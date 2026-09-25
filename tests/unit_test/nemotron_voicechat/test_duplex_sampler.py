@@ -22,17 +22,17 @@ def test_sampler_replay_updates_input_and_randomness():
 
     runner = object.__new__(DuplexTalkerRunner)
     runner.model = SimpleNamespace(
-        _hidden_out=torch.zeros(1, 16, device="cuda"),
+        hidden_out=torch.zeros(1, 16, device="cuda"),
         talker=SimpleNamespace(num_quantizers=8, generate_codes=sample),
         mog_head=None,
     )
     runner.exponent, runner.top_p, runner.noise_scale = 1.0, 0.9, 1.0
-    first = runner._generate_codes(0)
+    first = runner.generate_codes(0)
     saved = first.clone()
-    second = runner._generate_codes(0)
+    second = runner.generate_codes(0)
     assert not torch.equal(first, second)
-    runner.model._hidden_out.fill_(10)
-    third = runner._generate_codes(0)
+    runner.model.hidden_out.fill_(10)
+    third = runner.generate_codes(0)
     assert torch.all(third >= 10)
     assert torch.all(third < 11)
     assert torch.equal(first, saved)
@@ -63,7 +63,7 @@ def test_perception_capture_does_not_advance_history(monkeypatch):
         output = self.preemphasis_carry + samples[:1]
         self.preemphasis_carry = output
         self.sample_buffer = self.sample_buffer + samples[:1]
-        for name in self._lists:
+        for name in self.LIST_BUFFERS:
             setattr(
                 self, name, [tensor + samples[:1] for tensor in getattr(self, name)]
             )
@@ -76,12 +76,12 @@ def test_perception_capture_does_not_advance_history(monkeypatch):
         torch.float32,
         2,
     )
-    for name in stream._single:
+    for name in stream.SINGLE_BUFFERS:
         setattr(stream, name, torch.zeros(1, device="cuda"))
-    for name in stream._lists:
+    for name in stream.LIST_BUFFERS:
         setattr(stream, name, [torch.zeros(2, device="cuda")])
     for value in range(1, 5):
         result = stream.push(torch.ones(1280, device="cuda"))
         torch.testing.assert_close(result, torch.tensor([float(value)], device="cuda"))
-        for buffer in stream._buffers():
+        for buffer in stream.state_buffers():
             torch.testing.assert_close(buffer, torch.full_like(buffer, value))

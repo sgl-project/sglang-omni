@@ -168,6 +168,8 @@ class EarTtsTalker(nn.Module):
             counts = torch.ceil(masking * self.num_quantizers).long()
             counts = counts - torch.cat([counts[1:], counts.new_zeros(1)])
             assignment_counts = tuple(counts.tolist())
+        else:
+            pass
 
         assigned = 0
         for count in assignment_counts:

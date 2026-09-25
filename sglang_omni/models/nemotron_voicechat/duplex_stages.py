@@ -53,8 +53,8 @@ class ThinkerBuilder(SessionBuilder, NemotronVoiceChatEngineBuilder):
         from transformers import AutoTokenizer
 
         ordinary = super().make_adapters(model)
-        prompt, pad = self._prompt_tokens()
-        stt = json.loads((self._source / "config.json").read_text())["model"]["stt"][
+        prompt, pad = self.prompt_tokens()
+        stt = json.loads((self.source / "config.json").read_text())["model"]["stt"][
             "model"
         ]
         tokenizer = AutoTokenizer.from_pretrained(stt["pretrained_llm"])
@@ -128,13 +128,13 @@ def create_perception(model_path, *, dtype="float32", device=None, gpu_id=None):
     from sglang_omni.models.nemotron_voicechat.conformer import AudioPerception
     from sglang_omni.models.nemotron_voicechat.stages import (
         PERCEPTION_PREFIX,
-        _perception_config,
+        perception_config,
     )
     from sglang_omni.models.weight_loader import load_module, resolve_dtype
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = resolve_concrete_device(device, gpu_id)
-    model = AudioPerception(_perception_config(model_path))
+    model = AudioPerception(perception_config(model_path))
     load_module(
         model,
         model_path,
@@ -144,7 +144,7 @@ def create_perception(model_path, *, dtype="float32", device=None, gpu_id=None):
         strict=True,
     )
     return SessionScheduler(
-        PerceptionHooks(model.eval()), max_sessions=1, max_concurrency=1
+        PerceptionHooks(model.eval()), max_open_sessions=1, max_concurrency=1
     )
 
 
@@ -155,11 +155,11 @@ def create_codec(model_path, *, dtype="float32", device=None, gpu_id=None):
     offline = create_code2wav_executor(
         model_path, dtype=dtype, device=device, gpu_id=gpu_id
     )
-    hooks = CodecHooks(offline._decoder, offline._device)
+    hooks = CodecHooks(offline.decoder, offline.device)
     # Capture the steady-state codec before accepting a live microphone.
     import torch
 
-    if torch.device(offline._device).type == "cuda":
+    if torch.device(offline.device).type == "cuda":
         from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
             DECODE_WINDOW_FRAMES,
         )
@@ -167,13 +167,15 @@ def create_codec(model_path, *, dtype="float32", device=None, gpu_id=None):
         hooks.decode(
             torch.zeros(
                 DECODE_WINDOW_FRAMES,
-                offline._decoder.silence_codes.numel(),
+                offline.decoder.silence_codes.numel(),
                 dtype=torch.long,
-                device=offline._device,
+                device=offline.device,
             )
         )
+    else:
+        pass
     return SessionScheduler(
         hooks,
-        max_sessions=1,
+        max_open_sessions=1,
         max_concurrency=1,
     )

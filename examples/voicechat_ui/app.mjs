@@ -28,7 +28,6 @@ function controls(active, connecting = false) {
     $("start").disabled = active || connecting || !ready;
     $("stop").disabled = !active && !connecting;
     $("mute").disabled = !active;
-    $("interrupt").disabled = !active;
     $("microphone").disabled = active || connecting;
 }
 function send(s, type, fields = {}) {
@@ -126,7 +125,6 @@ async function start() {
         seq: 0,
         sentSamples: 0,
         completedSamples: 0,
-        epoch: 0,
         muted: false,
         level: 0,
         started: 0,
@@ -186,20 +184,7 @@ async function start() {
             "/voicechat-assets/capture-worklet.js",
         );
         if (current !== s) return;
-        s.player = new PCMPlayer(s.outputContext, (event, endMs) => {
-            if (
-                current === s &&
-                !s.cancelling &&
-                (event.sglang?.epoch ?? 0) === s.epoch
-            )
-                send(s, "sglang.playback.ack", {
-                    response_id: event.response_id,
-                    item_id: event.item_id,
-                    content_index: event.content_index ?? 0,
-                    audio_end_ms: endMs,
-                    sglang: { epoch: s.epoch },
-                });
-        });
+        s.player = new PCMPlayer(s.outputContext, () => {});
         s.ws = new WebSocket(
             `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/v1/realtime`,
         );
@@ -304,14 +289,14 @@ function handle(s, event) {
             clearTimeout(s.connectTimer);
             s.connecting = false;
             s.started = performance.now();
-            s.limit = Math.min(240, grant.limits?.session_timeout_s || 240);
+            s.limit = 240;
             beginCapture(s);
             controls(true);
             status("对话中", "active");
             $("stage").classList.add("active");
             $("call-title").textContent = "我在听，请直接说话";
             $("call-hint").textContent =
-                "你可以随时开口。点击“打断播放”可立即停止当前回复。";
+                "你可以随时开口，模型会持续接收你的声音。";
             $("mic-label").textContent = "正在收音";
             $("speaker-label").textContent = "等待回复";
             $("transcript-state").textContent = "LIVE";
@@ -321,7 +306,6 @@ function handle(s, event) {
             break;
         }
         case "response.output_audio.delta":
-            if (s.cancelling || (event.sglang?.epoch ?? 0) < s.epoch) break;
             if (!s.first) {
                 s.first = true;
                 $("first-audio").textContent =
@@ -331,8 +315,7 @@ function handle(s, event) {
             break;
         case "response.output_audio_transcript.delta":
         case "response.output_text.delta":
-            if (!s.cancelling && (event.sglang?.epoch ?? 0) >= s.epoch)
-                addText(event);
+            addText(event);
             break;
         case "response.done": {
             const item = replies.get(event.response.id);
@@ -346,13 +329,6 @@ function handle(s, event) {
                 s.completedSamples = Math.min(s.sentSamples, (unit + 1) * 1280);
             break;
         }
-        case "sglang.response.cancelled":
-            s.epoch = event.epoch;
-            s.cancelling = false;
-            s.player.clear();
-            $("interrupt").disabled = false;
-            log("旧回复已取消，继续接收你的声音");
-            break;
         case "session.closed":
             end(
                 event.reason === "session_timeout"
@@ -361,11 +337,6 @@ function handle(s, event) {
             );
             break;
         case "error":
-            if (
-                event.error?.code === "stale_epoch" &&
-                event.error?.event_id?.startsWith("ui-")
-            )
-                break;
             throw new Error(
                 event.error?.code === "buffer_overflow"
                     ? "服务端音频积压过多，已停止本次对话。请稍后重试。"
@@ -458,15 +429,6 @@ $("mute").onclick = () => {
     $("call-title").textContent = s.muted
         ? "麦克风已静音，继续听它说"
         : "我在听，请直接说话";
-};
-$("interrupt").onclick = () => {
-    const s = current;
-    if (!s || s.cancelling) return;
-    s.cancelling = true;
-    s.player.clear();
-    $("interrupt").disabled = true;
-    send(s, "response.cancel");
-    log("正在打断播放");
 };
 $("copy").onclick = async () => {
     try {

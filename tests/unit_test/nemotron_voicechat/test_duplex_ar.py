@@ -7,7 +7,7 @@ import torch
 from sglang_omni.models.nemotron_voicechat import duplex_ar
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.proto.session import SessionRef
+from sglang_omni.proto.session import SessionIdentity
 
 
 def test_prefill_uses_exact_uncached_suffix_and_replays_fused_history(monkeypatch):
@@ -68,13 +68,13 @@ def test_thinker_continuation_fuses_prior_output_and_function_without_new_token(
         tokenizer=tokenizer,
         context_length=8,
     )
-    ref = SessionRef("s")
+    ref = SessionIdentity("s")
     adapter.open(ref, OmniRequest(None))
 
     def request(payload, **kwargs):
         return SimpleNamespace(stage_payload=payload, talker_model_inputs={}, **kwargs)
 
-    monkeypatch.setattr(duplex_ar, "_ar_request", request)
+    monkeypatch.setattr(duplex_ar, "ar_request", request)
     first = adapter.build(
         ref, None, StagePayload("1", OmniRequest(None), {"acoustic": torch.ones(1, 4)})
     )
@@ -88,7 +88,7 @@ def test_thinker_continuation_fuses_prior_output_and_function_without_new_token(
         StagePayload("2", OmniRequest(None), {"acoustic": torch.full((1, 4), 7)}),
     )
     assert second.input_ids == [] and second.max_new_tokens == 1
-    history = adapter.states["s"]
+    history = adapter.states[ref]
     assert history.positions == 4
     assert torch.equal(
         history.rows[-1],

@@ -2,7 +2,8 @@
 
 This opt-in pipeline connects the existing VoiceChat model implementation to
 pipeline sessions (#2035), the AR streaming-session bridge (#2069), and the
-shared realtime endpoint (#2070). It needs all three dependencies. The default
+shared realtime endpoint (#2070). This local integration includes #2035 and #2069
+from main and #2070 at 0d09ba0b. The default
 offline VoiceChat configuration is unchanged.
 
 ## Run
@@ -44,8 +45,7 @@ opening the port (`--no-warmup` skips the silent session).
 2. Speak naturally. The browser sends continuous 80 ms PCM frames and plays
    streamed output, with assistant text shown alongside it.
 3. **静音麦克风** sends silence while the model continues responding.
-   **打断播放** clears scheduled output and cancels the current response while
-   preserving model history. **结束对话** releases the microphone and session.
+   **结束对话** releases the microphone and session.
 
 Microphone access requires localhost or HTTPS. To use a Kubernetes worker,
 forward its example port, then open the same localhost URL:
@@ -59,7 +59,7 @@ first audio packet (which can contain silence). It stops if input backlog exceed
 9 seconds instead of silently dropping input. Sessions last at most four minutes;
 one browser session is supported at a time. This is a prototype: sustained GPU
 processing can fall behind real time. Automatic interruption depends on model
-behavior; the explicit interrupt button is available to test cancellation.
+behavior. Explicit response cancellation is not supported by the current protocol.
 
 Playback uses a 480 ms startup/rebuffer reserve, then schedules packets
 contiguously. Where supported, the output AudioContext runs at 22050 Hz so
@@ -80,8 +80,7 @@ input is mono PCM16 at 16 kHz and output is PCM16 at 22050 Hz. Send
 The shared runtime assembles arbitrary client chunks into 1280-sample units.
 Use `sglang.input_audio.end` to pad a final partial unit and drain the codec;
 wait for `sglang.input_audio.drained`. Use `session.close` to release resources.
-`response.cancel` fences old output while retaining accepted input and model state.
-Clients must discard queued audio from the old epoch when cancellation is acknowledged.
+The current protocol does not accept `response.cancel` or playback acknowledgements.
 
 ## Execution and state
 
@@ -99,15 +98,14 @@ The fixed route is `perception → thinker → talker → code2wav`.
   alignment check. Bounded history also allows correct prefix replay.
 - Codec retains at most 16 code frames and holds back 256 samples until the next
   unit or EOS. An empty EOS drains that tail without another thinker/talker step.
-- A response spans units until EOS or a cancellation epoch. Text state and audio
-  conditioning survive cancellation. Closing releases all owners downstream first.
+- A response spans units until EOS. State is keyed by session ID and open index;
+  closing releases all owners downstream first.
 
 ## Scope
 
 This is native frame-driven input, with no VAD or turn commit. The model's own
 listening/speaking behavior controls generated audio. Automatic server interrupt
-notifications based on model markers are not implemented; client cancellation
-uses the shared runtime's epoch semantics. Playback does not rewind model history.
+notifications based on model markers are not implemented. Playback does not rewind model history.
 
 The initial version uses the checkpoint system prompt and Aria voice. Custom
 instructions are rejected. Tool execution, session resume, cross-unit overlap,
@@ -116,6 +114,7 @@ speech sampling, the full codec window, and perception after its causal caches
 reach their fixed bounds use CUDA graph replay; dynamic backbone KV remains
 managed by the native session scheduler. Perception capture restores its warmup
 state before replay, so capture does not consume extra input frames.
-Sessions are limited to 240 seconds; the AR adapters also enforce context bounds.
+The browser limits sessions to 240 seconds; the AR adapters enforce context bounds
+for every client. The shared runtime has no wall-clock session timeout.
 The underlying offline talker precision and classifier-free-guidance limitations
 still apply. Do not interpret unit tests or a smoke run as a quality benchmark.

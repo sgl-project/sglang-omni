@@ -1,17 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """CUDA graph capture for fixed-shape VoiceChat kernels."""
 
-from collections.abc import Callable
+from typing import Protocol
 
 import torch
 
 
+class GraphForward(Protocol):
+    def __call__(self) -> torch.Tensor: ...
+
+
+class StateRestorer(Protocol):
+    def __call__(self) -> None: ...
+
+
 @torch.inference_mode()
 def capture_cuda_graph(
-    forward: Callable[[], torch.Tensor],
+    forward: GraphForward,
     device: torch.device,
     *,
-    restore_state: Callable[[], None] | None = None,
+    restore_state: StateRestorer | None = None,
 ) -> tuple[torch.cuda.CUDAGraph, torch.Tensor]:
     """Warm kernels before capture, restoring causal state when necessary."""
     stream = torch.cuda.Stream(device=device)
@@ -22,6 +30,8 @@ def capture_cuda_graph(
     torch.cuda.current_stream().wait_stream(stream)
     if restore_state is not None:
         restore_state()
+    else:
+        pass
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph, stream=stream):
         output = forward()

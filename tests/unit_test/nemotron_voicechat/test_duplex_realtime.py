@@ -1,21 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise model-specific framing/events through the mounted shared WebSocket."""
+"""Exercise VoiceChat framing through the mounted shared WebSocket."""
 
 import asyncio
+import base64
 from dataclasses import replace
 
-import pytest
-import websockets
+from fastapi.testclient import TestClient
 
 from sglang_omni.models.nemotron_voicechat.realtime import deployment
-from sglang_omni.proto.session import OutputChunk, SessionRef
-from tests.unit_test.fixtures.realtime_websocket import (
-    append,
-    endpoint,
-    recv,
-    send,
-    until,
-)
+from sglang_omni.proto.session import OutputChunk, SessionIdentity
+from sglang_omni.serve.openai_api import create_app
 
 
 class Client:
@@ -23,95 +17,105 @@ class Client:
         self.chunks = []
         self.closed = 0
         self.queue = asyncio.Queue()
-        self.ref = None
+        self.identity = None
 
     async def open_session(self, request, *, stages, limits, session_id):
         assert stages == ["perception", "thinker", "talker", "code2wav"]
-        self.ref = SessionRef(session_id)
-        return self.ref
+        self.identity = SessionIdentity(session_id)
+        return self.identity
 
-    async def append_session(self, ref, chunk):
-        assert ref == self.ref
+    async def append_session(self, identity, chunk):
+        assert identity == self.identity
         self.chunks.append(chunk)
-        data = {
-            "pcm": b"\0\0" * (1764 if chunk.payload else 256),
-            "text": "hello",
-            "eos": chunk.eos,
-        }
-        out = OutputChunk(
-            ref,
+        output = OutputChunk(
+            identity,
             chunk.seq,
             chunk.seq,
             "audio",
             chunk.t_start_ms,
             chunk.duration_ms,
-            data,
+            {
+                "pcm": b"\0\0" * (1764 if chunk.payload else 256),
+                "text": "hello",
+                "eos": chunk.eos,
+            },
             "voicechat",
             chunk.eos,
         )
-        await self.queue.put(out)
-        await self.queue.put(replace(out, payload=None, kind="input_done"))
+        await self.queue.put(output)
+        await self.queue.put(replace(output, payload=None, kind="input_done"))
 
-    async def session_outputs(self, ref):
+    async def session_outputs(self, identity):
         while True:
-            out = await self.queue.get()
-            if out is None:
+            output = await self.queue.get()
+            if output is None:
                 break
-            yield out
+            yield output
 
-    async def abort_session(self, ref):
-        self.ref = replace(ref, epoch=ref.epoch + 1)
-        return self.ref
-
-    async def close_session(self, ref):
+    async def close_session(self, identity):
         self.closed += 1
         await self.queue.put(None)
 
 
-@pytest.mark.asyncio
-async def test_native_websocket_partial_tail_cancel_continuation_and_close():
-    client = Client()
-    async with endpoint(deployment=deployment(client)) as (_, url, _, _app):
-        async with websockets.connect(url) as ws:
-            await recv(ws)
-            await send(ws, "session.update", session={"output_modalities": ["audio"]})
-            update, _ = await until(ws, "session.updated")
-            assert update["session"]["audio"]["output"]["format"]["rate"] == 22050
-            await append(ws, 0, 640)
-            await until(ws, "sglang.input_audio.accepted")
-            assert client.chunks == []
-            await append(ws, 1, 640, start=40)
-            _, first = await until(ws, "sglang.unit.done")
-            assert len(client.chunks) == 1 and len(client.chunks[0].payload) == 2560
-            assert any(e["type"] == "response.output_audio.delta" for e in first)
-            await send(ws, "response.cancel")
-            _, cancelled = await until(ws, "sglang.response.cancelled")
-            assert any(
-                e["type"] == "response.done" and e["response"]["status"] == "cancelled"
-                for e in cancelled
-            )
-            await append(ws, 2, 100, start=80)
-            await send(ws, "sglang.input_audio.end")
-            drained, events = await until(ws, "sglang.input_audio.drained")
-            assert drained["consumed_ms"] == 86.25
-            assert drained["padding_ms"] == 73.75
-            assert client.chunks[-1].eos and len(client.chunks[-1].payload) == 2560
-            assert client.chunks[-1].duration_ms == 6.25
-            assert any(e["type"] == "response.created" for e in events)
-            await send(ws, "session.close")
-            await until(ws, "session.closed")
-        assert client.closed == 1
+def send(websocket, event_type, **fields):
+    websocket.send_json({"type": event_type, "event_id": event_type, **fields})
 
 
-@pytest.mark.asyncio
-async def test_native_websocket_disconnect_releases_session():
+def until(websocket, event_type):
+    events = []
+    while not events or events[-1]["type"] != event_type:
+        event = websocket.receive_json()
+        assert event["type"] != "error", event
+        events.append(event)
+    return events
+
+
+def append(websocket, sequence, samples, start):
+    send(
+        websocket,
+        "input_audio_buffer.append",
+        audio=base64.b64encode(b"\0\0" * samples).decode(),
+        sglang={"seq": sequence, "t_start_ms": start},
+    )
+
+
+def test_native_websocket_partial_tail_continuation_and_close():
     client = Client()
-    async with endpoint(deployment=deployment(client)) as (_, url, _, _app):
-        async with websockets.connect(url) as ws:
-            await recv(ws)
-            await send(ws, "session.update", session={})
-            await until(ws, "session.updated")
-        async with asyncio.timeout(5):
-            while client.closed == 0:
-                await asyncio.sleep(0.01)
-        assert client.closed == 1
+    app = create_app(
+        client, model_name="nemotron-voicechat", realtime_deployment=deployment(client)
+    )
+    with TestClient(app).websocket_connect("/v1/realtime") as websocket:
+        until(websocket, "session.created")
+        send(websocket, "session.update", session={"output_modalities": ["audio"]})
+        update = until(websocket, "session.updated")[-1]
+        assert update["session"]["audio"]["output"]["format"]["rate"] == 22050
+        append(websocket, 0, 640, 0)
+        until(websocket, "sglang.input_audio.accepted")
+        assert client.chunks == []
+        append(websocket, 1, 640, 40)
+        first = until(websocket, "sglang.unit.done")
+        assert len(client.chunks) == 1 and len(client.chunks[0].payload) == 2560
+        assert any(event["type"] == "response.output_audio.delta" for event in first)
+        append(websocket, 2, 100, 80)
+        send(websocket, "sglang.input_audio.end")
+        events = until(websocket, "sglang.input_audio.drained")
+        assert events[-1]["consumed_ms"] == 86.25
+        assert events[-1]["padding_ms"] == 73.75
+        assert client.chunks[-1].eos and len(client.chunks[-1].payload) == 2560
+        assert client.chunks[-1].duration_ms == 6.25
+        assert any(event["type"] == "response.done" for event in events)
+        send(websocket, "session.close")
+        until(websocket, "session.closed")
+    assert client.closed == 1
+
+
+def test_native_websocket_disconnect_releases_session():
+    client = Client()
+    app = create_app(
+        client, model_name="nemotron-voicechat", realtime_deployment=deployment(client)
+    )
+    with TestClient(app).websocket_connect("/v1/realtime") as websocket:
+        until(websocket, "session.created")
+        send(websocket, "session.update", session={})
+        until(websocket, "session.updated")
+    assert client.closed == 1

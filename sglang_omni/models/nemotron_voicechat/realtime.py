@@ -1,54 +1,81 @@
 # SPDX-License-Identifier: Apache-2.0
 """VoiceChat events on the shared realtime protocol, with one continuous response."""
 
-from sglang_omni.proto import OmniRequest
+from collections.abc import Iterable
+
+from sglang_omni.client.client import Client
+from sglang_omni.models.nemotron_voicechat.duplex_config import STAGES
+from sglang_omni.proto.request import OmniRequest
+from sglang_omni.proto.session import OutputChunk, SessionIdentity
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
+from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    OutputEvent,
     ResponseFinished,
     ResponseStarted,
     TextDelta,
     TextFinished,
 )
-from sglang_omni.serve.realtime.runtime import Capabilities, RuntimeLimits
-
-from .duplex_config import STAGES
+from sglang_omni.serve.realtime.schema import SessionConfiguration
+from sglang_omni.serve.realtime.types import Capabilities
 
 
 class VoiceChatOutput:
-    def __init__(self):
-        self.epoch = None
-        self.response = None
+    def __init__(self) -> None:
+        self.session_identity: SessionIdentity | None = None
+        self.response: str | None = None
         self.text = ""
 
-    def __call__(self, output):
-        data = output.payload
-        if not isinstance(data, dict) or "pcm" not in data:
+    def __call__(self, output: OutputChunk) -> Iterable[OutputEvent]:
+        payload = output.payload
+        if not isinstance(payload, dict):
             raise ValueError("invalid VoiceChat terminal payload")
-        if self.epoch != output.ref.epoch or self.response is None:
-            self.epoch = output.ref.epoch
-            self.response = f"{output.ref.session_id}-e{self.epoch}-u{output.input_seq}"
+        else:
+            pcm, text, eos = payload.get("pcm"), payload.get("text"), payload.get("eos")
+        if (
+            not isinstance(pcm, bytes)
+            or not isinstance(text, str)
+            or not isinstance(eos, bool)
+        ):
+            raise ValueError("invalid VoiceChat audio, text or EOS")
+        else:
+            pass
+        if self.session_identity != output.session_identity or self.response is None:
+            self.session_identity = output.session_identity
+            self.response = f"{output.session_identity.id}-o{output.session_identity.open_index}-u{output.input_seq}"
             self.text = ""
             yield ResponseStarted(self.response)
-        rid, item = self.response, self.response + "-item"
-        if data["text"]:
-            self.text += data["text"]
-            yield TextDelta(rid, item, data["text"])
-        if data["pcm"]:
-            yield AudioDelta(rid, item, data["pcm"])
-        if data["eos"]:
-            yield TextFinished(rid, item, self.text)
-            yield AudioFinished(rid, item)
-            yield ResponseFinished(rid, item, self.text, True, "completed", "stop")
+        else:
+            pass
+        response_id, item_id = self.response, self.response + "-item"
+        if text:
+            self.text += text
+            yield TextDelta(response_id, item_id, text)
+        else:
+            pass
+        if pcm:
+            yield AudioDelta(response_id, item_id, pcm)
+        else:
+            pass
+        if eos:
+            yield TextFinished(response_id, item_id, self.text)
+            yield AudioFinished(response_id, item_id)
+            yield ResponseFinished(
+                response_id, item_id, self.text, True, "completed", "stop"
+            )
             self.response = None
+        else:
+            pass
 
 
-def make_adapter(client):
-    def request(config):
+def make_adapter(client: Client) -> CoordinatorAdapter:
+    def request(config: SessionConfiguration) -> OmniRequest:
         if config.get("instructions"):
             raise ValueError("VoiceChat currently uses its checkpoint system prompt")
-        return OmniRequest(inputs=None)
+        else:
+            return OmniRequest(inputs=None)
 
     return CoordinatorAdapter(
         client,
@@ -59,20 +86,16 @@ def make_adapter(client):
     )
 
 
-def deployment(client):
-    from sglang_omni.serve.realtime.manager import RealtimeDeployment
-
-    # The bounded 4096-position talker supports <325 s. Leave prompt headroom.
+def deployment(client: Client) -> RealtimeDeployment:
     return RealtimeDeployment(
         Capabilities(
             interaction="native",
-            input_rate=16000,
-            output_rate=22050,
+            input_sample_rate_hz=16000,
+            output_sample_rate_hz=22050,
             output_modalities=("audio", "text"),
             native_unit_ms=80,
             tail_policy="pad",
         ),
         lambda: make_adapter(client),
-        RuntimeLimits(session_timeout_s=240),
         max_connections=1,
     )

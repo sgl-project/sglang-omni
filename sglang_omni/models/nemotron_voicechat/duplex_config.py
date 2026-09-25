@@ -5,7 +5,7 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import (
+from sglang_omni.config.schema import (
     EngineArgs,
     EngineStageConfig,
     FactoryArgs,
@@ -18,7 +18,7 @@ PREFIX = "sglang_omni.models.nemotron_voicechat.duplex_stages"
 STAGES = ["perception", "thinker", "talker", "code2wav"]
 
 
-def stages():
+def stages() -> list[StageConfig]:
     return [
         StageConfig(
             name="perception",
@@ -56,8 +56,11 @@ def stages():
 
 
 class NemotronVoiceChatDuplexPipelineConfig(PipelineConfig):
+    realtime_deployment_factory: ClassVar[str] = (
+        "sglang_omni.models.nemotron_voicechat.realtime.deployment"
+    )
     model_path: str
-    stage_config_types: ClassVar[dict] = {
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "thinker": EngineStageConfig,
         "talker": EngineStageConfig,
     }

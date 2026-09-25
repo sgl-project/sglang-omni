@@ -12,10 +12,15 @@ from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
     DECODE_WINDOW_FRAMES,
     TAIL_HOLDBACK_SAMPLES,
 )
-from sglang_omni.models.nemotron_voicechat.conformer import StreamingPerception
+from sglang_omni.models.nemotron_voicechat.codec import RVQVAEDecoder
+from sglang_omni.models.nemotron_voicechat.conformer import (
+    AudioPerception,
+    StreamingPerception,
+)
 from sglang_omni.models.nemotron_voicechat.cuda_graph import capture_cuda_graph
-from sglang_omni.proto.session import ResourceUsage, TimedChunk
-from sglang_omni.scheduling.session import SessionHooks
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
+from sglang_omni.scheduling.session import SessionContext, SessionHooks
 
 INPUT_RATE = 16000
 OUTPUT_RATE = 22050
@@ -25,47 +30,55 @@ FRAME_SAMPLES = 1280
 class GraphPerception(StreamingPerception):
     """Replay only after causal cache shapes have reached their fixed bounds."""
 
-    _single = ("sample_buffer", "preemphasis_carry")
-    _lists = ("sub_caches", "key_caches", "value_caches", "conv_caches")
+    SINGLE_BUFFERS = ("sample_buffer", "preemphasis_carry")
+    LIST_BUFFERS = ("sub_caches", "key_caches", "value_caches", "conv_caches")
 
-    def _buffers(self) -> list[torch.Tensor]:
-        return [getattr(self, name) for name in self._single] + [
-            tensor for name in self._lists for tensor in getattr(self, name)
+    def state_buffers(self) -> list[torch.Tensor]:
+        return [getattr(self, name) for name in self.SINGLE_BUFFERS] + [
+            tensor for name in self.LIST_BUFFERS for tensor in getattr(self, name)
         ]
 
     @torch.inference_mode()
     def push(self, samples: torch.Tensor) -> torch.Tensor:
         if self.device.type != "cuda" or len(self.key_caches[0]) < self.max_keys:
             return super().push(samples)
-        if not hasattr(self, "_graph"):
-            inputs = self._buffers()
+        else:
+            pass
+        if not hasattr(self, "graph"):
+            inputs = self.state_buffers()
             saved = [value.clone() for value in inputs]
-            attrs = {name: getattr(self, name) for name in self._single}
-            attrs.update({name: list(getattr(self, name)) for name in self._lists})
-            self._input = samples.to(device=self.device, dtype=self.dtype).clone()
+            attrs = {name: getattr(self, name) for name in self.SINGLE_BUFFERS}
+            attrs.update(
+                {name: list(getattr(self, name)) for name in self.LIST_BUFFERS}
+            )
+            self.graph_input = samples.to(device=self.device, dtype=self.dtype).clone()
 
-            def restore_state():
+            def restore_state() -> None:
                 for target, value in zip(inputs, saved):
                     target.copy_(value)
                 for name, value in attrs.items():
-                    setattr(self, name, list(value) if name in self._lists else value)
+                    setattr(
+                        self, name, list(value) if name in self.LIST_BUFFERS else value
+                    )
 
-            def forward():
-                output = super(GraphPerception, self).push(self._input)
+            def forward() -> torch.Tensor:
+                output = super(GraphPerception, self).push(self.graph_input)
                 # Keep captured cache addresses fixed across subsequent replays.
-                for target, value in zip(inputs, self._buffers()):
+                for target, value in zip(inputs, self.state_buffers()):
                     target.copy_(value)
                 return output
 
-            self._graph, self._output = capture_cuda_graph(
+            self.graph, self.graph_output = capture_cuda_graph(
                 forward, self.device, restore_state=restore_state
             )
             for name, value in attrs.items():
-                setattr(self, name, list(value) if name in self._lists else value)
+                setattr(self, name, list(value) if name in self.LIST_BUFFERS else value)
+        else:
+            pass
 
-        self._input.copy_(samples)
-        self._graph.replay()
-        return self._output
+        self.graph_input.copy_(samples)
+        self.graph.replay()
+        return self.graph_output
 
 
 @dataclass
@@ -75,44 +88,64 @@ class PerceptionState:
 
 
 class PerceptionHooks(SessionHooks):
-    def __init__(self, model):
+    def __init__(self, model: AudioPerception) -> None:
         self.model = model
+        self.states: dict[SessionIdentity, PerceptionState] = {}
 
-    def open(self, ref, request):
-        return PerceptionState(GraphPerception(self.model))
+    def open(self, ref: SessionIdentity, request: OmniRequest) -> None:
+        self.states[ref] = PerceptionState(GraphPerception(self.model))
 
     @torch.inference_mode()
-    def append(self, state, chunk, payload, context):
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        state = self.states[context.session_identity]
         if state.ended:
             raise ValueError("VoiceChat input already ended")
+        else:
+            pass
         if chunk.modality != "audio" or chunk.format != "pcm16":
             raise ValueError("VoiceChat requires mono 16 kHz PCM16")
+        else:
+            pass
         raw = chunk.payload
         if not isinstance(raw, bytes) or len(raw) % 2:
             raise ValueError("VoiceChat requires complete PCM16 samples")
+        else:
+            pass
         if len(raw) not in (0, FRAME_SAMPLES * 2):
             raise ValueError("VoiceChat requires 1280 samples per unit; pad at ingress")
+        else:
+            pass
         if not raw and not chunk.eos:
             raise ValueError("empty VoiceChat input requires EOS")
+        else:
+            pass
         row = None
         if raw:
             wave = torch.from_numpy(np.frombuffer(raw, dtype="<i2").astype(np.float32))
             row = state.stream.push(wave / 32768.0).cpu()
+        else:
+            pass
         state.ended = chunk.eos
         # Match the offline pipeline: the encoder's extra flush row is not a
         # model frame. EOS only drains the codec, it does not synthesize input.
         payload.data = {"acoustic": row, "eos": chunk.eos}
         return payload
 
-    def abort(self, state, ref):
-        pass  # Output fencing must not reset causal perception history.
+    def close(self, ref: SessionIdentity) -> None:
+        self.states.pop(ref, None)
 
-    def close(self, state):
-        state.stream = None
-
-    def usage(self, state):
+    def usage(self, ref: SessionIdentity) -> ResourceUsage:
+        state = self.states.get(ref)
+        if state is None:
+            return ResourceUsage()
+        else:
+            pass
         if state.stream is None:
             return ResourceUsage()
+        else:
+            pass
         stream = state.stream
         tensors = [stream.sample_buffer, stream.preemphasis_carry]
         for key in ("sub_caches", "key_caches", "value_caches", "conv_caches"):
@@ -131,9 +164,10 @@ class CodecState:
 class CodecHooks(SessionHooks):
     """A bounded rolling decoder window with the offline codec's tail holdback."""
 
-    def __init__(self, decoder, device):
+    def __init__(self, decoder: RVQVAEDecoder, device: str | torch.device) -> None:
         self.decoder, self.device = decoder, device
-        self._decode_graph = None
+        self.states: dict[SessionIdentity, CodecState] = {}
+        self.decode_graph = None
 
     @torch.inference_mode()
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
@@ -141,28 +175,39 @@ class CodecHooks(SessionHooks):
         # graph for codec kernels without changing the window or audio samples.
         if codes.device.type != "cuda" or codes.shape[0] != DECODE_WINDOW_FRAMES:
             return self.decoder(codes)
-        if self._decode_graph is None:
-            self._decode_input = codes.clone()
-            self._decode_graph, self._decode_output = capture_cuda_graph(
-                lambda: self.decoder(self._decode_input), codes.device
+        else:
+            pass
+        if self.decode_graph is None:
+            self.decode_input = codes.clone()
+            self.decode_graph, self.decode_output = capture_cuda_graph(
+                lambda: self.decoder(self.decode_input), codes.device
             )
-        self._decode_input.copy_(codes)
-        self._decode_graph.replay()
-        return self._decode_output
+        else:
+            pass
+        self.decode_input.copy_(codes)
+        self.decode_graph.replay()
+        return self.decode_output
 
-    def open(self, ref, request):
-        return CodecState()
+    def open(self, ref: SessionIdentity, request: OmniRequest) -> None:
+        self.states[ref] = CodecState()
 
     @torch.inference_mode()
-    def append(self, state, chunk, payload, context):
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        state = self.states[context.session_identity]
         if state.ended:
             raise ValueError("VoiceChat codec already ended")
+        else:
+            pass
         data = payload.data
         codes = data.get("codes")
         if codes is not None:
             state.rows.append(codes.reshape(-1).to(self.device))
             state.frames += 1
             state.rows = state.rows[-DECODE_WINDOW_FRAMES:]
+        else:
+            pass
         eos = bool(data.get("eos"))
         fresh = torch.zeros(0)
         if state.rows:
@@ -177,6 +222,8 @@ class CodecHooks(SessionHooks):
             end = available - window_start
             fresh = audio[start:end].float().cpu()
             state.emitted = available
+        else:
+            pass
         pcm = (fresh.clamp(-1, 1).numpy() * 32767).astype("<i2").tobytes()
         state.ended = eos
         payload.data = {
@@ -199,13 +246,15 @@ class CodecHooks(SessionHooks):
         )
         return payload
 
-    def abort(self, state, ref):
-        pass  # Retain synthesis history when old output is suppressed.
+    def close(self, ref: SessionIdentity) -> None:
+        self.states.pop(ref, None)
 
-    def close(self, state):
-        state.rows.clear()
-
-    def usage(self, state):
+    def usage(self, ref: SessionIdentity) -> ResourceUsage:
+        state = self.states.get(ref)
+        if state is None:
+            return ResourceUsage()
+        else:
+            pass
         return ResourceUsage(
             bytes=sum(t.numel() * t.element_size() for t in state.rows)
         )
