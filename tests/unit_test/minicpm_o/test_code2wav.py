@@ -320,7 +320,6 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.batch_wait_when_idle is False
     assert code2wav.factory.dtype is None
     assert code2wav.factory.enable_flow_variable_length is True
-    assert code2wav.factory.enable_dit_torch_compile is True
     assert code2wav.factory.enable_flow_cuda_graph is True
     assert code2wav.factory.flow_cuda_graph_capture_shapes is None
     assert code2wav.factory.packed_dit_cuda_graph_capture_shapes is None
@@ -330,7 +329,6 @@ def test_speech_pipeline_parses_flow_execution_options() -> None:
     config = MiniCPMOSpeechPipelineConfig(model_path="unused")
     merged = ConfigManager(config).merge_config(
         [
-            ("code2wav.factory.enable_dit_torch_compile", "false"),
             ("code2wav.factory.enable_flow_cuda_graph", "false"),
             (
                 "code2wav.factory.flow_cuda_graph_capture_shapes",
@@ -340,7 +338,6 @@ def test_speech_pipeline_parses_flow_execution_options() -> None:
         ]
     )
     code2wav = next(stage for stage in merged.stages if stage.name == "code2wav")
-    assert code2wav.factory.enable_dit_torch_compile is False
     assert code2wav.factory.enable_flow_cuda_graph is False
     assert code2wav.factory.flow_cuda_graph_capture_shapes == (
         (1, 256),

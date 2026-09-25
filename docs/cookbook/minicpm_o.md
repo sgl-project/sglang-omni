@@ -50,19 +50,17 @@ new preparation calls.
 
 ## Flow execution options
 
-The Code2Wav stage compiles the DiT blocks and enables separate Flow and
-packed DiT CUDA graph tables by default. The batch-1 Flow table spans
+The Code2Wav stage enables separate Flow and packed DiT CUDA graph tables
+by default. The batch-1 Flow table spans
 mel-frame lengths
 `128..1024`, every 16 frames from 272 through 720 and at most 32 frames
 apart elsewhere:
 
 ```text
---code2wav.factory.enable_dit_torch_compile false
 --code2wav.factory.enable_flow_cuda_graph false
 ```
 
-Compile runs before graph capture when both options are enabled. Two
-independent CUDA graph tables are configurable at startup:
+Two independent CUDA graph tables are configurable at startup:
 
 - `code2wav.factory.flow_cuda_graph_capture_shapes` is keyed by
   `(batch, mel_frames)`. Batch-1 keys capture complete Euler steps;

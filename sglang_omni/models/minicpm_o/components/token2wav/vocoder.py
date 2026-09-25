@@ -110,7 +110,6 @@ class Token2Wav(torch.nn.Module):
         dtype: torch.dtype = torch.float32,
         n_timesteps: int = 10,
         enable_flow_variable_length: bool = False,
-        enable_dit_torch_compile: bool = True,
         enable_flow_cuda_graph: bool = True,
         flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
         packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
@@ -149,10 +148,6 @@ class Token2Wav(torch.nn.Module):
         )
         self.flow.to(device).eval()
         self.flow.decoder.estimator.enable_variable_length = enable_flow_variable_length
-        if enable_dit_torch_compile:
-            self.flow.decoder.estimator.enable_compiled_blocks()
-        else:
-            pass
         self.hift = HiFTGenerator()
         weights = torch.load(
             model_path / "hift.pt", map_location="cpu", weights_only=True

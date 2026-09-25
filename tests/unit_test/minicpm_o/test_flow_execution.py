@@ -9,7 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT, DiTBlock
+from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 from sglang_omni.models.minicpm_o.components.token2wav.flow import (
     CausalConditionalCFM,
     FlowCudaGraphRunner,
@@ -39,20 +39,6 @@ def flow_inputs(
     spks = torch.randn(1, 4, device=device)
     cond = torch.randn_like(mu)
     return mu, mask, spks, cond
-
-
-def test_compiled_blocks_share_one_forward(monkeypatch: pytest.MonkeyPatch) -> None:
-    dit = DiT(in_channels=16, out_channels=4, depth=2, hidden_size=32)
-    compiled: list[tuple[object, bool]] = []
-
-    def compile_forward(forward: object, *, dynamic: bool) -> object:
-        compiled.append((forward, dynamic))
-        return forward
-
-    monkeypatch.setattr(torch, "compile", compile_forward)
-    dit.enable_compiled_blocks()
-    assert compiled == [(DiTBlock.forward, True)]
-    assert all(block.forward.__func__ is DiTBlock.forward for block in dit.blocks)
 
 
 def test_default_graph_shapes_cover_dense_region_and_sparse_tails() -> None:
@@ -96,14 +82,9 @@ def test_right_padding_preserves_valid_flow_frames() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.parametrize("compile_blocks", [False, True])
-def test_flow_graph_replays_changed_inputs_and_falls_back(
-    compile_blocks: bool,
-) -> None:
+def test_flow_graph_replays_changed_inputs_and_falls_back() -> None:
     torch.manual_seed(11)
     decoder = small_decoder("cuda")
-    if compile_blocks:
-        decoder.estimator.enable_compiled_blocks()
     runner = FlowCudaGraphRunner(decoder, device=torch.device("cuda:0"))
     runner.capture(((1, 16),))
 
