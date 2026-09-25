@@ -42,9 +42,33 @@ class TtsCiThresholdPreset:
 
 
 @dataclass(frozen=True)
+class TtsCiLatencyPoint:
+    """One open-loop streaming operating point of the latency stage."""
+
+    request_rate: float
+    samples: int
+    # note (luojiaxuan): None until the point is calibrated, so the stage
+    # prints the value without judging it.
+    ttfp_median_max_s: float | None = None
+    ttfp_p95_max_s: float | None = None
+    c50_min_pct: float | None = None
+
+
+@dataclass(frozen=True)
+class TtsCiLatencyPreset:
+    """Streaming first-audio latency points measured against one worker."""
+
+    points: tuple[TtsCiLatencyPoint, ...]
+    calibrated: bool = False
+
+
+@dataclass(frozen=True)
 class TtsCiPreset:
     model: TtsCiModelPreset
     thresholds: TtsCiThresholdPreset
+    # note (luojiaxuan): only the arms whose first-audio latency is being
+    # worked on carry this; the stage skips the others.
+    latency: TtsCiLatencyPreset | None = None
 
 
 # Slack factors applied to P95 reference values to derive CI thresholds.
@@ -234,6 +258,73 @@ COSYVOICE3_VC_STREAM_THRESHOLDS = apply_slack(
 )
 
 
+# note (luojiaxuan): 1 rps is the idle first-chunk path, 20 rps the loaded one;
+# the loaded point is the full EN corpus, so its p95 and its continuity rate
+# have support and only there are they gated. Each arm has its own references
+# because a cloned voice encodes the reference audio before the first chunk and
+# a named voice does not. First playable is timed from each request's planned
+# arrival. These are raw worst-of-five references; the gates below apply the
+# slack once.
+QWEN3_TTS_LATENCY_VC_R1_TTFP_MEDIAN_REF_S = 0.0596
+QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S = 0.1221
+QWEN3_TTS_LATENCY_VC_R20_TTFP_P95_REF_S = 0.3082
+QWEN3_TTS_LATENCY_VC_R20_C50_REF_PCT = 95.0
+QWEN3_TTS_LATENCY_CUSTOM_VOICE_R1_TTFP_MEDIAN_REF_S = 0.0223
+QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_MEDIAN_REF_S = 0.0353
+QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_P95_REF_S = 0.0590
+QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_C50_REF_PCT = 95.0
+
+
+def latency_gate(reference_s: float) -> float:
+    return round(reference_s * THRESHOLD_SLACK_LOWER, 4)
+
+
+def continuity_gate(reference_pct: float) -> float:
+    return round(reference_pct * THRESHOLD_SLACK_HIGHER, 2)
+
+
+QWEN3_TTS_VC_LATENCY_GATES = TtsCiLatencyPreset(
+    points=(
+        TtsCiLatencyPoint(
+            request_rate=1.0,
+            samples=60,
+            ttfp_median_max_s=latency_gate(QWEN3_TTS_LATENCY_VC_R1_TTFP_MEDIAN_REF_S),
+        ),
+        TtsCiLatencyPoint(
+            request_rate=20.0,
+            samples=1088,
+            ttfp_median_max_s=latency_gate(QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S),
+            ttfp_p95_max_s=latency_gate(QWEN3_TTS_LATENCY_VC_R20_TTFP_P95_REF_S),
+            c50_min_pct=continuity_gate(QWEN3_TTS_LATENCY_VC_R20_C50_REF_PCT),
+        ),
+    ),
+    calibrated=True,
+)
+QWEN3_TTS_CUSTOM_VOICE_LATENCY_GATES = TtsCiLatencyPreset(
+    points=(
+        TtsCiLatencyPoint(
+            request_rate=1.0,
+            samples=60,
+            ttfp_median_max_s=latency_gate(
+                QWEN3_TTS_LATENCY_CUSTOM_VOICE_R1_TTFP_MEDIAN_REF_S
+            ),
+        ),
+        TtsCiLatencyPoint(
+            request_rate=20.0,
+            samples=1088,
+            ttfp_median_max_s=latency_gate(
+                QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_MEDIAN_REF_S
+            ),
+            ttfp_p95_max_s=latency_gate(
+                QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_P95_REF_S
+            ),
+            c50_min_pct=continuity_gate(QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_C50_REF_PCT),
+        ),
+    ),
+    calibrated=True,
+)
+
+
 TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
     "higgs": TtsCiPreset(
         model=TtsCiModelPreset(
@@ -277,6 +368,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
         ),
+        latency=QWEN3_TTS_VC_LATENCY_GATES,
     ),
     "qwen3-tts-custom-voice": TtsCiPreset(
         model=TtsCiModelPreset(
@@ -311,6 +403,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             utmos_mean_min=QWEN3_TTS_CUSTOM_VOICE_UTMOS_MEAN_MIN,
             calibrated=False,
         ),
+        latency=QWEN3_TTS_CUSTOM_VOICE_LATENCY_GATES,
     ),
     "moss": TtsCiPreset(
         model=TtsCiModelPreset(

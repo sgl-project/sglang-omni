@@ -64,6 +64,42 @@ def test_the_workflow_rotation_draws_registered_presets_only() -> None:
 
 
 @pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))
+def test_the_latency_stage_covers_exactly_the_qwen3_tts_arms(name: str) -> None:
+    """The first-audio latency work is on Qwen3-TTS, so those arms carry the
+    latency points and no other arm does."""
+    preset = TTS_CI_PRESETS[name]
+    is_qwen3_tts = preset.model.model_path.startswith("Qwen/Qwen3-TTS")
+    assert (preset.latency is not None) == is_qwen3_tts
+
+
+@pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))
+def test_a_latency_preset_gates_every_point_or_none(name: str) -> None:
+    """A calibrated preset carries a median threshold at every point, so no
+    point is silently left ungated; an uncalibrated one carries none, so the
+    stage can only print."""
+    latency = TTS_CI_PRESETS[name].latency
+    if latency is None:
+        return
+    assert latency.points
+    assert all(point.samples > 0 and point.request_rate > 0 for point in latency.points)
+    thresholds = [
+        value
+        for point in latency.points
+        for value in (point.ttfp_median_max_s, point.ttfp_p95_max_s, point.c50_min_pct)
+        if value is not None
+    ]
+    if latency.calibrated:
+        assert all(point.ttfp_median_max_s is not None for point in latency.points)
+        assert all(value > 0 for value in thresholds)
+        assert all(
+            point.c50_min_pct is None or point.c50_min_pct <= 100
+            for point in latency.points
+        )
+    else:
+        assert not thresholds
+
+
+@pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))
 def test_the_router_profile_matches_the_preset_request_shape(name: str) -> None:
     """A preset's requests have to match a profile the CI router advertises."""
     from tests.test_model.rust_router_config import (
