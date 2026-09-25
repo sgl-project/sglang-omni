@@ -129,7 +129,7 @@ def test_minicpm_stages_launch_two_single_gpu_workers(
 def test_router_config_declares_actual_generation_stream_modes(
     tmp_path_factory: pytest.TempPathFactory, streaming: bool
 ) -> None:
-    config_path = omni_router_utils._write_router_config(
+    config_path = omni_router_utils.write_router_config(
         tmp_path_factory,
         topology=CiRouterTopology.OMNI_AUDIO,
         router_port=8000,
@@ -147,9 +147,9 @@ def test_router_config_declares_actual_generation_stream_modes(
 
 
 def test_omni_ci_model_option_rejects_unknown_models() -> None:
-    assert conftest._parse_omni_ci_model(" MiniCPMO ") == "minicpmo"
+    assert conftest.parse_omni_ci_model(" MiniCPMO ") == "minicpmo"
     with pytest.raises(pytest.UsageError, match="Unsupported OMNI_CI_MODEL"):
-        conftest._parse_omni_ci_model("unknown")
+        conftest.parse_omni_ci_model("unknown")
 
 
 def test_omni_ci_model_defaults_to_qwen(monkeypatch: pytest.MonkeyPatch) -> None:

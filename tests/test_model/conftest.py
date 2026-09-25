@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from tests.utils import ServerHandle
 
 
-def _parse_cpuset(spec: str) -> set[int]:
+def parse_cpuset(spec: str) -> set[int]:
     """Parse a Linux cpulist such as "0-23,64-87" into a CPU id set."""
     cpus: set[int] = set()
     for part in spec.split(","):
@@ -39,11 +39,11 @@ def _parse_cpuset(spec: str) -> set[int]:
     return cpus
 
 
-def _apply_omni_ci_cpuset() -> set[int] | None:
+def apply_omni_ci_cpuset() -> set[int] | None:
     spec = os.environ.get("OMNI_CI_CPUSET", "").strip()
     if not spec or not hasattr(os, "sched_setaffinity"):
         return None
-    requested = _parse_cpuset(spec)
+    requested = parse_cpuset(spec)
     previous = os.sched_getaffinity(0)
     os.sched_setaffinity(0, requested)
     # Note: (Jiaxin Deng) Linux may silently intersect the request with the
@@ -72,7 +72,7 @@ def pin_omni_ci_cpuset() -> "Generator[None, None, None]":
     carries the contention line for triage while retrying through the normal
     failure path. Calibration is stricter and rejects the round itself.
     """
-    cpus = _apply_omni_ci_cpuset()
+    cpus = apply_omni_ci_cpuset()
     if cpus is None:
         yield
         return
@@ -224,7 +224,7 @@ def omni_ci_server(
 @pytest.fixture(scope="module")
 def qwen3_omni_bf16_colocated_thinker_server(tmp_path_factory: pytest.TempPathFactory):
     """BF16 colocated-DP2, thinker-only (0.92); MMMU."""
-    yield from _start_qwen3_omni_bf16_colocated_router(
+    yield from start_qwen3_omni_bf16_colocated_router(
         tmp_path_factory,
         worker_extra_args=QWEN3_OMNI_BF16_THINKER_ARGS,
         audio_output=False,
@@ -234,7 +234,7 @@ def qwen3_omni_bf16_colocated_thinker_server(tmp_path_factory: pytest.TempPathFa
 @pytest.fixture(scope="module")
 def qwen3_omni_bf16_colocated_server(tmp_path_factory: pytest.TempPathFactory):
     """BF16 colocated-DP2, full thinker+talker; TTS."""
-    yield from _start_qwen3_omni_bf16_colocated_router(
+    yield from start_qwen3_omni_bf16_colocated_router(
         tmp_path_factory,
         worker_extra_args=QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS,
         audio_output=True,
@@ -244,28 +244,28 @@ def qwen3_omni_bf16_colocated_server(tmp_path_factory: pytest.TempPathFactory):
 @pytest.fixture(scope="module")
 def qwen3_omni_fp8_colocated_server(tmp_path_factory: pytest.TempPathFactory):
     """FP8 colocated-DP2; MMMU, Video-AMME."""
-    yield from _start_qwen3_omni_fp8_colocated_router(tmp_path_factory)
+    yield from start_qwen3_omni_fp8_colocated_router(tmp_path_factory)
 
 
 @pytest.fixture(scope="module")
 def qwen3_omni_bf16_disagg_server(tmp_path_factory: pytest.TempPathFactory):
     """BF16 disaggregated (thinker GPU 0 / talker GPU 1); Video-MME (+talker)."""
-    yield from _start_qwen3_omni_disagg(tmp_path_factory)
+    yield from start_qwen3_omni_disagg(tmp_path_factory)
 
 
 @pytest.fixture(scope="module")
 def qwen3_omni_fp8_tp2_server(tmp_path_factory: pytest.TempPathFactory):
     """FP8 thinker-TP=2; MMSU-talker, Video-AMME-talker."""
-    yield from _start_qwen3_omni_fp8_tp2(tmp_path_factory)
+    yield from start_qwen3_omni_fp8_tp2(tmp_path_factory)
 
 
 @pytest.fixture(scope="module")
 def qwen3_omni_bf16_tp2_server(tmp_path_factory: pytest.TempPathFactory):
     """BF16 thinker-TP=2 (short context); thinker_length context-length checks."""
-    yield from _start_qwen3_omni_tp2(tmp_path_factory, thinker_max_seq_len=128)
+    yield from start_qwen3_omni_tp2(tmp_path_factory, thinker_max_seq_len=128)
 
 
-def _start_qwen3_omni_fp8_colocated_router(tmp_path_factory: pytest.TempPathFactory):
+def start_qwen3_omni_fp8_colocated_router(tmp_path_factory: pytest.TempPathFactory):
     """Start 2 FP8 colocated replicas (one per H100) behind the managed router."""
     from tests.test_model.omni_router_utils import (
         CiRouterTopology,
@@ -284,7 +284,7 @@ def _start_qwen3_omni_fp8_colocated_router(tmp_path_factory: pytest.TempPathFact
         yield router
 
 
-def _start_qwen3_omni_bf16_colocated_router(
+def start_qwen3_omni_bf16_colocated_router(
     tmp_path_factory: pytest.TempPathFactory,
     *,
     worker_extra_args: str,
@@ -310,7 +310,7 @@ def _start_qwen3_omni_bf16_colocated_router(
         yield router
 
 
-def _start_qwen3_omni_disagg(tmp_path_factory: pytest.TempPathFactory):
+def start_qwen3_omni_disagg(tmp_path_factory: pytest.TempPathFactory):
     """Start a BF16 disaggregated server (thinker GPU 0 / talker GPU 1) as a non-router handle."""
     from tests.test_model.omni_router_utils import ManagedRouterHandle
 
@@ -330,7 +330,7 @@ def _start_qwen3_omni_disagg(tmp_path_factory: pytest.TempPathFactory):
         "--talker-mem-fraction-static",
         QWEN3_OMNI_DISAGG_TALKER_MEM_FRACTION,
     ]
-    gen = _start_qwen3_omni_speech_server(
+    gen = start_qwen3_omni_speech_server(
         tmp_path_factory,
         model_path=QWEN3_OMNI_TEST_MODEL_PATH,
         extra_args=extra_args,
@@ -351,7 +351,7 @@ def _start_qwen3_omni_disagg(tmp_path_factory: pytest.TempPathFactory):
         gen.close()
 
 
-def _start_qwen3_omni_fp8_tp2(tmp_path_factory: pytest.TempPathFactory):
+def start_qwen3_omni_fp8_tp2(tmp_path_factory: pytest.TempPathFactory):
     """Start an FP8 thinker-TP=2 server (talker stacked on GPU 1) as a non-router handle."""
     from tests.test_model.omni_router_utils import ManagedRouterHandle
 
@@ -369,7 +369,7 @@ def _start_qwen3_omni_fp8_tp2(tmp_path_factory: pytest.TempPathFactory):
         "--talker-mem-fraction-static",
         QWEN3_OMNI_TP2_TALKER_MEM_FRACTION,
     ]
-    gen = _start_qwen3_omni_speech_server(
+    gen = start_qwen3_omni_speech_server(
         tmp_path_factory,
         model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
         extra_args=extra_args,
@@ -390,7 +390,7 @@ def _start_qwen3_omni_fp8_tp2(tmp_path_factory: pytest.TempPathFactory):
         gen.close()
 
 
-def _start_qwen3_omni_tp2(
+def start_qwen3_omni_tp2(
     tmp_path_factory: pytest.TempPathFactory,
     *,
     thinker_max_seq_len: int = QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN,
@@ -425,7 +425,7 @@ def _start_qwen3_omni_tp2(
                 str(thinker_max_seq_len),
             ]
         )
-    gen = _start_qwen3_omni_speech_server(
+    gen = start_qwen3_omni_speech_server(
         tmp_path_factory,
         model_path=model_path,
         extra_args=extra_args,
@@ -449,7 +449,7 @@ def _start_qwen3_omni_tp2(
         gen.close()
 
 
-def _start_qwen3_omni_speech_server(
+def start_qwen3_omni_speech_server(
     tmp_path_factory: pytest.TempPathFactory,
     *,
     model_path: str = QWEN3_OMNI_TEST_MODEL_PATH,
@@ -496,7 +496,7 @@ def _start_qwen3_omni_speech_server(
         stop_server(proc)
 
 
-def _model_cache_present(model_path: str) -> bool:
+def model_cache_present(model_path: str) -> bool:
     """Return True iff *model_path* is either a local directory or an
     already-resolvable HF snapshot. Avoids triggering a multi-GB download
     on a CI runner that did not opt in.
@@ -517,7 +517,7 @@ def _model_cache_present(model_path: str) -> bool:
 def resolve_qwen3_omni_model_dir(model_path: str) -> Path:
     """Return the model directory without triggering a download. Caller is
     responsible for confirming the cache is populated (see
-    :func:`_model_cache_present`).
+    :func:`model_cache_present`).
     """
     if Path(model_path).exists():
         return Path(model_path)
@@ -534,7 +534,7 @@ def cuda_device():
 
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
-    if not _model_cache_present(QWEN3_OMNI_TEST_MODEL_PATH):
+    if not model_cache_present(QWEN3_OMNI_TEST_MODEL_PATH):
         pytest.skip(
             f"{QWEN3_OMNI_TEST_MODEL_PATH} is not in the local HF cache; this "
             f"benchmark test refuses to auto-download a multi-GB checkpoint. "
@@ -658,18 +658,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     option_value = config.getoption(TTS_CONCURRENCY_OPTION)
-    config.stash[SELECTED_TTS_CONCURRENCIES] = _parse_tts_concurrency(option_value)
+    config.stash[SELECTED_TTS_CONCURRENCIES] = parse_tts_concurrency(option_value)
     stage_value = config.getoption(TTS_STAGE_OPTION)
-    config.stash[SELECTED_TTS_CI_STAGE] = _parse_tts_ci_stage(stage_value)
+    config.stash[SELECTED_TTS_CI_STAGE] = parse_tts_ci_stage(stage_value)
     tts_model_value = config.getoption(TTS_CI_MODEL_OPTION)
     if tts_model_value:
-        os.environ["TTS_CI_MODEL"] = _parse_tts_ci_model(tts_model_value)
+        os.environ["TTS_CI_MODEL"] = parse_tts_ci_model(tts_model_value)
     asr_model_value = config.getoption(ASR_CI_MODEL_OPTION)
     if asr_model_value:
-        os.environ["ASR_CI_MODEL"] = _parse_asr_ci_model(asr_model_value)
+        os.environ["ASR_CI_MODEL"] = parse_asr_ci_model(asr_model_value)
     omni_model_value = config.getoption(OMNI_CI_MODEL_OPTION)
     if omni_model_value:
-        os.environ["OMNI_CI_MODEL"] = _parse_omni_ci_model(omni_model_value)
+        os.environ["OMNI_CI_MODEL"] = parse_omni_ci_model(omni_model_value)
 
 
 @pytest.fixture(scope="session")
@@ -684,7 +684,7 @@ def selected_tts_ci_stage(pytestconfig: pytest.Config) -> str:
     return pytestconfig.stash[SELECTED_TTS_CI_STAGE]
 
 
-def _parse_tts_concurrency(option_value: str) -> tuple[int, ...]:
+def parse_tts_concurrency(option_value: str) -> tuple[int, ...]:
     normalized_value = option_value.strip().lower()
     if normalized_value == TTS_FULL_SWEEP_VALUE:
         return TTS_ALLOWED_CONCURRENCIES
@@ -704,7 +704,7 @@ def _parse_tts_concurrency(option_value: str) -> tuple[int, ...]:
     return (concurrency,)
 
 
-def _parse_tts_ci_stage(option_value: str) -> str:
+def parse_tts_ci_stage(option_value: str) -> str:
     normalized_value = option_value.strip().lower()
     if normalized_value == TTS_STAGE_ALL:
         return TTS_STAGE_ALL
@@ -716,7 +716,7 @@ def _parse_tts_ci_stage(option_value: str) -> str:
     return normalized_value
 
 
-def _parse_tts_ci_model(option_value: str) -> str:
+def parse_tts_ci_model(option_value: str) -> str:
     from tests.test_model.tts_ci_config import TTS_CI_PRESETS
 
     normalized_value = option_value.strip().lower()
@@ -729,7 +729,7 @@ def _parse_tts_ci_model(option_value: str) -> str:
     return normalized_value
 
 
-def _parse_asr_ci_model(option_value: str) -> str:
+def parse_asr_ci_model(option_value: str) -> str:
     from tests.test_model.asr_ci_config import ASR_CI_PRESETS
 
     normalized_value = option_value.strip().lower()
@@ -742,7 +742,7 @@ def _parse_asr_ci_model(option_value: str) -> str:
     return normalized_value
 
 
-def _parse_omni_ci_model(option_value: str) -> str:
+def parse_omni_ci_model(option_value: str) -> str:
     from tests.test_model.omni_ci_config import select_omni_ci_preset
 
     try:

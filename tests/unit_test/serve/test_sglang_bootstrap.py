@@ -149,7 +149,7 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
     monkeypatch.setattr(
         bootstrap,
         "describe_sglang_runtime_configuration",
-        lambda *_args: "runtime configuration",
+        lambda *args: "runtime configuration",
     )
 
     class FakeRunner:

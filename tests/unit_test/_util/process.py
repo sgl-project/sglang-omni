@@ -13,7 +13,7 @@ import threading
 import time
 
 
-def _wait_for(predicate, timeout: float, interval: float = 2.0) -> bool:
+def wait_for(predicate, timeout: float, interval: float = 2.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
@@ -22,24 +22,24 @@ def _wait_for(predicate, timeout: float, interval: float = 2.0) -> bool:
     return False
 
 
-def _wait_for_process_line(
+def wait_for_process_line(
     proc: subprocess.Popen,
     marker: str,
     timeout: float,
 ) -> str:
     assert proc.stdout is not None
-    line_queue = getattr(proc, "_omni_stdout_line_queue", None)
+    line_queue = getattr(proc, "omni_stdout_line_queue", None)
     if line_queue is None:
         line_queue = queue.Queue()
 
-        def _read_stdout() -> None:
+        def read_stdout() -> None:
             assert proc.stdout is not None
             for line in proc.stdout:
                 line_queue.put(line)
             line_queue.put(None)
 
-        threading.Thread(target=_read_stdout, daemon=True).start()
-        setattr(proc, "_omni_stdout_line_queue", line_queue)
+        threading.Thread(target=read_stdout, daemon=True).start()
+        setattr(proc, "omni_stdout_line_queue", line_queue)
 
     deadline = time.time() + timeout
     output: list[str] = []

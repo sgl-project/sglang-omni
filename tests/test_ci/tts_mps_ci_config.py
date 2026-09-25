@@ -48,36 +48,36 @@ MPS_SIMILARITY_MEAN_MIN = {
     "moss": MPS_MOSS_SIMILARITY_MEAN_MIN,
 }
 
-_MINIMUM = "minimum"
-_MAXIMUM = "maximum"
+MINIMUM = "minimum"
+MAXIMUM = "maximum"
 
 MPS_PERFORMANCE_REFERENCES: dict[str, dict[str, tuple[float | None, str, str]]] = {
     "higgs": {
-        "throughput_qps": (MPS_HIGGS_THROUGHPUT_QPS_REF, _MINIMUM, "req/s"),
+        "throughput_qps": (MPS_HIGGS_THROUGHPUT_QPS_REF, MINIMUM, "req/s"),
         "output_tok_per_req_s": (
             MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF,
-            _MINIMUM,
+            MINIMUM,
             "tok/req-s",
         ),
-        "latency_mean_s": (MPS_HIGGS_LATENCY_MEAN_S_REF, _MAXIMUM, "s"),
-        "rtf_mean": (MPS_HIGGS_RTF_MEAN_REF, _MAXIMUM, ""),
+        "latency_mean_s": (MPS_HIGGS_LATENCY_MEAN_S_REF, MAXIMUM, "s"),
+        "rtf_mean": (MPS_HIGGS_RTF_MEAN_REF, MAXIMUM, ""),
     },
     "moss": {
-        "throughput_qps": (MPS_MOSS_THROUGHPUT_QPS_REF, _MINIMUM, "req/s"),
+        "throughput_qps": (MPS_MOSS_THROUGHPUT_QPS_REF, MINIMUM, "req/s"),
         "output_tok_per_req_s": (
             MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF,
-            _MINIMUM,
+            MINIMUM,
             "tok/req-s",
         ),
-        "latency_mean_s": (MPS_MOSS_LATENCY_MEAN_S_REF, _MAXIMUM, "s"),
-        "rtf_mean": (MPS_MOSS_RTF_MEAN_REF, _MAXIMUM, ""),
+        "latency_mean_s": (MPS_MOSS_LATENCY_MEAN_S_REF, MAXIMUM, "s"),
+        "rtf_mean": (MPS_MOSS_RTF_MEAN_REF, MAXIMUM, ""),
     },
 }
 
 
 def derive_threshold(reference: float, direction: str) -> float:
     """Apply CI slack to a stored pre-slack reference."""
-    if direction == _MINIMUM:
+    if direction == MINIMUM:
         return reference * MPS_SLACK_HIGHER
     return reference * MPS_SLACK_LOWER
 
@@ -118,7 +118,7 @@ def check_mps_performance(
             continue
         threshold = derive_threshold(reference, direction)
         passed = (
-            observed >= threshold if direction == _MINIMUM else observed <= threshold
+            observed >= threshold if direction == MINIMUM else observed <= threshold
         )
         checks[metric] = {
             "observed": observed,
@@ -129,7 +129,7 @@ def check_mps_performance(
             "pass": passed,
         }
         if not passed:
-            comparator = ">=" if direction == _MINIMUM else "<="
+            comparator = ">=" if direction == MINIMUM else "<="
             failed.append(
                 f"{metric} {observed:.4f}{unit} violates {comparator} "
                 f"{threshold:.4f}{unit} (reference {reference:.4f}{unit})"

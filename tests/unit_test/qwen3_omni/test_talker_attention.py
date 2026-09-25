@@ -19,7 +19,7 @@ from tests.unit_test.fixtures.qwen_predictor import (
 
 # note (EdwardZhang1108): cpu/fp32 covers the math backend; cuda/bf16 locks the
 # production-dtype evidence into CI instead of living only in the PR description.
-_DEVICE_DTYPE_PARAMS = [
+DEVICE_DTYPE_PARAMS = [
     pytest.param("cpu", torch.float32, id="cpu-fp32"),
     pytest.param(
         "cuda",
@@ -36,7 +36,7 @@ _DEVICE_DTYPE_PARAMS = [
 ]
 
 
-def _build_gqa_talker(device: torch.device, dtype: torch.dtype) -> Qwen3OmniTalker:
+def build_gqa_talker(device: torch.device, dtype: torch.dtype) -> Qwen3OmniTalker:
     talker = build_real_step_predictor_graph_talker(device, num_heads=4, num_kv_heads=2)
     attn = talker.code_predictor.model.layers[0].self_attn
     # note (EdwardZhang1108): kv heads > 1, else wrong GQA group order passes by broadcast
@@ -49,7 +49,7 @@ def _build_gqa_talker(device: torch.device, dtype: torch.dtype) -> Qwen3OmniTalk
     return talker
 
 
-def _project_q_kv(attn: SimpleNamespace, hidden_states: torch.Tensor):
+def project_q_kv(attn: SimpleNamespace, hidden_states: torch.Tensor):
     """Shared projection: hidden states to per-head q/k/v, mirroring the source."""
     batch_size, seq_len, hidden_size = hidden_states.shape
     qkv, _ = attn.qkv_proj(hidden_states.reshape(-1, hidden_size))
@@ -65,7 +65,7 @@ def _project_q_kv(attn: SimpleNamespace, hidden_states: torch.Tensor):
     )
 
 
-def _materialized_sdpa(
+def materialized_sdpa(
     attn: SimpleNamespace,
     q: torch.Tensor,
     k: torch.Tensor,
@@ -88,16 +88,16 @@ def _materialized_sdpa(
     return attn_output.reshape(batch_size, seq_len, -1)
 
 
-def _materialized_kv_direct_attention(
+def materialized_kv_direct_attention(
     *,
     attn: SimpleNamespace,
     hidden_states: torch.Tensor,
 ) -> torch.Tensor:
-    q, k, v = _project_q_kv(attn, hidden_states)
-    return _materialized_sdpa(attn, q, k, v, is_causal=True)
+    q, k, v = project_q_kv(attn, hidden_states)
+    return materialized_sdpa(attn, q, k, v, is_causal=True)
 
 
-def _materialized_kv_cached_attention(
+def materialized_kv_cached_attention(
     *,
     talker: Qwen3OmniTalker,
     attn: SimpleNamespace,
@@ -105,13 +105,13 @@ def _materialized_kv_cached_attention(
     batch_size: int,
     cache_len: int,
 ) -> torch.Tensor:
-    q, _, _ = _project_q_kv(attn, hidden_states)
+    q, _, _ = project_q_kv(attn, hidden_states)
     cached_k = talker.predictor_k_cache[0, :batch_size, :, : cache_len + 1, :]
     cached_v = talker.predictor_v_cache[0, :batch_size, :, : cache_len + 1, :]
-    return _materialized_sdpa(attn, q, cached_k, cached_v, is_causal=False)
+    return materialized_sdpa(attn, q, cached_k, cached_v, is_causal=False)
 
 
-@pytest.mark.parametrize("device_name,dtype", _DEVICE_DTYPE_PARAMS)
+@pytest.mark.parametrize("device_name,dtype", DEVICE_DTYPE_PARAMS)
 def test_qwen_predictor_direct_attention_gqa_matches_materialized_kv(
     monkeypatch: pytest.MonkeyPatch,
     device_name: str,
@@ -125,7 +125,7 @@ def test_qwen_predictor_direct_attention_gqa_matches_materialized_kv(
     )
 
     device = torch.device(device_name)
-    talker = _build_gqa_talker(device, dtype)
+    talker = build_gqa_talker(device, dtype)
     attn = talker.code_predictor.model.layers[0].self_attn
 
     batch_size, seq_len, hidden_size = 2, 3, 8
@@ -141,7 +141,7 @@ def test_qwen_predictor_direct_attention_gqa_matches_materialized_kv(
             hidden_states=hidden_states,
             positions=positions,
         )
-        expected = _materialized_kv_direct_attention(
+        expected = materialized_kv_direct_attention(
             attn=attn,
             hidden_states=hidden_states,
         )
@@ -149,7 +149,7 @@ def test_qwen_predictor_direct_attention_gqa_matches_materialized_kv(
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("device_name,dtype", _DEVICE_DTYPE_PARAMS)
+@pytest.mark.parametrize("device_name,dtype", DEVICE_DTYPE_PARAMS)
 def test_qwen_predictor_cached_attention_gqa_matches_materialized_kv(
     monkeypatch: pytest.MonkeyPatch,
     device_name: str,
@@ -163,7 +163,7 @@ def test_qwen_predictor_cached_attention_gqa_matches_materialized_kv(
     )
 
     device = torch.device(device_name)
-    talker = _build_gqa_talker(device, dtype)
+    talker = build_gqa_talker(device, dtype)
     attn = talker.code_predictor.model.layers[0].self_attn
     batch_size, hidden_size = 2, 8
 
@@ -182,7 +182,7 @@ def test_qwen_predictor_cached_attention_gqa_matches_materialized_kv(
                 batch_size=batch_size,
                 cache_len=cache_len,
             )
-            expected = _materialized_kv_cached_attention(
+            expected = materialized_kv_cached_attention(
                 talker=talker,
                 attn=attn,
                 hidden_states=hidden_states,

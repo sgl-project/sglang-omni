@@ -63,7 +63,7 @@ def test_length_ci_checks_selected_model_error(
     response = SimpleNamespace(
         status_code=400, text=detail, json=lambda: {"detail": detail}
     )
-    monkeypatch.setattr(length_ci, "_post_chat", lambda *args, **kwargs: response)
+    monkeypatch.setattr(length_ci, "post_chat", lambda *args, **kwargs: response)
     test = (
         length_ci.test_overlong_prompt_returns_400
         if overlong

@@ -11,8 +11,8 @@ import torch
 import sglang_omni.models.fun_cosyvoice3.stages as stages
 
 
-@pytest.fixture(autouse=True)
-def _cpu_cuda_contexts(monkeypatch) -> None:
+@pytest.fixture
+def cpu_cuda_contexts(monkeypatch) -> None:
     monkeypatch.setattr(
         torch.cuda, "device", lambda *args, **kwargs: contextlib.nullcontext()
     )
@@ -21,7 +21,7 @@ def _cpu_cuda_contexts(monkeypatch) -> None:
     )
 
 
-def _flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
+def make_flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
     parameter = torch.nn.Parameter(torch.zeros(1))
     return SimpleNamespace(
         parameters=lambda: iter((parameter,)),
@@ -41,38 +41,38 @@ def _flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
     )
 
 
-class _ReplayGraph:
+class ReplayGraph:
     def __init__(
         self,
         static_inputs: tuple[torch.Tensor, ...],
         static_output: torch.Tensor,
     ) -> None:
-        self._static_inputs = static_inputs
-        self._static_output = static_output
+        self.captured_inputs = static_inputs
+        self.static_output = static_output
 
     def replay(self) -> None:
-        self._static_output.copy_(
-            self._static_inputs[0] + self._static_inputs[2] + self._static_inputs[5]
+        self.static_output.copy_(
+            self.captured_inputs[0] + self.captured_inputs[2] + self.captured_inputs[5]
         )
 
 
-def _runner() -> stages.FlowCudaGraphRunner:
+def make_runner() -> stages.FlowCudaGraphRunner:
     return stages.FlowCudaGraphRunner(
-        _flow(), device=torch.device("cpu"), autocast_dtype=None
+        make_flow(), device=torch.device("cpu"), autocast_dtype=None
     )
 
 
-def _install(runner: stages.FlowCudaGraphRunner, key: tuple[int, int]) -> None:
+def install(runner: stages.FlowCudaGraphRunner, key: tuple[int, int]) -> None:
     static_inputs = runner.capture_inputs(*key)
     static_output = torch.empty_like(static_inputs[0])
     runner.graphs[key] = stages.CapturedFlowCudaGraph(
-        _ReplayGraph(static_inputs, static_output),
+        ReplayGraph(static_inputs, static_output),
         static_inputs,
         static_output,
     )
 
 
-def _solver_inputs(
+def solver_inputs(
     batch_size: int, mel_frame: int, channels: int = 4
 ) -> tuple[torch.Tensor, ...]:
     noisy_mel = torch.ones(batch_size, channels, mel_frame)
@@ -86,7 +86,7 @@ def _solver_inputs(
     )
 
 
-def _packed_tokens(flow: SimpleNamespace, length: int = 17) -> stages.PackedFlowBatch:
+def packed_tokens(flow: SimpleNamespace, length: int = 17) -> stages.PackedFlowBatch:
     return stages.pack_flow_inputs(
         flow,
         [
@@ -105,11 +105,12 @@ def test_verify_capture_shapes_rejects_unaligned_frames() -> None:
         stages.verify_flow_cuda_graph_capture_shapes(((1, 495),))
 
 
+@pytest.mark.usefixtures("cpu_cuda_contexts")
 def test_resident_replay_crops_to_actual_frames() -> None:
-    runner = _runner()
-    _install(runner, (2, 496))
+    runner = make_runner()
+    install(runner, (2, 496))
     noisy_mel, time_span, token_condition, mel_mask, speaker_embedding, prompt_mel = (
-        _solver_inputs(2, 489)
+        solver_inputs(2, 489)
     )
     output = runner.run(
         noisy_mel,
@@ -125,10 +126,11 @@ def test_resident_replay_crops_to_actual_frames() -> None:
     assert torch.equal(output, noisy_mel + token_condition + prompt_mel)
 
 
+@pytest.mark.usefixtures("cpu_cuda_contexts")
 def test_nonresident_shape_returns_none() -> None:
-    runner = _runner()
-    _install(runner, (2, 496))
-    assert runner.run(*_solver_inputs(2, 1)) is None
+    runner = make_runner()
+    install(runner, (2, 496))
+    assert runner.run(*solver_inputs(2, 1)) is None
 
 
 def test_generate_flow_does_not_retry_eager_after_replay_failure(monkeypatch) -> None:
@@ -137,12 +139,91 @@ def test_generate_flow_does_not_retry_eager_after_replay_failure(monkeypatch) ->
         stages, "solve_flow_euler", lambda *args, **kwargs: eager_calls.append(args)
     )
 
-    class _FailingRunner:
+    class FailingRunner:
         def run(self, *args, **kwargs):
             raise RuntimeError("replay failed")
 
-    flow = _flow(max_frames=64)
-    flow.cuda_graph_runner = _FailingRunner()
+    flow = make_flow(max_frames=64)
+    flow.cuda_graph_runner = FailingRunner()
     with pytest.raises(RuntimeError, match="replay failed"):
-        stages.generate_flow(flow, _packed_tokens(flow))
+        stages.generate_flow(flow, packed_tokens(flow))
     assert eager_calls == []
+
+
+def cuda_flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
+    parameter = torch.nn.Parameter(torch.zeros(1, device="cuda"))
+
+    def forward_estimator(
+        noisy_mel_cfg,
+        mel_mask_cfg,
+        token_condition_cfg,
+        flow_time,
+        speaker_embedding_cfg,
+        prompt_mel_cfg,
+        *,
+        streaming=False,
+    ):
+        return token_condition_cfg + prompt_mel_cfg
+
+    return SimpleNamespace(
+        parameters=lambda: iter((parameter,)),
+        decoder=SimpleNamespace(
+            t_scheduler="linear",
+            inference_cfg_rate=0.0,
+            rand_noise=torch.zeros(1, channels, max_frames),
+            estimator=torch.nn.Identity(),
+            forward_estimator=forward_estimator,
+        ),
+        output_size=channels,
+        token_mel_ratio=1,
+        spk_embed_affine_layer=torch.nn.Linear(3, 5),
+        input_embedding=lambda token: torch.ones(*token.shape, channels),
+        pre_lookahead_layer=lambda x, context=None: x,
+        pre_lookahead_len=3,
+        cuda_graph_runner=None,
+    )
+
+
+@pytest.mark.accelerator
+def test_capture_populates_graphs_and_replays_eager_equivalent() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for flow CUDA graph capture")
+    flow = cuda_flow()
+    runner = stages.FlowCudaGraphRunner(
+        flow, device=torch.device("cuda"), autocast_dtype=None
+    )
+    shape = (1, 16)
+    runner.capture((shape,))
+
+    captured = runner.graphs.get(shape)
+    assert captured is not None, "capture() must install a graph for each shape"
+    for static in captured.static_inputs:
+        assert static.is_cuda
+
+    noisy_mel, time_span, token_condition, mel_mask, speaker, prompt_mel = (
+        runner.capture_inputs(*shape)
+    )
+    noisy_mel = noisy_mel + 1.0
+    token_condition = token_condition + 0.5
+    prompt_mel = prompt_mel + 0.25
+
+    replayed = runner.run(
+        noisy_mel.clone(),
+        time_span,
+        token_condition.clone(),
+        mel_mask,
+        speaker,
+        prompt_mel.clone(),
+    )
+    eager = stages.solve_flow_euler(
+        flow.decoder,
+        noisy_mel,
+        time_span,
+        token_condition,
+        mel_mask,
+        speaker,
+        prompt_mel,
+    )
+    assert replayed is not None
+    assert replayed.shape == eager.shape
+    torch.testing.assert_close(replayed, eager, rtol=1e-4, atol=1e-4)

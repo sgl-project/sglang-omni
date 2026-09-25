@@ -22,7 +22,7 @@ from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
 
-def _higgs_with_vocoder_cadence() -> HiggsTtsPipelineConfig:
+def higgs_with_vocoder_cadence() -> HiggsTtsPipelineConfig:
     """Higgs's hook mirrors vocoder-set cadence onto tts_engine and supplies the
     platform-aware vocoder decode defaults (#1721); a cadence set on the
     vocoder here must reach the engine through it."""
@@ -56,7 +56,7 @@ def _higgs_with_vocoder_cadence() -> HiggsTtsPipelineConfig:
             id="dots-tts",
         ),
         pytest.param(
-            _higgs_with_vocoder_cadence(),
+            higgs_with_vocoder_cadence(),
             "tts_engine",
             id="higgs-tts",
         ),

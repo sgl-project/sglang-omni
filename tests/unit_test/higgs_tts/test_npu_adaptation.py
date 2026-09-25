@@ -17,23 +17,23 @@ from sglang_omni.models.higgs_tts import stages as higgs_stages
 from sglang_omni.platforms import current_platform
 
 
-class _FakePlatform:
+class FakePlatform:
     def __init__(self, device_type: str, *, npu: bool = False) -> None:
         self.device_type = device_type
-        self._npu = npu
+        self.npu = npu
 
     def is_npu(self) -> bool:
-        return self._npu
+        return self.npu
 
     def enable_code2wav_graph(self) -> bool:
-        return not self._npu
+        return not self.npu
 
 
 def test_sampler_renorm_falls_back_to_torch_on_npu(monkeypatch) -> None:
     monkeypatch.setattr(
         higgs_sampler,
         "current_platform",
-        _FakePlatform("npu", npu=True),
+        FakePlatform("npu", npu=True),
     )
 
     top_k, top_p = higgs_sampler.resolve_renorm_kernels()
@@ -121,13 +121,13 @@ def test_vocoder_decode_graph_domain_follows_platform_capability() -> None:
         assert counts == ()
 
 
-class _FakeTokenizer:
+class FakeTokenizer:
     @staticmethod
     def from_file(path):  # noqa: ANN001
         return object()
 
 
-def _fake_encoder_codec() -> SimpleNamespace:
+def fake_encoder_codec() -> SimpleNamespace:
     return SimpleNamespace(
         SAMPLE_RATE=24000,
         model=SimpleNamespace(acoustic_encoder=torch.nn.Linear(4, 4)),
@@ -135,9 +135,9 @@ def _fake_encoder_codec() -> SimpleNamespace:
     )
 
 
-def _install_audio_encoder_fakes(
+def install_audio_encoder_fakes(
     monkeypatch: pytest.MonkeyPatch,
-    platform: _FakePlatform,
+    platform: FakePlatform,
     codec: SimpleNamespace,
 ) -> None:
     monkeypatch.setattr(platforms_mod, "current_platform", platform)
@@ -150,7 +150,7 @@ def _install_audio_encoder_fakes(
     monkeypatch.setattr(
         higgs_stages, "resolve_checkpoint", lambda model_path: "ckpt_dir"
     )
-    monkeypatch.setattr(higgs_stages, "Tokenizer", _FakeTokenizer)
+    monkeypatch.setattr(higgs_stages, "Tokenizer", FakeTokenizer)
     monkeypatch.setattr(
         higgs_stages,
         "PreTrainedTokenizerFast",
@@ -170,9 +170,9 @@ def _install_audio_encoder_fakes(
 
 
 def test_audio_encoder_keeps_acoustic_encoder_eager_on_npu(monkeypatch) -> None:
-    codec = _fake_encoder_codec()
+    codec = fake_encoder_codec()
     original = codec.model.acoustic_encoder
-    _install_audio_encoder_fakes(monkeypatch, _FakePlatform("npu", npu=True), codec)
+    install_audio_encoder_fakes(monkeypatch, FakePlatform("npu", npu=True), codec)
 
     result = higgs_stages.create_audio_encoder_executor("model", device="npu:0")
 
@@ -180,7 +180,7 @@ def test_audio_encoder_keeps_acoustic_encoder_eager_on_npu(monkeypatch) -> None:
     assert codec.model.acoustic_encoder is original
 
 
-def _fake_vocoder_codec() -> SimpleNamespace:
+def fake_vocoder_codec() -> SimpleNamespace:
     return SimpleNamespace(
         model=SimpleNamespace(
             config=SimpleNamespace(num_quantizers=8),
@@ -192,9 +192,9 @@ def _fake_vocoder_codec() -> SimpleNamespace:
     )
 
 
-def _install_vocoder_fakes(
+def install_vocoder_fakes(
     monkeypatch: pytest.MonkeyPatch,
-    platform: _FakePlatform,
+    platform: FakePlatform,
     codec: SimpleNamespace,
 ) -> None:
     monkeypatch.setattr(platforms_mod, "current_platform", platform)
@@ -218,9 +218,9 @@ def _install_vocoder_fakes(
 
 
 def test_vocoder_compile_decode_falls_back_to_eager_on_npu(monkeypatch, caplog) -> None:
-    codec = _fake_vocoder_codec()
+    codec = fake_vocoder_codec()
     original = codec.model.decode
-    _install_vocoder_fakes(monkeypatch, _FakePlatform("npu", npu=True), codec)
+    install_vocoder_fakes(monkeypatch, FakePlatform("npu", npu=True), codec)
 
     with caplog.at_level(logging.WARNING, logger="sglang_omni.models.higgs_tts.stages"):
         result = higgs_stages.create_vocoder_executor(
@@ -233,12 +233,12 @@ def test_vocoder_compile_decode_falls_back_to_eager_on_npu(monkeypatch, caplog) 
 
 
 def test_vocoder_decode_cuda_graphs_skipped_on_npu(monkeypatch) -> None:
-    codec = _fake_vocoder_codec()
+    codec = fake_vocoder_codec()
     captured: list[tuple] = []
     codec.capture_decode_cuda_graphs = lambda frame_counts: captured.append(
         frame_counts
     )
-    _install_vocoder_fakes(monkeypatch, _FakePlatform("npu", npu=True), codec)
+    install_vocoder_fakes(monkeypatch, FakePlatform("npu", npu=True), codec)
 
     higgs_stages.create_vocoder_executor(
         "model", device="npu:0", decode_cuda_graph_frame_counts=(1, 2, 3)

@@ -21,14 +21,14 @@ N = 8
 V = 1026
 
 
-def _delayed(t_raw: int, n: int = N) -> torch.Tensor:
+def make_delayed_codes(t_raw: int, n: int = N) -> torch.Tensor:
     return apply_delay_pattern(torch.randint(0, 1024, (t_raw, n), device=DEVICE))
 
 
 def test_schema_actions_logprobs_and_action_count():
     torch.manual_seed(0)
     t_raw = 10
-    delayed = _delayed(t_raw)
+    delayed = make_delayed_codes(t_raw)
     lp = torch.randn(*delayed.shape, device=DEVICE)
 
     trace = build_omni_rollout_trace(
@@ -54,7 +54,7 @@ def test_schema_actions_logprobs_and_action_count():
 
 
 def test_input_guards():
-    delayed = _delayed(6)
+    delayed = make_delayed_codes(6)
 
     with pytest.raises(ValueError, match="codebooks"):
         build_omni_rollout_trace(delayed, num_codebooks=N + 1, codebook_vocab_size=V)

@@ -11,7 +11,7 @@ import torch
 
 import sglang_omni.utils.gpu_memory as gpu_memory
 
-_ACCELERATOR_ONLY = pytest.mark.skipif(
+ACCELERATOR_ONLY = pytest.mark.skipif(
     not (
         torch.cuda.is_available()
         or (hasattr(torch, "xpu") and torch.xpu.is_available())
@@ -20,7 +20,7 @@ _ACCELERATOR_ONLY = pytest.mark.skipif(
 )
 
 
-class _FakeNVML(ModuleType):
+class FakeNVML(ModuleType):
     def __init__(
         self,
         *,
@@ -83,7 +83,7 @@ class _FakeNVML(ModuleType):
         return SimpleNamespace(total=self.total_memory)
 
 
-def _install_fake_nvml(monkeypatch: pytest.MonkeyPatch, fake: _FakeNVML) -> None:
+def install_fake_nvml(monkeypatch: pytest.MonkeyPatch, fake: FakeNVML) -> None:
     monkeypatch.setitem(sys.modules, "pynvml", fake)
 
 
@@ -153,8 +153,8 @@ def test_resolve_visible_device_id_rejects_invalid_mapping(
 def test_process_scoped_memory_available_uses_nvml_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeNVML()
-    _install_fake_nvml(monkeypatch, fake)
+    fake = FakeNVML()
+    install_fake_nvml(monkeypatch, fake)
 
     assert gpu_memory.is_process_scoped_memory_available() is True
     assert fake.shutdown_called is True
@@ -163,10 +163,10 @@ def test_process_scoped_memory_available_uses_nvml_boundary(
 def test_process_scoped_memory_unavailable_when_nvml_import_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _raise_module_not_found(name: str) -> None:
+    def raise_module_not_found(name: str) -> None:
         raise ModuleNotFoundError(name)
 
-    monkeypatch.setattr(gpu_memory.importlib, "import_module", _raise_module_not_found)
+    monkeypatch.setattr(gpu_memory.importlib, "import_module", raise_module_not_found)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     assert gpu_memory.is_process_scoped_memory_available() is False
@@ -176,8 +176,8 @@ def test_process_scoped_memory_unavailable_when_nvml_import_fails(
 def test_process_scoped_memory_unavailable_when_nvml_init_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeNVML(init_error=RuntimeError("driver unavailable"))
-    _install_fake_nvml(monkeypatch, fake)
+    fake = FakeNVML(init_error=RuntimeError("driver unavailable"))
+    install_fake_nvml(monkeypatch, fake)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     assert gpu_memory.is_process_scoped_memory_available() is False
@@ -187,13 +187,13 @@ def test_process_scoped_memory_unavailable_when_nvml_init_fails(
 def test_get_process_gpu_memory_uses_current_pid_and_visible_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeNVML(
+    fake = FakeNVML(
         processes=[
             SimpleNamespace(pid=111, usedGpuMemory=256),
             SimpleNamespace(pid=os.getpid(), usedGpuMemory=1024),
         ]
     )
-    _install_fake_nvml(monkeypatch, fake)
+    install_fake_nvml(monkeypatch, fake)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
 
     assert gpu_memory.get_process_gpu_memory_bytes(0) == 1024
@@ -204,8 +204,8 @@ def test_get_process_gpu_memory_uses_current_pid_and_visible_index(
 def test_get_process_gpu_memory_uses_visible_uuid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeNVML(processes=[SimpleNamespace(pid=os.getpid(), usedGpuMemory=2048)])
-    _install_fake_nvml(monkeypatch, fake)
+    fake = FakeNVML(processes=[SimpleNamespace(pid=os.getpid(), usedGpuMemory=2048)])
+    install_fake_nvml(monkeypatch, fake)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-abc")
 
     assert gpu_memory.get_process_gpu_memory_bytes(0) == 2048
@@ -215,11 +215,11 @@ def test_get_process_gpu_memory_uses_visible_uuid(
 def test_get_process_gpu_memory_retries_uuid_as_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeNVML(
+    fake = FakeNVML(
         processes=[SimpleNamespace(pid=os.getpid(), usedGpuMemory=4096)],
         uuid_requires_bytes=True,
     )
-    _install_fake_nvml(monkeypatch, fake)
+    install_fake_nvml(monkeypatch, fake)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-abc")
 
     assert gpu_memory.get_process_gpu_memory_bytes(0) == 4096
@@ -229,8 +229,8 @@ def test_get_process_gpu_memory_retries_uuid_as_bytes(
 def test_get_process_gpu_memory_returns_zero_when_pid_not_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeNVML(processes=[SimpleNamespace(pid=os.getpid() + 1, usedGpuMemory=1)])
-    _install_fake_nvml(monkeypatch, fake)
+    fake = FakeNVML(processes=[SimpleNamespace(pid=os.getpid() + 1, usedGpuMemory=1)])
+    install_fake_nvml(monkeypatch, fake)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     assert gpu_memory.get_process_gpu_memory_bytes(0) == 0
@@ -240,8 +240,8 @@ def test_get_process_gpu_memory_returns_zero_when_pid_not_present(
 def test_get_process_gpu_memory_returns_none_on_query_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeNVML(query_error=RuntimeError("driver query failed"))
-    _install_fake_nvml(monkeypatch, fake)
+    fake = FakeNVML(query_error=RuntimeError("driver query failed"))
+    install_fake_nvml(monkeypatch, fake)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     assert gpu_memory.get_process_gpu_memory_bytes(0) is None
@@ -250,7 +250,7 @@ def test_get_process_gpu_memory_returns_none_on_query_failure(
 def test_get_gpu_device_info_falls_back_to_torch_when_nvml_import_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _FakeCuda:
+    class FakeCuda:
         @staticmethod
         def is_available() -> bool:
             return True
@@ -260,16 +260,16 @@ def test_get_gpu_device_info_falls_back_to_torch_when_nvml_import_fails(
             assert device_id == 0
             return SimpleNamespace(name="NVIDIA H20", total_memory=96 * 1024**3)
 
-    fake_torch = SimpleNamespace(get_device_module=lambda: _FakeCuda())
+    fake_torch = SimpleNamespace(get_device_module=lambda: FakeCuda())
 
-    def _import_module(name: str):
+    def import_module(name: str):
         if name == "pynvml":
             raise ModuleNotFoundError(name)
         if name == "torch":
             return fake_torch
         raise AssertionError(name)
 
-    monkeypatch.setattr(gpu_memory.importlib, "import_module", _import_module)
+    monkeypatch.setattr(gpu_memory.importlib, "import_module", import_module)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
 
     info = gpu_memory.get_gpu_device_info(0)
@@ -280,7 +280,7 @@ def test_get_gpu_device_info_falls_back_to_torch_when_nvml_import_fails(
 
 
 @pytest.mark.accelerator
-@_ACCELERATOR_ONLY
+@ACCELERATOR_ONLY
 def test_device_info_reports_real_memory_on_this_accelerator() -> None:
     """The live half, where an accelerator is actually present."""
     info = gpu_memory.get_gpu_device_info(0)
@@ -297,8 +297,8 @@ def test_get_process_gpu_memory_rejects_invalid_device_mapping(
     with pytest.raises(RuntimeError, match="CUDA_VISIBLE_DEVICES exposes 1"):
         gpu_memory.get_process_gpu_memory_bytes(1)
 
-    fake = _FakeNVML(device_count=1)
-    _install_fake_nvml(monkeypatch, fake)
+    fake = FakeNVML(device_count=1)
+    install_fake_nvml(monkeypatch, fake)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     with pytest.raises(RuntimeError, match="Only 1 GPU"):
@@ -378,8 +378,8 @@ def test_gpu_startup_lock_releases_after_exception(
 def test_get_gpu_device_info_reports_name_and_total_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeNVML(device_name=b"NVIDIA H200", total_memory=141 * 1024**3)
-    _install_fake_nvml(monkeypatch, fake)
+    fake = FakeNVML(device_name=b"NVIDIA H200", total_memory=141 * 1024**3)
+    install_fake_nvml(monkeypatch, fake)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
 
     info = gpu_memory.get_gpu_device_info(0)
@@ -395,10 +395,10 @@ def test_get_gpu_device_info_reports_name_and_total_memory(
 def test_get_gpu_device_info_returns_unknown_without_nvml(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _raise_module_not_found(name: str) -> None:
+    def raise_module_not_found(name: str) -> None:
         raise ModuleNotFoundError(name)
 
-    monkeypatch.setattr(gpu_memory.importlib, "import_module", _raise_module_not_found)
+    monkeypatch.setattr(gpu_memory.importlib, "import_module", raise_module_not_found)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     info = gpu_memory.get_gpu_device_info(0)

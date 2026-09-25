@@ -27,6 +27,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing, suppress
+from dataclasses import asdict
 from typing import Any, AsyncIterator
 
 from fastapi import (
@@ -104,6 +105,8 @@ from sglang_omni.serve.protocol import (
     VoiceListResponse,
     WeightsCheckerRequest,
 )
+from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.realtime.schema import CapabilityResponse
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
@@ -201,6 +204,7 @@ def create_app(
     additional_speech_languages: frozenset[str] = frozenset(),
     max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
     enable_realtime: bool = False,
+    realtime_deployment: RealtimeDeployment | None = None,
     supports_realtime_audio_output: bool = False,
     realtime_transcription: RealtimeTranscriptionConfig | None = None,
     allowed_local_media_path: str | None = None,
@@ -274,7 +278,8 @@ def create_app(
     app.state.long_audio_admission = LongAudioAdmission(
         app.state.audio_chunking.max_concurrent_long_audio_requests
     )
-    app.state.realtime_enabled = enable_realtime
+    app.state.realtime_deployment = realtime_deployment
+    app.state.realtime_enabled = enable_realtime or realtime_deployment is not None
     app.state.supports_realtime_audio_output = supports_realtime_audio_output
     app.state.realtime_transcription = realtime_transcription
     app.state.speaker_sample_store = SpeakerSampleStore()
@@ -313,7 +318,7 @@ def create_app(
     register_speech_ws(app)
     register_transcriptions(app)
     register_translations(app)
-    if enable_realtime:
+    if enable_realtime or realtime_deployment is not None:
         register_realtime(app)
     else:
         pass
@@ -1373,6 +1378,12 @@ def build_generate_response(
     return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
 
 
+def realtime_unavailable_response(message: str) -> JSONResponse:
+    return JSONResponse(
+        {"error": {"code": "unavailable", "message": message}}, status_code=503
+    )
+
+
 def register_realtime(app: FastAPI) -> None:
     """Mount the OpenAI-compatible WebSocket Realtime endpoint."""
     from sglang_omni.serve.realtime import RealtimeSessionManager
@@ -1380,16 +1391,21 @@ def register_realtime(app: FastAPI) -> None:
 
     client: Client = app.state.client
     model_name: str = app.state.model_name
-    try:
-        smart_turn_model = load_smart_turn()
-    except Exception:
-        logger.warning(
-            "Smart Turn model could not be loaded; semantic VAD will fall back "
-            "to server VAD",
-            exc_info=True,
-        )
+    deployment = app.state.realtime_deployment
+    if deployment is None:
+        try:
+            smart_turn_model = load_smart_turn()
+        except Exception:
+            logger.warning(
+                "Smart Turn model could not be loaded; semantic VAD will fall back "
+                "to server VAD",
+                exc_info=True,
+            )
+            smart_turn_model = None
+    else:
         smart_turn_model = None
     manager = RealtimeSessionManager(
+        deployment=deployment,
         client=client,
         model_name=model_name,
         supports_audio_output=app.state.supports_realtime_audio_output,
@@ -1398,31 +1414,61 @@ def register_realtime(app: FastAPI) -> None:
     )
     app.state.realtime_manager = manager
 
+    if deployment is not None:
+
+        @app.get("/v1/realtime/capabilities", response_model=None)
+        async def realtime_capabilities() -> CapabilityResponse | JSONResponse:
+            if not client.health().get("running", False):
+                return realtime_unavailable_response("instance is not ready")
+            else:
+                return {
+                    "model": model_name,
+                    **deployment.capabilities.to_granted_capabilities(),
+                    "limits": asdict(deployment.limits),
+                }
+
+    else:
+        pass
+
     @app.websocket("/v1/realtime")
     async def realtime(websocket: WebSocket) -> None:
-        await websocket.accept()
-        try:
-            session = manager.open(
-                websocket,
-                intent=websocket.query_params.get("intent", "conversation"),
+        if deployment is not None and len(manager.sessions) >= (
+            deployment.max_connections
+        ):
+            await websocket.send_denial_response(
+                realtime_unavailable_response("connection capacity exhausted")
             )
-        except ValueError as exc:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "error": {
-                        "type": "invalid_request_error",
-                        "code": "unsupported_realtime_intent",
-                        "message": str(exc),
-                    },
-                }
-            )
+        elif deployment is not None and (
+            "session_id" in websocket.query_params
+            or websocket.query_params.get("model", model_name) != model_name
+        ):
             await websocket.close(code=1008)
-            return
-        try:
-            await session.run()
-        finally:
-            await manager.close(session.session_id)
+        else:
+            # Note (Junnan Li): Open before accept; a shared deployment counts the connection before the upgrade yields.
+            try:
+                session = manager.open(
+                    websocket,
+                    intent=websocket.query_params.get("intent", "conversation"),
+                )
+            except ValueError as exc:
+                await websocket.accept()
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "code": "unsupported_realtime_intent",
+                            "message": str(exc),
+                        },
+                    }
+                )
+                await websocket.close(code=1008)
+            else:
+                try:
+                    await websocket.accept()
+                    await session.run()
+                finally:
+                    await manager.close(session.session_id)
 
 
 def speech_generation_failure_response(

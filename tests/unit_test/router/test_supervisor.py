@@ -15,11 +15,11 @@ from sglang_omni_router.python.supervisor import (
 
 
 class FakeProcess:
-    _next_pid = 1000
+    next_pid = 1000
 
     def __init__(self) -> None:
-        FakeProcess._next_pid += 1
-        self.pid = FakeProcess._next_pid
+        FakeProcess.next_pid += 1
+        self.pid = FakeProcess.next_pid
         self.returncode: int | None = None
         self.wait_called = False
         self.wait_timeouts: list[float | None] = []
@@ -64,12 +64,12 @@ class Harness:
             router_processes=n,
             workdir=str(tmp_path),
             prefer_uds=prefer_uds,
-            spawn_dp=self._spawn_dp,
-            spawn_cp=self._spawn_cp,
+            spawn_dp=self.spawn_dp,
+            spawn_cp=self.spawn_cp,
             clock=lambda: self.now,
         )
 
-    def _spawn_dp(
+    def spawn_dp(
         self, ctx: SupervisorContext, index: int, generation: int
     ) -> FakeProcess:
         process = FakeProcess()
@@ -77,14 +77,14 @@ class Harness:
         self.dp_spawns.append((index, generation, process))
         return process
 
-    def _spawn_cp(self, ctx: SupervisorContext) -> FakeProcess:
+    def spawn_cp(self, ctx: SupervisorContext) -> FakeProcess:
         process = FakeProcess()
         process.label = "cp"
         self.cp_spawns.append((ctx, process))
         return process
 
 
-def _free_port() -> int:
+def free_port() -> int:
     import socket
 
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -94,10 +94,10 @@ def _free_port() -> int:
     return port
 
 
-def _config(**overrides) -> RouterConfig:
+def make_config(**overrides) -> RouterConfig:
     return RouterConfig(
         host="127.0.0.1",
-        port=_free_port(),
+        port=free_port(),
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
         **overrides,
     )
@@ -119,13 +119,15 @@ def test_supervisor_binds_an_ipv6_host(tmp_path: Path) -> None:
 
     config = RouterConfig(
         host="::1",
-        port=_free_port(),
+        port=free_port(),
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
     )
     harness = Harness(config, n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     try:
-        assert harness.supervisor._socket.family == socket.AF_INET6
+        assert (
+            harness.supervisor._socket.family == socket.AF_INET6
+        )  # noqa: leading-underscore  # production name
     finally:
         harness.supervisor.shutdown()
 
@@ -137,13 +139,15 @@ def test_supervisor_binds_hostnames_as_ipv4_like_uvicorn(tmp_path: Path) -> None
 
     config = RouterConfig(
         host="localhost",
-        port=_free_port(),
+        port=free_port(),
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
     )
     harness = Harness(config, n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     try:
-        assert harness.supervisor._socket.family == socket.AF_INET
+        assert (
+            harness.supervisor._socket.family == socket.AF_INET
+        )  # noqa: leading-underscore  # production name
     finally:
         harness.supervisor.shutdown()
 
@@ -153,23 +157,25 @@ def test_shutdown_closes_the_listener_before_draining_children(
 ) -> None:
     # Note (Jiaxin Deng): if the parent held the listener until after the CP drained,
     # connections would keep landing in the backlog after every acceptor was gone
-    harness = Harness(_config(), n=2, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=2, tmp_path=tmp_path)
     harness.supervisor.start()
     listener_closed_at_signal: list[bool] = []
     for _, _, process in harness.dp_spawns:
         original = process.terminate
 
-        def _terminate(orig=original):
-            listener_closed_at_signal.append(harness.supervisor._socket is None)
+        def terminate(orig=original):
+            listener_closed_at_signal.append(
+                harness.supervisor._socket is None
+            )  # noqa: leading-underscore  # production name
             orig()
 
-        process.terminate = _terminate  # type: ignore[method-assign]
+        process.terminate = terminate  # type: ignore[method-assign]
     harness.supervisor.shutdown()
     assert listener_closed_at_signal and all(listener_closed_at_signal)
 
 
 def test_start_spawns_cp_and_n_dps_with_the_env_contract(tmp_path: Path) -> None:
-    harness = Harness(_config(), n=3, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=3, tmp_path=tmp_path)
     harness.supervisor.start()
 
     assert len(harness.cp_spawns) == 1
@@ -187,7 +193,7 @@ def test_start_spawns_cp_and_n_dps_with_the_env_contract(tmp_path: Path) -> None
 def test_dead_dp_is_reaped_before_reclaim_and_respawned_with_next_generation(
     tmp_path: Path,
 ) -> None:
-    harness = Harness(_config(), n=2, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=2, tmp_path=tmp_path)
     harness.supervisor.start()
     exits: list[tuple[int, int, int, bool]] = []
     harness.supervisor.on_dp_exit = lambda index, generation, code: exits.append(
@@ -208,7 +214,7 @@ def test_dead_dp_is_reaped_before_reclaim_and_respawned_with_next_generation(
 
 
 def test_rapidly_dying_slot_fails_closed(tmp_path: Path) -> None:
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
 
     with pytest.raises(SupervisorFailure, match="failing"):
@@ -221,7 +227,7 @@ def test_rapidly_dying_slot_fails_closed(tmp_path: Path) -> None:
 
 
 def test_slow_deaths_do_not_accumulate_toward_the_cap(tmp_path: Path) -> None:
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
 
     for _ in range(5):
@@ -236,7 +242,7 @@ def test_slow_deaths_do_not_accumulate_toward_the_cap(tmp_path: Path) -> None:
 
 
 def test_shutdown_stops_dps_before_the_cp(tmp_path: Path) -> None:
-    harness = Harness(_config(), n=2, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=2, tmp_path=tmp_path)
     harness.supervisor.start()
     order: list[str] = []
     for _, _, process in harness.dp_spawns:
@@ -252,7 +258,7 @@ def test_shutdown_waits_out_the_dp_drain_before_killing(tmp_path: Path) -> None:
     # Note (Jiaxin Deng): the DP's uvicorn drain runs up to the configured
     # shutdown drain; a supervisor that only waits its fixed grace period
     # SIGKILLs mid-drain and truncates exactly what the drain protects
-    harness = Harness(_config(shutdown_drain_secs=120), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(shutdown_drain_secs=120), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     dp = harness.dp_spawns[0][2]
     cp = harness.cp_spawns[0][1]
@@ -272,20 +278,22 @@ def test_dp_runner_drain_deadline_follows_the_config(
     from sglang_omni_router.python.app_factory import CONFIG_FILE_ENV
 
     path = tmp_path / "router_config.json"
-    path.write_text(_config(shutdown_drain_secs=77).model_dump_json(), encoding="utf-8")
+    path.write_text(
+        make_config(shutdown_drain_secs=77).model_dump_json(), encoding="utf-8"
+    )
     monkeypatch.setenv(CONFIG_FILE_ENV, str(path))
     assert dp_runner.build_server_config().timeout_graceful_shutdown == 77
 
     # Note (Jiaxin Deng): default = the request timeout, so a routine shutdown
     # never truncates a request its own timeout would have allowed
     path.write_text(
-        _config(request_timeout_secs=300).model_dump_json(), encoding="utf-8"
+        make_config(request_timeout_secs=300).model_dump_json(), encoding="utf-8"
     )
     assert dp_runner.build_server_config().timeout_graceful_shutdown == 300
 
 
 def test_cp_restart_gets_a_fresh_epoch(tmp_path: Path) -> None:
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     first_epoch = harness.cp_spawns[0][0].cp_epoch
 
@@ -299,11 +307,11 @@ def test_cp_restart_gets_a_fresh_epoch(tmp_path: Path) -> None:
 
 def test_router_processes_must_be_positive(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=">= 1"):
-        RouterSupervisor(_config(), router_processes=0, workdir=str(tmp_path))
+        RouterSupervisor(make_config(), router_processes=0, workdir=str(tmp_path))
 
 
 def test_cp_restart_unlinks_a_stale_uds_socket(tmp_path: Path) -> None:
-    harness = Harness(_config(), n=1, tmp_path=tmp_path, prefer_uds=True)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path, prefer_uds=True)
     harness.supervisor.start()
     uds_path = Path(harness.supervisor.context.internal_uds)
     uds_path.write_text("", encoding="utf-8")  # simulate the leftover socket
@@ -319,38 +327,40 @@ def test_cp_restart_unlinks_a_stale_uds_socket(tmp_path: Path) -> None:
 
 
 def test_start_rolls_back_when_a_dp_spawn_fails(tmp_path: Path) -> None:
-    config = _config()
+    config = make_config()
     spawned: list[FakeProcess] = []
     listener_closed_at_signal: list[bool] = []
 
-    def _track(process: FakeProcess) -> FakeProcess:
+    def track(process: FakeProcess) -> FakeProcess:
         original = process.terminate
 
-        def _terminate(orig=original):
+        def terminate(orig=original):
             # Note (Jiaxin Deng): supervisor is defined below; the closure resolves it
             # at call time
-            listener_closed_at_signal.append(supervisor._socket is None)
+            listener_closed_at_signal.append(
+                supervisor._socket is None
+            )  # noqa: leading-underscore  # production name
             orig()
 
-        process.terminate = _terminate  # type: ignore[method-assign]
+        process.terminate = terminate  # type: ignore[method-assign]
         spawned.append(process)
         return process
 
-    def _spawn_dp(ctx: SupervisorContext, index: int, generation: int) -> FakeProcess:
+    def spawn_dp(ctx: SupervisorContext, index: int, generation: int) -> FakeProcess:
         if index == 1:
             raise RuntimeError("spawn exploded")
-        return _track(FakeProcess())
+        return track(FakeProcess())
 
-    def _spawn_cp(ctx: SupervisorContext) -> FakeProcess:
-        return _track(FakeProcess())
+    def spawn_cp(ctx: SupervisorContext) -> FakeProcess:
+        return track(FakeProcess())
 
     supervisor = RouterSupervisor(
         config,
         router_processes=2,
         workdir=str(tmp_path),
         prefer_uds=False,
-        spawn_dp=_spawn_dp,
-        spawn_cp=_spawn_cp,
+        spawn_dp=spawn_dp,
+        spawn_cp=spawn_cp,
     )
     with pytest.raises(RuntimeError, match="spawn exploded"):
         supervisor.start()
@@ -375,18 +385,18 @@ def test_start_rolls_back_when_a_dp_spawn_fails(tmp_path: Path) -> None:
 
 
 def test_run_forever_stops_cleanly_on_request_stop(tmp_path: Path) -> None:
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)
     polls: list[int] = []
     original = harness.supervisor.poll_once
 
-    def _poll_then_stop() -> None:
+    def poll_then_stop() -> None:
         polls.append(1)
         original()
         if len(polls) >= 2:
             harness.supervisor.request_stop()
 
     harness.supervisor.start()
-    harness.supervisor.poll_once = _poll_then_stop  # type: ignore[method-assign]
+    harness.supervisor.poll_once = poll_then_stop  # type: ignore[method-assign]
     harness.supervisor.run_forever(poll_interval_secs=0.01)
 
     assert len(polls) == 2
@@ -398,19 +408,19 @@ def test_run_forever_stops_cleanly_on_request_stop(tmp_path: Path) -> None:
 def test_run_forever_installs_and_restores_signal_handlers(tmp_path: Path) -> None:
     import signal as signal_module
 
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     before = signal_module.getsignal(signal_module.SIGTERM)
     seen: list[object] = []
     original = harness.supervisor.poll_once
 
-    def _poll_capture() -> None:
+    def poll_capture() -> None:
         original()
         handler = signal_module.getsignal(signal_module.SIGTERM)
         seen.append(handler)
         handler(signal_module.SIGTERM, None)  # what a service stop delivers
 
-    harness.supervisor.poll_once = _poll_capture  # type: ignore[method-assign]
+    harness.supervisor.poll_once = poll_capture  # type: ignore[method-assign]
     harness.supervisor.run_forever(poll_interval_secs=0.01)
 
     assert len(seen) == 1  # the handler stopped the loop on first delivery
@@ -432,15 +442,15 @@ def test_run_forever_shutdown_survives_an_unrestorable_previous_handler(
 
     monkeypatch.setattr(sup.signal, "signal", fake_signal)
 
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     original = harness.supervisor.poll_once
 
-    def _poll_then_stop() -> None:
+    def poll_then_stop() -> None:
         original()
         harness.supervisor.request_stop()
 
-    harness.supervisor.poll_once = _poll_then_stop  # type: ignore[method-assign]
+    harness.supervisor.poll_once = poll_then_stop  # type: ignore[method-assign]
     harness.supervisor.run_forever(poll_interval_secs=0.01)
 
     # Note (Jiaxin Deng): shutdown still ran and stopped every child despite the un-
@@ -450,7 +460,7 @@ def test_run_forever_shutdown_survives_an_unrestorable_previous_handler(
 
 
 def test_rapidly_dying_cp_fails_closed(tmp_path: Path) -> None:
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
 
     with pytest.raises(SupervisorFailure, match="control plane"):
@@ -472,7 +482,7 @@ def test_child_env_sets_exactly_one_internal_transport(
     # Note (Jiaxin Deng): a stale UDS variable inherited from the parent must not leak
     # through
     monkeypatch.setenv(INTERNAL_UDS_ENV, "/stale/internal.sock")
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)  # TCP fallback mode
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)  # TCP fallback mode
     harness.supervisor.start()
     env = harness.supervisor.context.child_env()
     assert INTERNAL_UDS_ENV not in env
@@ -555,7 +565,7 @@ def test_context_carries_the_death_pipe_and_shutdown_closes_it(
 
     from sglang_omni_router.python.supervisor import DEATH_PIPE_FD_ENV
 
-    harness = Harness(_config(), n=1, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     fd = harness.supervisor.context.death_pipe_fd
     assert fd >= 0
@@ -571,7 +581,7 @@ def test_supervisor_rejects_a_bound_below_the_process_count(
 ) -> None:
     config = RouterConfig(
         host="127.0.0.1",
-        port=_free_port(),
+        port=free_port(),
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
         max_connections=2,
     )
@@ -584,7 +594,7 @@ def test_supervisor_rejects_least_request_with_multiple_processes(
 ) -> None:
     config = RouterConfig(
         host="127.0.0.1",
-        port=_free_port(),
+        port=free_port(),
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
         policy="least_request",
     )
@@ -598,7 +608,7 @@ def test_supervisor_creates_and_reclaims_admission_slots(tmp_path: Path) -> None
     from sglang_omni_router.python.admission_shm import SlotCodec, admission_file_size
     from sglang_omni_router.python.supervisor import ADMISSION_SHM_ENV
 
-    harness = Harness(_config(), n=2, tmp_path=tmp_path)
+    harness = Harness(make_config(), n=2, tmp_path=tmp_path)
     harness.supervisor.start()
     shm_path = harness.supervisor.context.admission_shm_path
     assert (tmp_path / "admission.shm").exists()
@@ -606,7 +616,9 @@ def test_supervisor_creates_and_reclaims_admission_slots(tmp_path: Path) -> None
     assert harness.supervisor.context.child_env()[ADMISSION_SHM_ENV] == shm_path
 
     # Note (Jiaxin Deng): a DP claims its slot and dies holding in-flight budget
-    shm = harness.supervisor._admission_mmap
+    shm = (
+        harness.supervisor._admission_mmap
+    )  # noqa: leading-underscore  # production name
     SlotCodec(shm, 1).write(
         inflight=5,
         peak_sum=5,
@@ -639,11 +651,11 @@ def test_multiprocess_is_refused_off_x86_64(
 
     monkeypatch.setattr(platform_module, "machine", lambda: machine)
     with pytest.raises(ValueError, match="x86-64"):
-        RouterSupervisor(_config(), router_processes=2)
+        RouterSupervisor(make_config(), router_processes=2)
 
 
 def test_single_process_is_allowed_off_x86_64(monkeypatch: pytest.MonkeyPatch) -> None:
     import platform as platform_module
 
     monkeypatch.setattr(platform_module, "machine", lambda: "aarch64")
-    assert RouterSupervisor(_config(), router_processes=1) is not None
+    assert RouterSupervisor(make_config(), router_processes=1) is not None

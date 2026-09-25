@@ -25,23 +25,23 @@ from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel
 
 
-class _FakeGraphRunner:
+class FakeGraphRunner:
     def __init__(self, model, keys) -> None:
         self.model = model
-        self._keys = set(keys)
+        self.keys = set(keys)
         self.calls: list[tuple[tuple[int, ...], bool, str]] = []
 
     def available_batch_sizes(self, frames: int) -> tuple[int, ...]:
         return tuple(
             sorted(
-                {key.batch_size for key in self._keys if key.frames == int(frames)},
+                {key.batch_size for key in self.keys if key.frames == int(frames)},
                 reverse=True,
             )
         )
 
     def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
         key = GraphKey(batch_size=int(codes.shape[0]), frames=int(codes.shape[-1]))
-        if eligible and key in self._keys:
+        if eligible and key in self.keys:
             mode, reason = "cuda_graph", None
         elif eligible:
             mode, reason = "eager", "key_miss"
@@ -54,11 +54,11 @@ class _FakeGraphRunner:
         return {
             "enabled": True,
             "disable_reason": None,
-            "graph_contract": {"keys": len(self._keys)},
+            "graph_contract": {"keys": len(self.keys)},
         }
 
 
-def _make_batching_scheduler(**kwargs) -> Code2WavScheduler:
+def make_batching_scheduler(**kwargs) -> Code2WavScheduler:
     return Code2WavScheduler(
         FakeCode2WavModel(total_upsample=2),
         device="cpu",
@@ -70,9 +70,9 @@ def _make_batching_scheduler(**kwargs) -> Code2WavScheduler:
     )
 
 
-def _make_chunk_aligned_scheduler(**kwargs) -> Code2WavScheduler:
+def make_chunk_aligned_scheduler(**kwargs) -> Code2WavScheduler:
     model = FakeCode2WavModel(total_upsample=2)
-    runner = _FakeGraphRunner(model, batched_graph_keys(2, 1, 8))
+    runner = FakeGraphRunner(model, batched_graph_keys(2, 1, 8))
     return Code2WavScheduler(
         model,
         device="cpu",
@@ -86,37 +86,37 @@ def _make_chunk_aligned_scheduler(**kwargs) -> Code2WavScheduler:
     )
 
 
-def _chunk(request_id: str) -> IncomingMessage:
+def chunk(request_id: str) -> IncomingMessage:
     return IncomingMessage(request_id=request_id, type="stream_chunk", data=None)
 
 
-def _stream_item(code: int, *, stream: bool = True) -> StreamItem:
+def stream_item(code: int, *, stream: bool = True) -> StreamItem:
     return StreamItem(
         0, torch.tensor([code, code * 10]), "talker", metadata={"stream": stream}
     )
 
 
-def _stream_chunk(request_id: str, code: int) -> IncomingMessage:
+def stream_chunk(request_id: str, code: int) -> IncomingMessage:
     return IncomingMessage(
         request_id=request_id,
         type="stream_chunk",
-        data=_stream_item(code),
+        data=stream_item(code),
     )
 
 
-def _start_scheduler(scheduler: Code2WavScheduler) -> threading.Thread:
+def start_scheduler(scheduler: Code2WavScheduler) -> threading.Thread:
     thread = threading.Thread(target=scheduler.start)
     thread.start()
     return thread
 
 
-def _stop_scheduler(scheduler: Code2WavScheduler, thread: threading.Thread) -> None:
+def stop_scheduler(scheduler: Code2WavScheduler, thread: threading.Thread) -> None:
     scheduler.stop()
     thread.join(timeout=1)
     assert not thread.is_alive()
 
 
-def _next_stream(scheduler: Code2WavScheduler, request_id: str, *, timeout: float):
+def next_stream(scheduler: Code2WavScheduler, request_id: str, *, timeout: float):
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
@@ -127,7 +127,7 @@ def _next_stream(scheduler: Code2WavScheduler, request_id: str, *, timeout: floa
             return message
 
 
-def _feed_batch(
+def feed_batch(
     scheduler: Code2WavScheduler,
     entries: list[tuple[str, int]],
     *,
@@ -136,11 +136,11 @@ def _feed_batch(
     items = []
     for rid, code in entries:
         stream = True if stream_flags is None else stream_flags[rid]
-        items.append((rid, _stream_item(code, stream=stream)))
+        items.append((rid, stream_item(code, stream=stream)))
     scheduler.on_stream_chunk_batch(items)
 
 
-def _drain_outbox(scheduler: Code2WavScheduler) -> list:
+def drain_outbox(scheduler: Code2WavScheduler) -> list:
     messages = []
     while not scheduler.outbox.empty():
         messages.append(scheduler.outbox.get_nowait())
@@ -148,68 +148,68 @@ def _drain_outbox(scheduler: Code2WavScheduler) -> list:
 
 
 def test_collector_collects_only_already_queued_chunks() -> None:
-    scheduler = _make_batching_scheduler()
-    scheduler.inbox.put(_chunk("req-2"))
-    batch = scheduler.collect_stream_chunk_batch(_chunk("req-1"))
+    scheduler = make_batching_scheduler()
+    scheduler.inbox.put(chunk("req-2"))
+    batch = scheduler.collect_stream_chunk_batch(chunk("req-1"))
     assert [m.request_id for m in batch] == ["req-1", "req-2"]
 
 
 def test_collector_no_wait_when_nothing_due() -> None:
-    scheduler = _make_batching_scheduler()
+    scheduler = make_batching_scheduler()
     assert scheduler.batch_deadline() is None
-    batch = scheduler.collect_stream_chunk_batch(_chunk("req-1"))
+    batch = scheduler.collect_stream_chunk_batch(chunk("req-1"))
     assert [m.request_id for m in batch] == ["req-1"]
 
 
 def test_collector_pushback_non_chunk() -> None:
-    scheduler = _make_batching_scheduler()
+    scheduler = make_batching_scheduler()
     done = IncomingMessage(request_id="req-1", type="stream_done", data=None)
     scheduler.inbox.put(done)
-    batch = scheduler.collect_stream_chunk_batch(_chunk("req-1"))
+    batch = scheduler.collect_stream_chunk_batch(chunk("req-1"))
     assert [m.request_id for m in batch] == ["req-1"]
     assert scheduler.pending_messages[0] is done
 
 
 def test_scheduler_loop_wakes_at_batch_deadline() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=50, batch_floor=2)
-    thread = _start_scheduler(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=50, batch_floor=2)
+    thread = start_scheduler(scheduler)
     try:
-        scheduler.inbox.put(_stream_chunk("req-1", 1))
-        scheduler.inbox.put(_stream_chunk("req-1", 2))
-        _next_stream(scheduler, "req-1", timeout=0.5)
+        scheduler.inbox.put(stream_chunk("req-1", 1))
+        scheduler.inbox.put(stream_chunk("req-1", 2))
+        next_stream(scheduler, "req-1", timeout=0.5)
 
         started = time.monotonic()
-        scheduler.inbox.put(_stream_chunk("req-1", 3))
-        scheduler.inbox.put(_stream_chunk("req-1", 4))
-        _next_stream(scheduler, "req-1", timeout=0.5)
+        scheduler.inbox.put(stream_chunk("req-1", 3))
+        scheduler.inbox.put(stream_chunk("req-1", 4))
+        next_stream(scheduler, "req-1", timeout=0.5)
         elapsed = time.monotonic() - started
 
         assert 0.025 <= elapsed < 0.2
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_old_deadline_does_not_delay_new_first_window() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=300, batch_floor=2)
-    thread = _start_scheduler(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=300, batch_floor=2)
+    thread = start_scheduler(scheduler)
     try:
-        scheduler.inbox.put(_stream_chunk("req-a", 1))
-        scheduler.inbox.put(_stream_chunk("req-a", 2))
-        _next_stream(scheduler, "req-a", timeout=0.5)
+        scheduler.inbox.put(stream_chunk("req-a", 1))
+        scheduler.inbox.put(stream_chunk("req-a", 2))
+        next_stream(scheduler, "req-a", timeout=0.5)
 
-        scheduler.inbox.put(_stream_chunk("req-a", 3))
-        scheduler.inbox.put(_stream_chunk("req-a", 4))
+        scheduler.inbox.put(stream_chunk("req-a", 3))
+        scheduler.inbox.put(stream_chunk("req-a", 4))
         time.sleep(0.02)
 
         started = time.monotonic()
-        scheduler.inbox.put(_stream_chunk("req-b", 5))
-        scheduler.inbox.put(_stream_chunk("req-b", 6))
-        _next_stream(scheduler, "req-b", timeout=0.5)
+        scheduler.inbox.put(stream_chunk("req-b", 5))
+        scheduler.inbox.put(stream_chunk("req-b", 6))
+        next_stream(scheduler, "req-b", timeout=0.5)
         elapsed = time.monotonic() - started
 
         assert elapsed < 0.15
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_decompose_batch() -> None:
@@ -230,7 +230,7 @@ def test_decompose_batch_against_published_sizes() -> None:
     assert decompose(3, ()) == [3]
 
 
-class _AvailabilityRunner:
+class AvailabilityRunner:
     def __init__(self, sizes: tuple[int, ...]) -> None:
         self.sizes = sizes
         self.queries: list[int] = []
@@ -240,7 +240,7 @@ class _AvailabilityRunner:
         return self.sizes
 
 
-def _states_with_ready(count: int, ready: int) -> list[tuple[str, Code2WavStreamState]]:
+def states_with_ready(count: int, ready: int) -> list[tuple[str, Code2WavStreamState]]:
     participants = []
     for i in range(count):
         state = Code2WavStreamState()
@@ -250,19 +250,19 @@ def _states_with_ready(count: int, ready: int) -> list[tuple[str, Code2WavStream
 
 
 def test_eager_step_plan_is_one_forward() -> None:
-    scheduler = _make_batching_scheduler()
+    scheduler = make_batching_scheduler()
     assert scheduler.cuda_graph_runner is None
     participants = [(f"r{i}", Code2WavStreamState()) for i in range(7)]
     assert scheduler.build_step_plan(participants) == [7]
 
 
 def test_step_plan_follows_runner_availability_for_the_window() -> None:
-    runner = _AvailabilityRunner((4, 2, 1))
-    scheduler = _make_batching_scheduler(
+    runner = AvailabilityRunner((4, 2, 1))
+    scheduler = make_batching_scheduler(
         enable_cuda_graph=True,
         cuda_graph_runner=runner,
     )
-    participants = _states_with_ready(7, ready=6)
+    participants = states_with_ready(7, ready=6)
     assert scheduler.build_step_plan(participants) == [4, 2, 1]
     # Note (ruoyu): the plan must query the chunk-capped window, not the raw
     # backlog depth — an uncapped query would miss the captured key set.
@@ -270,60 +270,60 @@ def test_step_plan_follows_runner_availability_for_the_window() -> None:
 
 
 def test_step_plan_without_published_graphs_stays_one_eager_forward() -> None:
-    runner = _AvailabilityRunner(())
-    scheduler = _make_batching_scheduler(
+    runner = AvailabilityRunner(())
+    scheduler = make_batching_scheduler(
         enable_cuda_graph=True,
         cuda_graph_runner=runner,
     )
-    participants = _states_with_ready(7, ready=6)
+    participants = states_with_ready(7, ready=6)
     assert scheduler.build_step_plan(participants) == [7]
 
 
 def test_five_streams_take_one_forward_not_two() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
     rids = [f"req-{i}" for i in range(5)]
-    _feed_batch(scheduler, [(rid, 1) for rid in rids])
-    _feed_batch(scheduler, [(rid, 2) for rid in rids])
+    feed_batch(scheduler, [(rid, 1) for rid in rids])
+    feed_batch(scheduler, [(rid, 2) for rid in rids])
     assert scheduler.model.calls == [(5, 2, 2)]
     for rid in rids:
         assert scheduler.stream_states[rid].emitted == 2
 
 
 def test_first_window_fires_immediately() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=1000, batch_floor=4)
-    _feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
-    messages = _drain_outbox(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=1000, batch_floor=4)
+    feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
+    messages = drain_outbox(scheduler)
     assert [m.type for m in messages] == ["stream"]
     assert scheduler.model.calls == [(1, 2, 2)]
 
 
 def test_floor_fires_without_deadline() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=1000, batch_floor=2)
-    _feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
-    _feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
-    _drain_outbox(scheduler)
-    _feed_batch(scheduler, [("req-a", 5), ("req-a", 6), ("req-b", 7), ("req-b", 8)])
-    messages = _drain_outbox(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=1000, batch_floor=2)
+    feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
+    feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
+    drain_outbox(scheduler)
+    feed_batch(scheduler, [("req-a", 5), ("req-a", 6), ("req-b", 7), ("req-b", 8)])
+    messages = drain_outbox(scheduler)
     assert sorted(m.request_id for m in messages) == ["req-a", "req-b"]
     assert scheduler.model.calls == [(1, 2, 2), (1, 2, 2), (2, 2, 3)]
 
 
 def test_deadline_fires_single() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
-    _drain_outbox(scheduler)
-    _feed_batch(scheduler, [("req-1", 3), ("req-1", 4)])
-    messages = _drain_outbox(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
+    drain_outbox(scheduler)
+    feed_batch(scheduler, [("req-1", 3), ("req-1", 4)])
+    messages = drain_outbox(scheduler)
     assert [m.request_id for m in messages] == ["req-1"]
     assert scheduler.model.calls == [(1, 2, 2), (1, 2, 3)]
 
 
 def test_bucket_isolation() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
-    _feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
-    _drain_outbox(scheduler)
-    _feed_batch(
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
+    feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
+    drain_outbox(scheduler)
+    feed_batch(
         scheduler,
         [
             ("req-a", 5),
@@ -342,20 +342,20 @@ def test_bucket_isolation() -> None:
 
 
 def test_step_cursor_uses_captured_window_end() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
-    _drain_outbox(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
+    drain_outbox(scheduler)
 
     state = scheduler.stream_states["req-1"]
     real_forward = scheduler.forward_codes
 
-    def _forward_then_ingest(codes, **kwargs):
+    def forward_then_ingest(codes, **kwargs):
         result = real_forward(codes, **kwargs)
         state.chunks.append(torch.tensor([9, 90]))
         return result
 
-    scheduler.forward_codes = _forward_then_ingest
-    _feed_batch(scheduler, [("req-1", 3), ("req-1", 4)])
+    scheduler.forward_codes = forward_then_ingest
+    feed_batch(scheduler, [("req-1", 3), ("req-1", 4)])
 
     assert state.emitted == 4
     assert len(state.chunks) == 5
@@ -378,15 +378,15 @@ def test_bitwise_equivalence() -> None:
     )
     for rid, codes in schedule.items():
         for code in codes:
-            control.handle_stream_chunk(rid, _stream_item(code))
+            control.handle_stream_chunk(rid, stream_item(code))
 
-    batched = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    batched = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
     for round_start in range(0, 6, 2):
         entries = []
         for rid, codes in schedule.items():
             entries.append((rid, codes[round_start]))
             entries.append((rid, codes[round_start + 1]))
-        _feed_batch(batched, entries)
+        feed_batch(batched, entries)
 
     assert any(call[0] > 1 for call in batched.model.calls)
     for rid in schedule:
@@ -400,13 +400,13 @@ def test_bitwise_equivalence() -> None:
 
 
 def test_mixed_stream_enabled() -> None:
-    scheduler = _make_batching_scheduler()
-    _feed_batch(
+    scheduler = make_batching_scheduler()
+    feed_batch(
         scheduler,
         [("req-a", 1), ("req-a", 2), ("req-b", 3), ("req-b", 4)],
         stream_flags={"req-a": True, "req-b": False},
     )
-    messages = _drain_outbox(scheduler)
+    messages = drain_outbox(scheduler)
     assert [(m.type, m.request_id) for m in messages] == [("stream", "req-a")]
     assert scheduler.model.calls == [(2, 2, 2)]
     for rid in ("req-a", "req-b"):
@@ -416,18 +416,18 @@ def test_mixed_stream_enabled() -> None:
 
 
 def test_step_failure_isolates_participants() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
-    _feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
-    _drain_outbox(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
+    feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
+    drain_outbox(scheduler)
 
     real_forward = scheduler.forward_codes
 
-    def _boom(*args, **kwargs):
+    def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    scheduler.forward_codes = _boom
-    _feed_batch(
+    scheduler.forward_codes = boom
+    feed_batch(
         scheduler,
         [
             ("req-a", 5),
@@ -443,37 +443,37 @@ def test_step_failure_isolates_participants() -> None:
     assert "req-c" in scheduler.stream_states
 
     scheduler.forward_codes = real_forward
-    _drain_outbox(scheduler)
-    _feed_batch(scheduler, [("req-c", 10)])
-    messages = _drain_outbox(scheduler)
+    drain_outbox(scheduler)
+    feed_batch(scheduler, [("req-c", 10)])
+    messages = drain_outbox(scheduler)
     assert [(m.type, m.request_id) for m in messages] == [("stream", "req-c")]
     assert scheduler.stream_states["req-c"].emitted == 2
 
 
 def test_step_failure_after_success_keeps_decoded_sub_batches() -> None:
-    scheduler = _make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    scheduler = make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
     cleaned: list[str] = []
     scheduler.cleanup_aborted_request = cleaned.append
 
     real_forward = scheduler.forward_codes
     forwards = 0
 
-    def _fail_on_second_sub_batch(codes, **kwargs):
+    def fail_on_second_sub_batch(codes, **kwargs):
         nonlocal forwards
         forwards += 1
         if forwards == 2:
             raise RuntimeError("boom")
         return real_forward(codes, **kwargs)
 
-    scheduler.forward_codes = _fail_on_second_sub_batch
-    _feed_batch(
+    scheduler.forward_codes = fail_on_second_sub_batch
+    feed_batch(
         scheduler,
         [(rid, code) for rid in ("req-a", "req-b", "req-c") for code in (1, 2)],
     )
 
     # Note (ruoyu): plan [2, 1] — the size-2 sub-batch decoded before the
     # size-1 one failed, so its audio must survive the failure.
-    messages = _drain_outbox(scheduler)
+    messages = drain_outbox(scheduler)
     assert [m.request_id for m in messages if m.type == "stream"] == [
         "req-a",
         "req-b",
@@ -488,17 +488,17 @@ def test_step_failure_after_success_keeps_decoded_sub_batches() -> None:
     assert scheduler.pending_step_failures == []
 
     scheduler.forward_codes = real_forward
-    _feed_batch(scheduler, [("req-a", 3), ("req-a", 4)])
-    assert [(m.type, m.request_id) for m in _drain_outbox(scheduler)] == [
+    feed_batch(scheduler, [("req-a", 3), ("req-a", 4)])
+    assert [(m.type, m.request_id) for m in drain_outbox(scheduler)] == [
         ("stream", "req-a")
     ]
     assert scheduler.stream_states["req-a"].emitted == 4
 
 
 def test_one_participation_per_pump() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
-    _drain_outbox(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
+    drain_outbox(scheduler)
 
     selections: list[list[str]] = []
     original_select = scheduler.select_step_participants
@@ -510,7 +510,7 @@ def test_one_participation_per_pump() -> None:
         return participants
 
     scheduler.select_step_participants = recording_select
-    _feed_batch(scheduler, [("req-1", 3), ("req-1", 4), ("req-1", 5), ("req-1", 6)])
+    feed_batch(scheduler, [("req-1", 3), ("req-1", 4), ("req-1", 5), ("req-1", 6)])
     assert selections == [["req-1"]]
     state = scheduler.stream_states["req-1"]
     assert state.emitted == 6
@@ -543,7 +543,7 @@ def test_factory_flags_reach_scheduler(monkeypatch) -> None:
 
 
 def test_forward_codes_eager() -> None:
-    scheduler = _make_batching_scheduler()
+    scheduler = make_batching_scheduler()
     codes = torch.zeros(1, 2, 2, dtype=torch.long)
     _, meta = scheduler.forward_codes(codes)
     assert meta == {
@@ -563,19 +563,19 @@ def test_batch_events_emitted(monkeypatch) -> None:
         lambda **kw: events.append((kw["event_name"], kw["metadata"])),
     )
 
-    class _ActiveRecorder:
+    class ActiveRecorder:
         def is_active(self) -> bool:
             return True
 
-    monkeypatch.setattr(mod, "_get_recorder", lambda: _ActiveRecorder())
+    monkeypatch.setattr(mod, "_get_recorder", lambda: ActiveRecorder())
 
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=1000, batch_floor=2)
-    _feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
-    _feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
-    _drain_outbox(scheduler)
+    scheduler = make_batching_scheduler(max_batch_wait_ms=1000, batch_floor=2)
+    feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
+    feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
+    drain_outbox(scheduler)
     events.clear()
 
-    _feed_batch(scheduler, [("req-a", 5), ("req-a", 6), ("req-b", 7), ("req-b", 8)])
+    feed_batch(scheduler, [("req-a", 5), ("req-a", 6), ("req-b", 7), ("req-b", 8)])
 
     batch_events = [
         (name, meta)
@@ -621,7 +621,7 @@ def test_first_window_ingest_events_are_bounded_and_exclude_eos(monkeypatch) -> 
         "sglang_omni.models.qwen3_omni.components.code2wav_scheduler._emit_event",
         lambda **kw: events.append(kw),
     )
-    scheduler = _make_batching_scheduler(initial_codec_chunk_frames=2)
+    scheduler = make_batching_scheduler(initial_codec_chunk_frames=2)
     state = Code2WavStreamState()
     for code in (2150, 1, 2, 3, 4):
         scheduler.ingest("req-a", state, torch.tensor([code, code * 10]))
@@ -659,7 +659,7 @@ def test_coalesced_first_window_profile_resets_on_new_run(monkeypatch) -> None:
         "sglang_omni.models.qwen3_omni.components.code2wav_scheduler._emit_event",
         lambda **kw: events.append(kw),
     )
-    scheduler = _make_batching_scheduler(initial_codec_chunk_frames=2)
+    scheduler = make_batching_scheduler(initial_codec_chunk_frames=2)
     state = Code2WavStreamState()
     scheduler.ingest("req-a", state, torch.tensor([[1, 10], [2, 20]]))
     assert events[-1]["metadata"]["messages"] == 1
@@ -683,7 +683,7 @@ def test_ingest_without_recorder_does_not_read_profile_clocks(monkeypatch) -> No
         "._get_event_recorder",
         lambda: SimpleNamespace(is_active=lambda: False),
     )
-    scheduler = _make_batching_scheduler()
+    scheduler = make_batching_scheduler()
     monkeypatch.setattr(
         "sglang_omni.models.qwen3_omni.components.code2wav_scheduler.time",
         SimpleNamespace(time_ns=unexpected, perf_counter_ns=unexpected),
@@ -692,18 +692,20 @@ def test_ingest_without_recorder_does_not_read_profile_clocks(monkeypatch) -> No
     scheduler.ingest("req-a", state, torch.tensor([1, 10]))
     scheduler.ingest("req-a", state, torch.tensor([2150, 0]))
     assert len(state.chunks) == 1
-    assert state._critical_ingest_profile is None
+    assert (
+        state._critical_ingest_profile is None
+    )  # noqa: leading-underscore  # production name
 
 
 def test_batching_and_cuda_graph_coexist() -> None:
-    scheduler = _make_chunk_aligned_scheduler()
+    scheduler = make_chunk_aligned_scheduler()
     assert scheduler.chunk_aligned_dispatch is True
     assert scheduler.cuda_graph_runner is not None
-    legacy = _make_batching_scheduler()
+    legacy = make_batching_scheduler()
     assert legacy.chunk_aligned_dispatch is False
 
 
-def _ready_participants(n: int) -> list[tuple[str, Code2WavStreamState]]:
+def ready_participants(n: int) -> list[tuple[str, Code2WavStreamState]]:
     participants = []
     for i in range(n):
         state = Code2WavStreamState()
@@ -713,13 +715,13 @@ def _ready_participants(n: int) -> list[tuple[str, Code2WavStreamState]]:
 
 
 def test_chunk_aligned_step_plan_decomposes() -> None:
-    scheduler = _make_chunk_aligned_scheduler()
-    assert scheduler.build_step_plan(_ready_participants(7)) == [4, 2, 1]
+    scheduler = make_chunk_aligned_scheduler()
+    assert scheduler.build_step_plan(ready_participants(7)) == [4, 2, 1]
 
 
 def test_chunk_aligned_backlog_drains_in_uniform_graph_windows() -> None:
-    scheduler = _make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-1", code) for code in (1, 2, 3, 4, 5, 6)])
+    scheduler = make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-1", code) for code in (1, 2, 3, 4, 5, 6)])
     assert scheduler.model.calls == [(1, 2, 2), (1, 2, 3), (1, 2, 3)]
     assert scheduler.stream_states["req-1"].emitted == 6
     runner = scheduler.cuda_graph_runner
@@ -727,11 +729,11 @@ def test_chunk_aligned_backlog_drains_in_uniform_graph_windows() -> None:
 
 
 def test_chunk_aligned_buckets_merge_mixed_backlogs() -> None:
-    scheduler = _make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
-    _feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
-    _drain_outbox(scheduler)
-    _feed_batch(
+    scheduler = make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
+    feed_batch(scheduler, [("req-b", 3), ("req-b", 4)])
+    drain_outbox(scheduler)
+    feed_batch(
         scheduler,
         [
             ("req-a", 5),
@@ -804,7 +806,7 @@ def test_bucket_batch_ceiling_is_per_window() -> None:
         enable_cuda_graph=True,
         initial_codec_chunk_frames=2,
         batch_ceiling=16,
-        cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 16, 2)),
+        cuda_graph_runner=FakeGraphRunner(model, batched_graph_keys(10, 25, 16, 2)),
     )
     assert scheduler.bucket_batch_ceiling(2) == 16
     assert scheduler.bucket_batch_ceiling(12) == 16
@@ -824,7 +826,7 @@ def test_bucket_batch_ceiling_honours_a_lower_configured_ceiling() -> None:
         enable_cuda_graph=True,
         initial_codec_chunk_frames=2,
         batch_ceiling=4,
-        cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 4, 2)),
+        cuda_graph_runner=FakeGraphRunner(model, batched_graph_keys(10, 25, 4, 2)),
     )
     assert scheduler.bucket_batch_ceiling(2) == 4
     assert scheduler.bucket_batch_ceiling(35) == 4
@@ -844,21 +846,21 @@ def test_batched_graph_keys_cover_decompose_sizes() -> None:
 def test_factory_builds_batched_keys_with_batching(monkeypatch) -> None:
     import sglang_omni.models.qwen3_omni.components.code2wav_scheduler as mod
 
-    def _fake_load(path, *, device, dtype):
+    def fake_load(path, *, device, dtype):
         model = FakeCode2WavModel(total_upsample=2)
         model.config = SimpleNamespace(num_quantizers=2)
         return model
 
-    monkeypatch.setattr(mod, "load_code2wav_model", _fake_load)
+    monkeypatch.setattr(mod, "load_code2wav_model", fake_load)
     captured: dict = {}
 
-    class _FakeRunnerCls:
+    class FakeRunnerCls:
         @classmethod
         def build(cls, model, **kwargs):
             captured.update(kwargs)
-            return _FakeGraphRunner(model, kwargs["graph_keys"])
+            return FakeGraphRunner(model, kwargs["graph_keys"])
 
-    monkeypatch.setattr(mod, "Code2WavCudaGraphRunner", _FakeRunnerCls)
+    monkeypatch.setattr(mod, "Code2WavCudaGraphRunner", FakeRunnerCls)
     scheduler = mod.create_code2wav_scheduler(
         "fake-path",
         device="cpu",
@@ -879,7 +881,7 @@ def test_factory_builds_batched_keys_with_batching(monkeypatch) -> None:
 
 def test_serial_only_runner_splits_groups_into_safe_b1_replays() -> None:
     model = FakeCode2WavModel(total_upsample=2)
-    runner = _FakeGraphRunner(model, serial_threshold_graph_keys(2, 1))
+    runner = FakeGraphRunner(model, serial_threshold_graph_keys(2, 1))
     scheduler = Code2WavScheduler(
         model,
         device="cpu",
@@ -894,21 +896,21 @@ def test_serial_only_runner_splits_groups_into_safe_b1_replays() -> None:
     # their eager warmup OOMed, so retrying the group as one eager forward is
     # unsafe even when it benchmarks faster in the non-OOM case.
     assert scheduler.chunk_aligned_dispatch is True
-    assert scheduler.build_step_plan(_ready_participants(7)) == [1] * 7
+    assert scheduler.build_step_plan(ready_participants(7)) == [1] * 7
 
 
 def test_runtime_disable_stops_chunk_aligned_dispatch() -> None:
-    scheduler = _make_chunk_aligned_scheduler()
+    scheduler = make_chunk_aligned_scheduler()
     assert scheduler.chunk_aligned_dispatch is True
-    scheduler.cuda_graph_runner._keys = set()
+    scheduler.cuda_graph_runner.keys = set()
     assert scheduler.chunk_aligned_dispatch is False
     participants = [(f"r{i}", Code2WavStreamState()) for i in range(3)]
     assert scheduler.build_step_plan(participants) == [3]
 
 
 def test_chunk_aligned_groups_replay_batched_graphs() -> None:
-    scheduler = _make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(
+    scheduler = make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(
         scheduler,
         [(rid, code) for rid in ("req-a", "req-b") for code in (1, 2, 3, 4)],
     )
@@ -933,10 +935,10 @@ def test_chunk_aligned_waveforms_match_serial_reference() -> None:
     )
     for rid, codes in schedule.items():
         for code in codes:
-            control.handle_stream_chunk(rid, _stream_item(code))
+            control.handle_stream_chunk(rid, stream_item(code))
 
-    quantized = _make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(
+    quantized = make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(
         quantized,
         [(rid, code) for rid, codes in schedule.items() for code in codes],
     )
@@ -970,7 +972,7 @@ def test_qwen_code2wav_run_step_emits_full_chunk_despite_output_deficit() -> Non
     assert state.emitted == 3
 
 
-class _StubGraphRunner:
+class StubGraphRunner:
     """Replays through the eager model but reports cuda_graph execution, and
     misses (eager fallback) for batch sizes it does not publish."""
 
@@ -995,11 +997,11 @@ class _StubGraphRunner:
         )
 
 
-def _make_graph_batching_scheduler(
+def make_graph_batching_scheduler(
     sizes: tuple[int, ...], **kwargs
-) -> tuple[Code2WavScheduler, _StubGraphRunner]:
+) -> tuple[Code2WavScheduler, StubGraphRunner]:
     model = FakeCode2WavModel(total_upsample=2)
-    runner = _StubGraphRunner(model, sizes)
+    runner = StubGraphRunner(model, sizes)
     scheduler = Code2WavScheduler(
         model,
         device="cpu",
@@ -1015,28 +1017,28 @@ def _make_graph_batching_scheduler(
 
 
 def test_batched_step_replays_one_graph_when_size_is_published() -> None:
-    scheduler, runner = _make_graph_batching_scheduler((8, 4, 2, 1))
-    _feed_batch(
+    scheduler, runner = make_graph_batching_scheduler((8, 4, 2, 1))
+    feed_batch(
         scheduler,
         [("req-a", 1), ("req-a", 2), ("req-b", 3), ("req-b", 4)],
     )
 
     assert runner.run_calls == [((2, 2, 2), True)]
-    messages = _drain_outbox(scheduler)
+    messages = drain_outbox(scheduler)
     assert sorted(m.request_id for m in messages) == ["req-a", "req-b"]
 
 
 def test_batched_step_replays_b1_graphs_without_batched_sizes() -> None:
     # Note (ruoyu): a serial-only runner can mean batched eager warmup OOMed,
     # so the plan must stay within its published B1 capacity.
-    scheduler, runner = _make_graph_batching_scheduler((1,))
-    _feed_batch(
+    scheduler, runner = make_graph_batching_scheduler((1,))
+    feed_batch(
         scheduler,
         [("req-a", 1), ("req-a", 2), ("req-b", 3), ("req-b", 4)],
     )
 
     assert runner.run_calls == [((1, 2, 2), True), ((1, 2, 2), True)]
-    messages = _drain_outbox(scheduler)
+    messages = drain_outbox(scheduler)
     assert sorted(m.request_id for m in messages) == ["req-a", "req-b"]
 
 
@@ -1050,14 +1052,14 @@ def test_batch_end_event_reports_mixed_sub_batch_execution(monkeypatch) -> None:
         lambda **kw: events.append((kw["event_name"], kw["metadata"])),
     )
 
-    class _ActiveRecorder:
+    class ActiveRecorder:
         def is_active(self) -> bool:
             return True
 
-    monkeypatch.setattr(mod, "_get_recorder", lambda: _ActiveRecorder())
+    monkeypatch.setattr(mod, "_get_recorder", lambda: ActiveRecorder())
 
-    scheduler, runner = _make_graph_batching_scheduler((2,))
-    _feed_batch(
+    scheduler, runner = make_graph_batching_scheduler((2,))
+    feed_batch(
         scheduler,
         [
             ("req-a", 1),
@@ -1090,40 +1092,40 @@ def test_batch_end_event_reports_mixed_sub_batch_execution(monkeypatch) -> None:
 
 
 def test_initial_codec_chunk_frames_fires_first_window_early() -> None:
-    scheduler = _make_batching_scheduler(
+    scheduler = make_batching_scheduler(
         max_batch_wait_ms=0, batch_floor=2, initial_codec_chunk_frames=1
     )
-    _feed_batch(scheduler, [("req-1", 1)])
-    messages = _drain_outbox(scheduler)
+    feed_batch(scheduler, [("req-1", 1)])
+    messages = drain_outbox(scheduler)
     assert [m.type for m in messages] == ["stream"]
     assert scheduler.model.calls == [(1, 2, 1)]
     assert scheduler.stream_states["req-1"].emitted == 1
-    _feed_batch(scheduler, [("req-1", 2)])
-    assert _drain_outbox(scheduler) == []
-    _feed_batch(scheduler, [("req-1", 3)])
-    assert [m.type for m in _drain_outbox(scheduler)] == ["stream"]
+    feed_batch(scheduler, [("req-1", 2)])
+    assert drain_outbox(scheduler) == []
+    feed_batch(scheduler, [("req-1", 3)])
+    assert [m.type for m in drain_outbox(scheduler)] == ["stream"]
     assert scheduler.stream_states["req-1"].emitted == 3
 
 
 def test_initial_codec_chunk_frames_zero_keeps_steady_threshold() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-1", 1)])
-    assert _drain_outbox(scheduler) == []
-    _feed_batch(scheduler, [("req-1", 2)])
-    assert [m.type for m in _drain_outbox(scheduler)] == ["stream"]
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-1", 1)])
+    assert drain_outbox(scheduler) == []
+    feed_batch(scheduler, [("req-1", 2)])
+    assert [m.type for m in drain_outbox(scheduler)] == ["stream"]
 
 
-def _done(request_id: str) -> IncomingMessage:
+def make_done(request_id: str) -> IncomingMessage:
     return IncomingMessage(request_id=request_id, type="stream_done", data=None)
 
 
 def test_next_message_ingests_first_chunks_before_other_messages() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
-    _drain_outbox(scheduler)
-    scheduler.inbox.put(_done("req-a"))
-    scheduler.inbox.put(_stream_chunk("req-b", 5))
-    scheduler.inbox.put(_stream_chunk("req-b", 6))
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
+    drain_outbox(scheduler)
+    scheduler.inbox.put(make_done("req-a"))
+    scheduler.inbox.put(stream_chunk("req-b", 5))
+    scheduler.inbox.put(stream_chunk("req-b", 6))
 
     msg = scheduler.next_message()
 
@@ -1135,12 +1137,12 @@ def test_next_message_ingests_first_chunks_before_other_messages() -> None:
 
 
 def test_next_message_keeps_steady_chunks_in_fifo_order() -> None:
-    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
-    _feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
-    _drain_outbox(scheduler)
-    scheduler.inbox.put(_done("req-a"))
-    scheduler.inbox.put(_stream_chunk("req-a", 3))
-    scheduler.inbox.put(_stream_chunk("req-a", 4))
+    scheduler = make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    feed_batch(scheduler, [("req-a", 1), ("req-a", 2)])
+    drain_outbox(scheduler)
+    scheduler.inbox.put(make_done("req-a"))
+    scheduler.inbox.put(stream_chunk("req-a", 3))
+    scheduler.inbox.put(stream_chunk("req-a", 4))
 
     msg = scheduler.next_message()
 
@@ -1150,11 +1152,11 @@ def test_next_message_keeps_steady_chunks_in_fifo_order() -> None:
     batches: list[int] = []
     original = scheduler.on_stream_chunk_batch
 
-    def _recording(items):
+    def recording(items):
         batches.append(len(items))
         return original(items)
 
-    scheduler.on_stream_chunk_batch = _recording
+    scheduler.on_stream_chunk_batch = recording
     assert scheduler.next_message() is None
     assert batches == [2]
     assert scheduler.stream_states["req-a"].emitted == 4

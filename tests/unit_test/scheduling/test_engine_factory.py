@@ -439,7 +439,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert scheduler.kwargs["model_runner"].outbox == "outbox"
 
 
-def _build_minimal_tts_builder_harness(monkeypatch):
+def build_minimal_tts_builder_harness(monkeypatch):
     """Fakes for exercising ``build()`` without CUDA graphs or a real engine."""
     from sglang_omni.scheduling import bootstrap, sglang_backend
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
@@ -545,7 +545,7 @@ def test_byte_budget_clears_builder_default_mem_fraction(monkeypatch, caplog) ->
     from sglang_omni.scheduling import engine_factory
     from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 
-    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+    MinimalBuilder, build_kwargs, consumed = build_minimal_tts_builder_harness(
         monkeypatch
     )
 
@@ -561,7 +561,7 @@ def test_byte_budget_clears_builder_default_mem_fraction(monkeypatch, caplog) ->
 def test_without_byte_budget_builder_default_mem_fraction_is_kept(
     monkeypatch,
 ) -> None:
-    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+    MinimalBuilder, build_kwargs, consumed = build_minimal_tts_builder_harness(
         monkeypatch
     )
 

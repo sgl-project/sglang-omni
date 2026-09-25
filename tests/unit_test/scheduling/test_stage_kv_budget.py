@@ -20,7 +20,7 @@ from sglang_omni.scheduling.stage_kv_budget import (
 )
 from tests.unit_test.fixtures.pipeline_fakes import fake_factory_path
 
-_LOG = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 def test_consume_outside_scope_returns_none() -> None:
@@ -72,7 +72,9 @@ def test_nested_scopes_are_rejected() -> None:
                 pass
 
 
-def _spec(factory_name: str, kv_cache_bytes: int | None = None) -> StageLaunchConfig:
+def make_spec(
+    factory_name: str, kv_cache_bytes: int | None = None
+) -> StageLaunchConfig:
     return StageLaunchConfig(
         stage_name="thinker",
         factory=fake_factory_path(factory_name),
@@ -81,28 +83,28 @@ def _spec(factory_name: str, kv_cache_bytes: int | None = None) -> StageLaunchCo
 
 
 def test_construct_scheduler_scopes_budget_around_factory() -> None:
-    spec = _spec(
+    spec = make_spec(
         "make_scheduler_consuming_kv_budget",
         kv_cache_bytes=3 * 1024**3,
     )
 
-    scheduler = construct_scheduler(spec, None, _LOG)
+    scheduler = construct_scheduler(spec, None, LOG)
 
     assert scheduler.consumed_kv_cache_bytes == 3 * 1024**3
     assert "kv_cache_bytes" not in scheduler.factory_kwargs
 
 
 def test_construct_scheduler_fails_when_budget_is_not_consumed() -> None:
-    spec = _spec("make_scheduler", kv_cache_bytes=3 * 1024**3)
+    spec = make_spec("make_scheduler", kv_cache_bytes=3 * 1024**3)
 
     with pytest.raises(RuntimeError, match="'thinker'.*did not build"):
-        construct_scheduler(spec, None, _LOG)
+        construct_scheduler(spec, None, LOG)
 
 
 def test_construct_scheduler_without_budget_opens_no_scope() -> None:
-    spec = _spec("make_scheduler_consuming_kv_budget")
+    spec = make_spec("make_scheduler_consuming_kv_budget")
 
-    scheduler = construct_scheduler(spec, None, _LOG)
+    scheduler = construct_scheduler(spec, None, LOG)
 
     assert scheduler.consumed_kv_cache_bytes is None
 
@@ -126,8 +128,8 @@ def test_total_reserve_cap_accumulates_across_colocated_stages(monkeypatch):
 
     first = StageLaunchConfig(stage_name="a", total_reserve_bytes=30)
     second = StageLaunchConfig(stage_name="b", total_reserve_bytes=50)
-    stage_workers.apply_total_reserve_cap(first, 0, _LOG)
-    stage_workers.apply_total_reserve_cap(second, 0, _LOG)
+    stage_workers.apply_total_reserve_cap(first, 0, LOG)
+    stage_workers.apply_total_reserve_cap(second, 0, LOG)
 
     assert calls == [(0.3, 0), (0.8, 0)]
 
@@ -153,7 +155,7 @@ def test_total_reserve_cap_respects_opt_out_and_absence(monkeypatch):
         stage_name="a", total_reserve_bytes=30, enforce_total_reserve=False
     )
     undeclared = StageLaunchConfig(stage_name="b")
-    stage_workers.apply_total_reserve_cap(opted_out, 0, _LOG)
-    stage_workers.apply_total_reserve_cap(undeclared, 0, _LOG)
+    stage_workers.apply_total_reserve_cap(opted_out, 0, LOG)
+    stage_workers.apply_total_reserve_cap(undeclared, 0, LOG)
 
     assert calls == []

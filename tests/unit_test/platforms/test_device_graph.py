@@ -17,22 +17,22 @@ from sglang_omni.platforms.device_graph import (
 )
 
 
-def _recording_module(graph_attr: str) -> SimpleNamespace:
+def recording_module(graph_attr: str) -> SimpleNamespace:
     """A torch.cuda / torch.xpu stand-in that records how graph() was called."""
     calls: list[dict[str, object]] = []
 
-    class _Graph:
+    class Graph:
         pass
 
     def graph(**kwargs):
         calls.append(kwargs)
         return nullcontext()
 
-    return SimpleNamespace(calls=calls, graph=graph, **{graph_attr: _Graph})
+    return SimpleNamespace(calls=calls, graph=graph, **{graph_attr: Graph})
 
 
 def test_cuda_backend_records_into_a_cuda_graph(monkeypatch) -> None:
-    module = _recording_module("CUDAGraph")
+    module = recording_module("CUDAGraph")
     monkeypatch.setattr(torch, "cuda", module)
     pool = object()
 
@@ -52,7 +52,7 @@ def test_cuda_backend_records_into_a_cuda_graph(monkeypatch) -> None:
 
 
 def test_cuda_backend_asks_for_nothing_it_was_not_given(monkeypatch) -> None:
-    module = _recording_module("CUDAGraph")
+    module = recording_module("CUDAGraph")
     monkeypatch.setattr(torch, "cuda", module)
 
     with CudaDeviceGraphBackend().capture() as graph:
@@ -63,7 +63,7 @@ def test_cuda_backend_asks_for_nothing_it_was_not_given(monkeypatch) -> None:
 
 def test_xpu_backend_records_into_an_xpu_graph_without_error_mode(monkeypatch) -> None:
     """XPU's context declares no capture_error_mode and rejects it as TypeError."""
-    module = _recording_module("XPUGraph")
+    module = recording_module("XPUGraph")
     monkeypatch.setattr(torch, "xpu", module)
     pool = object()
 
@@ -80,7 +80,7 @@ def test_xpu_backend_records_into_an_xpu_graph_without_error_mode(monkeypatch) -
 def test_npu_backend_records_into_an_npu_graph(
     monkeypatch, thread_local_errors
 ) -> None:
-    module = _recording_module("NPUGraph")
+    module = recording_module("NPUGraph")
     monkeypatch.setattr(torch, "npu", module, raising=False)
     pool = object()
     stream = object()
@@ -118,7 +118,7 @@ def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) ->
     """The graph context must exit on the body's exception, not swallow it."""
     exited: list[bool] = []
 
-    class _Ctx:
+    class Ctx:
         def __enter__(self):
             return None
 
@@ -126,8 +126,8 @@ def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) ->
             exited.append(True)
             return False
 
-    module = _recording_module("CUDAGraph")
-    module.graph = lambda **kwargs: _Ctx()
+    module = recording_module("CUDAGraph")
+    module.graph = lambda **kwargs: Ctx()
     module.XPUGraph = module.CUDAGraph
     module.NPUGraph = module.CUDAGraph
     monkeypatch.setattr(torch, "cuda", module)

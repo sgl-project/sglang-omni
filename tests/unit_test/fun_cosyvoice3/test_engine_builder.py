@@ -11,7 +11,7 @@ from sglang_omni.models.fun_cosyvoice3 import engine_builder as engine_builder_m
 from sglang_omni.models.fun_cosyvoice3.engine_builder import FunCosyVoice3EngineBuilder
 
 
-def _enable_mlx(monkeypatch: pytest.MonkeyPatch) -> None:
+def enable_mlx(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
     monkeypatch.setattr(
         engine_builder_module.current_platform,
@@ -20,7 +20,7 @@ def _enable_mlx(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _valid_mlx_server_args() -> SimpleNamespace:
+def valid_mlx_server_args() -> SimpleNamespace:
     return SimpleNamespace(
         max_running_requests=1,
         disable_radix_cache=True,
@@ -34,7 +34,7 @@ def _valid_mlx_server_args() -> SimpleNamespace:
 def test_mlx_engine_profile_disables_incompatible_scheduler_features(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_mlx(monkeypatch)
+    enable_mlx(monkeypatch)
     builder = FunCosyVoice3EngineBuilder()
     defaults = builder.generation_defaults(dtype="bfloat16")
 
@@ -66,8 +66,8 @@ def test_mlx_engine_rejects_unsafe_overrides(
     value: object,
     message: str,
 ) -> None:
-    _enable_mlx(monkeypatch)
-    server_args = _valid_mlx_server_args()
+    enable_mlx(monkeypatch)
+    server_args = valid_mlx_server_args()
     setattr(server_args, field, value)
 
     with pytest.raises(ValueError, match=message):
@@ -77,7 +77,7 @@ def test_mlx_engine_rejects_unsafe_overrides(
 def test_mlx_engine_passes_distinct_native_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_mlx(monkeypatch)
+    enable_mlx(monkeypatch)
     builder = FunCosyVoice3EngineBuilder(
         mlx_model_path="mlx-org/model",
         mlx_model_revision="mlx-revision",
