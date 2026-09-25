@@ -34,6 +34,7 @@ def test_registered_pipeline_is_connected(architecture):
     assert engine.next == decode.name == DECODE_STAGE
     assert engine.factory.enable_dit_fused_qk_norm_rope is True
     assert config.terminal_stages == [decode.name]
+    assert conditioning.factory.dtype == "float32"
     for stage in config.stages:
         module, name = stage.factory_path.rsplit(".", 1)
         assert callable(getattr(importlib.import_module(module), name))
