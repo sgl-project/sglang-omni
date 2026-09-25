@@ -14,6 +14,7 @@ def create_dllm_thinker_scheduler(
     *,
     tp_rank: int = 0,
     nccl_port: int | None = None,
+    total_gpu_memory_fraction: float | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker.
 
@@ -51,6 +52,7 @@ def create_dllm_thinker_scheduler(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         model_arch_override="LLaDA2MoeModelLM",
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)

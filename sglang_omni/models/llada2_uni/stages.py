@@ -87,13 +87,23 @@ def create_sglang_dllm_thinker_executor_from_config(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
     max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
+    total_gpu_memory_fraction: float | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
+    from sglang.srt.model_executor.cuda_graph_config import Backend
+
     from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
+    from sglang_omni.platforms import current_platform
+    from sglang_omni.scheduling.generation_batch_policy import (
+        get_decode_cuda_graph_backend,
+    )
     from sglang_omni.scheduling.sglang_backend import (
         build_sglang_server_args,
         pin_resolved_device_type,
@@ -103,12 +113,28 @@ def create_sglang_dllm_thinker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     resolved_gpu_id = concrete_device.index or 0
 
+    stated = dict(server_args_overrides or {})
+    if "tp_size" in stated and int(stated["tp_size"]) != int(tp_size):
+        # tp_size is the width the pipeline placed this stage at, not a request:
+        # the followers are already spawned, so a different number here would
+        # deadlock the collectives rather than resize anything.
+        raise ValueError(
+            "LLaDA2-Uni thinker tp_size conflicts with "
+            f"server_args_overrides.tp_size={stated['tp_size']!r}"
+        )
+    else:
+        pass
+    platform_backend = current_platform.get_dllm_attention_backend()
     overrides: dict[str, Any] = {
-        "attention_backend": "flashinfer",
-        "disable_cuda_graph": True,
+        "attention_backend": platform_backend or "flashinfer",
         "sampling_backend": "pytorch",
     }
-    overrides.update(server_args_overrides or {})
+    if not current_platform.enable_dllm_decode_graph():
+        overrides["disable_cuda_graph"] = True
+    else:
+        pass
+    overrides.update(stated)
+    overrides["tp_size"] = tp_size
     pin_resolved_device_type(overrides, concrete_device.type)
 
     server_args = build_sglang_server_args(
@@ -121,13 +147,46 @@ def create_sglang_dllm_thinker_executor_from_config(
     from sglang.srt.arg_groups.model_override_base import resolved_view
 
     cfg = resolved_view(server_args)
+    # The builder resolves before it returns, so this is the backend SGLang will
+    # act on. The disable_cuda_graph this factory requested is not: the platform
+    # decode default and the per-phase switches both outrank it, and the dLLM
+    # pass reads the same resolved field this does.
+    decode_graph = get_decode_cuda_graph_backend(server_args) != Backend.DISABLED
+
+    if platform_backend and decode_graph:
+        # SGLang's dLLM resolution renames the backend to flashinfer for any dLLM
+        # that captures decode graphs, and branches only for ROCm and NPU, so a
+        # platform outside that set would lose the backend its blocks need on the
+        # way in. Refuse at configuration time rather than at the first forward.
+        raise ValueError(
+            f"{current_platform.device_type} requires attention_backend="
+            f"{platform_backend!r} for a diffusion LLM, but SGLang's dLLM "
+            "resolution replaces it with flashinfer whenever decode graphs are "
+            "captured, and decode resolved to "
+            f"{get_decode_cuda_graph_backend(server_args)!r}; leave decode "
+            "capture off until that pass knows this platform"
+        )
+    else:
+        pass
+
     logger.info(
         "create_sglang_dllm_thinker_executor_from_config: "
-        "dllm_algorithm=%s, mem_fraction_static=%s",
+        "dllm_algorithm=%s, tp_rank=%s/%s, attention_backend=%s, "
+        "decode_cuda_graph=%s, mem_fraction_static=%s",
         cfg.dllm_algorithm,
+        tp_rank,
+        tp_size,
+        cfg.attention_backend,
+        get_decode_cuda_graph_backend(server_args),
         cfg.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, resolved_gpu_id)
+    return create_dllm_thinker_scheduler(
+        server_args,
+        resolved_gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+    )
 
 
 def create_decode_executor(model_path: str):

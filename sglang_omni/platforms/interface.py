@@ -129,6 +129,36 @@ class OmniPlatform(DeviceMixin):
     def enable_thinker_decode_graph(self) -> bool:
         return True
 
+    def enable_dllm_decode_graph(self) -> bool:
+        """Whether a diffusion-LLM thinker captures its decode graph here.
+
+        Off by default: the dLLM stage has run eager on every platform since it
+        landed, and its scheduler reads sampled ids back to the host on each
+        denoising round, so capture is opted into per platform once validated.
+        """
+        return False
+
+    def get_dllm_attention_backend(self) -> str | None:
+        """The attention backend a diffusion LLM's blocks need here, or None.
+
+        A dLLM block is bidirectional (AttentionType.ENCODER_ONLY), so only a
+        backend that honors that may serve it. None leaves the choice to
+        SGLang's own dLLM resolution, which covers CUDA, ROCm and NPU; a
+        platform outside that set names its backend.
+        """
+        return None
+
+    def dllm_max_requests_per_round(self) -> int | None:
+        """How many requests a diffusion-LLM round may hold here, or None.
+
+        None keeps SGLang's batched denoising, where one forward advances every
+        block in the round. A platform that has measured that path returning
+        wrong tokens under concurrency caps the round instead: the number of
+        rounds a block needs then stops depending on which requests happen to
+        share it, which is what makes a round reproducible.
+        """
+        return None
+
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
 

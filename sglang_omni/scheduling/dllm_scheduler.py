@@ -22,6 +22,7 @@ from sglang.srt.runtime_context import get_schedule
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,15 @@ class DllmScheduler:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
 
+        # Under TP this scheduler needs the leader's payloads replicated to the
+        # follower ranks: unlike OmniScheduler it holds no TP group of its own to
+        # broadcast over, so a rank with an empty queue would idle while its peers
+        # entered the MoE collectives. Every step from admission through denoising
+        # is a deterministic function of the payload and of the KV budget (which
+        # SGLang equalizes across ranks), so each rank reaches the same batches and
+        # the same number of forwards. Only the leader's results leave the stage.
+        self.requires_tp_work_fanout: bool = True
+
         self.request_builder = request_builder
         self.result_adapter = result_adapter
 
@@ -63,6 +73,11 @@ class DllmScheduler:
         self.chunked_prefill_size = (
             dllm_config.block_size or get_schedule().chunked_prefill_size
         )
+        # One SGLang forward denoises every block in the round together, so how
+        # many rounds a block takes depends on which requests it shares the round
+        # with. A platform that has measured batched rounds returning wrong tokens
+        # caps the round; None keeps it batched (see dllm_max_requests_per_round).
+        self.max_requests_per_round = current_platform.dllm_max_requests_per_round()
 
         self.running = False
         self.abort_lock = threading.Lock()
@@ -187,9 +202,20 @@ class DllmScheduler:
             else:
                 pass
 
-        # Add new waiting requests.
+        # Add new waiting requests, up to whatever the platform allows a round to
+        # hold. Admission is the only thing the cap touches: a request already
+        # staging keeps its resident KV and carried algorithm state either way,
+        # so under a cap of 1 the queue never holds more than the one request and
+        # this loop is simply skipped until it finishes.
         if not staging_no_token:
             for req in self.waiting_queue:
+                if (
+                    self.max_requests_per_round is not None
+                    and len(adder.can_run_list) >= self.max_requests_per_round
+                ):
+                    break
+                else:
+                    pass
                 req.init_next_round_input(self.tree_cache)
                 if (
                     adder.add_one_req(
@@ -248,13 +274,13 @@ class DllmScheduler:
             if hasattr(next_token_ids, "tolist")
             else next_token_ids
         )
-        # This stage runs one request at a time (PrefillAdder is built with
-        # prefill_max_requests=1 in _schedule_next_batch), so the model may
-        # return a flat list of token ids for the single request rather than a
-        # list-per-request. Normalize that flat list into the per-request shape.
-        # NOTE: if prefill_max_requests is ever raised above 1, this flat-list
-        # branch must be revisited together with the scheduling cap, otherwise
-        # the zip() below would pair each Req with a single int.
+        # For a single-request round the model may return a flat list of token
+        # ids rather than a list-per-request; normalize that into the per-request
+        # shape. A round holding several requests always comes back one row per
+        # request, so it takes the other branch -- and it can hold several even
+        # though PrefillAdder is built with prefill_max_requests=1, because that
+        # bound is checked by add_one_req and not by add_dllm_staging_req, which
+        # re-submits every request already denoising.
         if len(batch.reqs) == 1 and (not token_ids or isinstance(token_ids[0], int)):
             token_ids_per_req = [token_ids]
         else:

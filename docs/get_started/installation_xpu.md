@@ -173,6 +173,51 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
        "messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'
 ```
 
+### LLaDA2.0-Uni (dLLM-MoE, multi-XPU tensor parallel)
+
+A diffusion LLM: it denoises a whole block of masked positions per forward
+instead of emitting one token at a time. Text output for text and image input
+works here; image generation is not wired to the OpenAI response path on any
+platform yet. The thinker's bf16 weights are ~30 GB, so shard it across two
+cards — a TP stage needs its own process and a `gpu` list exactly `tp_size` long:
+
+```bash
+TRANSFORMERS_TRUST_REMOTE_CODE=1 ZE_AFFINITY_MASK=0,1 \
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni \
+  --host 0.0.0.0 --port 8000 \
+  --thinker.process thinker --thinker.gpu '[0,1]' --thinker.tp_size 2 \
+  --thinker.gpu_memory_fraction 0.80 --image_encoder.gpu_memory_fraction 0.12
+# text:
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"inclusionAI/LLaDA2.0-Uni",
+       "messages":[{"role":"user","content":"What is the capital of France?"}],
+       "max_tokens":64}'
+# image + text:
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"inclusionAI/LLaDA2.0-Uni",
+       "messages":[{"role":"user","content":"Briefly describe the cars in this image."}],
+       "images":["tests/data/cars.jpg"],"modalities":["text"],"max_tokens":64}'
+```
+
+XPU differences from the CUDA defaults, both applied automatically:
+
+- **The attention backend is triton, not `intel_xpu`.** A dLLM block must stay
+  bidirectional. triton honours the model's `AttentionType.ENCODER_ONLY`;
+  `intel_xpu` derives causality from `is_cross_attention` alone and would mask
+  each block's later positions, returning wrong tokens with no error.
+- **Decode graphs are off.** Every forward here is a `ForwardMode.DLLM_EXTEND`,
+  and no XPU-reachable backend can capture that mode: triton raises while
+  building its graph metadata and `intel_xpu` asserts `is_decode_or_idle()`.
+  Only flashinfer and flashattention handle it, both CUDA-only. Enabling capture
+  fails at startup rather than running slowly, so it stays gated until an XPU
+  backend grows the mode.
+
+Measured on two Arc Pro B60 cards: ~15-20 tok/s on a warm 64-token text reply.
+The first request after startup is several times slower (~3 tok/s) while triton
+autotunes, so time a second one before drawing conclusions.
+
 Health check for any of the above: `curl http://localhost:8000/v1/models`.
 
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
