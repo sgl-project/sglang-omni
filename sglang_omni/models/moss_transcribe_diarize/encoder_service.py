@@ -45,7 +45,8 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         adaptor_reference = next(model.vq_adaptor.parameters())
         self.dtype = adaptor_reference.dtype
         self.hidden_size = int(model.config.text_config.hidden_size)
-        self.stream = torch.cuda.Stream(device=self.device)
+        self.device_module = torch.get_device_module(self.device)
+        self.stream = self.device_module.Stream(device=self.device)
         self.cache = StageOutputCache(
             max_size=_CACHE_MAX_ENTRIES,
             max_bytes=_CACHE_MAX_BYTES,
@@ -138,7 +139,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         return self.drain_batch(), False
 
     def batch_context(self) -> contextlib.AbstractContextManager[Any]:
-        return torch.cuda.stream(self.stream)
+        return self.device_module.stream(self.stream)
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
         return self.model.get_audio_feature_uncached(items, None)
@@ -265,10 +266,10 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 "MOSS-TD encoder stream cleanup failed after OOM", exc_info=True
             )
         try:
-            with torch.cuda.device(self.device):
-                torch.cuda.empty_cache()
+            with self.device_module.device(self.device):
+                self.device_module.empty_cache()
         except Exception:
-            logger.warning("MOSS-TD CUDA cache cleanup failed after OOM", exc_info=True)
+            logger.warning("MOSS-TD device cache cleanup failed after OOM", exc_info=True)
 
     def record_success(self, item_count: int) -> None:
         self.batch_count += 1
