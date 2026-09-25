@@ -1,0 +1,103 @@
+name: NPU Model CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    paths:
+      - 'sglang_omni/**'
+      - 'tests/**'
+      - 'benchmarks/**'
+      - 'examples/configs/**'
+      - 'pyproject_npu.toml'
+      - 'scripts/npu/run_model_ci.sh'
+      - '.github/workflows/omni-npu-ci.yaml'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 16 * * *'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  # TODO: replace the temporary personal image with a validated official A2 image.
+  NPU_CI_IMAGE: ${{ vars.NPU_CI_IMAGE || 'cocoa001/sglang-omni:qwen3-tts-npu-a2-d794efee@sha256:2211349c4664cf792ab989e0f50a615d05d621fb12e6d84dde890c8f39a45823' }}
+  # TODO: confirm exclusive device allocation with the runner maintainers.
+  NPU_CI_DEVICE: ${{ vars.NPU_CI_DEVICE || '0' }}
+  NPU_CI_DATA_DIR: ${{ vars.NPU_CI_DATA_DIR }}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check live PR approval
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {data: pr} = await github.rest.pulls.get({
+              owner: context.repo.owner, repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            if (pr.draft || !pr.labels.some(label => label.name === 'run-ci')) {
+              core.setFailed('A non-draft PR with maintainer-approved run-ci is required.');
+            }
+            if (pr.head.sha !== context.payload.pull_request.head.sha) {
+              core.setFailed('This run is stale; run CI for the latest PR commit.');
+            }
+      - name: Validate integration configuration
+        run: |
+          python - <<'PY'
+          import os, re
+          assert re.fullmatch(r'.+@sha256:[0-9a-f]{64}', os.environ['NPU_CI_IMAGE']), 'Set NPU_CI_IMAGE to a tested image digest'
+          assert re.fullmatch(r'[0-9]+', os.environ['NPU_CI_DEVICE']), 'Set NPU_CI_DEVICE to one reserved physical device ID'
+          path = os.environ['NPU_CI_DATA_DIR']
+          assert path.startswith('/') and path != '/' and 'REPLACE' not in path, 'Set NPU_CI_DATA_DIR to the prepared host data directory'
+          PY
+
+  models:
+    needs: preflight
+    # Configure required reviewers on this environment BEFORE enabling hardware
+    # execution. A persistent PR label is not approval of every new commit.
+    environment: npu-ci
+    # TODO: confirm this temporary runner selection and its runtime compatibility.
+    runs-on: linux-aarch64-a2-2
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        model: [qwen3-tts, qwen3-asr]
+    # Serialize both models and all runs sharing the reserved device.
+    concurrency:
+      group: omni-npu-model-device-${{ vars.NPU_CI_DEVICE || '0' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test checked-out source
+        env:
+          NPU_CI_MODEL: ${{ matrix.model }}
+        run: bash scripts/npu/run_model_ci.sh
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npu-${{ matrix.model }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: npu-ci-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+  status:
+    name: NPU Model CI Status
+    if: always()
+    needs: [preflight, models]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful configuration and model tests
+        env:
+          PREFLIGHT: ${{ needs.preflight.result }}
+          MODELS: ${{ needs.models.result }}
+        run: test "$PREFLIGHT" = success && test "$MODELS" = success
