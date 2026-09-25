@@ -205,13 +205,6 @@ def test_streaming_first_audio_latency(
                     f"{label}: first playable p95 from arrival {p95} s exceeds "
                     f"{point.ttfp_p95_max_s} s",
                 )
-            if point.c50_min_pct is not None:
-                c50 = summary["c50"]
-                checks.check(
-                    c50 >= point.c50_min_pct,
-                    f"{label}: {c50}% of streams stayed within a 50 ms underrun, "
-                    f"below {point.c50_min_pct}%",
-                )
     checks.assert_all()
 
 

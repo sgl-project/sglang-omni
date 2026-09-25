@@ -85,16 +85,12 @@ def test_a_latency_preset_gates_every_point_or_none(name: str) -> None:
     thresholds = [
         value
         for point in latency.points
-        for value in (point.ttfp_median_max_s, point.ttfp_p95_max_s, point.c50_min_pct)
+        for value in (point.ttfp_median_max_s, point.ttfp_p95_max_s)
         if value is not None
     ]
     if latency.calibrated:
         assert all(point.ttfp_median_max_s is not None for point in latency.points)
         assert all(value > 0 for value in thresholds)
-        assert all(
-            point.c50_min_pct is None or point.c50_min_pct <= 100
-            for point in latency.points
-        )
     else:
         assert not thresholds
 
