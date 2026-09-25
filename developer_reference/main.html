@@ -618,14 +618,16 @@ requires it, put <code class="docutils literal notranslate"><span class="pre">#<
 Its references retain the same name. A comment such as
 <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">skip</span> <span class="pre">leading-underscore</span> <span class="pre">class</span> <span class="pre">and</span> <span class="pre">function</span> <span class="pre">names</span></code> is not an exemption.</p>
 <p>The pre-commit hook runs <code class="docutils literal notranslate"><span class="pre">scripts/check_leading_underscore.py</span></code> and only reports
-violations. It does not rewrite files. To rename violating definitions and
-supported references within one file, run the fixer:</p>
+violations. It does not rewrite files. To rename violating class and function
+definitions and their references within the same file, run the fixer and review
+the diff:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/check_leading_underscore.py<span class="w"> </span>--fix
 </pre></div>
 </div>
-<p>The fixer does not update callers in other files, pytest fixture parameters, or
-string references such as <code class="docutils literal notranslate"><span class="pre">monkeypatch.setattr(module,</span> <span class="pre">&quot;_name&quot;,</span> <span class="pre">...)</span></code>. Review the
-diff, preserve third-party API names, and update those references explicitly.</p>
+<p>The fixer never renames attributes, and it does not update callers in other
+files, pytest fixture parameters, or string references such as
+<code class="docutils literal notranslate"><span class="pre">monkeypatch.setattr(module,</span> <span class="pre">&quot;_name&quot;,</span> <span class="pre">...)</span></code>. Rename those by hand, preserve
+third-party API names, and update those references explicitly.</p>
 <p>Every <code class="docutils literal notranslate"><span class="pre">if</span></code> under <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code> must have an <code class="docutils literal notranslate"><span class="pre">else</span></code>, or belong to an <code class="docutils literal notranslate"><span class="pre">if</span></code>/<code class="docutils literal notranslate"><span class="pre">elif</span></code>
 chain that ends in <code class="docutils literal notranslate"><span class="pre">else</span></code>. Returning, raising, or a one-line body does not
 exempt it. There is no <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">noqa</span></code> exemption. Prefer an <code class="docutils literal notranslate"><span class="pre">else</span></code> branch that does
