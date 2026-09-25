@@ -19,7 +19,7 @@ import logging
 import os
 import time
 import wave
-from typing import AsyncIterator, Literal, Protocol
+from typing import AsyncIterator, Literal, Protocol, TypedDict
 
 import aiohttp
 import numpy as np
@@ -771,6 +771,46 @@ class VoiceCloneTTS:
         return transcribe_and_compute_wer(output, wav_path, asr, lang, device)
 
 
+def preload_reference_audio(samples: list[SampleInput]) -> dict[str, str]:
+    """Encode each reference WAV as a data URI, keyed by path, before timing starts."""
+    reference_audio_by_path: dict[str, str] = {}
+    for sample in samples:
+        if sample.ref_audio in reference_audio_by_path:
+            continue
+        with open(sample.ref_audio, "rb") as reference_file:
+            encoded_audio = base64.b64encode(reference_file.read()).decode("ascii")
+        reference_audio_by_path[sample.ref_audio] = (
+            f"data:audio/wav;base64,{encoded_audio}"
+        )
+    return reference_audio_by_path
+
+
+class TalkerSamplingParams(TypedDict, total=False):
+    talker_temperature: float
+    talker_top_p: float
+    talker_top_k: int
+    talker_repetition_penalty: float
+
+
+def talker_sampling_params(
+    *,
+    talker_temperature: float | None,
+    talker_top_p: float | None,
+    talker_top_k: int | None,
+    talker_repetition_penalty: float | None,
+) -> TalkerSamplingParams:
+    talker_params: TalkerSamplingParams = {}
+    if talker_temperature is not None:
+        talker_params["talker_temperature"] = talker_temperature
+    if talker_top_p is not None:
+        talker_params["talker_top_p"] = talker_top_p
+    if talker_top_k is not None:
+        talker_params["talker_top_k"] = talker_top_k
+    if talker_repetition_penalty is not None:
+        talker_params["talker_repetition_penalty"] = talker_repetition_penalty
+    return talker_params
+
+
 class VoiceCloneOmni:
     """Voice cloning via /v1/chat/completions (Omni API format).
 
@@ -789,12 +829,15 @@ class VoiceCloneOmni:
         speaker: str = "Ethan",
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        seed: int | None = None,
         voice_clone: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
         chunk_times_out: list[float] | None = None,
         text_first_time_holder: list[float] | None = None,
         reference_audio_field: ReferenceAudioField = "audios",
+        reference_audio_data: str | None = None,
+        talker_params: TalkerSamplingParams | None = None,
     ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
@@ -834,13 +877,20 @@ class VoiceCloneOmni:
             "temperature": temperature,
             "stream": stream,
         }
+        if seed is not None:
+            payload["seed"] = seed
+        if talker_params:
+            payload.update(talker_params)
         if voice_clone:
             if reference_audio_field == "audios":
                 payload["audios"] = [sample.ref_audio]
             elif reference_audio_field == "audio.ref_audio":
-                with open(sample.ref_audio, "rb") as reference:
-                    encoded = base64.b64encode(reference.read()).decode("ascii")
-                payload["audio"]["ref_audio"] = f"data:audio/wav;base64,{encoded}"
+                if reference_audio_data is None:
+                    raise ValueError(
+                        f"audio.ref_audio needs preloaded reference audio for "
+                        f"sample {sample.sample_id}; see preload_reference_audio"
+                    )
+                payload["audio"]["ref_audio"] = reference_audio_data
             else:
                 raise ValueError(
                     f"Unsupported reference audio field: {reference_audio_field}"

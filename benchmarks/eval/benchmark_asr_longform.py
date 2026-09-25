@@ -37,14 +37,14 @@ import asyncio
 import json
 import os
 
+from benchmarks.benchmarker.fingerprint import (
+    collect_environment_fingerprint,
+    collect_server_identity,
+)
 from benchmarks.dataset.asr_longform import (
     ASR_LONGFORM_DATASETS,
     ASR_LONGFORM_LANG,
     load_asr_longform_samples,
-)
-from benchmarks.eval.asr_profiling import (
-    collect_environment_fingerprint,
-    collect_server_identity,
 )
 from benchmarks.eval.benchmark_asr_seedtts import (
     _evaluation_input_sha256,

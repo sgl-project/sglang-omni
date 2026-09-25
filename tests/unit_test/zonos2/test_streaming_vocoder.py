@@ -46,7 +46,7 @@ HOP = DAC_HOP_LENGTH
 WITHHOLD = N_CODEBOOKS - 1  # trailing delay/flush rows trimmed before decode
 
 
-def _fake_decode(codes, eos_frame=None):
+def fake_decode(codes, eos_frame=None):
     """Deterministic stand-in for the DAC: codebook-0 of each aligned frame,
     repeated HOP times. Mirrors the real decode's length contract (drop the
     trailing WITHHOLD rows, cap at eos_frame). Column 0 is delay-0 so it is
@@ -60,25 +60,25 @@ def _fake_decode(codes, eos_frame=None):
     return c[:valid, 0].to(torch.float32).repeat_interleave(HOP)
 
 
-class _FakeDAC:
+class FakeDAC:
     def decode(self, codes, eos_frame=None):
-        return _fake_decode(codes, eos_frame)
+        return fake_decode(codes, eos_frame)
 
 
 @pytest.fixture(autouse=True)
-def _mock_dac(monkeypatch):
-    fake = _FakeDAC()
+def mock_dac(monkeypatch):
+    fake = FakeDAC()
     monkeypatch.setattr(streaming_vocoder, "get_vocoder", lambda device: fake)
     monkeypatch.setattr(
         streaming_vocoder,
         "decode_to_pcm",
-        lambda codes, eos_frame=None, device="cpu": _fake_decode(
+        lambda codes, eos_frame=None, device="cpu": fake_decode(
             torch.as_tensor(codes), eos_frame
         ),
     )
 
 
-def _scheduler(steady=32, initial=5, overlap=2):
+def make_scheduler(steady=32, initial=5, overlap=2):
     return Zonos2StreamingVocoderScheduler(
         device="cpu",
         compute_fn=None,
@@ -91,7 +91,7 @@ def _scheduler(steady=32, initial=5, overlap=2):
 
 def test_model_default_initial_chunk_is_continuity_safe():
     sch = Zonos2StreamingVocoderScheduler(device="cpu")
-    assert sch._default_initial_chunk_frames == _STREAM_INITIAL_CHUNK_FRAMES == 40
+    assert sch.default_initial_chunk_frames == _STREAM_INITIAL_CHUNK_FRAMES == 40
 
 
 def test_request_initial_chunk_zero_overrides_model_default():
@@ -115,14 +115,14 @@ def test_default_producer_flush_immediately_unlocks_first_vocoder_chunk():
     metadata = build_zonos2_stream_metadata(payload, n_codebooks=N_CODEBOOKS)
     data = SimpleNamespace(
         req=SimpleNamespace(finished=lambda: False, is_retracted=False),
-        output_codes=list(_codes(DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS - 1)),
+        output_codes=list(make_codes(DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS - 1)),
         stream_metadata=metadata,
         _stream_emit_idx=0,
     )
     runner = SimpleNamespace(
-        _outbox=queue.Queue(),
-        _stream_emit_chunk_frames=32,
-        _stream_emit_first_chunk_frames=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+        outbox=queue.Queue(),
+        stream_emit_chunk_frames=32,
+        stream_emit_first_chunk_frames=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
     )
     scheduler_output = SimpleNamespace(
         requests=[SimpleNamespace(request_id="req", data=data)]
@@ -130,18 +130,18 @@ def test_default_producer_flush_immediately_unlocks_first_vocoder_chunk():
 
     callbacks.extract_zonos2_output(runner, None, scheduler_output, None)
     with pytest.raises(queue.Empty):
-        runner._outbox.get_nowait()
+        runner.outbox.get_nowait()
 
-    data.output_codes.append(_codes(1)[0])
+    data.output_codes.append(make_codes(1)[0])
     callbacks.extract_zonos2_output(runner, None, scheduler_output, None)
-    producer_message = runner._outbox.get_nowait()
+    producer_message = runner.outbox.get_nowait()
     assert producer_message.data.shape == (
         DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
         N_CODEBOOKS,
     )
 
     scheduler = Zonos2StreamingVocoderScheduler(device="cpu")
-    scheduler.stream_payloads["req"] = _payload(
+    scheduler.stream_payloads["req"] = make_payload(
         producer_message.data,
         eos_frame=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS - WITHHOLD,
     )
@@ -163,7 +163,7 @@ def test_default_producer_flush_immediately_unlocks_first_vocoder_chunk():
     )
 
 
-def _run_producer_callback(
+def run_producer_callback(
     *,
     request_params: dict,
     configured_first_rows: int,
@@ -176,15 +176,15 @@ def _run_producer_callback(
     )
     data = SimpleNamespace(
         req=SimpleNamespace(finished=lambda: False, is_retracted=False),
-        output_codes=list(_codes(generated_rows)),
+        output_codes=list(make_codes(generated_rows)),
         stream_metadata=build_zonos2_stream_metadata(payload, n_codebooks=N_CODEBOOKS),
         _stream_emit_idx=0,
     )
     outbox = queue.Queue()
     runner = SimpleNamespace(
-        _outbox=outbox,
-        _stream_emit_chunk_frames=32,
-        _stream_emit_first_chunk_frames=configured_first_rows,
+        outbox=outbox,
+        stream_emit_chunk_frames=32,
+        stream_emit_first_chunk_frames=configured_first_rows,
     )
     callbacks.extract_zonos2_output(
         runner,
@@ -205,14 +205,14 @@ def test_missing_request_override_honors_configured_producer_boundary(
     configured_first_rows: int,
     expected_flush_rows: int,
 ) -> None:
-    before = _run_producer_callback(
+    before = run_producer_callback(
         request_params={"stream": True},
         configured_first_rows=configured_first_rows,
         generated_rows=expected_flush_rows - 1,
     )
     assert before.empty()
 
-    at_boundary = _run_producer_callback(
+    at_boundary = run_producer_callback(
         request_params={"stream": True},
         configured_first_rows=configured_first_rows,
         generated_rows=expected_flush_rows,
@@ -235,14 +235,14 @@ def test_request_override_wins_over_configured_producer_boundary(
         "stream": True,
         INITIAL_CODEC_CHUNK_FRAMES_PARAM: request_override,
     }
-    before = _run_producer_callback(
+    before = run_producer_callback(
         request_params=request_params,
         configured_first_rows=100,
         generated_rows=expected_flush_rows - 1,
     )
     assert before.empty()
 
-    at_boundary = _run_producer_callback(
+    at_boundary = run_producer_callback(
         request_params=request_params,
         configured_first_rows=100,
         generated_rows=expected_flush_rows,
@@ -253,7 +253,7 @@ def test_request_override_wins_over_configured_producer_boundary(
     )
 
 
-def _codes(n_frames: int) -> torch.Tensor:
+def make_codes(n_frames: int) -> torch.Tensor:
     """Delayed [T, 9] rows; codebook-0 = frame index so the decoded waveform
     fingerprints which frames survived."""
     c = torch.zeros((n_frames, N_CODEBOOKS), dtype=torch.long)
@@ -261,7 +261,7 @@ def _codes(n_frames: int) -> torch.Tensor:
     return c
 
 
-def _payload(codes: torch.Tensor, eos_frame: int, rid="req") -> StagePayload:
+def make_payload(codes: torch.Tensor, eos_frame: int, rid="req") -> StagePayload:
     state = Zonos2State(
         audio_codes=codes.clone(),
         eos_frame=eos_frame,
@@ -276,11 +276,11 @@ def _payload(codes: torch.Tensor, eos_frame: int, rid="req") -> StagePayload:
     )
 
 
-def _meta():
+def make_meta():
     return {"stream": True, "modality": "audio_codes", "n_codebooks": N_CODEBOOKS}
 
 
-def _pcm_from_messages(messages, rid) -> np.ndarray:
+def pcm_from_messages(messages, rid) -> np.ndarray:
     chunks = []
     for m in messages:
         if getattr(m, "type", None) == "stream" and m.request_id == rid:
@@ -289,12 +289,12 @@ def _pcm_from_messages(messages, rid) -> np.ndarray:
     return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
 
 
-def _drive(sch, codes, eos_frame, *, emit, rid="req", stream_first_n=None):
+def drive(sch, codes, eos_frame, *, emit, rid="req", stream_first_n=None):
     """Feed `codes` to the vocoder in coalesced batches of `emit` rows, then
     finish. `stream_first_n` streams only the first N rows (simulating a dropped
     tail) while the terminal payload still carries the full `audio_codes`."""
-    sch.stream_payloads[rid] = _payload(codes, eos_frame, rid)
-    meta = _meta()
+    sch.stream_payloads[rid] = make_payload(codes, eos_frame, rid)
+    meta = make_meta()
     fed = codes if stream_first_n is None else codes[:stream_first_n]
     msgs = []
     cid = 0
@@ -310,10 +310,10 @@ def _drive(sch, codes, eos_frame, *, emit, rid="req", stream_first_n=None):
         i += emit
         cid += 1
     msgs += sch.on_stream_done(rid)
-    return _pcm_from_messages(msgs, rid)
+    return pcm_from_messages(msgs, rid)
 
 
-def _aligned_len(codes, eos_frame):
+def aligned_len(codes, eos_frame):
     valid = min(codes.shape[0] - WITHHOLD, eos_frame)
     return max(0, valid) * HOP
 
@@ -323,23 +323,23 @@ def _aligned_len(codes, eos_frame):
 
 @pytest.mark.parametrize("emit", [1, 8, 16, 32, 48])
 def test_length_alignment_across_emit_sizes(emit):
-    codes = _codes(220)
+    codes = make_codes(220)
     eos = 200  # < 220 - WITHHOLD, so reference = 200 frames
-    sch = _scheduler(steady=32, initial=5, overlap=2)
-    pcm = _drive(sch, codes, eos, emit=emit)
-    assert len(pcm) == _aligned_len(codes, eos)
+    sch = make_scheduler(steady=32, initial=5, overlap=2)
+    pcm = drive(sch, codes, eos, emit=emit)
+    assert len(pcm) == aligned_len(codes, eos)
 
 
 def test_adaptive_emit_alignment():
     """Adaptive first-chunk batching (small first batch, large steady) must not
     change the aligned output length."""
-    codes = _codes(220)
+    codes = make_codes(220)
     eos = 200
-    sch = _scheduler(steady=32, initial=5, overlap=2)
+    sch = make_scheduler(steady=32, initial=5, overlap=2)
     # simulate adaptive at the message level: first batch 8, then steady 32
     rid = "req"
-    sch.stream_payloads[rid] = _payload(codes, eos, rid)
-    meta = _meta()
+    sch.stream_payloads[rid] = make_payload(codes, eos, rid)
+    meta = make_meta()
     sizes = [8] + [32] * 100
     msgs, i, cid = [], 0, 0
     for sz in sizes:
@@ -355,7 +355,7 @@ def test_adaptive_emit_alignment():
         i += sz
         cid += 1
     msgs += sch.on_stream_done(rid)
-    assert len(_pcm_from_messages(msgs, rid)) == _aligned_len(codes, eos)
+    assert len(pcm_from_messages(msgs, rid)) == aligned_len(codes, eos)
 
 
 # --- the bug regression: on_stream_done tops up a dropped/held tail ---
@@ -366,21 +366,21 @@ def test_on_stream_done_tops_up_dropped_tail(emit):
     """If a tail batch was never streamed (held/dropped under coalescing or
     retraction), on_stream_done must recover it from audio_codes so the output
     is NOT truncated. Without the top-up this returns ~half length."""
-    codes = _codes(260)
+    codes = make_codes(260)
     eos = 240
-    sch = _scheduler(steady=32, initial=5, overlap=2)
-    pcm = _drive(sch, codes, eos, emit=emit, stream_first_n=120)  # drop ~half the tail
-    assert len(pcm) == _aligned_len(codes, eos)
+    sch = make_scheduler(steady=32, initial=5, overlap=2)
+    pcm = drive(sch, codes, eos, emit=emit, stream_first_n=120)  # drop ~half the tail
+    assert len(pcm) == aligned_len(codes, eos)
 
 
 def test_nothing_streamed_falls_back_to_full_decode():
     """No chunks streamed at all (slot-starved) -> on_stream_done still emits the
     full aligned audio."""
-    codes = _codes(120)
+    codes = make_codes(120)
     eos = 100
-    sch = _scheduler(steady=32, initial=5, overlap=2)
-    pcm = _drive(sch, codes, eos, emit=32, stream_first_n=0)
-    assert len(pcm) == _aligned_len(codes, eos)
+    sch = make_scheduler(steady=32, initial=5, overlap=2)
+    pcm = drive(sch, codes, eos, emit=32, stream_first_n=0)
+    assert len(pcm) == aligned_len(codes, eos)
 
 
 # --- content integrity (overlap=0 => exact concatenation, no cross-fade) ---
@@ -388,10 +388,10 @@ def test_nothing_streamed_falls_back_to_full_decode():
 
 @pytest.mark.parametrize("emit", [1, 16, 32])
 def test_content_no_missing_or_reordered_frames(emit):
-    codes = _codes(160)
+    codes = make_codes(160)
     eos = 140
-    sch = _scheduler(steady=32, initial=5, overlap=0)
-    pcm = _drive(sch, codes, eos, emit=emit)
+    sch = make_scheduler(steady=32, initial=5, overlap=0)
+    pcm = drive(sch, codes, eos, emit=emit)
     expected = np.repeat(np.arange(eos, dtype=np.float32), HOP)
     np.testing.assert_array_equal(pcm, expected)
 
@@ -402,11 +402,11 @@ def test_content_no_missing_or_reordered_frames(emit):
 def test_short_utterance_below_emit_size():
     """Utterance shorter than the emit chunk: nothing hits a steady emit, the
     whole thing rides the finish flush + top-up."""
-    codes = _codes(20)  # < emit=32
+    codes = make_codes(20)  # < emit=32
     eos = 12
-    sch = _scheduler(steady=32, initial=5, overlap=2)
-    pcm = _drive(sch, codes, eos, emit=32)
-    assert len(pcm) == _aligned_len(codes, eos)
+    sch = make_scheduler(steady=32, initial=5, overlap=2)
+    pcm = drive(sch, codes, eos, emit=32)
+    assert len(pcm) == aligned_len(codes, eos)
 
 
 @pytest.mark.parametrize("eos", [31, 32, 33, 64, 65])
@@ -414,24 +414,24 @@ def test_eos_near_chunk_boundary(eos):
     # eos_frame sits ~10 frames before the end (the real post-EOS countdown), so
     # it falls inside the steady decoder's held-back tail and the flush emits
     # exactly up to eos -- regardless of where eos lands vs the 32-frame boundary.
-    codes = _codes(eos + 10)
-    sch = _scheduler(steady=32, initial=5, overlap=2)
-    pcm = _drive(sch, codes, eos, emit=32)
-    assert len(pcm) == _aligned_len(codes, eos)
+    codes = make_codes(eos + 10)
+    sch = make_scheduler(steady=32, initial=5, overlap=2)
+    pcm = drive(sch, codes, eos, emit=32)
+    assert len(pcm) == aligned_len(codes, eos)
 
 
 @pytest.mark.parametrize("payload_first", [False, True])
 def test_final_payload_recovers_tail_after_early_eos(payload_first):
-    codes = _codes(32)
+    codes = make_codes(32)
     eos = 24
-    scheduler = _scheduler(steady=32, initial=5, overlap=0)
-    payload = _payload(codes, eos)
+    scheduler = make_scheduler(steady=32, initial=5, overlap=0)
+    payload = make_payload(codes, eos)
     if payload_first:
         scheduler.handle_streaming_new_request("req", payload)
     scheduler.handle_stream_chunk(
         "req",
         StreamItem(
-            chunk_id=0, data=codes[:16], from_stage="tts_engine", metadata=_meta()
+            chunk_id=0, data=codes[:16], from_stage="tts_engine", metadata=make_meta()
         ),
     )
     scheduler.handle_stream_done("req")
@@ -443,7 +443,7 @@ def test_final_payload_recovers_tail_after_early_eos(payload_first):
     while not scheduler.outbox.empty():
         messages.append(scheduler.outbox.get_nowait())
     np.testing.assert_array_equal(
-        _pcm_from_messages(messages, "req"), _fake_decode(codes, eos).numpy()
+        pcm_from_messages(messages, "req"), fake_decode(codes, eos).numpy()
     )
     assert sum(message.type == "result" for message in messages) == 1
     assert scheduler.stream_states == {}

@@ -16,7 +16,7 @@ from sglang_omni.client.audio import (
 )
 
 
-def _stereo_test_signal() -> tuple[np.ndarray, int]:
+def stereo_test_signal() -> tuple[np.ndarray, int]:
     sample_rate = 32000
     time = np.arange(sample_rate // 2, dtype=np.float32) / sample_rate
     audio = np.stack(
@@ -28,7 +28,7 @@ def _stereo_test_signal() -> tuple[np.ndarray, int]:
     return audio, sample_rate
 
 
-def _decode_audio(encoded: bytes) -> tuple[int, np.ndarray]:
+def decode_audio(encoded: bytes) -> tuple[int, np.ndarray]:
     import av
 
     with av.open(io.BytesIO(encoded)) as container:
@@ -46,24 +46,24 @@ def _decode_audio(encoded: bytes) -> tuple[int, np.ndarray]:
     return sample_rate, np.concatenate(chunks, axis=-1)
 
 
-def _assert_flac(encoded: bytes) -> None:
+def assert_flac(encoded: bytes) -> None:
     import soundfile as sf
 
     with sf.SoundFile(io.BytesIO(encoded)) as sound_file:
         assert sound_file.format == "FLAC"
 
 
-def _dominant_frequency(audio: np.ndarray, sample_rate: int) -> float:
+def dominant_frequency(audio: np.ndarray, sample_rate: int) -> float:
     window = np.hanning(audio.size)
     spectrum = np.abs(np.fft.rfft(audio * window))
     frequencies = np.fft.rfftfreq(audio.size, 1 / sample_rate)
     return float(frequencies[1 + np.argmax(spectrum[1:])])
 
 
-def _assert_stereo_content(audio: np.ndarray, sample_rate: int) -> None:
+def assert_stereo_content(audio: np.ndarray, sample_rate: int) -> None:
     assert audio.shape[0] == 2
-    assert _dominant_frequency(audio[0], sample_rate) == pytest.approx(440, abs=20)
-    assert _dominant_frequency(audio[1], sample_rate) == pytest.approx(880, abs=20)
+    assert dominant_frequency(audio[0], sample_rate) == pytest.approx(440, abs=20)
+    assert dominant_frequency(audio[1], sample_rate) == pytest.approx(880, abs=20)
 
 
 def test_to_numpy():
@@ -134,7 +134,7 @@ def test_resample_linear_preserves_stereo_channels():
 
 @pytest.mark.parametrize("response_format", ["mp3", "aac", "opus"])
 def test_pyav_encode_preserves_stereo_content(response_format: str):
-    audio, sample_rate = _stereo_test_signal()
+    audio, sample_rate = stereo_test_signal()
     config = PYAV_ENCODE_CONFIGS[response_format]
 
     encoded = encode_with_pyav(
@@ -145,8 +145,8 @@ def test_pyav_encode_preserves_stereo_content(response_format: str):
         valid_rates=config["valid_rates"],
     )
 
-    decoded_sample_rate, decoded = _decode_audio(encoded)
-    _assert_stereo_content(decoded, decoded_sample_rate)
+    decoded_sample_rate, decoded = decode_audio(encoded)
+    assert_stereo_content(decoded, decoded_sample_rate)
 
 
 @pytest.mark.parametrize(
@@ -161,25 +161,25 @@ def test_pyav_encode_preserves_stereo_content(response_format: str):
 def test_encode_audio_preserves_stereo_content(
     response_format: str, expected_sample_rate: int
 ):
-    audio, sample_rate = _stereo_test_signal()
+    audio, sample_rate = stereo_test_signal()
     encoded, mime = encode_audio(
         audio,
         response_format=response_format,
         sample_rate=sample_rate,
     )
 
-    decoded_sample_rate, decoded = _decode_audio(encoded)
+    decoded_sample_rate, decoded = decode_audio(encoded)
 
     assert mime == FORMAT_MIME_TYPES[response_format]
     assert decoded_sample_rate == expected_sample_rate
-    _assert_stereo_content(decoded, decoded_sample_rate)
+    assert_stereo_content(decoded, decoded_sample_rate)
 
 
 @pytest.mark.parametrize(
     "channel_last", [False, True], ids=["channel_first", "channel_last"]
 )
 def test_encode_audio_flac_preserves_stereo_orientations(channel_last: bool):
-    audio, sample_rate = _stereo_test_signal()
+    audio, sample_rate = stereo_test_signal()
     if channel_last:
         audio = audio.T
 
@@ -190,10 +190,10 @@ def test_encode_audio_flac_preserves_stereo_orientations(channel_last: bool):
     )
 
     assert mime == FORMAT_MIME_TYPES["flac"]
-    _assert_flac(encoded)
-    decoded_sample_rate, decoded = _decode_audio(encoded)
+    assert_flac(encoded)
+    decoded_sample_rate, decoded = decode_audio(encoded)
     assert decoded_sample_rate == sample_rate
-    _assert_stereo_content(decoded, decoded_sample_rate)
+    assert_stereo_content(decoded, decoded_sample_rate)
 
 
 def test_encode_audio_flac_preserves_mono():
@@ -208,8 +208,8 @@ def test_encode_audio_flac_preserves_mono():
     )
 
     assert mime == FORMAT_MIME_TYPES["flac"]
-    _assert_flac(encoded)
-    decoded_sample_rate, decoded = _decode_audio(encoded)
+    assert_flac(encoded)
+    decoded_sample_rate, decoded = decode_audio(encoded)
     assert decoded_sample_rate == sample_rate
     assert decoded.shape[0] == 1
 

@@ -4,7 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
-from sglang.srt.runtime_context import get_parallel, get_stream
+from sglang.srt.runtime_context import get_exec, get_parallel, get_stream
 from torch import nn
 from transformers import PretrainedConfig
 
@@ -41,7 +41,6 @@ from sglang_omni.vendor.sglang.models import (
     create_fused_set_kv_buffer_arg,
     enable_fused_set_kv_buffer,
 )
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
 
 fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
@@ -53,6 +52,8 @@ def bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
         if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
+        else:
+            pass
 
 
 def compute_yarn_parameters(
@@ -76,6 +77,8 @@ def compute_yarn_parameters(
     rope_scaling = config.rope_scaling
     if rope_scaling is None:
         return 1.0, 0, 0, 1.0
+    else:
+        pass
 
     base = config.rope_theta
     partial_rotary_factor = config.partial_rotary_factor
@@ -97,6 +100,8 @@ def compute_yarn_parameters(
     def get_mscale(scale, mscale=1):
         if scale <= 1:
             return 1.0
+        else:
+            pass
         return 0.1 * mscale * math.log(scale) + 1.0
 
     # Sets the attention factor as suggested in the paper
@@ -107,6 +112,8 @@ def compute_yarn_parameters(
             )
         else:
             attention_factor = get_mscale(factor)
+    else:
+        pass
 
     # Optional config options
     # beta_fast/beta_slow: as suggested in the paper, default to 32/1 (correspondingly)
@@ -129,6 +136,8 @@ def compute_yarn_parameters(
         if truncate:
             low = math.floor(low)
             high = math.ceil(high)
+        else:
+            pass
         return max(low, 0), min(high, dim - 1)
 
     truncate = rope_scaling.get("truncate", True)
@@ -229,12 +238,12 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             not isinstance(self.rotary_emb, MRotaryEmbedding)
         ) and self.head_dim in (64, 128, 256)
         self.use_fused_qk_norm_rope = (
-            get_global_server_args().enable_fused_qk_norm_rope
+            get_exec().kernel.enable_fused_qk_norm_rope
             and self.compatible_with_fused_qk_norm_rope
             and fused_qk_norm_rope is not None
         )
-        self._used_fused_qk_norm_rope_last_call = False
-        self._used_fused_set_kv_buffer_last_call = False
+        self.used_fused_qk_norm_rope_last_call = False
+        self.used_fused_set_kv_buffer_last_call = False
 
         self.attn = RadixAttention(
             self.num_heads,
@@ -268,6 +277,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         # temporal row so it isn't misread as 3 batches (all sections equal here).
         if positions.dim() == 2 and not isinstance(self.rotary_emb, MRotaryEmbedding):
             positions = positions[0]
+        else:
+            pass
         use_fused = self.use_fused_qk_norm_rope and qkv.dtype == torch.bfloat16
         if use_fused:
             theta = self.config.rope_theta
@@ -293,8 +304,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 attention_factor,
             )
             q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-            self._used_fused_qk_norm_rope_last_call = True
-            self._used_fused_set_kv_buffer_last_call = False
+            self.used_fused_qk_norm_rope_last_call = True
+            self.used_fused_set_kv_buffer_last_call = False
         else:
             # Fallback to non-fused QK Norm & RoPE implementation
             q_linear, k_linear, v = qkv.split(
@@ -327,8 +338,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                     else None
                 ),
             )
-            self._used_fused_qk_norm_rope_last_call = False
-            self._used_fused_set_kv_buffer_last_call = use_fused_set_kv_buffer
+            self.used_fused_qk_norm_rope_last_call = False
+            self.used_fused_set_kv_buffer_last_call = use_fused_set_kv_buffer
         return q, k, v
 
     def forward_prepare(
@@ -339,6 +350,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
     ):
         if hidden_states.shape[0] == 0:
             return hidden_states, forward_batch, None
+        else:
+            pass
         return self.forward_prepare_native(
             positions=positions,
             hidden_states=hidden_states,
@@ -349,11 +362,13 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         hidden_states, forward_batch, inner_state = intermediate_state
         if inner_state is None:
             return hidden_states
+        else:
+            pass
 
         q, k, v, fb = inner_state
 
-        must_save_kv = self._used_fused_qk_norm_rope_last_call
-        save_kv_cache = must_save_kv or not self._used_fused_set_kv_buffer_last_call
+        must_save_kv = self.used_fused_qk_norm_rope_last_call
+        save_kv_cache = must_save_kv or not self.used_fused_set_kv_buffer_last_call
         attn_output = self.attn(
             q,
             k,
@@ -366,6 +381,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         # activation to the quantizer, which post1's sgl_kernel rejects.
         if attn_output.dtype != v.dtype:
             attn_output = attn_output.to(dtype=v.dtype)
+        else:
+            pass
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -403,6 +420,8 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
                 f"Tensor parallel size {self.tp_size} is greater than "
                 f"the number of experts {config.num_experts}."
             )
+        else:
+            pass
 
         self.topk = TopK(
             top_k=config.num_experts_per_tok,
@@ -412,8 +431,7 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         )
 
         self.experts = get_moe_impl_class(quant_config)(
-            num_experts=config.num_experts
-            + get_global_server_args().ep_num_redundant_experts,
+            num_experts=config.num_experts + get_exec().moe.ep_num_redundant_experts,
             top_k=config.num_experts_per_tok,
             layer_id=layer_id,
             hidden_size=config.hidden_size,
@@ -463,6 +481,8 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
             and not should_use_flashinfer_cutlass_moe_fp4_allgather()
         ):
             final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+        else:
+            pass
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
@@ -572,6 +592,8 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
             )
+        else:
+            pass
 
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states, residual, forward_batch
@@ -593,7 +615,7 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         )
 
         if should_allreduce_fusion:
-            hidden_states._sglang_needs_allreduce_fusion = True
+            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
             hidden_states, residual = self.layer_communicator.postprocess_layer(
                 hidden_states, residual, forward_batch
@@ -646,7 +668,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         # For EAGLE3 support
         self.layers_to_capture = []
         bind_default_weight_loaders(self)
-        self._cached_params_dict = dict(self.named_parameters())
+        self.cached_params_dict = dict(self.named_parameters())
 
     def forward(
         self,
@@ -668,6 +690,8 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         # Capture word embeddings (before any transformer layer) if requested
         if "embed" in self.layers_to_capture:
             aux_hidden_states.append(("embed", hidden_states.clone()))
+        else:
+            pass
 
         for layer_idx in range(self.start_layer, self.end_layer):
             layer = self.layers[layer_idx]
@@ -688,14 +712,20 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                     visual_pos_masks,
                     deepstack_visual_embeds[layer_idx],
                 )
+            else:
+                pass
         if hidden_states.shape[0] != 0:
             if residual is None:
                 hidden_states = self.norm(hidden_states)
             else:
                 hidden_states, _ = self.norm(hidden_states, residual)
+        else:
+            pass
 
         if len(aux_hidden_states) == 0:
             return hidden_states
+        else:
+            pass
 
         return hidden_states, aux_hidden_states
 
@@ -703,6 +733,8 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         # visual_pos_masks may be 1D boolean (SGLang path) or multi-dim (HF path)
         if visual_pos_masks.dim() > 1:
             visual_pos_masks = visual_pos_masks[..., 0]
+        else:
+            pass
         visual_pos_masks = visual_pos_masks.to(hidden_states.device)
         visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
         local_this = hidden_states[visual_pos_masks, :] + visual_embeds
@@ -718,7 +750,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         (model): Qwen3OmniMoeThinkerTextModel
         (lm_head): lm_head
         """
-        params_dict = self._cached_params_dict
+        params_dict = self.cached_params_dict
 
         preprocess_weight = get_weight_preprocessor(
             self.config, fp8_scale_inverted=True
@@ -746,6 +778,8 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                     loaded_weight = preprocess_weight(name, loaded_weight)
                     param.weight_loader(param, loaded_weight)
                     continue
+                else:
+                    pass
             logger.warning(f"Parameter {name} not found in params_dict")
 
 
@@ -769,6 +803,8 @@ def maybe_update_fused_qkv_proj(
             # not the fused QKV/gate_up_proj path.
             if "mlp.experts" in name:
                 continue
+            else:
+                pass
             fused_param_name, shard_id = stacked_params_mapping[shard_name]
 
             name = name.replace(shard_name, fused_param_name)
@@ -776,6 +812,8 @@ def maybe_update_fused_qkv_proj(
             loaded_weight = preprocess_weight(name, loaded_weight)
             param.weight_loader(param, loaded_weight, shard_id)
             return True
+        else:
+            pass
     return False
 
 
@@ -805,6 +843,10 @@ def maybe_update_fused_moe_proj(
                 expert_id=expert_id,
             )
             return True
+        else:
+            pass
+    else:
+        pass
     return False
 
 
@@ -832,7 +874,13 @@ def extract_fused_experts(
                 shard_id = "w2"
             elif weight_type == ckpt_up_proj_name:
                 shard_id = "w3"
+            else:
+                pass
             return param_name, f"experts.{expert_id}.{weight_type}", expert_id, shard_id
+        else:
+            pass
+    else:
+        pass
 
     return None
 

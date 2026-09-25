@@ -20,38 +20,36 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_payload
 
 
-def _fake_model(
-    n: int, hidden: int, code_groups: int, step: int = 0
-) -> SimpleNamespace:
+def fake_model(n: int, hidden: int, code_groups: int, step: int = 0) -> SimpleNamespace:
     return SimpleNamespace(
-        _output_codes=torch.stack(
+        output_codes=torch.stack(
             [
                 torch.tensor([i * 1000 + step, i + 100 + step], dtype=torch.long)
                 for i in range(n)
             ]
         )[:, :code_groups],
-        _output_embeds=torch.stack(
+        output_embeds=torch.stack(
             [torch.full((hidden,), float(i * 7 + 1 + step)) for i in range(n)]
         ),
     )
 
 
-def _runner(
+def make_runner(
     model: SimpleNamespace, coalesce: int, first_frames: int = 0
 ) -> QwenTalkerModelRunner:
     runner = object.__new__(QwenTalkerModelRunner)
     runner.model = model
-    runner._feedback_enabled = True
-    runner._code2wav_target = "code2wav"
-    runner._codec_coalesce_frames = coalesce
-    runner._codec_coalesce_early_frames = 0
-    runner._codec_coalesce_first_frames = first_frames
-    runner._outbox = SimpleNamespace(sent=[])
-    runner._outbox.put = runner._outbox.sent.append
+    runner.feedback_enabled = True
+    runner.code2wav_target = "code2wav"
+    runner.codec_coalesce_frames = coalesce
+    runner.codec_coalesce_early_frames = 0
+    runner.codec_coalesce_first_frames = first_frames
+    runner.outbox = SimpleNamespace(sent=[])
+    runner.outbox.put = runner.outbox.sent.append
     return runner
 
 
-def _data() -> SimpleNamespace:
+def make_data() -> SimpleNamespace:
     return SimpleNamespace(
         pending_feedback_queue=deque(),
         pending_codec_rows=[],
@@ -62,31 +60,31 @@ def _data() -> SimpleNamespace:
     )
 
 
-def _requests(n: int) -> list:
-    return [SimpleNamespace(data=_data()) for _ in range(n)]
+def make_requests(n: int) -> list:
+    return [SimpleNamespace(data=make_data()) for _ in range(n)]
 
 
-def _sched_batch(n: int) -> SimpleNamespace:
+def sched_batch(n: int) -> SimpleNamespace:
     return SimpleNamespace(reqs=[SimpleNamespace(rid=f"r{i}") for i in range(n)])
 
 
-def _run_steps(runner, requests, batch, steps: int) -> list[torch.Tensor]:
+def run_steps(runner, requests, batch, steps: int) -> list[torch.Tensor]:
     seen = []
     for _ in range(steps):
-        runner.model._output_codes += 1
-        runner.model._output_embeds += 1.0
-        seen.append(runner.model._output_codes[0].clone())
+        runner.model.output_codes += 1
+        runner.model.output_embeds += 1.0
+        seen.append(runner.model.output_codes[0].clone())
         runner.emit_code_chunks_and_feedback(schedule_batch=batch, requests=requests)
     return seen
 
 
 def test_coalesce_disabled_emits_one_message_per_frame() -> None:
     n = 3
-    runner = _runner(_fake_model(n, 4, 2), coalesce=0)
-    requests, batch = _requests(n), _sched_batch(n)
-    _run_steps(runner, requests, batch, steps=2)
-    assert len(runner._outbox.sent) == 2 * n
-    assert all(m.data.ndim == 1 for m in runner._outbox.sent)
+    runner = make_runner(fake_model(n, 4, 2), coalesce=0)
+    requests, batch = make_requests(n), sched_batch(n)
+    run_steps(runner, requests, batch, steps=2)
+    assert len(runner.outbox.sent) == 2 * n
+    assert all(m.data.ndim == 1 for m in runner.outbox.sent)
     assert all(not r.data.pending_codec_rows for r in requests)
 
 
@@ -99,18 +97,18 @@ def test_default_coalescing_preserves_serial_vocoder_graph_windows(pipeline_type
     factory = next(
         stage.factory for stage in config.stages if stage.name == "talker_ar"
     )
-    runner = _runner(_fake_model(1, 4, 2), coalesce=factory.codec_coalesce_frames)
-    runner._codec_coalesce_early_frames = factory.codec_coalesce_early_frames
-    runner._codec_coalesce_first_frames = factory.codec_coalesce_first_frames
-    requests, batch = _requests(1), _sched_batch(1)
+    runner = make_runner(fake_model(1, 4, 2), coalesce=factory.codec_coalesce_frames)
+    runner.codec_coalesce_early_frames = factory.codec_coalesce_early_frames
+    runner.codec_coalesce_first_frames = factory.codec_coalesce_first_frames
+    requests, batch = make_requests(1), sched_batch(1)
     model = FakeCode2WavModel()
     scheduler = Code2WavScheduler(model, device="cpu", enable_output_overlap=False)
     state = scheduler.create_stream_state("r0")
     decode_steps = []
     for step in range(1, 46):
-        sent_before = len(runner._outbox.sent)
-        _run_steps(runner, requests, batch, 1)
-        for message in runner._outbox.sent[sent_before:]:
+        sent_before = len(runner.outbox.sent)
+        run_steps(runner, requests, batch, 1)
+        for message in runner.outbox.sent[sent_before:]:
             scheduler.ingest("r0", state, message.data)
             if scheduler.should_decode(state, is_final=False):
                 scheduler.decode_delta("r0", state, is_final=False)
@@ -123,15 +121,15 @@ def test_default_coalescing_preserves_serial_vocoder_graph_windows(pipeline_type
 
 
 def test_early_frames_preserve_code2wav_window_cadence() -> None:
-    runner = _runner(_fake_model(1, 4, 2), coalesce=10)
-    runner._codec_coalesce_early_frames = 12
-    requests, batch = _requests(1), _sched_batch(1)
+    runner = make_runner(fake_model(1, 4, 2), coalesce=10)
+    runner.codec_coalesce_early_frames = 12
+    requests, batch = make_requests(1), sched_batch(1)
     ready_at = {}
     received_frames = 0
     for step in range(1, 42):
-        sent_before = len(runner._outbox.sent)
-        _run_steps(runner, requests, batch, 1)
-        for message in runner._outbox.sent[sent_before:]:
+        sent_before = len(runner.outbox.sent)
+        run_steps(runner, requests, batch, 1)
+        for message in runner.outbox.sent[sent_before:]:
             received_frames += 1 if message.data.ndim == 1 else len(message.data)
         for window_end in (2, 12, 22, 32):
             if received_frames >= window_end:
@@ -147,15 +145,15 @@ def test_early_frames_preserve_code2wav_window_cadence() -> None:
 @pytest.mark.parametrize("finish_reason", ["length", "stop"])
 def test_early_frames_preserve_order_and_final_tail(early_frames, steps, finish_reason):
     """The early single-frame prefix and coalesced tail emit each non-EOS row once."""
-    runner = _runner(_fake_model(1, 4, 2), coalesce=10)
-    runner._codec_coalesce_early_frames = early_frames
-    requests, batch = _requests(1), _sched_batch(1)
-    expected = _run_steps(runner, requests, batch, steps)
+    runner = make_runner(fake_model(1, 4, 2), coalesce=10)
+    runner.codec_coalesce_early_frames = early_frames
+    requests, batch = make_requests(1), sched_batch(1)
+    expected = run_steps(runner, requests, batch, steps)
     data = requests[0].data
     data.finish_reason = finish_reason
     runner.on_request_finished("r0", data)
 
-    messages = runner._outbox.sent
+    messages = runner.outbox.sent
     assert all(message.data.ndim == 1 for message in messages[:early_frames])
     actual = torch.cat(
         [
@@ -170,17 +168,17 @@ def test_early_frames_preserve_order_and_final_tail(early_frames, steps, finish_
 
 def test_coalesce_buffers_until_threshold_then_emits_stacked_rows() -> None:
     n, k = 2, 3
-    runner = _runner(_fake_model(n, 4, 2), coalesce=k)
-    requests, batch = _requests(n), _sched_batch(n)
+    runner = make_runner(fake_model(n, 4, 2), coalesce=k)
+    requests, batch = make_requests(n), sched_batch(n)
 
-    seen = _run_steps(runner, requests, batch, steps=k)
-    assert runner._outbox.sent == []
+    seen = run_steps(runner, requests, batch, steps=k)
+    assert runner.outbox.sent == []
     assert all(len(r.data.pending_codec_rows) == k for r in requests)
 
-    seen += _run_steps(runner, requests, batch, steps=1)
-    assert len(runner._outbox.sent) == n
+    seen += run_steps(runner, requests, batch, steps=1)
+    assert len(runner.outbox.sent) == n
     assert all(len(r.data.pending_codec_rows) == 1 for r in requests)
-    msg = next(m for m in runner._outbox.sent if m.request_id == "r0")
+    msg = next(m for m in runner.outbox.sent if m.request_id == "r0")
     assert msg.type == "stream"
     assert msg.target == "code2wav"
     assert msg.metadata == {"stream": False}
@@ -190,48 +188,48 @@ def test_coalesce_buffers_until_threshold_then_emits_stacked_rows() -> None:
 
 def test_coalesced_rows_survive_next_step_inplace_write() -> None:
     n, k = 2, 2
-    runner = _runner(_fake_model(n, 4, 2), coalesce=k)
-    requests, batch = _requests(n), _sched_batch(n)
+    runner = make_runner(fake_model(n, 4, 2), coalesce=k)
+    requests, batch = make_requests(n), sched_batch(n)
     runner.emit_code_chunks_and_feedback(schedule_batch=batch, requests=requests)
     buffered = requests[0].data.pending_codec_rows[0].clone()
-    runner.model._output_codes.copy_(runner.model._output_codes + 999)
+    runner.model.output_codes.copy_(runner.model.output_codes + 999)
     assert torch.equal(requests[0].data.pending_codec_rows[0], buffered)
 
 
 def test_on_request_finished_flushes_partial_tail() -> None:
     n, k = 1, 5
-    runner = _runner(_fake_model(n, 4, 2), coalesce=k)
-    requests, batch = _requests(n), _sched_batch(n)
-    _run_steps(runner, requests, batch, steps=2)
-    assert runner._outbox.sent == []
+    runner = make_runner(fake_model(n, 4, 2), coalesce=k)
+    requests, batch = make_requests(n), sched_batch(n)
+    run_steps(runner, requests, batch, steps=2)
+    assert runner.outbox.sent == []
 
     runner.on_request_finished("r0", requests[0].data)
-    assert len(runner._outbox.sent) == 2
-    assert all(msg.data.shape == (2,) for msg in runner._outbox.sent)
+    assert len(runner.outbox.sent) == 2
+    assert all(msg.data.shape == (2,) for msg in runner.outbox.sent)
     assert not requests[0].data.pending_codec_rows
 
     runner.on_request_finished("r0", requests[0].data)
-    assert len(runner._outbox.sent) == 2
+    assert len(runner.outbox.sent) == 2
 
 
 def test_single_row_flush_keeps_legacy_1d_shape() -> None:
     n, k = 1, 5
-    runner = _runner(_fake_model(n, 4, 2), coalesce=k)
-    requests, batch = _requests(n), _sched_batch(n)
-    _run_steps(runner, requests, batch, steps=1)
+    runner = make_runner(fake_model(n, 4, 2), coalesce=k)
+    requests, batch = make_requests(n), sched_batch(n)
+    run_steps(runner, requests, batch, steps=1)
     runner.on_request_finished("r0", requests[0].data)
-    assert runner._outbox.sent[0].data.ndim == 1
+    assert runner.outbox.sent[0].data.ndim == 1
 
 
 def test_feedback_queue_fills_regardless_of_coalescing() -> None:
     n, k = 2, 4
-    runner = _runner(_fake_model(n, 4, 2), coalesce=k)
-    requests, batch = _requests(n), _sched_batch(n)
-    _run_steps(runner, requests, batch, steps=2)
+    runner = make_runner(fake_model(n, 4, 2), coalesce=k)
+    requests, batch = make_requests(n), sched_batch(n)
+    run_steps(runner, requests, batch, steps=2)
     assert all(len(r.data.pending_feedback_queue) == 2 for r in requests)
 
 
-def _make_scheduler(
+def make_scheduler(
     model: FakeCode2WavModel, *, enable_output_overlap: bool = True
 ) -> Code2WavScheduler:
     return Code2WavScheduler(
@@ -246,7 +244,7 @@ def _make_scheduler(
 
 def test_ingest_unbinds_coalesced_chunk_and_decodes() -> None:
     model = FakeCode2WavModel(total_upsample=2)
-    scheduler = _make_scheduler(model)
+    scheduler = make_scheduler(model)
     scheduler.stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
     scheduler.handle_stream_chunk(
         "req-1",
@@ -262,7 +260,7 @@ def test_ingest_unbinds_coalesced_chunk_and_decodes() -> None:
     assert all(chunk.ndim == 1 for chunk in state.chunks)
 
 
-class _SyncGuardTensor(torch.Tensor):
+class SyncGuardTensor(torch.Tensor):
     def item(self):
         raise AssertionError("D2H .item() on coalesced chunk")
 
@@ -271,10 +269,10 @@ class _SyncGuardTensor(torch.Tensor):
 
 
 def test_ingest_2d_chunk_does_not_sync() -> None:
-    scheduler = _make_scheduler(FakeCode2WavModel(total_upsample=2))
+    scheduler = make_scheduler(FakeCode2WavModel(total_upsample=2))
     state = scheduler.create_stream_state("req-1")
-    codes = torch.Tensor._make_subclass(
-        _SyncGuardTensor, torch.tensor([[1, 10], [2, 20]])
+    codes = torch.Tensor._make_subclass(  # noqa: leading-underscore  # upstream name
+        SyncGuardTensor, torch.tensor([[1, 10], [2, 20]])
     )
     scheduler.ingest("req-1", state, codes)
     assert len(state.chunks) == 2
@@ -282,19 +280,19 @@ def test_ingest_2d_chunk_does_not_sync() -> None:
 
 
 def test_ingest_1d_row_eager_path_drops_eos_immediately() -> None:
-    scheduler = _make_scheduler(
+    scheduler = make_scheduler(
         FakeCode2WavModel(total_upsample=2), enable_output_overlap=False
     )
     state = scheduler.create_stream_state("req-1")
-    scheduler.ingest("req-1", state, torch.tensor([scheduler._codec_eos_token_id, 0]))
+    scheduler.ingest("req-1", state, torch.tensor([scheduler.codec_eos_token_id, 0]))
     assert state.chunks == []
 
 
 def test_ingest_1d_row_lazy_path_drops_eos_at_final_scan() -> None:
     model = FakeCode2WavModel(total_upsample=2)
-    scheduler = _make_scheduler(model, enable_output_overlap=True)
+    scheduler = make_scheduler(model, enable_output_overlap=True)
     state = scheduler.create_stream_state("req-1")
-    scheduler.ingest("req-1", state, torch.tensor([scheduler._codec_eos_token_id, 0]))
+    scheduler.ingest("req-1", state, torch.tensor([scheduler.codec_eos_token_id, 0]))
 
     assert len(state.chunks) == 1
     assert state.checked == 0
@@ -306,13 +304,13 @@ def test_ingest_1d_row_lazy_path_drops_eos_at_final_scan() -> None:
 @pytest.mark.parametrize("finish_reason", [None, "stop", "length"])
 @pytest.mark.parametrize("steps", [1, 3, 4])
 def test_finish_sends_uncertain_last_row_separately(finish_reason, steps) -> None:
-    runner = _runner(_fake_model(1, 4, 2), coalesce=3)
-    requests, batch = _requests(1), _sched_batch(1)
-    seen = _run_steps(runner, requests, batch, steps=steps)
+    runner = make_runner(fake_model(1, 4, 2), coalesce=3)
+    requests, batch = make_requests(1), sched_batch(1)
+    seen = run_steps(runner, requests, batch, steps=steps)
     requests[0].data.finish_reason = finish_reason
     runner.on_request_finished("r0", requests[0].data)
 
-    messages = runner._outbox.sent
+    messages = runner.outbox.sent
     assert messages[-1].data.ndim == 1
     assert torch.equal(messages[-1].data, seen[-1])
     if steps > 1:
@@ -329,26 +327,28 @@ def test_finish_sends_uncertain_last_row_separately(finish_reason, steps) -> Non
 def test_finish_tail_is_filtered_by_vocoder(
     finish_reason, last_is_eos, enable_output_overlap, steps
 ) -> None:
-    runner = _runner(_fake_model(1, 4, 2), coalesce=3)
-    requests, batch = _requests(1), _sched_batch(1)
-    seen = _run_steps(runner, requests, batch, steps=steps)
-    scheduler = _make_scheduler(
+    runner = make_runner(fake_model(1, 4, 2), coalesce=3)
+    requests, batch = make_requests(1), sched_batch(1)
+    seen = run_steps(runner, requests, batch, steps=steps)
+    scheduler = make_scheduler(
         FakeCode2WavModel(total_upsample=2),
         enable_output_overlap=enable_output_overlap,
     )
     data = requests[0].data
     if last_is_eos:
-        data.pending_codec_rows[-1][0] = scheduler._codec_eos_token_id
+        data.pending_codec_rows[-1][0] = scheduler.codec_eos_token_id
     data.finish_reason = finish_reason
     # The sender must never inspect tensor values to decide whether this is EOS.
     data.pending_codec_rows[:] = [
-        torch.Tensor._make_subclass(_SyncGuardTensor, row)
+        torch.Tensor._make_subclass(
+            SyncGuardTensor, row
+        )  # noqa: leading-underscore  # upstream name
         for row in data.pending_codec_rows
     ]
     runner.on_request_finished("r0", data)
 
     state = scheduler.create_stream_state("r0")
-    for message in runner._outbox.sent:
+    for message in runner.outbox.sent:
         scheduler.ingest("r0", state, message.data.as_subclass(torch.Tensor))
     scheduler.decode_delta("r0", state, is_final=True)
     expected = seen[:-1] if last_is_eos else seen
@@ -360,42 +360,42 @@ def test_finish_tail_is_filtered_by_vocoder(
 
 def test_first_flush_uses_smaller_threshold_then_steady_state() -> None:
     n, k, first = 2, 5, 2
-    runner = _runner(_fake_model(n, 4, 2), coalesce=k, first_frames=first)
-    requests, batch = _requests(n), _sched_batch(n)
+    runner = make_runner(fake_model(n, 4, 2), coalesce=k, first_frames=first)
+    requests, batch = make_requests(n), sched_batch(n)
 
-    _run_steps(runner, requests, batch, steps=first + 1)
-    assert len(runner._outbox.sent) == n
-    assert all(m.data.shape[0] == first for m in runner._outbox.sent)
+    run_steps(runner, requests, batch, steps=first + 1)
+    assert len(runner.outbox.sent) == n
+    assert all(m.data.shape[0] == first for m in runner.outbox.sent)
     assert all(r.data.codec_first_flush_done for r in requests)
 
-    _run_steps(runner, requests, batch, steps=k - 1)
-    assert len(runner._outbox.sent) == n
+    run_steps(runner, requests, batch, steps=k - 1)
+    assert len(runner.outbox.sent) == n
 
-    _run_steps(runner, requests, batch, steps=1)
-    assert len(runner._outbox.sent) == 2 * n
-    assert all(m.data.shape[0] == k for m in runner._outbox.sent[n:])
+    run_steps(runner, requests, batch, steps=1)
+    assert len(runner.outbox.sent) == 2 * n
+    assert all(m.data.shape[0] == k for m in runner.outbox.sent[n:])
 
 
 def test_first_frames_of_one_emits_legacy_row_then_stacked() -> None:
     n, k = 1, 3
-    runner = _runner(_fake_model(n, 4, 2), coalesce=k, first_frames=1)
-    requests, batch = _requests(n), _sched_batch(n)
+    runner = make_runner(fake_model(n, 4, 2), coalesce=k, first_frames=1)
+    requests, batch = make_requests(n), sched_batch(n)
 
-    _run_steps(runner, requests, batch, steps=2)
-    assert len(runner._outbox.sent) == 1
-    assert runner._outbox.sent[0].data.ndim == 1
+    run_steps(runner, requests, batch, steps=2)
+    assert len(runner.outbox.sent) == 1
+    assert runner.outbox.sent[0].data.ndim == 1
 
-    _run_steps(runner, requests, batch, steps=k)
-    assert len(runner._outbox.sent) == 2
-    assert runner._outbox.sent[1].data.shape[0] == k
+    run_steps(runner, requests, batch, steps=k)
+    assert len(runner.outbox.sent) == 2
+    assert runner.outbox.sent[1].data.shape[0] == k
 
 
 def test_first_frames_zero_keeps_uniform_threshold() -> None:
     n, k = 1, 3
-    runner = _runner(_fake_model(n, 4, 2), coalesce=k, first_frames=0)
-    requests, batch = _requests(n), _sched_batch(n)
-    _run_steps(runner, requests, batch, steps=k)
-    assert runner._outbox.sent == []
-    _run_steps(runner, requests, batch, steps=1)
-    assert len(runner._outbox.sent) == 1
-    assert runner._outbox.sent[0].data.shape[0] == k
+    runner = make_runner(fake_model(n, 4, 2), coalesce=k, first_frames=0)
+    requests, batch = make_requests(n), sched_batch(n)
+    run_steps(runner, requests, batch, steps=k)
+    assert runner.outbox.sent == []
+    run_steps(runner, requests, batch, steps=1)
+    assert len(runner.outbox.sent) == 1
+    assert runner.outbox.sent[0].data.shape[0] == k

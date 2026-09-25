@@ -334,8 +334,8 @@ def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
         encoding="utf-8"
     )
 
-    assert "audio_feats = audio_feats.to(device=self._device)" in source
-    assert "audio_feats_lengths = audio_feats_lengths.to(device=self._device)" in source
+    assert "audio_feats = audio_feats.to(device=self.device)" in source
+    assert "audio_feats_lengths = audio_feats_lengths.to(device=self.device)" in source
 
 
 def test_ming_preprocessor_computes_mel_feature_tuple(monkeypatch) -> None:
@@ -907,8 +907,8 @@ def test_ming_preprocessor_uses_dedicated_video_processor_contract() -> None:
             }
 
     preprocessor = MingPreprocessor.__new__(MingPreprocessor)
-    preprocessor._video_processor = FakeVideoProcessor()
-    preprocessor._vision_config = SimpleNamespace(spatial_merge_size=2)
+    preprocessor.video_processor = FakeVideoProcessor()
+    preprocessor.vision_config = SimpleNamespace(spatial_merge_size=2)
 
     frames = torch.zeros((4, 3, 8, 8), dtype=torch.float32)
     pixel_values, grid, token_counts = preprocessor.process_videos([frames])
@@ -916,7 +916,7 @@ def test_ming_preprocessor_uses_dedicated_video_processor_contract() -> None:
     assert tuple(pixel_values.shape) == (8, 16)
     assert grid.tolist() == [[2, 4, 4]]
     assert token_counts == [8]
-    videos, return_tensors = preprocessor._video_processor.calls[0]
+    videos, return_tensors = preprocessor.video_processor.calls[0]
     assert return_tensors == "pt"
     assert len(videos) == 1
     assert videos[0].shape == (4, 8, 8, 3)
@@ -1092,7 +1092,7 @@ def test_compute_video_cache_key_changes_with_decode_params() -> None:
     assert compute_video_cache_key([], fps=8.0) is None
 
 
-def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
+def make_fake_ming_image_encoder(spatial_merge_size: int = 2):
     """Build a MingImageEncoder shell whose ``_encode`` returns synthetic
     tensors with the real shape contract (embeds rows == sum(token_counts)).
 
@@ -1106,7 +1106,7 @@ def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
     enc = object.__new__(MingImageEncoder)
-    enc.__dict__["_spatial_merge_size"] = spatial_merge_size
+    enc.__dict__["spatial_merge_size"] = spatial_merge_size
     enc.__dict__["visual"] = types.SimpleNamespace(device=torch.device("cpu"))
 
     def fake_encode(pixel_values, grid_thw):
@@ -1132,7 +1132,7 @@ def test_ming_image_encoder_forward_video_embeds_match_token_counts() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
     # Two videos: (t=2, h=4, w=4) and (t=1, h=6, w=6).
     # With merge_sq=4: tokens = 8 and 9, total = 17.
     video_grid_thw = torch.tensor([[2, 4, 4], [1, 6, 6]], dtype=torch.long)
@@ -1158,7 +1158,7 @@ def test_ming_image_encoder_forward_handles_image_and_video_together() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
     out = MingImageEncoder.forward(
         enc,
         pixel_values=torch.zeros(50, 16),
@@ -1195,7 +1195,7 @@ def test_ming_image_encoder_forward_skips_video_when_grid_thw_missing() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
 
     # pixel_values_videos without video_grid_thw -> skipped.
     out = MingImageEncoder.forward(

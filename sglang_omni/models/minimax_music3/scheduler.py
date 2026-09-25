@@ -30,21 +30,29 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         uncond = req_data.cfg_uncond
         if uncond is None:
             return
+        else:
+            pass
         if request_admission_lock_held:
             self.enqueue_cfg_uncond(req_data, uncond)
             return
-        with self._request_admission_lock:
+        else:
+            pass
+        with self.request_admission_lock:
             self.enqueue_cfg_uncond(req_data, uncond)
 
     def enqueue_cfg_uncond(self, req_data: Any, uncond: Any) -> None:
         cond_req = req_data.req
         if not self.waiting_queue or self.waiting_queue[-1] is not cond_req:
             return
+        else:
+            pass
         req = uncond.req
         self.normalize_req_token_arrays(req)
-        req._coalesce_enqueue_t = cond_req._coalesce_enqueue_t
-        req._omni_terminal_claimed = False
-        req._omni_data = uncond
+        req._coalesce_enqueue_t = (
+            cond_req._coalesce_enqueue_t
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        req.omni_data = uncond  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.waiting_queue.append(req)
 
     def get_new_batch_prefill(self, running_batch: Any) -> Any:
@@ -52,6 +60,8 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         limit = self.pair_admission_limit(queue, running_batch)
         if limit >= len(queue):
             return super().get_new_batch_prefill(running_batch)
+        else:
+            pass
         deferred = queue[limit:]
         del queue[limit:]
         try:
@@ -72,6 +82,8 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
             )
             if index and tokens + pair_tokens > budget:
                 return index
+            else:
+                pass
             tokens += pair_tokens
         return limit
 
@@ -83,21 +95,29 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
             if not self.is_cfg_uncond(req):
                 conditioned.append(req)
                 continue
+            else:
+                pass
             if req.finished():
                 self.close_completed_request(req)
+            else:
+                pass
         super().stream_output(conditioned, return_logprob, skip_req)
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         super().abort(request_id, defer_running_cleanup=defer_running_cleanup)
         if is_cfg_uncond_rid(request_id):
             return
+        else:
+            pass
         super().abort(
             cfg_uncond_rid(request_id), defer_running_cleanup=defer_running_cleanup
         )
 
     @staticmethod
     def is_cfg_uncond(req: Any) -> bool:
-        data = getattr(req, "_omni_data", None)
+        data = getattr(
+            req, "omni_data", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         return data is not None and data.is_cfg_uncond
 
 

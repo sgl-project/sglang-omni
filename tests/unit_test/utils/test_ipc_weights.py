@@ -38,19 +38,19 @@ class IdentitySerializer:
     tensor objects the exporter passed in, mimicking zero-copy handle opening
     inside a single test process."""
 
-    _store: dict[bytes, dict] = {}
-    _next = 0
+    store: dict[bytes, dict] = {}
+    next_id = 0
 
     @classmethod
     def serialize(cls, obj) -> bytes:
-        key = f"identity-{cls._next}".encode()
-        cls._next += 1
-        cls._store[key] = obj
+        key = f"identity-{cls.next_id}".encode()
+        cls.next_id += 1
+        cls.store[key] = obj
         return key
 
     @classmethod
     def deserialize(cls, data: bytes):
-        return cls._store[data]
+        return cls.store[data]
 
 
 class TinyModel(nn.Module):
@@ -71,7 +71,7 @@ class TinyModel(nn.Module):
         )
 
 
-def _export(model, path, **kw):
+def export(model, path, **kw):
     kw.setdefault("serializer", IdentitySerializer)
     kw.setdefault("alias_predicate", lambda t: True)
     # Note (Jiaxin Deng): protocol tests use a mock serializer in pytest's tmp
@@ -80,7 +80,7 @@ def _export(model, path, **kw):
     return export_weights(model, path, **kw)
 
 
-def _attach(model, path, **kw):
+def attach(model, path, **kw):
     kw.setdefault("serializer", IdentitySerializer)
     kw.setdefault("timeout_s", 5.0)
     kw.setdefault("validate_secure", False)
@@ -95,8 +95,8 @@ def handle_path(tmp_path):
 def test_roundtrip_aliases_all_params_and_buffers(handle_path):
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)  # dummy-weight stand-in: different values
-    _export(leader, handle_path)
-    record = _attach(follower, handle_path)
+    export(leader, handle_path)
+    record = attach(follower, handle_path)
 
     assert follower.linear.weight.data_ptr() == leader.linear.weight.data_ptr()
     assert follower.linear.bias.data_ptr() == leader.linear.bias.data_ptr()
@@ -116,8 +116,8 @@ def test_roundtrip_aliases_all_params_and_buffers(handle_path):
 def test_tied_parameter_stays_tied_and_shared(handle_path):
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)
-    _export(leader, handle_path)
-    _attach(follower, handle_path)
+    export(leader, handle_path)
+    attach(follower, handle_path)
     assert follower.head.weight is follower.linear.weight
     assert follower.head.weight.data_ptr() == leader.linear.weight.data_ptr()
 
@@ -126,8 +126,8 @@ def test_attach_is_assignment_not_inplace_copy(handle_path):
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)
     before_ptr = follower.linear.weight.data_ptr()
-    _export(leader, handle_path)
-    _attach(follower, handle_path)
+    export(leader, handle_path)
+    attach(follower, handle_path)
     assert follower.linear.weight.data_ptr() != before_ptr
 
 
@@ -137,8 +137,8 @@ def test_value_path_copies_without_aliasing(handle_path):
     # Note (Jiaxin Deng): aliasing only the parameters drives buffers through
     # the by-value path, as CPU-resident tensors do in production.
     param_ids = {id(p) for p in leader.parameters()}
-    _export(leader, handle_path, alias_predicate=lambda t: id(t) in param_ids)
-    _attach(follower, handle_path)
+    export(leader, handle_path, alias_predicate=lambda t: id(t) in param_ids)
+    attach(follower, handle_path)
     assert torch.equal(follower.persistent_buf, leader.persistent_buf)
     assert follower.persistent_buf.data_ptr() != leader.persistent_buf.data_ptr()
     assert follower.linear.weight.data_ptr() == leader.linear.weight.data_ptr()
@@ -162,14 +162,14 @@ def test_manifest_mismatch_extra_and_missing_names(tmp_path):
     OtherShape.__name__ = "TinyModel"
 
     path = str(tmp_path / "TinyModel.weights-ipc")
-    _export(TinyModel(seed=1), path)
+    export(TinyModel(seed=1), path)
     with pytest.raises(WeightShareError, match="manifest mismatch"):
-        _attach(OtherShape(), path)
+        attach(OtherShape(), path)
 
 
 def test_model_class_mismatch_rejected(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
-    _export(TinyModel(seed=1), path)
+    export(TinyModel(seed=1), path)
 
     class Different(nn.Module):
         def __init__(self):
@@ -177,14 +177,14 @@ def test_model_class_mismatch_rejected(tmp_path):
             self.linear = nn.Linear(4, 3)
 
     with pytest.raises(WeightShareError, match="model class"):
-        _attach(Different(), path)
+        attach(Different(), path)
 
 
 def test_attach_timeout_on_missing_file(tmp_path):
     follower = TinyModel()
     t0 = time.monotonic()
     with pytest.raises(TimeoutError, match="timed out"):
-        _attach(
+        attach(
             follower,
             str(tmp_path / "never-appears.weights-ipc"),
             timeout_s=0.3,
@@ -199,24 +199,26 @@ def test_attach_waits_for_late_export(handle_path):
 
     def late_export():
         time.sleep(0.4)
-        _export(leader, handle_path)
+        export(leader, handle_path)
 
     thread = threading.Thread(target=late_export)
     thread.start()
     try:
-        _attach(follower, handle_path, timeout_s=5.0, poll_interval_s=0.05)
+        attach(follower, handle_path, timeout_s=5.0, poll_interval_s=0.05)
     finally:
         thread.join()
     assert follower.linear.weight.data_ptr() == leader.linear.weight.data_ptr()
 
 
 def test_export_is_atomic_no_tmp_left_and_readable(handle_path, tmp_path):
-    _export(TinyModel(seed=1), handle_path)
+    export(TinyModel(seed=1), handle_path)
     leftovers = [f for f in os.listdir(tmp_path) if ".tmp." in f]
     assert leftovers == []
     with open(handle_path, "rb") as fh:
         payload = pickle.load(fh)
-    assert payload["format_version"] == ipc_weights._FORMAT_VERSION
+    assert (
+        payload["format_version"] == ipc_weights._FORMAT_VERSION
+    )  # noqa: leading-underscore  # production name
     assert payload["model_class"] == "TinyModel"
     assert isinstance(payload["manifest_hash"], str)
     assert payload["private_names"] == []
@@ -224,23 +226,23 @@ def test_export_is_atomic_no_tmp_left_and_readable(handle_path, tmp_path):
 
 def test_double_export_same_file_rejected(handle_path):
     leader = TinyModel(seed=1)
-    _export(leader, handle_path)
+    export(leader, handle_path)
     with pytest.raises(WeightShareError, match="already exported"):
-        _export(leader, handle_path)
+        export(leader, handle_path)
 
 
 def test_corrupt_handle_file_rejected(handle_path):
     with open(handle_path, "wb") as fh:
         fh.write(pickle.dumps({"format_version": 999}))
     with pytest.raises(WeightShareError, match="format"):
-        _attach(TinyModel(), handle_path)
+        attach(TinyModel(), handle_path)
 
 
 def test_verify_attachment_detects_rebound_storage(handle_path):
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)
-    _export(leader, handle_path)
-    record = _attach(follower, handle_path)
+    export(leader, handle_path)
+    record = attach(follower, handle_path)
     verify_attachment(follower, record)  # freshly attached: passes
 
     # Note (Jiaxin Deng): a post-attach re-init (a stray loader step) rebinds
@@ -255,8 +257,8 @@ def test_in_place_mutation_keeps_attachment_valid(handle_path):
     # pattern) keeps storage identity, so it must not trip the guard.
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)
-    _export(leader, handle_path)
-    record = _attach(follower, handle_path)
+    export(leader, handle_path)
+    record = attach(follower, handle_path)
     with torch.no_grad():
         leader.cache_buf.copy_(leader.cache_buf.to(torch.bfloat16).float())
     verify_attachment(follower, record)
@@ -322,19 +324,19 @@ def test_validate_weight_share_architecture_allows_and_rejects():
     # still rejected by the gate.
     expected_supported = {
         "HiggsMultimodalQwen3ForConditionalGeneration": frozenset(),
-        "MossTTSLocalSGLangModel": frozenset({"_decode_input_embedding.weight"}),
-        "MossTTSDelaySGLangModel": frozenset({"_decode_input_embedding.weight"}),
+        "MossTTSLocalSGLangModel": frozenset({"decode_input_embedding.weight"}),
+        "MossTTSDelaySGLangModel": frozenset({"decode_input_embedding.weight"}),
         "MossTranscribeDiarizeForConditionalGeneration": frozenset(),
         "Qwen3ASRForConditionalGeneration": frozenset(),
         "WhisperForConditionalGeneration": frozenset(),
         "FunAsrNanoForConditionalGeneration": frozenset(),
     }
     expected_audit_only = {
-        "MingTTSSGLangModel": frozenset({"_decode_input_embedding.weight"}),
+        "MingTTSSGLangModel": frozenset({"decode_input_embedding.weight"}),
         "VoxtralSGLangTTSModel": frozenset(),
         "S2ProSGLangTextModel": frozenset(),
         "LLaDA2MoeModelLM": frozenset(),
-        "Qwen3TTSTalker": frozenset({"model._decode_feedback_embedding.weight"}),
+        "Qwen3TTSTalker": frozenset({"model.decode_feedback_embedding.weight"}),
         "Qwen3OmniThinkerForCausalLM": frozenset(),
         "Qwen3OmniTalker": frozenset(),
     }
@@ -386,24 +388,24 @@ def test_is_zombie_parses_state_after_comm(monkeypatch):
 
 
 def test_is_zombie_false_when_stat_unreadable(monkeypatch):
-    def _raise(_self, encoding=None):
+    def raise_error(_self, encoding=None):
         raise OSError
 
-    monkeypatch.setattr(ipc_weights.Path, "read_text", _raise)
+    monkeypatch.setattr(ipc_weights.Path, "read_text", raise_error)
     assert not ipc_weights.is_zombie(42)
 
 
-_POSIX_ONLY = pytest.mark.skipif(os.name != "posix", reason="POSIX fs-trust checks")
+POSIX_ONLY = pytest.mark.skipif(os.name != "posix", reason="POSIX fs-trust checks")
 
 
-@_POSIX_ONLY
+@POSIX_ONLY
 def test_validate_secure_dir_rejects_group_world(tmp_path):
     os.chmod(tmp_path, 0o777)
     with pytest.raises(WeightShareError, match="group/world"):
         ipc_weights.validate_secure_dir(str(tmp_path))
 
 
-@_POSIX_ONLY
+@POSIX_ONLY
 def test_validate_secure_dir_rejects_foreign_owner(tmp_path, monkeypatch):
     os.chmod(tmp_path, 0o700)
     monkeypatch.setattr(ipc_weights.os, "geteuid", lambda: os.stat(tmp_path).st_uid + 1)
@@ -411,21 +413,21 @@ def test_validate_secure_dir_rejects_foreign_owner(tmp_path, monkeypatch):
         ipc_weights.validate_secure_dir(str(tmp_path))
 
 
-@_POSIX_ONLY
+@POSIX_ONLY
 def test_load_payload_rejects_symlinked_handle(tmp_path):
     # Note (Jiaxin Deng): the secure read path opens O_NOFOLLOW, so a symlinked
     # handle is refused.
     real_dir = tmp_path / "real"
     real_dir.mkdir(mode=0o700)
     real_path = str(real_dir / "TinyModel.weights-ipc")
-    _export(TinyModel(seed=1), real_path, validate_secure=True)
+    export(TinyModel(seed=1), real_path, validate_secure=True)
 
     link_dir = tmp_path / "link"
     link_dir.mkdir(mode=0o700)
     link_path = link_dir / "TinyModel.weights-ipc"
     os.symlink(real_path, link_path)
     with pytest.raises(WeightShareError):
-        _attach(TinyModel(seed=2), str(link_path), validate_secure=True)
+        attach(TinyModel(seed=2), str(link_path), validate_secure=True)
 
 
 def test_check_leader_alive_rejects_dead_pid(monkeypatch):
@@ -441,7 +443,7 @@ def test_check_leader_alive_rejects_dead_pid(monkeypatch):
     )  # alive + matching start time: no raise
 
 
-@_POSIX_ONLY
+@POSIX_ONLY
 def test_check_leader_alive_rejects_recycled_pid():
     # Note (Jiaxin Deng): same live pid but a different recorded start time
     # means the pid was reused.
@@ -456,9 +458,9 @@ def test_check_leader_alive_rejects_recycled_pid():
     ipc_weights.check_leader_alive(ok, "before attach")  # matching start: no raise
 
 
-def _min_payload(**overrides):
+def min_payload(**overrides):
     payload = {
-        "format_version": ipc_weights._FORMAT_VERSION,
+        "format_version": ipc_weights._FORMAT_VERSION,  # noqa: leading-underscore  # production name
         "model_class": "TinyModel",
         "manifest_hash": "x",
         "private_names": [],
@@ -476,9 +478,9 @@ def _min_payload(**overrides):
 def test_load_payload_requires_positive_pid(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
     with open(path, "wb") as fh:
-        pickle.dump(_min_payload(pid=0), fh)
+        pickle.dump(min_payload(pid=0), fh)
     with pytest.raises(WeightShareError, match="invalid leader pid"):
-        _attach(TinyModel(), path)
+        attach(TinyModel(), path)
 
 
 def test_load_payload_rejects_missing_required_field(tmp_path):
@@ -490,21 +492,21 @@ def test_load_payload_rejects_missing_required_field(tmp_path):
         "ipc_names",
         "value_blobs",
     ):
-        payload = _min_payload()
+        payload = min_payload()
         del payload[missing]
         path = str(tmp_path / "TinyModel.weights-ipc")
         with open(path, "wb") as fh:
             pickle.dump(payload, fh)
         with pytest.raises(WeightShareError, match="missing required field"):
-            _attach(TinyModel(), path)
+            attach(TinyModel(), path)
 
 
 def test_load_payload_rejects_wrong_field_type(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
     with open(path, "wb") as fh:
-        pickle.dump(_min_payload(ipc_names="not-a-list"), fh)
+        pickle.dump(min_payload(ipc_names="not-a-list"), fh)
     with pytest.raises(WeightShareError, match="wrong type"):
-        _attach(TinyModel(), path)
+        attach(TinyModel(), path)
 
 
 def test_load_payload_rejects_unreadable_bytes(tmp_path):
@@ -512,7 +514,7 @@ def test_load_payload_rejects_unreadable_bytes(tmp_path):
     with open(path, "wb") as fh:
         fh.write(b"\x80\x04 truncated not a valid pickle")
     with pytest.raises(WeightShareError, match="not a readable payload"):
-        _attach(TinyModel(), path)
+        attach(TinyModel(), path)
 
 
 def test_alias_rejects_non_tensor_blob(handle_path):
@@ -525,21 +527,21 @@ def test_alias_rejects_non_tensor_blob(handle_path):
         def deserialize(data):
             return {"linear.weight": "not-a-tensor"}
 
-    _export(TinyModel(seed=1), handle_path)
+    export(TinyModel(seed=1), handle_path)
     with pytest.raises(WeightShareError, match="tensor mapping"):
-        _attach(TinyModel(seed=2), handle_path, serializer=BadSerializer)
+        attach(TinyModel(seed=2), handle_path, serializer=BadSerializer)
 
 
 def test_model_path_mismatch_rejected(handle_path):
-    _export(TinyModel(seed=1), handle_path, model_path="checkpoint-A")
+    export(TinyModel(seed=1), handle_path, model_path="checkpoint-A")
     with pytest.raises(WeightShareError, match="model_path"):
-        _attach(TinyModel(seed=2), handle_path, model_path="checkpoint-B")
+        attach(TinyModel(seed=2), handle_path, model_path="checkpoint-B")
 
 
 def test_run_id_mismatch_rejected(handle_path):
-    _export(TinyModel(seed=1), handle_path, run_id="run-A")
+    export(TinyModel(seed=1), handle_path, run_id="run-A")
     with pytest.raises(WeightShareError, match="run"):
-        _attach(TinyModel(seed=2), handle_path, run_id="run-B")
+        attach(TinyModel(seed=2), handle_path, run_id="run-B")
 
 
 def test_check_model_identity_rejects_wrong_gpu(monkeypatch):
@@ -550,7 +552,7 @@ def test_check_model_identity_rejects_wrong_gpu(monkeypatch):
         )
 
 
-@_POSIX_ONLY
+@POSIX_ONLY
 def test_claim_namespace_refuses_second_leader(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
     ipc_weights.claim_namespace(path, "run-A")  # first leader holds the flock
@@ -573,7 +575,7 @@ class ScratchModel(nn.Module):
             self.scratch.weight.copy_(torch.randn(4, 3, generator=gen))
 
 
-_SCRATCH_PRIVATE = frozenset({"scratch.weight"})
+SCRATCH_PRIVATE = frozenset({"scratch.weight"})
 
 
 def test_private_tensor_keeps_own_storage_and_copies_values(tmp_path):
@@ -581,8 +583,8 @@ def test_private_tensor_keeps_own_storage_and_copies_values(tmp_path):
     leader = ScratchModel(seed=1)
     follower = ScratchModel(seed=2)
     scratch_ptr = follower.scratch.weight.data_ptr()
-    _export(leader, path, private_names=_SCRATCH_PRIVATE)
-    record = _attach(follower, path, private_names=_SCRATCH_PRIVATE)
+    export(leader, path, private_names=SCRATCH_PRIVATE)
+    record = attach(follower, path, private_names=SCRATCH_PRIVATE)
 
     assert follower.linear.weight.data_ptr() == leader.linear.weight.data_ptr()
     assert follower.scratch.weight.data_ptr() == scratch_ptr
@@ -601,25 +603,25 @@ def test_private_tensor_keeps_own_storage_and_copies_values(tmp_path):
 
 def test_private_classification_mismatch_rejected(tmp_path):
     path = str(tmp_path / "ScratchModel.weights-ipc")
-    _export(ScratchModel(seed=1), path, private_names=_SCRATCH_PRIVATE)
+    export(ScratchModel(seed=1), path, private_names=SCRATCH_PRIVATE)
     with pytest.raises(WeightShareError, match="classification"):
-        _attach(ScratchModel(seed=2), path)
+        attach(ScratchModel(seed=2), path)
 
 
 def test_private_classification_mismatch_other_direction(tmp_path):
     path = str(tmp_path / "ScratchModel.weights-ipc")
-    _export(ScratchModel(seed=1), path)
+    export(ScratchModel(seed=1), path)
     with pytest.raises(WeightShareError, match="classification"):
-        _attach(ScratchModel(seed=2), path, private_names=_SCRATCH_PRIVATE)
+        attach(ScratchModel(seed=2), path, private_names=SCRATCH_PRIVATE)
 
 
 def test_unknown_private_name_fails_closed(tmp_path):
     path = str(tmp_path / "ScratchModel.weights-ipc")
     with pytest.raises(WeightShareError, match="diverged"):
-        _export(ScratchModel(seed=1), path, private_names=frozenset({"gone.weight"}))
-    _export(ScratchModel(seed=1), path, private_names=_SCRATCH_PRIVATE)
+        export(ScratchModel(seed=1), path, private_names=frozenset({"gone.weight"}))
+    export(ScratchModel(seed=1), path, private_names=SCRATCH_PRIVATE)
     with pytest.raises(WeightShareError, match="diverged"):
-        _attach(ScratchModel(seed=2), path, private_names=frozenset({"gone.weight"}))
+        attach(ScratchModel(seed=2), path, private_names=frozenset({"gone.weight"}))
 
 
 def test_ipc_blob_sharing_private_tensor_rejected(tmp_path):
@@ -627,31 +629,31 @@ def test_ipc_blob_sharing_private_tensor_rejected(tmp_path):
     # the corruption vector itself, so the follower must refuse the whole blob.
     path = str(tmp_path / "ScratchModel.weights-ipc")
     tensors = ipc_weights.named_shared_tensors(ScratchModel(seed=1))
-    payload = _min_payload(
+    payload = min_payload(
         model_class="ScratchModel",
-        manifest_hash=ipc_weights.manifest_hash(tensors, _SCRATCH_PRIVATE),
-        private_names=sorted(_SCRATCH_PRIVATE),
+        manifest_hash=ipc_weights.manifest_hash(tensors, SCRATCH_PRIVATE),
+        private_names=sorted(SCRATCH_PRIVATE),
         ipc_blob=IdentitySerializer.serialize(dict(tensors)),
         ipc_names=sorted(tensors),
     )
     with open(path, "wb") as fh:
         pickle.dump(payload, fh)
     with pytest.raises(WeightShareError, match="replica-private"):
-        _attach(ScratchModel(seed=2), path, private_names=_SCRATCH_PRIVATE)
+        attach(ScratchModel(seed=2), path, private_names=SCRATCH_PRIVATE)
 
 
 def test_manifest_hash_includes_classification():
     tensors = ipc_weights.named_shared_tensors(ScratchModel(seed=1))
     assert ipc_weights.manifest_hash(tensors, frozenset()) != ipc_weights.manifest_hash(
-        tensors, _SCRATCH_PRIVATE
+        tensors, SCRATCH_PRIVATE
     )
 
 
 def test_verify_attachment_detects_private_rebound(tmp_path):
     path = str(tmp_path / "ScratchModel.weights-ipc")
-    _export(ScratchModel(seed=1), path, private_names=_SCRATCH_PRIVATE)
+    export(ScratchModel(seed=1), path, private_names=SCRATCH_PRIVATE)
     follower = ScratchModel(seed=2)
-    record = _attach(follower, path, private_names=_SCRATCH_PRIVATE)
+    record = attach(follower, path, private_names=SCRATCH_PRIVATE)
     follower.scratch.weight.data = torch.zeros_like(follower.scratch.weight)
     with pytest.raises(WeightShareError, match="rebound"):
         verify_attachment(follower, record)
@@ -660,9 +662,9 @@ def test_verify_attachment_detects_private_rebound(tmp_path):
 def test_format_version_1_payload_rejected(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
     with open(path, "wb") as fh:
-        pickle.dump(_min_payload(format_version=1), fh)
+        pickle.dump(min_payload(format_version=1), fh)
     with pytest.raises(WeightShareError, match="format"):
-        _attach(TinyModel(), path)
+        attach(TinyModel(), path)
 
 
 def test_cross_registered_private_tensor_rejected(tmp_path):
@@ -675,14 +677,16 @@ def test_cross_registered_private_tensor_rejected(tmp_path):
             gen = torch.Generator().manual_seed(seed)
             self.linear = nn.Linear(4, 3)
             self.scratch = nn.Parameter(torch.randn(4, 3, generator=gen))
-            self._buffers["scratch_alias"] = self.scratch
+            self._buffers["scratch_alias"] = (
+                self.scratch
+            )  # noqa: leading-underscore  # production name
 
     path = str(tmp_path / "MixedDup.weights-ipc")
     leader = MixedDup(seed=1)
     original = leader.scratch.detach().clone()
-    _export(leader, path, private_names=frozenset({"scratch_alias"}))
+    export(leader, path, private_names=frozenset({"scratch_alias"}))
     with pytest.raises(WeightShareError, match="cross-registered"):
-        _attach(MixedDup(seed=2), path, private_names=frozenset({"scratch_alias"}))
+        attach(MixedDup(seed=2), path, private_names=frozenset({"scratch_alias"}))
     # The refusal must land before any private copy writes into the leader.
     assert torch.equal(leader.scratch.detach(), original)
 
@@ -692,7 +696,7 @@ def test_payload_with_unregistered_tensor_rejected(tmp_path):
     tensors = ipc_weights.named_shared_tensors(TinyModel(seed=1))
     blob = dict(tensors)
     blob["ghost.weight"] = torch.randn(2)
-    payload = _min_payload(
+    payload = min_payload(
         manifest_hash=ipc_weights.manifest_hash(tensors, frozenset()),
         ipc_blob=IdentitySerializer.serialize(blob),
         ipc_names=sorted(blob),
@@ -700,13 +704,13 @@ def test_payload_with_unregistered_tensor_rejected(tmp_path):
     with open(path, "wb") as fh:
         pickle.dump(payload, fh)
     with pytest.raises(WeightShareError, match="does not register"):
-        _attach(TinyModel(seed=2), path)
+        attach(TinyModel(seed=2), path)
 
 
 def test_name_in_both_ipc_and_value_rejected(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
     tensors = ipc_weights.named_shared_tensors(TinyModel(seed=1))
-    payload = _min_payload(
+    payload = min_payload(
         manifest_hash=ipc_weights.manifest_hash(tensors, frozenset()),
         ipc_blob=IdentitySerializer.serialize(dict(tensors)),
         ipc_names=sorted(tensors),
@@ -717,15 +721,15 @@ def test_name_in_both_ipc_and_value_rejected(tmp_path):
     with open(path, "wb") as fh:
         pickle.dump(payload, fh)
     with pytest.raises(WeightShareError, match="both as IPC and"):
-        _attach(TinyModel(seed=2), path)
+        attach(TinyModel(seed=2), path)
 
 
 def test_schema_rejects_non_string_names(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
     with open(path, "wb") as fh:
-        pickle.dump(_min_payload(ipc_names=[[]]), fh)
+        pickle.dump(min_payload(ipc_names=[[]]), fh)
     with pytest.raises(WeightShareError, match="unique tensor names"):
-        _attach(TinyModel(), path)
+        attach(TinyModel(), path)
 
 
 def test_shared_scratch_interleaving_corrupts_and_private_isolates(tmp_path):
@@ -735,8 +739,8 @@ def test_shared_scratch_interleaving_corrupts_and_private_isolates(tmp_path):
     shared_path = str(tmp_path / "shared" / "ScratchModel.weights-ipc")
     leader = ScratchModel(seed=1)
     follower = ScratchModel(seed=2)
-    _export(leader, shared_path)
-    _attach(follower, shared_path)
+    export(leader, shared_path)
+    attach(follower, shared_path)
     with torch.no_grad():
         leader.scratch.weight[:2].fill_(1.0)
         follower.scratch.weight[:2].fill_(2.0)
@@ -745,8 +749,8 @@ def test_shared_scratch_interleaving_corrupts_and_private_isolates(tmp_path):
     private_path = str(tmp_path / "private" / "ScratchModel.weights-ipc")
     leader2 = ScratchModel(seed=1)
     follower2 = ScratchModel(seed=2)
-    _export(leader2, private_path, private_names=_SCRATCH_PRIVATE)
-    _attach(follower2, private_path, private_names=_SCRATCH_PRIVATE)
+    export(leader2, private_path, private_names=SCRATCH_PRIVATE)
+    attach(follower2, private_path, private_names=SCRATCH_PRIVATE)
     with torch.no_grad():
         leader2.scratch.weight[:2].fill_(1.0)
         follower2.scratch.weight[:2].fill_(2.0)

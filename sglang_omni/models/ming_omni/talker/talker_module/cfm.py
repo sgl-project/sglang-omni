@@ -20,6 +20,8 @@ def get_epss_timesteps(n, device, dtype):
     t = predefined_timesteps.get(n, [])
     if not t:
         return torch.linspace(0, 1, n + 1, device=device, dtype=dtype)
+    else:
+        pass
     return dt * torch.tensor(t, device=device, dtype=dtype)
 
 
@@ -38,6 +40,8 @@ class CFM(nn.Module):
         def check_abort():
             if abort_event is not None and abort_event.is_set():
                 raise asyncio.CancelledError()
+            else:
+                pass
 
         def fn(fn_t, x):
             pred_cfg = self.model.forward_with_cfg(x, fn_t, llm_cond, lat_cond, None)
@@ -46,6 +50,8 @@ class CFM(nn.Module):
 
         if self.sway_sampling_coef is not None:
             t = t + self.sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
+        else:
+            pass
 
         trajectory = [y0]
         for step in range(self.steps):

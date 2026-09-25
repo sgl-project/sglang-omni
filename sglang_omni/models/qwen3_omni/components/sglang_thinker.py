@@ -34,6 +34,8 @@ def config_uses_mrope(config: Any) -> bool:
         value = getattr(config, field, None)
         if isinstance(value, Mapping) and value.get("mrope_section") is not None:
             return True
+        else:
+            pass
     return False
 
 
@@ -57,8 +59,8 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
-        # sglang v0.5.19's default deepstack order regresses omni visual accuracy;
-        # remove this override once the upstream default passes omni's visual checks.
+        # note (ratish): the default deepstack addition order lowers image and video
+        # accuracy; drop this once the default passes the visual checks.
         self.model.use_hf_deepstack_order = True
         if getattr(self.config, "tie_word_embeddings", False):
             self.lm_head = self.model.embed_tokens
@@ -70,7 +72,7 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 prefix=add_prefix("lm_head", prefix),
             )
         self.logits_processor = LogitsProcessor(self.config)
-        self._fused_rope_gate = install_thinker_fused_rope(self.model)
+        self.fused_rope_gate = install_thinker_fused_rope(self.model)
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
@@ -91,8 +93,12 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         del get_embedding, omni_prefill_rids
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
-        if self._fused_rope_gate is not None:
-            self._fused_rope_gate.evaluate(positions, forward_batch)
+        else:
+            pass
+        if self.fused_rope_gate is not None:
+            self.fused_rope_gate.evaluate(positions, forward_batch)
+        else:
+            pass
 
         hidden_states = self.model(
             input_ids=input_ids,
@@ -154,9 +160,13 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 name = name[len("thinker.") :]
             elif name.startswith(("talker.", "code2wav.")):
                 continue
+            else:
+                pass
 
             if name.startswith(("audio_tower.", "visual.")):
                 continue
+            else:
+                pass
 
             is_fused_expert = False
             expert_params_mapping = base_expert_params_mapping
@@ -165,18 +175,28 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 if "experts.gate_up_proj" in name or "experts.down_proj" in name:
                     is_fused_expert = True
                     expert_params_mapping = fused_expert_params_mapping
+                else:
+                    pass
 
                 if weight_name not in name:
                     continue
+                else:
+                    pass
                 if "mlp.experts" in name:
                     continue
+                else:
+                    pass
 
                 mapped = name.replace(weight_name, param_name)
                 if mapped.endswith(ignore_suffixes) and mapped not in params_dict:
                     continue
+                else:
+                    pass
                 param = params_dict.get(mapped)
                 if param is None:
                     continue
+                else:
+                    pass
                 loaded_weight = preprocess_weight(mapped, loaded_weight)
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight, shard_id)
@@ -187,6 +207,8 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                     param_name, weight_name, expert_id, shard_id = mapping
                     if weight_name not in name:
                         continue
+                    else:
+                        pass
                     is_expert_weight = True
                     mapped = name.replace(weight_name, param_name)
                     if is_fused_expert:
@@ -213,9 +235,13 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                             and mapped not in params_dict
                         ):
                             continue
+                        else:
+                            pass
                         param = params_dict.get(mapped)
                         if param is None:
                             continue
+                        else:
+                            pass
                         loaded_weight = preprocess_weight(mapped, loaded_weight)
                         weight_loader = getattr(
                             param, "weight_loader", default_weight_loader
@@ -231,8 +257,12 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 else:
                     if is_expert_weight:
                         continue
+                    else:
+                        pass
                     if name.endswith(ignore_suffixes) and name not in params_dict:
                         continue
+                    else:
+                        pass
                     param = params_dict.get(name)
                     if param is not None:
                         loaded_weight = preprocess_weight(name, loaded_weight)
@@ -245,6 +275,8 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                             "Loaded thinker weight %s not found in text-only params",
                             name,
                         )
+                    else:
+                        pass
 
 
 EntryClass = Qwen3OmniThinkerForCausalLM

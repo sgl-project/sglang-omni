@@ -36,7 +36,7 @@ async def test_warmup_matches_concurrency_without_touching_measured_samples() ->
     starts: list[float] = []
     seen: list[str] = []
 
-    async def _send(_session, sample: str) -> RequestResult:
+    async def send(session, sample: str) -> RequestResult:
         starts.append(time.perf_counter())
         seen.append(sample)
         await asyncio.sleep(0.2)
@@ -44,7 +44,7 @@ async def test_warmup_matches_concurrency_without_touching_measured_samples() ->
 
     samples = ["a", "b", "c", "d"]
     runner = BenchmarkRunner(RunConfig(max_concurrency=4, disable_tqdm=True))
-    await runner.run(samples, _send)
+    await runner.run(samples, send)
 
     assert len(seen) == len(samples) * 2
     # note (luojiaxuan): Warmup repeats one sample so the measured cohort does
@@ -60,12 +60,12 @@ async def test_warmup_matches_concurrency_without_touching_measured_samples() ->
 async def test_warmup_can_be_disabled_explicitly() -> None:
     seen: list[str] = []
 
-    async def _send(_session, sample: str) -> RequestResult:
+    async def send(session, sample: str) -> RequestResult:
         seen.append(sample)
         return RequestResult(request_id=sample, is_success=True)
 
     runner = BenchmarkRunner(RunConfig(max_concurrency=4, warmup=0, disable_tqdm=True))
-    await runner.run(["a", "b"], _send)
+    await runner.run(["a", "b"], send)
 
     assert seen == ["a", "b"]
 
@@ -76,7 +76,7 @@ async def test_open_loop_arrivals_overlap_in_flight_requests(
 ) -> None:
     starts: list[float] = []
 
-    async def _send(_session, sample: str) -> RequestResult:
+    async def send(session, sample: str) -> RequestResult:
         starts.append(time.perf_counter())
         await asyncio.sleep(0.3)
         return RequestResult(request_id=sample, is_success=True)
@@ -90,7 +90,7 @@ async def test_open_loop_arrivals_overlap_in_flight_requests(
             disable_tqdm=True,
         )
     )
-    await runner.run(["a", "b", "c", "d", "e", "f", "g", "h"], _send)
+    await runner.run(["a", "b", "c", "d", "e", "f", "g", "h"], send)
 
     assert len(starts) == 8
     assert max(starts) - min(starts) < 0.25

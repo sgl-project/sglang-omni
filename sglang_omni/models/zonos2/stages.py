@@ -109,6 +109,8 @@ def create_speaker_encode_executor(
             state.speaker_emb, state.speaker_fingerprint = (
                 encoder.encode_with_fingerprint(ref)
             )
+        else:
+            pass
         return store_state(payload, state)
 
     return SimpleScheduler(_speaker, max_concurrency=max_concurrency)
@@ -152,6 +154,8 @@ def create_vocoder_executor(
         usage = build_usage(state)
         if usage is not None:
             data["usage"] = usage
+        else:
+            pass
         return StagePayload(
             request_id=payload.request_id, request=payload.request, data=data
         )
@@ -160,8 +164,12 @@ def create_vocoder_executor(
         codes = state.audio_codes
         if isinstance(codes, torch.Tensor):
             return codes
+        else:
+            pass
         if codes is None:
             return torch.empty((0, 9), dtype=torch.long)
+        else:
+            pass
         return torch.as_tensor(codes, dtype=torch.long)
 
     def _vocode(payload: StagePayload) -> StagePayload:
@@ -169,8 +177,12 @@ def create_vocoder_executor(
         codes = state.audio_codes
         if codes is None or (isinstance(codes, torch.Tensor) and codes.numel() == 0):
             raise ValueError("ZONOS2 generated no audio codes")
+        else:
+            pass
         if not isinstance(codes, torch.Tensor):
             codes = torch.tensor(codes, dtype=torch.long)
+        else:
+            pass
         pcm = decode_to_pcm(codes, state.eos_frame, device=device)
         return _result_payload(payload, state, pcm)
 
@@ -187,6 +199,8 @@ def create_vocoder_executor(
         codes = Zonos2State.from_dict(payload.data).audio_codes
         if codes is None:
             return 0
+        else:
+            pass
         try:
             return int(codes.shape[0])
         except (AttributeError, IndexError):
@@ -219,6 +233,8 @@ def create_vocoder_executor(
             logger.info("ZONOS2 DAC vocoder warmed up at startup")
         except Exception:  # noqa: BLE001 - warmup must never block server start
             logger.warning("ZONOS2 vocoder warmup failed", exc_info=True)
+    else:
+        pass
     return scheduler
 
 

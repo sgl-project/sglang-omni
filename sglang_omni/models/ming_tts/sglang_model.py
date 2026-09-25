@@ -7,6 +7,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
@@ -106,7 +107,7 @@ class MingTTSTailGraph:
         self.outputs: MingTTSTailOutputs | None = None
 
     def capture(self) -> None:
-        weight = self.model._decode_input_embedding.weight
+        weight = self.model.decode_input_embedding.weight
         device = weight.device
         hidden_dtype = weight.dtype
         float_dtype = torch.float32
@@ -217,6 +218,8 @@ class MingTTSTailGraphCache:
             if bucket >= batch_size:
                 graph = self.graphs[bucket]
                 return graph.replay(inputs, noise=noise, sde_random=sde_random)
+            else:
+                pass
         raise RuntimeError(
             "Ming TTS tail CUDA graph bucket does not cover active batch "
             f"{batch_size}; captured={list(self.buckets)}"
@@ -249,6 +252,8 @@ class MingBailingMoeAttention(nn.Module):
                 f"attention TP size, got heads={self.num_heads}, "
                 f"tp_size={attn_tp_size}"
             )
+        else:
+            pass
         if self.num_kv_heads >= attn_tp_size:
             if self.num_kv_heads % attn_tp_size != 0:
                 raise ValueError(
@@ -256,12 +261,16 @@ class MingBailingMoeAttention(nn.Module):
                     f"TP size, got kv_heads={self.num_kv_heads}, "
                     f"tp_size={attn_tp_size}"
                 )
+            else:
+                pass
         elif attn_tp_size % self.num_kv_heads != 0:
             raise ValueError(
                 "Ming BailingMoe KV heads must either divide or be divided by "
                 f"attention TP size, got kv_heads={self.num_kv_heads}, "
                 f"tp_size={attn_tp_size}"
             )
+        else:
+            pass
 
         self.num_heads_per_tp = self.num_heads // attn_tp_size
         self.num_kv_heads_per_tp = max(1, self.num_kv_heads // attn_tp_size)
@@ -293,6 +302,8 @@ class MingBailingMoeAttention(nn.Module):
         rope_scaling = getattr(config, "runtime_rope_scaling", None)
         if rope_scaling is None:
             rope_scaling = getattr(config, "rope_scaling", None)
+        else:
+            pass
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -313,9 +324,15 @@ class MingBailingMoeAttention(nn.Module):
         if isinstance(self.rotary_emb, MRotaryEmbedding):
             if positions.dim() == 1:
                 return positions.unsqueeze(0).expand(3, -1)
+            else:
+                pass
             return positions
+        else:
+            pass
         if positions.dim() == 2:
             return positions[0]
+        else:
+            pass
         return positions
 
     def forward(
@@ -326,6 +343,8 @@ class MingBailingMoeAttention(nn.Module):
     ) -> torch.Tensor:
         if hidden_states.shape[0] == 0:
             return hidden_states
+        else:
+            pass
 
         qkv, _ = self.query_key_value(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
@@ -398,6 +417,8 @@ class MingBailingMoeMLP(nn.Module):
     ) -> torch.Tensor:
         if self.tp_size == 1 and hidden_states.shape[0] == 0:
             return hidden_states
+        else:
+            pass
 
         gate_up, _ = self.gate_up_proj(hidden_states)
         hidden_states = self.act_fn(gate_up)
@@ -448,6 +469,8 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
             # coverage even though TTS serving does not use modality masks.
             self.image_gate = MingBailingMoeGate(config)
             self.audio_gate = MingBailingMoeGate(config)
+        else:
+            pass
         self.topk = TopK(
             top_k=self.num_experts_per_tok,
             renormalize=self.norm_topk_prob,
@@ -495,11 +518,15 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
         hidden_states = self.experts(hidden_states, topk_output)
         if self.shared_experts is not None:
             hidden_states = hidden_states + self.shared_experts(shared_input)
+        else:
+            pass
 
         if self.tp_size > 1 and not should_skip_post_experts_all_reduce(
             is_tp_path=True,
         ):
             hidden_states = tensor_model_parallel_all_reduce(hidden_states)
+        else:
+            pass
         return hidden_states.view(original_shape)
 
 
@@ -580,6 +607,8 @@ class MingBailingMoeDecoderLayer(nn.Module):
         )
         if hidden_states.shape[0] != 0:
             hidden_states = self.attention(positions, hidden_states, forward_batch)
+        else:
+            pass
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states=hidden_states,
             residual=residual,
@@ -600,7 +629,7 @@ class MingBailingMoeDecoderLayer(nn.Module):
             hidden_states = self.mlp(hidden_states, forward_batch)
 
         if fuse_mlp_allreduce:
-            hidden_states._sglang_needs_allreduce_fusion = True
+            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
             hidden_states, residual = self.layer_communicator.postprocess_layer(
                 hidden_states,
@@ -653,19 +682,27 @@ class MingBailingMoeTextModel(nn.Module):
                 "Ming-Omni-TTS BailingMoE currently supports only "
                 f"hidden_act='silu'; got {hidden_act!r}"
             )
+        else:
+            pass
         if getattr(config, "use_qk_norm", False):
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE does not yet support use_qk_norm=True"
             )
+        else:
+            pass
         if getattr(config, "use_sliding_window", False):
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE does not yet support sliding-window "
                 "attention"
             )
+        else:
+            pass
         if getattr(config, "moe_router_enable_expert_bias", False):
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE does not yet support router expert bias"
             )
+        else:
+            pass
 
         score_function = getattr(config, "score_function", None)
         if score_function not in (None, "softmax"):
@@ -673,12 +710,16 @@ class MingBailingMoeTextModel(nn.Module):
                 "Ming-Omni-TTS BailingMoE currently supports only softmax "
                 f"routing; got score_function={score_function!r}"
             )
+        else:
+            pass
         router_dtype = getattr(config, "router_dtype", None)
         if router_dtype is not None:
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE does not yet support router_dtype; "
                 f"got {router_dtype!r}"
             )
+        else:
+            pass
 
         for field in ("n_group", "num_expert_group", "topk_group"):
             value = getattr(config, field, None)
@@ -687,6 +728,8 @@ class MingBailingMoeTextModel(nn.Module):
                     "Ming-Omni-TTS BailingMoE does not yet support grouped "
                     f"top-k routing; got {field}={value!r}"
                 )
+            else:
+                pass
 
         shared_intermediate = getattr(
             config,
@@ -702,6 +745,8 @@ class MingBailingMoeTextModel(nn.Module):
                 f"moe_shared_expert_intermediate_size={shared_intermediate!r}, "
                 f"moe_intermediate_size={config.moe_intermediate_size!r}"
             )
+        else:
+            pass
 
     def get_input_embeddings(self) -> nn.Module:
         return self.word_embeddings
@@ -762,6 +807,8 @@ class MingTTSSGLangModel(nn.Module):
                 "Ming-TTS requires a joint in-place RoPE kernel, but "
                 f"{type(current_platform).__name__} does not provide one."
             )
+        else:
+            pass
         self.config = config
         self.llm_config = getattr(config, "llm_config", config)
         self.quant_config = quant_config
@@ -786,6 +833,8 @@ class MingTTSSGLangModel(nn.Module):
                     tail_batch_capacity,
                     int(graph.cuda_graph_config.decode.max_bs or 1),
                 )
+            else:
+                pass
             # Note(yzxiao): Each reference patch becomes one AR prompt token.
             # Covering the context limit keeps valid reference positions at a
             # stable address for eager execution and future graph capture.
@@ -793,18 +842,20 @@ class MingTTSSGLangModel(nn.Module):
                 tail_batch_capacity,
                 int(get_model().context_length),
             )
+        else:
+            pass
         tail_attn_backend = MING_TTS_TAIL_ATTN_BACKEND
 
         weight = self.model.word_embeddings.weight
-        self._decode_input_embedding = nn.Embedding(
+        self.decode_input_embedding = nn.Embedding(
             tail_batch_capacity,
             self.hidden_size,
             device=weight.device,
             dtype=weight.dtype,
         )
-        self._decode_input_embedding.weight.requires_grad_(False)
+        self.decode_input_embedding.weight.requires_grad_(False)
         self.register_buffer(
-            "_decode_input_row_ids",
+            "decode_input_row_ids",
             torch.arange(
                 tail_batch_capacity,
                 dtype=torch.long,
@@ -819,6 +870,8 @@ class MingTTSSGLangModel(nn.Module):
                 "not only llm_config, because FlowLoss/Aggregator shapes live "
                 "in audio_tokenizer_config, ditar_config, and aggregator_config."
             )
+        else:
+            pass
 
         audio_config = self.config.audio_tokenizer_config
         self.latent_dim = int(audio_config.enc_kwargs["latent_dim"])
@@ -829,6 +882,8 @@ class MingTTSSGLangModel(nn.Module):
         self.tail_attn_backend = tail_attn_backend
         aggregator_config = dict(self.config.aggregator_config)
         ditar_config = dict(self.config.ditar_config)
+        # note (yzxiao): Preserve Ming's cast-before-weight-multiply RMSNorm semantics.
+        norm_layer = partial(RMSNorm, cast_x_before_out_mul=True)
         # Note(yzxiao): Runtime policy overrides any checkpoint-provided
         # execution config. Other shared-component callers keep native.
         aggregator_config["execution_config"] = TalkerExecutionConfig(
@@ -836,12 +891,14 @@ class MingTTSSGLangModel(nn.Module):
             rope_kernel=rope_kernel,
             rope_seq_len=1 + self.patch_size,
             rope_max_batch_size=aggregator_batch_capacity,
+            norm_layer=norm_layer,
         )
         ditar_config["execution_config"] = TalkerExecutionConfig(
             attn_backend=tail_attn_backend,
             rope_kernel=rope_kernel,
             rope_seq_len=1 + self.history_patch_size + self.patch_size,
             rope_max_batch_size=2 * tail_batch_capacity,
+            norm_layer=norm_layer,
         )
 
         self.linear_proj_audio = Aggregator(
@@ -856,8 +913,8 @@ class MingTTSSGLangModel(nn.Module):
         )
         self.stop_head = nn.Linear(self.hidden_size, 2, bias=True)
         self.spk_head = nn.Linear(192, self.hidden_size, bias=True)
-        self._tail_graphs = None
-        self._cfm_timesteps: torch.Tensor | None = None
+        self.tail_graphs = None
+        self.cfm_timesteps: torch.Tensor | None = None
 
     def get_input_embeddings(self) -> nn.Module:
         return self.model.get_input_embeddings()
@@ -877,17 +934,17 @@ class MingTTSSGLangModel(nn.Module):
         feedback_embeddings: torch.Tensor,
     ) -> torch.Tensor:
         batch_size = int(feedback_embeddings.shape[0])
-        weight = self._decode_input_embedding.weight
+        weight = self.decode_input_embedding.weight
         weight[:batch_size].copy_(
             feedback_embeddings.to(device=weight.device, dtype=weight.dtype)
         )
-        return self._decode_input_row_ids[:batch_size]
+        return self.decode_input_row_ids[:batch_size]
 
     @torch.no_grad()
     def init_tail_graphs(self, batch_sizes: list[int]) -> None:
         graphs = MingTTSTailGraphCache(self)
         graphs.capture(batch_sizes)
-        self._tail_graphs = graphs
+        self.tail_graphs = graphs
         logger.info(
             "Ming TTS tail CUDA graphs captured for bs=%s",
             list(graphs.buckets),
@@ -899,13 +956,15 @@ class MingTTSSGLangModel(nn.Module):
             batch_size=int(inputs.hidden_states.shape[0]),
             device=inputs.hidden_states.device,
         )
-        tail_graphs = self._tail_graphs
+        tail_graphs = self.tail_graphs
         if tail_graphs is not None:
             return tail_graphs.replay(
                 inputs,
                 noise=noise,
                 sde_random=sde_random,
             )
+        else:
+            pass
         return self.compute_tail_step(
             inputs,
             noise=noise,
@@ -921,7 +980,7 @@ class MingTTSSGLangModel(nn.Module):
         timesteps: torch.Tensor,
         sde_random: torch.Tensor,
     ) -> MingTTSTailOutputs:
-        weight = self._decode_input_embedding.weight
+        weight = self.decode_input_embedding.weight
         # Note(yzxiao): Eager and captured tails share one precision policy.
         # FP32 explicitly disables any autocast inherited from the caller.
         with torch.autocast(
@@ -963,14 +1022,16 @@ class MingTTSSGLangModel(nn.Module):
             int(self.patch_size),
             device=device,
         )
-        timesteps = self._cfm_timesteps
+        timesteps = self.cfm_timesteps
         if timesteps is None or timesteps.device != device:
             timesteps = build_cfm_timesteps(
                 steps=_MING_TTS_CFM_STEPS,
                 device=device,
                 dtype=noise.dtype,
             )
-            self._cfm_timesteps = timesteps
+            self.cfm_timesteps = timesteps
+        else:
+            pass
         sde_random = build_cfm_sde_random(
             steps=_MING_TTS_CFM_STEPS,
             device=device,
@@ -994,17 +1055,23 @@ class MingTTSSGLangModel(nn.Module):
 
         if input_embeds is None:
             input_embeds = getattr(forward_batch, "input_embeds", None)
+        else:
+            pass
 
         forward_mode = forward_batch.forward_mode
         is_decode = bool(forward_mode.is_decode())
         is_extend = bool(forward_mode.is_extend())
         if input_embeds is None and is_decode:
-            input_embeds = self._decode_input_embedding(input_ids)
+            input_embeds = self.decode_input_embedding(input_ids)
             input_ids = None
+        else:
+            pass
 
         mrope_positions = getattr(forward_batch, "mrope_positions", None)
         if mrope_positions is not None:
             positions = mrope_positions
+        else:
+            pass
 
         hidden_states = self.model(
             input_ids=input_ids,
@@ -1058,13 +1125,19 @@ class MingTTSSGLangModel(nn.Module):
         ) -> tuple[str, str] | None:
             if ".experts." in name:
                 return None
+            else:
+                pass
             for weight_name, shard_id in ((".gate_proj.", 0), (".up_proj.", 1)):
                 if weight_name not in name:
                     continue
+                else:
+                    pass
                 mapped_name = name.replace(weight_name, ".gate_up_proj.")
                 param = params_dict.get(mapped_name)
                 if param is None:
                     return None
+                else:
+                    pass
                 param.weight_loader(param, loaded_weight, shard_id)
                 return mapped_name, str(shard_id)
             return None
@@ -1075,13 +1148,19 @@ class MingTTSSGLangModel(nn.Module):
         ) -> tuple[str, str] | None:
             if ".experts." not in name:
                 return None
+            else:
+                pass
             match = re.search(r"experts\.(\d+)\.(gate_proj|down_proj|up_proj)", name)
             if match is None:
                 return None
+            else:
+                pass
 
             expert_id = int(match.group(1))
             if expert_id >= num_experts:
                 return None
+            else:
+                pass
 
             weight_type = match.group(2)
             param_name = "experts.w2_weight"
@@ -1092,14 +1171,20 @@ class MingTTSSGLangModel(nn.Module):
             elif weight_type == "up_proj":
                 param_name = "experts.w13_weight"
                 shard_id = "w3"
+            else:
+                pass
 
             weight_name = f"experts.{expert_id}.{weight_type}.weight"
             if weight_name not in name:
                 return None
+            else:
+                pass
             mapped_name = name.replace(weight_name, param_name)
             param = params_dict.get(mapped_name)
             if param is None:
                 return None
+            else:
+                pass
             param.weight_loader(
                 param,
                 loaded_weight,
@@ -1123,6 +1208,8 @@ class MingTTSSGLangModel(nn.Module):
                     name,
                     [f"w2:{expert_id}" for expert_id in range(num_experts)],
                 )
+            else:
+                pass
 
         for original_name, loaded_weight in weights:
             owner = classify_ming_tts_weight(original_name)
@@ -1132,12 +1219,18 @@ class MingTTSSGLangModel(nn.Module):
                     [],
                 ).append(original_name)
                 continue
+            else:
+                pass
             if owner == OWNER_AUDIO_VAE:
                 report.deferred.setdefault(OWNER_AUDIO_VAE, []).append(original_name)
                 continue
+            else:
+                pass
             if owner == OWNER_UNKNOWN:
                 report.leftovers.append(original_name)
                 continue
+            else:
+                pass
             if "rotary_emb." in original_name or original_name.endswith(
                 ".rotary_embed.inv_freq"
             ):
@@ -1146,12 +1239,16 @@ class MingTTSSGLangModel(nn.Module):
                     [],
                 ).append(original_name)
                 continue
+            else:
+                pass
 
             name = original_name
             if name.startswith("model.model."):
                 name = "model." + name[len("model.model.") :]
             elif name.startswith(("word_embeddings.", "layers.", "norm.")):
                 name = "model." + name
+            else:
+                pass
 
             packed = load_fused_expert_weight(name, loaded_weight)
             if packed is not None:
@@ -1160,6 +1257,8 @@ class MingTTSSGLangModel(nn.Module):
                 report.add_loaded(owner, original_name, target_param=target_param)
                 report.add_loaded_shard(target_param, shard_id)
                 continue
+            else:
+                pass
 
             packed = load_gate_up_weight(name, loaded_weight)
             if packed is not None:
@@ -1168,6 +1267,8 @@ class MingTTSSGLangModel(nn.Module):
                 report.add_loaded(owner, original_name, target_param=target_param)
                 report.add_loaded_shard(target_param, shard_id)
                 continue
+            else:
+                pass
 
             param = params_dict.get(name)
             if param is not None:
@@ -1177,13 +1278,15 @@ class MingTTSSGLangModel(nn.Module):
             else:
                 report.leftovers.append(original_name)
 
-        runtime_params = {"_decode_input_embedding.weight"}
+        runtime_params = {"decode_input_embedding.weight"}
         missing_params = sorted(set(params_dict) - loaded_param_names - runtime_params)
         if missing_params:
             report.missing["model_params"] = missing_params
+        else:
+            pass
 
         assert_ming_tts_weight_coverage(report)
-        self._weight_load_report = report
+        self.weight_load_report = report
         logger.info("%s", report.summary())
 
 

@@ -15,7 +15,7 @@ from sglang_omni.profiler.views import (
 )
 
 
-def _write_events(path: Path, events: list[dict]) -> None:
+def write_events(path: Path, events: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fp:
         for ev in events:
@@ -23,7 +23,7 @@ def _write_events(path: Path, events: list[dict]) -> None:
             fp.write("\n")
 
 
-def _ev(request_id, stage, name, ts, **md):
+def make_ev(request_id, stage, name, ts, **md):
     return {
         "request_id": request_id,
         "stage": stage,
@@ -42,13 +42,15 @@ def _ev(request_id, stage, name, ts, **md):
 
 def test_reconstruct_timelines_sorts_per_request(tmp_path: Path) -> None:
     events = [
-        _ev("r1", "coordinator", "request_admission", 1000),
-        _ev("r2", "coordinator", "request_admission", 1100),
-        _ev("r1", "encoder", "stage_input_received", 1500, from_stage="coordinator"),
-        _ev("r1", "coordinator", "terminal_response", 5000, from_stage="thinker"),
+        make_ev("r1", "coordinator", "request_admission", 1000),
+        make_ev("r2", "coordinator", "request_admission", 1100),
+        make_ev(
+            "r1", "encoder", "stage_input_received", 1500, from_stage="coordinator"
+        ),
+        make_ev("r1", "coordinator", "terminal_response", 5000, from_stage="thinker"),
     ]
     p = tmp_path / "events_test_1.jsonl"
-    _write_events(p, events)
+    write_events(p, events)
 
     tls = reconstruct_timelines(tmp_path)
     assert set(tls) == {"r1", "r2"}
@@ -66,10 +68,14 @@ def test_reconstruct_timelines_sorts_per_request(tmp_path: Path) -> None:
 def test_timeline_merges_multiple_files(tmp_path: Path) -> None:
     file_a = tmp_path / "events_coordinator_1.jsonl"
     file_b = tmp_path / "events_encoder_2.jsonl"
-    _write_events(file_a, [_ev("r1", "coordinator", "request_admission", 100)])
-    _write_events(
+    write_events(file_a, [make_ev("r1", "coordinator", "request_admission", 100)])
+    write_events(
         file_b,
-        [_ev("r1", "encoder", "stage_input_received", 200, from_stage="coordinator")],
+        [
+            make_ev(
+                "r1", "encoder", "stage_input_received", 200, from_stage="coordinator"
+            )
+        ],
     )
 
     tls = reconstruct_timelines(tmp_path)
@@ -82,10 +88,10 @@ def test_iter_events_skips_malformed_lines(tmp_path: Path) -> None:
     """A garbage line must not break the loader."""
     p = tmp_path / "events_x_1.jsonl"
     with p.open("w", encoding="utf-8") as fp:
-        fp.write(json.dumps(_ev("r1", "s", "a", 1)))
+        fp.write(json.dumps(make_ev("r1", "s", "a", 1)))
         fp.write("\n")
         fp.write("not-valid-json\n")
-        fp.write(json.dumps(_ev("r1", "s", "b", 2)))
+        fp.write(json.dumps(make_ev("r1", "s", "b", 2)))
         fp.write("\n")
     tls = reconstruct_timelines(tmp_path)
     assert len(tls["r1"].events) == 2
@@ -98,12 +104,12 @@ def test_iter_events_skips_malformed_lines(tmp_path: Path) -> None:
 
 def test_stage_breakdown_pairs_open_close(tmp_path: Path) -> None:
     events = [
-        _ev("r1", "encoder", "stage_input_received", 0, from_stage="coordinator"),
-        _ev("r1", "encoder", "stage_complete", 2_000_000),  # 2ms
-        _ev("r2", "encoder", "stage_input_received", 1, from_stage="coordinator"),
-        _ev("r2", "encoder", "stage_complete", 4_000_001),  # 4ms
+        make_ev("r1", "encoder", "stage_input_received", 0, from_stage="coordinator"),
+        make_ev("r1", "encoder", "stage_complete", 2_000_000),  # 2ms
+        make_ev("r2", "encoder", "stage_input_received", 1, from_stage="coordinator"),
+        make_ev("r2", "encoder", "stage_complete", 4_000_001),  # 4ms
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rows = stage_breakdown(source=tmp_path)
     encoder_rows = [
         r
@@ -122,11 +128,11 @@ def test_stage_breakdown_pairs_open_close(tmp_path: Path) -> None:
 def test_stage_breakdown_keeps_intervals_stage_local(tmp_path: Path) -> None:
     """An open on stage A must not pair with a close on stage B."""
     events = [
-        _ev("r1", "encoder", "stage_input_received", 0, from_stage="coordinator"),
-        _ev("r1", "thinker", "stage_complete", 1_000_000),
+        make_ev("r1", "encoder", "stage_input_received", 0, from_stage="coordinator"),
+        make_ev("r1", "thinker", "stage_complete", 1_000_000),
         # No matching close on encoder for r1 → no encoder interval emitted.
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rows = stage_breakdown(source=tmp_path)
     encoder_rows = [
         r
@@ -144,8 +150,8 @@ def test_stage_breakdown_keeps_intervals_stage_local(tmp_path: Path) -> None:
 
 def test_hop_breakdown_pairs_payload_send_recv(tmp_path: Path) -> None:
     events = [
-        _ev("r1", "encoder", "stage_hop_sent", 0, to_stage="thinker"),
-        _ev(
+        make_ev("r1", "encoder", "stage_hop_sent", 0, to_stage="thinker"),
+        make_ev(
             "r1",
             "thinker",
             "stage_input_received",
@@ -154,7 +160,7 @@ def test_hop_breakdown_pairs_payload_send_recv(tmp_path: Path) -> None:
             kind="payload",
         ),
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rows = hop_breakdown(source=tmp_path)
     assert len(rows) == 1
     r = rows[0]
@@ -167,7 +173,7 @@ def test_hop_breakdown_pairs_payload_send_recv(tmp_path: Path) -> None:
 
 def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
     events = [
-        _ev(
+        make_ev(
             "r1",
             "thinker",
             "stage_stream_chunk_sent",
@@ -175,7 +181,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
             to_stage="talker",
             chunk_id=0,
         ),
-        _ev(
+        make_ev(
             "r1",
             "thinker",
             "stage_stream_chunk_sent",
@@ -183,7 +189,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
             to_stage="talker",
             chunk_id=1,
         ),
-        _ev(
+        make_ev(
             "r1",
             "talker",
             "stage_stream_chunk_received",
@@ -191,7 +197,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
             from_stage="thinker",
             chunk_id=0,
         ),
-        _ev(
+        make_ev(
             "r1",
             "talker",
             "stage_stream_chunk_received",
@@ -200,7 +206,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
             chunk_id=1,
         ),
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rows = hop_breakdown(source=tmp_path)
     assert len(rows) == 1
     r = rows[0]
@@ -214,7 +220,7 @@ def test_hop_breakdown_pairs_terminal_stream_chunks_to_coordinator(
     tmp_path: Path,
 ) -> None:
     events = [
-        _ev(
+        make_ev(
             "r1",
             "decode",
             "stage_stream_chunk_sent",
@@ -222,7 +228,7 @@ def test_hop_breakdown_pairs_terminal_stream_chunks_to_coordinator(
             to_stage="coordinator",
             chunk_id=0,
         ),
-        _ev(
+        make_ev(
             "r1",
             "decode",
             "stage_stream_chunk_sent",
@@ -230,7 +236,7 @@ def test_hop_breakdown_pairs_terminal_stream_chunks_to_coordinator(
             to_stage="coordinator",
             chunk_id=1,
         ),
-        _ev(
+        make_ev(
             "r1",
             "coordinator",
             "stage_stream_chunk_received",
@@ -238,7 +244,7 @@ def test_hop_breakdown_pairs_terminal_stream_chunks_to_coordinator(
             from_stage="decode",
             chunk_id=0,
         ),
-        _ev(
+        make_ev(
             "r1",
             "coordinator",
             "stage_stream_chunk_received",
@@ -247,7 +253,7 @@ def test_hop_breakdown_pairs_terminal_stream_chunks_to_coordinator(
             chunk_id=1,
         ),
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rows = hop_breakdown(source=tmp_path)
     assert len(rows) == 1
     r = rows[0]
@@ -262,22 +268,24 @@ def test_stage_breakdown_covers_preprocess_encoder_and_prefill(
 ) -> None:
     """The required intervals for #501 must be wired into the views layer."""
     events = [
-        _ev("r1", "preprocessor", "preprocess_start", 0),
-        _ev("r1", "preprocessor", "preprocess_end", 1_000_000),  # 1ms
-        _ev("r1", "audio_encoder", "encoder_start", 1_100_000, modality="audio"),
-        _ev("r1", "audio_encoder", "encoder_end", 6_100_000, modality="audio"),  # 5ms
-        _ev("r1", "thinker", "scheduler_prefill_start", 6_200_000),
-        _ev(
+        make_ev("r1", "preprocessor", "preprocess_start", 0),
+        make_ev("r1", "preprocessor", "preprocess_end", 1_000_000),  # 1ms
+        make_ev("r1", "audio_encoder", "encoder_start", 1_100_000, modality="audio"),
+        make_ev(
+            "r1", "audio_encoder", "encoder_end", 6_100_000, modality="audio"
+        ),  # 5ms
+        make_ev("r1", "thinker", "scheduler_prefill_start", 6_200_000),
+        make_ev(
             "r1",
             "thinker",
             "stage_first_stream_chunk_sent",
             10_200_000,  # 4ms thinker TTFT
             to_stage="talker",
         ),
-        _ev("r1", "talker", "scheduler_request_build_start", 10_300_000),
-        _ev("r1", "talker", "scheduler_request_build_end", 10_700_000),  # 0.4ms
-        _ev("r1", "talker", "scheduler_prefill_start", 10_800_000),
-        _ev(
+        make_ev("r1", "talker", "scheduler_request_build_start", 10_300_000),
+        make_ev("r1", "talker", "scheduler_request_build_end", 10_700_000),  # 0.4ms
+        make_ev("r1", "talker", "scheduler_prefill_start", 10_800_000),
+        make_ev(
             "r1",
             "talker",
             "stage_first_stream_chunk_sent",
@@ -285,7 +293,7 @@ def test_stage_breakdown_covers_preprocess_encoder_and_prefill(
             to_stage="code2wav",
         ),
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rows = stage_breakdown(source=tmp_path)
     by_key = {(r.stage, r.interval_name): r for r in rows}
 
@@ -330,11 +338,11 @@ def test_stage_breakdown_emits_both_intervals_sharing_opener(
     report.
     """
     events = [
-        _ev("r1", "thinker", "scheduler_prefill_start", 0),
-        _ev("r1", "thinker", "scheduler_first_emit", 3_000_000),  # 3 ms
-        _ev("r1", "thinker", "stage_first_stream_chunk_sent", 7_000_000),  # 7 ms
+        make_ev("r1", "thinker", "scheduler_prefill_start", 0),
+        make_ev("r1", "thinker", "scheduler_first_emit", 3_000_000),  # 3 ms
+        make_ev("r1", "thinker", "stage_first_stream_chunk_sent", 7_000_000),  # 7 ms
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rows = stage_breakdown(source=tmp_path)
     by_key = {(r.stage, r.interval_name): r for r in rows}
 
@@ -356,12 +364,12 @@ def test_stage_breakdown_uses_prefill_start_not_queue_enter(
     tmp_path: Path,
 ) -> None:
     events = [
-        _ev("r1", "thinker", "scheduler_queue_enter", 0),
-        _ev("r1", "thinker", "scheduler_prefill_start", 5_000_000),
-        _ev("r1", "thinker", "scheduler_first_emit", 7_000_000),
-        _ev("r1", "thinker", "stage_first_stream_chunk_sent", 10_000_000),
+        make_ev("r1", "thinker", "scheduler_queue_enter", 0),
+        make_ev("r1", "thinker", "scheduler_prefill_start", 5_000_000),
+        make_ev("r1", "thinker", "scheduler_first_emit", 7_000_000),
+        make_ev("r1", "thinker", "stage_first_stream_chunk_sent", 10_000_000),
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rows = stage_breakdown(source=tmp_path)
     by_key = {(r.stage, r.interval_name): r for r in rows}
 
@@ -390,20 +398,20 @@ def test_stage_breakdown_uses_prefill_start_not_queue_enter(
 
 def test_build_report_returns_all_three_views(tmp_path: Path) -> None:
     events = [
-        _ev("r1", "coordinator", "request_admission", 0),
-        _ev("r1", "encoder", "stage_input_received", 100, from_stage="coordinator"),
-        _ev("r1", "encoder", "stage_complete", 2_000_000),
-        _ev("r1", "encoder", "stage_hop_sent", 2_100_000, to_stage="thinker"),
-        _ev(
+        make_ev("r1", "coordinator", "request_admission", 0),
+        make_ev("r1", "encoder", "stage_input_received", 100, from_stage="coordinator"),
+        make_ev("r1", "encoder", "stage_complete", 2_000_000),
+        make_ev("r1", "encoder", "stage_hop_sent", 2_100_000, to_stage="thinker"),
+        make_ev(
             "r1",
             "thinker",
             "stage_input_received",
             3_000_000,
             from_stage="encoder",
         ),
-        _ev("r1", "coordinator", "terminal_response", 10_000_000),
+        make_ev("r1", "coordinator", "terminal_response", 10_000_000),
     ]
-    _write_events(tmp_path / "events_x.jsonl", events)
+    write_events(tmp_path / "events_x.jsonl", events)
     rep = build_report(tmp_path)
     assert rep["request_count"] == 1
     assert "r1" in rep["timelines"]

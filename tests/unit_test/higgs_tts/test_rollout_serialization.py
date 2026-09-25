@@ -15,7 +15,7 @@ N = 8
 V = 1026
 
 
-def _fake_data(*, return_omni_rollout, return_logprob, t_raw=6):
+def fake_data(*, return_omni_rollout, return_logprob, t_raw=6):
     delayed = apply_delay_pattern(torch.randint(0, 1024, (t_raw, N)))
     return SimpleNamespace(
         output_code_buffer=None,
@@ -33,7 +33,7 @@ def _fake_data(*, return_omni_rollout, return_logprob, t_raw=6):
 def test_omni_rollout_built_and_roundtrips():
     torch.manual_seed(0)
     state = HiggsTtsState(num_codebooks=N, codebook_size=V)
-    apply_higgs_result(state, _fake_data(return_omni_rollout=True, return_logprob=True))
+    apply_higgs_result(state, fake_data(return_omni_rollout=True, return_logprob=True))
 
     stream = state.omni_rollout["action_streams"][0]
     assert stream["name"] == "higgs_codes"
@@ -47,13 +47,11 @@ def test_flag_gating():
     torch.manual_seed(1)
     # no rollout flag -> nothing emitted.
     off = HiggsTtsState(num_codebooks=N, codebook_size=V)
-    apply_higgs_result(off, _fake_data(return_omni_rollout=False, return_logprob=True))
+    apply_higgs_result(off, fake_data(return_omni_rollout=False, return_logprob=True))
     assert off.omni_rollout is None
     assert "omni_rollout" not in off.to_dict()
 
     # rollout but no logprob flag -> trace without logprobs.
     no_lp = HiggsTtsState(num_codebooks=N, codebook_size=V)
-    apply_higgs_result(
-        no_lp, _fake_data(return_omni_rollout=True, return_logprob=False)
-    )
+    apply_higgs_result(no_lp, fake_data(return_omni_rollout=True, return_logprob=False))
     assert no_lp.omni_rollout["action_streams"][0]["logprobs"] is None

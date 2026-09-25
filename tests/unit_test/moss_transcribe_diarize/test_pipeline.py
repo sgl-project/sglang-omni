@@ -27,7 +27,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 
 
-def _make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
+def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
     return MossTranscribeDiarizeEngineBuilder(
         max_running_requests=16,
         max_new_tokens=None,
@@ -89,7 +89,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
 
 
 def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
-    builder = _make_moss_engine_builder()
+    builder = make_moss_engine_builder()
 
     assert type(builder).supports_breakable_prefill_cuda_graph is True
     defaults = builder.generation_defaults(dtype="bfloat16")
@@ -113,7 +113,7 @@ def test_moss_transcribe_diarize_compile_cap_survives_batch_overrides() -> None:
     """torch_compile_max_bs must bind to the named builder parameter. If it
     ever lands in **stage_defaults instead, the merge silently replaces the
     stage cap with max_running_requests."""
-    builder = _make_moss_engine_builder()
+    builder = make_moss_engine_builder()
 
     overrides = build_generation_batch_overrides(
         server_args_overrides=None,
@@ -146,14 +146,14 @@ def test_moss_transcribe_diarize_omp_default_tracks_request_workers(
 
     calls: list[tuple[int, int]] = []
 
-    def _bounded_threads(*, worker_count: int, max_threads: int) -> int:
+    def bounded_threads(*, worker_count: int, max_threads: int) -> int:
         calls.append((worker_count, max_threads))
         return 3
 
     monkeypatch.setattr(
         config_module,
         "bounded_intraop_threads",
-        _bounded_threads,
+        bounded_threads,
     )
 
     config = config_module.MossTranscribeDiarizePipelineConfig(model_path="dummy")
@@ -235,16 +235,16 @@ def test_compile_encoder_sets_runner_and_warms_each_bucket(
     encoder = torch.nn.Linear(4, 4)
     model = SimpleNamespace(
         whisper_encoder=encoder,
-        _compiled_encoder=None,
-        _compiled_chunk_buckets=frozenset(),
+        compiled_encoder=None,
+        compiled_chunk_buckets=frozenset(),
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=4)),
     )
 
     Model.compile_encoder(model, [2, 1, 1], input_feature_len=6)
 
-    assert model._compiled_encoder is runner
-    assert model._compiled_chunk_buckets == frozenset({1, 2})
-    assert model._compiled_input_feature_len == 6
+    assert model.compiled_encoder is runner
+    assert model.compiled_chunk_buckets == frozenset({1, 2})
+    assert model.compiled_input_feature_len == 6
     assert len(warmups) == 6
     assert {shape[0] for shape in warmups} == {1, 2}
     assert all(shape[1:] == (4, 6) for shape in warmups)
@@ -272,18 +272,18 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
 
     model = SimpleNamespace(
         whisper_encoder=torch.nn.Linear(4, 4),
-        _compiled_encoder=None,
-        _compiled_chunk_buckets=frozenset(),
-        _compiled_input_feature_len=0,
+        compiled_encoder=None,
+        compiled_chunk_buckets=frozenset(),
+        compiled_input_feature_len=0,
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=4)),
     )
 
     Model.compile_encoder(model, [1, 2], input_feature_len=6)
 
-    assert model._compiled_chunk_buckets == frozenset({1})
+    assert model.compiled_chunk_buckets == frozenset({1})
 
 
-def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
+def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
     from types import SimpleNamespace
 
     from transformers import AutoProcessor
@@ -317,10 +317,10 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         init_encoder_cache=lambda n: None,
     )
 
-    def _bump_init_cuda_graphs() -> None:
+    def bump_init_cuda_graphs() -> None:
         calls["init_cuda_graphs"] += 1
 
-    model_runner = SimpleNamespace(model=model, init_cuda_graphs=_bump_init_cuda_graphs)
+    model_runner = SimpleNamespace(model=model, init_cuda_graphs=bump_init_cuda_graphs)
     model_worker = SimpleNamespace(
         gpu_id=0,
         model_runner=model_runner,
@@ -367,12 +367,12 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
     )
     monkeypatch.setattr(engine_builder, "init_mm_embedding_cache", lambda n: None)
 
-    def _make_encoder_service(model, *, max_batch_size):
+    def make_encoder_service(model, *, max_batch_size):
         calls["encoder_services"].append((model, max_batch_size))
         return object()
 
     monkeypatch.setattr(
-        engine_builder, "BatchedAudioEncoderService", _make_encoder_service
+        engine_builder, "BatchedAudioEncoderService", make_encoder_service
     )
     monkeypatch.setattr(
         request_builders,
@@ -396,7 +396,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
 def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = _stub_factory_env(monkeypatch, want_cuda_graph=True)
+    calls = stub_factory_env(monkeypatch, want_cuda_graph=True)
 
     create_sglang_moss_transcribe_diarize_executor(
         "OpenMOSS-Team/MOSS-Transcribe-Diarize", encoder_torch_compile=True
@@ -428,7 +428,7 @@ def test_factory_context_length_override_uses_final_server_value(
         build_generation_batch_overrides,
     )
 
-    _stub_factory_env(monkeypatch, want_cuda_graph=False)
+    stub_factory_env(monkeypatch, want_cuda_graph=False)
     # The shared stub swallows server_args_overrides, but this regression
     # needs the real merge so a context_length key retained in overrides
     # would collide with the explicit keyword and raise TypeError.
@@ -472,7 +472,7 @@ def test_factory_context_length_override_uses_final_server_value(
     assert adapter_kwargs["context_length"] == final_context_length
 
 
-def _repo_not_found(url: str) -> RepositoryNotFoundError:
+def repo_not_found(url: str) -> RepositoryNotFoundError:
     response = httpx.Response(404, request=httpx.Request("GET", url))
     return RepositoryNotFoundError(f"missing: {url}", response=response)
 
@@ -483,8 +483,8 @@ def test_processor_compat_ignores_missing_additional_chat_templates(
     import transformers.processing_utils as processing_utils
     import transformers.utils.hub as hub_utils
 
-    def missing_templates(*_args: object, **_kwargs: object) -> list[str]:
-        raise _repo_not_found(
+    def missing_templates(*args: object, **_kwargs: object) -> list[str]:
+        raise repo_not_found(
             "https://huggingface.co/api/models/repo/tree/main/"
             "additional_chat_templates"
         )
@@ -504,8 +504,8 @@ def test_processor_compat_preserves_non_template_repo_errors(
 ) -> None:
     import transformers.processing_utils as processing_utils
 
-    def missing_repo(*_args: object, **_kwargs: object) -> list[str]:
-        raise _repo_not_found("https://huggingface.co/api/models/missing-repo")
+    def missing_repo(*args: object, **_kwargs: object) -> list[str]:
+        raise repo_not_found("https://huggingface.co/api/models/missing-repo")
 
     monkeypatch.setattr(processing_utils, "list_repo_templates", missing_repo)
 

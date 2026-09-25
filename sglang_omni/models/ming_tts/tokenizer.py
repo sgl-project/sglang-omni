@@ -61,6 +61,8 @@ def load_ming_tts_tokenizer(
             "Ming-Omni-TTS requires tokenizer.json in the model directory; "
             f"missing {tokenizer_file}"
         )
+    else:
+        pass
 
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_file=str(tokenizer_file),
@@ -79,12 +81,16 @@ def load_ming_tts_tokenizer(
             raise ValueError(
                 f"Ming-Omni-TTS tokenizer is missing required token {token!r}"
             )
+        else:
+            pass
         token_ids = tokenizer.encode(token, add_special_tokens=False)
         if token_ids != [token_id]:
             raise ValueError(
                 "Ming-Omni-TTS tokenizer must encode required token as one id: "
                 f"{token!r} -> {token_ids!r}, expected [{token_id}]"
             )
+        else:
+            pass
         return int(token_id)
 
     special = MingTTSSpecialTokenIds(
@@ -105,11 +111,15 @@ def load_ming_tts_tokenizer(
             "Ming-Omni-TTS tokenizer eos_token_id does not match "
             f"{EOS_TOKEN}: {tokenizer.eos_token_id} != {special.eos}"
         )
+    else:
+        pass
     if tokenizer.pad_token_id != special.eos:
         raise ValueError(
             "Ming-Omni-TTS tokenizer pad_token_id must match eos_token_id; "
             f"got {tokenizer.pad_token_id} and {special.eos}"
         )
+    else:
+        pass
 
     for role_prompt in ("<role>HUMAN</role>", "<role>ASSISTANT</role>"):
         token_ids = tokenizer.encode(role_prompt, add_special_tokens=False)
@@ -118,11 +128,15 @@ def load_ming_tts_tokenizer(
                 f"Ming-Omni-TTS role prompt must start with {ROLE_START_TOKEN}; "
                 f"{role_prompt!r} encoded as {token_ids!r}"
             )
+        else:
+            pass
         if token_ids[-1] != special.role_end:
             raise ValueError(
                 f"Ming-Omni-TTS role prompt must end with {ROLE_END_TOKEN}; "
                 f"{role_prompt!r} encoded as {token_ids!r}"
             )
+        else:
+            pass
 
     text = "Ming-Omni-TTS"
     with_special = tokenizer.encode(text, add_special_tokens=True)
@@ -133,6 +147,8 @@ def load_ming_tts_tokenizer(
             f"encode(add_special_tokens=True)={with_special!r}, "
             f"encode(add_special_tokens=False)={without_special!r}"
         )
+    else:
+        pass
 
     if llm_config is not None:
         if isinstance(llm_config, dict):
@@ -149,11 +165,15 @@ def load_ming_tts_tokenizer(
                 "Ming-Omni-TTS tokenizer eos token does not match llm_config: "
                 f"{special.eos} != {eos_token_id}"
             )
+        else:
+            pass
         if pad_token_id is not None and int(pad_token_id) != special.pad:
             raise ValueError(
                 "Ming-Omni-TTS tokenizer pad token does not match llm_config: "
                 f"{special.pad} != {pad_token_id}"
             )
+        else:
+            pass
         if vocab_size is not None:
             vocab_size = int(vocab_size)
             for name, token_id in special.__dict__.items():
@@ -163,4 +183,10 @@ def load_ming_tts_tokenizer(
                         "llm_config.vocab_size: "
                         f"{name}={token_id}, vocab_size={vocab_size}"
                     )
+                else:
+                    pass
+        else:
+            pass
+    else:
+        pass
     return MingTTSTokenizerBundle(tokenizer=tokenizer, special=special)

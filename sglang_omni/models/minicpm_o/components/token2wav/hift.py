@@ -95,8 +95,12 @@ class HiFTGenerator(nn.Module):
         super(HiFTGenerator, self).__init__()
         if sampling_rate != 24000:
             raise ValueError("MiniCPM-o HiFT requires a 24000 Hz sample rate")
+        else:
+            pass
         if istft_params is None:
             istft_params = {"n_fft": 16, "hop_len": 4}
+        else:
+            pass
         self.out_channels = 1
         self.nb_harmonics = nb_harmonics
         self.sampling_rate = sampling_rate
@@ -212,6 +216,8 @@ class HiFTGenerator(nn.Module):
             x = self.ups[i](x)
             if i == self.num_upsamples - 1:
                 x = self.reflection_pad(x)
+            else:
+                pass
             si = self.source_downs[i](s_stft)
             si = self.source_resblocks[i](si)
             x = x + si

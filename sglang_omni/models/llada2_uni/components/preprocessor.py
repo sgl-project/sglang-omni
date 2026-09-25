@@ -59,6 +59,8 @@ def validate_prompt_seq_len(
 ) -> None:
     if max_seq_len is None:
         return
+    else:
+        pass
     prompt_len = int(input_ids.numel())
     if prompt_len >= max_seq_len:
         logger.info(
@@ -71,6 +73,8 @@ def validate_prompt_seq_len(
             f"The input ({prompt_len} tokens) is longer than the model's "
             f"context length ({max_seq_len} tokens)."
         )
+    else:
+        pass
     total_tokens = prompt_len + int(max_new_tokens)
     if total_tokens > max_seq_len:
         logger.info(
@@ -90,6 +94,8 @@ def validate_prompt_seq_len(
             f"the number of tokens in the input messages or the completion to "
             f"fit within the limit."
         )
+    else:
+        pass
 
 
 def compute_target_dims(
@@ -111,6 +117,8 @@ def compute_target_dims(
         scale = math.sqrt(min_pixels / (height * width))
         new_h = math.ceil(height * scale / factor) * factor
         new_w = math.ceil(width * scale / factor) * factor
+    else:
+        pass
 
     return new_h, new_w
 
@@ -159,17 +167,17 @@ class LLaDA2Preprocessor:
     """Preprocessor for LLaDA2-Uni model (text + image)."""
 
     def __init__(self, model_path: str, max_seq_len: int | None = None):
-        self._max_seq_len = max_seq_len
-        self._model_dir = resolve_local_model_dir(model_path)
-        self._tokenizer = load_llada2_tokenizer(model_path)
+        self.max_seq_len = max_seq_len
+        self.model_dir = resolve_local_model_dir(model_path)
+        self.tokenizer = load_llada2_tokenizer(model_path)
 
         # Load HF Qwen2VLImageProcessor (do_resize=False, crop handles sizing)
         from transformers import Qwen2VLImageProcessor
 
-        tokenizer_path = str(Path(self._model_dir) / "image_tokenizer")
+        tokenizer_path = str(Path(self.model_dir) / "image_tokenizer")
 
         try:
-            self._image_processor = Qwen2VLImageProcessor.from_pretrained(
+            self.image_processor = Qwen2VLImageProcessor.from_pretrained(
                 tokenizer_path,
                 local_files_only=True,
                 do_resize=False,  # Disable resize, use manual crop instead
@@ -177,22 +185,22 @@ class LLaDA2Preprocessor:
         except (OSError, ValueError, RuntimeError):
             if Path(model_path).exists():
                 raise
-            self._image_processor = Qwen2VLImageProcessor.from_pretrained(
+            else:
+                pass
+            self.image_processor = Qwen2VLImageProcessor.from_pretrained(
                 model_path,
                 trust_remote_code=True,
                 local_files_only=False,
                 subfolder="image_tokenizer",
                 do_resize=False,
             )
-            self._model_dir = str(
-                resolve_model_path(model_path, local_files_only=False)
-            )
-        self._merge_size = self._image_processor.merge_size
-        self._factor = self._image_processor.patch_size * self._merge_size
+            self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
+        self.merge_size = self.image_processor.merge_size
+        self.factor = self.image_processor.patch_size * self.merge_size
 
         # Cache special token IDs
-        self._eoi_id = self._tokenizer.convert_tokens_to_ids(EOI_TOKEN)
-        self._boi_id = self._tokenizer.convert_tokens_to_ids(BOI_TOKEN)
+        self.eoi_id = self.tokenizer.convert_tokens_to_ids(EOI_TOKEN)
+        self.boi_id = self.tokenizer.convert_tokens_to_ids(BOI_TOKEN)
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         request = payload.request
@@ -218,8 +226,8 @@ class LLaDA2Preprocessor:
         image_parts_by_msg: dict[int, list[str]] = {}
 
         if images:
-            cropped = resize_images(images, self._factor)
-            img_result = self._image_processor(images=cropped, return_tensors="pt")
+            cropped = resize_images(images, self.factor)
+            img_result = self.image_processor(images=cropped, return_tensors="pt")
             pixel_values = img_result["pixel_values"]
             image_grid_thw = img_result["image_grid_thw"]
             image_enc_inputs: dict[str, Any] = {
@@ -228,6 +236,8 @@ class LLaDA2Preprocessor:
             }
             if image_cache_key:
                 image_enc_inputs["cache_key"] = image_cache_key
+            else:
+                pass
             encoder_inputs[IMAGE_STAGE] = image_enc_inputs
 
             if image_counts_per_msg is None:
@@ -235,9 +245,13 @@ class LLaDA2Preprocessor:
                 for i, m in enumerate(messages):
                     if m.get("role", "user") == "user":
                         last_user_idx = i
+                    else:
+                        pass
                 image_counts_per_msg = [(last_user_idx, len(images))]
+            else:
+                pass
 
-            merge_sq = self._merge_size**2
+            merge_sq = self.merge_size**2
             img_idx = 0
             for msg_idx, count in image_counts_per_msg:
                 parts: list[str] = []
@@ -255,16 +269,18 @@ class LLaDA2Preprocessor:
             encoder_inputs[IMAGE_STAGE] = {"_skip": True, "_result": {}}
 
         text_prompt = self.build_prompt(messages, image_parts_by_msg=image_parts_by_msg)
-        input_ids = self._tokenizer.encode(text_prompt, add_special_tokens=False)
+        input_ids = self.tokenizer.encode(text_prompt, add_special_tokens=False)
 
         if image_token_counts:
             input_ids = self.insert_image_placeholders(input_ids, image_token_counts)
+        else:
+            pass
 
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
 
         validate_prompt_seq_len(
             input_ids_tensor,
-            max_seq_len=self._max_seq_len,
+            max_seq_len=self.max_seq_len,
             max_new_tokens=request.params.get(
                 "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
             ),
@@ -297,29 +313,47 @@ class LLaDA2Preprocessor:
                 for item in content:
                     if not isinstance(item, dict):
                         continue
+                    else:
+                        pass
                     if item.get("type") == "image_url":
                         url = item.get("image_url", {})
                         if isinstance(url, dict):
                             url = url.get("url", "")
+                        else:
+                            pass
                         if url:
                             raw_images.append(url)
                             msg_count += 1
+                        else:
+                            pass
                     elif item.get("type") == "image":
                         img = item.get("image", "")
                         if img:
                             raw_images.append(img)
                             msg_count += 1
+                        else:
+                            pass
+                    else:
+                        pass
+            else:
+                pass
             if msg_count > 0:
                 image_counts_per_msg.append((msg_idx, msg_count))
+            else:
+                pass
         return raw_images, image_counts_per_msg
 
     @staticmethod
     def validate_messages(messages: list[dict[str, Any]]) -> None:
         if not isinstance(messages, list):
             raise ValueError("Preprocessing expects a list of chat messages")
+        else:
+            pass
         for message in messages:
             if not isinstance(message, dict):
                 raise ValueError("Each message must be a dict with role/content")
+            else:
+                pass
 
     def build_prompt(
         self,
@@ -341,12 +375,16 @@ class LLaDA2Preprocessor:
 
             if role == "system":
                 continue
+            else:
+                pass
 
             role_tag = ROLE_HUMAN if role == "user" else ROLE_ASSISTANT
 
             img_prefix = ""
             if image_parts_by_msg and msg_idx in image_parts_by_msg:
                 img_prefix = "".join(image_parts_by_msg[msg_idx])
+            else:
+                pass
 
             if isinstance(content, str):
                 parts.append(f"{role_tag}{img_prefix}{content}")
@@ -357,8 +395,12 @@ class LLaDA2Preprocessor:
                         item_type = item.get("type", "text")
                         if item_type == "text":
                             text_parts.append(item.get("text", ""))
+                        else:
+                            pass
                     elif isinstance(item, str):
                         text_parts.append(item)
+                    else:
+                        pass
                 parts.append(f"{role_tag}{img_prefix}{''.join(text_parts)}")
             else:
                 parts.append(f"{role_tag}{img_prefix}{content}")
@@ -380,7 +422,7 @@ class LLaDA2Preprocessor:
                 (
                     i
                     for i in range(search_start, len(input_ids))
-                    if input_ids[i] == self._boi_id
+                    if input_ids[i] == self.boi_id
                 ),
                 None,
             )
@@ -388,12 +430,14 @@ class LLaDA2Preprocessor:
                 raise ValueError(
                     f"Expected image block {image_idx} but no matching <boi> token was found"
                 )
+            else:
+                pass
 
             eoi_idx = next(
                 (
                     i
                     for i in range(boi_idx + 1, len(input_ids))
-                    if input_ids[i] == self._eoi_id
+                    if input_ids[i] == self.eoi_id
                 ),
                 None,
             )
@@ -401,6 +445,8 @@ class LLaDA2Preprocessor:
                 raise ValueError(
                     f"No <eoi> token found after <boi> for image block {image_idx}"
                 )
+            else:
+                pass
 
             new_ids.extend(input_ids[cursor : boi_idx + 1])
             new_ids.extend([DUMMY_IMAGE_TOKEN_ID] * num_tokens)

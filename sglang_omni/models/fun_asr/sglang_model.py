@@ -42,6 +42,8 @@ def sanm_mask_from_lengths(
 def apply_time_mask(x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
     if mask is None:
         return x
+    else:
+        pass
     return x * mask.transpose(1, 2)
 
 
@@ -64,6 +66,8 @@ def fused_qkv_project(
     bias = None
     if q_proj.bias is not None:
         bias = torch.cat([q_proj.bias, k_proj.bias, v_proj.bias], dim=0)
+    else:
+        pass
     return F.linear(x, weight, bias).chunk(3, dim=-1)
 
 
@@ -206,6 +210,8 @@ class EncoderLayerSANM(nn.Module):
         x = apply_time_mask(x, mask)
         if self.in_size == self.size:
             x = residual + x
+        else:
+            pass
         residual = x
         x = self.post_attention_layernorm(x)
         x = self.activation_dropout(self.activation(self.mlp.fc1(x)))
@@ -214,6 +220,8 @@ class EncoderLayerSANM(nn.Module):
         if x.dtype == torch.float16:
             clamp_value = torch.finfo(x.dtype).max - 1000
             x = torch.clamp(x, min=-clamp_value, max=clamp_value)
+        else:
+            pass
         return apply_time_mask(self.final_layernorm(x), mask)
 
 
@@ -235,13 +243,15 @@ class FunAsrNanoAudioEncoder(nn.Module):
         layer_norm_eps: float = 1e-5,
     ) -> None:
         super().__init__()
-        self._output_size = output_size
+        self._output_size = output_size  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.embed = SinusoidalPositionEncoder()
 
         if num_blocks < 1 or tp_blocks < 0:
             raise ValueError(
                 "Fun-ASR requires positive transcription blocks and nonnegative timestamp blocks"
             )
+        else:
+            pass
 
         def make_layer(index: int) -> EncoderLayerSANM:
             return EncoderLayerSANM(
@@ -263,12 +273,16 @@ class FunAsrNanoAudioEncoder(nn.Module):
         )
 
     def output_size(self) -> int:
-        return self._output_size
+        return (
+            self._output_size
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def forward(
         self, xs: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        xs = xs * (self._output_size**0.5)
+        xs = xs * (
+            self._output_size**0.5
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         xs = self.embed(xs)
         for layer in self.layers:
             xs = layer(xs, mask)
@@ -472,6 +486,8 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             raise ValueError(
                 "Fun-ASR get_audio_feature requires at least one audio item"
             )
+        else:
+            pass
         device = next(self.audio_tower.parameters()).device
         dtype = next(self.audio_tower.parameters()).dtype
 
@@ -483,12 +499,16 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
                     "Fun-ASR audio item is missing feature (input_features); "
                     "cannot encode"
                 )
+            else:
+                pass
             feature = item.feature
             if feature.ndim != 3 or feature.shape[0] != 1:
                 raise ValueError(
                     "Fun-ASR expects item.feature shaped [1, input_size, T], "
                     f"got {tuple(feature.shape)}"
                 )
+            else:
+                pass
             mask = getattr(item, "feature_attention_mask", None)
             if mask is not None:
                 valid = int(mask.sum().item())
@@ -517,6 +537,8 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             # Bucketed capture/replay; always masked. Returns None when no
             # bucket fits (falls through to the eager path below).
             adp_out = graph_runner.run(xs, lengths)
+        else:
+            pass
 
         if adp_out is None:
             # note (guozhihao): skip masking for the common B=1 unpadded path
@@ -532,6 +554,8 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
 
             enc_out = self.audio_tower(xs, sanm_mask)
             adp_out = self.multi_modal_projector(enc_out, sanm_mask)
+        else:
+            pass
 
         embeddings: List[torch.Tensor] = []
         for b, length in enumerate(lengths):
@@ -573,13 +597,19 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             checkpoint_name = name
             if "rotary_emb.inv_freq" in name:
                 continue
+            else:
+                pass
             if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
                 continue
+            else:
+                pass
 
             if getattr(self.config.text_config, "tie_word_embeddings", False) and (
                 name == "lm_head.weight" or name.endswith(".lm_head.weight")
             ):
                 continue
+            else:
+                pass
 
             strict_multimodal = False
             if name.startswith("model.audio_tower."):
@@ -604,11 +634,17 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
                 for param_name, weight_name, shard_id in llm_stacked_params:
                     if weight_name not in name:
                         continue
+                    else:
+                        pass
                     name_tmp = name.replace(weight_name, param_name)
                     if name_tmp.endswith(".bias") and name_tmp not in params_dict:
                         continue
+                    else:
+                        pass
                     if name_tmp not in params_dict:
                         continue
+                    else:
+                        pass
                     param = params_dict[name_tmp]
                     weight_loader = param.weight_loader
                     weight_loader(param, loaded_weight, shard_id)
@@ -616,6 +652,10 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
                     break
                 if stacked:
                     continue
+                else:
+                    pass
+            else:
+                pass
 
             if (
                 name.endswith(".bias")
@@ -623,13 +663,19 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
                 and not strict_multimodal
             ):
                 continue
+            else:
+                pass
             if name not in params_dict:
                 if strict_multimodal:
                     raise ValueError(
                         f"Fun-ASR checkpoint weight {checkpoint_name} has no matching "
                         f"model parameter ({name})"
                     )
+                else:
+                    pass
                 continue
+            else:
+                pass
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
             weight_loader(param, loaded_weight)

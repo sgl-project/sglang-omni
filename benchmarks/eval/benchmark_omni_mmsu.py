@@ -88,7 +88,6 @@ Speed (speed)
 Additional local notes: `audio_returned=2000/2000`, `rtf_mean=1.2704`.
 """
 
-
 from __future__ import annotations
 
 import argparse
@@ -101,6 +100,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.benchmarker.conditions import (
+    add_fingerprint_argument,
+    fingerprint_fields,
+    warn_if_tail_percentile_is_thin,
+)
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.mmsu import MmsuSample, load_mmsu_samples
@@ -154,6 +158,7 @@ async def run(
         modalities=modalities,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        seed=args.seed,
         save_audio_dir=save_audio_dir,
     )
     if args.prompt:
@@ -173,6 +178,7 @@ async def run(
     results = build_mmsu_results(request_results, samples, modalities)
     metrics = compute_mmsu_metrics(results)
     speed = compute_speed_metrics(request_results, wall_clock_s=runner.wall_clock_s)
+    warn_if_tail_percentile_is_thin(len(request_results))
     audio_mode = "audio" in modalities
     if audio_mode:
         speed["audio_returned"] = sum(
@@ -211,6 +217,7 @@ async def run(
                 "warmup": runner.config.effective_warmup,
                 "max_concurrency": args.max_concurrency,
                 "request_rate": args.request_rate,
+                **fingerprint_fields(args.fingerprint, base_url),
             },
             args.output_dir,
             speed_metrics=speed,
@@ -245,7 +252,13 @@ def main() -> None:
     p.add_argument("--timeout-s", type=int, default=300)
     p.add_argument("--save-audio", action="store_true")
     p.add_argument("--disable-tqdm", action="store_true")
-    p.add_argument("--seed", type=int, default=None)
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Dataset shuffle seed, also sent on each chat request.",
+    )
+    add_fingerprint_argument(p)
     p.add_argument(
         "--repo-id",
         type=str,

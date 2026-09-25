@@ -18,18 +18,75 @@ from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
 
 pytestmark = pytest.mark.accelerator
 
-_HAS_CUDA = torch.cuda.is_available()
+HAS_CUDA = torch.cuda.is_available()
 
-_CKPT_GLOB = (
+CKPT_GLOB = (
     "/root/.cache/huggingface/hub/"
     "models--OpenMOSS-Team--MOSS-Transcribe-Diarize/snapshots/*/"
 )
 
-_INPUT_FEATURE_LEN = 3000
-_CHUNK_BUCKETS = [1, 2, 4, 8, 16, 32]
+INPUT_FEATURE_LEN = 3000
+CHUNK_BUCKETS = [1, 2, 4, 8, 16, 32]
 # Chunk counts exercised by the bit-identity test: exact bucket hits plus counts
 # that pad up to the next bucket (3->4, 5->8, 12->16, 20->32).
-_TEST_CHUNKS = [1, 2, 3, 4, 5, 8, 12, 16, 20, 32]
+TEST_CHUNKS = [1, 2, 3, 4, 5, 8, 12, 16, 20, 32]
+
+
+QKV_FUSED_NAMES = (
+    ("self_attn.qkv_proj", "self_attn.q_proj", "q"),
+    ("self_attn.qkv_proj", "self_attn.k_proj", "k"),
+    ("self_attn.qkv_proj", "self_attn.v_proj", "v"),
+)
+
+
+def load_encoder_checkpoint(encoder: torch.nn.Module, snapshot: str) -> None:
+    """Load the checkpoint Whisper encoder. Random bf16 init overflows to NaN."""
+    weight_paths = sorted(glob.glob(os.path.join(snapshot, "*.safetensors")))
+    if not weight_paths:
+        return
+    else:
+        from safetensors.torch import load_file
+        from sglang.srt.model_loader.weight_utils import default_weight_loader
+
+        checkpoint_tensors: dict[str, torch.Tensor] = {}
+        for weight_path in weight_paths:
+            checkpoint_tensors.update(load_file(weight_path))
+        prefix = "model.whisper_encoder."
+        encoder_weights = {
+            name[len(prefix) :]: tensor
+            for name, tensor in checkpoint_tensors.items()
+            if name.startswith(prefix)
+        }
+        for name, tensor in list(encoder_weights.items()):
+            if ".self_attn.k_proj.weight" not in name:
+                continue
+            else:
+                bias_name = name.replace(".k_proj.weight", ".k_proj.bias")
+                if bias_name not in encoder_weights:
+                    encoder_weights[bias_name] = torch.zeros(
+                        tensor.shape[0], dtype=tensor.dtype
+                    )
+                else:
+                    pass
+        parameters = dict(encoder.named_parameters())
+        for name, tensor in encoder_weights.items():
+            mapped_name = name
+            shard_id = None
+            for fused_name, source_name, shard in QKV_FUSED_NAMES:
+                if source_name in mapped_name:
+                    mapped_name = mapped_name.replace(source_name, fused_name)
+                    shard_id = shard
+                    break
+                else:
+                    pass
+            if mapped_name not in parameters:
+                continue
+            else:
+                parameter = parameters[mapped_name]
+                if shard_id is None:
+                    default_weight_loader(parameter, tensor)
+                else:
+                    parameter.weight_loader(parameter, tensor, shard_id)
 
 
 def test_capture_uses_thread_local_error_mode():
@@ -60,9 +117,9 @@ def test_capture_uses_thread_local_error_mode():
 def encoder_bundle():
     """sglang WhisperEncoder built from the MOSS-TD checkpoint. sglang's encoder
     uses TP-parallel layers, so a TP=1 group must exist before construction."""
-    if not _HAS_CUDA:
+    if not HAS_CUDA:
         pytest.skip("needs CUDA")
-    snaps = glob.glob(_CKPT_GLOB)
+    snaps = glob.glob(CKPT_GLOB)
     if not snaps:
         pytest.skip("MOSS-Transcribe-Diarize checkpoint snapshot not found")
 
@@ -95,48 +152,48 @@ def encoder_bundle():
     published = get_context().override_server_args()
     published.install()
     try:
-        encoder = WhisperEncoder(audio_config).cuda().to(torch.bfloat16).eval()
+        encoder = WhisperEncoder(audio_config)
+        load_encoder_checkpoint(encoder, snaps[0])
+        encoder = encoder.cuda().to(torch.bfloat16).eval()
         num_mel_bins = int(audio_config.num_mel_bins)
-        runner = WhisperEncoderCudaGraphRunner(
-            encoder, num_mel_bins, _INPUT_FEATURE_LEN
-        )
-        runner.capture(_CHUNK_BUCKETS)
+        runner = WhisperEncoderCudaGraphRunner(encoder, num_mel_bins, INPUT_FEATURE_LEN)
+        runner.capture(CHUNK_BUCKETS)
         yield encoder, num_mel_bins, runner
     finally:
         published.restore()
 
 
-def _feat(num_mel_bins: int, n: int) -> torch.Tensor:
+def make_feat(num_mel_bins: int, n: int) -> torch.Tensor:
     return torch.randn(
-        n, num_mel_bins, _INPUT_FEATURE_LEN, device="cuda", dtype=torch.bfloat16
+        n, num_mel_bins, INPUT_FEATURE_LEN, device="cuda", dtype=torch.bfloat16
     )
 
 
-def _pos() -> torch.Tensor:
-    encoder_len = (_INPUT_FEATURE_LEN - 1) // 2 + 1
+def make_pos() -> torch.Tensor:
+    encoder_len = (INPUT_FEATURE_LEN - 1) // 2 + 1
     return torch.arange(encoder_len, device="cuda", dtype=torch.long)
 
 
 def test_some_graphs_captured(encoder_bundle):
     _, _, runner = encoder_bundle
-    assert runner._graphs, "no encoder CUDA graphs captured (all fell back to eager)"
-    assert set(runner._graphs) == set(_CHUNK_BUCKETS)
+    assert runner.graphs, "no encoder CUDA graphs captured (all fell back to eager)"
+    assert set(runner.graphs) == set(CHUNK_BUCKETS)
 
 
-@pytest.mark.parametrize("n", _TEST_CHUNKS)
+@pytest.mark.parametrize("n", TEST_CHUNKS)
 def test_graph_bit_identical_to_eager(encoder_bundle, n):
     """Graphed replay must equal eager bit-for-bit at the SAME batch size. When n
     pads up to a larger bucket, we compare against eager run at that padded batch
     (not batch n) to avoid batch sizes affecting kernel selections."""
     encoder, num_mel_bins, runner = encoder_bundle
-    pos = _pos()
-    chunk_bucket = min(c for c in _CHUNK_BUCKETS if c >= n)
+    pos = make_pos()
+    chunk_bucket = min(c for c in CHUNK_BUCKETS if c >= n)
     torch.manual_seed(100 + n)
-    feat = _feat(num_mel_bins, n)
+    feat = make_feat(num_mel_bins, n)
     feat_padded = torch.zeros(
         chunk_bucket,
         num_mel_bins,
-        _INPUT_FEATURE_LEN,
+        INPUT_FEATURE_LEN,
         device="cuda",
         dtype=torch.bfloat16,
     )
@@ -155,10 +212,10 @@ def test_over_largest_bucket_falls_back_to_eager(encoder_bundle):
     """A chunk count above the largest captured bucket falls back to eager and
     still matches a direct eager call."""
     encoder, num_mel_bins, _ = encoder_bundle
-    runner = WhisperEncoderCudaGraphRunner(encoder, num_mel_bins, _INPUT_FEATURE_LEN)
+    runner = WhisperEncoderCudaGraphRunner(encoder, num_mel_bins, INPUT_FEATURE_LEN)
     runner.capture([1, 2])
-    feat = _feat(num_mel_bins, 5)
-    pos = _pos()
+    feat = make_feat(num_mel_bins, 5)
+    pos = make_pos()
     with torch.no_grad():
         eager = encoder(feat, pos, None)
         out = runner.run(feat, pos, None)
@@ -170,27 +227,27 @@ def test_vram_guard_skips_capture(encoder_bundle):
     via an absurd min_free_gb."""
     encoder, num_mel_bins, _ = encoder_bundle
     runner = WhisperEncoderCudaGraphRunner(
-        encoder, num_mel_bins, _INPUT_FEATURE_LEN, min_free_gb=100000.0
+        encoder, num_mel_bins, INPUT_FEATURE_LEN, min_free_gb=100000.0
     )
-    runner.capture(_CHUNK_BUCKETS)
-    assert runner._graphs == {}, "VRAM guard must skip all captures"
+    runner.capture(CHUNK_BUCKETS)
+    assert runner.graphs == {}, "VRAM guard must skip all captures"
 
 
 def test_capture_failure_falls_back_to_eager(encoder_bundle):
     """A capture exception is caught per-bucket, that bucket dropped; run() then
     falls back to eager, bit-identical to a direct eager call."""
     encoder, num_mel_bins, _ = encoder_bundle
-    runner = WhisperEncoderCudaGraphRunner(encoder, num_mel_bins, _INPUT_FEATURE_LEN)
+    runner = WhisperEncoderCudaGraphRunner(encoder, num_mel_bins, INPUT_FEATURE_LEN)
 
     def boom(*args, **kwargs):
         raise RuntimeError("simulated capture OOM")
 
     runner.capture_bucket = boom
-    runner.capture(_CHUNK_BUCKETS)
-    assert runner._graphs == {}, "capture failures must be caught -> no graphs"
+    runner.capture(CHUNK_BUCKETS)
+    assert runner.graphs == {}, "capture failures must be caught -> no graphs"
 
-    feat = _feat(num_mel_bins, 2)
-    pos = _pos()
+    feat = make_feat(num_mel_bins, 2)
+    pos = make_pos()
     with torch.no_grad():
         eager = encoder(feat, pos, None)
         out = runner.run(feat, pos, None)

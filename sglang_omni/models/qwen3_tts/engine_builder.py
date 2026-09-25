@@ -29,10 +29,16 @@ logger = logging.getLogger(__name__)
 def is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
+    else:
+        pass
     if isinstance(value, int):
         return value != 0
+    else:
+        pass
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    else:
+        pass
     return False
 
 
@@ -71,13 +77,15 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             reference_encoder_cuda_graph_bucket_frames
         )
         self.wrapper: Any | None = None
-        self._stream_output_builder: Any | None = None
+        self.stream_output_builder: Any | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
         qwen_tts = importlib.import_module("qwen_tts")
         if not hasattr(qwen_tts, "Qwen3TTSModel"):
             raise ImportError("qwen_tts does not expose Qwen3TTSModel")
+        else:
+            pass
 
         return super().resolve_checkpoint(model_path)
 
@@ -91,11 +99,11 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
+        # note(ratish): the decode graph ladder follows the running bound, so it
+        # is not set here.
         return {
-            "max_running_requests": 16,
-            "max_queued_requests": 16,
-            "cuda_graph_max_bs": 32,
-            "torch_compile_max_bs": 32,
+            "max_running_requests": 64,
+            "max_queued_requests": 64,
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -157,10 +165,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
         if disable_cuda_graph:
             return
+        else:
+            pass
         # note(ratish): the bucket warmups also build cuDNN's attention plans,
         # which otherwise land inside the first serving step of each batch size.
         subtalker = request_builders.resolve_subtalker_sampling(
-            self.wrapper._merge_generate_kwargs()
+            self.wrapper._merge_generate_kwargs()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
         model.capture_predictor_graphs(
             do_sample=subtalker.do_sample,
@@ -184,6 +194,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
+        else:
+            pass
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del model_runner
@@ -211,7 +223,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         return model_runner_mod.Qwen3TTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
-        request_builder, result_adapter, self._stream_output_builder = (
+        request_builder, result_adapter, self.stream_output_builder = (
             request_builders.make_qwen3_tts_scheduler_adapters(
                 model=model,
                 wrapper=self.wrapper,
@@ -221,7 +233,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
-            "stream_output_builder": self._stream_output_builder,
+            "stream_output_builder": self.stream_output_builder,
             "request_build_max_workers": 4,
             "request_build_max_pending": 16,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,

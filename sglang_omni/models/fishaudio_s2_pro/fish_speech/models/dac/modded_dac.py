@@ -36,6 +36,8 @@ class VQResult:
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
+    else:
+        pass
     return n + k - (n % k)
 
 
@@ -60,10 +62,14 @@ class ModelArgs:
     def __post_init__(self):
         if self.n_local_heads == -1:
             self.n_local_heads = self.n_head
+        else:
+            pass
         if self.intermediate_size is None:
             hidden_dim = 4 * self.dim
             n_hidden = int(2 * hidden_dim / 3)
             self.intermediate_size = find_multiple(n_hidden, 256)
+        else:
+            pass
         assert self.pos_embed_type in [
             "rope",
             "conformer",
@@ -168,6 +174,8 @@ class Transformer(nn.Module):
             else:
                 mask = self.causal_mask[None, None, input_pos]
                 mask = mask[..., input_pos]
+        else:
+            pass
 
         for i, layer in enumerate(self.layers):
             x = layer(x, input_pos, freqs_cis, mask)
@@ -225,6 +233,8 @@ class Attention(nn.Module):
                 torch.zeros(num_pos_embeddings, self.head_dim)
             )
             nn.init.normal_(self.rel_pos_embeddings, mean=0.0, std=0.02)
+        else:
+            pass
 
     def compute_conformer_pos_scores(self, q: Tensor, seqlen: int) -> Tensor:
         # q: [B, H, S, D]
@@ -264,11 +274,15 @@ class Attention(nn.Module):
         if self.pos_embed_type == "rope":
             q = apply_rotary_emb(q, freqs_cis)
             k = apply_rotary_emb(k, freqs_cis)
+        else:
+            pass
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
         if self.kv_cache is not None:
             k, v = self.kv_cache.update(input_pos, k, v)
+        else:
+            pass
 
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
@@ -285,10 +299,14 @@ class Attention(nn.Module):
             # Apply attention
             if mask is not None:
                 scores = scores.masked_fill(~mask, float("-inf"))
+            else:
+                pass
 
             attn = F.softmax(scores, dim=-1)
             if self.attn_dropout_rate > 0 and self.training:
                 attn = F.dropout(attn, p=self.attn_dropout_rate)
+            else:
+                pass
 
             y = torch.matmul(attn, v)
         else:
@@ -426,6 +444,8 @@ class WindowLimitedTransformer(Transformer):
     ) -> Tensor:
         if self.channels_first:
             x = x.transpose(1, 2)
+        else:
+            pass
         x = self.input_proj(x)  # (B, T, D)
         x = self.look_ahead_conv(x)
         input_pos = torch.arange(x.shape[1], device=x.device)
@@ -440,6 +460,8 @@ class WindowLimitedTransformer(Transformer):
         x = self.output_proj(x)  # (B, T, D)
         if self.channels_first:
             x = x.transpose(1, 2)
+        else:
+            pass
         return x
 
 
@@ -475,6 +497,8 @@ def init_weights(m):
     if isinstance(m, nn.Conv1d):
         nn.init.trunc_normal_(m.weight, std=0.02)
         nn.init.constant_(m.bias, 0)
+    else:
+        pass
 
 
 def unpad1d(x: torch.Tensor, paddings: tp.Tuple[int, int]):
@@ -515,6 +539,8 @@ def pad1d(
         if length <= max_pad:
             extra_pad = max_pad - length + 1
             x = F.pad(x, (0, extra_pad))
+        else:
+            pass
         padded = F.pad(x, paddings, mode, value)
         end = padded.shape[-1] - extra_pad
         return padded[..., :end]
@@ -621,6 +647,8 @@ class ResidualUnit(nn.Module):
                 x = x[..., :-pad]
             else:
                 x = x[..., pad // 2 : -pad // 2]
+        else:
+            pass
         return x + y
 
 
@@ -684,8 +712,12 @@ class Encoder(nn.Module):
         super().__init__()
         if strides is None:
             strides = DEFAULT_ENCODER_STRIDES
+        else:
+            pass
         if n_transformer_layers is None:
             n_transformer_layers = DEFAULT_ENCODER_TRANSFORMER_LAYERS
+        else:
+            pass
         conv_class = CausalWNConv1d if causal else WNConv1d
         # Create first convolution
         self.block = [conv_class(1, d_model, kernel_size=7, padding=3)]
@@ -779,6 +811,8 @@ class Decoder(nn.Module):
         super().__init__()
         if n_transformer_layers is None:
             n_transformer_layers = DEFAULT_DECODER_TRANSFORMER_LAYERS
+        else:
+            pass
         conv_class = CausalWNConv1d if causal else WNConv1d
         # Add first conv layer
         layers = [conv_class(input_channel, channels, kernel_size=7, padding=3)]
@@ -830,12 +864,20 @@ class DAC(BaseModel, CodecMixin):
         super().__init__()
         if encoder_rates is None:
             encoder_rates = DEFAULT_DAC_ENCODER_RATES
+        else:
+            pass
         if decoder_rates is ...:
             decoder_rates = DEFAULT_DAC_DECODER_RATES
+        else:
+            pass
         if encoder_transformer_layers is None:
             encoder_transformer_layers = DEFAULT_DAC_ENCODER_TRANSFORMER_LAYERS
+        else:
+            pass
         if decoder_transformer_layers is None:
             decoder_transformer_layers = DEFAULT_DAC_DECODER_TRANSFORMER_LAYERS
+        else:
+            pass
 
         self.encoder_dim = encoder_dim
         self.encoder_rates = encoder_rates
@@ -845,6 +887,8 @@ class DAC(BaseModel, CodecMixin):
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
+        else:
+            pass
 
         self.latent_dim = latent_dim
 
@@ -881,6 +925,8 @@ class DAC(BaseModel, CodecMixin):
     def preprocess(self, audio_data, sample_rate):
         if sample_rate is None:
             sample_rate = self.sample_rate
+        else:
+            pass
         assert sample_rate == self.sample_rate
 
         length = audio_data.shape[-1]
@@ -932,6 +978,8 @@ class DAC(BaseModel, CodecMixin):
         audio_data = nn.functional.pad(audio_data, (0, right_pad))
         if audio_lengths is None:
             audio_lengths = torch.LongTensor([length + right_pad]).to(audio_data.device)
+        else:
+            pass
 
         z = self.encoder(audio_data)
         vq_results = self.quantizer(z, n_quantizers, **kwargs)
@@ -1033,6 +1081,8 @@ if __name__ == "__main__":
                 print(
                     f"Warning: Skipped loading some keys due to shape mismatch: {skipped_keys}"
                 )
+            else:
+                pass
             return filtered_state_dict, skipped_keys
 
         model = hydra.utils.instantiate(
@@ -1060,6 +1110,8 @@ if __name__ == "__main__":
         # If mono, add a channel dimension
         if len(wave_np.shape) == 1:
             wave_np = wave_np[None, :]
+        else:
+            pass
         wave_tensor = torch.from_numpy(wave_np).cuda()
 
         features, feature_lens = model.encode(wave_tensor)
@@ -1079,3 +1131,5 @@ if __name__ == "__main__":
             print(features.shape)
             fake_audio = model.from_indices(features)
             sf.write(f"fake{idx}.wav", fake_audio.squeeze(1).cpu().numpy().T, 44100)
+else:
+    pass

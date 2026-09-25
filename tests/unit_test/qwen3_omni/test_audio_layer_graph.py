@@ -22,32 +22,32 @@ HEADS = 4
 HEAD_DIM = 64
 
 
-class _Config:
+class Config:
     def __init__(self, d_model: int) -> None:
         self.d_model = d_model
 
 
-class _Attention(nn.Module):
+class Attention(nn.Module):
     def __init__(self, dim: int) -> None:
         super().__init__()
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
 
-class _Layer(nn.Module):
+class Layer(nn.Module):
     def __init__(self, dim: int) -> None:
         super().__init__()
-        self.self_attn = _Attention(dim)
+        self.self_attn = Attention(dim)
 
 
-class _Tower(nn.Module):
+class Tower(nn.Module):
     def __init__(self, dim: int = 8, n: int = 2) -> None:
         super().__init__()
-        self.config = _Config(dim)
-        self.layers = nn.ModuleList(_Layer(dim) for _ in range(n))
+        self.config = Config(dim)
+        self.layers = nn.ModuleList(Layer(dim) for _ in range(n))
 
 
-def _runner(**kwargs) -> AudioLayerGraphRunner:
-    tower = _Tower()
+def make_runner(**kwargs) -> AudioLayerGraphRunner:
+    tower = Tower()
     return AudioLayerGraphRunner(
         tower, device=torch.device("cuda", 0), window=WINDOW, **kwargs
     )
@@ -55,24 +55,24 @@ def _runner(**kwargs) -> AudioLayerGraphRunner:
 
 def test_cpu_device_is_rejected() -> None:
     with pytest.raises(ValueError):
-        AudioLayerGraphRunner(_Tower(), device=torch.device("cpu"), window=WINDOW)
+        AudioLayerGraphRunner(Tower(), device=torch.device("cpu"), window=WINDOW)
 
 
 def test_runner_without_captured_graphs_declines() -> None:
-    runner = _runner()
+    runner = make_runner()
     assert runner.has_graphs is False
     hidden = torch.zeros(4, 8)
     assert runner.maybe_replay(hidden, torch.zeros(3), [2, 2]) is None
 
 
 def test_segment_slots_cover_every_batch_row() -> None:
-    runner = _runner(max_batch_rows=32)
+    runner = make_runner(max_batch_rows=32)
     # A bucket of 256 tokens holds 2 windows, but 32 rows can each add one more.
     assert runner.segment_slots(256) >= 256 // WINDOW + 32
 
 
 def test_window_segments_bound_each_segment() -> None:
-    runner = _runner()
+    runner = make_runner()
     assert runner.window_segments(0) == []
     assert runner.window_segments(23) == [23]
     assert runner.window_segments(126) == [WINDOW, 22]
@@ -80,8 +80,8 @@ def test_window_segments_bound_each_segment() -> None:
 
 
 def test_bucket_selection_picks_the_smallest_that_fits() -> None:
-    runner = _runner()
-    runner._graphs = {
+    runner = make_runner()
+    runner.graphs = {
         b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
     }
     assert runner.select(100, [25, 25, 25, 25]) == 128
@@ -90,8 +90,8 @@ def test_bucket_selection_picks_the_smallest_that_fits() -> None:
 
 
 def test_bucket_selection_declines_beyond_the_largest_bucket() -> None:
-    runner = _runner()
-    runner._graphs = {
+    runner = make_runner()
+    runner.graphs = {
         b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
     }
     tokens = max(DEFAULT_TOKEN_BUCKETS) + 1
@@ -99,16 +99,16 @@ def test_bucket_selection_declines_beyond_the_largest_bucket() -> None:
 
 
 def test_bucket_selection_declines_when_segments_exceed_slots() -> None:
-    runner = _runner()
-    runner._graphs = {
+    runner = make_runner()
+    runner.graphs = {
         b: type("C", (), {"segment_slots": 4})() for b in DEFAULT_TOKEN_BUCKETS
     }
     assert runner.select(100, [1] * 100) is None
 
 
 def test_bucket_selection_counts_split_padding_segments() -> None:
-    runner = _runner(token_buckets=(256,))
-    runner._graphs = {256: type("C", (), {"segment_slots": 3})()}
+    runner = make_runner(token_buckets=(256,))
+    runner.graphs = {256: type("C", (), {"segment_slots": 3})()}
     # 129 live tokens occupy two segments. The 127 padding rows need two more
     # window-bounded segments, so a three-slot capture cannot serve the replay.
     assert runner.select(129, [104, 25]) is None
@@ -116,17 +116,17 @@ def test_bucket_selection_counts_split_padding_segments() -> None:
 
 @pytest.mark.parametrize("segments", ([104, -4], [104, 1], [WINDOW + 1]))
 def test_bucket_selection_declines_invalid_live_segments(segments: list[int]) -> None:
-    runner = _runner()
-    runner._graphs = {
+    runner = make_runner()
+    runner.graphs = {
         b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
     }
     assert runner.select(100, segments) is None
 
 
 def test_disabled_runner_declines_even_with_graphs() -> None:
-    runner = _runner()
-    runner._graphs = {128: type("C", (), {"segment_slots": 64})()}
-    runner._disabled_reason = "capture failed"
+    runner = make_runner()
+    runner.graphs = {128: type("C", (), {"segment_slots": 64})()}
+    runner.disabled_reason = "capture failed"
     assert runner.has_graphs is False
     assert runner.maybe_replay(torch.zeros(4, 8), torch.zeros(3), [2, 2]) is None
 
@@ -159,15 +159,15 @@ def test_an_unresolvable_kernel_stack_stays_eager_with_a_reason(
         raise ImportError("no flash attention build for this torch")
 
     monkeypatch.setattr(audio_layer_graph, "resolve_packed_attention", resolve)
-    runner = _runner()
+    runner = make_runner()
     runner.capture_all()
     assert runner.has_graphs is False
-    assert runner._graphs == {}
-    assert "no flash attention build" in runner._disabled_reason
+    assert runner.graphs == {}
+    assert "no flash attention build" in runner.disabled_reason
 
 
 def test_capture_segments_fit_the_declared_window() -> None:
-    runner = _runner(max_batch_rows=32)
+    runner = make_runner(max_batch_rows=32)
     for bucket in DEFAULT_TOKEN_BUCKETS:
         segments = runner.capture_segments(bucket)
         assert len(segments) == runner.segment_slots(bucket)
@@ -175,7 +175,7 @@ def test_capture_segments_fit_the_declared_window() -> None:
         assert max(segments) <= WINDOW
 
 
-class _RealAttention(nn.Module):
+class RealAttention(nn.Module):
     def __init__(self, dim: int) -> None:
         super().__init__()
         self.num_heads = HEADS
@@ -186,10 +186,10 @@ class _RealAttention(nn.Module):
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
 
-class _RealLayer(nn.Module):
+class RealLayer(nn.Module):
     def __init__(self, dim: int) -> None:
         super().__init__()
-        self.self_attn = _RealAttention(dim)
+        self.self_attn = RealAttention(dim)
         self.self_attn_layer_norm = nn.LayerNorm(dim)
         self.final_layer_norm = nn.LayerNorm(dim)
         self.fc1 = nn.Linear(dim, dim, bias=False)
@@ -197,14 +197,14 @@ class _RealLayer(nn.Module):
         self.activation_fn = nn.GELU()
 
 
-class _RealTower(nn.Module):
+class RealTower(nn.Module):
     def __init__(self, dim: int = HEADS * HEAD_DIM, n: int = 2) -> None:
         super().__init__()
-        self.config = _Config(dim)
-        self.layers = nn.ModuleList(_RealLayer(dim) for _ in range(n))
+        self.config = Config(dim)
+        self.layers = nn.ModuleList(RealLayer(dim) for _ in range(n))
 
 
-def _segmented_sdpa(q, k, v, cu_seqlens, softmax_scale):
+def segmented_sdpa(q, k, v, cu_seqlens, softmax_scale):
     bounds = cu_seqlens.tolist()
     outputs = [
         F.scaled_dot_product_attention(
@@ -218,12 +218,12 @@ def _segmented_sdpa(q, k, v, cu_seqlens, softmax_scale):
     return torch.cat(outputs, dim=0)
 
 
-class _SegmentedSdpa(nn.Module):
+class SegmentedSdpa(nn.Module):
     def forward(self, q, k, v, cu_seqlens, bsz, seq_len, softmax_scale, **kwargs):
-        return _segmented_sdpa(q, k, v, cu_seqlens, softmax_scale)
+        return segmented_sdpa(q, k, v, cu_seqlens, softmax_scale)
 
 
-def _cu_seqlens(segments: list[int], device: torch.device) -> torch.Tensor:
+def make_cu_seqlens(segments: list[int], device: torch.device) -> torch.Tensor:
     return (
         torch.tensor([0, *segments], dtype=torch.int32)
         .cumsum(0)
@@ -243,7 +243,7 @@ def test_packed_attention_matches_fp32_sdpa_per_segment_and_head() -> None:
         torch.randn(sum(segments), HEADS, HEAD_DIM, device=device).to(torch.bfloat16)
         for _ in range(3)
     )
-    cu_seqlens = _cu_seqlens(segments, device)
+    cu_seqlens = make_cu_seqlens(segments, device)
     with torch.no_grad():
         packed = packed_attention(
             q,
@@ -256,7 +256,7 @@ def test_packed_attention_matches_fp32_sdpa_per_segment_and_head() -> None:
             max_seqlen=WINDOW,
         )
         with sdpa_kernel(SDPBackend.MATH):
-            reference = _segmented_sdpa(
+            reference = segmented_sdpa(
                 q.float(), k.float(), v.float(), cu_seqlens, HEAD_DIM**-0.5
             )
     assert packed.shape == reference.shape
@@ -268,18 +268,18 @@ def test_packed_attention_matches_fp32_sdpa_per_segment_and_head() -> None:
 def test_packed_layer_stack_matches_segmented_sdpa() -> None:
     torch.manual_seed(0)
     device = torch.device("cuda", 0)
-    tower = _RealTower().to(device, torch.bfloat16)
+    tower = RealTower().to(device, torch.bfloat16)
     runner = AudioLayerGraphRunner(tower, device=device, window=WINDOW)
     runner.resolve_attention()
-    assert runner._disabled_reason is None, runner._disabled_reason
+    assert runner.disabled_reason is None, runner.disabled_reason
     segments = [104, 104, 49, 37, 90]
     hidden = torch.randn(sum(segments), tower.config.d_model, device=device).to(
         torch.bfloat16
     )
-    cu_seqlens = _cu_seqlens(segments, device)
+    cu_seqlens = make_cu_seqlens(segments, device)
     with torch.no_grad():
         packed = runner.run_layers(hidden, cu_seqlens, WINDOW)
-        runner._packed_attention = _SegmentedSdpa()
+        runner.packed_attention = SegmentedSdpa()
         reference = runner.run_layers(hidden, cu_seqlens, WINDOW)
     torch.testing.assert_close(packed, reference, rtol=2e-2, atol=2e-2)
 
@@ -287,11 +287,11 @@ def test_packed_layer_stack_matches_segmented_sdpa() -> None:
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_capture_all_records_a_graph_for_every_bucket() -> None:
-    tower = _RealTower().to(torch.device("cuda", 0), torch.bfloat16)
+    tower = RealTower().to(torch.device("cuda", 0), torch.bfloat16)
     runner = AudioLayerGraphRunner(tower, device=torch.device("cuda", 0), window=WINDOW)
     runner.capture_all()
-    assert runner.has_graphs, runner._disabled_reason
-    assert sorted(runner._graphs) == sorted(DEFAULT_TOKEN_BUCKETS)
+    assert runner.has_graphs, runner.disabled_reason
+    assert sorted(runner.graphs) == sorted(DEFAULT_TOKEN_BUCKETS)
 
 
 @pytest.mark.accelerator
@@ -299,10 +299,10 @@ def test_capture_all_records_a_graph_for_every_bucket() -> None:
 def test_replay_matches_the_uncaptured_packed_stack_across_bucket_boundaries() -> None:
     torch.manual_seed(0)
     device = torch.device("cuda", 0)
-    tower = _RealTower().to(device, torch.bfloat16)
+    tower = RealTower().to(device, torch.bfloat16)
     runner = AudioLayerGraphRunner(tower, device=device, window=WINDOW)
     runner.capture_all()
-    assert runner.has_graphs, runner._disabled_reason
+    assert runner.has_graphs, runner.disabled_reason
 
     cases = (
         [104, 23],
@@ -319,7 +319,7 @@ def test_replay_matches_the_uncaptured_packed_stack_across_bucket_boundaries() -
             hidden = torch.randn(tokens, tower.config.d_model, device=device).to(
                 torch.bfloat16
             )
-            cu_seqlens = _cu_seqlens(segments, device)
+            cu_seqlens = make_cu_seqlens(segments, device)
             uncaptured = runner.run_layers(hidden, cu_seqlens, WINDOW)
             replayed = runner.maybe_replay(hidden, cu_seqlens, segments)
             assert replayed is not None

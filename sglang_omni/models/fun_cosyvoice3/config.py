@@ -87,6 +87,8 @@ def reject_conflicting_dit_accelerators(
 ) -> None:
     if enable_flow_estimator_trt and enable_dit_torch_compile:
         raise ValueError(_DIT_ACCELERATOR_CONFLICT)
+    else:
+        pass
 
 
 class FunCosyVoice3EngineFactoryArgs(FactoryArgs):
@@ -199,19 +201,27 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name != "vocoder":
             return {}
+        else:
+            pass
         vocoder_factory = self.stage_named("vocoder").factory
         if vocoder_factory.mlx_model_path is not None:
             # Note (yexiaodong): A separate vocoder artifact must keep its own
             # revision; both explicit fields therefore stay in typed config.
             return {}
+        else:
+            pass
         # Note (yexiaodong): The converted artifact contains the speech-token
         # LLM, Flow, and HiFT weights, so reuse it unless the vocoder overrides it.
         engine_factory = self.stage_named("tts_engine").factory
         kwargs: dict[str, Any] = {}
         if engine_factory.mlx_model_path is not None:
             kwargs["mlx_model_path"] = engine_factory.mlx_model_path
+        else:
+            pass
         if engine_factory.mlx_model_revision is not None:
             kwargs["mlx_model_revision"] = engine_factory.mlx_model_revision
+        else:
+            pass
         return kwargs
 
 

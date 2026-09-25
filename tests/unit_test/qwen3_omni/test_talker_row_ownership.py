@@ -13,31 +13,31 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.types import ModelRunnerOutput
 
 
-def _fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
+def fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
     return SimpleNamespace(
-        _feedback_buffer=torch.zeros(n, hidden, dtype=torch.float32),
-        _feedback_mask=torch.zeros(n, dtype=torch.bool),
-        _output_codes=torch.stack(
+        feedback_buffer=torch.zeros(n, hidden, dtype=torch.float32),
+        feedback_mask=torch.zeros(n, dtype=torch.bool),
+        output_codes=torch.stack(
             [torch.tensor([i, i + 100], dtype=torch.long) for i in range(n)]
         )[:, :code_groups],
-        _output_embeds=torch.stack(
+        output_embeds=torch.stack(
             [torch.full((hidden,), float(i * 7 + 1)) for i in range(n)]
         ),
     )
 
 
-def _runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
+def make_runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner = object.__new__(QwenTalkerModelRunner)
     runner.model = model
-    runner._feedback_enabled = True
-    runner._code2wav_target = "code2wav"
-    runner._codec_coalesce_frames = 0
-    runner._outbox = SimpleNamespace(sent=[])
-    runner._outbox.put = runner._outbox.sent.append
+    runner.feedback_enabled = True
+    runner.code2wav_target = "code2wav"
+    runner.codec_coalesce_frames = 0
+    runner.outbox = SimpleNamespace(sent=[])
+    runner.outbox.put = runner.outbox.sent.append
     return runner
 
 
-def _data(
+def make_data(
     feedback: torch.Tensor | None,
     text: torch.Tensor | None,
     *,
@@ -55,98 +55,98 @@ def _data(
     )
 
 
-def _req_wrap(data: SimpleNamespace) -> SimpleNamespace:
+def req_wrap(data: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(data=data)
 
 
-def _sched_batch(n: int) -> SimpleNamespace:
+def sched_batch(n: int) -> SimpleNamespace:
     return SimpleNamespace(reqs=[SimpleNamespace(rid=f"r{i}") for i in range(n)])
 
 
 def test_row_ownership_survives_prep_then_emit() -> None:
     n, hidden, code_groups = 3, 3, 2
-    model = _fake_model(n, hidden, code_groups)
-    runner = _runner(model)
+    model = fake_model(n, hidden, code_groups)
+    runner = make_runner(model)
 
     feedbacks = [torch.full((hidden,), float(i + 1)) for i in range(n)]
     texts = [torch.full((hidden,), float(10 * (i + 1))) for i in range(n)]
-    requests = [_req_wrap(_data(feedbacks[i], texts[i])) for i in range(n)]
-    schedule_batch = _sched_batch(n)
+    requests = [req_wrap(make_data(feedbacks[i], texts[i])) for i in range(n)]
+    schedule_batch = sched_batch(n)
 
     runner.write_feedback_buffers(requests)
 
-    assert torch.equal(model._feedback_mask, torch.ones(n, dtype=torch.bool))
+    assert torch.equal(model.feedback_mask, torch.ones(n, dtype=torch.bool))
     for i in range(n):
-        assert torch.equal(model._feedback_buffer[i], feedbacks[i] + texts[i])
+        assert torch.equal(model.feedback_buffer[i], feedbacks[i] + texts[i])
 
     runner.emit_code_chunks_and_feedback(
         schedule_batch=schedule_batch, requests=requests
     )
 
-    sent = runner._outbox.sent
+    sent = runner.outbox.sent
     assert [m.request_id for m in sent] == [f"r{i}" for i in range(n)]
     for i, msg in enumerate(sent):
         assert msg.target == "code2wav"
         assert msg.metadata == {"stream": False}
-        assert torch.equal(msg.data, model._output_codes[i])
+        assert torch.equal(msg.data, model.output_codes[i])
         fb_queue = requests[i].data.pending_feedback_queue
         assert len(fb_queue) == 1
-        assert torch.equal(fb_queue[0], model._output_embeds[i])
+        assert torch.equal(fb_queue[0], model.output_embeds[i])
 
 
 def test_sparse_feedback_row_stays_unwritten() -> None:
     n, hidden, code_groups = 3, 3, 2
-    model = _fake_model(n, hidden, code_groups)
-    runner = _runner(model)
+    model = fake_model(n, hidden, code_groups)
+    runner = make_runner(model)
 
     feedbacks = [torch.full((hidden,), float(i + 1)) for i in range(n)]
     texts = [torch.full((hidden,), float(10 * (i + 1))) for i in range(n)]
     requests = [
-        _req_wrap(_data(feedbacks[0], texts[0])),
-        _req_wrap(_data(feedbacks[1], None, thinker_done=False)),
-        _req_wrap(_data(feedbacks[2], texts[2])),
+        req_wrap(make_data(feedbacks[0], texts[0])),
+        req_wrap(make_data(feedbacks[1], None, thinker_done=False)),
+        req_wrap(make_data(feedbacks[2], texts[2])),
     ]
 
     runner.write_feedback_buffers(requests)
 
-    assert model._feedback_mask.tolist() == [True, False, True]
-    assert torch.equal(model._feedback_buffer[1], torch.zeros(hidden))
-    assert torch.equal(model._feedback_buffer[0], feedbacks[0] + texts[0])
-    assert torch.equal(model._feedback_buffer[2], feedbacks[2] + texts[2])
+    assert model.feedback_mask.tolist() == [True, False, True]
+    assert torch.equal(model.feedback_buffer[1], torch.zeros(hidden))
+    assert torch.equal(model.feedback_buffer[0], feedbacks[0] + texts[0])
+    assert torch.equal(model.feedback_buffer[2], feedbacks[2] + texts[2])
 
 
 def test_stale_mask_cannot_leak_into_reused_slot() -> None:
     # Note (wenyao): forward-side mask reset (talker.py:422) needs a real forward; integration-level only
     n, hidden, code_groups = 2, 3, 2
-    model = _fake_model(n, hidden, code_groups)
-    model._feedback_mask[:n] = True
-    runner = _runner(model)
+    model = fake_model(n, hidden, code_groups)
+    model.feedback_mask[:n] = True
+    runner = make_runner(model)
 
     feedback1 = torch.full((hidden,), 5.0)
     text1 = torch.full((hidden,), 50.0)
     requests = [
-        _req_wrap(_data(torch.full((hidden,), 1.0), None, thinker_done=False)),
-        _req_wrap(_data(feedback1, text1)),
+        req_wrap(make_data(torch.full((hidden,), 1.0), None, thinker_done=False)),
+        req_wrap(make_data(feedback1, text1)),
     ]
 
     runner.write_feedback_buffers(requests)
 
-    assert model._feedback_mask.tolist() == [False, True]
-    assert torch.equal(model._feedback_buffer[0], torch.zeros(hidden))
-    assert torch.equal(model._feedback_buffer[1], feedback1 + text1)
+    assert model.feedback_mask.tolist() == [False, True]
+    assert torch.equal(model.feedback_buffer[0], torch.zeros(hidden))
+    assert torch.equal(model.feedback_buffer[1], feedback1 + text1)
 
 
 def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
     n, hidden, code_groups = 2, 3, 2
-    model = _fake_model(n, hidden, code_groups)
-    runner = _runner(model)
+    model = fake_model(n, hidden, code_groups)
+    runner = make_runner(model)
 
     request_data = {
-        "r0": _data(
+        "r0": make_data(
             torch.full((hidden,), 1.0),
             torch.full((hidden,), 10.0),
         ),
-        "r1": _data(
+        "r1": make_data(
             torch.full((hidden,), 2.0),
             torch.full((hidden,), 20.0),
         ),
@@ -169,7 +169,7 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
     expected_pending_feedback: dict[str, torch.Tensor] = {}
 
     for step, order in enumerate(step_orders):
-        requests = [_req_wrap(request_data[rid]) for rid in order]
+        requests = [req_wrap(request_data[rid]) for rid in order]
         schedule_batch = SimpleNamespace(
             reqs=[SimpleNamespace(rid=rid) for rid in order],
             output_ids=None,
@@ -181,14 +181,14 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
 
         runner.write_feedback_buffers(requests)
 
-        assert model._feedback_mask.tolist() == [True] * len(order) + [False] * (
+        assert model.feedback_mask.tolist() == [True] * len(order) + [False] * (
             n - len(order)
         )
         for row, expected in enumerate(expected_inputs):
-            assert torch.equal(model._feedback_buffer[row], expected)
+            assert torch.equal(model.feedback_buffer[row], expected)
 
         # Match the real forward, which consumes and clears the active mask.
-        model._feedback_mask[: len(order)] = False
+        model.feedback_mask[: len(order)] = False
         tokens = torch.tensor(
             [step * 10 + int(rid[-1]) for rid in order], dtype=torch.long
         )
@@ -207,8 +207,8 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
                 for rid in order
             ]
         )
-        model._output_codes[: len(order)] = codes
-        model._output_embeds[: len(order)] = embeds
+        model.output_codes[: len(order)] = codes
+        model.output_embeds[: len(order)] = embeds
 
         result = SimpleNamespace()
         runner.stage_token_ids(result, tokens)
@@ -217,7 +217,7 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
             requests=requests,
         )
 
-        emitted = runner._outbox.sent[-len(order) :]
+        emitted = runner.outbox.sent[-len(order) :]
         assert [message.request_id for message in emitted] == list(order)
         for row, rid in enumerate(order):
             assert torch.equal(emitted[row].data, codes[row])
@@ -226,9 +226,9 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
             expected_messages.append((rid, codes[row].clone()))
             expected_pending_feedback[rid] = embeds[row].clone()
 
-        assert len(runner._outbox.sent) == len(expected_messages)
+        assert len(runner.outbox.sent) == len(expected_messages)
         for message, (expected_rid, expected_code) in zip(
-            runner._outbox.sent, expected_messages
+            runner.outbox.sent, expected_messages
         ):
             assert message.request_id == expected_rid
             assert torch.equal(message.data, expected_code)
@@ -254,17 +254,17 @@ def test_make_batch_result_requires_declared_host_token_ids() -> None:
         OmniScheduler.make_batch_result(malformed_output)
 
 
-class _FakeReq:
+class FakeReq:
     def __init__(self, rid: str, finished: bool, retracted: bool = False) -> None:
         self.rid = rid
-        self._finished = finished
+        self.is_finished = finished
         self.is_retracted = retracted
 
     def finished(self) -> bool:
-        return self._finished
+        return self.is_finished
 
 
-def _resolve_scheduler(result: SimpleNamespace) -> tuple[OmniScheduler, list]:
+def resolve_scheduler(result: SimpleNamespace) -> tuple[OmniScheduler, list]:
     scheduler = object.__new__(OmniScheduler)
     captured: list = []
     scheduler.run_batch_resolve = (
@@ -278,14 +278,14 @@ def _resolve_scheduler(result: SimpleNamespace) -> tuple[OmniScheduler, list]:
 
 def test_overrun_drop_keeps_reqs_and_tokens_index_aligned() -> None:
     reqs = [
-        _FakeReq("r0", finished=False),
-        _FakeReq("r1", finished=True),
-        _FakeReq("r2", finished=False),
-        _FakeReq("r3", finished=True),
+        FakeReq("r0", finished=False),
+        FakeReq("r1", finished=True),
+        FakeReq("r2", finished=False),
+        FakeReq("r3", finished=True),
     ]
     batch = SimpleNamespace(reqs=list(reqs))
     result = SimpleNamespace(next_token_ids=torch.tensor([100, 101, 102, 103]))
-    scheduler, captured = _resolve_scheduler(result)
+    scheduler, captured = resolve_scheduler(result)
 
     scheduler.resolve_and_process(batch, None, None)
 
@@ -297,13 +297,13 @@ def test_overrun_drop_keeps_reqs_and_tokens_index_aligned() -> None:
 
 def test_overrun_drop_retracted_row_is_dropped() -> None:
     reqs = [
-        _FakeReq("r0", finished=False),
-        _FakeReq("r1", finished=False, retracted=True),
-        _FakeReq("r2", finished=False),
+        FakeReq("r0", finished=False),
+        FakeReq("r1", finished=False, retracted=True),
+        FakeReq("r2", finished=False),
     ]
     batch = SimpleNamespace(reqs=list(reqs))
     result = SimpleNamespace(next_token_ids=torch.tensor([10, 11, 12]))
-    scheduler, captured = _resolve_scheduler(result)
+    scheduler, captured = resolve_scheduler(result)
 
     scheduler.resolve_and_process(batch, None, None)
 
@@ -313,10 +313,10 @@ def test_overrun_drop_retracted_row_is_dropped() -> None:
 
 
 def test_overrun_drop_noop_keeps_full_alignment() -> None:
-    reqs = [_FakeReq(f"r{i}", finished=False) for i in range(3)]
+    reqs = [FakeReq(f"r{i}", finished=False) for i in range(3)]
     batch = SimpleNamespace(reqs=list(reqs))
     result = SimpleNamespace(next_token_ids=torch.tensor([7, 8, 9]))
-    scheduler, captured = _resolve_scheduler(result)
+    scheduler, captured = resolve_scheduler(result)
 
     scheduler.resolve_and_process(batch, None, None)
 
@@ -326,10 +326,10 @@ def test_overrun_drop_noop_keeps_full_alignment() -> None:
 
 
 def test_overrun_drop_all_finished_skips_process() -> None:
-    reqs = [_FakeReq("r0", finished=True), _FakeReq("r1", finished=True)]
+    reqs = [FakeReq("r0", finished=True), FakeReq("r1", finished=True)]
     batch = SimpleNamespace(reqs=list(reqs))
     result = SimpleNamespace(next_token_ids=torch.tensor([1, 2]))
-    scheduler, captured = _resolve_scheduler(result)
+    scheduler, captured = resolve_scheduler(result)
 
     scheduler.resolve_and_process(batch, None, None)
 

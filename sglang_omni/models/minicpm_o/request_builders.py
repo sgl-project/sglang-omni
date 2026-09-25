@@ -20,13 +20,15 @@ from sglang_omni.models.minicpm_o.routing import (
     payload_with_state,
 )
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
 
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+else:
+    pass
 
 
 def resolve_sampling_seed(params: dict[str, Any]) -> int | None:
@@ -34,6 +36,8 @@ def resolve_sampling_seed(params: dict[str, Any]) -> int | None:
         value = params.get(key)
         if value is not None:
             return int(value)
+        else:
+            pass
     return None
 
 
@@ -52,6 +56,8 @@ def build_encoder_request(
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:
         return EncoderRequestData(model_inputs={}, skip_result={})
+    else:
+        pass
     cache_key = inputs.get("cache_key")
     model_inputs = {
         k: v for k, v in inputs.items() if k not in ("cache_key", "_active")
@@ -84,9 +90,13 @@ def apply_mm_pad_values(
         info = mm_inputs.get(modality)
         if not isinstance(info, dict):
             continue
+        else:
+            pass
         bounds = info.get("bounds")
         if bounds is None or bounds.numel() == 0:
             continue
+        else:
+            pass
         positions = torch.cat(
             [torch.arange(int(start), int(end)) for start, end in bounds]
         )
@@ -99,6 +109,8 @@ def apply_mm_pad_values(
         mm_positions[modality] = positions
     if not has_any:
         return input_ids, None
+    else:
+        pass
     model_inputs["pad_values"] = pad_values
     return input_ids, mm_positions
 
@@ -156,6 +168,8 @@ def build_sglang_thinker_request(
             model_inputs=model_inputs,
             vocab_size=vocab_size,
         )
+    else:
+        pass
     req = Req(
         rid=request_id or "req-0",
         origin_input_text="",
@@ -166,9 +180,9 @@ def build_sglang_thinker_request(
     req.tokenizer = tokenizer
 
     req.omni_model_inputs = model_inputs if model_inputs else None
-    req._omni_consumed = None
-    req._codec_suppress_tokens = None
-    req._omni_mm_positions = mm_positions
+    req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._omni_mm_positions = mm_positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = SGLangARRequestData(
         input_ids=input_ids,
@@ -201,10 +215,16 @@ def apply_thinker_result(
 
     if result.finish_reason is not None:
         thinker_out["finish_reason"] = result.finish_reason
+    else:
+        pass
     if result.weight_version is not None:
         thinker_out["weight_version"] = result.weight_version
+    else:
+        pass
     if result.output_token_logprobs is not None:
         thinker_out["output_token_logprobs"] = result.output_token_logprobs
+    else:
+        pass
 
     state.thinker_out = thinker_out
     state.engine_outputs[stage_name] = thinker_out
@@ -249,8 +269,12 @@ def build_thinker_stream_output(
     """Emit one token for streaming requests after a complete prefill or decode."""
     if req_data.req.inflight_middle_chunks > 0 or req_output.data is None:
         return []
+    else:
+        pass
     if not req_data.stage_payload.request.params.get("stream", False):
         return []
+    else:
+        pass
 
     token_id = int(req_output.data)
     # note (MayDomine): stream transport accepts tensors, not scalar ids.

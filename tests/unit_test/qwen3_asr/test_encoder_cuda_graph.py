@@ -19,23 +19,23 @@ def test_build_buckets_rejects_bad_limits():
         build_buckets(0, 780)
 
 
-def _plan_only_runner(max_batch=8, max_tokens_per_clip=780):
+def plan_only_runner(max_batch=8, max_tokens_per_clip=780):
     r = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
-    r._max_seqlen = 104
-    r._max_windows_for = lambda b: max_batch + b // 104 + 1
+    r.max_seqlen = 104
+    r.max_windows_for = lambda b: max_batch + b // 104 + 1
     raw = build_buckets(max_batch, max_tokens_per_clip)
-    r._buckets = raw[:-1] + (raw[-1] + r._max_windows_for(raw[-1]),)
+    r.buckets = raw[:-1] + (raw[-1] + r.max_windows_for(raw[-1]),)
     return r
 
 
 @pytest.mark.parametrize("total,windows", [(65, 1), (260, 4), (6240, 64), (104, 1)])
 def test_plan_invariants(total, windows):
-    r = _plan_only_runner()
+    r = plan_only_runner()
     bucket_size, dummies = r.plan(total, windows)
     assert total + sum(dummies) == bucket_size
-    assert all(1 <= d <= r._max_seqlen for d in dummies)
-    assert windows + len(dummies) == r._max_windows_for(bucket_size)
-    assert r.plan(r._buckets[-1] + 1, 1) is None
+    assert all(1 <= d <= r.max_seqlen for d in dummies)
+    assert windows + len(dummies) == r.max_windows_for(bucket_size)
+    assert r.plan(r.buckets[-1] + 1, 1) is None
 
 
 def test_get_audio_feature_routing(monkeypatch):
@@ -55,12 +55,12 @@ def test_get_audio_feature_routing(monkeypatch):
     )
     get = sglang_model.Qwen3ASRForConditionalGeneration.get_audio_feature
 
-    model._encoder_graph_runner = SimpleNamespace(
+    model.encoder_graph_runner = SimpleNamespace(
         tokens_per_window=104, run=lambda h, w: torch.ones(65, 8)
     )
     assert torch.equal(get(model, [item]), torch.ones(1, 65, 8))
 
-    model._encoder_graph_runner = SimpleNamespace(
+    model.encoder_graph_runner = SimpleNamespace(
         tokens_per_window=104, run=lambda h, w: None
     )
     assert torch.equal(get(model, [item]), torch.full((1, 65, 8), 7.0))
@@ -93,12 +93,12 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
         proj2=identity_linear,
     )
     runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
-    runner._tower = tower
-    runner._max_seqlen = 104
+    runner.tower = tower
+    runner.max_seqlen = 104
     hidden_states = torch.zeros(8, 4)
     cu_seqlens = torch.tensor([0, 4, 8], dtype=torch.int32)
     attention_metadata = object()
-    runner._capture_attention_metadata = attention_metadata
+    runner.capture_attention_metadata = attention_metadata
 
     output = runner.layer_stack(hidden_states, cu_seqlens)
 
@@ -182,8 +182,8 @@ def test_graph_matches_eager_tower(asr_server_args):
         graph_backend=current_platform.get_device_graph_backend(tower_device),
     )
     runner.capture_all()
-    assert runner._graphs and not runner._failed
-    pools = [entry.graph.pool() for entry in runner._graphs.values()]
+    assert runner.graphs and not runner.failed
+    pools = [entry.graph.pool() for entry in runner.graphs.values()]
     assert len(set(pools)) == len(pools)
 
     def check(frame_lens):
@@ -229,10 +229,10 @@ def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
         sglang_model.Qwen3ASRForConditionalGeneration
     )
     model.audio_tower = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]))
-    model._encoder_graph_runner = "untouched"
+    model.encoder_graph_runner = "untouched"
 
     sglang_model.Qwen3ASRForConditionalGeneration.init_encoder_graphs(
         model, max_batch_size=4, max_tokens_per_clip=780
     )
 
-    assert model._encoder_graph_runner == "untouched"
+    assert model.encoder_graph_runner == "untouched"

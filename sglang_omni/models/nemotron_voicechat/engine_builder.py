@@ -51,6 +51,8 @@ def shim_dir(name: str, source: Path) -> Path:
     for entry in source.iterdir():
         if entry.name != "config.json":
             (shim / entry.name).symlink_to(entry)
+        else:
+            pass
     return shim
 
 
@@ -137,11 +139,11 @@ class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
     def __init__(self, *, max_running_requests: int = 1) -> None:
         super().__init__(max_running_requests=max_running_requests)
         self.model_arch_override = VOICECHAT_MODEL_ARCH_OVERRIDE
-        self._source: Path | None = None
+        self.source: Path | None = None
 
     def resolve_checkpoint(self, model_path):
         source = Path(resolve_model_path(model_path))
-        self._source = source
+        self.source = source
         shim = shim_dir("voicechat", source)
         config = NemotronVoiceChatConfig.from_dict(
             json.loads((source / "config.json").read_text())
@@ -156,7 +158,7 @@ class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
         three are easy to confuse here, since this tokenizer's padding token is
         the frame-locked silence marker rather than anything called "pad".
         """
-        stt = json.loads((self._source / "config.json").read_text())["model"]["stt"][
+        stt = json.loads((self.source / "config.json").read_text())["model"]["stt"][
             "model"
         ]
         tokenizer_name = stt.get("pretrained_llm", "nvidia/NVIDIA-Nemotron-Nano-9B-v2")
@@ -190,7 +192,7 @@ class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
         vocab_size = int(model.llm.config.vocab_size)
 
         prompt_token_ids, pad_token_id = self.prompt_tokens()
-        self._model_runner_pad_id = pad_token_id
+        self.model_runner_pad_id = pad_token_id
 
         def build(payload):
             return build_thinker_request(
@@ -218,6 +220,8 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
         self.model_arch_override = TALKER_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
+        else:
+            pass
 
     def resolve_checkpoint(self, model_path):
         source = Path(resolve_model_path(model_path))

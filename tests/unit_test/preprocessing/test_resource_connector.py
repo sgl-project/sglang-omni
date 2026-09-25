@@ -21,7 +21,7 @@ from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 
 
-class _RecordingMediaIO(MediaIO[Path]):
+class RecordingMediaIO(MediaIO[Path]):
     """Fake MediaIO that records the file paths it is asked to load."""
 
     def __init__(self) -> None:
@@ -42,7 +42,7 @@ def test_load_local_path_allowed_without_allowlist(tmp_path: Path) -> None:
     audio = tmp_path / "ref.wav"
     audio.write_bytes(b"RIFF")
     connector = MultiModalResourceConnector()
-    media_io = _RecordingMediaIO()
+    media_io = RecordingMediaIO()
 
     result = connector.load_local_path(audio, media_io)
 
@@ -56,7 +56,7 @@ def test_load_local_path_inside_allowlist(tmp_path: Path) -> None:
     audio = media_dir / "ref.wav"
     audio.write_bytes(b"RIFF")
     connector = MultiModalResourceConnector(allowed_local_media_path=media_dir)
-    media_io = _RecordingMediaIO()
+    media_io = RecordingMediaIO()
 
     result = connector.load_local_path(audio, media_io)
 
@@ -70,7 +70,7 @@ def test_load_local_path_rejects_outside_allowlist(tmp_path: Path) -> None:
     outside = tmp_path / "outside.wav"
     outside.write_bytes(b"RIFF")
     connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = _RecordingMediaIO()
+    media_io = RecordingMediaIO()
 
     with pytest.raises(ValueError, match="not within allowed directory"):
         connector.load_local_path(outside, media_io)
@@ -84,7 +84,7 @@ def test_load_local_path_rejects_traversal_escape(tmp_path: Path) -> None:
     outside = tmp_path / "outside.wav"
     outside.write_bytes(b"RIFF")
     connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = _RecordingMediaIO()
+    media_io = RecordingMediaIO()
 
     with pytest.raises(ValueError, match="not within allowed directory"):
         connector.load_local_path(allowed / ".." / "outside.wav", media_io)
@@ -104,7 +104,7 @@ def test_load_local_path_rejects_symlink_escape(tmp_path: Path) -> None:
         pytest.skip(f"symlink creation unsupported: {exc}")
 
     connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = _RecordingMediaIO()
+    media_io = RecordingMediaIO()
 
     with pytest.raises(ValueError, match="not within allowed directory"):
         connector.load_local_path(link, media_io)
@@ -123,7 +123,7 @@ def test_file_url_rejection_never_reaches_media_io(tmp_path: Path) -> None:
     allowed.mkdir()
     (tmp_path / "outside.wav").write_bytes(b"RIFF")
     connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = _RecordingMediaIO()
+    media_io = RecordingMediaIO()
     traversal_url = (allowed / ".." / "outside.wav").as_uri()
 
     with pytest.raises(ValueError, match="not within allowed directory"):
@@ -137,7 +137,7 @@ def test_file_url_passes_resolved_path_to_media_io(tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
     allowed.mkdir()
     connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = _RecordingMediaIO()
+    media_io = RecordingMediaIO()
     missing = allowed / "ghost.wav"
 
     result = connector.load_resource(missing.as_uri(), media_io)

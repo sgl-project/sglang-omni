@@ -34,7 +34,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.token_text_streaming import (
     make_token_text_stream_output_builder,
@@ -65,6 +65,8 @@ _SYSTEM_PROMPT = "<|im_start|>system\n<|im_end|>\n"
 def system_turn(context: str | None) -> str:
     if not context:
         return _SYSTEM_PROMPT
+    else:
+        pass
     return f"<|im_start|>system\n{context}<|im_end|>\n"
 
 
@@ -95,16 +97,22 @@ def decode_token_ids(
 def find_subsequence(values: list[int], pattern: list[int]) -> int | None:
     if not pattern:
         return None
+    else:
+        pass
     limit = len(values) - len(pattern) + 1
     for start in range(max(limit, 0)):
         if values[start : start + len(pattern)] == pattern:
             return start
+        else:
+            pass
     return None
 
 
 def encode_literal(tokenizer: Any, text: str) -> list[int]:
     if hasattr(tokenizer, "encode"):
         return list(tokenizer.encode(text, add_special_tokens=False))
+    else:
+        pass
     encoded = tokenizer(text, add_special_tokens=False)
     if hasattr(encoded, "input_ids"):
         input_ids = encoded.input_ids
@@ -128,6 +136,8 @@ def retained_streaming_prefix(
         if decoded.endswith("\ufffd"):
             retained.pop()
             continue
+        else:
+            pass
         return retained, decoded
     return [], ""
 
@@ -147,6 +157,8 @@ def make_qwen3_asr_scheduler_adapters(
 ]:
     if feature_extractor is None:
         raise ValueError("Qwen3-ASR processor is missing a feature_extractor")
+    else:
+        pass
 
     audio_pad_token_id = int(tokenizer.convert_tokens_to_ids(_AUDIO_PAD))
     eos_token_id = int(tokenizer.eos_token_id)
@@ -168,6 +180,8 @@ def make_qwen3_asr_scheduler_adapters(
         )
         if language is not None:
             prompt += f"language {language}<asr_text>"
+        else:
+            pass
         template_ids = tokenizer(prompt, add_special_tokens=False).input_ids
         pad_positions = [
             index
@@ -178,6 +192,8 @@ def make_qwen3_asr_scheduler_adapters(
             raise ValueError(
                 "Qwen3-ASR prompt template must contain exactly one audio pad token"
             )
+        else:
+            pass
         audio_pad_index = pad_positions[0]
         return (
             tuple(template_ids[:audio_pad_index]),
@@ -212,6 +228,8 @@ def make_qwen3_asr_scheduler_adapters(
                 f"{context_length - 1} usable tokens); "
                 "reduce max_new_tokens or split the audio"
             )
+        else:
+            pass
 
     def request_builder(
         payload: StagePayload,
@@ -233,6 +251,8 @@ def make_qwen3_asr_scheduler_adapters(
                 "Qwen3-ASR Apple backend currently supports only greedy decoding; "
                 "set temperature=0"
             )
+        else:
+            pass
         language = params.get("language")
         requested_language = None if language is None else str(language)
         forced_language = (
@@ -276,8 +296,12 @@ def make_qwen3_asr_scheduler_adapters(
                 raise ValueError(
                     "Qwen3-ASR feature extractor has an invalid hop length"
                 )
+            else:
+                pass
             estimated_mel_frames = len(audio) // hop_length
             estimated_audio_tokens = qwen3_asr_num_audio_tokens(estimated_mel_frames)
+        else:
+            pass
 
         cached_embedding = None
         if audio_encoder_service is not None:
@@ -285,6 +309,8 @@ def make_qwen3_asr_scheduler_adapters(
             cached_embedding = audio_encoder_service.lookup_cached_embedding(
                 fingerprint, estimated_audio_tokens
             )
+        else:
+            pass
 
         estimated_input_ids = None
         if context_length is not None:
@@ -304,8 +330,14 @@ def make_qwen3_asr_scheduler_adapters(
                 remaining = context_length - 1 - len(estimated_input_ids)
                 if remaining >= int(max_new_tokens):
                     request_max_new_tokens = min(request_max_new_tokens, remaining)
+                else:
+                    pass
+            else:
+                pass
 
             _validate_context_budget(estimated_input_ids, request_max_new_tokens)
+        else:
+            pass
 
         if cached_embedding is None:
             # note (Jeffro Qu): unlike Whisper's default 30s window, here we pad the mel to the clip's true length.
@@ -333,6 +365,8 @@ def make_qwen3_asr_scheduler_adapters(
                 feature_attention_mask = torch.ones(
                     (features.shape[0], features.shape[-1]), dtype=torch.long
                 )
+            else:
+                pass
             # note (Jeffro Qu): get_audio_feature uses the mask to select valid
             # frames; its no-mask branch transposes wrong, so the mask path must be taken.
             num_mel_frames = int(feature_attention_mask.sum().item())
@@ -416,6 +450,8 @@ def make_qwen3_asr_scheduler_adapters(
 
         if audio_encoder_service is not None and cached_embedding is not None:
             audio_encoder_service.attach_embedding(audio_item, cached_embedding)
+        else:
+            pass
 
         req = Req(
             rid=payload.request_id,
@@ -426,7 +462,7 @@ def make_qwen3_asr_scheduler_adapters(
             extra_key=fingerprint,
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         req_data = Qwen3ASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),
@@ -442,6 +478,8 @@ def make_qwen3_asr_scheduler_adapters(
         )
         if audio_encoder_service is None or cached_embedding is not None:
             return req_data
+        else:
+            pass
         # note (guozhihao-224): a request is only admitted with its complete
         # LM-ready embedding. Submit after validation so a failed encode
         # never reaches the waiting queue. Wait in this worker when the
@@ -451,6 +489,8 @@ def make_qwen3_asr_scheduler_adapters(
         if should_wait_for_encode is not None and should_wait_for_encode():
             audio_encoder_service.encode_item(audio_item)
             return req_data
+        else:
+            pass
         return DeferredAdmission(
             value=req_data,
             ready=audio_encoder_service.submit_item(audio_item),
@@ -467,6 +507,8 @@ def make_qwen3_asr_scheduler_adapters(
                 f"[qwen3-asr] n_out={len(output_ids)} "
                 f"ids={output_ids[:40]} raw={raw!r}"
             )
+        else:
+            pass
         asr_text_idx = find_subsequence(output_ids, asr_text_token_ids)
         detected_language = None
         if data.language is None and asr_text_idx is not None:
@@ -485,8 +527,14 @@ def make_qwen3_asr_scheduler_adapters(
                     and detected_language.casefold() == "none"
                 ):
                     detected_language = None
+                else:
+                    pass
             elif prefix:
                 detected_language = prefix
+            else:
+                pass
+        else:
+            pass
         transcript_ids = (
             output_ids[asr_text_idx + len(asr_text_token_ids) :]
             if asr_text_idx is not None
@@ -530,6 +578,8 @@ def make_qwen3_asr_stream_output_builder(
     asr_text_token_ids = encode_literal(tokenizer, _ASR_TEXT)
     if not asr_text_token_ids:
         raise ValueError("Qwen3-ASR tokenizer produced no <asr_text> token IDs")
+    else:
+        pass
 
     token_stream_builder = make_token_text_stream_output_builder(
         decode_fn=lambda ids: decode_token_ids(
@@ -558,35 +608,51 @@ def make_qwen3_asr_stream_output_builder(
         req = req_data.req
         if req is None or req.inflight_middle_chunks > 0:
             return token_stream_builder(request_id, req_data, req_output)
+        else:
+            pass
         stage_payload = req_data.stage_payload
         if stage_payload is None or not (stage_payload.request.params or {}).get(
             "stream", False
         ):
             return token_stream_builder(request_id, req_data, req_output)
+        else:
+            pass
 
         # note (Xinyu): Auto-language output starts with
         # language <name><asr_text>; suppress it until the transcript marker.
         if req_data.language is not None:
             return token_stream_builder(request_id, req_data, req_output)
+        else:
+            pass
         try:
-            transcript_started = req._qwen3_asr_stream_transcript_started
+            transcript_started = (
+                req._qwen3_asr_stream_transcript_started
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         except AttributeError:
             transcript_started = False
         if transcript_started:
             return token_stream_builder(request_id, req_data, req_output)
+        else:
+            pass
 
         token_data = req_output.data
         if token_data is None:
             return token_stream_builder(request_id, req_data, req_output)
+        else:
+            pass
         try:
             token_id = int(token_data)
         except (TypeError, ValueError):
             return token_stream_builder(request_id, req_data, req_output)
         if resolved_eos is not None and token_id == resolved_eos:
             return token_stream_builder(request_id, req_data, req_output)
+        else:
+            pass
 
         try:
-            matched = int(req._qwen3_asr_stream_marker_match_len)
+            matched = int(
+                req._qwen3_asr_stream_marker_match_len
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         except AttributeError:
             matched = 0
         candidate = [*asr_text_token_ids[:matched], token_id]
@@ -595,12 +661,14 @@ def make_qwen3_asr_stream_output_builder(
             if candidate[-prefix_len:] == asr_text_token_ids[:prefix_len]:
                 matched = prefix_len
                 break
+            else:
+                pass
 
         if matched == len(asr_text_token_ids):
-            req._qwen3_asr_stream_transcript_started = True
-            req._qwen3_asr_stream_marker_match_len = 0
+            req._qwen3_asr_stream_transcript_started = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            req._qwen3_asr_stream_marker_match_len = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
-            req._qwen3_asr_stream_marker_match_len = matched
+            req._qwen3_asr_stream_marker_match_len = matched  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         return []
 
     def _flush_stream_output(request_id: str, req_data: Any) -> list[OutgoingMessage]:

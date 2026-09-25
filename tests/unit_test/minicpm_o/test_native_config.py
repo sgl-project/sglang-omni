@@ -87,7 +87,9 @@ def test_engine_factory_resolves_native_config_before_server_args(
     snapshot: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mapping = dict(CONFIG_MAPPING._extra_content)
+    mapping = dict(
+        CONFIG_MAPPING._extra_content
+    )  # noqa: leading-underscore  # upstream name
     mapping.pop("minicpmo", None)
     monkeypatch.setattr(CONFIG_MAPPING, "_extra_content", mapping)
     monkeypatch.setattr(stages, "resolved_view", lambda args: args)

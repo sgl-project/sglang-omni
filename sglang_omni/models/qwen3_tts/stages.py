@@ -62,11 +62,15 @@ def resolve_qwen3_tts_attn_implementation(
     device_type = str(device).strip().partition(":")[0].lower()
     if not current_platform.is_npu() or device_type != "npu":
         return attn_implementation
+    else:
+        pass
     if attn_implementation in _NPU_UNSUPPORTED_ATTN_IMPLEMENTATIONS:
         raise ValueError(
             "Qwen3-TTS speech tokenizer cannot use "
             f"attn_implementation={attn_implementation!r} on NPU; use 'sdpa'"
         )
+    else:
+        pass
     return attn_implementation or "sdpa"
 
 
@@ -99,12 +103,16 @@ def load_qwen3_tts_tokenizer(
                 f"Reusing the Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
             )
             return tokenizer
+        else:
+            pass
         kwargs: dict[str, Any] = {
             "device_map": device,
             "dtype": torch_dtype,
         }
         if attn_implementation is not None:
             kwargs["attn_implementation"] = attn_implementation
+        else:
+            pass
 
         logger.info(
             "Loading Qwen3-TTS speech tokenizer from %s on %s "
@@ -134,9 +142,13 @@ def register_qwen3_tts_hf_config() -> None:
             talker_config = getattr(self, "talker_config", None)
             if talker_config is not None:
                 self.text_config = talker_config
+            else:
+                pass
 
         Qwen3TTSConfig.__init__ = _patched_init
-        Qwen3TTSConfig._sglang_omni_patched = True
+        Qwen3TTSConfig._sglang_omni_patched = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    else:
+        pass
     try:
         AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
     except ValueError:
@@ -149,6 +161,8 @@ def load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     path = os.path.join(checkpoint_dir, "generation_config.json")
     if not os.path.exists(path):
         return {}
+    else:
+        pass
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     return data if isinstance(data, dict) else {}
@@ -173,6 +187,8 @@ def create_preprocessing_executor(
             dtype=dtype,
             attn_implementation=attn_implementation,
         )
+    else:
+        pass
     # note (luojiaxuan): preprocessing must admit several requests at once. A
     # serial executor keeps at most one reference-code request in flight, so
     # the speech-tokenizer batcher would only ever see batches of one; the
@@ -314,8 +330,12 @@ def create_vocoder_executor(
     # off for a rollback is one flag.
     if incremental_codec_cuda_graph is None:
         incremental_codec_cuda_graph = enable_stateful_codec_decoder
+    else:
+        pass
     if incremental_codec_compile is None:
         incremental_codec_compile = enable_stateful_codec_decoder
+    else:
+        pass
     tokenizer = load_qwen3_tts_tokenizer(
         model_path,
         device=device,

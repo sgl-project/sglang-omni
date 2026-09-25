@@ -110,6 +110,8 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
         policy = super().resolved_audio_chunking
         if not current_platform.is_mps() or use_mlx():
             return policy
+        else:
+            pass
 
         if policy.max_audio_clip_s > QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS:
             raise ValueError(
@@ -117,6 +119,8 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 "audio_chunking.max_audio_clip_s up to "
                 f"{QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS:g}s"
             )
+        else:
+            pass
 
         # Note (yexiaodong): Torch MPS currently uses one clip shape for the
         # encoder path. Keep its native and whole-upload limits within the
@@ -128,6 +132,8 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             or max_total_audio_s > QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS
         ):
             max_total_audio_s = QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS
+        else:
+            pass
         return replace(
             policy,
             max_native_clip_s=QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS,

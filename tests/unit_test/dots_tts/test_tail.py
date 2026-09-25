@@ -53,7 +53,7 @@ def test_batched_tail_mask_hides_padding_and_preserves_causality() -> None:
     ]
 
 
-class _TailModel(torch.nn.Module):
+class TailModel(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.velocity_field_predictor = DiT(
@@ -77,7 +77,7 @@ class _TailModel(torch.nn.Module):
                 parameter.normal_(0.0, 0.2)
 
 
-def _patch_encoder() -> VAESemanticEncoder:
+def patch_encoder() -> VAESemanticEncoder:
     encoder_config = _EncoderConfig(
         num_layers=1,
         num_heads=2,
@@ -93,8 +93,8 @@ def _patch_encoder() -> VAESemanticEncoder:
     return VAESemanticEncoder(in_dim=LATENT_DIM, out_dim=FM_HIDDEN, config=config)
 
 
-def _build_tail(
-    model: _TailModel,
+def build_tail(
+    model: TailModel,
     *,
     slots: int,
     device: torch.device = torch.device("cpu"),
@@ -102,7 +102,7 @@ def _build_tail(
     patch_capacity: int = 8,
     optimize: bool = False,
 ):
-    encoder = _patch_encoder().to(device=device, dtype=dtype)
+    encoder = patch_encoder().to(device=device, dtype=dtype)
     with torch.no_grad():
         for parameter in encoder.parameters():
             parameter.normal_(0.0, 0.2)
@@ -126,7 +126,7 @@ def _build_tail(
     )
 
 
-def _reference_meanflow(
+def reference_meanflow(
     dit: torch.nn.Module,
     coordinate_proj: torch.nn.Module,
     sequence: torch.Tensor,
@@ -167,8 +167,8 @@ def _reference_meanflow(
 @pytest.mark.parametrize("slots", [1, 2])
 def test_kv_cached_tail_matches_full_recompute(slots: int) -> None:
     torch.manual_seed(1234)
-    model = _TailModel().eval()
-    acoustic_tail = _build_tail(model, slots=slots)
+    model = TailModel().eval()
+    acoustic_tail = build_tail(model, slots=slots)
     unit = acoustic_tail.spec.unit_len
     g_cond = torch.randn(1, FM_HIDDEN)
     grid = torch.linspace(0.0, 1.0, NFE + 1)
@@ -186,7 +186,7 @@ def test_kv_cached_tail_matches_full_recompute(slots: int) -> None:
     sequence[0, sequence_len] = hidden[0]
     sequence_len += 1
     torch.manual_seed(9)
-    expected = _reference_meanflow(
+    expected = reference_meanflow(
         acoustic_tail.dit,
         model.coordinate_proj,
         sequence,
@@ -197,11 +197,11 @@ def test_kv_cached_tail_matches_full_recompute(slots: int) -> None:
     actual = acoustic_tail.sample_patches([slot], fm_hidden_rows=hidden)
 
     torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
-    assert acoustic_tail._dit_contiguous_view_steps == (NFE if slots == 1 else 0)
+    assert acoustic_tail.dit_contiguous_view_steps == (NFE if slots == 1 else 0)
 
 
 def test_tail_slots_are_bounded_and_reusable() -> None:
-    acoustic_tail = _build_tail(_TailModel().eval(), slots=2)
+    acoustic_tail = build_tail(TailModel().eval(), slots=2)
     first = acoustic_tail.acquire_slot()
     acoustic_tail.acquire_slot()
     try:
@@ -219,8 +219,8 @@ def test_tail_slots_are_bounded_and_reusable() -> None:
 
 
 def test_estimate_acoustic_pool_bytes_matches_allocated_tensors() -> None:
-    acoustic_tail = _build_tail(_TailModel().eval(), slots=2, patch_capacity=8)
-    estimate = acoustic_tail.pool_memory_estimate(acoustic_tail._mods_width)
+    acoustic_tail = build_tail(TailModel().eval(), slots=2, patch_capacity=8)
+    estimate = acoustic_tail.pool_memory_estimate(acoustic_tail.mods_width)
     assert estimate.total_bytes == acoustic_tail.allocated_pool_bytes()
     assert estimate.num_slots == 2
     assert estimate.patch_capacity == 8
@@ -236,16 +236,16 @@ def test_estimate_acoustic_pool_bytes_matches_allocated_tensors() -> None:
             latent_dim=LATENT_DIM,
             fm_hidden_size=FM_HIDDEN,
         ),
-        dit_layers=acoustic_tail._dit_layers,
-        dit_heads=acoustic_tail._dit_heads,
-        dit_head_dim=acoustic_tail._dit_head_dim,
-        encoder_layers=acoustic_tail._encoder_layers,
-        encoder_heads=acoustic_tail._encoder_heads,
-        encoder_head_dim=acoustic_tail._encoder_head_dim,
-        encoder_block=acoustic_tail._encoder_block,
-        encoder_conv_channels=int(acoustic_tail._encoder.ds_proj.in_channels),
-        encoder_conv_padding=int(acoustic_tail._encoder.ds_proj.left_padding),
-        mods_width=acoustic_tail._mods_width,
+        dit_layers=acoustic_tail.dit_layers,
+        dit_heads=acoustic_tail.dit_heads,
+        dit_head_dim=acoustic_tail.dit_head_dim,
+        encoder_layers=acoustic_tail.encoder_layers,
+        encoder_heads=acoustic_tail.encoder_heads,
+        encoder_head_dim=acoustic_tail.encoder_head_dim,
+        encoder_block=acoustic_tail.encoder_block,
+        encoder_conv_channels=int(acoustic_tail.encoder.ds_proj.in_channels),
+        encoder_conv_padding=int(acoustic_tail.encoder.ds_proj.left_padding),
+        mods_width=acoustic_tail.mods_width,
         dtype=acoustic_tail.dtype,
     )
     assert double.total_bytes == 2 * estimate.total_bytes
@@ -327,9 +327,9 @@ def test_validate_acoustic_pool_memory_releases_cached_blocks_before_sampling_fr
 
 def test_permuted_full_pool_matches_fragmented_gather_fallback() -> None:
     torch.manual_seed(1234)
-    direct = _build_tail(_TailModel().eval(), slots=2)
+    direct = build_tail(TailModel().eval(), slots=2)
     torch.manual_seed(1234)
-    fallback = _build_tail(_TailModel().eval(), slots=3)
+    fallback = build_tail(TailModel().eval(), slots=3)
     direct_slots = [direct.acquire_slot(), direct.acquire_slot()][::-1]
     fallback_slots = [
         fallback.acquire_slot(),
@@ -357,15 +357,15 @@ def test_permuted_full_pool_matches_fragmented_gather_fallback() -> None:
     expected = fallback.sample_patches(fallback_slots, fm_hidden_rows=hidden)
 
     torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
-    assert direct._dit_contiguous_view_steps == NFE
-    assert fallback._dit_contiguous_view_steps == 0
+    assert direct.dit_contiguous_view_steps == NFE
+    assert fallback.dit_contiguous_view_steps == 0
 
 
 def test_request_release_forgets_slot_before_it_can_be_reused() -> None:
     from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
 
     released = []
-    flow = SimpleNamespace(_tail=SimpleNamespace(release_slot=released.append))
+    flow = SimpleNamespace(tail=SimpleNamespace(release_slot=released.append))
     state = SimpleNamespace(slot=3)
 
     DotsTTSFlowHead.release_request(flow, state)
@@ -376,7 +376,7 @@ def test_request_release_forgets_slot_before_it_can_be_reused() -> None:
 
 
 def test_fused_dit_builds_modulations_with_bfloat16_weights() -> None:
-    model = _TailModel().eval().to(torch.bfloat16)
+    model = TailModel().eval().to(torch.bfloat16)
     dit = tail.fuse_dit_for_inference(model)
     steps = torch.tensor([0.0, 0.5], dtype=torch.bfloat16)
 
@@ -392,10 +392,10 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     torch.manual_seed(1234)
     device = torch.device("cuda")
     dtype = torch.bfloat16
-    eager_model = _TailModel().eval().to(device=device, dtype=dtype)
+    eager_model = TailModel().eval().to(device=device, dtype=dtype)
     graph_model = copy.deepcopy(eager_model)
     torch.manual_seed(9)
-    eager = _build_tail(
+    eager = build_tail(
         eager_model,
         slots=8,
         device=device,
@@ -403,7 +403,7 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
         patch_capacity=33,
     )
     torch.manual_seed(9)
-    graph = _build_tail(
+    graph = build_tail(
         graph_model,
         slots=8,
         device=device,
@@ -413,20 +413,22 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     )
 
     for name in (
-        "_dit_k",
-        "_dit_v",
-        "_encoder_k",
-        "_encoder_v",
-        "_encoder_conv_tail",
-        "_window",
-        "_all_mods",
+        "dit_k",
+        "dit_v",
+        "encoder_k",
+        "encoder_v",
+        "encoder_conv_tail",
+        "window",
+        "all_mods",
     ):
         eager_value = getattr(eager, name)
         eager_value.normal_(0, 0.05)
         getattr(graph, name).copy_(eager_value)
     for slot in range(8):
-        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = 15
-        eager._encoder_seq_len[slot] = graph._encoder_seq_len[slot] = 4
+        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = (
+            15  # noqa: leading-underscore  # production name
+        )
+        eager.encoder_seq_len[slot] = graph.encoder_seq_len[slot] = 4
         eager.initialize_slot_rng(slot, 100 + slot)
         graph.initialize_slot_rng(slot, 100 + slot)
 
@@ -440,15 +442,15 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     eager_feedback = eager.encode_feedback(slots, latent)
     graph_feedback = graph.encode_feedback(slots, latent)
     torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
-    assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
-    assert not graph._graph_misses
-    assert graph._dit_contiguous_view_steps == NFE
+    assert graph.graph_replays == {"meanflow": 1, "semantic_encoder": 1}
+    assert not graph.graph_misses
+    assert graph.dit_contiguous_view_steps == NFE
 
 
-def _seed_single_slot_tail(patch_capacity: int) -> tuple[Any, int]:
+def seed_single_slot_tail(patch_capacity: int) -> tuple[Any, int]:
     torch.manual_seed(7)
-    model = _TailModel().eval()
-    acoustic_tail = _build_tail(model, slots=1, patch_capacity=patch_capacity)
+    model = TailModel().eval()
+    acoustic_tail = build_tail(model, slots=1, patch_capacity=patch_capacity)
     unit = acoustic_tail.spec.unit_len
     g_cond = torch.randn(1, FM_HIDDEN)
     grid = torch.linspace(0.0, 1.0, NFE + 1)
@@ -462,16 +464,16 @@ def _seed_single_slot_tail(patch_capacity: int) -> tuple[Any, int]:
     return acoustic_tail, slot
 
 
-def _counter_records(caplog) -> list[logging.LogRecord]:
+def counter_records(caplog) -> list[logging.LogRecord]:
     return [r for r in caplog.records if "tail graph counters" in r.getMessage()]
 
 
 def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
-    acoustic_tail, slot = _seed_single_slot_tail(patch_capacity=60)
+    acoustic_tail, slot = seed_single_slot_tail(patch_capacity=60)
     # A captured batch-8 bucket that batch-1 decode can never select: every
     # cycle is a real miss, which is exactly what the counters report.
-    acoustic_tail._meanflow_graphs[(8, 16)] = object()
-    acoustic_tail._encoder_graphs[(8, 16)] = object()
+    acoustic_tail.meanflow_graphs[(8, 16)] = object()
+    acoustic_tail.encoder_graphs[(8, 16)] = object()
 
     with caplog.at_level(logging.DEBUG, logger=tail.logger.name):
         for step in range(50):
@@ -481,11 +483,11 @@ def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
             acoustic_tail.encode_feedback([slot], latent)
             acoustic_tail.note_decode_cycle()
             if step == 48:
-                assert not _counter_records(caplog)
-        [periodic] = _counter_records(caplog)
+                assert not counter_records(caplog)
+        [periodic] = counter_records(caplog)
         caplog.clear()
         acoustic_tail.log_graph_counters()
-        [shutdown] = _counter_records(caplog)
+        [shutdown] = counter_records(caplog)
 
     assert periodic.levelno == logging.DEBUG
     assert shutdown.levelno == logging.INFO
@@ -496,14 +498,14 @@ def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
     assert "meanflow_misses=50" in message
     assert "semantic_encoder_replays=0" in message
     assert "semantic_encoder_misses=50" in message
-    assert acoustic_tail._graph_misses == Counter(
+    assert acoustic_tail.graph_misses == Counter(
         {"meanflow": 50, "semantic_encoder": 50}
     )
-    assert acoustic_tail._graph_replays == Counter()
+    assert acoustic_tail.graph_replays == Counter()
 
 
 def test_tail_without_captured_graphs_logs_no_counters(caplog) -> None:
-    acoustic_tail, slot = _seed_single_slot_tail(patch_capacity=60)
+    acoustic_tail, slot = seed_single_slot_tail(patch_capacity=60)
     assert not acoustic_tail.has_captured_graphs
 
     with caplog.at_level(logging.DEBUG, logger=tail.logger.name):
@@ -515,8 +517,8 @@ def test_tail_without_captured_graphs_logs_no_counters(caplog) -> None:
             acoustic_tail.note_decode_cycle()
         acoustic_tail.log_graph_counters()
 
-    assert acoustic_tail._tail_steps == 50
-    assert acoustic_tail._graph_misses == Counter(
+    assert acoustic_tail.tail_steps == 50
+    assert acoustic_tail.graph_misses == Counter(
         {"meanflow": 50, "semantic_encoder": 50}
     )
-    assert not _counter_records(caplog)
+    assert not counter_records(caplog)

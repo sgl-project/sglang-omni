@@ -13,7 +13,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
 from tests.unit_test.fixtures.pipeline_fakes import make_stage_payload
 
 
-def _talker_model_inputs(model_inputs: dict) -> dict:
+def talker_model_inputs(model_inputs: dict) -> dict:
     state = Qwen3OmniPipelineState(
         prompt={"input_ids": torch.zeros(3, dtype=torch.long)},
         thinker_inputs={"model_inputs": model_inputs},
@@ -27,7 +27,7 @@ def _talker_model_inputs(model_inputs: dict) -> dict:
 
 
 def test_talker_projection_drops_deepstack_keeps_used_embeds() -> None:
-    out = _talker_model_inputs(
+    out = talker_model_inputs(
         {
             "video_embeds": torch.zeros(4, 2),
             "image_embeds": torch.zeros(4, 2),

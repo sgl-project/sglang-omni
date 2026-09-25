@@ -20,7 +20,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 
 
-class _FakeGraph:
+class FakeGraph:
     def __init__(self) -> None:
         self.replays = 0
         self.resets = 0
@@ -32,7 +32,7 @@ class _FakeGraph:
         self.resets += 1
 
 
-class _FailingGraph:
+class FailingGraph:
     def __init__(self) -> None:
         self.resets = 0
 
@@ -43,7 +43,7 @@ class _FailingGraph:
         self.resets += 1
 
 
-class _DeviceContext:
+class DeviceContext:
     def __enter__(self):
         return None
 
@@ -51,7 +51,7 @@ class _DeviceContext:
         return False
 
 
-def _state(
+def make_state(
     rows: int,
     *,
     offset: int = 0,
@@ -91,23 +91,23 @@ def _state(
     )
 
 
-def _async_incremental_scheduler(
+def async_incremental_scheduler(
     device: torch.device,
 ) -> Qwen3TTSStreamingVocoderScheduler:
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
-    scheduler._device = device
-    scheduler._cuda_decode_failed = False
-    scheduler._deterministic_inference = False
-    scheduler._samples_per_frame = 1
-    scheduler._pinned_staging_disabled = True
-    scheduler._decode_staging = threading.local()
-    scheduler._decode_stream = torch.cuda.Stream(device=device)
-    scheduler._followup_decode_stream = torch.cuda.Stream(device=device)
-    scheduler._followup_decode_streams = (scheduler._followup_decode_stream,)
-    scheduler._initial_window_decode_graphs = None
-    scheduler._worker_ctx = SimpleNamespace(graphs=None)
+    scheduler.device = device
+    scheduler.cuda_decode_failed = False
+    scheduler.deterministic_inference = False
+    scheduler.samples_per_frame = 1
+    scheduler.pinned_staging_disabled = True
+    scheduler.decode_staging = threading.local()
+    scheduler.decode_stream = torch.cuda.Stream(device=device)
+    scheduler.followup_decode_stream = torch.cuda.Stream(device=device)
+    scheduler.followup_decode_streams = (scheduler.followup_decode_stream,)
+    scheduler.initial_window_decode_graphs = None
+    scheduler.worker_ctx = SimpleNamespace(graphs=None)
     return scheduler
 
 
@@ -125,14 +125,14 @@ def test_incremental_codec_graph_rejects_unknown_mode() -> None:
         )
 
 
-class _FakeArena:
+class FakeArena:
     scratch_slot = 64
 
     def stage_index(self, slots):
         return torch.tensor(list(slots), dtype=torch.long)
 
 
-def _runner(**kwargs) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
+def make_runner(**kwargs) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
     runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
         SimpleNamespace(),
         device=torch.device("cpu"),
@@ -141,16 +141,16 @@ def _runner(**kwargs) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
         mode="warm",
         fresh_frames=(8,),
         enabled=False,
-        arena=_FakeArena(),
+        arena=FakeArena(),
         **kwargs,
     )
-    runner._enabled = True
+    runner.enabled = True
     return runner
 
 
-def _entry(bucket: int, graph=None) -> SimpleNamespace:
+def make_entry(bucket: int, graph=None) -> SimpleNamespace:
     return SimpleNamespace(
-        graph=graph or _FakeGraph(),
+        graph=graph or FakeGraph(),
         static_codes=torch.full((bucket, 2, 8), -1, dtype=torch.long),
         static_index=torch.full((bucket,), -1, dtype=torch.long),
         waveform=torch.arange(bucket * 32, dtype=torch.float32).view(bucket, 1, 32),
@@ -158,9 +158,9 @@ def _entry(bucket: int, graph=None) -> SimpleNamespace:
 
 
 def test_incremental_codec_graph_stages_padding_and_returns_borrowed_views() -> None:
-    runner = _runner(batch_sizes=(1, 4))
-    entry = _entry(4)
-    runner._graphs[IncrementalCodecGraphKey(fresh_frames=8, batch_bucket=4)] = entry
+    runner = make_runner(batch_sizes=(1, 4))
+    entry = make_entry(4)
+    runner.graphs[IncrementalCodecGraphKey(fresh_frames=8, batch_bucket=4)] = entry
     codes = torch.arange(3 * 2 * 8, dtype=torch.long).view(3, 2, 8)
 
     waveform = runner.decode_slots(codes, [5, 6, 7])
@@ -170,7 +170,7 @@ def test_incremental_codec_graph_stages_padding_and_returns_borrowed_views() -> 
     assert torch.equal(entry.static_codes[:3], codes)
     assert torch.equal(entry.static_codes[3], torch.zeros((2, 8), dtype=torch.long))
     # note (luojiaxuan): padded rows read and write the arena's scratch row.
-    assert entry.static_index.tolist() == [5, 6, 7, _FakeArena.scratch_slot]
+    assert entry.static_index.tolist() == [5, 6, 7, FakeArena.scratch_slot]
     assert waveform.shape == (3, 1, 32)
     assert (
         waveform.untyped_storage().data_ptr()
@@ -179,11 +179,11 @@ def test_incremental_codec_graph_stages_padding_and_returns_borrowed_views() -> 
 
 
 def test_incremental_codec_graph_uses_smallest_available_bucket() -> None:
-    runner = _runner(batch_sizes=(1, 2, 4, 8))
+    runner = make_runner(batch_sizes=(1, 2, 4, 8))
     graphs = {
-        IncrementalCodecGraphKey(8, bucket): _entry(bucket) for bucket in (2, 4, 8)
+        IncrementalCodecGraphKey(8, bucket): make_entry(bucket) for bucket in (2, 4, 8)
     }
-    runner._graphs = graphs
+    runner.graphs = graphs
 
     assert (
         runner.decode_slots(torch.zeros(3, 2, 8, dtype=torch.long), [0, 1, 2])
@@ -195,8 +195,8 @@ def test_incremental_codec_graph_uses_smallest_available_bucket() -> None:
 
 
 def test_incremental_codec_graph_misses_uncaptured_frame_count() -> None:
-    runner = _runner(batch_sizes=(1, 2, 4))
-    runner._graphs[IncrementalCodecGraphKey(8, 1)] = _entry(1)
+    runner = make_runner(batch_sizes=(1, 2, 4))
+    runner.graphs[IncrementalCodecGraphKey(8, 1)] = make_entry(1)
 
     assert runner.decode_slots(torch.zeros(1, 2, 3, dtype=torch.long), [0]) is None
     assert runner.stats()["runtime"]["fallback_counts"] == {
@@ -231,7 +231,7 @@ def test_incremental_codec_graph_accepts_the_window_mode() -> None:
         mode="window",
         fresh_frames=(8, 2, 4),
         enabled=False,
-        arena=_FakeArena(),
+        arena=FakeArena(),
     )
 
     assert runner.stats()["binding"]["mode"] == "window"
@@ -239,12 +239,12 @@ def test_incremental_codec_graph_accepts_the_window_mode() -> None:
 
 
 def test_incremental_codec_graph_splits_frames_by_captured_widths_only() -> None:
-    runner = _runner(batch_sizes=(1, 4))
-    runner._graphs = {
-        IncrementalCodecGraphKey(8, 1): _entry(1),
-        IncrementalCodecGraphKey(8, 4): _entry(4),
-        IncrementalCodecGraphKey(4, 1): _entry(1),
-        IncrementalCodecGraphKey(4, 4): _entry(4),
+    runner = make_runner(batch_sizes=(1, 4))
+    runner.graphs = {
+        IncrementalCodecGraphKey(8, 1): make_entry(1),
+        IncrementalCodecGraphKey(8, 4): make_entry(4),
+        IncrementalCodecGraphKey(4, 1): make_entry(1),
+        IncrementalCodecGraphKey(4, 4): make_entry(4),
     }
 
     assert runner.split_frames(20) == (8, 8, 4)
@@ -252,7 +252,7 @@ def test_incremental_codec_graph_splits_frames_by_captured_widths_only() -> None
     assert runner.split_frames(6) is None
     assert runner.largest_batch_bucket() == 4
 
-    runner._enabled = False
+    runner.enabled = False
     assert runner.split_frames(8) is None
     assert runner.largest_batch_bucket() == 0
 
@@ -260,11 +260,11 @@ def test_incremental_codec_graph_splits_frames_by_captured_widths_only() -> None
 def test_incremental_codec_graph_replay_failure_disables_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner = _runner(batch_sizes=(1,))
+    runner = make_runner(batch_sizes=(1,))
     key = IncrementalCodecGraphKey(8, 1)
-    graph = _FailingGraph()
-    runner._graphs[key] = _entry(1, graph=graph)
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: _DeviceContext())
+    graph = FailingGraph()
+    runner.graphs[key] = make_entry(1, graph=graph)
+    monkeypatch.setattr(torch.cuda, "device", lambda _device: DeviceContext())
     monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
 
@@ -277,7 +277,7 @@ def test_incremental_codec_graph_replay_failure_disables_runner(
     assert stats["disable_reason"].startswith("runtime_replay_failed")
     assert runner.available_batch_sizes(8) == ()
     assert graph.resets == 1
-    assert key not in runner._graphs
+    assert key not in runner.graphs
 
 
 def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
@@ -291,13 +291,13 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
         mode="warm",
         fresh_frames=(8,),
         enabled=False,
-        arena=_FakeArena(),
+        arena=FakeArena(),
     )
     key = IncrementalCodecGraphKey(8, 1)
     temporary = {key: SimpleNamespace()}
     pool = object()
     capture_stream = object()
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: _DeviceContext())
+    monkeypatch.setattr(torch.cuda, "device", lambda _device: DeviceContext())
 
     def fail_synchronize(_device) -> None:
         raise RuntimeError("injected synchronize failure")
@@ -313,7 +313,7 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
 
     assert temporary
     assert runner.stats()["retained_capture_resource_sets"] == 1
-    retained = runner._retained_capture_resources[0]
+    retained = runner.retained_capture_resources[0]
     assert retained.keepalives == [temporary]
     assert retained.pool is pool
     assert retained.stream is capture_stream
@@ -330,13 +330,13 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
         mode="warm",
         fresh_frames=(8,),
         enabled=False,
-        arena=_FakeArena(),
+        arena=FakeArena(),
     )
-    graph = _FakeGraph()
+    graph = FakeGraph()
     key = IncrementalCodecGraphKey(8, 1)
     temporary = {key: SimpleNamespace(graph=graph)}
 
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: _DeviceContext())
+    monkeypatch.setattr(torch.cuda, "device", lambda _device: DeviceContext())
     monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
 
@@ -360,12 +360,12 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
-    scheduler._async_decode = True
-    scheduler._initial_decode_graphs = graph_holder("whole-sequence-initial")
-    scheduler._followup_graph_holders = (graph_holder("whole-sequence-followup"),)
-    scheduler._initial_incremental_decode_graphs = graph_holder("cold")
-    scheduler._initial_window_decode_graphs = graph_holder("window")
-    scheduler._followup_incremental_graph_holders = (graph_holder("warm"),)
+    scheduler.async_decode = True
+    scheduler.initial_decode_graphs = graph_holder("whole-sequence-initial")
+    scheduler.followup_graph_holders = (graph_holder("whole-sequence-followup"),)
+    scheduler.initial_incremental_decode_graphs = graph_holder("cold")
+    scheduler.initial_window_decode_graphs = graph_holder("window")
+    scheduler.followup_incremental_graph_holders = (graph_holder("warm"),)
 
     scheduler.warmup_now()
 
@@ -453,7 +453,7 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
     device = torch.device("cuda", torch.cuda.current_device())
-    scheduler = _async_incremental_scheduler(device)
+    scheduler = async_incremental_scheduler(device)
 
     graph_waveform = torch.tensor([[[10.0, 11.0]]], device=device)
 
@@ -485,9 +485,9 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
             AssertionError("no gather on a hit")
         ),
     )
-    scheduler._initial_incremental_decode_graphs = None
-    scheduler._followup_incremental_graph_holders = (graph_runner,)
-    scheduler._worker_ctx.incremental_graphs = graph_runner
+    scheduler.initial_incremental_decode_graphs = None
+    scheduler.followup_incremental_graph_holders = (graph_runner,)
+    scheduler.worker_ctx.incremental_graphs = graph_runner
     plan = IncrementalDecodePlan(
         decoder_input=torch.tensor([[[1, 2], [3, 4]]], device=device),
         slot=0,
@@ -500,7 +500,7 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
 
     handle = scheduler.launch_decode_plans(
         [plan],
-        stream=scheduler._followup_decode_stream,
+        stream=scheduler.followup_decode_stream,
         incremental=batch,
     )
     deltas = handle.resolve()
@@ -517,9 +517,9 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
     device = torch.device("cuda", torch.cuda.current_device())
-    scheduler = _async_incremental_scheduler(device)
+    scheduler = async_incremental_scheduler(device)
 
-    cohort_state = _state(1, offset=5, device=device)
+    cohort_state = make_state(1, offset=5, device=device)
     eager_waveform = torch.tensor([[[20.0, 21.0]]], device=device)
 
     class GraphRunner:
@@ -551,9 +551,9 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
         scatter=lambda slots, state: scatters.append((slots, state)),
         gather=lambda slots: cohort_state,
     )
-    scheduler._initial_incremental_decode_graphs = None
-    scheduler._followup_incremental_graph_holders = (graph_runner,)
-    scheduler._worker_ctx.incremental_graphs = graph_runner
+    scheduler.initial_incremental_decode_graphs = None
+    scheduler.followup_incremental_graph_holders = (graph_runner,)
+    scheduler.worker_ctx.incremental_graphs = graph_runner
     plan = IncrementalDecodePlan(
         decoder_input=torch.tensor([[[1, 2], [3, 4]]], device=device),
         slot=0,
@@ -566,7 +566,7 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
 
     handle = scheduler.launch_decode_plans(
         [plan],
-        stream=scheduler._followup_decode_stream,
+        stream=scheduler.followup_decode_stream,
         incremental=batch,
     )
     deltas = handle.resolve()
@@ -584,7 +584,7 @@ def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
-    scheduler._followup_incremental_graph_holders = (
+    scheduler.followup_incremental_graph_holders = (
         SimpleNamespace(
             available_batch_sizes=lambda fresh_frames: {8: (4, 2, 1)}.get(
                 fresh_frames, ()
@@ -603,7 +603,7 @@ def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
         )
 
     group = [(str(index), None, plan(index)) for index in range(10)]
-    runner = scheduler._followup_incremental_graph_holders[0]
+    runner = scheduler.followup_incremental_graph_holders[0]
     split = scheduler.split_incremental_group_for_graph(group, runner=runner)
 
     assert [len(item) for item in split] == [4, 4, 2]

@@ -78,6 +78,8 @@ class S3TokenizerV2(torch.nn.Module):
             hidden, code_len = self.encoder(mel, mel_len)
             code = self.quantizer.encode(hidden)
             return (code, code_len)
+        else:
+            pass
 
         segments = []
         lengths = []

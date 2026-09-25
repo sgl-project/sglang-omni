@@ -16,7 +16,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from .execution import TalkerExecutionConfig
-from .modules import DiTBlock, FinalLayer
+from .modules import DiTBlock, FinalLayer, RMSNorm
 from .rotary import build_rotary_embedding, get_rotary_inputs, validate_rotary_config
 
 #################################################################################
@@ -85,6 +85,8 @@ class CondEmbedder(nn.Module):
         use_dropout = self.dropout_prob > 0
         if train and use_dropout:
             llm_cond = self.cond_drop(llm_cond)
+        else:
+            pass
 
         llm_cond = self.cond_embedder(llm_cond)
 
@@ -121,6 +123,9 @@ class DiT(nn.Module):
         )
         if execution_config.attn_backend is not None:
             kwargs["attn_backend"] = execution_config.attn_backend
+        else:
+            pass
+        norm_layer = execution_config.norm_layer or RMSNorm
 
         self.in_channels = in_channels
         self.out_channels = in_channels
@@ -145,11 +150,21 @@ class DiT(nn.Module):
 
         self.blocks = nn.ModuleList(
             [
-                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, **kwargs)
+                DiTBlock(
+                    hidden_size,
+                    num_heads,
+                    mlp_ratio=mlp_ratio,
+                    norm_layer=norm_layer,
+                    **kwargs,
+                )
                 for _ in range(depth)
             ]
         )
-        self.final_layer = FinalLayer(hidden_size, self.out_channels)
+        self.final_layer = FinalLayer(
+            hidden_size,
+            self.out_channels,
+            norm_layer=norm_layer,
+        )
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -159,6 +174,10 @@ class DiT(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+                else:
+                    pass
+            else:
+                pass
 
         self.apply(_basic_init)
 
@@ -220,7 +239,11 @@ class DiT(nn.Module):
         c = torch.cat([c, fake_latent], dim=0)
         if t.ndim == 0:
             t = t.repeat(x.shape[0])
+        else:
+            pass
         if spk_emb is not None:
             spk_emb = torch.cat([spk_emb, spk_emb], dim=0)
+        else:
+            pass
         model_out = self.forward(x, t, c, latent_history, spk_emb)
         return model_out[:, -x.shape[1] :, :]

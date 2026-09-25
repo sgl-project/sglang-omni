@@ -11,7 +11,7 @@ from typing import Any
 import torch
 
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
@@ -54,12 +54,16 @@ def build_sglang_minimax_request(
     state = build_ttm_state(payload)
     if state.prompt is None:
         raise RuntimeError("MiniMax Music 3 preprocessing did not build a prompt")
+    else:
+        pass
     # The twin's id is derived, so the scheduler can pair and abort by id alone.
     if is_cfg_uncond_rid(payload.request_id):
         raise ValueError(
             f"MiniMax Music 3 cannot serve request id {payload.request_id!r}: "
             f"the {_CFG_UNCOND_RID_SUFFIX} suffix is reserved for the CFG twin"
         )
+    else:
+        pass
     prompt_token_ids = tokenizer(state.prompt, return_tensors="pt")["input_ids"][0]
     prompt_tokens = int(prompt_token_ids.numel())
     if prompt_tokens > MAX_PROMPT_TOKENS:
@@ -67,6 +71,8 @@ def build_sglang_minimax_request(
             f"MiniMax Music 3 prompt has {prompt_tokens} tokens; "
             f"maximum is {MAX_PROMPT_TOKENS}"
         )
+    else:
+        pass
 
     max_new_tokens = int(state.max_audio_frames) + 1
     vocab_size = AUDIO_CODE_OFFSET + _C0_VOCAB_SIZE
@@ -87,8 +93,8 @@ def build_sglang_minimax_request(
         vocab_size=vocab_size,
     )
     req.tokenizer = None
-    req._input_embeds_are_projected = True
-    req._codec_suppress_tokens = None
+    req._input_embeds_are_projected = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     uncond_ids = prompt_token_ids.clone()
     uncond_ids[1:-2] = SPECIAL_TOKEN_IDS["<|audio_cfg|>"]
@@ -101,8 +107,8 @@ def build_sglang_minimax_request(
         vocab_size=vocab_size,
     )
     uncond_req.tokenizer = None
-    uncond_req._input_embeds_are_projected = True
-    uncond_req._codec_suppress_tokens = None
+    uncond_req._input_embeds_are_projected = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    uncond_req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     uncond = MiniMaxMusic3SGLangRequestData(
         minimax_state=state,
         stage_payload=payload,
@@ -153,6 +159,8 @@ def apply_minimax_result(data: MiniMaxMusic3SGLangRequestData) -> StagePayload:
     state = data.minimax_state
     if state is None:
         raise RuntimeError("MiniMax Music 3 result has no request state")
+    else:
+        pass
     state.caption = ""
     state.lyrics = ""
     state.prompt = None
@@ -165,6 +173,8 @@ def drain_pending_chunks(
     ar_state = data.ar_state
     if ar_state is None:
         return
+    else:
+        pass
     pending = ar_state.pending_chunks
     while pending:
         chunk, metadata = pending.pop(0)

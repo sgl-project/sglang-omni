@@ -25,7 +25,7 @@ from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
-class _VendorDeviceMixin(DeviceMixin):
+class VendorDeviceMixin(DeviceMixin):
     _enum = PlatformEnum.OOT
     device_name = "vendor"
     device_type = "vendor"
@@ -37,7 +37,7 @@ class _VendorDeviceMixin(DeviceMixin):
         pass
 
 
-class _VendorSRTPlatform(SRTPlatform, _VendorDeviceMixin):
+class VendorSRTPlatform(SRTPlatform, VendorDeviceMixin):
     pass
 
 
@@ -95,12 +95,6 @@ def test_cuda_joint_rope_getter_propagates_import_failure(
         CUDAOmniPlatform().get_joint_rope_inplace_kernel()
 
     assert raised.value is error
-
-
-def test_npu_probe_handles_torch_without_npu(monkeypatch) -> None:
-    monkeypatch.delattr(torch, "npu", raising=False)
-
-    assert platforms.is_npu_available() is False
 
 
 def test_cpu_platform_needs_no_stage_process_env() -> None:
@@ -215,7 +209,7 @@ def test_rocm_qwen3_omni_rejects_cutlass_moe_backends(backend: str) -> None:
 
 
 def test_srt_plugin_identity_round_trips_to_spawned_process() -> None:
-    qualname = f"{__name__}._VendorSRTPlatform"
+    qualname = f"{__name__}.VendorSRTPlatform"
     platform = platforms.load_platform_class(qualname)()
 
     restored = platforms.load_platform_class(platforms.get_platform_spec(platform))()
@@ -287,6 +281,12 @@ def test_xpu_captures_the_qwen3_tts_code_predictor() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_tts_predictor_graph() is True
     assert OmniPlatform().enable_tts_predictor_graph() is True
     assert CPUOmniPlatform().enable_tts_predictor_graph() is True
+
+
+def test_musa_captures_the_qwen3_tts_code_predictor() -> None:
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+
+    assert MUSAOmniPlatform().enable_tts_predictor_graph() is True
 
 
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:

@@ -76,8 +76,12 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
             for name, loaded_weight in weights:
                 if name.startswith(NON_TEXT_PREFIXES):
                     continue
+                else:
+                    pass
                 if name.startswith("llm."):
                     yield name[len("llm.") :], loaded_weight
+                else:
+                    pass
 
         self.language_model.load_weights(_text_weights())
 

@@ -51,25 +51,25 @@ def build_real_step_predictor_graph_talker(
     talker = object.__new__(Qwen3OmniTalker)
     talker.training = False
     talker.config = SimpleNamespace(num_code_groups=num_code_groups)
-    talker._predictor_input_buffer = torch.zeros(
+    talker.predictor_input_buffer = torch.zeros(
         max_batch_size,
         predictor_len,
         hidden_size,
         device=device,
     )
-    talker._output_codes = torch.zeros(
+    talker.output_codes = torch.zeros(
         max_batch_size,
         num_code_groups,
         dtype=torch.long,
         device=device,
     )
-    talker._output_embeds = torch.zeros(max_batch_size, hidden_size, device=device)
-    talker._predictor_positions = torch.arange(
+    talker.output_embeds = torch.zeros(max_batch_size, hidden_size, device=device)
+    talker.predictor_positions = torch.arange(
         predictor_len,
         device=device,
         dtype=torch.long,
     )
-    talker._predictor_k_cache = torch.zeros(
+    talker.predictor_k_cache = torch.zeros(
         1,
         max_batch_size,
         num_kv_heads,
@@ -77,10 +77,10 @@ def build_real_step_predictor_graph_talker(
         head_dim,
         device=device,
     )
-    talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
-    talker._predictor_decode_graph_batch_sizes = (1, 2, 4)
-    talker._predictor_decode_graphs = {}
-    talker._predictor_decode_graph_disabled = set()
+    talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
+    talker.predictor_decode_graph_batch_sizes = (1, 2, 4)
+    talker.predictor_decode_graphs = {}
+    talker.predictor_decode_graph_disabled = set()
 
     layer = SimpleNamespace(
         input_layernorm=nn.Identity(),
