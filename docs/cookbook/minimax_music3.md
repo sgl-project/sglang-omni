@@ -31,6 +31,8 @@ source .venv/bin/activate
 uv pip install -v -e .   # drop -e for a non-editable install
 ```
 
+To select devices on Intel GPUs, `ZE_AFFINITY_MASK` can be used
+
 **Single GPU** (colocate both stages):
 
 ```bash
@@ -43,7 +45,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --po
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000
 ```
 
-Default optimizations that are on without further flags: backbone decode CUDA graph, RVQ depth CUDA graph, compiled DIT blocks, compiled DAV decoder, and batched seeded sampling.
+Default optimizations that are on without further flags: backbone decode device graph, RVQ depth device graph, compiled DIT blocks, compiled DAV decoder, and batched seeded sampling.
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
 
@@ -393,7 +395,9 @@ What it does *not* change is the request contract or where the randomness comes 
 
 ## Concurrency
 
-The server batches continuously. Admission defaults to 16 concurrent requests (`max_running_requests=16`), which is **32 decode rows**, because guidance gives every request a second row. Raise admission at serve time with `--minimax_music3_ar.engine.max_running_requests`; the row count, the decode CUDA graph and the RVQ depth graph are all derived from it:
+The server batches continuously. Admission defaults to 16 concurrent requests (`max_running_requests=16`), which is **32 decode rows**, because guidance gives every request a second row. Raise admission at serve time with `--minimax_music3_ar.engine.max_running_requests`; the row count, the decode device graph and the RVQ depth device graph are all derived from it:
+
+To select devices on Intel GPUs, `ZE_AFFINITY_MASK` can be used
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 \
