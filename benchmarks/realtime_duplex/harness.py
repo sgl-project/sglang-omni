@@ -83,7 +83,9 @@ class DuplexSessionDriver:
         websocket = await websockets.connect(self.url, max_size=None)
         t0 = time.perf_counter()
 
-        async def note(direction: str, event: dict[str, Any], audio_bytes: int = 0) -> None:
+        async def note(
+            direction: str, event: dict[str, Any], audio_bytes: int = 0
+        ) -> None:
             entries.append(
                 LogEntry(
                     t_s=time.perf_counter() - t0,
@@ -112,7 +114,9 @@ class DuplexSessionDriver:
             if isinstance(parsed, dict):
                 event = parsed
                 delta = event.get("delta")
-                audio_bytes = len(base64.b64decode(delta)) if isinstance(delta, str) else 0
+                audio_bytes = (
+                    len(base64.b64decode(delta)) if isinstance(delta, str) else 0
+                )
             else:
                 event = {"type": MALFORMED_EVENT_TYPE}
                 audio_bytes = 0
@@ -143,7 +147,9 @@ class DuplexSessionDriver:
                 delay = start + index * frame_s - time.perf_counter()
                 if delay > 0:
                     await asyncio.sleep(delay)
-                payload = base64.b64encode(self.audio_pcm[offset : offset + chunk]).decode("ascii")
+                payload = base64.b64encode(
+                    self.audio_pcm[offset : offset + chunk]
+                ).decode("ascii")
                 await send({"type": "input_audio_buffer.append", "audio": payload})
 
         manifest = SessionManifest(
@@ -151,7 +157,8 @@ class DuplexSessionDriver:
             model=self.model,
             started_at_wall=dt.datetime.now(dt.timezone.utc).isoformat(),
             input_sha256=sha256_of(self.audio_pcm),
-            input_duration_s=len(self.audio_pcm) / (schema.SAMPLE_RATE * schema.BYTES_PER_SAMPLE),
+            input_duration_s=len(self.audio_pcm)
+            / (schema.SAMPLE_RATE * schema.BYTES_PER_SAMPLE),
             frame_ms=self.frame_ms,
             pace=self.pace,
             scenario=self.mode,
@@ -184,7 +191,9 @@ class DuplexSessionDriver:
                     if not quiet_exit and open_responses == 0:
                         # Cap the wait so the quiet-exit reassessment happens
                         # promptly once the sender's schedule runs out.
-                        remaining = sender_end - time.perf_counter() + 2 * self.quiet_drain_s
+                        remaining = (
+                            sender_end - time.perf_counter() + 2 * self.quiet_drain_s
+                        )
                         timeout = max(2 * self.quiet_drain_s, min(timeout, remaining))
                     entry = await pump(timeout)
                     if entry is None:
@@ -226,4 +235,6 @@ class DuplexSessionDriver:
             client_error = f"{type(exc).__name__}: {exc}"
         finally:
             await websocket.close()
-        return SessionRecord(manifest=manifest, entries=entries, client_error=client_error)
+        return SessionRecord(
+            manifest=manifest, entries=entries, client_error=client_error
+        )

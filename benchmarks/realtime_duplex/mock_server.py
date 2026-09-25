@@ -69,9 +69,7 @@ class DuplexMockServer:
         return schema.conversation_url("127.0.0.1", self._port)
 
     async def __aenter__(self) -> DuplexMockServer:
-        self._server = await ws_serve(
-            self._handler, "127.0.0.1", 0, max_size=None
-        )
+        self._server = await ws_serve(self._handler, "127.0.0.1", 0, max_size=None)
         self._port = self._server.sockets[0].getsockname()[1]
         return self
 
@@ -99,7 +97,9 @@ class DuplexMockServer:
             "input_audio_format": "pcm16",
             "output_audio_format": "pcm16",
         }
-        await self._send(websocket, {"type": "session.created", "session": session_object})
+        await self._send(
+            websocket, {"type": "session.created", "session": session_object}
+        )
         self._session_ready.set()
         if behavior.send_malformed_on_session:
             await websocket.send("this-line-is-not-a-json-object")
@@ -111,27 +111,43 @@ class DuplexMockServer:
         async def run_response() -> None:
             nonlocal committed
             committed = True
-            await self._send(websocket, {"type": "response.created", "response": {"id": "resp_mock"}})
+            await self._send(
+                websocket, {"type": "response.created", "response": {"id": "resp_mock"}}
+            )
             payload = base64.b64encode(
-                TONE_BYTE.to_bytes() * (behavior.delta_payload_bytes or schema.frame_bytes())
+                TONE_BYTE.to_bytes()
+                * (behavior.delta_payload_bytes or schema.frame_bytes())
             ).decode("ascii")
             try:
                 for _ in range(behavior.delta_count):
                     await asyncio.sleep(behavior.delta_delay_s)
                     await self._send(
                         websocket,
-                        {"type": "response.audio.delta", "delta": payload, "response_id": "resp_mock"},
+                        {
+                            "type": "response.audio.delta",
+                            "delta": payload,
+                            "response_id": "resp_mock",
+                        },
                     )
             except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
                 return
-            total = behavior.delta_count * (behavior.delta_payload_bytes or schema.frame_bytes())
-            await self._send(
-                websocket,
-                {"type": "response.audio.done", "output_audio_bytes": total, "response_id": "resp_mock"},
+            total = behavior.delta_count * (
+                behavior.delta_payload_bytes or schema.frame_bytes()
             )
             await self._send(
                 websocket,
-                {"type": "response.done", "response": {"id": "resp_mock", "status": "completed"}},
+                {
+                    "type": "response.audio.done",
+                    "output_audio_bytes": total,
+                    "response_id": "resp_mock",
+                },
+            )
+            await self._send(
+                websocket,
+                {
+                    "type": "response.done",
+                    "response": {"id": "resp_mock", "status": "completed"},
+                },
             )
 
         try:
@@ -143,13 +159,25 @@ class DuplexMockServer:
                 except ValueError:
                     await self._send(
                         websocket,
-                        {"type": "error", "error": {"type": "invalid_request_error", "message": "malformed JSON"}},
+                        {
+                            "type": "error",
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": "malformed JSON",
+                            },
+                        },
                     )
                     continue
                 if not isinstance(event, dict):
                     await self._send(
                         websocket,
-                        {"type": "error", "error": {"type": "invalid_request_error", "message": "event is not an object"}},
+                        {
+                            "type": "error",
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": "event is not an object",
+                            },
+                        },
                     )
                     continue
                 self.received.append(event)
@@ -159,7 +187,13 @@ class DuplexMockServer:
                     # the conversation protocol is an invalid request.
                     await self._send(
                         websocket,
-                        {"type": "error", "error": {"type": "invalid_request_error", "message": f"unknown event type {event_type!r}"}},
+                        {
+                            "type": "error",
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": f"unknown event type {event_type!r}",
+                            },
+                        },
                     )
                     continue
 
@@ -168,16 +202,28 @@ class DuplexMockServer:
                     continue
 
                 if event_type == "session.update":
-                    await self._send(websocket, {"type": "session.updated", "session": session_object})
+                    await self._send(
+                        websocket,
+                        {"type": "session.updated", "session": session_object},
+                    )
                 elif event_type == "input_audio_buffer.append":
                     audio_frames += 1
                     if not committed and audio_frames >= behavior.commit_after_frames:
-                        await self._send(websocket, {"type": "input_audio_buffer.speech_started"})
-                        await self._send(websocket, {"type": "input_audio_buffer.speech_stopped"})
-                        await self._send(websocket, {"type": "input_audio_buffer.committed"})
+                        await self._send(
+                            websocket, {"type": "input_audio_buffer.speech_started"}
+                        )
+                        await self._send(
+                            websocket, {"type": "input_audio_buffer.speech_stopped"}
+                        )
+                        await self._send(
+                            websocket, {"type": "input_audio_buffer.committed"}
+                        )
                         await self._send(
                             websocket,
-                            {"type": "conversation.item.created", "item": {"role": "user"}},
+                            {
+                                "type": "conversation.item.created",
+                                "item": {"role": "user"},
+                            },
                         )
                         response_job = asyncio.create_task(run_response())
                 elif event_type == "input_audio_buffer.clear":
@@ -192,14 +238,23 @@ class DuplexMockServer:
                     committed = False
                     await self._send(
                         websocket,
-                        {"type": "response.done", "response": {"id": "resp_mock", "status": "cancelled"}},
+                        {
+                            "type": "response.done",
+                            "response": {"id": "resp_mock", "status": "cancelled"},
+                        },
                     )
                 elif event_type == "conversation.item.truncate":
                     await self._send(
                         websocket,
-                        {"type": "conversation.item.truncated", "item_id": event.get("item_id")},
+                        {
+                            "type": "conversation.item.truncated",
+                            "item_id": event.get("item_id"),
+                        },
                     )
-                if behavior.abort_close_code is not None and audio_frames >= behavior.commit_after_frames:
+                if (
+                    behavior.abort_close_code is not None
+                    and audio_frames >= behavior.commit_after_frames
+                ):
                     await websocket.close(code=behavior.abort_close_code)
                     return
         except websockets.exceptions.ConnectionClosed:

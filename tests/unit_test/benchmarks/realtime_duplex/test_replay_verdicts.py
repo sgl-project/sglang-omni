@@ -8,15 +8,15 @@ import copy
 
 from benchmarks.realtime_duplex.replay import replay
 from benchmarks.realtime_duplex.session_log import LogEntry
-from tests.unit_test.benchmarks.realtime_duplex.test_session_log import (
-    make_manifest,
-)
+from tests.unit_test.benchmarks.realtime_duplex.test_session_log import make_manifest
 
 C2S = "c2s"
 S2C = "s2c"
 
 
-def line(direction: str, t_s: float, event_type: str, audio_bytes: int = 0, **fields: object) -> LogEntry:
+def line(
+    direction: str, t_s: float, event_type: str, audio_bytes: int = 0, **fields: object
+) -> LogEntry:
     event: dict[str, object] = {"type": event_type}
     event.update(fields)
     return LogEntry(t_s=t_s, direction=direction, event=event, audio_bytes=audio_bytes)

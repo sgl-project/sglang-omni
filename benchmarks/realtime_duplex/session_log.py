@@ -58,7 +58,9 @@ def sha256_of(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def write_session_log(path: str | Path, manifest: SessionManifest, entries: list[LogEntry]) -> None:
+def write_session_log(
+    path: str | Path, manifest: SessionManifest, entries: list[LogEntry]
+) -> None:
     """Write manifest + entries as JSONL. Untimely mid-write crashes leave
     a truncated file; the reader rejects those instead of guessing."""
     target = Path(path)

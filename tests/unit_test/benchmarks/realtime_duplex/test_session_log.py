@@ -39,7 +39,9 @@ def make_entries() -> list[LogEntry]:
             event={"type": "input_audio_buffer.append", "audio": "VQ=="},
             audio_bytes=1,
         ),
-        LogEntry(t_s=0.900, direction="c2s", event={"type": "client.close", "code": 1000}),
+        LogEntry(
+            t_s=0.900, direction="c2s", event={"type": "client.close", "code": 1000}
+        ),
     ]
 
 

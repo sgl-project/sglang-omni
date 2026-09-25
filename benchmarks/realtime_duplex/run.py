@@ -32,13 +32,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", help="websocket url of the realtime endpoint")
     parser.add_argument("--audio", type=Path, help="raw pcm16 16 kHz input file")
-    parser.add_argument("--duration", type=float, default=2.0, help="seconds of synthetic audio when --audio is absent")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=2.0,
+        help="seconds of synthetic audio when --audio is absent",
+    )
     parser.add_argument("--mode", choices=MODES, default="continuous")
     parser.add_argument("--frame-ms", type=int, default=schema.DEFAULT_FRAME_MS)
     parser.add_argument("--pace", type=float, default=1.0)
     parser.add_argument("--model", default="unknown")
     parser.add_argument("--out", type=Path, default=Path("duplex_session.jsonl"))
-    parser.add_argument("--replay-only", type=Path, help="verdict an existing session log and exit")
+    parser.add_argument(
+        "--replay-only", type=Path, help="verdict an existing session log and exit"
+    )
     return parser
 
 

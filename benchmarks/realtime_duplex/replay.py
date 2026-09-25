@@ -68,7 +68,11 @@ class ReplayReport:
             "passed": self.passed,
             "summary": self.summary,
             "verdicts": [
-                {"name": verdict.name, "passed": verdict.passed, "detail": verdict.detail}
+                {
+                    "name": verdict.name,
+                    "passed": verdict.passed,
+                    "detail": verdict.detail,
+                }
                 for verdict in self.verdicts
             ],
             "timing_profile": self.timing_profile,
@@ -82,11 +86,7 @@ def group_responses(entries: list[LogEntry]) -> list[ResponseWindow]:
     windows: list[ResponseWindow] = []
     for entry in entries:
         if entry.direction != SERVER_TO_CLIENT:
-            if (
-                entry.type == "response.cancel"
-                and windows
-                and windows[-1].done is None
-            ):
+            if entry.type == "response.cancel" and windows and windows[-1].done is None:
                 windows[-1].cancelled_by_client = True
             continue
         if entry.type == "response.created":
@@ -132,7 +132,9 @@ def session_ordering(entries: list[LogEntry]) -> Verdict:
     )
 
 
-def response_lifecycle(windows: list[ResponseWindow], *, expect_responses: bool = True) -> Verdict:
+def response_lifecycle(
+    windows: list[ResponseWindow], *, expect_responses: bool = True
+) -> Verdict:
     problems: list[str] = []
     if not windows:
         if expect_responses:
@@ -140,7 +142,11 @@ def response_lifecycle(windows: list[ResponseWindow], *, expect_responses: bool 
         return Verdict(
             "response_lifecycle",
             not problems,
-            "; ".join(problems) if problems else "no responses expected by this scenario",
+            (
+                "; ".join(problems)
+                if problems
+                else "no responses expected by this scenario"
+            ),
         )
     for index, window in enumerate(windows):
         label = f"response[{index}]"
@@ -151,7 +157,9 @@ def response_lifecycle(windows: list[ResponseWindow], *, expect_responses: bool 
             problems.append(f"{label} closed before it was created")
         done_status = str(window.done.event.get("response", {}).get("status", ""))
         if window.cancelled_by_client and done_status != "cancelled":
-            problems.append(f"{label} cancelled by client but done.status={done_status!r}")
+            problems.append(
+                f"{label} cancelled by client but done.status={done_status!r}"
+            )
         if not window.cancelled_by_client and done_status == "cancelled":
             problems.append(f"{label} reported cancelled without a client cancel")
         for delta in window.deltas:
@@ -166,7 +174,11 @@ def response_lifecycle(windows: list[ResponseWindow], *, expect_responses: bool 
     return Verdict(
         "response_lifecycle",
         not problems,
-        "; ".join(problems) if problems else f"{len(windows)} responses opened and closed correctly",
+        (
+            "; ".join(problems)
+            if problems
+            else f"{len(windows)} responses opened and closed correctly"
+        ),
     )
 
 
@@ -194,7 +206,11 @@ def ack_closure(entries: list[LogEntry]) -> Verdict:
     return Verdict(
         "ack_closure",
         not problems,
-        "; ".join(problems) if problems else "every acknowledged client event was answered",
+        (
+            "; ".join(problems)
+            if problems
+            else "every acknowledged client event was answered"
+        ),
     )
 
 
@@ -202,7 +218,11 @@ def byte_accounting(windows: list[ResponseWindow]) -> Verdict:
     problems: list[str] = []
     for index, window in enumerate(windows):
         label = f"response[{index}]"
-        delta_bytes = sum(entry.audio_bytes for entry in window.deltas if entry.type == "response.audio.delta")
+        delta_bytes = sum(
+            entry.audio_bytes
+            for entry in window.deltas
+            if entry.type == "response.audio.delta"
+        )
         if window.audio_done is not None:
             declared = window.audio_done.event.get("output_audio_bytes")
             if isinstance(declared, int) and declared != delta_bytes:
@@ -212,7 +232,9 @@ def byte_accounting(windows: list[ResponseWindow]) -> Verdict:
         elif window.done is not None and delta_bytes:
             done_status = str(window.done.event.get("response", {}).get("status", ""))
             if done_status != "cancelled":
-                problems.append(f"{label} streamed {delta_bytes} audio bytes without response.audio.done")
+                problems.append(
+                    f"{label} streamed {delta_bytes} audio bytes without response.audio.done"
+                )
     return Verdict(
         "byte_accounting",
         not problems,
@@ -232,7 +254,11 @@ def error_accounting(manifest: SessionManifest, entries: list[LogEntry]) -> Verd
         detail = f"{len(errors)} error event(s) recorded as expected by scenario"
     else:
         passed = not errors
-        detail = "no server error events" if passed else f"{len(errors)} unexpected server error event(s)"
+        detail = (
+            "no server error events"
+            if passed
+            else f"{len(errors)} unexpected server error event(s)"
+        )
     return Verdict("error_accounting", passed, detail)
 
 
@@ -259,7 +285,9 @@ def clean_shutdown(entries: list[LogEntry]) -> Verdict:
     )
 
 
-def timing_profile(manifest: SessionManifest, entries: list[LogEntry], windows: list[ResponseWindow]) -> dict[str, Any]:
+def timing_profile(
+    manifest: SessionManifest, entries: list[LogEntry], windows: list[ResponseWindow]
+) -> dict[str, Any]:
     profile: dict[str, Any] = {
         "frame_ms": manifest.frame_ms,
         "responses": [],
@@ -276,13 +304,13 @@ def timing_profile(manifest: SessionManifest, entries: list[LogEntry], windows: 
             {
                 "index": index,
                 "first_delta_after_created_s": (
-                    first_delta_t - window.created.t_s if first_delta_t is not None else None
+                    first_delta_t - window.created.t_s
+                    if first_delta_t is not None
+                    else None
                 ),
                 "delta_count": len(window.deltas),
                 "inter_delta_gap_max_s": max(gaps) if gaps else None,
-                "inter_delta_gap_mean_s": (
-                    sum(gaps) / len(gaps) if gaps else None
-                ),
+                "inter_delta_gap_mean_s": (sum(gaps) / len(gaps) if gaps else None),
                 "underrun_gaps": underruns,
                 "cancelled": window.cancelled_by_client,
             }
