@@ -1,0 +1,2 @@
+config_cls: MiniCPMODuplexPipelineConfig
+model_path: /path/to/MiniCPM-o-4_5
