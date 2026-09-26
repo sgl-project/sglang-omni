@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
@@ -36,6 +36,21 @@ class JudgeSpec:
     base_url: str
     api_key_env: str | None
     max_concurrency: int
+
+
+def public_judge_record(judge: JudgeSpec) -> dict[str, Any]:
+    """Serialize judge metadata without persisting endpoint paths or credentials."""
+    parts = urlsplit(judge.base_url)
+    host = parts.hostname or ""
+    if parts.port is not None:
+        host = f"{host}:{parts.port}"
+    return {
+        "name": judge.name,
+        "model": judge.model,
+        "base_url": urlunsplit((parts.scheme, host, "", "", "")),
+        "api_key_env": judge.api_key_env,
+        "max_concurrency": judge.max_concurrency,
+    }
 
 
 def validate_endpoint_url(base_url: str) -> None:
@@ -410,5 +425,4 @@ def make_level1_send_fn(model: str, base_url: str):
         )
 
     return send
-
 

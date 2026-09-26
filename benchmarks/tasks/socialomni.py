@@ -39,6 +39,7 @@ from benchmarks.tasks.socialomni_protocol import (
     parse_choice,
     parse_judge_score,
     parse_when,
+    public_judge_record,
     request_chat_completion,
     validate_endpoint_url,
     validate_judge_credentials,

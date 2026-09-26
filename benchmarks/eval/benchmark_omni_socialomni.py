@@ -40,6 +40,7 @@ from benchmarks.tasks.socialomni import (
     build_level1_result_records,
     load_judge_config,
     make_level1_send_fn,
+    public_judge_record,
     run_judges,
     run_level2_model,
     validate_endpoint_url,
@@ -233,7 +234,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             if failure:
                 output["failures"].append(failure)
 
-        output["config"]["judges"] = [asdict(judge) for judge in judges]
+        output["config"]["judges"] = [public_judge_record(judge) for judge in judges]
         judge_requests = []
         judge_failures: list[dict[str, str]] = []
         judge_wall_s = 0.0

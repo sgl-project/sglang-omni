@@ -9,7 +9,13 @@ import pytest
 
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
-from benchmarks.tasks.socialomni import load_judge_config, parse_judge_score, parse_when
+from benchmarks.tasks.socialomni import (
+    JudgeSpec,
+    load_judge_config,
+    parse_judge_score,
+    parse_when,
+    public_judge_record,
+)
 
 
 def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
@@ -231,3 +237,10 @@ def test_judge_config_has_only_fixed_public_fields(tmp_path: Path, monkeypatch) 
     public = [asdict(judge) for judge in load_judge_config(path)]
     assert "must-not-appear" not in json.dumps(public)
     assert public[0]["api_key_env"] == "SECRET_VALUE"
+
+
+def test_public_judge_record_redacts_endpoint_path() -> None:
+    record = public_judge_record(
+        JudgeSpec("judge", "model", "https://judge.example/v1/private", None, 1)
+    )
+    assert record["base_url"] == "https://judge.example"
