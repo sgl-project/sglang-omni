@@ -42,9 +42,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -70,6 +73,7 @@ from benchmarks.realtime_asr.metrics import (
     summarize,
     wer_metrics,
 )
+from benchmarks.realtime_asr.replay import TraceArtifact, save_trace, source_fingerprint
 from benchmarks.tasks.asr import (
     QWEN3_ASR_MODEL_PATH,
     _load_wav_mono_16k,
@@ -207,6 +211,7 @@ async def run_asr_realtime_once(
     with_http_baseline: bool = False,
     model_path: str = QWEN3_ASR_MODEL_PATH,
     pcm_cache: dict[str, bytes] | None = None,
+    trace_dir: str | None = None,
 ) -> dict[str, Any]:
     """Stream every sample once, ``concurrency`` sessions at a time.
 
@@ -221,6 +226,52 @@ async def run_asr_realtime_once(
     for sample in samples:
         if sample.ref_audio not in pcm_cache:
             pcm_cache[sample.ref_audio] = load_pcm16(sample.ref_audio)
+
+    config = {
+        "mode": mode,
+        "concurrency": concurrency,
+        "packet_ms": packet_ms,
+        "paced": paced,
+        "trailing_silence_ms": trailing_silence_ms,
+        "timeout_s": timeout_s,
+        "lang": lang,
+        "model_path": model_path,
+    }
+    if trace_dir is None:
+        run_dir = None
+        source = {}
+        input_hashes = {}
+    else:
+        Path(trace_dir).mkdir(parents=True, exist_ok=True)
+        run_dir = Path(tempfile.mkdtemp(prefix=f"c{concurrency}-", dir=trace_dir))
+        source = source_fingerprint()
+        input_hashes = {
+            sample.ref_audio: hashlib.sha256(pcm_cache[sample.ref_audio]).hexdigest()
+            for sample in samples
+        }
+        for audio_path, digest in input_hashes.items():
+            (run_dir / f"input-{digest}.pcm").write_bytes(pcm_cache[audio_path])
+        (run_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "config": config,
+                    "source": source,
+                    "samples": [
+                        {
+                            "sample_id": sample.sample_id,
+                            "trace_file": f"{index:06d}.json",
+                            "input_pcm_sha256": input_hashes[sample.ref_audio],
+                        }
+                        for index, sample in enumerate(samples)
+                    ],
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -241,24 +292,35 @@ async def run_asr_realtime_once(
     traces = await asyncio.gather(*(_one(sample) for sample in samples))
     wall_clock_s = time.perf_counter() - start
 
+    if run_dir is not None:
+        for index, (sample, trace) in enumerate(zip(samples, traces)):
+            save_trace(
+                run_dir / f"{index:06d}.json",
+                TraceArtifact(
+                    schema_version=1,
+                    sample_id=sample.sample_id,
+                    config=config,
+                    source=source,
+                    input_pcm_sha256=input_hashes[sample.ref_audio],
+                    trace=trace,
+                ),
+            )
+
     outputs: list[SampleOutput] = []
     per_sample: list[dict[str, Any]] = []
-    for sample, trace in zip(samples, traces):
+    for index, (sample, trace) in enumerate(zip(samples, traces)):
         output = wer_metrics(trace, sample.ref_text, lang=lang)
         output.sample_id = sample.sample_id
         outputs.append(output)
-        per_sample.append(_per_sample_record(sample, trace, output))
+        record = _per_sample_record(sample, trace, output)
+        if run_dir is not None:
+            record["trace_file"] = str((run_dir / f"{index:06d}.json").resolve())
+        per_sample.append(record)
 
     decode_intervals = {t.session.get("decode_interval_ms") for t in traces}
     result: dict[str, Any] = {
         "config": {
-            "mode": mode,
-            "concurrency": concurrency,
-            "packet_ms": packet_ms,
-            "paced": paced,
-            "trailing_silence_ms": trailing_silence_ms,
-            "lang": lang,
-            "model_path": model_path,
+            **config,
             "decode_interval_ms": (
                 decode_intervals.pop() if len(decode_intervals) == 1 else None
             ),
@@ -359,6 +421,11 @@ def parse_args() -> argparse.Namespace:
         help="Also transcribe over /v1/audio/transcriptions for a WER baseline.",
     )
     parser.add_argument("--output", default="asr_realtime_results.json")
+    parser.add_argument(
+        "--trace-dir",
+        default=None,
+        help="Save inputs and raw session observations here (default: OUTPUT.traces).",
+    )
     return parser.parse_args()
 
 
@@ -403,6 +470,7 @@ def main() -> None:
                 with_http_baseline=args.http_baseline,
                 model_path=args.model_path,
                 pcm_cache=pcm_cache,
+                trace_dir=args.trace_dir or f"{args.output}.traces",
             )
             summary = result["summary"]
             print(

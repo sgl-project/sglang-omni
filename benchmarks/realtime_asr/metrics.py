@@ -47,12 +47,8 @@ def check_invariants(trace: SessionTrace) -> list[str]:
     for item in trace.events("error"):
         violations.append(f"server error event: {item.event.get('error')}")
 
-    indexes = [
-        item.event.get("event_index")
-        for item in trace.received
-        if "event_index" in item.event
-    ]
-    if any(not isinstance(index, int) for index in indexes):
+    indexes = [item.event.get("event_index") for item in trace.received]
+    if any(type(index) is not int for index in indexes):
         violations.append("event_index missing or non-integer on some events")
     else:
         for previous, current in zip(indexes, indexes[1:]):
@@ -74,17 +70,35 @@ def check_invariants(trace: SessionTrace) -> list[str]:
     if len(set(final_ids)) != len(final_ids):
         violations.append(f"duplicate final segment ids: {final_ids}")
 
+    committed: set[Any] = set()
     finalized: set[Any] = set()
-    for item in trace.events("transcription.segment"):
-        segment_id = item.event.get("segment_id")
-        if segment_id in finalized:
-            violations.append(f"segment {segment_id} updated after its final event")
-            break
-        if item.event.get("is_final"):
-            finalized.add(segment_id)
+    completed_count = 0
+    for item in trace.received:
+        if item.type == "input_audio_buffer.committed":
+            committed.add(item.event.get("segment_id"))
+        elif item.type == "transcription.completed":
+            completed_count += 1
+        elif item.type == "transcription.segment":
+            segment_id = item.event.get("segment_id")
+            if completed_count:
+                violations.append(
+                    f"segment {segment_id} emitted after transcription.completed"
+                )
+            if segment_id in finalized:
+                violations.append(f"segment {segment_id} updated after its final event")
+            if item.event.get("is_final"):
+                if segment_id not in committed:
+                    violations.append(
+                        f"segment {segment_id} finalized before its committed event"
+                    )
+                finalized.add(segment_id)
 
-    if not trace.events("transcription.completed"):
+    if completed_count == 0:
         violations.append("no transcription.completed event")
+    elif completed_count > 1:
+        violations.append(
+            f"duplicate transcription.completed events: {completed_count}"
+        )
     return violations
 
 
