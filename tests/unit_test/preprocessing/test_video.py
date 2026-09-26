@@ -194,7 +194,7 @@ def test_video_reader_error_classification(
 ):
     """Reader fallback must distinguish invalid media from backend failures."""
     path = tmp_path / "valid.mp4"
-    _write_video_with_audio(path)
+    write_video_with_audio(path)
 
     def fail(_item):
         raise error
