@@ -38,6 +38,20 @@ sgl-omni serve \
   --port 8008
 ```
 
+### Audio Encoder QKV Fusion
+
+Add `--audio_encoder.factory.enable_fused_qkv true` to the server command to
+combine the audio encoder's query, key, and value projections into one linear
+operation. The option defaults to `false` and applies to both eager execution
+and layer CUDA graphs, including their eager fallback.
+
+Validation covers CPU correctness and H100 BF16 execution with the FA3 graph
+backend. Other accelerator backends have not been validated for this option.
+Measured gains depend on input length; longer inputs can regress. Benchmark
+your audio workload before enabling it.
+Fusion happens after loading the original Hugging Face checkpoint; exporting
+the fused audio tower as a Hugging Face checkpoint is not supported.
+
 ### Image and Text Input
 
 Send an image with a text question to get a text response.

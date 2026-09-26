@@ -10,6 +10,10 @@ import torch
 import torch.nn as nn
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
+from sglang_omni.models.qwen3_omni.components.audio_attention import (
+    FusedAudioAttention,
+    SegmentSplits,
+)
 from sglang_omni.models.qwen3_omni.components.audio_layer_graph import (
     AudioLayerGraphRunner,
 )
@@ -68,15 +72,6 @@ def pack_padded_audio_features(
         [row[:, :length] for row, length in zip(input_features, lengths.tolist())],
         dim=-1,
     ).contiguous()
-
-
-class SegmentSplits:
-    """Per-request attention segment sizes, shared by every encoder layer."""
-
-    __slots__ = ("value",)
-
-    def __init__(self) -> None:
-        self.value: list[int] | None = None
 
 
 def forward_with_shared_segments(self, hidden_states, cu_seqlens, **kwargs):
@@ -179,6 +174,7 @@ class Qwen3OmniAudioEncoder(nn.Module):
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
         enable_layer_cuda_graph: bool = False,
+        enable_fused_qkv: bool = False,
     ) -> None:
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
@@ -194,7 +190,13 @@ class Qwen3OmniAudioEncoder(nn.Module):
             hf_modeling._get_feat_extract_output_lengths
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.segment_splits = SegmentSplits()
-        share_segment_splits(self.audio_tower, self.segment_splits)
+        if enable_fused_qkv:
+            for layer in self.audio_tower.layers:
+                layer.self_attn = FusedAudioAttention(
+                    layer.self_attn, self.segment_splits
+                )
+        else:
+            share_segment_splits(self.audio_tower, self.segment_splits)
         self.layer_graph_runner = None
         if enable_layer_cuda_graph and self.device.type == "cuda":
             self.enable_layer_cuda_graph()
