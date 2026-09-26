@@ -156,3 +156,106 @@ def test_output_response_spans_units_and_restarts_after_reopen() -> None:
     )
     assert isinstance(final_events[-1], ResponseFinished)
     assert final_events[-1].text == "hi"
+
+
+@pytest.mark.parametrize(
+    "modality,audio_format", [("text", "pcm16"), ("audio", "float32")]
+)
+def test_perception_rejects_unsupported_input_format(
+    monkeypatch: pytest.MonkeyPatch,
+    modality: str,
+    audio_format: str,
+) -> None:
+    stream = Mock(spec=StreamingPerception)
+    monkeypatch.setattr(
+        "sglang_omni.models.nemotron_voicechat.duplex.GraphPerception",
+        Mock(return_value=stream),
+    )
+    hooks = PerceptionHooks(Mock())
+    session_identity = SessionIdentity("format")
+    hooks.open(session_identity, OmniRequest(None))
+    context = SessionContext(
+        session_identity=session_identity, cancelled=threading.Event(), emit=Mock()
+    )
+    with pytest.raises(ValueError, match="PCM16"):
+        hooks.append(
+            replace(audio_chunk(), modality=modality, format=audio_format),
+            stage_payload(),
+            context,
+        )
+    stream.push.assert_not_called()
+
+
+def test_codec_memory_stays_bounded_and_reopen_clears_audio_history() -> None:
+    hooks = CodecHooks(ConstantFrameDecoder(), "cpu")
+    session_identity = SessionIdentity("bounded-codec")
+    hooks.open(session_identity, OmniRequest(None))
+    context = SessionContext(
+        session_identity=session_identity, cancelled=threading.Event(), emit=Mock()
+    )
+    for frame_index in range(100):
+        hooks.append(
+            audio_chunk(),
+            stage_payload({"codes": torch.tensor([[frame_index]])}),
+            context,
+        )
+        assert (
+            hooks.usage(session_identity).bytes <= 16 * torch.tensor(0).element_size()
+        )
+    hooks.append(audio_chunk(b"", eos=True), stage_payload({"eos": True}), context)
+    with pytest.raises(ValueError, match="already ended"):
+        hooks.append(
+            audio_chunk(),
+            stage_payload({"codes": torch.zeros(1, 1, dtype=torch.long)}),
+            context,
+        )
+    hooks.close(session_identity)
+    hooks.open(session_identity, OmniRequest(None))
+    output = hooks.append(
+        audio_chunk(),
+        stage_payload({"codes": torch.zeros(1, 1, dtype=torch.long)}),
+        context,
+    )
+    assert output.data["pcm"] == bytes((1764 - 256) * 2)
+
+
+def test_codec_empty_session_drains_without_audio() -> None:
+    hooks = CodecHooks(ConstantFrameDecoder(), "cpu")
+    session_identity = SessionIdentity("empty-codec")
+    hooks.open(session_identity, OmniRequest(None))
+    emitted_chunks: list[TimedChunk] = []
+    context = SessionContext(
+        session_identity=session_identity,
+        cancelled=threading.Event(),
+        emit=emitted_chunks.append,
+    )
+    output = hooks.append(
+        audio_chunk(b"", eos=True), stage_payload({"eos": True}), context
+    )
+    assert output.data["pcm"] == b""
+    assert emitted_chunks[-1].eos
+    assert emitted_chunks[-1].duration_ms == 0
+
+
+@pytest.mark.parametrize(
+    "terminal_payload",
+    [
+        b"not-a-mapping",
+        {"pcm": "not-bytes", "text": "", "eos": False},
+        {"pcm": b"", "text": None, "eos": False},
+        {"pcm": b"", "text": "", "eos": "true"},
+    ],
+)
+def test_output_converter_rejects_invalid_terminal_payload_before_starting_response(
+    terminal_payload: bytes | dict[str, bytes | str | bool | None],
+) -> None:
+    converter = VoiceChatOutput()
+    invalid_output = OutputChunk(
+        SessionIdentity("validation"), 0, 0, "audio", 0, 80, terminal_payload
+    )
+    with pytest.raises(ValueError, match="invalid VoiceChat"):
+        list(converter(invalid_output))
+    valid_output = replace(
+        invalid_output, payload={"pcm": bytes(2), "text": "hello", "eos": False}
+    )
+    assert isinstance(list(converter(valid_output))[0], ResponseStarted)
