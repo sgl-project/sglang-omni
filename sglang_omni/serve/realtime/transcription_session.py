@@ -472,17 +472,18 @@ class RealtimeTranscriptionSession:
         return segment
 
     async def enforce_hard_limit(self) -> None:
+        segment = self.active_segment
         max_samples = self.max_segment_samples
-        if max_samples is None:
+        if segment is None or max_samples is None:
             return
-        end_sample = self.audio_buffer.end_sample
-        while (
-            self.active_segment is not None
-            and end_sample - self.active_segment.start_sample >= max_samples
-        ):
-            cut = self.active_segment.start_sample + max_samples
-            await self.queue_final(cut)
-            self.start_segment(cut)
+        full_blocks = (
+            self.audio_buffer.end_sample - segment.start_sample
+        ) // max_samples
+        if full_blocks == 0:
+            return
+        cut = segment.start_sample + full_blocks * max_samples
+        await self.finalize_through(cut)
+        self.start_segment(cut)
 
     def trim_idle_prefix(self) -> None:
         """Bound the buffer while server VAD holds no active speech turn.
