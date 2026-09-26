@@ -18,12 +18,18 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset videomme-ci-50
     python -m benchmarks.dataset.prepare --dataset videomme-ci-25
     python -m benchmarks.dataset.prepare --dataset videoamme-ci-50
+    python -m benchmarks.dataset.prepare --dataset socialomni
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+
+from benchmarks.dataset.socialomni import (
+    SOCIALOMNI_DATASET_ID,
+    SOCIALOMNI_DATASET_REVISION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +41,6 @@ LONGLIBRIHEAVY_DATASET_ID = "inesc-id/longlibriheavy"
 LONGLIBRIHEAVY_DATASET_REVISION = "09bc067255eeb0d0bca62357ac985c2ebdc5169c"
 MEANWHILE_DATASET_ID = "distil-whisper/meanwhile"
 MEANWHILE_DATASET_REVISION = "5a6b431a268523a6603f199d859fc25a24c22900"
-
 DATASETS: dict[str, str] = {
     "seedtts": SEEDTTS_DATASET_ID,
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini-arrow",
@@ -57,6 +62,7 @@ DATASETS: dict[str, str] = {
     "videomme-ci-50": "zhaochenyang20/Video_MME_ci",
     "videomme-ci-25": "zhaochenyang20/Video_MME_ci_25",
     "videoamme-ci-50": "zhaochenyang20/Video_AMME_ci",
+    "socialomni": SOCIALOMNI_DATASET_ID,
 }
 
 
@@ -65,13 +71,21 @@ def download_dataset(
     *,
     revision: str | None = None,
     quiet: bool = False,
+    local_dir: str | None = None,
 ) -> None:
     """Pre-warm the HuggingFace datasets cache for *repo_id*."""
     from datasets import get_dataset_config_names, load_dataset
     from huggingface_hub import hf_hub_download
 
     dataset_id, separator, split = repo_id.partition(":")
-    if revision is None and dataset_id == SEEDTTS_DATASET_ID:
+    if dataset_id == SOCIALOMNI_DATASET_ID:
+        if revision not in (None, SOCIALOMNI_DATASET_REVISION):
+            raise ValueError(
+                "SocialOmni must use the pinned dataset revision "
+                f"{SOCIALOMNI_DATASET_REVISION}"
+            )
+        revision = SOCIALOMNI_DATASET_REVISION
+    elif revision is None and dataset_id == SEEDTTS_DATASET_ID:
         revision = SEEDTTS_DATASET_REVISION
     elif revision is None and dataset_id == STT_BENCHMARK_DATASET_ID:
         revision = STT_BENCHMARK_DATASET_REVISION
@@ -87,7 +101,21 @@ def download_dataset(
             f"revision={revision or 'default'} ..."
         )
 
-    if dataset_id == "MMMU/MMMU":
+    if dataset_id == SOCIALOMNI_DATASET_ID:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            repo_id=dataset_id,
+            repo_type="dataset",
+            local_dir=local_dir or "benchmarks/cache/socialomni",
+            allow_patterns=[
+                "README.md",
+                "data/level_1/**",
+                "data/level_2/**",
+            ],
+            **revision_kwargs,
+        )
+    elif dataset_id == "MMMU/MMMU":
         config_names = get_dataset_config_names(dataset_id, **revision_kwargs)
         for config_name in config_names:
             load_dataset(
@@ -144,10 +172,17 @@ def main() -> None:
         default=None,
         help="Dataset revision; known evaluation datasets use a pinned default.",
     )
+    parser.add_argument(
+        "--local-dir",
+        default=None,
+        help="Materialization directory for datasets that contain media files.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
-    download_dataset(DATASETS[args.dataset], revision=args.revision)
+    download_dataset(
+        DATASETS[args.dataset], revision=args.revision, local_dir=args.local_dir
+    )
 
 
 if __name__ == "__main__":

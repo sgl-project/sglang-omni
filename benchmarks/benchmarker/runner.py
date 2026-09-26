@@ -36,6 +36,7 @@ class RunConfig:
     warmup: int | None = None
     disable_tqdm: bool = False
     timeout_s: int = 300
+    trust_env: bool = False
 
     @property
     def effective_warmup(self) -> int:
@@ -67,7 +68,7 @@ class BenchmarkRunner:
             aiohttp.TCPConnector(limit=0) if not self.config.max_concurrency else None
         )
         async with aiohttp.ClientSession(
-            timeout=timeout, connector=connector
+            timeout=timeout, connector=connector, trust_env=self.config.trust_env
         ) as session:
             if self.config.effective_warmup > 0:
                 await self._warmup(session, samples, send_fn)
