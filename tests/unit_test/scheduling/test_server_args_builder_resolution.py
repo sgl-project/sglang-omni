@@ -35,6 +35,12 @@ DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY = str(
 )
 
 
+@pytest.fixture(autouse=True)
+def isolate_torchinductor_cache_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """build_sglang_server_args writes the process cache directory."""
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+
+
 def test_builder_record_is_resolved_with_the_cuda_graph_config_declared(
     tmp_path: Path,
 ) -> None:
@@ -118,10 +124,7 @@ def test_torchinductor_cache_directory_keeps_existing_value() -> None:
 
 def test_server_args_builder_pins_torchinductor_cache_directory_when_unset(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
-
     build_sglang_server_args(
         write_mini_llama_checkpoint(tmp_path),
         context_length=2048,
@@ -134,6 +137,7 @@ def test_server_args_builder_pins_torchinductor_cache_directory_when_unset(
 
 
 def test_gpu_compat_env_defaults_pin_torchinductor_cache_directory_when_unset() -> None:
+    # note (zhaochenyang20): a set FlashInfer key skips the GPU topology probe.
     env = {"FLASHINFER_USE_CUDA_NORM": "0"}
 
     apply_gpu_compat_env_defaults(env)
