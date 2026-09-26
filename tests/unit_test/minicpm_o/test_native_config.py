@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,10 @@ from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
 from sglang_omni.models.minicpm_o import stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
+from sglang_omni.models.minicpm_o.config import preprocessing_stage
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import IncomingMessage
 
 
 class ConfigLoaded(Exception):
@@ -115,3 +119,62 @@ def test_engine_factory_resolves_native_config_before_server_args(
     overrides = {} if trust_override is None else {"trust_remote_code": trust_override}
     with pytest.raises(ConfigLoaded):
         factory(str(snapshot), server_args_overrides=overrides)
+
+
+def test_preprocessing_executor_enables_bounded_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initialized: list[str] = []
+    events: list[tuple[str, str]] = []
+
+    class Preprocessor:
+        def __init__(self, model_path: str, *, speech_enabled: bool) -> None:
+            self.model_path = model_path
+            self.speech_enabled = speech_enabled
+
+        @property
+        def processor(self) -> object:
+            initialized.append(self.model_path)
+            return object()
+
+        async def __call__(self, payload: StagePayload) -> StagePayload:
+            return payload
+
+    monkeypatch.setattr(stages, "MiniCPMOPreprocessor", Preprocessor)
+    monkeypatch.setattr(
+        stages,
+        "emit_event",
+        lambda *, request_id, stage, event_name: events.append(
+            (request_id, event_name)
+        ),
+    )
+
+    scheduler = stages.create_preprocessing_executor("model", max_concurrency=4)
+    assert initialized == ["model"]
+
+    payload = StagePayload(
+        request_id="request",
+        request=OmniRequest(inputs={}),
+        data=None,
+    )
+    scheduler_thread = threading.Thread(target=scheduler.start, daemon=True)
+    scheduler_thread.start()
+    try:
+        scheduler.inbox.put(IncomingMessage("request", "new_request", payload))
+        output = scheduler.outbox.get(timeout=2)
+    finally:
+        scheduler.stop()
+        scheduler_thread.join(timeout=2)
+
+    assert output.request_id == "request"
+    assert output.type == "result"
+    assert output.data is payload
+    assert events == [
+        ("request", "preprocess_start"),
+        ("request", "preprocess_end"),
+    ]
+
+
+def test_preprocessing_concurrency_is_enabled_by_default() -> None:
+    stage = preprocessing_stage(process="pipeline")
+    assert stage.factory.max_concurrency == 4
