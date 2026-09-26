@@ -12,9 +12,6 @@ import shutil
 import uuid
 from pathlib import Path
 
-from .socialomni import PREFIX_ENCODING, _source_digest
-
-
 def resolve_ffmpeg_executable() -> str | None:
     system = shutil.which("ffmpeg")
     if system:
@@ -31,6 +28,8 @@ def resolve_ffmpeg_executable() -> str | None:
 def build_ffmpeg_prefix_command(
     ffmpeg: str, source: Path, timestamp_s: float, output: Path
 ) -> list[str]:
+    from .socialomni import PREFIX_ENCODING
+
     return [
         ffmpeg,
         "-hide_banner",
@@ -65,6 +64,8 @@ async def create_video_prefix(
     input_path: str | Path, timestamp_s: float, cache_dir: str | Path
 ) -> Path:
     """Re-encode video and audio up to the query time into an atomic cache entry."""
+    from .socialomni import PREFIX_ENCODING, _source_digest
+
     if not math.isfinite(timestamp_s) or timestamp_s <= 0:
         raise ValueError("timestamp_s must be finite and positive")
     source = Path(input_path).resolve()
