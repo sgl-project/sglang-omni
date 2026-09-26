@@ -434,7 +434,7 @@ def test_converter_omits_explicit_params_when_sampling_omitted() -> None:
     assert gen.sampling.temperature == 1.0
     assert gen.sampling.top_p == 1.0
     assert gen.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen.metadata
+    assert gen.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == []
 
 
 def test_converter_preserves_explicit_rollout_sampling_default_values() -> None:
@@ -466,7 +466,7 @@ def test_converter_does_not_mark_null_rollout_sampling_params_explicit() -> None
     assert gen.sampling.temperature == 1.0
     assert gen.sampling.top_p == 1.0
     assert gen.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen.metadata
+    assert gen.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == []
 
 
 def test_converter_preserves_rollout_metadata() -> None:
@@ -478,7 +478,7 @@ def test_converter_preserves_rollout_metadata() -> None:
 
     gen = build_rollout_generate_request(req)
 
-    assert gen.metadata == {"rollout_id": 1}
+    assert gen.metadata == {"rollout_id": 1, EXPLICIT_GENERATION_PARAMS_KEY: []}
 
 
 def test_converter_preserves_prompt_as_raw_rollout_input() -> None:

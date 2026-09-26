@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 
 @dataclass
 class Message:
@@ -54,17 +56,22 @@ class UsageInfo:
         return d
 
 
-@dataclass
-class SamplingParams:
-    """Sampling configuration."""
+class SamplingParams(BaseModel):
+    """Sampling configuration.
+
+    model_fields_set names the fields the caller chose, so a stage with its
+    own defaults can tell them apart from the values filled in here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     temperature: float = 1.0
     top_p: float = 1.0
     top_k: int = -1
     min_p: float = 0.0
     repetition_penalty: float = 1.0
-    stop: list[str] = field(default_factory=list)
-    stop_token_ids: list[int] = field(default_factory=list)
+    stop: list[str] = Field(default_factory=list)
+    stop_token_ids: list[int] = Field(default_factory=list)
     seed: int | None = None
     max_new_tokens: int | None = None
 

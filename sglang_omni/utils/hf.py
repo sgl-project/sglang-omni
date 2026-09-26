@@ -29,14 +29,19 @@ _CONFIG_MODEL_TYPE_TO_ARCH = {
     "qwen3_tts": "Qwen3TTSForConditionalGeneration",
     "voxtral_tts": "VoxtralTTSForConditionalGeneration",
     "zonos2": "Zonos2ForCausalLM",
+    "personaplex": "PersonaPlexForCausalLM",
 }
 
-_COSYVOICE3_LAYOUT_MARKER = "cosyvoice3.yaml"
-_COSYVOICE3_ARCHITECTURE = "FunCosyVoice3SGLangModel"
+COSYVOICE3_LAYOUT_MARKER = "cosyvoice3.yaml"
+COSYVOICE3_ARCHITECTURE = "FunCosyVoice3SGLangModel"
 _AUK_ARCHITECTURE = "AuKForConditionalGeneration"
 _AUK_CONFIG_NAMES = ("config.yaml", "config.yml")
 _AUK_MODEL_NAMES = frozenset({"auk", "auk-flash"})
 _AUK_WEIGHT_MARKERS = ("auk_base.safetensors", "auk_flash.safetensors")
+# Note (wilsonzheng0327): PersonaPlex ships no architectures entry; the Moshi text
+# tokenizer beside model.safetensors is what identifies the family.
+PERSONAPLEX_LAYOUT_MARKER = "tokenizer_spm_32k_3.model"
+PERSONAPLEX_ARCHITECTURE = "PersonaPlexForCausalLM"
 
 
 def architecture_from_hf_config(hf_config: Any) -> str | None:
@@ -192,13 +197,12 @@ def try_resolve_arch_from_raw_config(
     return None
 
 
-def try_resolve_arch_from_cosyvoice3_layout(
-    model_path: str, revision: str | None = None
+def try_resolve_arch_from_layout_marker(
+    model_path: str, marker: str, architecture: str, revision: str | None = None
 ) -> str | None:
-    """Resolve Fun-CosyVoice3 from the official checkpoint layout."""
-    marker_path = os.path.join(model_path, _COSYVOICE3_LAYOUT_MARKER)
-    if os.path.isfile(marker_path):
-        return _COSYVOICE3_ARCHITECTURE
+    """Resolve a checkpoint whose family is identified by one file it ships."""
+    if os.path.isfile(os.path.join(model_path, marker)):
+        return architecture
     else:
         pass
     if os.path.isdir(model_path):
@@ -206,14 +210,10 @@ def try_resolve_arch_from_cosyvoice3_layout(
     else:
         pass
     try:
-        hf_hub_download(
-            repo_id=model_path,
-            filename=_COSYVOICE3_LAYOUT_MARKER,
-            revision=revision,
-        )
-    except Exception:
+        hf_hub_download(repo_id=model_path, filename=marker, revision=revision)
+    except (OSError, ValueError):
         return None
-    return _COSYVOICE3_ARCHITECTURE
+    return architecture
 
 
 def auk_architecture_from_config(path: str) -> str | None:

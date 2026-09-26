@@ -80,7 +80,8 @@ def test_hub_config_yaml_resolves_without_snapshot(monkeypatch, tmp_path):
 
     def fake_hub_download(repo_id, filename, **kwargs):
         assert repo_id == "tencent/AuK"
-        assert filename == "config.yaml"
+        if filename != "config.yaml":
+            raise FileNotFoundError(filename)
         return str(path)
 
     monkeypatch.setattr("sglang_omni.utils.hf.hf_hub_download", fake_hub_download)

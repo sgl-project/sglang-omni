@@ -71,6 +71,25 @@ class SGLangGenerationEngineBuilder(ABC):
         from sglang_omni.scheduling import sglang_backend
         from sglang_omni.utils.device import resolve_concrete_device
 
+        requested_context_length = (
+            server_args_overrides.get("context_length")
+            if server_args_overrides is not None
+            else None
+        )
+        uses_requested_context_length = (
+            requested_context_length is not None
+            and self.supports_context_length_override
+        )
+        if uses_requested_context_length:
+            # Note (wilsonzheng0327): Set before resolve_checkpoint, which may write
+            # the context length into the checkpoint it prepares.
+            self.context_length = normalize_context_length(
+                requested_context_length,
+                model_name=self.model_name,
+            )
+        else:
+            pass
+
         checkpoint_dir = self.resolve_checkpoint(model_path)
         concrete_device = resolve_concrete_device(device, gpu_id)
         device = str(concrete_device)
@@ -90,25 +109,16 @@ class SGLangGenerationEngineBuilder(ABC):
         else:
             pass
 
-        requested_context_length = (
-            server_args_overrides.get("context_length")
-            if server_args_overrides is not None
-            else None
-        )
-        if (
-            requested_context_length is not None
-            and self.supports_context_length_override
-        ):
-            context_length = requested_context_length
-        else:
-            context_length = self.resolve_context_length(
-                checkpoint_dir,
-                server_args_overrides=server_args_overrides,
+        if not uses_requested_context_length:
+            self.context_length = normalize_context_length(
+                self.resolve_context_length(
+                    checkpoint_dir,
+                    server_args_overrides=server_args_overrides,
+                ),
+                model_name=self.model_name,
             )
-        self.context_length = normalize_context_length(
-            context_length,
-            model_name=self.model_name,
-        )
+        else:
+            pass
 
         operator_selected = operator_selected_prefill_backend(server_args_overrides)
         overrides = build_generation_batch_overrides(

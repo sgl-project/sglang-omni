@@ -31,7 +31,12 @@ from sglang_omni.client.types import (
     UsageInfo,
 )
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
+from sglang_omni.proto import (
+    EXPLICIT_GENERATION_PARAMS_KEY,
+    OmniRequest,
+    RequestState,
+    StreamMessage,
+)
 from sglang_omni.proto.session import (
     OutputChunk,
     SessionIdentity,
@@ -561,6 +566,14 @@ class Client:
             metadata["output_modalities"] = request.output_modalities
         else:
             pass
+        explicit_fields = set(request.sampling.model_fields_set)
+        if request.max_tokens is not None:
+            explicit_fields.add("max_new_tokens")
+        else:
+            pass
+        # Note (wilsonzheng0327): A server route records what its HTTP caller chose;
+        # a direct caller chose whatever it set on sampling.
+        metadata.setdefault(EXPLICIT_GENERATION_PARAMS_KEY, sorted(explicit_fields))
         return OmniRequest(inputs=inputs, params=params, metadata=metadata)
 
     @staticmethod
@@ -875,8 +888,11 @@ def build_params(request: GenerateRequest) -> dict[str, Any]:
         params["max_new_tokens"] = max_new_tokens
     params["stream"] = request.stream
     if request.stage_sampling:
+        # Note (wilsonzheng0327): Only the fields the caller set, so a stage keeps its
+        # own defaults for the rest.
         params["stage_sampling"] = {
-            key: value.to_dict() for key, value in request.stage_sampling.items()
+            key: value.model_dump(exclude_unset=True)
+            for key, value in request.stage_sampling.items()
         }
     else:
         pass

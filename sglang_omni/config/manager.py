@@ -12,10 +12,16 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.utils import (
     architecture_from_hf_config,
     try_resolve_arch_from_auk_layout,
-    try_resolve_arch_from_cosyvoice3_layout,
+    try_resolve_arch_from_layout_marker,
     try_resolve_arch_from_mistral_config,
     try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_raw_config,
+)
+from sglang_omni.utils.hf import (
+    COSYVOICE3_ARCHITECTURE,
+    COSYVOICE3_LAYOUT_MARKER,
+    PERSONAPLEX_ARCHITECTURE,
+    PERSONAPLEX_LAYOUT_MARKER,
 )
 
 
@@ -51,11 +57,19 @@ def resolve_config_cls_for_model_path(model_path: str):
     else:
         pass
     if arch is None:
-        arch = try_resolve_arch_from_cosyvoice3_layout(repo_id, revision=revision)
+        arch = try_resolve_arch_from_layout_marker(
+            repo_id, COSYVOICE3_LAYOUT_MARKER, COSYVOICE3_ARCHITECTURE, revision
+        )
     else:
         pass
     if arch is None:
         arch = try_resolve_arch_from_auk_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_layout_marker(
+            repo_id, PERSONAPLEX_LAYOUT_MARKER, PERSONAPLEX_ARCHITECTURE, revision
+        )
     else:
         pass
     if arch is None:

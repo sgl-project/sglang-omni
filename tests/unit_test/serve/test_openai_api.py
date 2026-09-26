@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import GenerateRequest, SamplingParams
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
     EXPLICIT_GENERATION_PARAMS_KEY,
@@ -1209,7 +1209,7 @@ def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
     assert gen_req.sampling.temperature == 1.0
     assert gen_req.sampling.top_p == 1.0
     assert gen_req.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == []
 
 
 def test_chat_request_preserves_explicit_default_sampling_values() -> None:
@@ -1233,6 +1233,35 @@ def test_chat_request_preserves_explicit_default_sampling_values() -> None:
     ]
 
 
+def test_client_keeps_the_route_explicit_params_over_its_filled_sampling() -> None:
+    req = ChatCompletionRequest(
+        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    omni_request = Client.build_omni_request(build_chat_generate_request(req))
+
+    assert omni_request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == []
+
+
+def test_client_records_the_sampling_fields_a_direct_caller_set() -> None:
+    request = GenerateRequest(
+        prompt="hi",
+        sampling=SamplingParams(temperature=1.0),
+        stage_sampling={"thinker": SamplingParams(top_k=5)},
+        max_tokens=16,
+    )
+
+    omni_request = Client.build_omni_request(request)
+
+    assert omni_request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == [
+        "max_new_tokens",
+        "temperature",
+    ]
+    assert omni_request.params["temperature"] == 1.0
+    assert omni_request.params["stage_sampling"] == {"thinker": {"top_k": 5}}
+
+
 def test_chat_request_does_not_mark_null_sampling_params_explicit() -> None:
     req = ChatCompletionRequest(
         model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
@@ -1247,7 +1276,7 @@ def test_chat_request_does_not_mark_null_sampling_params_explicit() -> None:
     assert gen_req.sampling.temperature == 1.0
     assert gen_req.sampling.top_p == 1.0
     assert gen_req.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == []
 
 
 def test_speech_stream_defaults_to_raw_pcm() -> None:
@@ -1509,7 +1538,7 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.sampling.temperature == 0.0
     omni_req = Client.build_omni_request(gen_req)
     assert omni_req.params["temperature"] == 0.0
-    assert gen_req.metadata == {"task": "asr"}
+    assert gen_req.metadata == {"task": "asr", EXPLICIT_GENERATION_PARAMS_KEY: []}
     assert gen_req.output_modalities == ["text"]
     assert gen_req.stream is False
 
@@ -3111,7 +3140,7 @@ def test_transcription_endpoint_uses_openai_temperature_default() -> None:
     assert transcription_client.requests
     request = transcription_client.requests[0]
     assert request.sampling.temperature == 0.0
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in request.metadata
+    assert request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == []
 
 
 def test_transcription_endpoint_marks_mtd_request_for_model_sampling_defaults() -> None:
@@ -3134,7 +3163,7 @@ def test_transcription_endpoint_marks_mtd_request_for_model_sampling_defaults() 
     assert transcription_client.requests
     request = transcription_client.requests[0]
     assert request.sampling.temperature == 0.0
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in request.metadata
+    assert request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == []
 
 
 class DiarizationTranscriptionClient:

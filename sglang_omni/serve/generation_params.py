@@ -12,7 +12,6 @@ def record_explicit_generation_params(
     metadata: dict[str, Any],
     explicit_fields: list[str],
 ) -> None:
-    if explicit_fields:
-        metadata[EXPLICIT_GENERATION_PARAMS_KEY] = explicit_fields
-    else:
-        pass
+    """Recorded even when empty: the client otherwise reads the explicit
+    fields off the SamplingParams, which a server route fills completely."""
+    metadata[EXPLICIT_GENERATION_PARAMS_KEY] = explicit_fields

@@ -118,6 +118,7 @@ Supported Models
    cookbook/minicpm_o.md
    cookbook/ming_omni.md
    cookbook/nemotron_voicechat.md
+   cookbook/personaplex.md
    cookbook/llada2_uni.md
    cookbook/fun_cosyvoice3.md
    cookbook/auk.md
