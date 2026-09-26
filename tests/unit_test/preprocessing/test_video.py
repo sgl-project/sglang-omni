@@ -17,7 +17,7 @@ from sglang_omni.preprocessing.resource_connector import run_media_io
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
-def _write_video_with_audio(path: Path) -> None:
+def _write_video_with_audio(path: Path) -> None:  # noqa: leading-underscore
     with video.av.open(str(path), mode="w") as container:
         frames = container.add_stream("mpeg4", rate=10)
         frames.width = frames.height = 64

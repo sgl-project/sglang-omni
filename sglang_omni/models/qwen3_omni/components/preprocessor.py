@@ -692,7 +692,7 @@ class Qwen3OmniPreprocessor:
         )
 
         videos_kwargs: dict[str, Any] = {}
-        if sampled_video_fps is not None:
+        if sampled_video_fps:
             # The HF processor uses one scalar FPS for video token timestamps.
             if any(fps != sampled_video_fps[0] for fps in sampled_video_fps):
                 raise ValueError(

@@ -10,8 +10,9 @@ import logging
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, ParamSpec, TypeVar
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -21,6 +22,7 @@ import numpy.typing as npt
 from .base import MediaIO
 
 _M = TypeVar("_M")
+_P = ParamSpec("_P")
 _MAX_HTTP_REDIRECTS = 5
 
 # Global thread pool for CPU-bound tasks (decoding/resampling)
@@ -45,9 +47,11 @@ async def await_media_cleanup(awaitable: Awaitable[_M]) -> _M:
     return result
 
 
-async def run_media_io(func: Callable[..., _M], *args: Any) -> _M:
+async def run_media_io(func: Callable[_P, _M], *args: _P.args, **kwargs: _P.kwargs) -> _M:
     """Wait for decoder threads to finish even when the request is cancelled."""
-    future = asyncio.get_running_loop().run_in_executor(global_thread_pool, func, *args)
+    future = asyncio.get_running_loop().run_in_executor(
+        global_thread_pool, partial(func, *args, **kwargs)
+    )
     try:
         return await asyncio.shield(future)
     except asyncio.CancelledError:
