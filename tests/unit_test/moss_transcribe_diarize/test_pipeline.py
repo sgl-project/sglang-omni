@@ -69,7 +69,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     engine = config.stages[0].engine
     assert factory.device is None
     assert engine.max_running_requests == 16
-    assert engine.enable_torch_compile is True
+    assert engine.enable_torch_compile is False
     assert engine.torch_compile_max_bs == 4
     assert factory.encoder_max_batch_size == 2
     assert factory.request_build_max_workers == 8
