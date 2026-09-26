@@ -27,3 +27,9 @@ class RequestResult:
     text_ttft_s: float | None = None
     audio_chunk_count: int = 0
     first_audio_payload_bytes: int = 0
+    # note (luojiaxuan): the client-side slot cap was busy when this request
+    # arrived, so its clock started late and it was not open loop.
+    waited_for_slot: bool = False
+    # note (luojiaxuan): open-loop runs only; how long after its planned
+    # arrival the request was actually sent.
+    dispatch_lateness_s: float | None = None

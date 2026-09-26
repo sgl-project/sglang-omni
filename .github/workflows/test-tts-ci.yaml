@@ -167,6 +167,63 @@ jobs:
             */speed_results.json
             */wer_results.json
 
+  stage-latency:
+    name: stage latency - streaming first audio
+    needs: stage-2-streaming
+    if: always() && !cancelled() && startsWith(inputs.tts_ci_model, 'qwen3-tts')
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 30
+    container:
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run TTS streaming first-audio latency stage
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_tts_latency_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OMNI_CI_MAX_ATTEMPTS: "1"
+          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
+          TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Upload latency artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-stage-latency-results
+          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/**/speed_results.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: TTS stage latency (streaming first audio)
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency
+          artifact-path-globs: |
+            */speed_results.json
+
   stage-3-consistency:
     name: stage 3 - consistency
     needs: stage-2-streaming

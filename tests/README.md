@@ -11,6 +11,7 @@ tests/
 │   ├── test_qwen3_omni_*_ci.py
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   ├── test_tts_ci.py
+│   ├── test_tts_latency_ci.py
 │   ├── test_asr_ci_multi_speaker.py
 │   └── test_asr_ci_seedtts.py
 └── unit_test/
@@ -412,6 +413,11 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
   speaker-similarity checks. Non-streaming and streaming WER pass the selected
   TTS generation concurrency into the result config while keeping Qwen3-ASR
   transcription concurrency at 4.
+- `test_tts_latency_ci.py`: streaming first-audio latency for the Qwen3-TTS
+  presets. One worker behind the router takes open-loop Poisson arrivals at
+  1 rps (60 samples) and 20 rps (the full EN set), and the first playable
+  latency is gated against the calibrated references in `tts_ci_config.py`.
+  It runs in its own pytest invocation so its worker is alone on the GPU.
 - `test_tts_consistency_artifacts.py`: CPU-only stage-3 check that compares
   TTS non-stream and streaming `speed_results.json` under
   `${OMNI_CI_HOME}/tts-stage-results/{nonstream,stream}/`.
