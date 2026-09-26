@@ -33,6 +33,7 @@ from sglang_omni.models.auk.request_builders import (
     preprocess_auk_payload,
     set_auk_preprocessing_context,
 )
+from sglang_omni.models.auk.seacache import SeaCacheConfig
 from sglang_omni.models.auk.step_cuda_graph import (
     AuKStepCudaGraphRunner,
     build_step_graph_runner,
@@ -311,8 +312,11 @@ def sample_batch(payloads, flow, device, dtype, max_frames, sampling):
         for state in states
     ]
     logger.info("AuK DiT: sampling batch of %d requests", len(items))
+    stats = {} if sampling["seacache_config"] is not None else None
     with autocast(device, dtype):
-        latents = flow.sample_batch(items, **sampling)
+        latents = flow.sample_batch(items, **sampling, seacache_stats=stats)
+    if stats is not None:
+        logger.info(f"AuK SeaCache batch_size={len(items)} stats={stats}")
     for state, latent in zip(states, latents):
         if not torch.isfinite(latent).all():
             raise RuntimeError("AuK generated latent contains NaN/Inf")
@@ -332,6 +336,10 @@ def create_auk_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     nfe: int = C.DEFAULT_NFE,
+    enable_seacache: bool = False,
+    seacache_threshold: float = 0.20,
+    seacache_max_skip_steps: int = 1,
+    seacache_force_compute_steps: int = 1,
     enable_dit_fused_qk_norm_rope: bool = True,
     cfg_strength: float = C.DEFAULT_CFG_STRENGTH,
     sway_sampling_coef: float | None = C.DEFAULT_SWAY_SAMPLING_COEF,
@@ -353,9 +361,21 @@ def create_auk_engine_executor(
     # Named dtypes are checked before resolve_checkpoint, which downloads.
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
     backbone_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
+    seacache_config = SeaCacheConfig(
+        threshold=seacache_threshold,
+        max_skip_steps=seacache_max_skip_steps,
+        force_compute_steps=seacache_force_compute_steps,
+    )
+    if enable_seacache and (enable_dit_torch_compile or enable_dit_cuda_graph):
+        raise ValueError(
+            "AuK SeaCache requires enable_dit_torch_compile=false and "
+            "enable_dit_cuda_graph=false"
+        )
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
+    if enable_seacache and config.is_flash:
+        raise ValueError("SeaCache is supported only for base AuK, not AuK-Flash")
     # note(Dayuxiaoshui): autocast reads fp32 as off, and on a non-fp32
     # backbone it would only re-cast per op and force the norms back to fp32.
     autocast_dtype = compute_dtype if backbone_dtype == torch.float32 else torch.float32
@@ -365,6 +385,7 @@ def create_auk_engine_executor(
         cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,
         sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
         t_grid=C.FLASH_T_GRID if config.is_flash else None,
+        seacache_config=seacache_config if enable_seacache else None,
     )
     # note(Dayuxiaoshui): installed before the blocks compile and before the
     # step graph captures them, so both carry the fused kernel.

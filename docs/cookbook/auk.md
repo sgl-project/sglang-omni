@@ -98,6 +98,32 @@ Padded rows are computed and discarded, not blended in: the attention bias sends
 
 Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
 
+## Experimental SeaCache
+
+Base AuK supports experimental SeaCache block reuse. It is disabled by default;
+enable it with:
+
+```bash
+python -m sglang_omni.cli serve --model-path tencent/AuK \
+  --auk_engine.factory.enable_seacache true \
+  --auk_engine.factory.seacache_threshold 0.20 \
+  --auk_engine.factory.seacache_max_skip_steps 1 \
+  --auk_engine.factory.enable_dit_torch_compile false \
+  --auk_engine.factory.enable_dit_cuda_graph false
+```
+
+The threshold of 0.20 is an experimental starting point, not a validated quality
+recommendation. The first and last step always run the full DiT. Set
+`--auk_engine.factory.seacache_threshold 0` to measure integration overhead
+without skipping. `seacache_force_compute_steps` controls the number of full
+steps at each boundary (default 1). Filtering uses the valid generated audio
+frames; the entire conditional and unconditional batch must pass the threshold
+to reuse a block residual. Each batch logs computed/cached counts, refresh
+reasons, and CUDA event times for the filter and DiT blocks in milliseconds.
+SeaCache requires both DiT block compilation and step CUDA graphs to be disabled.
+AuK-Flash rejects the option. Compare audio quality against a fixed-seed baseline
+before using this experimental option for production requests.
+
 ## DiT Q/K fusion
 
 On CUDA, the DiT uses a Triton kernel that fuses per-head RMSNorm with
