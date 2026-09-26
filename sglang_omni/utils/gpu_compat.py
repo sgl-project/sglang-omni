@@ -20,9 +20,6 @@ from sglang_omni.utils.gpu_memory import (
 logger = logging.getLogger(__name__)
 
 _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
-_DEFAULT_TORCHINDUCTOR_CACHE_DIR = (
-    Path.home() / ".cache" / "sglang-omni" / "torchinductor"
-)
 
 _GPU_ARCHITECTURES = {
     89: "ada",
@@ -189,11 +186,11 @@ def apply_torch_compile_cache_env(
     """Pin TORCHINDUCTOR_CACHE_DIR so the first compile is reused on later starts."""
     target_env = os.environ if env is None else env
     if "TORCHINDUCTOR_CACHE_DIR" not in target_env:
-        target_env["TORCHINDUCTOR_CACHE_DIR"] = str(_DEFAULT_TORCHINDUCTOR_CACHE_DIR)
-        logger.info(
-            "Torch compile cache directory: %s",
-            target_env["TORCHINDUCTOR_CACHE_DIR"],
-        )
+        cache_directory = str(Path.home() / ".cache" / "sglang-omni" / "torchinductor")
+        target_env["TORCHINDUCTOR_CACHE_DIR"] = cache_directory
+        logger.info(f"Torch compile cache directory: {cache_directory}")
+    else:
+        pass
     return target_env["TORCHINDUCTOR_CACHE_DIR"]
 
 
