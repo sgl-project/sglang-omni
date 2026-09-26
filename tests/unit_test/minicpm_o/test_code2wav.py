@@ -27,6 +27,7 @@ from sglang_omni.models.minicpm_o.routing import (
 )
 from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.utils.device import resolve_concrete_device
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -75,14 +76,23 @@ def checkpoint_dir() -> Path | None:
     return None
 
 
-@pytest.mark.accelerator
-def test_native_vocoder_with_checkpoint() -> None:
+@pytest.fixture(scope="module")
+def native_vocoder() -> MiniCPMOCode2Wav:
     checkpoint = checkpoint_dir()
-    if checkpoint is None or not torch.cuda.is_available():
-        pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    device = resolve_concrete_device(None)
+    if checkpoint is None or device.type not in ("cuda", "xpu"):
+        pytest.skip(
+            "Set MINICPMO_CHECKPOINT and provide CUDA or XPU for vocoder validation"
+        )
+    else:
+        pass
+    return MiniCPMOCode2Wav(str(checkpoint), device=str(device))
+
+
+@pytest.mark.accelerator
+def test_native_vocoder_with_checkpoint(native_vocoder: MiniCPMOCode2Wav) -> None:
     tokens = [1498, 1734, 3732, 3726, 3645]
-    output = model(codec_tokens=torch.tensor(tokens))
+    output = native_vocoder(codec_tokens=torch.tensor(tokens))
     waveform = output["waveform"]
     assert output["sample_rate"] == 24000
     assert waveform.dtype == np.float32
@@ -93,16 +103,14 @@ def test_native_vocoder_with_checkpoint() -> None:
 
 
 @pytest.mark.accelerator
-def test_native_vocoder_batch_matches_single_request_shapes() -> None:
-    checkpoint = checkpoint_dir()
-    if checkpoint is None or not torch.cuda.is_available():
-        pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+def test_native_vocoder_batch_matches_single_request_shapes(
+    native_vocoder: MiniCPMOCode2Wav,
+) -> None:
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
-    batched = model.vocode([tokens_a, tokens_b], None)
-    single_a = model.vocode([tokens_a], None)[0]
-    single_b = model.vocode([tokens_b], None)[0]
+    batched = native_vocoder.vocode([tokens_a, tokens_b], None)
+    single_a = native_vocoder.vocode([tokens_a], None)[0]
+    single_b = native_vocoder.vocode([tokens_b], None)[0]
     assert (
         batched[0].shape == single_a.shape == (len(tokens_a) * SAMPLES_PER_CODEC_TOKEN,)
     )

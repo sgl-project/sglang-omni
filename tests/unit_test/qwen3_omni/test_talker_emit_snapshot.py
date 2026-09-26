@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import torch
 
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
+from sglang_omni.scheduling.message import OutgoingMessage
 
 
 def fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
@@ -25,6 +26,7 @@ def make_runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner.model = model
     runner.feedback_enabled = True
     runner.code2wav_target = "code2wav"
+    runner.code2wav_in_process = True
     runner.codec_coalesce_frames = 0
     runner.outbox = SimpleNamespace(sent=[])
     runner.outbox.put = runner.outbox.sent.append
@@ -99,3 +101,89 @@ def test_two_batched_clones_rows_share_storage() -> None:
     }
     assert len(code_ptrs) == 1
     assert len(embed_ptrs) == 1
+
+
+class DeviceCodesTensor(torch.Tensor):
+    """CPU tensor that reports a CUDA device to the sender."""
+
+    @property
+    def device(self) -> torch.device:
+        return torch.device("cuda")
+
+
+def test_every_code_message_carries_one_event_recorded_after_the_snapshot(
+    monkeypatch,
+) -> None:
+    log: list[object] = []
+    talker_stream = object()
+
+    class _RecordingEvent:
+        def record(self, stream: object) -> None:
+            log.append(("record", stream))
+
+    original_clone = torch.Tensor.clone
+
+    def _logging_clone(self, *args, **kwargs):
+        log.append("clone")
+        return original_clone(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.cuda, "Event", _RecordingEvent)
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: talker_stream)
+    monkeypatch.setattr(torch.Tensor, "clone", _logging_clone)
+    n = 3
+    model = fake_model(n, 3, 2)
+    model.output_codes = torch.Tensor._make_subclass(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        DeviceCodesTensor, model.output_codes
+    )
+    runner = make_runner(model)
+
+    def put_after_record(message: OutgoingMessage) -> None:
+        assert log[-1] == ("record", talker_stream)
+        assert message.metadata["codes_ready_event"] is not None
+        runner.outbox.sent.append(message)
+
+    runner.outbox.put = put_after_record
+
+    runner.emit_code_chunks_and_feedback(
+        schedule_batch=sched_batch(n), requests=make_requests(n)
+    )
+
+    assert len(runner.outbox.sent) == n
+    events = [msg.metadata["codes_ready_event"] for msg in runner.outbox.sent]
+    assert all(event is events[0] for event in events)
+    assert log.count(("record", talker_stream)) == 1
+    assert log[-1] == ("record", talker_stream)
+    assert "clone" in log
+
+
+def test_cpu_code_messages_carry_no_event() -> None:
+    n = 2
+    runner = make_runner(fake_model(n, 3, 2))
+
+    runner.emit_code_chunks_and_feedback(
+        schedule_batch=sched_batch(n), requests=make_requests(n)
+    )
+
+    assert len(runner.outbox.sent) == n
+    assert all(msg.metadata == {"stream": False} for msg in runner.outbox.sent)
+
+
+def test_code_messages_for_another_process_carry_no_event(monkeypatch) -> None:
+    def record_forbidden() -> None:
+        raise AssertionError("no event may be recorded for another process")
+
+    monkeypatch.setattr(torch.cuda, "Event", record_forbidden)
+    n = 2
+    model = fake_model(n, 3, 2)
+    model.output_codes = torch.Tensor._make_subclass(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        DeviceCodesTensor, model.output_codes
+    )
+    runner = make_runner(model)
+    runner.code2wav_in_process = False
+
+    runner.emit_code_chunks_and_feedback(
+        schedule_batch=sched_batch(n), requests=make_requests(n)
+    )
+
+    assert len(runner.outbox.sent) == n
+    assert all(msg.metadata == {"stream": False} for msg in runner.outbox.sent)

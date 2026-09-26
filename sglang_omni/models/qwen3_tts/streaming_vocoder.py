@@ -30,9 +30,11 @@ from sglang_omni.scheduling.streaming_vocoder import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     StreamingVocoderBase,
     resolve_initial_codec_chunk_frames,
+    vocoder_decode_stream_priority,
 )
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import GrowablePinnedBuffer, PinnedTransferSlot
+from sglang_omni.utils.snake_beta import fuse_vocoder_decoder
 
 logger = logging.getLogger(__name__)
 DEFAULT_QWEN3_TTS_STREAM_STRIDE = 16
@@ -678,14 +680,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         if fused_snake_activation:
-            from sglang_omni.models.qwen3_tts.vocoder_kernels import (
-                fuse_vocoder_decoder,
-            )
-
-            logger.info(
-                "Qwen3-TTS vocoder fused SnakeBeta modules: %d",
-                fuse_vocoder_decoder(self.decoder),
-            )
+            replaced = fuse_vocoder_decoder(self.decoder)
+            logger.info(f"Qwen3-TTS vocoder fused SnakeBeta modules: {replaced}")
         else:
             pass
         tokenizer_config = getattr(tokenizer.model, "config", None)
@@ -812,7 +808,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.pinned_staging_disabled = self.device.type not in {"cuda", "musa"}
         self.cuda_decode_failed = False
         if self.device.type in {"cuda", "musa"}:
-            followup_priority = self.decode_stream_priority()
+            followup_priority = vocoder_decode_stream_priority(
+                torch.get_device_module(self.device)
+            )
             self.decode_stream = torch.cuda.Stream(
                 device=self.device, priority=followup_priority
             )
@@ -922,7 +920,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             enabled and self.async_decode and (not self.deterministic_inference)
         )
         graph_priority = (
-            self.decode_stream_priority() if self.device.type in {"cuda", "musa"} else 0
+            vocoder_decode_stream_priority(torch.get_device_module(self.device))
+            if self.device.type in {"cuda", "musa"}
+            else 0
         )
         graph_batch_sizes = self.resolve_incremental_warm_graph_batch_sizes(
             max_batch_size=min(self.followup_max_batch_size, codec_state_slots)
@@ -1663,18 +1663,6 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         torch.cuda.current_stream(self.device).wait_event(state.codes_ready)
-
-    @staticmethod
-    def decode_stream_priority() -> int:
-        """The second-highest priority: ahead of the talker's default stream,
-        with the top notch left free. A device with only two levels uses the
-        top one."""
-        least_priority, greatest_priority = torch.cuda.Stream.priority_range()
-        if greatest_priority + 1 < least_priority:
-            return greatest_priority + 1
-        else:
-            pass
-        return greatest_priority
 
     def decode_stream_context(self) -> Any:
         if self.decode_stream is None:

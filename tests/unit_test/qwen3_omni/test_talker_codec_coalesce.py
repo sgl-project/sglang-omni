@@ -41,6 +41,7 @@ def make_runner(
     runner.model = model
     runner.feedback_enabled = True
     runner.code2wav_target = "code2wav"
+    runner.code2wav_in_process = False
     runner.codec_coalesce_frames = coalesce
     runner.codec_coalesce_early_frames = 0
     runner.codec_coalesce_first_frames = first_frames

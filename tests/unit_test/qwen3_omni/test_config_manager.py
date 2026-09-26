@@ -104,7 +104,6 @@ def test_qwen3_omni_h20_colocated_example_config_loads_and_plans() -> None:
         "thinker",
         "decode",
         "talker_ar",
-        "code2wav",
     ]
     assert make_stage(config, "thinker").engine.mem_fraction_static is None
     assert make_stage(config, "talker_ar").engine.mem_fraction_static is None
