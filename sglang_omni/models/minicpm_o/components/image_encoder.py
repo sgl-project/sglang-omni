@@ -178,7 +178,7 @@ class MiniCPMOImageEncoder(nn.Module):
         tgt_sizes: torch.Tensor,
         patch_counts_cpu: torch.Tensor,
     ) -> torch.Tensor:
-        """Pack valid patches for attention, then restore resampler padding."""
+        """Pack patches using CPU masks and sizes, then restore resampler padding."""
         from sglang.srt.layers.attention.vision import prepare_vision_attention_metadata
 
         embeds = self.vpm.embeddings(
@@ -186,7 +186,7 @@ class MiniCPMOImageEncoder(nn.Module):
             patch_attention_mask=patch_attn_mask,
             tgt_sizes=tgt_sizes,
         )
-        valid = patch_attn_mask[:, 0, :]
+        valid = patch_attn_mask[:, 0, :].to(embeds.device)
         packed = embeds[valid].unsqueeze(0)
 
         cu_seqlens = torch.cat(
@@ -199,7 +199,9 @@ class MiniCPMOImageEncoder(nn.Module):
             packed,
             cu_seqlens=cu_seqlens,
             forward_metadata=prepare_vision_attention_metadata(
-                cu_seqlens, device=embeds.device
+                cu_seqlens,
+                device=embeds.device,
+                max_seqlen=int(patch_counts_cpu.max()),
             ),
         )
         packed = self.vpm.post_layernorm(packed)
@@ -222,7 +224,6 @@ class MiniCPMOImageEncoder(nn.Module):
         else:
             pass
         tgt_sizes_cpu = tgt_sizes.to("cpu", dtype=torch.int32)
-        tgt_sizes = tgt_sizes_cpu.to(self.device)
 
         all_pixel_values = [
             v.to(self.device, dtype=self.dtype).flatten(end_dim=1).permute(1, 0)
@@ -236,13 +237,13 @@ class MiniCPMOImageEncoder(nn.Module):
             batch_size, 3, -1, sequence_length
         )
 
-        # note (MayDomine): host-side patch counts avoid device synchronization.
+        # note (cuzmi): position IDs and resampler shapes consume host metadata.
         patch_counts_cpu = tgt_sizes_cpu[:, 0] * tgt_sizes_cpu[:, 1]
         max_patches = int(patch_counts_cpu.max())
-        patch_range = torch.arange(max_patches, device=self.device)
-        patch_attn_mask = (
-            patch_range[None, :] < patch_counts_cpu.to(self.device)[:, None]
-        ).unsqueeze(1)
+        patch_range = torch.arange(max_patches, device="cpu")
+        patch_attn_mask = (patch_range[None, :] < patch_counts_cpu[:, None]).unsqueeze(
+            1
+        )
 
         chunk = self.vision_batch_size
         if batch_size > chunk:
@@ -253,14 +254,14 @@ class MiniCPMOImageEncoder(nn.Module):
                     self.run_vpm(
                         all_pixel_values[start:end],
                         patch_attn_mask[start:end],
-                        tgt_sizes[start:end],
+                        tgt_sizes_cpu[start:end],
                         patch_counts_cpu[start:end],
                     )
                 )
             vision_embedding = torch.vstack(hs)
         else:
             vision_embedding = self.run_vpm(
-                all_pixel_values, patch_attn_mask, tgt_sizes, patch_counts_cpu
+                all_pixel_values, patch_attn_mask, tgt_sizes_cpu, patch_counts_cpu
             )
 
         # note (MayDomine): chunk the resampler too to bound video attention memory.
@@ -268,7 +269,7 @@ class MiniCPMOImageEncoder(nn.Module):
             resampled = []
             for start in range(0, batch_size, chunk):
                 end = start + chunk
-                chunk_tgt_sizes = tgt_sizes[start:end]
+                chunk_tgt_sizes = tgt_sizes_cpu[start:end]
                 chunk_patch_counts = patch_counts_cpu[start:end]
                 chunk_max_patches = int(chunk_patch_counts.max())
                 resampled.append(
@@ -279,6 +280,6 @@ class MiniCPMOImageEncoder(nn.Module):
                 )
             vision_embedding = torch.cat(resampled, dim=0)
         else:
-            vision_embedding = self.resampler(vision_embedding, tgt_sizes)
+            vision_embedding = self.resampler(vision_embedding, tgt_sizes_cpu)
 
         return {"image_embeds": vision_embedding.flatten(0, 1)}
