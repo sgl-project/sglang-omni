@@ -51,6 +51,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     Qwen3TTSInvalidCodeRows,
     Qwen3TTSStreamingVocoderScheduler,
     Qwen3TTSStreamState,
+    decode_graph_batch_sizes,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -3010,6 +3011,66 @@ def test_qwen3_tts_streaming_vocoder_followup_graphs_can_be_disabled() -> None:
 
     assert scheduler.followup_decode_graphs.enabled is False
     assert scheduler.initial_decode_graphs is not scheduler.followup_decode_graphs
+
+
+@pytest.mark.parametrize(
+    ("max_batch_size", "expected"),
+    [
+        (1, (1,)),
+        (2, (1, 2)),
+        (3, (1, 2, 4)),
+        (4, (1, 2, 4)),
+        (5, (1, 2, 4, 8)),
+        (8, (1, 2, 4, 8)),
+        (32, (1, 2, 4, 8)),
+    ],
+)
+def test_qwen3_tts_decode_graph_batch_sizes_select_expected_prefix(
+    max_batch_size: int,
+    expected: tuple[int, ...],
+) -> None:
+    assert decode_graph_batch_sizes(max_batch_size) == expected
+
+
+def test_qwen3_tts_vocoder_skips_unreachable_decode_graph_batch_sizes() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        initial_max_batch_size=1,
+        followup_max_batch_size=3,
+    )
+
+    assert scheduler.initial_decode_graphs.batch_sizes == (1,)
+    assert scheduler.followup_decode_graphs.batch_sizes == (1, 2, 4)
+
+
+def test_qwen3_tts_vocoder_normalizes_batch_limits_before_graph_pruning() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        initial_max_batch_size=1.1,
+        followup_max_batch_size=2.1,
+    )
+
+    assert scheduler.initial_max_batch_size == 1
+    assert scheduler.initial_decode_graphs.batch_sizes == (1,)
+    assert scheduler.followup_max_batch_size == 2
+    assert scheduler.followup_decode_graphs.batch_sizes == (1, 2)
+
+
+@pytest.mark.parametrize(
+    "batch_limit",
+    ["initial_max_batch_size", "followup_max_batch_size"],
+)
+def test_qwen3_tts_vocoder_rejects_batch_limits_that_normalize_to_zero(
+    batch_limit: str,
+) -> None:
+    with pytest.raises(ValueError, match="async batch sizes must be > 0"):
+        Qwen3TTSStreamingVocoderScheduler(
+            FakeQwen3TTSSpeechTokenizer(),
+            device="cpu",
+            **{batch_limit: 0.1},
+        )
 
 
 def test_qwen3_tts_streaming_vocoder_fused_snake_activation_flag() -> None:
