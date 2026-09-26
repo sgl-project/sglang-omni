@@ -24,7 +24,10 @@ from typing import Awaitable, Callable, Generic, Protocol
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.threaded_simple_scheduler import ComputeInput, ComputeResult
-from sglang_omni.scheduling.types import ParallelSchedulerCapabilities
+from sglang_omni.scheduling.types import (
+    ParallelSchedulerCapabilities,
+    SynchronizedRequestError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +107,16 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.abort_lock = threading.Lock()
         self.running = False
         self.drain_on_stop = False
+        self.fail_on_unsynchronized_error: bool = False
         self.pending_messages: collections.deque[IncomingMessage] = collections.deque()
+
+    def enable_parallel_failure_handling(self) -> None:
+        if self.max_concurrency != 1 or self.max_batch_size != 1:
+            raise ValueError(
+                "Parallel work fanout requires serial, unbatched SimpleScheduler execution"
+            )
+        else:
+            self.fail_on_unsynchronized_error = True
 
     def validate_sequence_parallel(self) -> None:
         if self.max_concurrency != 1 or self.max_batch_size != 1:
@@ -262,7 +274,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             else:
                 pass
         except Exception:
-            if self.consume_if_aborted(msg.request_id):
+            if self.consume_if_aborted(msg.request_id) and not self.fail_on_unsynchronized_error:
                 return
             else:
                 pass
@@ -354,19 +366,23 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                         batch = self.collect_batch(msg)
                         self.run_batch(batch, loop)
                     except Exception as exc:
-                        logger.exception(
-                            "SimpleScheduler: compute_fn failed for %s", msg.request_id
-                        )
-                        for failed_msg in batch:
-                            if self.consume_if_aborted(failed_msg.request_id):
-                                continue
-                            else:
-                                pass
-                            self.emit_error(
-                                failed_msg.request_id,
-                                exc,
-                                self.outbox,
+                        if self.fail_on_unsynchronized_error and not isinstance(
+                            exc, SynchronizedRequestError
+                        ):
+                            raise
+                        else:
+                            logger.exception(
+                                f"SimpleScheduler: compute_fn failed for {msg.request_id}"
                             )
+                            for failed_msg in batch:
+                                if self.is_aborted(failed_msg.request_id):
+                                    continue
+                                else:
+                                    self.emit_error(
+                                        failed_msg.request_id,
+                                        exc,
+                                        self.outbox,
+                                    )
                 else:
                     pass
         finally:

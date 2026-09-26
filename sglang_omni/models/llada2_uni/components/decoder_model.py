@@ -173,10 +173,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                     int,
                     int,
                 ],
-                SimpleNamespace,
-                dict[
-                    str, torch.Tensor | tuple[torch.Tensor, torch.Tensor] | int | None
-                ],
+                tuple[torch.Tensor, torch.Tensor],
             ]
             | None
         ) = None
