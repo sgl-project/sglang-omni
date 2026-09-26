@@ -6,6 +6,7 @@ runs vocoder incrementally, outputs final audio via outbox.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import queue
@@ -26,7 +27,10 @@ from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recor
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
-from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
+from sglang_omni.scheduling.streaming_vocoder import (
+    StreamingVocoderBase,
+    vocoder_decode_stream_priority,
+)
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot
 from sglang_omni.utils.snake_beta import fuse_vocoder_decoder
@@ -145,6 +149,16 @@ class PendingWindow:
 
 
 @dataclass
+class RetiredChunks:
+    """A dropped request's codec chunks, held until the event recorded after
+    their last queued window read completes; freeing them earlier would let the
+    producer reuse memory a window is still reading."""
+
+    event: torch.cuda.Event
+    chunks: list[torch.Tensor]
+
+
+@dataclass
 class Code2WavStreamState:
     chunks: list[torch.Tensor] = field(default_factory=list)
     emitted: int = 0
@@ -153,6 +167,7 @@ class Code2WavStreamState:
     due_since: float | None = None
     checked: int = 0
     pending: PendingWindow | None = None
+    codes_ready_event: torch.Event | None = None
     _critical_ingest_profile: dict[str, Any] | None = None
 
 
@@ -177,9 +192,11 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         enable_output_overlap: bool = True,
         enable_cuda_graph: bool = False,
         cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
+        decode_stream: torch.Stream | None = None,
     ):
         self.model = model
         self.device = torch.device(device)
+        self.decode_stream = decode_stream
         self.stream_chunk_size = max(int(stream_chunk_size), 1)
         self.left_context_size = max(int(left_context_size), 0)
         self.codec_eos_token_id = codec_eos_token_id
@@ -213,6 +230,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.pinned_created = 0
         self.pinned_retired: list[PinnedTransferSlot] = []
         self.pinned_quarantined: list[PinnedTransferSlot] = []
+        self.retired_chunks: list[RetiredChunks] = []
         self.max_pinned_slots = self.MAX_PINNED_SLOTS + self.batch_ceiling
 
     @property
@@ -226,6 +244,26 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             pass
         steady_window = self.left_context_size + self.stream_chunk_size
         return bool(self.cuda_graph_runner.available_batch_sizes(steady_window))
+
+    def on_serving_start(self) -> None:
+        """Every device op of the serving thread runs on the decode stream."""
+        if self.decode_stream is not None:
+            torch.get_device_module(self.device).set_stream(self.decode_stream)
+        else:
+            pass
+
+    def wait_codes_ready(self, state: Code2WavStreamState) -> None:
+        """Order the decode stream after the producer of the request's newest chunk."""
+        if self.decode_stream is None:
+            pass
+        elif state.codes_ready_event is None:
+            # note (ratish): a chunk from another process is made ready on the
+            # receiving thread's default stream.
+            self.decode_stream.wait_stream(
+                torch.get_device_module(self.device).default_stream(self.device)
+            )
+        else:
+            self.decode_stream.wait_event(state.codes_ready_event)
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         del payload
@@ -248,6 +286,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             return
         else:
             pass
+        state.codes_ready_event = source.get("codes_ready_event")
         if state.stream_enabled is None:
             state.stream_enabled = bool(source["stream"])
         else:
@@ -273,6 +312,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         elif self.eos_lazy_scan:
             state.chunks.append(codes)
         elif codes.ndim >= 1:
+            self.wait_codes_ready(state)
             if profile is None:
                 is_eos = codes[0].item() == self.codec_eos_token_id
             else:
@@ -413,6 +453,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         else:
             pass
         unchecked = chunks[start:]
+        self.wait_codes_ready(state)
         if all((codes.ndim == 1 for codes in unchecked)):
             heads = torch.stack([codes[0] for codes in unchecked])
             is_eos = (heads == self.codec_eos_token_id).tolist()
@@ -467,6 +508,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             )
         else:
             pass
+        self.wait_codes_ready(state)
         window = torch.stack(state.chunks[start - context : end], dim=0)
         codes = window.transpose(0, 1).unsqueeze(0)
         wav, execution_metadata = self.forward_codes(codes, graph_eligible=not is_final)
@@ -634,7 +676,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         return (wait_ns, torch.from_numpy(audio))
 
     def acquire_slot(self, samples: int) -> PinnedTransferSlot | None:
-        self.reap_retired_slots()
+        self.reap_retired()
         if self.pinned_free:
             slot = self.pinned_free.pop()
             try:
@@ -667,12 +709,16 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.pinned_quarantined.append(slot)
         self.pipeline_active = False
 
-    def reap_retired_slots(self) -> None:
-        """Non-blockingly return completed retired slots to the free pool.
+    def reap_retired(self) -> None:
+        """Non-blockingly return completed retired slots to the free pool and
+        drop retired chunks the device has finished reading.
 
-        Callers hold ``state_lock``. An event-query error leaves the buffer
-        owned by the scheduler but permanently unavailable for reuse.
+        Callers hold state_lock. An event-query error leaves the buffer owned
+        by the scheduler but permanently unavailable for reuse.
         """
+        self.retired_chunks = [
+            held for held in self.retired_chunks if not held.event.query()
+        ]
         if not self.pinned_retired:
             return
         else:
@@ -771,7 +817,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
 
     def next_message(self):
         with self.state_lock:
-            self.reap_retired_slots()
+            self.reap_retired()
         if self.can_batch_stream_chunks:
             first_chunks: list = []
             for msg in self.drain_inbox():
@@ -949,16 +995,29 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self, request_id: str, state: Code2WavStreamState
     ) -> None:
         del request_id
-        pending = state.pending
-        if pending is None:
-            return
+        if state.pending is not None:
+            self.retire_slot(state.pending.slot)
+            state.pending = None
         else:
             pass
-        self.retire_slot(pending.slot)
-        state.pending = None
+        if state.chunks and self.device.type == "cuda":
+            # note (ratish): windows read the chunks on the decode stream, or on
+            # the default stream when the serving thread has none of its own.
+            read_stream = self.decode_stream
+            if read_stream is None:
+                read_stream = torch.cuda.default_stream(self.device)
+            else:
+                pass
+            event = torch.cuda.Event()
+            event.record(read_stream)
+            self.retired_chunks.append(RetiredChunks(event=event, chunks=state.chunks))
+            state.chunks = []
+        else:
+            pass
 
     def on_serving_stop(self) -> None:
-        """Drain retired slots at shutdown, when blocking costs no latency."""
+        """Drain retired slots and chunks at shutdown, when blocking costs no
+        latency."""
         retired = self.pinned_retired
         self.pinned_retired = []
         for slot in retired:
@@ -971,6 +1030,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 self.pinned_quarantined.append(slot)
             else:
                 self.release_slot(slot)
+        for held in self.retired_chunks:
+            held.event.synchronize()
+        self.retired_chunks = []
 
     def select_step_participants(self) -> list[tuple[str, Code2WavStreamState]]:
         now = time.monotonic()
@@ -1145,6 +1207,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             end = start + self.step_frames(state)
             window_ends.append(end)
             context = min(self.left_context_size, start)
+            self.wait_codes_ready(state)
             rows.append(
                 torch.stack(state.chunks[start - context : end], dim=0).transpose(0, 1)
             )
@@ -1213,6 +1276,10 @@ def create_code2wav_scheduler(
     enable_cuda_graph: bool = False,
     total_gpu_memory_fraction: float | None = None,
     fused_snake_activation: bool = True,
+<<<<<<< HEAD
+=======
+    talker_in_process: bool = False,
+>>>>>>> upstream/main
 ):
     """Factory: returns Code2WavScheduler."""
     from sglang_omni.utils.device import resolve_concrete_device
@@ -1233,6 +1300,21 @@ def create_code2wav_scheduler(
         logger.info(f"Code2Wav fused SnakeBeta modules: {replaced}")
     else:
         pass
+<<<<<<< HEAD
+=======
+    decode_stream: torch.Stream | None = None
+    # note (ratish): the priority stream only orders code2wav ahead of the
+    # talker's stream in the same context; alone in its process code2wav keeps
+    # the default stream.
+    if talker_in_process and concrete_device.type == "cuda":
+        device_module = torch.get_device_module(concrete_device)
+        decode_stream = device_module.Stream(
+            device=concrete_device,
+            priority=vocoder_decode_stream_priority(device_module),
+        )
+    else:
+        pass
+>>>>>>> upstream/main
     cuda_graph_runner = None
     if enable_cuda_graph:
         if enable_batching:
@@ -1252,6 +1334,11 @@ def create_code2wav_scheduler(
             num_quantizers=int(model.config.num_quantizers),
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             graph_keys=graph_keys,
+            model_footprint_bytes=sum(
+                tensor.nbytes
+                for tensor in itertools.chain(model.parameters(), model.buffers())
+            ),
+            decode_stream=decode_stream,
         )
         startup_stats = cuda_graph_runner.stats()
         if enable_batching and (not startup_stats["enabled"]):
@@ -1283,4 +1370,5 @@ def create_code2wav_scheduler(
         enable_output_overlap=enable_output_overlap,
         enable_cuda_graph=enable_cuda_graph,
         cuda_graph_runner=cuda_graph_runner,
+        decode_stream=decode_stream,
     )

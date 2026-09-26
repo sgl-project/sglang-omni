@@ -191,7 +191,7 @@ class Code2WavCudaGraphRunner:
     serving already relies on.
     """
 
-    WARMUP_ITERATIONS = 3
+    WARMUP_ITERATIONS = 2
 
     def __init__(
         self,
@@ -200,10 +200,12 @@ class Code2WavCudaGraphRunner:
         device: str | torch.device,
         num_quantizers: int,
         graph_keys: tuple[GraphKey, ...],
+        decode_stream: torch.Stream | None,
         device_api: Any,
     ) -> None:
         self.model = model
         self.device = torch.device(device)
+        self.decode_stream = decode_stream
         self.device_api = device_api
         if self.device.index is None:
             raise ValueError(
@@ -250,20 +252,29 @@ class Code2WavCudaGraphRunner:
         num_quantizers: int,
         total_gpu_memory_fraction: float | None,
         graph_keys: tuple[GraphKey, ...],
+        model_footprint_bytes: int,
+        decode_stream: torch.Stream | None,
         device_api: Any | None = None,
     ) -> Code2WavCudaGraphRunner:
-        """Build the configured serving-reachable serial graphs."""
+        """Build the configured serving-reachable serial graphs.
+
+        Graphs are captured on decode_stream, the stream the scheduler replays
+        them from; None captures on a fresh stream per attempt.
+        """
         runner = cls(
             model,
             device=device,
             num_quantizers=num_quantizers,
             graph_keys=graph_keys,
+            decode_stream=decode_stream,
             device_api=TorchDeviceApi() if device_api is None else device_api,
         )
-        runner._build(total_gpu_memory_fraction)
+        runner._build(total_gpu_memory_fraction, model_footprint_bytes)
         return runner
 
-    def _build(self, total_gpu_memory_fraction: float | None) -> None:
+    def _build(
+        self, total_gpu_memory_fraction: float | None, model_footprint_bytes: int
+    ) -> None:
         fraction = self.valid_fraction(total_gpu_memory_fraction)
         if fraction is None:
             self.disable_reason = "invalid_total_gpu_memory_fraction"
@@ -293,12 +304,13 @@ class Code2WavCudaGraphRunner:
             return
         self.memory_stats["before"] = before
         stage_budget = int(before["total_bytes"] * fraction)
-        loaded_model_footprint = before["allocated_bytes"]
-        graph_budget = max(0, stage_budget - loaded_model_footprint)
+        # note (ratish): the stage budget covers this model alone, so allocations
+        # of other stages sharing the process must not shrink it.
+        graph_budget = max(0, stage_budget - model_footprint_bytes)
         self.memory_stats.update(
             {
                 "stage_budget_bytes": stage_budget,
-                "loaded_model_footprint_bytes": loaded_model_footprint,
+                "loaded_model_footprint_bytes": model_footprint_bytes,
                 "graph_budget_bytes": graph_budget,
             }
         )
@@ -404,7 +416,11 @@ class Code2WavCudaGraphRunner:
         try:
             with self.device_api.device_context(self.device):
                 pool = self.device_api.graph_pool_handle(self.device)
-                capture_stream = self.device_api.new_stream(self.device)
+                capture_stream = (
+                    self.device_api.new_stream(self.device)
+                    if self.decode_stream is None
+                    else self.decode_stream
+                )
                 if tier1_keys:
                     previous_footprint = self.footprint_since(before)
                 else:
@@ -644,7 +660,9 @@ class Code2WavCudaGraphRunner:
         """Replay an exact graph or eagerly execute with a stable reason.
 
         Graph outputs are borrowed and valid only until the next graph replay;
-        callers must serialize replay through trim and D2H consumption.
+        callers must serialize replay through trim and D2H consumption. Replay
+        launches on the caller's current stream, which the serving thread holds
+        at decode_stream.
         """
         current_pid = os.getpid()
         if current_pid != self.owner_pid:

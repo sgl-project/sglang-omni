@@ -162,7 +162,8 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 enable_flow_cuda_graph=True,
                 flow_cuda_graph_capture_shapes=FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
                 # note (guozhihao-224, chenyang):
-                # Follow SGLang, CUDA Graph is on by default. torch.compile and TensorRT stay opt-in.
+                # CUDA Graph and DiT torch.compile are on by default. TensorRT stays opt-in.
+                enable_dit_torch_compile=True,
                 enable_flow_estimator_trt=False,
                 token_hop_len=25,
                 token_max_hop_len=100,
@@ -191,10 +192,21 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         # TODO (chenyang): Indeed, TRT and Torch compile conflicts are pretty
         # common in this repo, so we should make this into config level, not in each model.
         super().model_post_init(__context)
+        if "OMP_NUM_THREADS" not in self.env_defaults:
+            config_cls = type(self)
+            for stage in self.stages:
+                if config_cls.stage_config_cls(stage.name).engine_stage:
+                    # note(chenye): SGLang pins Torch CPU threads to 1 for its GPU process.
+                    # Apply the same policy at spawn to every stage colocated with the engine.
+                    stage.env.setdefault("OMP_NUM_THREADS", "1")
+                else:
+                    pass
+        else:
+            pass
         vocoder = next(stage for stage in self.stages if stage.name == "vocoder")
         extras = vocoder.factory.model_extra
         reject_conflicting_dit_accelerators(
-            enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile")),
+            enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile", True)),
             enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
         )
 

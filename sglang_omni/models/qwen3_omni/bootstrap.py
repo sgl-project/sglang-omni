@@ -123,6 +123,8 @@ def create_talker_scheduler(
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
     enable_talker_start_topology: bool = False,
+    code2wav_in_process: bool = False,
+    operator_selected_prefill_backend: bool = False,
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
@@ -143,12 +145,18 @@ def create_talker_scheduler(
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
     )
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
+    )
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+    from sglang_omni.utils import cuda_graph_batch_validator
 
     want_cuda_graph = configure_talker_server_args(
         server_args,
         feedback_enabled=feedback_enabled,
     )
+    prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
 
     (
         model_worker,
@@ -165,6 +173,7 @@ def create_talker_scheduler(
         weight_prefix=weight_prefix,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         defer_cuda_graph_capture=want_cuda_graph,
+        enable_prefill_input_embeds=prefill_graph_backend == CudaGraphBackend.BREAKABLE,
     )
     # Note:(Chenchen Hong) align the talker vocab to the codec vocab: post1 sizes
     # the repetition-penalty orchestrator from model_config.vocab_size (the
@@ -178,10 +187,15 @@ def create_talker_scheduler(
         pass
     model_worker.model_runner.model.sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
-        # Equivalent to init_cuda_graphs() while the talker requests no prefill
-        # embeds slot, but keeps both stages on one path so enabling talker
-        # prefill graphs later cannot silently miss the embeds view.
+        # note (ratish): capture after binding the sampler so decode graphs record it.
         init_sglang_cuda_graphs(model_worker)
+        if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
+            cuda_graph_batch_validator.attest_prefill_cuda_graphs(
+                model_worker.model_runner,
+                operator_selected=operator_selected_prefill_backend,
+            )
+        else:
+            pass
     else:
         pass
 
@@ -247,6 +261,7 @@ def create_talker_scheduler(
         model_worker,
         output_proc,
         scheduler.outbox,
+        code2wav_in_process=code2wav_in_process,
         feedback_enabled=feedback_enabled,
         codec_coalesce_frames=codec_coalesce_frames,
         codec_coalesce_first_frames=codec_coalesce_first_frames,

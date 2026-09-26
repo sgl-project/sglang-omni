@@ -29,6 +29,7 @@ class QwenTalkerModelRunner(ModelRunner):
         outbox: Any,
         *,
         code2wav_target: str = "code2wav",
+        code2wav_in_process: bool = False,
         feedback_enabled: bool = True,
         codec_coalesce_frames: int = 0,
         codec_coalesce_first_frames: int = 0,
@@ -37,6 +38,7 @@ class QwenTalkerModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self.outbox = outbox
         self.code2wav_target = code2wav_target
+        self.code2wav_in_process = code2wav_in_process
         self.feedback_enabled = bool(feedback_enabled)
         self.codec_coalesce_frames = max(int(codec_coalesce_frames), 0)
         self.codec_coalesce_first_frames = max(int(codec_coalesce_first_frames), 0)
@@ -160,6 +162,7 @@ class QwenTalkerModelRunner(ModelRunner):
         codes_snap = self.model.output_codes[:bs].detach().clone()
         embeds_snap = self.model.output_embeds[:bs].detach().clone()
         coalesce = self.codec_coalesce_frames
+        code_messages: list[OutgoingMessage] = []
         for idx, sched_req in enumerate(requests):
             req = schedule_batch.reqs[idx]
             code_chunk = codes_snap[idx]
@@ -169,7 +172,7 @@ class QwenTalkerModelRunner(ModelRunner):
                 pending = data.pending_codec_rows
                 data.codec_frames_seen += 1
                 if data.codec_frames_seen <= self.codec_coalesce_early_frames:
-                    self.outbox.put(
+                    code_messages.append(
                         OutgoingMessage(
                             request_id=req.rid,
                             type="stream",
@@ -187,12 +190,12 @@ class QwenTalkerModelRunner(ModelRunner):
                     else:
                         flush_ready = len(pending) >= self.coalesce_threshold(data)
                     if flush_ready:
-                        self.flush_codec_rows(req.rid, data)
+                        self.flush_codec_rows(req.rid, data, code_messages)
                     else:
                         pass
                     pending.append(code_chunk)
             else:
-                self.outbox.put(
+                code_messages.append(
                     OutgoingMessage(
                         request_id=req.rid,
                         type="stream",
@@ -202,6 +205,31 @@ class QwenTalkerModelRunner(ModelRunner):
                     )
                 )
             sched_req.data.pending_feedback_queue.append(feedback_row)
+        self.put_code_messages(code_messages)
+
+    def put_code_messages(self, code_messages: list[OutgoingMessage]) -> None:
+        """Send the messages with one ready event recorded after all their codes.
+
+        The event is recorded once every snapshot and stack the messages carry
+        is enqueued, and before any message is visible to the consumer. Only a
+        code2wav in this process can wait on it; another process orders its
+        reads on the receiving stream instead.
+        """
+        if (
+            self.code2wav_in_process
+            and code_messages
+            and code_messages[0].data.device.type == "cuda"
+        ):
+            device = code_messages[0].data.device
+            device_module = torch.get_device_module(device)
+            codes_ready_event = device_module.Event()
+            codes_ready_event.record(device_module.current_stream(device))
+            for message in code_messages:
+                message.metadata["codes_ready_event"] = codes_ready_event
+        else:
+            pass
+        for message in code_messages:
+            self.outbox.put(message)
 
     @staticmethod
     def is_streaming(data: Any) -> bool:
@@ -219,7 +247,9 @@ class QwenTalkerModelRunner(ModelRunner):
             pass
         return self.codec_coalesce_frames
 
-    def flush_codec_rows(self, request_id: str, data: Any) -> None:
+    def flush_codec_rows(
+        self, request_id: str, data: Any, code_messages: list[OutgoingMessage]
+    ) -> None:
         pending = data.pending_codec_rows
         if not pending:
             return
@@ -228,7 +258,7 @@ class QwenTalkerModelRunner(ModelRunner):
         data.codec_first_flush_done = True
         rows = pending[0] if len(pending) == 1 else torch.stack(pending, dim=0)
         pending.clear()
-        self.outbox.put(
+        code_messages.append(
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
@@ -246,10 +276,12 @@ class QwenTalkerModelRunner(ModelRunner):
             pass
         # Only preceding rows are known to be non-EOS. Send the uncertain last
         # row through Code2Wav's 1-D EOS scan without synchronizing on the sender.
+        code_messages: list[OutgoingMessage] = []
         last_row = pending.pop()
-        self.flush_codec_rows(request_id, req_data)
+        self.flush_codec_rows(request_id, req_data, code_messages)
         pending.append(last_row)
-        self.flush_codec_rows(request_id, req_data)
+        self.flush_codec_rows(request_id, req_data, code_messages)
+        self.put_code_messages(code_messages)
 
     def sample_before_post_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
