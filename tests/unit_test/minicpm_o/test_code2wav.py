@@ -29,6 +29,7 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
 )
 from sglang_omni.models.minicpm_o.components.token2wav import vocoder
 from sglang_omni.models.minicpm_o.components.token2wav.dit import TimestepEmbedder
+from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
@@ -37,7 +38,7 @@ from sglang_omni.models.minicpm_o.routing import (
 )
 from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -69,7 +70,7 @@ def mock_token2wav(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MagicMock
 def reference_model(
     tmp_path: Path, mock_token2wav: MagicMock
 ) -> Iterator[MiniCPMOCode2Wav]:
-    model = MiniCPMOCode2Wav(str(tmp_path))
+    model = MiniCPMOCode2Wav(str(tmp_path), hift_max_padding_waste=1.5)
     try:
         yield model
     finally:
@@ -173,7 +174,9 @@ def test_native_vocoder_with_checkpoint() -> None:
     checkpoint = _checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    model = MiniCPMOCode2Wav(
+        str(checkpoint), device="cuda:0", hift_max_padding_waste=1.5
+    )
     tokens = [1498, 1734, 3732, 3726, 3645]
     output = model(codec_tokens=torch.tensor(tokens))
     waveform = output["waveform"]
@@ -190,7 +193,9 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
     checkpoint = _checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    model = MiniCPMOCode2Wav(
+        str(checkpoint), device="cuda:0", hift_max_padding_waste=1.5
+    )
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
     batched = model.vocode([tokens_a, tokens_b], None)
@@ -229,6 +234,7 @@ def test_parallel_reference_preparation_preserves_checkpoint_waveforms(
         str(checkpoint),
         device="cuda:0",
         enable_flow_variable_length=enable_variable_length,
+        hift_max_padding_waste=1.5,
     )
     try:
         with torch.inference_mode():
@@ -301,8 +307,36 @@ def test_variable_length_option_reaches_dit(
     token2wav = MagicMock()
     monkeypatch.setattr(vocoder, "Token2Wav", lambda *args, **kwargs: token2wav)
     monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
-    MiniCPMOCode2Wav(str(tmp_path), enable_flow_variable_length=enabled)
+    MiniCPMOCode2Wav(
+        str(tmp_path),
+        enable_flow_variable_length=enabled,
+        hift_max_padding_waste=1.5,
+    )
     assert token2wav.flow.decoder.estimator.enable_variable_length is enabled
+
+
+def test_compile_option_wraps_dit_and_warms_up_small_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "assets" / "token2wav").mkdir(parents=True)
+    flow = SimpleNamespace(
+        decoder=SimpleNamespace(estimator=torch.nn.Linear(4, 4)),
+        inference=MagicMock(return_value=torch.zeros(1, 80, 1)),
+        up_rate=2,
+        output_size=80,
+        spk_embed_affine_layer=torch.nn.Linear(192, 80),
+    )
+    token2wav = SimpleNamespace(
+        flow=flow, device=torch.device("cpu"), dtype=torch.float32, n_timesteps=10
+    )
+    monkeypatch.setattr(vocoder, "Token2Wav", lambda *args, **kwargs: token2wav)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
+    MiniCPMOCode2Wav(str(tmp_path), compile_flow_dit=True, hift_max_padding_waste=1.5)
+    assert isinstance(flow.decoder.estimator, torch._dynamo.eval_frame.OptimizedModule)
+    warmup_batches = [call.args[0].shape[0] for call in flow.inference.call_args_list]
+    assert warmup_batches == [1, 2]
+    prompt_mels = flow.inference.call_args_list[0].args[4]
+    assert prompt_mels.shape == (1, 150, 80)
 
 
 def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
@@ -312,7 +346,9 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.max_batch_wait_ms == 0.0
     assert code2wav.factory.batch_wait_when_idle is False
     assert code2wav.factory.dtype is None
-    assert code2wav.factory.enable_flow_variable_length is True
+    assert code2wav.factory.enable_flow_variable_length is False
+    assert code2wav.factory.compile_flow_dit is True
+    assert code2wav.factory.hift_max_padding_waste == 1.5
 
 
 def test_vocode_slices_waveforms_to_token_lengths() -> None:
@@ -329,12 +365,15 @@ def test_vocode_slices_waveforms_to_token_lengths() -> None:
             return torch.zeros(speech_tokens.shape[0], 80, frames)
 
     class FakeHiFT:
-        def __call__(self, speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
+        def __call__(
+            self, speech_feat: torch.Tensor, mel_lengths: list[int]
+        ) -> tuple[torch.Tensor, None]:
             samples = speech_feat.shape[-1] * (SAMPLES_PER_CODEC_TOKEN // 2)
             wav = speech_feat.new_ones(speech_feat.shape[0], 1, samples)
             return wav, None
 
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
+    model.hift_max_padding_waste = 1.5
     model.token2wav = SimpleNamespace(
         device=torch.device("cpu"),
         dtype=torch.float32,
@@ -426,7 +465,7 @@ def test_reference_configuration_is_read_by_constructor(
         monkeypatch.setenv("MINICPMO_REF_WORKERS", workers)
     if capacity is not None:
         monkeypatch.setenv("MINICPMO_PROMPT_CACHE_CAPACITY", capacity)
-    model = MiniCPMOCode2Wav(str(tmp_path))
+    model = MiniCPMOCode2Wav(str(tmp_path), hift_max_padding_waste=1.5)
     try:
         assert model.reference_workers == expected_workers
         assert model.prompt_cache_capacity == expected_capacity
@@ -444,7 +483,7 @@ def test_reference_configuration_rejects_invalid_values(
 ) -> None:
     monkeypatch.setenv(name, value)
     with pytest.raises(ValueError, match=name):
-        MiniCPMOCode2Wav("unused")
+        MiniCPMOCode2Wav("unused", hift_max_padding_waste=1.5)
 
 
 def test_failed_reference_batch_drains_workers_and_can_retry(
@@ -532,7 +571,9 @@ def test_stage_stop_closes_reference_preparation(
     monkeypatch.setattr(
         stages, "MiniCPMOCode2Wav", MagicMock(return_value=reference_model)
     )
-    scheduler = stages.create_code2wav_executor("unused", device="cuda", gpu_id=0)
+    scheduler = stages.create_code2wav_executor(
+        "unused", device="cuda", gpu_id=0, hift_max_padding_waste=1.5
+    )
     reference_model.prepare_references([b"a", b"b"])
     scheduler.stop()
     scheduler.stop()
@@ -560,7 +601,9 @@ def test_stage_stop_prevents_late_reference_pool_creation(
         stages, "MiniCPMOCode2Wav", MagicMock(return_value=reference_model)
     )
     monkeypatch.setattr(stages, "vocode_code2wav_payloads", delayed_vocode)
-    scheduler = stages.create_code2wav_executor("unused", device="cuda", gpu_id=0)
+    scheduler = stages.create_code2wav_executor(
+        "unused", device="cuda", gpu_id=0, hift_max_padding_waste=1.5
+    )
     scheduler.inbox.put(IncomingMessage("late", "new_request", _payload()))
     with ThreadPoolExecutor(max_workers=1) as caller:
         running = caller.submit(scheduler.start)
@@ -596,11 +639,14 @@ def _batch_model() -> MiniCPMOCode2Wav:
             return torch.zeros(speech_tokens.shape[0], 80, frames)
 
     class FakeHiFT:
-        def __call__(self, speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
+        def __call__(
+            self, speech_feat: torch.Tensor, mel_lengths: list[int]
+        ) -> tuple[torch.Tensor, None]:
             samples = speech_feat.shape[-1] * (SAMPLES_PER_CODEC_TOKEN // 2)
             return speech_feat.new_ones(speech_feat.shape[0], 1, samples), None
 
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
+    model.hift_max_padding_waste = 1.5
     model.token2wav = SimpleNamespace(
         device=torch.device("cpu"),
         dtype=torch.float32,
@@ -636,22 +682,152 @@ def test_vocode_mixed_references_and_lengths_share_one_batch() -> None:
 
 def test_vocode_mixed_lengths_preserve_hift_boundaries() -> None:
     class BoundarySensitiveHiFT:
-        def __call__(self, speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def __call__(
+            self, speech_feat: torch.Tensor, mel_lengths: list[int]
+        ) -> tuple[torch.Tensor, None]:
+            self.batch_sizes.append(speech_feat.shape[0])
+            positions = torch.arange(speech_feat.shape[-1])
+            mask = (positions < torch.tensor(mel_lengths)[:, None]).unsqueeze(1)
             kernel = speech_feat.new_ones(1, 1, 3)
             hidden = (
-                torch.nn.functional.conv1d(speech_feat[:, :1], kernel, padding=1) + 1
-            )
+                torch.nn.functional.conv1d(speech_feat[:, :1] * mask, kernel, padding=1)
+                + 1
+            ) * mask
             samples = torch.nn.functional.conv1d(hidden, kernel, padding=1)
             waveform = samples.repeat_interleave(SAMPLES_PER_CODEC_TOKEN // 2, dim=-1)
             return waveform, None
 
     model = _batch_model()
-    model.token2wav.hift = BoundarySensitiveHiFT()
+    hift = BoundarySensitiveHiFT()
+    model.token2wav.hift = hift
     sequences = [[1, 2], [3, 4, 5], [6, 7]]
     batched = model.vocode(sequences, b"ref")
+    assert hift.batch_sizes == [3]
     for tokens, waveform in zip(sequences, batched, strict=True):
         reference = model.vocode([tokens], b"ref")[0]
         np.testing.assert_array_equal(waveform, reference)
+
+
+def test_vocode_splits_hift_batch_past_padding_budget() -> None:
+    model = _batch_model()
+    model.hift_max_padding_waste = 1.0
+    calls: list[list[int]] = []
+    fake_hift = model.token2wav.hift
+
+    def record(
+        speech_feat: torch.Tensor, mel_lengths: list[int]
+    ) -> tuple[torch.Tensor, None]:
+        calls.append(mel_lengths)
+        return fake_hift(speech_feat, mel_lengths)
+
+    model.token2wav.hift = record
+    model.vocode([[1, 2], [3, 4, 5], [6, 7]], b"ref")
+    assert calls == [[4, 4], [6]]
+
+
+def test_hift_padded_batch_matches_single_rows(monkeypatch) -> None:
+    # Remove the random excitation phase and noise so rows are comparable.
+    monkeypatch.setattr(torch, "rand", torch.zeros)
+    monkeypatch.setattr(torch, "randn_like", torch.zeros_like)
+    torch.manual_seed(0)
+    hift = HiFTGenerator().eval()
+    mel_lengths = [14, 9, 6]
+    mel = torch.randn(len(mel_lengths), 80, max(mel_lengths))
+    for row, length in enumerate(mel_lengths):
+        mel[row, :, length:] = 0
+
+    padded, _ = hift(speech_feat=mel, mel_lengths=mel_lengths)
+    unmasked, _ = hift(speech_feat=mel)
+    samples_per_frame = SAMPLES_PER_CODEC_TOKEN // 2
+    short_row = len(mel_lengths) - 1
+    for row, length in enumerate(mel_lengths):
+        single, _ = hift(speech_feat=mel[row : row + 1, :, :length])
+        torch.testing.assert_close(
+            padded[row, : length * samples_per_frame],
+            single[0],
+            rtol=1e-4,
+            atol=1e-5,
+        )
+        if row == short_row:
+            tail_error = (unmasked[row, : length * samples_per_frame] - single[0]).abs()
+            assert tail_error.max() > 1e-3
+
+
+@pytest.mark.accelerator
+def test_checkpoint_hift_padded_batch_matches_single_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = _checkpoint_dir()
+    if checkpoint is None or not torch.cuda.is_available():
+        pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
+
+    asset_dir = checkpoint / "assets" / "token2wav"
+    weights = torch.load(asset_dir / "hift.pt", map_location="cpu", weights_only=True)
+    hift = HiFTGenerator().to("cuda:0").eval()
+    hift.load_state_dict(
+        {name.removeprefix("generator."): value for name, value in weights.items()},
+        strict=True,
+    )
+    mel_lengths = [14, 9, 6]
+    generator = torch.Generator().manual_seed(0)
+    mel = torch.randn(3, 80, max(mel_lengths), generator=generator).to("cuda:0")
+    for row, length in enumerate(mel_lengths):
+        mel[row, :, length:] = 0
+
+    samples_per_frame = SAMPLES_PER_CODEC_TOKEN // 2
+    max_samples = max(mel_lengths) * samples_per_frame
+    excitation_generator = torch.Generator(device=mel.device).manual_seed(1)
+    phase = torch.rand(
+        3, hift.nb_harmonics + 1, device=mel.device, generator=excitation_generator
+    )
+    sine_noise = torch.randn(
+        3,
+        max_samples,
+        hift.nb_harmonics + 1,
+        device=mel.device,
+        generator=excitation_generator,
+    )
+    uv_noise = torch.randn(
+        3, max_samples, 1, device=mel.device, generator=excitation_generator
+    )
+    active_rows = [0, 1, 2]
+
+    def aligned_phase(*shape: int, device: torch.device) -> torch.Tensor:
+        assert shape == (len(active_rows), hift.nb_harmonics + 1)
+        assert device == mel.device
+        return phase[active_rows].clone()
+
+    def aligned_noise(like: torch.Tensor) -> torch.Tensor:
+        source = sine_noise if like.shape[-1] > 1 else uv_noise
+        return source[active_rows, : like.shape[1]].clone()
+
+    monkeypatch.setattr(torch, "rand", aligned_phase)
+    monkeypatch.setattr(torch, "randn_like", aligned_noise)
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    batched, batched_excitation = hift(speech_feat=mel, mel_lengths=mel_lengths)
+    for row, length in enumerate(mel_lengths):
+        active_rows = [row]
+        single, single_excitation = hift(speech_feat=mel[row : row + 1, :, :length])
+        sample_count = length * samples_per_frame
+        torch.testing.assert_close(
+            batched_excitation[row, :, :sample_count],
+            single_excitation[0],
+            rtol=1e-4,
+            atol=3e-5,
+        )
+        torch.testing.assert_close(
+            batched[row, :sample_count], single[0], rtol=1e-4, atol=3e-5
+        )
+        tail_samples = 2 * samples_per_frame
+        torch.testing.assert_close(
+            batched[row, sample_count - tail_samples : sample_count],
+            single[0, -tail_samples:],
+            rtol=1e-4,
+            atol=3e-5,
+        )
 
 
 def test_vocode_rejects_empty_sequences() -> None:

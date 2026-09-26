@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -10,7 +11,27 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import PipelineStateBase
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
-__all__ = ["BatchVocoderBase"]
+__all__ = ["BatchVocoderBase", "group_by_padding_waste"]
+
+
+def group_by_padding_waste(
+    lengths: Sequence[int], max_padding_waste: float
+) -> list[list[int]]:
+    """Group indices by ascending length while each group's padded size stays
+    within max_padding_waste times its summed real length."""
+    groups: list[list[int]] = []
+    group: list[int] = []
+    total = 0
+    for index in sorted(range(len(lengths)), key=lengths.__getitem__):
+        length = lengths[index]
+        if group and length * (len(group) + 1) > max_padding_waste * (total + length):
+            groups.append(group)
+            group, total = [], 0
+        group.append(index)
+        total += length
+    if group:
+        groups.append(group)
+    return groups
 
 
 class BatchVocoderBase:

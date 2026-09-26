@@ -20,6 +20,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
+from sglang_omni.scheduling.vocoder_base import group_by_padding_waste
 
 FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
@@ -28,6 +29,10 @@ CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
 DEFAULT_PROMPT_CACHE_CAPACITY = 32
 DEFAULT_REFERENCE_WORKERS = 8
+# note(liuqihao): warm-up shapes; the dynamic compile covers other lengths and batches.
+WARMUP_GENERATED_TOKENS = 100
+WARMUP_PROMPT_TOKENS = 75
+WARMUP_BATCH_SIZES = (1, 2)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +65,8 @@ class MiniCPMOCode2Wav(nn.Module):
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
         enable_flow_variable_length: bool = False,
+        compile_flow_dit: bool = False,
+        hift_max_padding_waste: float,
     ) -> None:
         super().__init__()
         self.prompt_cache_capacity: int = positive_int_env(
@@ -75,6 +82,8 @@ class MiniCPMOCode2Wav(nn.Module):
         self.reference_hits: int = 0
         self.reference_misses: int = 0
         self.reference_evictions: int = 0
+        if hift_max_padding_waste < 1.0:
+            raise ValueError("hift_max_padding_waste must be at least 1.0")
         from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
 
         dev = torch.device(device)
@@ -112,6 +121,16 @@ class MiniCPMOCode2Wav(nn.Module):
         self.token2wav.flow.decoder.estimator.enable_variable_length = (
             enable_flow_variable_length
         )
+        if compile_flow_dit:
+            # note(liuqihao): the DiT is launch-bound; one dynamic-shape compile
+            # with CUDA-graph replay halves its GPU time at every batch size.
+            self.token2wav.flow.decoder.estimator = torch.compile(
+                self.token2wav.flow.decoder.estimator,
+                mode="reduce-overhead",
+                dynamic=True,
+            )
+        else:
+            pass
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
@@ -124,7 +143,60 @@ class MiniCPMOCode2Wav(nn.Module):
             str, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
         ] = OrderedDict()
         self.sample_rate = OUTPUT_SAMPLE_RATE
+        self.hift_max_padding_waste = hift_max_padding_waste
         self.eval()
+        if compile_flow_dit:
+            self.warmup_flow()
+        else:
+            pass
+
+    def warmup_flow(self) -> None:
+        """Run the flow on synthetic inputs so compilation happens before serving."""
+        flow = self.token2wav.flow
+        device = self.token2wav.device
+        mel_channels = flow.output_size
+        embedding_dim = flow.spk_embed_affine_layer.in_features
+        with self.device_context, torch.inference_mode():
+            for batch_size in WARMUP_BATCH_SIZES:
+                with torch.amp.autocast(
+                    "cuda",
+                    dtype=self.token2wav.dtype,
+                    enabled=self.token2wav.dtype != torch.float32,
+                ):
+                    flow.inference(
+                        torch.zeros(
+                            batch_size,
+                            WARMUP_GENERATED_TOKENS,
+                            dtype=torch.int32,
+                            device=device,
+                        ),
+                        torch.full(
+                            (batch_size,),
+                            WARMUP_GENERATED_TOKENS,
+                            dtype=torch.int32,
+                            device=device,
+                        ),
+                        torch.zeros(
+                            batch_size,
+                            WARMUP_PROMPT_TOKENS,
+                            dtype=torch.int32,
+                            device=device,
+                        ),
+                        torch.full(
+                            (batch_size,),
+                            WARMUP_PROMPT_TOKENS,
+                            dtype=torch.int32,
+                            device=device,
+                        ),
+                        torch.zeros(
+                            batch_size,
+                            WARMUP_PROMPT_TOKENS * flow.up_rate,
+                            mel_channels,
+                            device=device,
+                        ),
+                        torch.zeros(batch_size, embedding_dim, device=device),
+                        self.token2wav.n_timesteps,
+                    )
 
     @torch.inference_mode()
     def forward(
@@ -327,19 +399,17 @@ class MiniCPMOCode2Wav(nn.Module):
                 self.token2wav.n_timesteps,
             )
 
-        up_rate = self.token2wav.flow.up_rate
-        length_groups: dict[int, list[int]] = {}
-        for idx, token_len in enumerate(token_lens):
-            length_groups.setdefault(token_len, []).append(idx)
-
+        mel_lens = [token_len * self.token2wav.flow.up_rate for token_len in token_lens]
         waveform_rows: dict[int, torch.Tensor] = {}
-        # note (MayDomine): padding changes HiFT's noncausal convolution boundaries.
-        for token_len, indices in length_groups.items():
-            speech_feat = mel[indices, :, : token_len * up_rate].float().contiguous()
-            wav, _ = self.token2wav.hift(speech_feat=speech_feat)
+        for indices in group_by_padding_waste(mel_lens, self.hift_max_padding_waste):
+            group_mel_lens = [mel_lens[idx] for idx in indices]
+            speech_feat = mel[indices, :, : max(group_mel_lens)].float().contiguous()
+            wav, _ = self.token2wav.hift(
+                speech_feat=speech_feat, mel_lengths=group_mel_lens
+            )
             for row, idx in enumerate(indices):
                 waveform_rows[idx] = wav[row].reshape(-1)[
-                    : token_len * SAMPLES_PER_CODEC_TOKEN
+                    : token_lens[idx] * SAMPLES_PER_CODEC_TOKEN
                 ]
         wav = (
             pad_sequence(

@@ -37,9 +37,17 @@ Token2wav uses the checkpoint's `assets/HT_ref_audio.wav` when available.
 The vocoder keeps an LRU cache of up to 32 speaker references by default, so switching back
 to a cached reference reuses its conditioning. Inline references are keyed by
 audio content; file references account for file metadata. Flow inference batches
-different references and token lengths together. HiFT groups rows by generated
-length to preserve waveform boundaries. Invalid references fail instead of
+different references and token lengths together. HiFT pads rows of different
+generated lengths into one batch while the padded frames stay within
+`hift_max_padding_waste` (default 1.5) times the real frames, and masks the
+padding so each row decodes as it would alone. Invalid references fail instead of
 silently using the default. Audio output remains non-streaming.
+
+The flow's DiT runs in bf16 and, with `compile_flow_dit` (default on), is compiled
+once at start-up with dynamic shapes and CUDA-graph replay; the stage warms the
+compiled estimator up before serving, which adds about two minutes to start-up on
+the first launch. Set `enable_flow_variable_length` to use the packed
+variable-length DiT path instead, which is not compiled.
 
 Reference preparation uses up to 8 worker threads, preparing each unique
 reference once per batch. Set `MINICPMO_REF_WORKERS=1` to prepare references

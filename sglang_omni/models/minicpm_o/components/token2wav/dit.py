@@ -428,10 +428,12 @@ class DiT(nn.Module):
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 packed_input = self.in_proj(x).to(torch.bfloat16)
                 return self.forward_packed(packed_input, t.to(torch.bfloat16), lengths)
-        x = self.in_proj(x)
-        for block in self.blocks:
-            x = block(x, t, attn_mask)
-        x = self.final_layer(x, t)
+        # note(liuqihao): the dense path runs in bf16 like the packed path.
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            x = self.in_proj(x)
+            for block in self.blocks:
+                x = block(x, t, attn_mask)
+            x = self.final_layer(x, t)
         x = x.transpose(1, 2)
         return x
 
