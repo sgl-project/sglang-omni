@@ -1,53 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
-from types import SimpleNamespace
+"""AR adapters preserve fusion inputs across streaming continuations."""
+
+from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from transformers import PreTrainedTokenizerBase
 
-from sglang_omni.models.nemotron_voicechat import duplex_ar
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.models.nemotron_voicechat.duplex_ar import (
+    DuplexThinkerRunner,
+    ThinkerAdapter,
+)
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
-from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.proto.session import SessionIdentity
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.scheduling.types import SchedulerRequest
 
 
-def test_prefill_uses_exact_uncached_suffix_and_replays_fused_history(monkeypatch):
-    captured = []
-    monkeypatch.setattr(
-        duplex_ar,
-        "attach_omni_prefill_inputs",
-        lambda batch, inputs: captured.append(inputs.input_embeds),
+@pytest.fixture
+def thinker_adapter() -> ThinkerAdapter:
+    embeddings = torch.nn.Embedding.from_pretrained(
+        torch.arange(40).float().reshape(10, 4)
     )
-    history = duplex_ar.FrameHistory(
-        fusion_rows=[torch.arange(12).reshape(3, 4), torch.full((1, 4), 99)],
-        position_count=4,
-    )
-    requests = [
-        SimpleNamespace(
-            data=SimpleNamespace(talker_model_inputs={"duplex_history": history})
-        )
-    ]
-    for prefix in (0, 2, 3):
-        duplex_ar.attach_fusion_rows(
-            SimpleNamespace(
-                extend_prefix_lens_cpu=[prefix], extend_seq_lens_cpu=[4 - prefix]
-            ),
-            requests,
-        )
-        assert torch.equal(captured[-1], torch.cat(history.fusion_rows)[prefix:])
-    with pytest.raises(RuntimeError, match="not aligned"):
-        duplex_ar.attach_fusion_rows(
-            SimpleNamespace(extend_prefix_lens_cpu=[2], extend_seq_lens_cpu=[1]),
-            requests,
-        )
-
-
-def test_thinker_continuation_fuses_prior_output_and_function_without_new_token(
-    monkeypatch,
-):
-    emb = torch.nn.Embedding.from_pretrained(torch.arange(40).float().reshape(10, 4))
-    model = SimpleNamespace(
-        llm=SimpleNamespace(
-            get_input_embeddings=lambda: emb, config=SimpleNamespace(vocab_size=10)
+    model = Mock(
+        llm=Mock(
+            get_input_embeddings=Mock(return_value=embeddings),
+            config=Mock(vocab_size=10),
         ),
         fusion=AddFusion(
             {
@@ -57,43 +37,97 @@ def test_thinker_continuation_fuses_prior_output_and_function_without_new_token(
             }
         ),
     )
-    tokenizer = SimpleNamespace(
-        all_special_ids=[0],
-        convert_tokens_to_ids=lambda _: 0,
-        decode=lambda ids: "x" * len(ids),
-    )
-    adapter = duplex_ar.ThinkerAdapter(
-        SimpleNamespace(model=model),
+    tokenizer = Mock(spec=PreTrainedTokenizerBase, all_special_ids=[0])
+    tokenizer.convert_tokens_to_ids.return_value = 0
+    tokenizer.decode.side_effect = lambda token_ids: "x" * len(token_ids)
+    return ThinkerAdapter(
+        Mock(spec=DuplexThinkerRunner, model=model),
         prompt_token_ids=[1, 2],
         pad_token_id=0,
         tokenizer=tokenizer,
         context_length=8,
     )
-    ref = SessionIdentity("s")
-    adapter.open(ref, OmniRequest(None))
 
-    def request(payload, **kwargs):
-        return SimpleNamespace(stage_payload=payload, talker_model_inputs={}, **kwargs)
 
-    monkeypatch.setattr(duplex_ar, "ar_request", request)
-    first = adapter.build(
-        ref, None, StagePayload("1", OmniRequest(None), {"acoustic": torch.ones(1, 4)})
+@pytest.mark.parametrize("cached_positions", [0, 2, 3])
+def test_runner_forwards_only_uncached_fusion_inputs(
+    thinker_adapter: ThinkerAdapter,
+    cached_positions: int,
+) -> None:
+    session_identity = SessionIdentity("fusion")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    first_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("first", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
     )
-    assert first.input_ids == [1, 2, 0]
-    first.output_ids = [3]
-    first.extra_model_outputs = {"function_ids": [4]}
-    adapter.result(ref, first)
-    second = adapter.build(
-        ref,
-        None,
-        StagePayload("2", OmniRequest(None), {"acoustic": torch.full((1, 4), 7)}),
+    first_request.output_ids = [3]
+    first_request.extra_model_outputs = {"function_ids": [4]}
+    thinker_adapter.result(session_identity, first_request)
+    next_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("next", OmniRequest(None), {"acoustic": torch.full((1, 4), 7)}),
     )
-    assert second.input_ids == [] and second.max_new_tokens == 1
-    history = adapter.states[ref]
-    assert history.position_count == 4
-    assert torch.equal(
-        history.fusion_rows[-1],
-        2 * torch.full((1, 4), 7) + 3 * emb.weight[3] + 5 * emb.weight[4],
+    forward_batch = Mock(
+        spec=ForwardBatch,
+        extend_prefix_lens_cpu=[cached_positions],
+        extend_seq_lens_cpu=[4 - cached_positions],
+        replace_embeds=None,
+        input_ids=torch.zeros(4 - cached_positions, dtype=torch.long),
     )
-    adapter.close(ref)
-    assert not adapter.states
+    DuplexThinkerRunner.before_prefill(
+        thinker_adapter.runner,
+        forward_batch,
+        Mock(),
+        [SchedulerRequest("next", data=next_request)],
+    )
+    embeddings = thinker_adapter.runner.model.llm.get_input_embeddings().weight
+    expected_rows = torch.stack(
+        [
+            2 * embeddings[1] + 8 * embeddings[0],
+            2 * embeddings[2] + 8 * embeddings[0],
+            2 * torch.ones(4) + 8 * embeddings[0],
+            2 * torch.full((4,), 7) + 3 * embeddings[3] + 5 * embeddings[4],
+        ]
+    )
+    actual_inputs = get_omni_prefill_inputs(forward_batch)
+    torch.testing.assert_close(
+        actual_inputs.input_embeds, expected_rows[cached_positions:]
+    )
+
+
+def test_thinker_continuation_reuses_pending_token_position(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    session_identity = SessionIdentity("continuation")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    first_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("first", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert first_request.input_ids.tolist() == [1, 2, 0]
+    first_request.output_ids = [3]
+    first_request.extra_model_outputs = {"function_ids": [4]}
+    first_output = thinker_adapter.result(session_identity, first_request)
+    assert first_output.data["text"] == "x"
+    assert first_output.data["text_token"] == 3
+    assert first_output.data["function_token"] == 4
+    next_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("next", OmniRequest(None), {"acoustic": torch.full((1, 4), 7)}),
+    )
+    assert next_request.input_ids.numel() == 0
+    assert next_request.max_new_tokens == 1
+    thinker_adapter.close(session_identity)
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    reopened_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("reopened", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert reopened_request.input_ids.tolist() == [1, 2, 0]
