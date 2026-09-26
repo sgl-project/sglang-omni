@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import enum
 import json
 import logging
 import uuid
@@ -18,6 +19,7 @@ from starlette.websockets import WebSocketState
 from sglang_omni.client import Client, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime.audio_buffer import (
+    PCM16_BYTES_PER_SAMPLE,
     PCM_SAMPLE_RATE,
     BufferOverflow,
     RealtimeAudioBuffer,
@@ -46,9 +48,8 @@ from sglang_omni.serve.realtime.events import (
 )
 from sglang_omni.serve.realtime.vad import (
     VAD_FRAME_SAMPLES,
-    StreamingVAD,
+    StatelessVAD,
     VADConfig,
-    VADEvent,
     offsets_to_ms,
 )
 from sglang_omni.serve.transcription_chunking import (
@@ -84,6 +85,13 @@ class StreamingASRStrategy(Protocol):
         language: str | None,
         state: object,
     ) -> str: ...
+
+
+class SessionState(enum.Enum):
+    RECEIVING = "receiving"
+    # transcription.done was received; only the pending finals are still running.
+    INPUT_DONE = "input_done"
+    CLOSED = "closed"
 
 
 def new_id(prefix: str) -> str:
@@ -146,7 +154,7 @@ class RealtimeTranscriptionSession:
         self.client = client
         self.model_name = model_name
         self.session_id = session_id or new_id("sess")
-        self.closed = False
+        self.state = SessionState.RECEIVING
         self.event_index = 0
         self.send_lock = asyncio.Lock()
         self.transcription_config = transcription_config
@@ -160,31 +168,39 @@ class RealtimeTranscriptionSession:
             ),
         )
         max_segment_s = transcription_config.max_segment_s
+        self.max_segment_samples = (
+            int(max_segment_s * PCM_SAMPLE_RATE) if max_segment_s is not None else None
+        )
+        self.refresh_interval_samples = (
+            transcription_config.decode_interval_ms * PCM_SAMPLE_RATE // 1000
+        )
         max_buffer_seconds = (
             max_segment_s + 4 if max_segment_s is not None else _UNBOUNDED_BUFFER_S
         )
-        max_buffer_bytes = int(max_buffer_seconds * PCM_SAMPLE_RATE * 2)
+        max_buffer_bytes = int(
+            max_buffer_seconds * PCM_SAMPLE_RATE * PCM16_BYTES_PER_SAMPLE
+        )
         self.audio_buffer = RealtimeAudioBuffer(
             source_sr=PCM_SAMPLE_RATE,
             target_sr=PCM_SAMPLE_RATE,
             max_bytes=max_buffer_bytes,
         )
-        self.vad: StreamingVAD | None = self.new_vad(self.settings.turn_detection)
-        self.vad_origin_samples = 0
-        self.buffer_origin_samples = 0
+        self.vad: StatelessVAD | None = self.new_vad(self.settings.turn_detection)
         self.active_segment: ActiveTranscriptionSegment | None = None
         self.committed_segments: list[CommittedTranscriptionSegment] = []
         self.next_segment_id = 0
+        self.last_closed_segment_id: int | None = (
+            None  # The segment most recently closed by queue_final.
+        )
         self.decode_event = asyncio.Event()
         self.pending_finals: deque[FinalDecode] = deque()
         self.final_waiters: set[asyncio.Future[None]] = set()
         self.inflight_request_id: str | None = None
         self.decode_worker_task = self.spawn_decode_worker()
-        self.input_done = False
 
     async def run(self) -> None:
-        await self.send(self.initial_event())
-        while not self.closed:
+        await self.send(TranscriptionSessionCreated(session=self.session_object()))
+        while True:
             message = await self.websocket.receive()
             if message["type"] == "websocket.disconnect":
                 break
@@ -213,6 +229,10 @@ class RealtimeTranscriptionSession:
             await self.dispatch(payload)
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
+        if self.state is SessionState.CLOSED:
+            return
+        else:
+            pass
         try:
             event = parse_transcription_client_event(payload)
         except ValidationError as exc:
@@ -223,6 +243,15 @@ class RealtimeTranscriptionSession:
                 "invalid_request_error",
                 "unsupported_event",
                 f"Unsupported event type: {payload.get('type')!r}",
+            )
+            return
+        else:
+            pass
+        if self.state is SessionState.INPUT_DONE:
+            await self.send_error(
+                "invalid_request_error",
+                "input_already_done",
+                f"{event.type} is not accepted after transcription.done.",
             )
             return
         else:
@@ -240,23 +269,9 @@ class RealtimeTranscriptionSession:
                 "internal_error",
                 f"Internal error while handling {event.type}.",
             )
-            self.resync_vad_after_failure()
-
-    def resync_vad_after_failure(self) -> None:
-        # Note (Jeffro): vad.process() flips its own is_speech before the session handles the
-        # onset, if handling failed before a segment existed, the VAD would
-        # stay in speech state and never report this utterance again. Reset it
-        # so the next speech frame re-emits speech_started. With an active
-        # segment the two are still consistent and nothing needs to change.
-        if self.vad is None or self.active_segment is not None:
-            return
-        else:
-            pass
-        self.vad.reset()
-        self.vad_origin_samples = self.buffer_origin_samples
 
     async def send(self, event: dict[str, Any] | TranscriptionServerEvent) -> None:
-        if self.closed:
+        if self.state is SessionState.CLOSED:
             return
         else:
             pass
@@ -310,9 +325,6 @@ class RealtimeTranscriptionSession:
         finally:
             await asyncio.gather(task, return_exceptions=True)
 
-    def initial_event(self) -> TranscriptionSessionCreated:
-        return TranscriptionSessionCreated(session=self.session_object())
-
     def session_object(self) -> TranscriptionSessionObject:
         return TranscriptionSessionObject(
             id=self.session_id,
@@ -353,12 +365,12 @@ class RealtimeTranscriptionSession:
         return None
 
     @classmethod
-    def new_vad(cls, turn_detection: TurnDetection | None) -> StreamingVAD | None:
+    def new_vad(cls, turn_detection: TurnDetection | None) -> StatelessVAD | None:
         if turn_detection is None:
             return None
         else:
             pass
-        return StreamingVAD(cls.vad_config(turn_detection))
+        return StatelessVAD(cls.vad_config(turn_detection))
 
     async def handle_session_update(self, event: TranscriptionSessionUpdate) -> None:
         update = event.session.model_dump(exclude_unset=True)
@@ -420,21 +432,11 @@ class RealtimeTranscriptionSession:
                 pass
             self.settings.turn_detection = turn_detection
             self.vad = self.new_vad(turn_detection)
-            self.vad_origin_samples = self.buffer_origin_samples
         else:
             pass
         await self.send(TranscriptionSessionUpdated(session=self.session_object()))
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
-        if self.input_done:
-            await self.send_error(
-                "invalid_request_error",
-                "input_already_done",
-                "Audio cannot be appended after transcription.done.",
-            )
-            return
-        else:
-            pass
         try:
             pcm = base64.b64decode(event.audio, validate=False)
         except (ValueError, binascii.Error):
@@ -451,7 +453,7 @@ class RealtimeTranscriptionSession:
             return
         else:
             pass
-        append_start_sample = self.buffer_origin_samples + self.audio_buffer.num_samples
+        append_start_sample = self.audio_buffer.end_sample
         try:
             self.audio_buffer.append_bytes(pcm)
         except BufferOverflow as exc:
@@ -460,59 +462,61 @@ class RealtimeTranscriptionSession:
             )
             return
         if self.vad is None:
+            # Note (Jeffro): The VAD = None means as long as pcm comes in and there is no active segment currently,
+            # we can just start a new segment.
             if self.active_segment is None and pcm:
                 self.start_segment(append_start_sample)
             else:
                 pass
         else:
-            emits = await asyncio.to_thread(self.vad.process, pcm)
-            for emit in emits:
-                await self.handle_vad_emit(emit)
+
+            async def vad_on_started(start_sample: int) -> None:
+                # Prefix padding cannot reach audio the buffer no longer holds.
+                start_sample = max(self.audio_buffer.start_sample, start_sample)
+                segment = self.start_segment(start_sample)
+                await self.send(
+                    TranscriptionSpeechStarted(
+                        audio_start_ms=offsets_to_ms(start_sample),
+                        segment_id=segment.segment_id,
+                    )
+                )
+
+            async def vad_on_stopped(end_sample: int) -> None:
+                segment = self.active_segment
+
+                has_speech = end_sample > segment.start_sample
+                await self.send(
+                    TranscriptionSpeechStopped(
+                        audio_end_ms=offsets_to_ms(end_sample),
+                        segment_id=(
+                            segment.segment_id
+                            if has_speech
+                            else self.last_closed_segment_id
+                        ),
+                    )
+                )
+                if has_speech:
+                    await self.finalize_through(end_sample)
+                elif segment.last_text:
+                    # A partial was already reported, so it still owes a final.
+                    await self.finalize_through(self.audio_buffer.end_sample)
+                else:
+                    self.active_segment = None
+
+            await self.vad.process(
+                pcm,
+                append_start_sample,
+                # active_segment is the ONLY record of whether someone is speaking.
+                in_speech=lambda: self.active_segment is not None,
+                on_started=vad_on_started,
+                on_stopped=vad_on_stopped,
+            )
 
         await self.enforce_hard_limit()
         self.trim_idle_prefix()
         self.maybe_schedule_partial()
 
-    def absolute_vad_sample(self, sample_offset: int) -> int:
-        return self.vad_origin_samples + sample_offset
-
-    def absolute_buffer_end(self) -> int:
-        return self.buffer_origin_samples + self.audio_buffer.num_samples
-
-    async def handle_vad_emit(self, emit: Any) -> None:
-        absolute_sample = self.absolute_vad_sample(emit.sample_offset)
-        if emit.event_type == VADEvent.SPEECH_STARTED:
-            if self.active_segment is None:
-                self.start_segment(absolute_sample)
-            else:
-                pass
-            await self.send(
-                TranscriptionSpeechStarted(
-                    audio_start_ms=offsets_to_ms(absolute_sample),
-                    segment_id=self.active_segment.segment_id,
-                )
-            )
-            return
-        else:
-            pass
-        if emit.event_type == VADEvent.SPEECH_STOPPED:
-            segment_id = (
-                self.active_segment.segment_id
-                if self.active_segment is not None
-                else None
-            )
-            await self.send(
-                TranscriptionSpeechStopped(
-                    audio_end_ms=offsets_to_ms(absolute_sample),
-                    segment_id=segment_id,
-                )
-            )
-            await self.finalize_through(absolute_sample)
-        else:
-            pass
-
     def start_segment(self, start_sample: int) -> ActiveTranscriptionSegment:
-        interval_samples = self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
         segment = ActiveTranscriptionSegment(
             segment_id=self.next_segment_id,
             start_sample=start_sample,
@@ -520,34 +524,29 @@ class RealtimeTranscriptionSession:
                 model_name=self.model_name,
                 language=self.settings.language,
             ),
-            next_refresh_sample=start_sample + interval_samples,
+            next_refresh_sample=start_sample + self.refresh_interval_samples,
         )
         self.next_segment_id += 1
         self.active_segment = segment
         return segment
 
-    def max_segment_samples(self) -> int | None:
-        max_segment_s = self.transcription_config.max_segment_s
-        if max_segment_s is None:
-            return None
-        else:
-            pass
-        return int(max_segment_s * PCM_SAMPLE_RATE)
-
     async def enforce_hard_limit(self) -> None:
-        max_samples = self.max_segment_samples()
-        if max_samples is None:
+        segment = self.active_segment
+        max_samples = self.max_segment_samples
+        if segment is None or max_samples is None:
             return
         else:
             pass
-        end_sample = self.absolute_buffer_end()
-        while (
-            self.active_segment is not None
-            and end_sample - self.active_segment.start_sample >= max_samples
-        ):
-            cut = self.active_segment.start_sample + max_samples
-            await self.queue_final(cut)
-            self.start_segment(cut)
+        full_blocks = (
+            self.audio_buffer.end_sample - segment.start_sample
+        ) // max_samples
+        if full_blocks == 0:
+            return
+        else:
+            pass
+        cut = segment.start_sample + full_blocks * max_samples
+        await self.finalize_through(cut)
+        self.start_segment(cut)
 
     def trim_idle_prefix(self) -> None:
         """Bound the buffer while server VAD holds no active speech turn.
@@ -566,21 +565,15 @@ class RealtimeTranscriptionSession:
             self.vad.config.prefix_padding_ms * PCM_SAMPLE_RATE // 1000
             + 2 * VAD_FRAME_SAMPLES
         )
-        excess_bytes = self.audio_buffer.num_bytes - keep_samples * 2
-        if excess_bytes <= 0:
-            return
-        else:
-            pass
-        self.audio_buffer.drop_prefix(excess_bytes)
-        self.buffer_origin_samples += excess_bytes // 2
+        self.audio_buffer.drop_before(self.audio_buffer.end_sample - keep_samples)
 
     async def finalize_through(self, end_sample: int) -> None:
         if self.active_segment is None:
             return
         else:
             pass
-        end_sample = min(end_sample, self.absolute_buffer_end())
-        max_samples = self.max_segment_samples()
+        end_sample = min(end_sample, self.audio_buffer.end_sample)
+        max_samples = self.max_segment_samples
         while (
             max_samples is not None
             and end_sample - self.active_segment.start_sample > max_samples
@@ -602,12 +595,7 @@ class RealtimeTranscriptionSession:
             return
         else:
             pass
-        start_byte = (segment.start_sample - self.buffer_origin_samples) * 2
-        end_byte = min(
-            self.audio_buffer.num_bytes,
-            max(start_byte, (end_sample - self.buffer_origin_samples) * 2),
-        )
-        pcm = bytes(self.audio_buffer.buf[start_byte:end_byte])
+        pcm = self.audio_buffer.slice(segment.start_sample, end_sample)
         done = asyncio.get_running_loop().create_future()
         done.add_done_callback(self.final_waiters.discard)
         self.final_waiters.add(done)
@@ -620,9 +608,9 @@ class RealtimeTranscriptionSession:
             )
         )
 
-        self.audio_buffer.drop_prefix(end_byte)
-        self.buffer_origin_samples += end_byte // 2
+        self.audio_buffer.drop_before(end_sample)
         self.active_segment = None
+        self.last_closed_segment_id = segment.segment_id
         self.decode_event.set()
         await self.send(
             TranscriptionCommitted(
@@ -636,7 +624,7 @@ class RealtimeTranscriptionSession:
             return
         else:
             pass
-        if self.absolute_buffer_end() >= segment.next_refresh_sample:
+        if self.audio_buffer.end_sample >= segment.next_refresh_sample:
             self.decode_event.set()
         else:
             pass
@@ -663,7 +651,7 @@ class RealtimeTranscriptionSession:
         while True:
             await self.decode_event.wait()
             self.decode_event.clear()
-            if self.closed:
+            if self.state is SessionState.CLOSED:
                 return
             else:
                 pass
@@ -688,18 +676,13 @@ class RealtimeTranscriptionSession:
                 continue
             else:
                 pass
-            end_sample = self.absolute_buffer_end()
+            end_sample = self.audio_buffer.end_sample
             if end_sample < segment.next_refresh_sample:
                 continue
             else:
                 pass
-            interval_samples = (
-                self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
-            )
-            while segment.next_refresh_sample <= end_sample:
-                segment.next_refresh_sample += interval_samples
-            start_byte = (segment.start_sample - self.buffer_origin_samples) * 2
-            pcm = bytes(self.audio_buffer.buf[start_byte:])
+            segment.next_refresh_sample = end_sample + self.refresh_interval_samples
+            pcm = self.audio_buffer.slice(segment.start_sample)
             if self.is_silent(pcm):
                 continue
             else:
@@ -812,54 +795,39 @@ class RealtimeTranscriptionSession:
         self.final_waiters.clear()
         self.decode_event.clear()
 
-        buffer_end = self.absolute_buffer_end()
         self.audio_buffer.clear()
-        self.buffer_origin_samples = buffer_end
         self.active_segment = None
         if self.vad is not None:
             self.vad.reset()
         else:
             pass
-        self.vad_origin_samples = self.buffer_origin_samples
 
         self.decode_worker_task = self.spawn_decode_worker()
         await self.send(TranscriptionCleared())
 
     async def commit_buffer(self, reason: str) -> None:
-        end_sample = self.absolute_buffer_end()
+        end_sample = self.audio_buffer.end_sample
         if self.active_segment is None and not self.audio_buffer.is_empty():
             if reason == "session_end" and self.vad is not None:
                 # Note (Akazaakane): With server VAD, buffered audio outside an
                 # active speech turn is trailing silence and must not free-run ASR.
-                self.buffer_origin_samples = end_sample
                 self.audio_buffer.clear()
                 self.vad.reset()
-                self.vad_origin_samples = self.buffer_origin_samples
                 return
             else:
                 pass
-            self.start_segment(self.buffer_origin_samples)
+            self.start_segment(self.audio_buffer.start_sample)
         else:
             pass
         await self.finalize_through(end_sample)
         if self.vad is not None:
             self.vad.reset()
-            self.vad_origin_samples = self.buffer_origin_samples
         else:
             pass
 
     async def handle_transcription_done(self, event: TranscriptionDone) -> None:
         del event
-        if self.input_done:
-            await self.send_error(
-                "invalid_request_error",
-                "input_already_done",
-                "transcription.done was already received.",
-            )
-            return
-        else:
-            pass
-        self.input_done = True
+        self.state = SessionState.INPUT_DONE
         await self.commit_buffer("session_end")
         if self.final_waiters:
             await asyncio.gather(*list(self.final_waiters))
@@ -874,7 +842,7 @@ class RealtimeTranscriptionSession:
         )
 
     async def teardown(self) -> None:
-        self.closed = True
+        self.state = SessionState.CLOSED
         self.active_segment = None
         request_id = self.inflight_request_id
         await self.cancel_and_abort(self.decode_worker_task, request_id)
