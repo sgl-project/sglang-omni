@@ -11,6 +11,7 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.models.whisper_asr.request_builders import MAX_PREV_CONTEXT_TOKENS
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -20,6 +21,8 @@ from sglang_omni.scheduling.generation_batch_policy import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
+_DEFAULT_GPU_MEM_FRACTION_STATIC = 0.85
+_DEFAULT_NPU_MEM_FRACTION_STATIC = 0.50
 
 
 _TASK_PREFIX_SLACK_TOKENS = 8
@@ -164,7 +167,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         *,
         max_running_requests: int,
         max_new_tokens: int,
-        mem_fraction_static: float,
+        mem_fraction_static: float | None,
         enable_encoder_cuda_graph: bool = False,
         encoder_graph_batch_buckets: list[int] | None = None,
         request_build_max_workers: int = 8,
@@ -362,18 +365,33 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        return {
+        mem_fraction_static = self.mem_fraction_static
+        if mem_fraction_static is None:
+            mem_fraction_static = (
+                _DEFAULT_NPU_MEM_FRACTION_STATIC
+                if current_platform.is_npu()
+                else _DEFAULT_GPU_MEM_FRACTION_STATIC
+            )
+        defaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": True,
-            "mem_fraction_static": self.mem_fraction_static,
+            "mem_fraction_static": mem_fraction_static,
             "max_prefill_tokens": 6144,
             "chunked_prefill_size": 0,
             "sampling_backend": "pytorch",
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        # Whisper cross-attention indexes each request's encoder span with
+        # data-dependent slice bounds. The Ascend graph compiler cannot
+        # specialize that expression, while the eager NPU path is supported.
+        # Keep CUDA defaults unchanged and let an explicit server override opt
+        # back into NPU graph capture when the backend gains support.
+        if current_platform.is_npu():
+            defaults["cuda_graph_backend_decode"] = CudaGraphBackend.DISABLED
+        return defaults
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
