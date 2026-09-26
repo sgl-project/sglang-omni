@@ -11,6 +11,7 @@ pub(crate) struct SpeechFields {
     pub(crate) model: Option<Option<String>>,
     pub(crate) response_format: Option<Option<String>>,
     pub(crate) stream: Option<Option<bool>>,
+    pub(crate) stream_format: Option<Option<String>>,
     pub(crate) task: Option<Option<String>>,
     pub(crate) voice: Option<Option<String>>,
     voice_present: bool,

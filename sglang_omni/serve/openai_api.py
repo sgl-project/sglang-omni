@@ -21,6 +21,7 @@ Provides the following endpoints:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
@@ -28,7 +29,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing, suppress
 from dataclasses import asdict
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import (
     Depends,
@@ -58,6 +59,7 @@ from sglang_omni.client.audio import (
     encode_pcm,
     select_audio_delta,
 )
+from sglang_omni.client.types import UsageInfo
 from sglang_omni.config import (
     CustomVoiceConfig,
     RealtimeTranscriptionConfig,
@@ -1483,6 +1485,7 @@ def register_speech(app: FastAPI) -> None:
                     gen_req=gen_req,
                     request_id=request_id,
                     speed=req.speed,
+                    stream_format=req.stream_format,
                 )
             except ClientError as exc:
                 return speech_generation_failure_response(request_id, exc)
@@ -1490,9 +1493,7 @@ def register_speech(app: FastAPI) -> None:
                 return speech_generation_failure_response(
                     request_id,
                     exc,
-                    unexpected_message=(
-                        "Error preparing raw PCM speech stream for request %s"
-                    ),
+                    unexpected_message="Error preparing speech stream for request %s",
                 )
         else:
             pass
@@ -1671,9 +1672,11 @@ async def speech_audio_response(
     gen_req: GenerateRequest,
     request_id: str,
     speed: float,
+    stream_format: Literal["audio", "sse"],
 ) -> StreamingResponse:
-    """Build a raw PCM stream after deriving headers from the first audio chunk."""
+    """Stream raw PCM or SSE events once the first audio chunk sets the headers."""
     emitted_samples = 0
+    final_usage: UsageInfo | None = None
     chunk_stream = client.generate(gen_req, request_id=request_id)
     first_audio_bytes: bytes | None = None
     stream_sample_rate: int | None = None
@@ -1705,6 +1708,10 @@ async def speech_audio_response(
             except StopAsyncIteration:
                 stream_completed = True
                 break
+            if chunk.usage is not None:
+                final_usage = chunk.usage
+            else:
+                pass
             if chunk.audio_data is None:
                 continue
             else:
@@ -1748,13 +1755,17 @@ async def speech_audio_response(
         else:
             pass
 
-    async def _body():
-        nonlocal emitted_samples
+    async def _body() -> AsyncIterator[bytes]:
+        nonlocal emitted_samples, final_usage
         active_request = True
         try:
             yield first_audio_bytes
 
             async for chunk in chunk_stream:
+                if chunk.usage is not None:
+                    final_usage = chunk.usage
+                else:
+                    pass
                 if chunk.audio_data is None:
                     continue
                 else:
@@ -1784,15 +1795,48 @@ async def speech_audio_response(
             else:
                 await _close_async_iterator_if_supported(chunk_stream)
 
-    return StreamingResponse(
-        _body(),
-        media_type="audio/pcm",
-        headers={
-            "X-Sample-Rate": str(stream_sample_rate),
-            "X-Channels": "1",
-            "X-Bit-Depth": "16",
-        },
-    )
+    async def _sse_body() -> AsyncIterator[str]:
+        try:
+            async with aclosing(_body()) as pcm_chunks:
+                async for pcm_bytes in pcm_chunks:
+                    delta = {
+                        "type": "speech.audio.delta",
+                        "audio": base64.b64encode(pcm_bytes).decode("ascii"),
+                    }
+                    yield f"data: {json.dumps(delta)}\n\n"
+        except Exception as exc:
+            logger.exception(f"Speech SSE stream failed for request {request_id}")
+            error = speech_generation_error(exc)
+            payload = openai_error_payload(
+                error.message,
+                error_type=error.error_type,
+                param=error.param,
+                code=error.code,
+            )
+            yield f"data: {json.dumps({'type': 'error', **payload})}\n\n"
+        else:
+            if final_usage is None:
+                usage = None
+            else:
+                usage = {
+                    "input_tokens": final_usage.prompt_tokens,
+                    "output_tokens": final_usage.completion_tokens,
+                    "total_tokens": final_usage.total_tokens,
+                }
+            done = {"type": "speech.audio.done", "usage": usage}
+            yield f"data: {json.dumps(done)}\n\n"
+
+    headers = {
+        "X-Sample-Rate": str(stream_sample_rate),
+        "X-Channels": "1",
+        "X-Bit-Depth": "16",
+    }
+    if stream_format == "sse":
+        return _ClosableStreamingResponse(
+            _sse_body(), media_type="text/event-stream", headers=headers
+        )
+    else:
+        return StreamingResponse(_body(), media_type="audio/pcm", headers=headers)
 
 
 async def await_speech_response(

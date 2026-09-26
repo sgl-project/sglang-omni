@@ -101,6 +101,7 @@ class LargeJsonMetadata:
     request_id: str | None = None
     model: str | None = None
     stream: bool | None = None
+    stream_format: str | None = None
 
 
 def extract_route_metadata(
@@ -142,7 +143,9 @@ def extract_route_metadata(
             if speech_facts is not None
             else string_or_none(payload.get("model"))
         )
-        stream = payload.get("stream") is True
+        stream = payload.get("stream") is True or (
+            route_kind is RouteKind.SPEECH and payload.get("stream_format") == "sse"
+        )
         capabilities = required_capabilities(
             route_kind,
             payload,
@@ -164,7 +167,10 @@ def extract_route_metadata(
     elif large_json_metadata is not None:
         request_id = request_id or large_json_metadata.request_id
         model = large_json_metadata.model
-        stream = large_json_metadata.stream is True
+        stream = large_json_metadata.stream is True or (
+            route_kind is RouteKind.SPEECH
+            and large_json_metadata.stream_format == "sse"
+        )
         capabilities = required_capabilities(
             route_kind,
             payload,
@@ -333,7 +339,7 @@ def scan_large_json_metadata(body: bytes) -> LargeJsonMetadata:
 
 
 class JsonTopLevelScanner:
-    _METADATA_KEYS = {"model", "request_id", "stream"}
+    _METADATA_KEYS = {"model", "request_id", "stream", "stream_format"}
 
     def __init__(self, body: bytes):
         self._body = body
@@ -399,6 +405,8 @@ class JsonTopLevelScanner:
             if value:
                 if key == "model":
                     metadata.model = value
+                elif key == "stream_format":
+                    metadata.stream_format = value
                 else:
                     metadata.request_id = value
             return next_index

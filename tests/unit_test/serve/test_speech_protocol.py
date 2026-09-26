@@ -269,6 +269,16 @@ def test_speech_service_requires_pcm_for_http_streaming(
     assert "stream=true" in exc_info.value.message
 
 
+def test_speech_service_sse_enables_streaming() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    request = service.parse_request(
+        {"input": "hello", "response_format": "pcm", "stream_format": "sse"}
+    )
+
+    assert request.stream
+
+
 def test_speech_service_reports_missing_encoder_dependency_as_capability_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

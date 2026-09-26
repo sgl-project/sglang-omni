@@ -269,18 +269,20 @@ class SpeechRequestValidator:
         self.validate_input_text(request.input)
         updates: dict[str, Any] = {}
         response_format = normalize_response_format(request.response_format)
-        if request.stream and response_format != "pcm":
+        stream = request.stream or request.stream_format == "sse"
+        if stream and response_format != "pcm":
             raise bad_request(
                 "stream=true requires response_format='pcm'",
                 param="response_format",
             )
         else:
             pass
-        if not request.stream:
+        if not stream:
             self.validate_encoder_dependency(response_format)
         else:
             pass
         updates["response_format"] = response_format
+        updates["stream"] = stream
 
         if not TTS_SPEED_MIN <= float(request.speed) <= TTS_SPEED_MAX:
             raise bad_request(
