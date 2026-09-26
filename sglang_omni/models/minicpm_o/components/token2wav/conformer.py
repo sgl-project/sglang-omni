@@ -40,12 +40,20 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import (
+    CausalConv1d,
+    ConvState,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.conformer_layers import (
     ConformerEncoderLayer,
     EspnetRelPositionalEncoding,
     LinearNoSubsampling,
     PositionwiseFeedForward,
     RelPositionMultiHeadedAttention,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
+    AttentionState,
+    ConformerState,
 )
 
 
@@ -62,7 +70,7 @@ class Upsample1D(nn.Module):
         self.channels = channels
         self.out_channels = out_channels
         self.stride = stride
-        self.conv = nn.Conv1d(
+        self.conv = CausalConv1d(
             self.channels, self.out_channels, stride * 2 + 1, stride=1, padding=0
         )
         self.scale_factor = (
@@ -70,12 +78,14 @@ class Upsample1D(nn.Module):
         )
 
     def forward(
-        self, inputs: torch.Tensor, input_lengths: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self,
+        inputs: torch.Tensor,
+        input_lengths: torch.Tensor,
+        state: ConvState | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, ConvState | None]:
         outputs = F.interpolate(inputs, scale_factor=self.scale_factor, mode="nearest")
-        outputs = F.pad(outputs, (self.stride * 2, 0), value=0.0)
-        outputs = self.conv(outputs)
-        return (outputs, input_lengths * self.stride)
+        outputs, next_state = self.conv(outputs, state)
+        return outputs, input_lengths * self.stride, next_state
 
 
 class PreLookaheadLayer(nn.Module):
@@ -87,19 +97,33 @@ class PreLookaheadLayer(nn.Module):
         self.conv1 = nn.Conv1d(
             channels, channels, kernel_size=pre_lookahead_len + 1, stride=1, padding=0
         )
-        self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, stride=1, padding=0)
-
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        outputs = inputs.transpose(1, 2).contiguous()
-        outputs = F.pad(
-            outputs, (0, self.pre_lookahead_len), mode="constant", value=0.0
+        self.conv2 = CausalConv1d(
+            channels, channels, kernel_size=3, stride=1, padding=0
         )
+
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        state: ConvState | None = None,
+        last_chunk: bool = True,
+    ) -> tuple[torch.Tensor, ConvState | None]:
+        outputs = inputs.transpose(1, 2)
+        if state is None:
+            outputs = outputs.contiguous()
+        else:
+            pass
+        if last_chunk:
+            outputs = F.pad(outputs, (0, self.pre_lookahead_len))
+        else:
+            pass
         outputs = F.leaky_relu(self.conv1(outputs))
-        outputs = F.pad(outputs, (2, 0), mode="constant", value=0.0)
-        outputs = self.conv2(outputs)
-        outputs = outputs.transpose(1, 2).contiguous()
-        outputs = outputs + inputs
-        return outputs
+        outputs, next_state = self.conv2(outputs, state)
+        outputs = outputs.transpose(1, 2)
+        if state is None:
+            outputs = outputs.contiguous()
+        else:
+            pass
+        return outputs + inputs[:, : outputs.shape[1]], next_state
 
 
 class UpsampleConformerEncoderV2(torch.nn.Module):
@@ -193,30 +217,121 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
         )
 
     def forward(
-        self, xs: torch.Tensor, xs_lens: torch.Tensor
+        self,
+        xs: torch.Tensor,
+        xs_lens: torch.Tensor,
+        last_chunk: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        T = xs.size(1)
-        masks = ~make_pad_mask(xs_lens, T).unsqueeze(1)
-        xs, pos_emb, masks = self.embed(xs, masks)
-        xs = xs * masks.transpose(1, 2).to(xs)
-        xs = self.pre_lookahead_layer(xs)
-        xs = xs * masks.transpose(1, 2).to(xs)
-        for layer in self.encoders:
-            xs = layer(xs, masks, pos_emb)
-        xs = xs.transpose(1, 2).contiguous()
-        xs, xs_lens = self.up_layer(xs, xs_lens)
-        xs = xs.transpose(1, 2).contiguous()
-        T = xs.size(1)
-        masks = ~make_pad_mask(xs_lens, T).unsqueeze(1)
-        xs, pos_emb, masks = self.up_embed(xs, masks)
-        xs = xs * masks.transpose(1, 2).to(xs)
-        for layer in self.up_encoders:
-            xs = layer(xs, masks, pos_emb)
+        xs, masks, _ = self.run_stages(xs, xs_lens, None, last_chunk)
+        return xs, masks
+
+    def run_stages(
+        self,
+        xs: torch.Tensor,
+        xs_lens: torch.Tensor,
+        state: ConformerState | None,
+        last_chunk: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, ConformerState | None]:
+        attention = state.attention if state is not None else ()
+        history_length = (
+            attention[0].history.shape[2]
+            if attention and attention[0].history is not None
+            else 0
+        )
+        lookahead_state = state.lookahead if state is not None else None
+        upsample_state = state.upsample if state is not None else None
+        attention_states: list[AttentionState] = []
+        for stage, (embedding, layers) in enumerate(
+            ((self.embed, self.encoders), (self.up_embed, self.up_encoders))
+        ):
+            masks = (
+                ~make_pad_mask(xs_lens, xs.size(1)).unsqueeze(1)
+                if state is None
+                else xs.new_empty((0, 0, 0))
+            )
+            xs, positions, masks = embedding(xs, masks)
+            if state is None:
+                xs = xs * masks.transpose(1, 2).to(xs)
+            else:
+                pass
+            if stage == 0:
+                xs, lookahead_state = self.pre_lookahead_layer(
+                    xs, lookahead_state, last_chunk
+                )
+                if state is None:
+                    xs = xs * masks.transpose(1, 2).to(xs)
+                else:
+                    pass
+            else:
+                pass
+            if state is not None:
+                positions = embedding.pos_enc.position_embedding(xs, history_length)
+            else:
+                pass
+            previous_states = (
+                (state.attention if stage == 0 else state.up_attention)
+                if state is not None
+                else ()
+            )
+            assert not previous_states or len(previous_states) == len(layers)
+            for index, layer in enumerate(layers):
+                if state is None:
+                    layer_state = None
+                else:
+                    layer_state = (
+                        previous_states[index] if previous_states else AttentionState()
+                    )
+                xs, next_layer_state = layer(xs, masks, positions, layer_state)
+                if next_layer_state is not None:
+                    attention_states.append(next_layer_state)
+                else:
+                    pass
+            if stage == 0:
+                xs = xs.transpose(1, 2)
+                if state is None:
+                    xs = xs.contiguous()
+                else:
+                    pass
+                xs, xs_lens, upsample_state = self.up_layer(
+                    xs,
+                    xs_lens,
+                    upsample_state,
+                )
+                xs = xs.transpose(1, 2)
+                if state is None:
+                    xs = xs.contiguous()
+                else:
+                    pass
+                history_length *= self.up_layer.stride
+            else:
+                pass
         if self.normalize_before:
             xs = self.after_norm(xs)
         else:
             pass
-        return (xs, masks)
+        if state is None:
+            next_state = None
+        else:
+            assert lookahead_state is not None and upsample_state is not None
+            next_state = ConformerState(
+                lookahead=lookahead_state,
+                upsample=upsample_state,
+                attention=tuple(attention_states[: len(self.encoders)]),
+                up_attention=tuple(attention_states[len(self.encoders) :]),
+            )
+        return xs, masks, next_state
+
+    def forward_chunk(
+        self,
+        xs: torch.Tensor,
+        last_chunk: bool = False,
+        state: ConformerState | None = None,
+    ) -> tuple[torch.Tensor, ConformerState]:
+        state = ConformerState() if state is None else state
+        lengths = torch.full((xs.shape[0],), xs.shape[1], device=xs.device)
+        xs, _, next_state = self.run_stages(xs, lengths, state, last_chunk)
+        assert next_state is not None
+        return xs, next_state
 
 
 def make_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:

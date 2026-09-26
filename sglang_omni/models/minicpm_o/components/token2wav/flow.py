@@ -26,6 +26,9 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
     make_pad_mask,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
+    ConformerState,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 
 
@@ -50,6 +53,7 @@ class CausalConditionalCFM(torch.nn.Module):
         mask: torch.Tensor,
         spks: torch.Tensor,
         cond: torch.Tensor,
+        caches: list[dict[str, torch.Tensor]] | None = None,
     ) -> torch.Tensor:
         batch_size = x.size(0)
         t = t_span[0].expand(batch_size)
@@ -63,7 +67,13 @@ class CausalConditionalCFM(torch.nn.Module):
             x_in = torch.cat([x, x], dim=0)
             t_in = torch.cat([t, t], dim=0)
             dphi_dt = self.estimator.forward(
-                x_in, mask_in, mu_in, t_in, spks_in, cond_in
+                x_in,
+                mask_in if caches is None else None,
+                mu_in,
+                t_in,
+                spks_in,
+                cond_in,
+                cache=caches[step - 1] if caches is not None else None,
             )
             dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
             dphi_dt = (
@@ -86,24 +96,64 @@ class CausalConditionalCFM(torch.nn.Module):
         cond: torch.Tensor,
         n_timesteps: int = 10,
         temperature: float = 1.0,
+        caches: list[dict[str, torch.Tensor]] | None = None,
+        offset: int = 0,
     ) -> torch.Tensor:
         if n_timesteps <= 0:
             raise ValueError("n_timesteps must be positive")
         else:
             pass
-        if mu.size(2) > self.rand_noise.size(2):
+        if offset + mu.size(2) > self.rand_noise.size(2):
             raise ValueError(
                 "Combined reference and generated audio exceed 600 seconds"
             )
         else:
             pass
         z = (
-            self.rand_noise[:, :, : mu.size(2)].expand(mu.size(0), -1, -1).clone()
+            self.rand_noise[:, :, offset : offset + mu.size(2)]
+            .expand(mu.size(0), -1, -1)
+            .clone()
             * temperature
         )
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-        return self.solve_euler(z, t_span, mu, mask, spks, cond)
+        return self.solve_euler(z, t_span, mu, mask, spks, cond, caches)
+
+    @torch.inference_mode()
+    def forward_chunk(
+        self,
+        mu: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+        n_timesteps: int = 10,
+        temperature: float = 1.0,
+        cnn_cache: torch.Tensor | None = None,
+        att_cache: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        offset = att_cache.shape[4] if att_cache is not None else 0
+        caches = (
+            [{} for _ in range(n_timesteps)]
+            if att_cache is None
+            else [
+                {"cnn": cnn_cache[index], "attention": att_cache[index]}
+                for index in range(n_timesteps)
+            ]
+        )
+        result = self.forward(
+            mu,
+            torch.ones_like(mu[:, :1]),
+            spks,
+            cond,
+            n_timesteps,
+            temperature,
+            caches,
+            offset,
+        )
+        return (
+            result,
+            torch.stack([cache["cnn"] for cache in caches]),
+            torch.stack([cache["attention"] for cache in caches]),
+        )
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):
@@ -174,3 +224,77 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         feat = feat[:, :, mel_len1:]
         assert feat.shape[2] == mel_len2
         return feat
+
+    @torch.inference_mode()
+    def setup_cache(
+        self,
+        token: torch.Tensor,
+        mel: torch.Tensor,
+        spk: torch.Tensor,
+        n_timesteps: int = 10,
+    ) -> dict[str, torch.Tensor]:
+        assert (token.shape[1] - self.pre_lookahead_len) * self.up_rate == mel.shape[
+            1
+        ], (token.shape, mel.shape)
+        _, cache = self.inference_chunk(
+            token, spk, None, n_timesteps=n_timesteps, prompt_feat=mel
+        )
+        return cache
+
+    @torch.inference_mode()
+    def inference_chunk(
+        self,
+        token: torch.Tensor,
+        spk: torch.Tensor,
+        cache: dict[str, torch.Tensor] | None,
+        last_chunk: bool = False,
+        n_timesteps: int = 10,
+        prompt_feat: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        conformer_cnn_cache = (
+            cache["conformer_cnn_cache"] if cache is not None else None
+        )
+        conformer_att_cache = (
+            cache["conformer_att_cache"] if cache is not None else None
+        )
+        estimator_cnn_cache = (
+            cache["estimator_cnn_cache"] if cache is not None else None
+        )
+        estimator_att_cache = (
+            cache["estimator_att_cache"] if cache is not None else None
+        )
+        spk = F.normalize(spk, dim=1)
+        spk = self.spk_embed_affine_layer(spk)
+        token = self.input_embedding(token)
+        conformer_state = ConformerState.from_packed(
+            conformer_cnn_cache,
+            conformer_att_cache,
+            len(self.encoder.encoders),
+            self.encoder.up_layer.stride,
+        )
+        h, conformer_state = self.encoder.forward_chunk(
+            xs=token,
+            last_chunk=last_chunk,
+            state=conformer_state,
+        )
+        conformer_cnn_cache, conformer_att_cache = conformer_state.to_packed(
+            self.encoder.up_layer.stride
+        )
+        h = self.encoder_proj(h)
+        cond = torch.zeros_like(h) if prompt_feat is None else prompt_feat
+        feat, estimator_cnn_cache, estimator_att_cache = self.decoder.forward_chunk(
+            mu=h.transpose(1, 2).contiguous(),
+            spks=spk,
+            cond=cond.transpose(1, 2).contiguous(),
+            n_timesteps=n_timesteps,
+            temperature=1.0,
+            cnn_cache=estimator_cnn_cache,
+            att_cache=estimator_att_cache,
+        )
+        new_cache = {
+            "conformer_cnn_cache": conformer_cnn_cache,
+            "conformer_att_cache": conformer_att_cache,
+            "estimator_cnn_cache": estimator_cnn_cache,
+            "estimator_att_cache": estimator_att_cache,
+        }
+        return (feat, new_cache)

@@ -6,11 +6,17 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import pack, repeat
+
+from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import (
+    CausalConv1d,
+    ConvState,
+)
 
 
 class MLP(torch.nn.Module):
@@ -79,7 +85,12 @@ class Attention(torch.nn.Module):
         ts = ts.transpose(1, 2)
         return ts
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        cache: list[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         b, t, c = x.shape
         q = self.to_q(x)
         k = self.to_k(x)
@@ -89,7 +100,20 @@ class Attention(torch.nn.Module):
         v = self.to_heads(v)
         q = self.q_norm(q)
         k = self.k_norm(k)
-        attn_mask = attn_mask.unsqueeze(1)
+        if cache is not None:
+            if cache:
+                previous_key, previous_value = cache[0].chunk(2, dim=-1)
+                k = torch.cat((k, previous_key), dim=2)
+                v = torch.cat((v, previous_value), dim=2)
+            else:
+                pass
+            cache[:] = [torch.cat((k, v), dim=-1)]
+        else:
+            pass
+        if attn_mask is not None:
+            attn_mask = attn_mask.unsqueeze(1)
+        else:
+            pass
         x = F.scaled_dot_product_attention(
             q,
             k,
@@ -155,16 +179,10 @@ class Transpose(torch.nn.Module):
         return x
 
 
-class CausalConv1d(torch.nn.Conv1d):
-
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int) -> None:
-        super(CausalConv1d, self).__init__(in_channels, out_channels, kernel_size)
-        self.causal_padding = (kernel_size - 1, 0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.pad(x, self.causal_padding)
-        x = super(CausalConv1d, self).forward(x)
-        return x
+@dataclass(frozen=True, kw_only=True)
+class ConvBlockState:
+    first: ConvState = field(default_factory=ConvState)
+    second: ConvState = field(default_factory=ConvState)
 
 
 class CausalConvBlock(nn.Module):
@@ -188,18 +206,38 @@ class CausalConvBlock(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, mask: torch.Tensor | None = None
-    ) -> torch.Tensor:
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        state: ConvBlockState | None = None,
+    ) -> tuple[torch.Tensor, ConvBlockState | None]:
         if mask is not None:
             x = x * mask
         else:
             pass
-        x = self.block(x)
+        previous = iter(
+            (state.first, state.second) if state is not None else (None, None)
+        )
+        histories: list[ConvState] = []
+        for module in self.block:
+            if isinstance(module, CausalConv1d):
+                x, history = module(x, next(previous))
+                if history is not None:
+                    histories.append(history)
+                else:
+                    pass
+            else:
+                x = module(x)
+        next_state = (
+            ConvBlockState(first=histories[0], second=histories[1])
+            if state is not None
+            else None
+        )
         if mask is not None:
             x = x * mask
         else:
             pass
-        return x
+        return x, next_state
 
 
 class DiTBlock(nn.Module):
@@ -234,8 +272,13 @@ class DiTBlock(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, c: torch.Tensor, attn_mask: torch.Tensor
-    ) -> torch.Tensor:
+        self,
+        x: torch.Tensor,
+        c: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        cnn_state: ConvBlockState | None = None,
+        att_cache: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, ConvBlockState | None]:
         (
             shift_msa,
             scale_msa,
@@ -248,11 +291,14 @@ class DiTBlock(nn.Module):
             gate_conv,
         ) = self.adaLN_modulation(c).chunk(9, dim=-1)
         x = x + gate_msa * self.attn(
-            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask
+            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask, att_cache
         )
-        x = x + gate_conv * self.conv(modulate(self.norm3(x), shift_conv, scale_conv))
+        convolution, next_state = self.conv(
+            modulate(self.norm3(x), shift_conv, scale_conv), state=cnn_state
+        )
+        x = x + gate_conv * convolution
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        return x
+        return x, next_state
 
 
 class FinalLayer(nn.Module):
@@ -324,11 +370,12 @@ class DiT(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        mask: torch.Tensor,
+        mask: torch.Tensor | None,
         mu: torch.Tensor,
         t: torch.Tensor,
         spks: torch.Tensor | None = None,
         cond: torch.Tensor | None = None,
+        cache: dict[str, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         t = self.t_embedder(t).unsqueeze(1)
         x = pack([x, mu], "b * t")[0]
@@ -342,10 +389,37 @@ class DiT(nn.Module):
         else:
             pass
         x = x.transpose(1, 2)
-        attn_mask = mask.bool()
+        attn_mask = mask.bool() if mask is not None else None
         x = self.in_proj(x)
-        for block in self.blocks:
-            x = block(x, t, attn_mask)
+        next_cnn: list[torch.Tensor] = []
+        next_attention: list[torch.Tensor] = []
+        for index, block in enumerate(self.blocks):
+            if cache is None:
+                x, _ = block(x, t, attn_mask)
+            else:
+                if cache:
+                    first, second = cache["cnn"][index].split(
+                        (block.conv.in_channels, block.conv.out_channels), dim=1
+                    )
+                    cnn = ConvBlockState(
+                        first=ConvState(history=first), second=ConvState(history=second)
+                    )
+                else:
+                    cnn = ConvBlockState()
+                attention = [cache["attention"][index]] if cache else []
+                x, cnn = block(x, t, attn_mask, cnn, attention)
+                assert cnn is not None
+                assert cnn.first.history is not None and cnn.second.history is not None
+                next_cnn.append(
+                    torch.cat((cnn.first.history, cnn.second.history), dim=1)
+                )
+                next_attention.append(attention[0])
+        if cache is not None:
+            cache.update(
+                cnn=torch.stack(next_cnn), attention=torch.stack(next_attention)
+            )
+        else:
+            pass
         x = self.final_layer(x, t)
         x = x.transpose(1, 2)
         return x

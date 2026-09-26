@@ -37,8 +37,6 @@ class MiniCPMOCode2Wav(nn.Module):
         prompt_wav: str | None = None,
     ) -> None:
         super().__init__()
-        from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
-
         dev = torch.device(device)
         if dev.type not in {"cuda", "xpu"}:
             raise ValueError(f"Token2wav requires a CUDA or XPU device, got {device}")
@@ -67,6 +65,8 @@ class MiniCPMOCode2Wav(nn.Module):
             )
         else:
             pass
+        from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
+
         with self.device_context:
             self.token2wav = Token2Wav(
                 Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps

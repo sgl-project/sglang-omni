@@ -61,8 +61,10 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor | None = None,
+        omni_prefill_rids: list[str] | tuple[str, ...] | None = None,
         **kwargs: object,
     ) -> LogitsProcessorOutput:
+        # note (Junnan Li): The prefill interface includes request ids; this text wrapper needs only embeddings.
         return self.language_model(
             input_ids,
             positions,

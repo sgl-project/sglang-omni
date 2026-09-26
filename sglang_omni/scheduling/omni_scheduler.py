@@ -1055,13 +1055,28 @@ class OmniScheduler:
         else:
             unit = bridge.accept(payload, operation)
             chunk = unit.chunk
+            try:
+                bypass_generation = bridge.prepare_unit(unit, payload)
+            except Exception:
+                bridge.complete(payload.request_id)
+                raise
             is_empty_eos = (
                 chunk.eos
                 and chunk.duration_ms == 0
                 and isinstance(chunk.payload, bytes)
                 and not chunk.payload
             )
-            if not is_empty_eos:
+            if bypass_generation:
+                bridge.complete(payload.request_id)
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=payload.request_id,
+                        type="result",
+                        data=payload,
+                    )
+                )
+                return False
+            elif not is_empty_eos:
                 return True
             else:
                 try:

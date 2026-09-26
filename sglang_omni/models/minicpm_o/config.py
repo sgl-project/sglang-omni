@@ -14,6 +14,7 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
 
 PKG = "sglang_omni.models.minicpm_o"
 THINKER_STAGE = "thinker"
@@ -197,6 +198,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
 EntryClass = MiniCPMOSpeechPipelineConfig
 
 Variants = {
+    "session": MiniCPMODuplexPipelineConfig,
     "text": MiniCPMOPipelineConfig,
     "speech": MiniCPMOSpeechPipelineConfig,
 }

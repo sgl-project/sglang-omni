@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 from array import array
-from dataclasses import dataclass
-from typing import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import Protocol
 
 from sglang.srt.managers.io_struct import (
     CloseSessionReqInput,
@@ -14,6 +15,7 @@ from sglang.srt.managers.io_struct import (
     TokenizedGenerateReqInput,
 )
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req
+from sglang.srt.session.session_controller import SessionController
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.profiler.event_recorder import get_active_stage
@@ -25,11 +27,72 @@ from sglang_omni.proto.session import (
     find_session_operation,
 )
 from sglang_omni.scheduling.message import OutgoingMessage
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    EmbeddingSpan,
+    SGLangARRequestData,
+)
 from sglang_omni.scheduling.types import RequestOutput
 
 SESSION_STRING_LENGTH_LIMIT_CHARACTERS = 0
 REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV = 1
+
+
+class SessionKV(Protocol):
+    kv_allocated_len: int
+
+
+class SessionSlot(Protocol):
+    kv: SessionKV
+
+
+class SessionTreeCache(Protocol):
+    slots: Mapping[str, SessionSlot]
+
+    def evictable_size(self) -> int:
+
+        pass
+
+
+class RequestToTokenPool(Protocol):
+    free_slots: list[int]
+
+
+class TokenToKVPoolAllocator(Protocol):
+    def available_size(self) -> int:
+        pass
+
+
+class ModelVocabulary(Protocol):
+    vocab_size: int
+
+
+class BridgeScheduler(Protocol):
+    """The scheduler surface the bridge drives; OmniScheduler satisfies it."""
+
+    session_controller: SessionController
+    tree_cache: SessionTreeCache
+    req_to_token_pool: RequestToTokenPool
+    token_to_kv_pool_allocator: TokenToKVPoolAllocator
+    model_config: ModelVocabulary
+    waiting_queue: list[Req]
+    chunked_req: Req | None
+    max_running_requests: int
+
+    def abort(self, request_id: str) -> None:
+
+        pass
+
+    def release_request_kv_cache(self, req: Req) -> None:
+        pass
+
+    def run_abort_callback(self, request_id: str) -> None:
+        pass
+
+    def synchronize_launched_decode(self) -> None:
+        pass
+
+    def resolve_pending_async(self) -> None:
+        pass
 
 
 def is_close_request(payload: StagePayload) -> bool:
@@ -41,6 +104,12 @@ def is_close_request(payload: StagePayload) -> bool:
         return operation_metadata.operation == "close"
 
 
+@dataclass(frozen=True, kw_only=True)
+class ARSessionPreparation:
+    reset_history: bool = False
+    bypass_generation: bool = False
+
+
 class ARSessionAdapter:
     """Convert unit inputs and outputs without mutating streaming session state."""
 
@@ -49,6 +118,15 @@ class ARSessionAdapter:
 
     def close(self, session_identity: SessionIdentity) -> None:
         """Release auxiliary history after streaming session work and KV are released."""
+
+    def prepare_unit(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        payload: StagePayload,
+    ) -> ARSessionPreparation:
+        """Select a fresh model turn or relay a unit that needs no generation."""
+        return ARSessionPreparation()
 
     def finish_input(
         self, session_identity: SessionIdentity, payload: StagePayload
@@ -97,19 +175,23 @@ class SessionUnit:
     # from earlier turns, and binds it to the streaming session.
     session_request: Req | None = None
     is_enqueued: bool = False
+    # note (Junnan Li): Only completed units commit their spans to retained history.
+    embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)
 class BridgeSession:
     session_identity: SessionIdentity
     unit: SessionUnit | None = None
+    # note (Junnan Li): KV rebuilds need embeddings from every completed unit.
+    embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
 
 
 class ARSessionBridge:
     """Map pipeline open, append, and close onto one SGLang streaming session."""
 
     def __init__(
-        self, bridge_scheduler: OmniScheduler, adapter: ARSessionAdapter
+        self, bridge_scheduler: BridgeScheduler, adapter: ARSessionAdapter
     ) -> None:
         self.bridge_scheduler = bridge_scheduler
         self.adapter = adapter
@@ -190,6 +272,39 @@ class ARSessionBridge:
             else:
                 return session.unit
 
+    def prepare_unit(self, unit: SessionUnit, payload: StagePayload) -> bool:
+        preparation = self.adapter.prepare_unit(
+            unit.session_identity, unit.chunk, payload
+        )
+        if preparation.reset_history:
+            self.drain()
+            session_id = unit.session_identity.id
+            self.sessions[session_id].embedding_spans.clear()
+            controller = self.bridge_scheduler.session_controller
+            controller.close(CloseSessionReqInput(session_id=session_id))
+            if (
+                controller.get(session_id) is not None
+                or session_id in self.bridge_scheduler.tree_cache.slots
+            ):
+                raise RuntimeError("native session reset is still pending")
+            else:
+                pass
+            result = controller.open(
+                OpenSessionReqInput(
+                    session_id=session_id,
+                    capacity_of_str_len=SESSION_STRING_LENGTH_LIMIT_CHARACTERS,
+                    streaming=True,
+                    timeout=None,
+                )
+            )
+            if not result.success:
+                raise RuntimeError("native session reset failed")
+            else:
+                pass
+        else:
+            pass
+        return preparation.bypass_generation
+
     def create_session_request(
         self, payload: StagePayload, request_data: SGLangARRequestData
     ) -> None:
@@ -210,52 +325,75 @@ class ARSessionBridge:
                 "history-aware session embedding and multimodal inputs are not supported"
             )
         else:
-            streaming_session = self.bridge_scheduler.session_controller.get(
-                unit.session_identity.id
+            pass
+        native_session = self.bridge_scheduler.session_controller.get(
+            unit.session_identity.id
+        )
+        tokenized_input = TokenizedGenerateReqInput(
+            rid=adapter_request.rid,
+            input_text=None,
+            input_ids=array("q", adapter_request.origin_input_ids),
+            input_embeds=None,
+            mm_inputs=None,
+            token_type_ids=None,
+            sampling_params=adapter_request.sampling_params,
+            logprob_start_len=adapter_request.logprob_start_len,
+            session_params=SessionParams(id=native_session.session_id),
+            stream=adapter_request.stream,
+            return_logprob=adapter_request.return_logprob,
+            return_sampling_mask=adapter_request.return_sampling_mask,
+            lora_id=adapter_request.lora_id,
+            custom_logit_processor=adapter_request.custom_logit_processor,
+            require_reasoning=adapter_request.require_reasoning,
+            return_hidden_states=adapter_request.return_hidden_states,
+            return_routed_experts=adapter_request.return_routed_experts,
+            routed_experts_start_len=adapter_request.routed_experts_start_len,
+            priority=adapter_request.priority,
+            routing_key=adapter_request.routing_key,
+            extra_key=adapter_request.extra_key,
+            cache_salt=adapter_request.cache_salt,
+            http_worker_ipc=adapter_request.http_worker_ipc,
+            top_logprobs_num=adapter_request.logprob.top_logprobs_num,
+            token_ids_logprob=adapter_request.logprob.token_ids_logprob,
+        )
+        session_request = native_session.create_req(
+            tokenized_input,
+            adapter_request.tokenizer,
+            self.bridge_scheduler.model_config.vocab_size,
+            eos_token_ids=adapter_request.eos_token_ids,
+        )
+        if session_request.to_finish is not None:
+            raise ValueError("native session rejected append")
+        else:
+            pass
+        unit.session_request = session_request
+        # note (Junnan Li): Native requests prepend retained turns to this unit's ids.
+        offset = len(session_request.origin_input_ids) - len(
+            adapter_request.origin_input_ids
+        )
+        unit.embedding_spans = [
+            EmbeddingSpan(
+                start=span.start + offset,
+                end=span.end + offset,
+                input_embeds=span.input_embeds,
             )
-            tokenized_input = TokenizedGenerateReqInput(
-                rid=adapter_request.rid,
-                input_text=None,
-                input_ids=array("q", adapter_request.origin_input_ids),
-                input_embeds=None,
-                mm_inputs=None,
-                token_type_ids=None,
-                sampling_params=adapter_request.sampling_params,
-                logprob_start_len=adapter_request.logprob_start_len,
-                session_params=SessionParams(id=streaming_session.session_id),
-                stream=adapter_request.stream,
-                return_logprob=adapter_request.return_logprob,
-                return_sampling_mask=adapter_request.return_sampling_mask,
-                lora_id=adapter_request.lora_id,
-                custom_logit_processor=adapter_request.custom_logit_processor,
-                require_reasoning=adapter_request.require_reasoning,
-                return_hidden_states=adapter_request.return_hidden_states,
-                return_routed_experts=adapter_request.return_routed_experts,
-                routed_experts_start_len=adapter_request.routed_experts_start_len,
-                priority=adapter_request.priority,
-                routing_key=adapter_request.routing_key,
-                extra_key=adapter_request.extra_key,
-                cache_salt=adapter_request.cache_salt,
-                http_worker_ipc=adapter_request.http_worker_ipc,
-                top_logprobs_num=adapter_request.logprob.top_logprobs_num,
-                token_ids_logprob=adapter_request.logprob.token_ids_logprob,
-            )
-            session_request = streaming_session.create_req(
-                tokenized_input,
-                adapter_request.tokenizer,
-                self.bridge_scheduler.model_config.vocab_size,
-                eos_token_ids=adapter_request.eos_token_ids,
-            )
-            if session_request.to_finish is not None:
-                raise ValueError("streaming session rejected append")
-            else:
-                unit.session_request = session_request
-                session_request.logprob_start_len = adapter_request.logprob_start_len
-                session_request._omni_prompt_cache_key = getattr(
-                    adapter_request, "_omni_prompt_cache_key", None
-                )  # noqa: leading-underscore
-                request_data.req = session_request
-                request_data.stage_payload = payload
+            for span in request_data.unit_embedding_spans
+        ]
+        if any(span.start < 0 for span in unit.embedding_spans):
+            raise ValueError("embedding span precedes the native sequence")
+        else:
+            pass
+        session = self.sessions[unit.session_identity.id]
+        request_data.session_embedding_spans = [
+            *session.embedding_spans,
+            *unit.embedding_spans,
+        ]
+        session_request.logprob_start_len = adapter_request.logprob_start_len
+        session_request._omni_prompt_cache_key = getattr(
+            adapter_request, "_omni_prompt_cache_key", None
+        )  # noqa: leading-underscore
+        request_data.req = session_request
+        request_data.stage_payload = payload
 
     def release_append_unit(self, request_id: str) -> None:
         unit = self.units_by_request_id.pop(request_id, None)
@@ -408,7 +546,9 @@ class ARSessionBridge:
     def complete(self, request_id: str) -> None:
         unit = self.units_by_request_id.pop(request_id, None)
         if unit is not None:
-            self.sessions[unit.session_identity.id].unit = None
+            session = self.sessions[unit.session_identity.id]
+            session.unit = None
+            session.embedding_spans.extend(unit.embedding_spans)
         else:
             pass
 
