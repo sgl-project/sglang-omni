@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CUDA Graph replay for the fixed-shape MiniMax RVQ depth pass."""
+"""Device graph replay for the fixed-shape MiniMax RVQ depth pass."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from typing import Any
 
 import torch
 from torch import Tensor
+
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +26,7 @@ class RVQDepthCudaGraphRunner:
         self,
         *,
         forward: RVQDepthForward,
+        backend: DeviceGraphBackend,
         device: torch.device,
         dtype: torch.dtype,
         hidden_size: int,
@@ -29,20 +34,22 @@ class RVQDepthCudaGraphRunner:
         buckets: list[int],
     ) -> None:
         self.forward = forward
+        self.backend = backend
         self.device = device
+        self.device_module = torch.get_device_module(device)
         self.buckets = sorted(set(buckets))
         if not self.buckets or self.buckets[0] < 1:
             raise ValueError("MiniMax Music 3 RVQ graph needs positive batch buckets")
         else:
             pass
-        self.graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        self.graphs: dict[int, Any] = {}
         self.inputs: dict[int, tuple[Tensor, ...]] = {}
         self.outputs: dict[int, tuple[Tensor, Tensor, Tensor]] = {}
         self.allocated_bytes = 0
         for size in self.buckets:
             self.capture(size, dtype, hidden_size, num_codebooks)
         logger.info(
-            f"MiniMax Music 3 RVQ depth CUDA graphs captured buckets={self.buckets} memory={self.allocated_bytes / 2 ** 20:.1f}MiB"
+            f"MiniMax Music 3 RVQ depth device graphs captured buckets={self.buckets} memory={self.allocated_bytes / 2 ** 20:.1f}MiB"
         )
 
     @property
@@ -62,17 +69,21 @@ class RVQDepthCudaGraphRunner:
         )
         replay = torch.zeros((), device=self.device, dtype=torch.bool)
 
-        with torch.cuda.device(self.device):
+        # The depth decoder's attention must reach a capturable kernel: XPU's
+        # default SDPA path enqueues work on events the graph cannot own.
+        with (
+            self.device_module.device(self.device),
+            current_platform.graph_capture_attention(),
+        ):
             for _ in range(_WARMUP_REPLAYS):
                 self.forward(hidden, c0, seeds, positions, forced, replay)
-            torch.cuda.synchronize(self.device)
-            allocated_before = torch.cuda.memory_allocated(self.device)
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
+            self.device_module.synchronize(self.device)
+            allocated_before = self.device_module.memory_allocated(self.device)
+            with self.backend.capture() as graph:
                 outputs = self.forward(hidden, c0, seeds, positions, forced, replay)
-            torch.cuda.synchronize(self.device)
+            self.device_module.synchronize(self.device)
             self.allocated_bytes += max(
-                0, torch.cuda.memory_allocated(self.device) - allocated_before
+                0, self.device_module.memory_allocated(self.device) - allocated_before
             )
 
         self.graphs[size] = graph

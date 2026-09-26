@@ -10,6 +10,8 @@ from typing import Any
 import torch
 from torch import nn
 
+from sglang_omni.platforms import current_platform
+
 from .checkpoint import load_audio_state, load_json, resolve_checkpoint
 from .constants import AR_CFG_SCALE, AR_CFG_TOP_K
 from .prompt import AUDIO_CODE_OFFSET, SPECIAL_TOKEN_IDS
@@ -131,10 +133,20 @@ def enable_rvq_depth_cuda_graph(model: Any, buckets: list[int]) -> None:
     from .rvq_cuda_graph import RVQDepthCudaGraphRunner
 
     parameter = next(model.parameters())
+    backend = current_platform.get_device_graph_backend(parameter.device)
+    if backend is None:
+        model.rvq_depth_graph = None
+        logger.info(
+            f"MiniMax Music 3 RVQ depth runs eager: {parameter.device.type} records no model-owned graphs"
+        )
+        return
+    else:
+        pass
     model.rvq_depth_graph = RVQDepthCudaGraphRunner(
         forward=lambda hidden, c0, seeds, positions, forced, replay: (
             depth_decode_eager(model, hidden, c0, seeds, positions, forced, replay)
         ),
+        backend=backend,
         device=parameter.device,
         dtype=parameter.dtype,
         hidden_size=model.rvq_decoder.hidden_size,
