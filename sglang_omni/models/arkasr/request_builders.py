@@ -99,9 +99,11 @@ def make_arkasr_scheduler_adapters(
     tokenizer: Any,
     max_new_tokens: int,
     feature_extractor: Any = None,
+    context_length: int | None = None,
     merge_factor: int = 4,
     audio_token_id: int = 151663,
     audio_encoder_service: Any = None,
+    mlx_mode: bool = False,
 ) -> tuple[
     Callable[[StagePayload], ArkASRRequestData | DeferredAdmission],
     Callable[[Any], StagePayload],
@@ -112,14 +114,10 @@ def make_arkasr_scheduler_adapters(
         pass
 
     eos_token_id = int(tokenizer.eos_token_id)
-    vocab_size = int(tokenizer.vocab_size)
+    # MLX may emit added tokens whose IDs exceed tokenizer.vocab_size.
+    vocab_size = len(tokenizer) if mlx_mode else int(tokenizer.vocab_size)
 
-    # Defensively suppress every reserved marker (special / ``<...>`` added
-    # token) except EOS. The checkpoint ships no bad_words_ids, so without this,
-    # adversarial / OOD audio can leak markers like ``<tool_call>`` or
-    # ``<|audio|>`` into transcripts (``skip_special_tokens`` only strips the few
-    # "special" ones, not the non-special added tokens). We suppress at sampling
-    # (hard-negative logit_bias) and strip on decode as belt-and-suspenders.
+    # CUDA suppresses reserved markers during sampling; MLX filters decoded IDs.
     _suppressed_ids = build_suppressed_token_ids(tokenizer)
 
     def _build_prompt_ids(num_audio_tokens: int) -> list[int]:
@@ -135,6 +133,12 @@ def make_arkasr_scheduler_adapters(
         payload: StagePayload,
     ) -> ArkASRRequestData | DeferredAdmission:
         params = payload.request.params or {}
+        temperature = float(params.get("temperature") or 0.0)
+        if mlx_mode and temperature != 0.0:
+            raise ValueError(
+                "ARK-ASR MLX currently supports only greedy decoding; "
+                "set temperature=0"
+            )
         prepared = prepare_audio(
             payload, source_name="ARK-ASR", target_sample_rate=_SAMPLE_RATE
         )
@@ -192,8 +196,19 @@ def make_arkasr_scheduler_adapters(
         )
         mm_inputs.audio_token_id = audio_token_id
 
-        temperature = float(params.get("temperature") or 0.0)
         request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+        if (
+            mlx_mode
+            and context_length is not None
+            and len(input_ids) + request_max_new_tokens > context_length - 1
+        ):
+            raise ValueError(
+                "ARK-ASR request is longer than the model's context length "
+                f"({len(input_ids)} prompt/audio tokens + "
+                f"{request_max_new_tokens} max_new_tokens > "
+                f"{context_length - 1} usable tokens); "
+                "reduce max_new_tokens or split the audio"
+            )
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -201,7 +216,7 @@ def make_arkasr_scheduler_adapters(
             stop_token_ids=[eos_token_id],
             logit_bias=(
                 {str(tid): -100.0 for tid in _suppressed_ids}
-                if _suppressed_ids
+                if _suppressed_ids and not mlx_mode
                 else None
             ),
         )
@@ -241,9 +256,7 @@ def make_arkasr_scheduler_adapters(
     def result_adapter(data: ArkASRRequestData) -> StagePayload:
         payload = data.stage_payload
         output_ids = list(data.output_ids or [])
-        # belt-and-suspenders: drop any suppressed marker tokens that slipped
-        # through before decoding (logit_bias suppresses them at sampling, but a
-        # non-greedy request could still surface one).
+        # CUDA uses sampling bias; MLX relies on this marker-token filter.
         if _suppressed_ids:
             _drop = set(_suppressed_ids)
             output_ids = [t for t in output_ids if t not in _drop]
