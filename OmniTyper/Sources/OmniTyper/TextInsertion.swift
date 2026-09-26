@@ -114,7 +114,7 @@ enum TextInsertion {
                                document: window.flatMap { attribute($0, kAXDocumentAttribute) as? String })
     }
 
-    static func insert(_ text: String, into target: InsertionTarget) async throws {
+    static func insert(_ text: String, into target: InsertionTarget, pasteSent: (() -> Void)? = nil) async throws {
         guard !text.isEmpty else { return }
         try Task.checkCancellation()
         try validate(target)
@@ -176,6 +176,7 @@ enum TextInsertion {
         up.flags = .maskCommand
         down.post(tap: .cgAnnotatedSessionEventTap)
         up.post(tap: .cgAnnotatedSessionEventTap)
+        pasteSent?()
         // Note (Codex): Cancellation must not restore the clipboard before the queued paste consumes it.
         await Task.detached { try? await Task.sleep(nanoseconds: 800_000_000) }.value
         // Note (Jiaxin Deng): Report ignored pastes without retrying; a delayed paste could otherwise duplicate text.

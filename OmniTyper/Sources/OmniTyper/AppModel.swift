@@ -205,14 +205,21 @@ final class AppModel: ObservableObject {
 
     func finish() {
         guard phase == .recording else { return }
-        do {
-            let duration = recorder.elapsed
-            let audio = try recorder.stop()
-            if sessionPreferences.sounds { NSSound(named: "Pop")?.play() }
-            run(audio: audio, duration: duration, allowInsertion: true)
-        } catch {
-            speechStream?.cancel(); speechStream = nil
-            target = nil; phase = .idle; self.error = error.localizedDescription; hideVoicePanel?(); showMainWindow?()
+        let duration = recorder.elapsed
+        // Note (Yifei Leng): Acknowledge the key press before the microphone winds down, not after.
+        phase = .processing
+        if sessionPreferences.sounds { NSSound(named: "Pop")?.play() }
+        let token = UUID(); generation = token
+        task = Task {
+            do {
+                let audio = try await recorder.stop()
+                guard generation == token, !Task.isCancelled else { try? FileManager.default.removeItem(at: audio); return }
+                run(audio: audio, duration: duration, allowInsertion: true)
+            } catch {
+                guard generation == token else { return }
+                speechStream?.cancel(); speechStream = nil
+                target = nil; phase = .idle; self.error = error.localizedDescription; hideVoicePanel?(); showMainWindow?()
+            }
         }
     }
 
@@ -291,7 +298,11 @@ final class AppModel: ObservableObject {
                     notice = warning
                     if allowInsertion, preferences.autoPaste, requestMode != .ask, let capturedTarget {
                         do {
-                            try await TextInsertion.insert(text, into: capturedTarget)
+                            // Note (Yifei Leng): Once the paste is sent the text is on screen, so the popup leaves
+                            // now instead of sitting through the ignored-paste check.
+                            try await TextInsertion.insert(text, into: capturedTarget) { [weak self] in
+                                self?.hideVoicePanel?()
+                            }
                             guard generation == token else { return }
                             if notice.isEmpty { notice = L("notice.inserted", capturedTarget.applicationName) }
                         } catch {
