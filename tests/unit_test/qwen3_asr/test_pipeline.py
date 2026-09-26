@@ -393,10 +393,10 @@ def test_qwen3_asr_stage_default_disables_multimodal_embedding_cache() -> None:
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
 
 
-def test_qwen3_asr_stage_default_enables_torch_compile() -> None:
+def test_qwen3_asr_stage_default_defers_torch_compile_to_builder() -> None:
     signature = inspect.signature(create_sglang_qwen3_asr_executor)
 
-    assert signature.parameters["enable_torch_compile"].default is True
+    assert signature.parameters["enable_torch_compile"].default is None
     assert signature.parameters["torch_compile_max_bs"].default == 1
 
 

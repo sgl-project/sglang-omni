@@ -19,6 +19,7 @@ from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalPipelineConfig,
     MossTTSLocalSplitPipelineConfig,
 )
+from sglang_omni.models.moss_tts_local.engine_builder import MossTtsLocalEngineBuilder
 from sglang_omni.models.moss_tts_local.local_transformer import (
     MossTTSLocalTransformer,
     rotate_half_interleaved,
@@ -595,7 +596,7 @@ def install_fake_moss_ar_factory(
         server_args = types.SimpleNamespace(
             model_path=model_path,
             context_length=context_length,
-            **kwargs,
+            **{"enable_torch_compile": False, **kwargs},
         )
         server_args.cuda_graph_config = types.SimpleNamespace(
             decode=types.SimpleNamespace(
@@ -735,11 +736,7 @@ def test_moss_local_engine_uses_text_backbone_context(
     )
 
 
-def test_moss_tts_local_generation_defaults_enable_torch_compile() -> None:
-    from sglang_omni.models.moss_tts_local.engine_builder import (
-        MossTtsLocalEngineBuilder,
-    )
-
+def test_moss_tts_local_generation_defaults_defer_torch_compile_to_builder() -> None:
     builder = MossTtsLocalEngineBuilder(
         enable_async_decode=True,
         async_decode_min_batch_size=1,
@@ -747,7 +744,7 @@ def test_moss_tts_local_generation_defaults_enable_torch_compile() -> None:
         codec_mem_reserve=0.0,
     )
 
-    assert builder.generation_defaults(dtype="bfloat16")["enable_torch_compile"] is True
+    assert "enable_torch_compile" not in builder.generation_defaults(dtype="bfloat16")
 
 
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(

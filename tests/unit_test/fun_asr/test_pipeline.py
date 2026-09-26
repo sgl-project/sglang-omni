@@ -103,10 +103,10 @@ def test_fun_asr_stage_default_disables_multimodal_embedding_cache() -> None:
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
 
 
-def test_fun_asr_stage_default_enables_torch_compile() -> None:
+def test_fun_asr_stage_default_defers_torch_compile_to_builder() -> None:
     signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
-    assert signature.parameters["enable_torch_compile"].default is True
+    assert signature.parameters["enable_torch_compile"].default is None
 
 
 def test_fun_asr_stage_default_enables_async_decode() -> None:

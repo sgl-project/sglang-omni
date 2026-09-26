@@ -68,7 +68,6 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": True,
             "max_prefill_tokens": min(self.context_length, 8192),
             "sampling_backend": "pytorch",
             "trust_remote_code": True,

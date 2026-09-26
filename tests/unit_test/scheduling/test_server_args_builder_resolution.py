@@ -36,8 +36,9 @@ DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY = str(
 
 
 @pytest.fixture(autouse=True)
-def isolate_torchinductor_cache_directory(monkeypatch: pytest.MonkeyPatch) -> None:
-    """build_sglang_server_args writes the process cache directory."""
+def isolate_torch_compile_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI exports the compile default, and the builder writes the cache directory."""
+    monkeypatch.delenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", raising=False)
     monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
 
 
@@ -87,7 +88,30 @@ def test_encoder_mem_reserve_reads_the_declared_fraction(tmp_path: Path) -> None
     )
 
 
-def test_builder_keeps_torch_compile_off_by_default(tmp_path: Path) -> None:
+def test_builder_enables_torch_compile_by_default(tmp_path: Path) -> None:
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path), context_length=2048, device="cuda"
+    )
+
+    assert resolution_result(server_args, "enable_torch_compile") is True
+
+
+def test_builder_keeps_stage_torch_compile_opt_out(tmp_path: Path) -> None:
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path),
+        context_length=2048,
+        device="cuda",
+        enable_torch_compile=False,
+    )
+
+    assert resolution_result(server_args, "enable_torch_compile") is False
+
+
+def test_builder_disables_torch_compile_by_default_when_ci_turns_default_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", "0")
+
     server_args = build_sglang_server_args(
         write_mini_llama_checkpoint(tmp_path), context_length=2048, device="cuda"
     )
@@ -95,7 +119,11 @@ def test_builder_keeps_torch_compile_off_by_default(tmp_path: Path) -> None:
     assert resolution_result(server_args, "enable_torch_compile") is False
 
 
-def test_builder_forwards_stage_torch_compile_opt_in(tmp_path: Path) -> None:
+def test_builder_keeps_stage_torch_compile_opt_in_when_ci_turns_default_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", "0")
+
     server_args = build_sglang_server_args(
         write_mini_llama_checkpoint(tmp_path),
         context_length=2048,
