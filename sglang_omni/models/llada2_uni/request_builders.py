@@ -352,6 +352,8 @@ def thinking_phase1_to_phase2(
     trace = tokenizer.decode(output_ids[:boi_pos], skip_special_tokens=True)
     state.stream_state = {**state.stream_state, **cfg_inputs}
     state.thinking_text = trace
+    state.thinking_prompt_tokens = int(state.prompt["input_ids"].numel())
+    state.thinking_completion_tokens = boi_pos + 1
     state.thinking_phase = "image"
     state.prompt = {"input_ids": phase2_tensor}
 

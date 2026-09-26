@@ -30,6 +30,8 @@ from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.models.llada2_uni import stages
 from sglang_omni.models.llada2_uni.components import decoder_runtime
+from sglang_omni.models.llada2_uni.components import common as common_module
+from sglang_omni.models.llada2_uni.components import image_decoder as decoder_module
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     DecoderConfig,
     ZImageTransformer2DModelWrapper,
@@ -65,7 +67,10 @@ from sglang_omni.models.llada2_uni.request_builders import (
     merge_image_tokens_for_thinker,
     thinker_next,
 )
-from sglang_omni.models.llada2_uni.stages import create_image_decode_executor
+from sglang_omni.models.llada2_uni.stages import (
+    create_decode_executor,
+    create_image_decode_executor,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -695,7 +700,11 @@ def test_edit_preprocess_merge_extract_and_decode(
 
 
 @pytest.mark.parametrize("cfg_scale", [1.0, 4.0])
-def test_thinking_stops_at_boundary_then_generates_image(preprocessor, cfg_scale):
+def test_thinking_stops_at_boundary_then_generates_image(
+    preprocessor: LLaDA2Preprocessor,
+    monkeypatch: pytest.MonkeyPatch,
+    cfg_scale: float,
+) -> None:
     payload = StagePayload(
         request_id="thinking-image",
         request=OmniRequest(
@@ -707,6 +716,7 @@ def test_thinking_stops_at_boundary_then_generates_image(preprocessor, cfg_scale
     )
     payload = asyncio.run(preprocessor(payload))
     tokenizer = preprocessor.tokenizer
+    prompt_tokens = payload.data["prompt"]["input_ids"].numel()
     config = DllmConfig(
         algorithm="LowConfidenceCFG",
         algorithm_config={},
@@ -734,6 +744,7 @@ def test_thinking_stops_at_boundary_then_generates_image(preprocessor, cfg_scale
         + [IMAGE_TOKEN_OFFSET + 7]
     )
     image_payload = finish(text_request)
+    image_payload.data = LLaDA2UniPipelineState.from_dict(image_payload.data).to_dict()
     assert thinker_next(payload.request_id, image_payload) == "thinker"
     image_request = build(image_payload)
     assert image_request.req.origin_input_ids[-1] == preprocessor.boi_id
@@ -756,10 +767,47 @@ def test_thinking_stops_at_boundary_then_generates_image(preprocessor, cfg_scale
     assert thinker_next(payload.request_id, output) == ["decode", "image_decode"]
     assert extract_image_vq_tokens(state)[:3] == ([7] * 1024, 32, 32)
 
+    monkeypatch.setattr(common_module, "load_llada2_tokenizer", lambda path: tokenizer)
+    output.data = state.to_dict()
+    decoded = create_decode_executor("unused").fn(output)
+    thinking_tokens = text_request.output_ids.index(preprocessor.boi_id) + 1
+    assert decoded.data["usage"] == {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": thinking_tokens + 1024,
+        "total_tokens": prompt_tokens + thinking_tokens + 1024,
+    }
+    assert decoded.data["text"] == trace
+
     text_request.output_ids = tokenizer.encode("No image boundary")
     with pytest.raises(RuntimeError, match="did not produce <boi>"):
         finish(text_request)
     assert LLaDA2UniPipelineState.from_dict(payload.data).thinking_phase == "text"
+
+
+@pytest.mark.parametrize("task_kind", ["chat", "t2i"])
+def test_single_pass_usage_is_unchanged(
+    preprocessor: LLaDA2Preprocessor,
+    monkeypatch: pytest.MonkeyPatch,
+    task_kind: str,
+) -> None:
+    tokenizer = preprocessor.tokenizer
+    monkeypatch.setattr(common_module, "load_llada2_tokenizer", lambda path: tokenizer)
+    state = LLaDA2UniPipelineState(
+        prompt={"input_ids": torch.tensor([[1, 2, 3]])},
+        thinker_out={"output_ids": [IMAGE_TOKEN_OFFSET + 7] * 4},
+        task_kind=task_kind,
+    )
+    payload = StagePayload(
+        request_id="single-pass",
+        request=OmniRequest(inputs={}, metadata={}, params={}),
+        data=state.to_dict(),
+    )
+    result = create_decode_executor("unused").fn(payload)
+    assert result.data["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 4,
+        "total_tokens": 7,
+    }
 
 
 def test_thinking_edit_is_rejected(preprocessor):
