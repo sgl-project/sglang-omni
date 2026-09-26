@@ -14,24 +14,23 @@ from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
 )
 from sglang_omni.models.nemotron_voicechat.codec import RVQVAEDecoder
 from sglang_omni.models.nemotron_voicechat.conformer import (
+    SAMPLES_PER_FRAME,
     AudioPerception,
     StreamingPerception,
 )
 from sglang_omni.models.nemotron_voicechat.cuda_graph import capture_cuda_graph
+from sglang_omni.models.nemotron_voicechat.payload_types import OUTPUT_SAMPLE_RATE
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import SessionContext, SessionHooks
 
-INPUT_RATE = 16000
-OUTPUT_RATE = 22050
-FRAME_SAMPLES = 1280
+PCM16_SAMPLE_BYTES = 2
+PCM16_INPUT_SCALE = 32768.0
+PCM16_OUTPUT_SCALE = 32767
 
 
 class GraphPerception(StreamingPerception):
     """Replay only after causal cache shapes have reached their fixed bounds."""
-
-    SINGLE_BUFFERS = ("sample_buffer", "preemphasis_carry")
-    LIST_BUFFERS = ("sub_caches", "key_caches", "value_caches", "conv_caches")
 
     def __init__(self, perception: AudioPerception) -> None:
         super().__init__(perception)
@@ -40,8 +39,13 @@ class GraphPerception(StreamingPerception):
         self.graph_output: torch.Tensor | None = None
 
     def state_buffers(self) -> list[torch.Tensor]:
-        return [getattr(self, name) for name in self.SINGLE_BUFFERS] + [
-            tensor for name in self.LIST_BUFFERS for tensor in getattr(self, name)
+        return [
+            self.sample_buffer,
+            self.preemphasis_carry,
+            *self.sub_caches,
+            *self.key_caches,
+            *self.value_caches,
+            *self.conv_caches,
         ]
 
     @torch.inference_mode()
@@ -51,34 +55,45 @@ class GraphPerception(StreamingPerception):
         else:
             pass
         if self.graph is None:
-            inputs = self.state_buffers()
-            saved = [value.clone() for value in inputs]
-            attrs = {name: getattr(self, name) for name in self.SINGLE_BUFFERS}
-            attrs.update(
-                {name: list(getattr(self, name)) for name in self.LIST_BUFFERS}
-            )
+            original_buffers = self.state_buffers()
+            saved_values = [buffer.clone() for buffer in original_buffers]
+            original_sample_buffer = self.sample_buffer
+            original_preemphasis_carry = self.preemphasis_carry
+            original_sub_caches = self.sub_caches.copy()
+            original_key_caches = self.key_caches.copy()
+            original_value_caches = self.value_caches.copy()
+            original_conv_caches = self.conv_caches.copy()
+
+            def restore_buffer_references() -> None:
+                self.sample_buffer = original_sample_buffer
+                self.preemphasis_carry = original_preemphasis_carry
+                self.sub_caches = original_sub_caches.copy()
+                self.key_caches = original_key_caches.copy()
+                self.value_caches = original_value_caches.copy()
+                self.conv_caches = original_conv_caches.copy()
+
             self.graph_input = samples.to(device=self.device, dtype=self.dtype).clone()
 
             def restore_state() -> None:
-                for target, value in zip(inputs, saved):
-                    target.copy_(value)
-                for name, value in attrs.items():
-                    setattr(
-                        self, name, list(value) if name in self.LIST_BUFFERS else value
-                    )
+                for buffer, saved_value in zip(
+                    original_buffers, saved_values, strict=True
+                ):
+                    buffer.copy_(saved_value)
+                restore_buffer_references()
 
             def forward() -> torch.Tensor:
                 output = super(GraphPerception, self).push(self.graph_input)
                 # Keep captured cache addresses fixed across subsequent replays.
-                for target, value in zip(inputs, self.state_buffers()):
+                for target, value in zip(
+                    original_buffers, self.state_buffers(), strict=True
+                ):
                     target.copy_(value)
                 return output
 
             self.graph, self.graph_output = capture_cuda_graph(
                 forward, self.device, restore_state=restore_state
             )
-            for name, value in attrs.items():
-                setattr(self, name, list(value) if name in self.LIST_BUFFERS else value)
+            restore_buffer_references()
         else:
             pass
 
@@ -91,7 +106,7 @@ class GraphPerception(StreamingPerception):
 @dataclass(kw_only=True)
 class PerceptionState:
     stream: StreamingPerception
-    ended: bool = False
+    is_ended: bool = False
 
 
 class PerceptionHooks(SessionHooks):
@@ -109,7 +124,7 @@ class PerceptionHooks(SessionHooks):
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
         state = self.states[context.session_identity]
-        if state.ended:
+        if state.is_ended:
             raise ValueError("VoiceChat input already ended")
         else:
             pass
@@ -118,11 +133,11 @@ class PerceptionHooks(SessionHooks):
         else:
             pass
         raw = chunk.payload
-        if not isinstance(raw, bytes) or len(raw) % 2:
+        if not isinstance(raw, bytes) or len(raw) % PCM16_SAMPLE_BYTES:
             raise ValueError("VoiceChat requires complete PCM16 samples")
         else:
             pass
-        if len(raw) not in (0, FRAME_SAMPLES * 2):
+        if len(raw) not in (0, SAMPLES_PER_FRAME * PCM16_SAMPLE_BYTES):
             raise ValueError("VoiceChat requires 1280 samples per unit; pad at ingress")
         else:
             pass
@@ -130,18 +145,18 @@ class PerceptionHooks(SessionHooks):
             raise ValueError("empty VoiceChat input requires EOS")
         else:
             pass
-        row = None
+        acoustic_features = None
         if raw:
             waveform = torch.from_numpy(
                 np.frombuffer(raw, dtype="<i2").astype(np.float32)
             )
-            row = state.stream.push(waveform / 32768.0).cpu()
+            acoustic_features = state.stream.push(waveform / PCM16_INPUT_SCALE).cpu()
         else:
             pass
-        state.ended = chunk.eos
+        state.is_ended = chunk.eos
         # Match the offline pipeline: the encoder's extra flush row is not a
         # model frame. EOS only drains the codec, it does not synthesize input.
-        payload.data = {"acoustic": row, "eos": chunk.eos}
+        payload.data = {"acoustic": acoustic_features, "eos": chunk.eos}
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:
@@ -154,9 +169,14 @@ class PerceptionHooks(SessionHooks):
         else:
             pass
         stream = state.stream
-        tensors = [stream.sample_buffer, stream.preemphasis_carry]
-        for key in ("sub_caches", "key_caches", "value_caches", "conv_caches"):
-            tensors.extend(getattr(stream, key))
+        tensors = [
+            stream.sample_buffer,
+            stream.preemphasis_carry,
+            *stream.sub_caches,
+            *stream.key_caches,
+            *stream.value_caches,
+            *stream.conv_caches,
+        ]
         return ResourceUsage(bytes=sum(t.numel() * t.element_size() for t in tensors))
 
 
@@ -165,7 +185,7 @@ class CodecState:
     code_frames: list[torch.Tensor] = field(default_factory=list)
     frame_count: int = 0
     emitted_samples: int = 0
-    ended: bool = False
+    is_ended: bool = False
 
 
 class CodecHooks(SessionHooks):
@@ -206,20 +226,20 @@ class CodecHooks(SessionHooks):
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
         state = self.states[context.session_identity]
-        if state.ended:
+        if state.is_ended:
             raise ValueError("VoiceChat codec already ended")
         else:
             pass
-        data = payload.data
-        codes = data.get("codes")
+        model_output = payload.data
+        codes = model_output.get("codes")
         if codes is not None:
             state.code_frames.append(codes.reshape(-1).to(self.device))
             state.frame_count += 1
             state.code_frames = state.code_frames[-DECODE_WINDOW_FRAMES:]
         else:
             pass
-        eos = bool(data.get("eos"))
-        fresh = torch.zeros(0)
+        eos = bool(model_output.get("eos"))
+        new_audio = torch.zeros(0)
         if state.code_frames:
             first_frame_index = state.frame_count - len(state.code_frames)
             frame_samples = self.decoder.samples_per_frame
@@ -227,27 +247,31 @@ class CodecHooks(SessionHooks):
                 0 if eos else TAIL_HOLDBACK_SAMPLES
             )
             audio = self.decode(torch.stack(state.code_frames))
-            window_start = first_frame_index * frame_samples
-            start = state.emitted_samples - window_start
-            end = available_samples - window_start
-            fresh = audio[start:end].float().cpu()
+            window_start_sample = first_frame_index * frame_samples
+            slice_start = state.emitted_samples - window_start_sample
+            slice_end = available_samples - window_start_sample
+            new_audio = audio[slice_start:slice_end].float().cpu()
             state.emitted_samples = available_samples
         else:
             pass
-        pcm = (fresh.clamp(-1, 1).numpy() * 32767).astype("<i2").tobytes()
-        state.ended = eos
+        pcm = (
+            (new_audio.clamp(-1, 1).numpy() * PCM16_OUTPUT_SCALE)
+            .astype("<i2")
+            .tobytes()
+        )
+        state.is_ended = eos
         payload.data = {
             "pcm": pcm,
-            "text": data.get("text", ""),
+            "text": model_output.get("text", ""),
             "eos": eos,
-            "text_token": data.get("text_token"),
-            "function_token": data.get("function_token"),
+            "text_token": model_output.get("text_token"),
+            "function_token": model_output.get("function_token"),
         }
         context.emit(
             TimedChunk(
                 "audio",
                 chunk.t_start_ms,
-                len(pcm) * 500 / OUTPUT_RATE,
+                len(pcm) * 1000 / (PCM16_SAMPLE_BYTES * OUTPUT_SAMPLE_RATE),
                 chunk.seq,
                 payload.data,
                 format="voicechat",

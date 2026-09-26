@@ -5,6 +5,10 @@ from collections.abc import Iterable
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.nemotron_voicechat.duplex_config import STAGES
+from sglang_omni.models.nemotron_voicechat.payload_types import (
+    INPUT_SAMPLE_RATE,
+    OUTPUT_SAMPLE_RATE,
+)
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk, SessionIdentity, SessionLimits
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
@@ -25,8 +29,8 @@ from sglang_omni.serve.realtime.types import Capabilities, RuntimeLimits
 class VoiceChatOutput:
     def __init__(self) -> None:
         self.session_identity: SessionIdentity | None = None
-        self.response: str | None = None
-        self.text = ""
+        self.response_id: str | None = None
+        self.transcript = ""
 
     def __call__(self, output: OutputChunk) -> Iterable[OutputEvent]:
         payload = output.payload
@@ -42,16 +46,16 @@ class VoiceChatOutput:
             raise ValueError("invalid VoiceChat audio, text or EOS")
         else:
             pass
-        if self.session_identity != output.session_identity or self.response is None:
+        if self.session_identity != output.session_identity or self.response_id is None:
             self.session_identity = output.session_identity
-            self.response = f"{output.session_identity.id}-o{output.session_identity.open_index}-u{output.input_seq}"
-            self.text = ""
-            yield ResponseStarted(self.response)
+            self.response_id = f"{output.session_identity.id}-o{output.session_identity.open_index}-u{output.input_seq}"
+            self.transcript = ""
+            yield ResponseStarted(self.response_id)
         else:
             pass
-        response_id, item_id = self.response, self.response + "-item"
+        response_id, item_id = self.response_id, self.response_id + "-item"
         if text:
-            self.text += text
+            self.transcript += text
             yield TextDelta(response_id, item_id, text)
         else:
             pass
@@ -60,12 +64,12 @@ class VoiceChatOutput:
         else:
             pass
         if eos:
-            yield TextFinished(response_id, item_id, self.text)
+            yield TextFinished(response_id, item_id, self.transcript)
             yield AudioFinished(response_id, item_id)
             yield ResponseFinished(
-                response_id, item_id, self.text, True, "completed", "stop"
+                response_id, item_id, self.transcript, True, "completed", "stop"
             )
-            self.response = None
+            self.response_id = None
         else:
             pass
 
@@ -95,8 +99,8 @@ def deployment(
     return RealtimeDeployment(
         Capabilities(
             interaction="native",
-            input_sample_rate_hz=16000,
-            output_sample_rate_hz=22050,
+            input_sample_rate_hz=INPUT_SAMPLE_RATE,
+            output_sample_rate_hz=OUTPUT_SAMPLE_RATE,
             output_modalities=("audio", "text"),
             native_unit_ms=80,
             tail_policy="pad",

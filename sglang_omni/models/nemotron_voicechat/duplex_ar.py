@@ -58,10 +58,10 @@ def attach_fusion_rows(
     forward_batch: ForwardBatch, requests: list[SchedulerRequest]
 ) -> None:
     fusion_suffixes: list[torch.Tensor] = []
-    for i, request in enumerate(requests):
+    for request_index, request in enumerate(requests):
         history: FrameHistory = request.data.talker_model_inputs["duplex_history"]
-        cached_positions = int(forward_batch.extend_prefix_lens_cpu[i])
-        uncached_positions = int(forward_batch.extend_seq_lens_cpu[i])
+        cached_positions = int(forward_batch.extend_prefix_lens_cpu[request_index])
+        uncached_positions = int(forward_batch.extend_seq_lens_cpu[request_index])
         if cached_positions + uncached_positions != history.position_count:
             raise RuntimeError(
                 "VoiceChat fusion history is not aligned with session KV"
@@ -74,7 +74,7 @@ def attach_fusion_rows(
         history.reused_prefix_positions += cached_positions
         history.unit_count += 1
         remaining_positions = uncached_positions
-        suffix_blocks = []
+        suffix_blocks: list[torch.Tensor] = []
         for block in reversed(history.fusion_rows):
             block_positions = min(remaining_positions, block.shape[0])
             suffix_blocks.append(block[-block_positions:])
@@ -133,31 +133,38 @@ class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
         else:
             pass
         if self.sampler_graph is None:
-            hidden = self.model.hidden_out[index : index + 1].float().clone()
-            rates = torch.linspace(0, 1, NUM_ITER + 1, device=hidden.device)[:-1]
-            counts = torch.ceil(
-                (1 - rates.pow(self.exponent)).pow(1 / self.exponent)
+            sampler_hidden = self.model.hidden_out[index : index + 1].float().clone()
+            iteration_fractions = torch.linspace(
+                0, 1, NUM_ITER + 1, device=sampler_hidden.device
+            )[:-1]
+            remaining_quantizers = torch.ceil(
+                (1 - iteration_fractions.pow(self.exponent)).pow(1 / self.exponent)
                 * self.model.talker.num_quantizers
             ).long()
-            counts = tuple(
-                (counts - torch.cat([counts[1:], counts.new_zeros(1)])).tolist()
+            assignment_counts = tuple(
+                (
+                    remaining_quantizers
+                    - torch.cat(
+                        [remaining_quantizers[1:], remaining_quantizers.new_zeros(1)]
+                    )
+                ).tolist()
             )
 
             def sample() -> torch.Tensor:
                 return self.model.talker.generate_codes(
-                    hidden,
+                    sampler_hidden,
                     self.model.mog_head,
                     num_iter=NUM_ITER,
                     exponent=self.exponent,
                     top_p=self.top_p,
                     noise_scale=self.noise_scale,
-                    assignment_counts=counts,
+                    assignment_counts=assignment_counts,
                 )
 
             self.sampler_graph, self.sampler_output = capture_cuda_graph(
-                sample, hidden.device
+                sample, sampler_hidden.device
             )
-            self.sampler_hidden = hidden
+            self.sampler_hidden = sampler_hidden
         else:
             pass
         assert self.sampler_hidden is not None and self.sampler_output is not None
@@ -227,8 +234,7 @@ class FrameAdapter(ARSessionAdapter):
         if payload.data.get("eos") and payload.data.get("acoustic") is None:
             return payload
         else:
-            pass
-        return None
+            return None
 
     def build_unit_request(
         self,
@@ -239,8 +245,8 @@ class FrameAdapter(ARSessionAdapter):
         vocab_size: int,
     ) -> SGLangARRequestData:
         state = self.states[session_identity]
-        length = fusion_rows.shape[0]
-        if state.position_count + length + 1 > self.context_length:
+        new_position_count = fusion_rows.shape[0]
+        if state.position_count + new_position_count + 1 > self.context_length:
             raise ValueError(
                 "VoiceChat session context limit reached; start a new session"
             )
@@ -249,7 +255,7 @@ class FrameAdapter(ARSessionAdapter):
         # note (Codex): The next unit forwards the previous sampled token with new fusion input.
         input_token_ids = opening_token_ids if state.position_count == 0 else []
         state.fusion_rows.append(fusion_rows.detach())
-        state.position_count += length
+        state.position_count += new_position_count
         request_data = ar_request(
             payload, input_ids=input_token_ids, max_new_tokens=1, vocab_size=vocab_size
         )
@@ -291,10 +297,16 @@ class ThinkerAdapter(FrameAdapter):
         acoustic = payload.data["acoustic"].to(embeddings.weight).reshape(1, -1)
         if state.position_count == 0:
             opening_token_ids = [*self.prompt_token_ids, self.pad_token_id]
-            ids = torch.tensor(opening_token_ids, device=embeddings.weight.device)
-            pad = embeddings(torch.full_like(ids, self.pad_token_id))
-            heard = torch.cat([embeddings(ids[:-1]), acoustic])
-            rows = model.fusion(heard, pad, pad)
+            prompt_ids = torch.tensor(
+                opening_token_ids, device=embeddings.weight.device
+            )
+            padding_embeddings = embeddings(
+                torch.full_like(prompt_ids, self.pad_token_id)
+            )
+            input_embeddings = torch.cat([embeddings(prompt_ids[:-1]), acoustic])
+            fusion_rows = model.fusion(
+                input_embeddings, padding_embeddings, padding_embeddings
+            )
         else:
             opening_token_ids = []
             text, function = embeddings(
@@ -303,12 +315,14 @@ class ThinkerAdapter(FrameAdapter):
                     device=embeddings.weight.device,
                 )
             )
-            rows = model.fusion(acoustic, text.reshape(1, -1), function.reshape(1, -1))
+            fusion_rows = model.fusion(
+                acoustic, text.reshape(1, -1), function.reshape(1, -1)
+            )
         return self.build_unit_request(
             session_identity,
             payload,
             opening_token_ids,
-            rows,
+            fusion_rows,
             model.llm.config.vocab_size,
         )
 
@@ -324,18 +338,14 @@ class ThinkerAdapter(FrameAdapter):
         if state.previous_text_token_id not in self.silent_token_ids:
             state.text_token_ids.append(state.previous_text_token_id)
             decoded = self.tokenizer.decode(state.text_token_ids)
-            # Do not publish incomplete UTF-8 byte fallback tokens.
-            if not decoded.endswith("\ufffd"):
-                if not decoded.startswith(state.emitted_text):
-                    raise RuntimeError(
-                        "VoiceChat detokenization revised committed text"
-                    )
-                else:
-                    pass
+            # note (Codex): Byte fallback tokens must form complete UTF-8 before publication.
+            if decoded.endswith("\ufffd"):
+                pass
+            elif not decoded.startswith(state.emitted_text):
+                raise RuntimeError("VoiceChat detokenization revised committed text")
+            else:
                 delta = decoded[len(state.emitted_text) :]
                 state.emitted_text = decoded
-            else:
-                pass
         else:
             pass
         payload = request_data.stage_payload
@@ -359,10 +369,10 @@ class TalkerAdapter(FrameAdapter):
     ) -> SGLangARRequestData:
         state = self.states[session_identity]
         runner = self.runner
-        previous = (
+        previous_codes = (
             runner.pad_codes() if state.previous_codes is None else state.previous_codes
         )
-        row = runner.step_row(previous, int(payload.data["text_token"]))
+        row = runner.step_row(previous_codes, int(payload.data["text_token"]))
         if state.position_count == 0:
             rows = torch.cat([runner.warmup(), row])
             opening_token_ids = [0] * rows.shape[0]

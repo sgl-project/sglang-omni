@@ -1,10 +1,8 @@
 # Native VoiceChat sessions (local integration prototype)
 
 This opt-in pipeline connects the existing VoiceChat model implementation to
-pipeline sessions (#2035), the AR streaming-session bridge (#2069), and the
-shared realtime endpoint (#2070). This local integration includes #2035 and #2069
-from main and #2070 at 0d09ba0b. The default
-offline VoiceChat configuration is unchanged.
+pipeline sessions, the AR streaming-session bridge, and the shared realtime
+endpoint. The default offline VoiceChat configuration is unchanged.
 
 ## Run
 
