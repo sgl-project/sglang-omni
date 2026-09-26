@@ -17,7 +17,7 @@ from sglang_omni.preprocessing.resource_connector import run_media_io
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
-def _write_video_with_audio(path: Path) -> None:  # noqa: leading-underscore
+def write_video_with_audio(path: Path) -> None:
     with video.av.open(str(path), mode="w") as container:
         frames = container.add_stream("mpeg4", rate=10)
         frames.width = frames.height = 64
@@ -72,7 +72,7 @@ def test_extract_audio_from_path_decodes_resamples_and_downmixes(
     tmp_path: Path,
 ) -> None:
     media = tmp_path / "audio.mp4"
-    _write_video_with_audio(media)
+    write_video_with_audio(media)
 
     audio = video.extract_audio_from_path(media, 16_000)
 
