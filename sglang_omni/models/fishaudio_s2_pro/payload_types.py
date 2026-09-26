@@ -35,7 +35,6 @@ class S2ProState(DeclarativeStateBase):
 
     # -- From TTS engine ---------------------------------------------------
     output_codes: Any | None = wire(None, codec="tensor_restore")  # [nq+1, T]
-    finish_reason: str | None = None
 
     # -- From vocoder ------------------------------------------------------
     audio_samples: Any | None = wire(None, codec="tensor_list")

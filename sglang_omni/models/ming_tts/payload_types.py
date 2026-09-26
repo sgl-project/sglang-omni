@@ -47,7 +47,6 @@ class MingTTSState(DeclarativeStateBase):
 
     generated_latents: Any | None = wire(None, codec="typed_tensor")
     stop_step: int | None = wire(None, codec="opt_int")
-    finish_reason: str | None = None
 
     duration_s: float | None = None
 

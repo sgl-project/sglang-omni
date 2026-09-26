@@ -137,12 +137,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTS_BENCHMARK_CONCURRENCY = int(os.getenv("TTS_BENCHMARK_CONCURRENCY", "16"))
 
 
+DEFAULT_MAX_NEW_TOKENS = 2048
+
+
 @dataclass(frozen=True)
 class _ModelBenchmarkProfile:
-    """Per-checkpoint CLI defaults and managed-server knobs."""
+    """Per-checkpoint CLI defaults, request defaults, and managed-server knobs."""
 
     argument_defaults: dict[str, Any] = field(default_factory=dict)
     forward_sglang_engine: bool = True
+    # note (Yucheng Hu): None omits max_new_tokens so the server's own default applies.
+    max_new_tokens: int | None = DEFAULT_MAX_NEW_TOKENS
 
 
 _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
@@ -154,9 +159,13 @@ _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
     },
     forward_sglang_engine=False,
 )
+# note (Yucheng Hu): Fun-CosyVoice3 caps generation at min(2048, 20x target text
+# tokens) unless the request sets max_new_tokens; a flat 2048 lets a runaway run 82 s.
+_FUN_COSYVOICE3_BENCHMARK_PROFILE = _ModelBenchmarkProfile(max_new_tokens=None)
 _MODEL_BENCHMARK_PROFILES: dict[str, _ModelBenchmarkProfile] = {
     "auk": _AUK_BENCHMARK_PROFILE,
     "auk-flash": _AUK_BENCHMARK_PROFILE,
+    "fun-cosyvoice3-0.5b-2512": _FUN_COSYVOICE3_BENCHMARK_PROFILE,
 }
 
 
@@ -201,7 +210,7 @@ class TtsSeedttsBenchmarkConfig:
     # clients replay DISJOINT dataset shards (offset i*max_samples) so shared
     # radix/fingerprint caches don't inflate multi-client throughput.
     sample_offset: int = 0
-    max_new_tokens: int | None = 2048
+    max_new_tokens: int | None = None
     token_count: int | str | None = None
     temperature: float | None = None
     top_p: float | None = None
@@ -236,10 +245,22 @@ class TtsSeedttsBenchmarkConfig:
     environment_fingerprint: BenchmarkFingerprint | None = None
 
 
+def _resolve_max_new_tokens(config: TtsSeedttsBenchmarkConfig) -> int | None:
+    # note (Yucheng Hu): resolved here rather than in _parse_args so a config built
+    # without the CLI, as tests/test_model/test_tts_ci.py does, follows the profile.
+    if config.max_new_tokens is not None:
+        return config.max_new_tokens
+    else:
+        return _profile_for_model(config.model).max_new_tokens
+
+
 def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
     generation_kwargs: dict = {}
-    if config.max_new_tokens is not None:
-        generation_kwargs["max_new_tokens"] = config.max_new_tokens
+    max_new_tokens = _resolve_max_new_tokens(config)
+    if max_new_tokens is not None:
+        generation_kwargs["max_new_tokens"] = max_new_tokens
+    else:
+        pass
     if config.token_count is not None:
         generation_kwargs["token_count"] = config.token_count
     if config.temperature is not None:
@@ -291,7 +312,7 @@ def _build_results_config(
         "stream": config.stream,
         "max_samples": config.max_samples,
         "sample_offset": config.sample_offset,
-        "max_new_tokens": config.max_new_tokens,
+        "max_new_tokens": _resolve_max_new_tokens(config),
         "temperature": config.temperature,
         "top_p": config.top_p,
         "top_k": config.top_k,
@@ -451,7 +472,7 @@ def run_tts_seedtts_transcribe(
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
-        "max_new_tokens": config.max_new_tokens,
+        "max_new_tokens": _resolve_max_new_tokens(config),
         "token_count": config.token_count,
         "temperature": config.temperature,
         "top_p": config.top_p,
@@ -852,7 +873,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--sample-offset", type=int, default=0)
-    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Generation length cap sent with every request (default "
+            f"{DEFAULT_MAX_NEW_TOKENS}). Fun-CosyVoice3 omits it by default so the "
+            "server applies the model's own text-length contract; pass a value to "
+            "override that contract."
+        ),
+    )
     parser.add_argument(
         "--token-count",
         type=_parse_token_count,

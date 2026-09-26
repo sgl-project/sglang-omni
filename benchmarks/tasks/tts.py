@@ -1107,18 +1107,96 @@ def _resolve_tts_generation_kwargs(
     return resolved
 
 
+def _int_or_none(value: object) -> int | None:
+    """Parse a header string or JSON number; anything else counts as absent."""
+    if isinstance(value, bool):
+        return None
+    elif isinstance(value, (int, float, str)):
+        return int(value)
+    else:
+        return None
+
+
+def _float_or_none(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    elif isinstance(value, (int, float, str)):
+        return float(value)
+    else:
+        return None
+
+
 def _parse_response_headers(result: RequestResult, headers: dict) -> None:
-    prompt_tok = headers.get("X-Prompt-Tokens")
-    comp_tok = headers.get("X-Completion-Tokens")
-    eng_time = headers.get("X-Engine-Time")
-    if prompt_tok is not None:
-        result.prompt_tokens = int(prompt_tok)
-    if comp_tok is not None:
-        result.completion_tokens = int(comp_tok)
-    if eng_time is not None:
-        result.engine_time_s = float(eng_time)
+    finish_reason = headers.get("X-Finish-Reason")
+    _record_terminal_state(
+        result,
+        prompt_tokens=_int_or_none(headers.get("X-Prompt-Tokens")),
+        completion_tokens=_int_or_none(headers.get("X-Completion-Tokens")),
+        engine_time_s=_float_or_none(headers.get("X-Engine-Time")),
+        finish_reason=finish_reason if isinstance(finish_reason, str) else None,
+    )
+
+
+async def _fetch_stream_outcome(
+    session: aiohttp.ClientSession,
+    api_url: str,
+    request_id: str,
+    result: RequestResult,
+) -> None:
+    # note (Yucheng Hu): a raw PCM stream carries no trailing metadata, so the
+    # server keeps the terminal state for a follow-up GET. A server without the
+    # route, or an evicted entry, answers 404 and leaves the result unchanged.
+    async with session.get(f"{api_url}/{request_id}") as response:
+        if response.status == 404:
+            return
+        elif response.status != 200:
+            logger.warning(
+                f"[{result.request_id}] stream outcome lookup returned HTTP "
+                f"{response.status}"
+            )
+            return
+        else:
+            outcome: dict[str, object] = await response.json()
+    usage = outcome.get("usage")
+    usage_fields: dict[str, object] = usage if isinstance(usage, dict) else {}
+    finish_reason = outcome.get("finish_reason")
+    _record_terminal_state(
+        result,
+        prompt_tokens=_int_or_none(usage_fields.get("prompt_tokens")),
+        completion_tokens=_int_or_none(usage_fields.get("completion_tokens")),
+        engine_time_s=_float_or_none(usage_fields.get("engine_time_s")),
+        finish_reason=finish_reason if isinstance(finish_reason, str) else None,
+    )
+
+
+def _record_terminal_state(
+    result: RequestResult,
+    *,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    engine_time_s: float | None,
+    finish_reason: str | None,
+) -> None:
+    if prompt_tokens is not None:
+        result.prompt_tokens = prompt_tokens
+    else:
+        pass
+    if completion_tokens is not None:
+        result.completion_tokens = completion_tokens
+    else:
+        pass
+    if engine_time_s is not None:
+        result.engine_time_s = engine_time_s
+    else:
+        pass
+    if finish_reason is not None:
+        result.finish_reason = finish_reason
+    else:
+        pass
     if result.completion_tokens > 0 and result.engine_time_s > 0:
         result.tok_per_s = result.completion_tokens / result.engine_time_s
+    else:
+        pass
 
 
 def _parse_pcm_response_format(
@@ -1357,6 +1435,7 @@ def make_tts_send_fn(
             **gen_kwargs,
         )
         start_time = time.perf_counter()
+        stream_request_id: str | None = None
         try:
             async with session.post(api_url, json=payload) as response:
                 if response.status != 200:
@@ -1365,6 +1444,7 @@ def make_tts_send_fn(
                     await _handle_raw_pcm_streaming_response(
                         response, result, start_time, save_audio_dir
                     )
+                    stream_request_id = response.headers.get("X-Request-Id")
                 else:
                     await _handle_non_streaming_response(
                         response, result, start_time, save_audio_dir
@@ -1373,6 +1453,16 @@ def make_tts_send_fn(
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time
+        # note (Yucheng Hu): the follow-up lookup stays outside the latency window.
+        if result.is_success and stream_request_id is not None:
+            try:
+                await _fetch_stream_outcome(session, api_url, stream_request_id, result)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                logger.warning(
+                    f"[{result.request_id}] stream outcome lookup failed: {exc}"
+                )
+        else:
+            pass
         return result
 
     return send_fn

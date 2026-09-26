@@ -91,6 +91,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
+    from sglang_omni.models.minimax_music3.payload_types import MiniMaxMusic3State
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
@@ -104,6 +105,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         S2ProState,
         HiggsTtsState,
         MingTTSState,
+        MiniMaxMusic3State,
         MossTTSState,
         MossTTSLocalState,
         Qwen3TTSState,
@@ -115,6 +117,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         "prompt_tokens",
         "completion_tokens",
         "engine_time_s",
+        "finish_reason",
     }
 
     for state_cls in state_classes:
@@ -124,6 +127,19 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         assert not missing, f"{state_cls.__name__} missing base fields: {missing}"
         assert callable(getattr(state_cls, "to_dict", None)), state_cls.__name__
         assert callable(getattr(state_cls, "from_dict", None)), state_cls.__name__
+
+
+def test_declarative_state_round_trips_finish_reason() -> None:
+    import dataclasses
+
+    @dataclasses.dataclass
+    class _State(DeclarativeStateBase):
+        value: str = ""
+
+    assert "finish_reason" not in _State(value="x").to_dict()
+    data = _State(value="x", finish_reason="length").to_dict()
+    assert data["finish_reason"] == "length"
+    assert _State.from_dict(data).finish_reason == "length"
 
 
 def normalize_payload_value(value: Any) -> Any:

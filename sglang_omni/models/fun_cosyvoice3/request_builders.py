@@ -972,6 +972,7 @@ def apply_sglang_cosyvoice3_result(
     # Note (yexiaodong): Report AR work before downstream silent-token removal.
     state.completion_tokens = len(data.output_codes)
     state.engine_time_s = time.perf_counter() - data.engine_start_s
+    state.finish_reason = data.finish_reason
     state.sample_rate = _SAMPLE_RATE
 
     return StagePayload(

@@ -150,6 +150,10 @@ def compute_speed_metrics(
         for o in successes
         if getattr(o, "chunk_audio_duration_s", None)
     ]
+    # note (Yucheng Hu): a run whose responses carried no finish reason reports
+    # None, not zero capped.
+    finish_reasons = [o.finish_reason for o in successes if o.finish_reason is not None]
+    capped_requests = finish_reasons.count("length")
 
     if wall_clock_s is not None and wall_clock_s > 0:
         throughput = round(len(successes) / wall_clock_s, 3)
@@ -163,6 +167,10 @@ def compute_speed_metrics(
         "total_requests": len(outputs),
         "completed_requests": len(successes),
         "failed_requests": len(outputs) - len(successes),
+        "capped_requests": capped_requests if finish_reasons else None,
+        "capped_request_rate": (
+            round(capped_requests / len(finish_reasons), 4) if finish_reasons else None
+        ),
         "latency_mean_s": round(float(np.mean(latencies)), 3),
         "latency_median_s": round(float(np.median(latencies)), 3),
         "latency_p95_s": round(float(np.percentile(latencies, 95)), 3),
@@ -243,6 +251,8 @@ def print_speed_summary(
         print(f"  {'Concurrency:':<{lw}} {concurrency}")
     print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
     print(f"  {'Failed requests:':<{lw}} {metrics['failed_requests']}")
+    print_speed_metric_line(lw, "Capped requests:", metrics, "capped_requests")
+    print_speed_metric_line(lw, "Capped request rate:", metrics, "capped_request_rate")
     print(f"{'-' * w}")
     print_speed_metric_line(lw, "Latency mean (s):", metrics, "latency_mean_s")
     print_speed_metric_line(lw, "Latency median (s):", metrics, "latency_median_s")
@@ -403,6 +413,7 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         "rtf": round(output.rtf, 4) if output.rtf < float("inf") else None,
         "prompt_tokens": output.prompt_tokens or None,
         "completion_tokens": output.completion_tokens or None,
+        "finish_reason": output.finish_reason,
         "output_token_rate": (
             round(output.tok_per_s, 1) if output.tok_per_s > 0 else None
         ),

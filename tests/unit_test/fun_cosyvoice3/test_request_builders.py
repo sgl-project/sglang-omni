@@ -853,6 +853,7 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
         output_codes=[torch.tensor([50]), torch.tensor([51])],
         stage_payload=payload,
         engine_start_s=10.0,
+        finish_reason="length",
     )
     monkeypatch.setattr(request_builders.time, "perf_counter", lambda: 10.5)
 
@@ -868,6 +869,7 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
     assert restored.completion_tokens == 2
     assert restored.sample_rate == 24000
     assert restored.engine_time_s == pytest.approx(0.5)
+    assert restored.finish_reason == "length"
 
 
 def test_result_adapter_filters_silent_runs_without_mutating_ar_history() -> None:

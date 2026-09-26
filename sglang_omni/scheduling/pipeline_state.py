@@ -20,7 +20,7 @@ __all__ = [
     "wire",
 ]
 
-_USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "engine_time_s")
+_USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "engine_time_s", "finish_reason")
 _EXPLICIT_EMIT_MODES = frozenset({"always", "not_none", "truthy"})
 _DEFAULT_CONSUMING_CODECS = frozenset({"int_or", "str_or"})
 
@@ -33,6 +33,10 @@ class PipelineStateBase:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     engine_time_s: float = 0.0
+    # note (Yucheng Hu): engine terminal state (stop, length, abort). It rides
+    # with the usage fields so a client can tell a capped generation from a
+    # natural stop.
+    finish_reason: str | None = None
 
     # Note(Chenchen Hong): subclasses must override; the stub turns a forgotten
     # override into a clear contract error rather than an AttributeError in store_state.
@@ -66,6 +70,10 @@ class PipelineStateBase:
             pass
         if self.engine_time_s:
             data["engine_time_s"] = float(self.engine_time_s)
+        else:
+            pass
+        if self.finish_reason:
+            data["finish_reason"] = self.finish_reason
         else:
             pass
 

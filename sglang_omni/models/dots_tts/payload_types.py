@@ -33,7 +33,6 @@ class DotsTTSState(DeclarativeStateBase):
     prompt_latents: torch.Tensor | None = wire(None, codec="typed_tensor")
     speaker_embedding: torch.Tensor | None = wire(None, codec="typed_tensor")
     generated_latents: torch.Tensor | None = wire(None, codec="typed_tensor")
-    finish_reason: str | None = None
 
 
 def load_dots_tts_state(payload: StagePayload) -> DotsTTSState:

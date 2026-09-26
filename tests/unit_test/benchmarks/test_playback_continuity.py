@@ -161,3 +161,32 @@ def test_compute_speed_metrics_reports_all_single_chunk_streams() -> None:
     assert metrics["c50"] is None
     assert metrics["c100"] is None
     assert metrics["c200"] is None
+
+
+def test_compute_speed_metrics_counts_length_capped_requests() -> None:
+    def request_result(request_id: str, finish_reason: str | None) -> RequestResult:
+        return RequestResult(
+            request_id=request_id,
+            is_success=True,
+            latency_s=1.0,
+            audio_duration_s=1.0,
+            rtf=1.0,
+            finish_reason=finish_reason,
+        )
+
+    metrics = compute_speed_metrics(
+        [
+            request_result("stop", "stop"),
+            request_result("capped", "length"),
+            request_result("unknown", None),
+        ]
+    )
+    assert metrics["capped_requests"] == 1
+    assert metrics["capped_request_rate"] == pytest.approx(0.5)
+
+    # A run whose responses carried no finish reason reports None, not zero.
+    unknown = compute_speed_metrics(
+        [request_result("a", None), request_result("b", None)]
+    )
+    assert unknown["capped_requests"] is None
+    assert unknown["capped_request_rate"] is None
