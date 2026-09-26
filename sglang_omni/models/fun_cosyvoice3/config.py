@@ -75,8 +75,8 @@ FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES: tuple[tuple[int, int], ..
 )
 
 _DIT_ACCELERATOR_CONFLICT = (
-    "enable_flow_estimator_trt and enable_dit_torch_compile both "
-    "target flow.decoder.estimator; enable only one"
+    "enable_flow_estimator_trt cannot be combined with "
+    "enable_dit_torch_compile or enable_dit_fused_rope"
 )
 
 
@@ -84,8 +84,11 @@ def reject_conflicting_dit_accelerators(
     *,
     enable_dit_torch_compile: bool,
     enable_flow_estimator_trt: bool,
+    enable_dit_fused_rope: bool,
 ) -> None:
-    if enable_flow_estimator_trt and enable_dit_torch_compile:
+    if enable_flow_estimator_trt and (
+        enable_dit_torch_compile or enable_dit_fused_rope
+    ):
         raise ValueError(_DIT_ACCELERATOR_CONFLICT)
     else:
         pass
@@ -109,6 +112,7 @@ class FunCosyVoice3VocoderFactoryArgs(FactoryArgs):
 
     mlx_model_path: str | None = Field(default=None)
     mlx_model_revision: str | None = Field(default=None)
+    enable_dit_fused_rope: bool = True
 
 
 class FunCosyVoice3VocoderStageConfig(StageConfig):
@@ -196,6 +200,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         reject_conflicting_dit_accelerators(
             enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile")),
             enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
+            enable_dit_fused_rope=vocoder.factory.enable_dit_fused_rope,
         )
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
