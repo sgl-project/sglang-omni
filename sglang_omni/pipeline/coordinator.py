@@ -523,15 +523,26 @@ class Coordinator(CoordinatorSessions):
             metadata={"entry_stage": self.entry_stage},
         )
 
-        await self.control_plane.submit_to_stage(
-            entry_instance,
-            entry_info.control_endpoint,
-            SubmitMessage(
-                request_id=request_id,
-                data=payload,
-                replica_bindings=replica_bindings,
-            ),
-        )
+        try:
+            await self.control_plane.submit_to_stage(
+                entry_instance,
+                entry_info.control_endpoint,
+                SubmitMessage(
+                    request_id=request_id,
+                    data=payload,
+                    replica_bindings=replica_bindings,
+                ),
+            )
+        except BaseException:
+            self.requests.pop(request_id, None)
+            self.partial_results.pop(request_id, None)
+            self.stream_queues.pop(request_id, None)
+            pending = self.completion_futures.pop(request_id, None)
+            if pending is not None and not pending.done():
+                pending.cancel()
+            else:
+                pass
+            raise
 
         # Update state
         info = self.requests.get(request_id)

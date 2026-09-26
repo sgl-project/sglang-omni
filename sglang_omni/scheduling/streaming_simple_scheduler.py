@@ -538,7 +538,10 @@ class StreamingSimpleScheduler:
             pass
         for msg, result in zip(valid, results):
             if not self.is_aborted(msg.request_id):
-                self.emit_result(msg.request_id, result)
+                if isinstance(result, BaseException):
+                    self.emit_error(msg.request_id, result)
+                else:
+                    self.emit_result(msg.request_id, result)
                 self.record_completed_non_streaming_request_id(msg.request_id)
             else:
                 pass

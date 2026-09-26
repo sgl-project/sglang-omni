@@ -2090,15 +2090,17 @@ class Stage:
             raise RuntimeError(f"Follower stage {self.name} failed: {error}")
         else:
             pass
-        await self.control_plane.send_complete(
-            CompleteMessage(
-                request_id=request_id,
-                from_stage=self.name,
-                success=False,
-                error=error,
+        try:
+            await self.control_plane.send_complete(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    success=False,
+                    error=error,
+                )
             )
-        )
-        self.clear_request_state(request_id)
+        finally:
+            self.clear_request_state(request_id)
 
     def clear_request_state(self, request_id: str) -> None:
         self.active_requests.discard(request_id)
