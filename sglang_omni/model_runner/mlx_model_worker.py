@@ -225,6 +225,10 @@ def create_mlx_model_worker(
         )
 
         make_runner_class = make_fun_cosyvoice3_mlx_runner_class
+    elif model_arch == "FunAsrNanoForConditionalGeneration":
+        from sglang_omni.models.fun_asr.mlx.runner import make_fun_asr_mlx_runner_class
+
+        make_runner_class = make_fun_asr_mlx_runner_class
     else:
         raise NotImplementedError(
             "Omni's MLX worker does not support model architecture " f"{model_arch!r}"
