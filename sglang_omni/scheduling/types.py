@@ -26,6 +26,10 @@ class SchedulerStatus(Enum):
     ABORTED = auto()
 
 
+class SynchronizedRequestError(RuntimeError):
+    """All ranks agreed to fail a request at a completed synchronization boundary."""
+
+
 @dataclass(frozen=True)
 class ParallelSchedulerCapabilities:
     """Ownership of parallel work delivery and cancellation.
@@ -49,6 +53,8 @@ class ParallelSchedulerCapabilities:
 @runtime_checkable
 class SequenceParallelScheduler(Protocol):
     parallel_capabilities: ParallelSchedulerCapabilities
+
+    def enable_parallel_failure_handling(self) -> None: ...
 
     def validate_sequence_parallel(self) -> None: ...
 

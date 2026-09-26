@@ -22,6 +22,7 @@ from sglang_omni.pipeline.tp_control import (
     RequestDispatchTracker,
     TPLeaderFanout,
 )
+from sglang_omni.scheduling import types as scheduling_types
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.types import ParallelSchedulerCapabilities
@@ -121,7 +122,9 @@ def test_typed_factory_cannot_override_rank_wiring(key):
         )
 
 
-def make_stage(*, follower=False, scheduler=None, rank_endpoints=None):
+def make_stage(
+    *, follower=False, scheduler=None, rank_endpoints=None, parallel_kind="sp"
+):
     work, abort = queue.Queue(), queue.Queue()
     fanout = TPLeaderFanout(
         "decode", follower_work_queues=[work], follower_abort_queues=[abort]
@@ -134,10 +137,9 @@ def make_stage(*, follower=False, scheduler=None, rank_endpoints=None):
         endpoints={},
         control_plane=RecordingStageControlPlane(),
         scheduler=scheduler or SimpleScheduler(lambda payload: payload),
-        sp_size=2,
-        sp_rank=int(follower),
         tp_fanout=None if follower else fanout,
         rank_endpoints=rank_endpoints,
+        **{f"{parallel_kind}_size": 2, f"{parallel_kind}_rank": int(follower)},
     )
     return stage, work, abort
 
@@ -180,7 +182,11 @@ def test_abort_drains_committed_work_and_acknowledges_terminal(follower, termina
             loop.close()
         scheduler.outbox.get_nowait()
         scheduler.outbox.put(
-            OutgoingMessage(request_id="r", type=terminal, data="error")
+            OutgoingMessage(
+                request_id="r",
+                type=terminal,
+                data=scheduling_types.SynchronizedRequestError("all ranks failed"),
+            )
         )
         await stage.drain_outbox()
         assert computed == ["r"] and cleaned == ["r"]
@@ -230,19 +236,165 @@ def test_follower_preserves_pending_work_until_last_terminal(parallel_kind):
     asyncio.run(run())
 
 
-def test_follower_request_error_does_not_stop_stage():
+@pytest.mark.parametrize("parallel_kind", ["tp", "sp"])
+@pytest.mark.parametrize("aborted", [False, True])
+def test_follower_unsynchronized_error_is_fatal(
+    parallel_kind: str, aborted: bool
+) -> None:
+    stage, _, _ = make_stage(follower=True, parallel_kind=parallel_kind)
+
+    async def run() -> None:
+        await stage.execute(SimpleNamespace(request_id="r"), dispatch_id=1)
+        if aborted:
+            stage.on_abort("r", dispatch_id=1)
+        stage.scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="r", type="error", data=ValueError("decode failed")
+            )
+        )
+        with pytest.raises(RuntimeError, match="decode failed"):
+            await stage.drain_outbox()
+        assert not stage.control_plane.completions
+
+    asyncio.run(run())
+
+
+def test_follower_synchronized_request_error_does_not_stop_stage():
     stage, _, _ = make_stage(follower=True)
 
     async def run():
         await stage.execute(SimpleNamespace(request_id="r"), dispatch_id=1)
         stage.scheduler.outbox.put(
-            OutgoingMessage(request_id="r", type="error", data="decode failed")
+            OutgoingMessage(
+                request_id="r",
+                type="error",
+                data=scheduling_types.SynchronizedRequestError("decode failed"),
+            )
         )
         await stage.drain_outbox()
         assert "r" not in stage.active_requests
         assert not stage.control_plane.completions
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("parallel_kind", ["tp", "sp"])
+@pytest.mark.parametrize("follower", [False, True])
+@pytest.mark.parametrize("aborted", [False, True])
+def test_parallel_compute_failure_stops_before_next_request(
+    parallel_kind: str, follower: bool, aborted: bool
+) -> None:
+    computed: list[str] = []
+    failure = ValueError("one rank failed before its collective")
+
+    def compute(payload: SimpleNamespace) -> SimpleNamespace:
+        computed.append(payload.request_id)
+        if payload.request_id == "first":
+            if aborted:
+                scheduler.abort(payload.request_id)
+            raise failure
+        else:
+            scheduler.stop()
+            return payload
+
+    scheduler = SimpleScheduler(compute)
+    stage, _, _ = make_stage(
+        follower=follower, scheduler=scheduler, parallel_kind=parallel_kind
+    )
+
+    async def enqueue() -> None:
+        for dispatch, request_id in enumerate(("first", "second"), start=1):
+            await stage.execute(
+                SimpleNamespace(request_id=request_id), dispatch_id=dispatch
+            )
+
+    asyncio.run(enqueue())
+    with pytest.raises(ValueError) as raised:
+        scheduler.start()
+    assert raised.value is failure
+    assert computed == ["first"]
+    assert scheduler.outbox.empty()
+
+
+@pytest.mark.parametrize("parallel_kind", ["tp", "sp"])
+@pytest.mark.parametrize("follower", [False, True])
+def test_parallel_synchronized_failure_allows_next_request(
+    parallel_kind: str, follower: bool
+) -> None:
+    computed: list[str] = []
+
+    def compute(payload: SimpleNamespace) -> SimpleNamespace:
+        computed.append(payload.request_id)
+        if payload.request_id == "first":
+            raise scheduling_types.SynchronizedRequestError(
+                "all ranks rejected request"
+            )
+        else:
+            scheduler.stop()
+            return payload
+
+    scheduler = SimpleScheduler(compute)
+    stage, _, _ = make_stage(
+        follower=follower, scheduler=scheduler, parallel_kind=parallel_kind
+    )
+
+    async def enqueue() -> None:
+        for dispatch, request_id in enumerate(("first", "second"), start=1):
+            await stage.execute(
+                SimpleNamespace(request_id=request_id), dispatch_id=dispatch
+            )
+
+    asyncio.run(enqueue())
+    scheduler.start()
+    assert computed == ["first", "second"]
+    first, second = scheduler.outbox.get_nowait(), scheduler.outbox.get_nowait()
+    assert first.type == "error"
+    assert isinstance(first.data, scheduling_types.SynchronizedRequestError)
+    assert second.type == "result" and second.request_id == "second"
+
+
+@pytest.mark.parametrize("parallel_kind", ["tp", "sp"])
+@pytest.mark.parametrize("options", [{"max_concurrency": 2}, {"max_batch_size": 2}])
+def test_parallel_fanout_requires_serial_request_order(
+    parallel_kind: str, options: dict[str, int]
+) -> None:
+    with pytest.raises(ValueError, match="serial"):
+        make_stage(
+            scheduler=SimpleScheduler(lambda payload: payload, **options),
+            parallel_kind=parallel_kind,
+        )
+
+
+def test_single_rank_stage_preserves_request_failure_recovery() -> None:
+    computed: list[str] = []
+
+    def compute(payload: SimpleNamespace) -> SimpleNamespace:
+        computed.append(payload.request_id)
+        if payload.request_id == "first":
+            raise ValueError("request-local error")
+        else:
+            scheduler.stop()
+            return payload
+
+    scheduler = SimpleScheduler(compute)
+    stage = Stage(
+        name="decode",
+        role="single",
+        get_next=lambda *_: None,
+        gpu_id=None,
+        endpoints={},
+        control_plane=RecordingStageControlPlane(),
+        scheduler=scheduler,
+    )
+
+    async def enqueue() -> None:
+        for request_id in ("first", "second"):
+            await stage.execute(SimpleNamespace(request_id=request_id))
+
+    asyncio.run(enqueue())
+    scheduler.start()
+    assert computed == ["first", "second"]
+    assert [scheduler.outbox.get_nowait().type for _ in range(2)] == ["error", "result"]
 
 
 def test_sp_failure_is_idempotent_and_drains_pending_work(monkeypatch):

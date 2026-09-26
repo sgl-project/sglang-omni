@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Lifecycle checks for the process-local SGLang decoder runtime."""
 
+import asyncio
+import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+from typing import Literal
 
 import pytest
 import torch
@@ -12,6 +17,11 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from sglang_omni.models.llada2_uni.components import decoder_runtime as runtime
+from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.pipeline.tp_control import TPLeaderFanout
+from sglang_omni.scheduling import types as scheduling_types
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from tests.unit_test.fixtures.pipeline_fakes import RecordingStageControlPlane
 
 
 def collective_worker(rank, rendezvous):
@@ -59,9 +69,15 @@ def collective_worker(rank, rendezvous):
         torch.testing.assert_close(
             handle.broadcast_features(features), torch.full_like(features, 7.0)
         )
-        with pytest.raises(ValueError, match="inconsistent request settings"):
+        with pytest.raises(
+            scheduling_types.SynchronizedRequestError,
+            match="inconsistent request settings",
+        ):
             handle.request_seed(metadata, rank)
-        with pytest.raises(RuntimeError, match="conditioning failed across ranks"):
+        with pytest.raises(
+            scheduling_types.SynchronizedRequestError,
+            match="conditioning failed across ranks",
+        ):
             with handle.preparation("conditioning"):
                 if rank == 1:
                     raise ValueError("bad conditioning")
@@ -75,6 +91,104 @@ def test_sp_collective_request_contract(tmp_path):
     mp.spawn(
         collective_worker,
         args=((tmp_path / "rendezvous").as_uri(),),
+        nprocs=2,
+        join=True,
+    )
+
+
+def parallel_failure_worker(
+    rank: int, rendezvous: str, parallel_kind: Literal["tp", "sp"], synchronized: bool
+) -> None:
+    dist.init_process_group(
+        "gloo",
+        init_method=rendezvous,
+        rank=rank,
+        world_size=2,
+        timeout=timedelta(seconds=3),
+    )
+    handle = runtime.DecoderRuntimeHandle(
+        torch.device("cpu"),
+        torch.float32,
+        "torch_sdpa",
+        None,
+        None,
+        None,
+        None,
+        sp_rank=rank,
+        sp_size=2,
+        ulysses_degree=2,
+    )
+    handle.cpu_group = dist.group.WORLD
+    started: list[str] = []
+
+    def compute(payload: SimpleNamespace) -> int:
+        started.append(payload.request_id)
+        if synchronized:
+            with handle.preparation("conditioning"):
+                if rank == 1 and payload.request_id == "first":
+                    raise ValueError("rank-local preparation failed")
+        elif rank == 1 and payload.request_id == "first":
+            raise ValueError("rank failed before collective")
+        value = 10 if payload.request_id == "first" else 20
+        tensor = torch.tensor([value * (10 if rank else 1)], dtype=torch.int64)
+        dist.all_reduce(tensor)
+        if payload.request_id == "second":
+            scheduler.stop()
+        return int(tensor.item())
+
+    scheduler = SimpleScheduler(compute)
+    fanout = TPLeaderFanout(
+        "decode",
+        follower_work_queues=[queue.Queue()],
+        follower_abort_queues=[queue.Queue()],
+    )
+    stage = Stage(
+        name="decode",
+        role="follower" if rank else "leader",
+        get_next=lambda *_: None,
+        gpu_id=None,
+        endpoints={},
+        control_plane=RecordingStageControlPlane(),
+        scheduler=scheduler,
+        tp_fanout=None if rank else fanout,
+        **{f"{parallel_kind}_size": 2, f"{parallel_kind}_rank": rank},
+    )
+
+    async def enqueue() -> None:
+        for dispatch, request_id in enumerate(("first", "second"), start=1):
+            await stage.execute(
+                SimpleNamespace(request_id=request_id), dispatch_id=dispatch
+            )
+
+    try:
+        asyncio.run(enqueue())
+        if synchronized:
+            scheduler.start()
+            first, second = scheduler.outbox.get_nowait(), scheduler.outbox.get_nowait()
+            assert first.type == "error"
+            assert isinstance(first.data, scheduling_types.SynchronizedRequestError)
+            assert second.type == "result" and second.data == 220
+            assert started == ["first", "second"]
+        else:
+            with pytest.raises((ValueError, RuntimeError)):
+                scheduler.start()
+            assert started == ["first"]
+            assert (
+                scheduler.outbox.empty()
+            ), "Failed ranks must not mix request collectives"
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not dist.is_gloo_available(), reason="requires Gloo")
+@pytest.mark.parametrize("parallel_kind", ["tp", "sp"])
+@pytest.mark.parametrize("synchronized", [False, True])
+def test_parallel_failures_preserve_request_collective_order(
+    tmp_path: Path, parallel_kind: Literal["tp", "sp"], synchronized: bool
+) -> None:
+    mp.spawn(
+        parallel_failure_worker,
+        args=((tmp_path / "rendezvous").as_uri(), parallel_kind, synchronized),
         nprocs=2,
         join=True,
     )
@@ -266,7 +380,7 @@ def test_sp_requests_share_seed_and_reject_mismatched_settings(
     monkeypatch.setattr(runtime.dist, "get_global_rank", lambda group, rank: rank)
     assert handle.request_seed((4, 4, "normal", 50, 2), None) == 123
     mismatch = True
-    with pytest.raises(ValueError, match="inconsistent"):
+    with pytest.raises(scheduling_types.SynchronizedRequestError, match="inconsistent"):
         handle.request_seed((4, 4, "normal", 50, 2), 7)
 
 
@@ -278,7 +392,9 @@ def test_sp_preparation_reports_peer_failure(owned_runtime, monkeypatch):
         output[:] = [value, "ValueError: peer load failed"]
 
     monkeypatch.setattr(runtime.dist, "all_gather_object", gather)
-    with pytest.raises(RuntimeError, match="peer load failed"):
+    with pytest.raises(
+        scheduling_types.SynchronizedRequestError, match="peer load failed"
+    ):
         with handle.preparation("weight loading"):
             pass
 
@@ -290,3 +406,26 @@ def test_sp1_preparation_preserves_original_exception(owned_runtime):
         with handle.preparation("weight loading"):
             raise original
     assert error.value is original
+
+
+@pytest.mark.parametrize("phase", ["preparation", "request_seed"])
+def test_collective_failure_is_not_a_synchronized_request_error(
+    owned_runtime, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    handle, _, _, _ = owned_runtime
+    handle.sp_size = 2
+    failure = RuntimeError("collective connection lost")
+
+    def fail_collective(output, value, group) -> None:
+        raise failure
+
+    monkeypatch.setattr(runtime.dist, "all_gather_object", fail_collective)
+    monkeypatch.setattr(handle, "validate", lambda: None)
+    with pytest.raises(RuntimeError) as raised:
+        if phase == "preparation":
+            with handle.preparation("conditioning"):
+                raise ValueError("local preparation error")
+        else:
+            handle.request_seed((4, 8, "normal", 3, 2), 7)
+    assert raised.value is failure
+    assert not isinstance(raised.value, scheduling_types.SynchronizedRequestError)

@@ -13,6 +13,8 @@ from typing import Literal
 import torch
 import torch.distributed as dist
 
+from sglang_omni.scheduling.types import SynchronizedRequestError
+
 
 class DecoderRuntimeHandle:
     """Own the SGLang diffusion state used by one decoder rank."""
@@ -153,7 +155,7 @@ class DecoderRuntimeHandle:
             group=self.cpu_group,
         )
         if any(failure is not None for failure in failures):
-            raise RuntimeError(
+            raise SynchronizedRequestError(
                 f"Decoder {phase} failed across ranks: {failures}"
             ) from error
         else:
@@ -173,7 +175,9 @@ class DecoderRuntimeHandle:
         ] * self.sp_size
         dist.all_gather_object(requests, request, group=self.cpu_group)
         if any(candidate != request for candidate in requests):
-            raise ValueError("Decoder ranks received inconsistent request settings")
+            raise SynchronizedRequestError(
+                "Decoder ranks received inconsistent request settings"
+            )
         else:
             pass
         shared = [

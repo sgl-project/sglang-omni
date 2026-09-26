@@ -75,7 +75,7 @@ from sglang_omni.scheduling.message import (
     StageScheduler,
 )
 from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
-from sglang_omni.scheduling.types import SequenceParallelScheduler
+from sglang_omni.scheduling.types import SequenceParallelScheduler, SynchronizedRequestError
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -209,6 +209,10 @@ class Stage:
             else:
                 pass
             self.sp_scheduler.validate_sequence_parallel()
+        else:
+            pass
+        if self.sp_scheduler is not None:
+            self.sp_scheduler.enable_parallel_failure_handling()
         else:
             pass
         self.project_payload = project_payload or {}
@@ -1720,6 +1724,15 @@ class Stage:
         while True:
             out = await self.wait_outbox_message()
 
+            if out.type == "error" and not isinstance(
+                out.data, SynchronizedRequestError
+            ):
+                raise RuntimeError(
+                    f"Parallel follower stage {self.name} failed request "
+                    f"{out.request_id}: {out.data}"
+                )
+            else:
+                pass
             if out.type in {"result", "error"}:
                 self.acknowledge_terminal(out.request_id)
             else:
@@ -1742,10 +1755,8 @@ class Stage:
                 )
             elif out.type == "error":
                 logger.warning(
-                    "TP follower stage %s failed request %s: %s",
-                    self.name,
-                    out.request_id,
-                    out.data,
+                    f"Parallel follower stage {self.name} failed request "
+                    f"{out.request_id}: {out.data}"
                 )
                 self.clear_request_state(out.request_id)
             else:
