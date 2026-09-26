@@ -103,6 +103,8 @@ def build_sglang_server_args(
     else:
         pass
     kwargs.update(overrides)
+    if kwargs.get("enable_memory_saver"):
+        kwargs["enable_weights_cpu_backup"] = True
     normalize_decode_cuda_graph_overrides(kwargs)
     # Existing Omni models remain eager-prefill by default. Models that have
     # adapted SGLang's phase-specific prefill contract opt in explicitly

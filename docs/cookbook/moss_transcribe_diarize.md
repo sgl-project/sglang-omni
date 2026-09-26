@@ -115,6 +115,10 @@ sgl-omni serve \
   --mem-fraction-static 0.80
 ```
 
+For a shared GPU, add `--asr.engine.enable_memory_saver true` to enable
+[memory release and resume](../get_started/apiserver_quickstart.md#stage-memory-release-and-resume)
+between transcription jobs.
+
 MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
 default target is 4 requests with a 12 ms oldest-request deadline. While more
 request builds are pending, the scheduler waits for either limit; after build

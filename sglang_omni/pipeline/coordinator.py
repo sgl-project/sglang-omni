@@ -295,6 +295,28 @@ class Coordinator(CoordinatorSessions):
             timeout_s=timeout_s,
         )
 
+    async def release_memory_occupation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "release_memory_occupation", payload, stages=stages, timeout_s=timeout_s
+        )
+
+    async def resume_memory_occupation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "resume_memory_occupation", payload, stages=stages, timeout_s=timeout_s
+        )
+
     async def update_weights_from_disk(
         self,
         payload: dict[str, Any],

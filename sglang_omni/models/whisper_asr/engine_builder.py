@@ -411,9 +411,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
         if self.audio_encoder_service is None:
             return {}
-        else:
-            pass
-        return {"shutdown_callback": self.audio_encoder_service.close}
+        return {
+            "shutdown_callback": self.audio_encoder_service.close,
+            "request_build_idle_callback": self.audio_encoder_service.is_idle,
+        }
 
     def cleanup_build_failure(self) -> None:
         if self.audio_encoder_service is not None:

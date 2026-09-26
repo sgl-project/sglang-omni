@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.model_executor.cuda_graph_config import Backend
 
@@ -23,6 +25,21 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
+
+
+@pytest.mark.parametrize("enable_memory_saver", [False, True])
+def test_memory_saver_enables_weights_cpu_backup(
+    tmp_path: Path, enable_memory_saver: bool
+) -> None:
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path),
+        context_length=2048,
+        device="cuda",
+        enable_memory_saver=enable_memory_saver,
+        enable_weights_cpu_backup=False,
+    )
+
+    assert resolved_view(server_args).enable_weights_cpu_backup is enable_memory_saver
 
 
 def test_builder_record_is_resolved_with_the_cuda_graph_config_declared(

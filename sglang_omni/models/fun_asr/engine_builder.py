@@ -208,12 +208,12 @@ class FunASREngineBuilder(AsrEngineBuilder):
         )
 
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
+        service = self.audio_encoder_service
         return {
-            "shutdown_callback": (
-                self.audio_encoder_service.close
-                if self.audio_encoder_service is not None
-                else None
-            )
+            "shutdown_callback": service.close if service is not None else None,
+            "request_build_idle_callback": (
+                service.is_idle if service is not None else None
+            ),
         }
 
     def cleanup_build_failure(self) -> None:

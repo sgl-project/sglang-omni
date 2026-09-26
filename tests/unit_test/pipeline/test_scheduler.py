@@ -1926,6 +1926,9 @@ def test_completed_request_id_is_cleared_on_explicit_readmission(
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
     scheduler.completed_request_ids = {"req-complete": None}
+    scheduler.released_memory_tags = set()
+    scheduler.memory_transition_failed = False
+    scheduler.memory_transition_active = False
     scheduler.pending_stream_ingress = {}
     scheduler.inbox = Queue()
     message = IncomingMessage(

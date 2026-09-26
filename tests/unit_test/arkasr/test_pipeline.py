@@ -357,7 +357,7 @@ def test_arkasr_prefill_graph_uses_resolved_auto_chunk_size(
     stub = stub_arkasr_engine_build(
         monkeypatch,
         want_cuda_graph=False,
-        encoder_service=SimpleNamespace(close=lambda: None),
+        encoder_service=SimpleNamespace(close=lambda: None, is_idle=lambda: True),
         resolved_chunked_prefill_size=2048,
     )
 
@@ -388,7 +388,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     stub = stub_arkasr_engine_build(
         monkeypatch,
         want_cuda_graph=want_cuda_graph,
-        encoder_service=SimpleNamespace(close=lambda: None),
+        encoder_service=SimpleNamespace(close=lambda: None, is_idle=lambda: True),
     )
 
     scheduler = create_sglang_arkasr_executor(
@@ -440,7 +440,7 @@ def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
     """The encoder service is handed to the request builder (so encoding runs
     before LM admission) and its close() is registered as the scheduler's
     shutdown callback (so the worker thread cannot outlive the stage)."""
-    encoder_service = SimpleNamespace(close=lambda: None)
+    encoder_service = SimpleNamespace(close=lambda: None, is_idle=lambda: True)
     stub = stub_arkasr_engine_build(
         monkeypatch, want_cuda_graph=False, encoder_service=encoder_service
     )
@@ -449,6 +449,7 @@ def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
 
     assert stub.adapter_kwargs["audio_encoder_service"] is encoder_service
     assert scheduler.shutdown_callback == encoder_service.close
+    assert scheduler.request_build_idle_callback() is True
     assert scheduler.stream_output_builder is stub.stream_output_builder
     assert stub.stream_builder_calls == [
         {

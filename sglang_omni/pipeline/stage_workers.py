@@ -11,8 +11,9 @@ import queue
 import sys
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Literal, Sequence
 
 from sglang_omni.config.runtime import (
@@ -26,6 +27,8 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.proto.admin import ADMIN_MEMORY_CONTROL
+from sglang_omni.scheduling.memory_control import WorkerMemoryControl
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -169,11 +172,30 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     return current_platform.get_stage_process_env(tp_stages[0])
 
 
+def worker_memory_saver_enabled(spec: StageWorkerProcessSpec) -> bool:
+    memory_saver_settings: dict[str, bool] = {}
+    for stage_spec in spec.stage_specs:
+        overrides = {
+            **(stage_spec.factory_kwargs.get("server_args_overrides") or {}),
+            **(stage_spec.typed_kwargs.get("server_args_overrides") or {}),
+        }
+        memory_saver_settings[stage_spec.stage_name] = bool(
+            overrides.get("enable_memory_saver", False)
+        )
+    if len(set(memory_saver_settings.values())) > 1:
+        raise ValueError(
+            f"Process {spec.process_name!r} requires consistent enable_memory_saver "
+            f"settings across its stages: {memory_saver_settings}"
+        )
+    return any(memory_saver_settings.values())
+
+
 @contextmanager
 def patched_spawn_env(
     spec: StageWorkerProcessSpec,
     extra_env: Mapping[str, str] | None = None,
 ):
+    enable_memory_saver = worker_memory_saver_enabled(spec)
     env_default_updates: dict[str, str] = {}
     for stage_spec in spec.stage_specs:
         for key, value in stage_spec.env_defaults.items():
@@ -209,7 +231,16 @@ def patched_spawn_env(
     try:
         for key, value in updates.items():
             os.environ[key] = value
-        yield
+        with ExitStack() as stack:
+            if enable_memory_saver:
+                from sglang.srt.utils.torch_memory_saver_adapter import (
+                    TorchMemorySaverAdapter,
+                )
+
+                stack.enter_context(
+                    TorchMemorySaverAdapter.create(True).configure_subprocess()
+                )
+            yield
     finally:
         for key, value in backup.items():
             if value is None:
@@ -563,6 +594,19 @@ def run_process(
                 )
             )
         local_dispatcher.register_many(stages)
+        if worker_memory_saver_enabled(spec):
+            handlers = {}
+            for stage in stages:
+                if not callable(getattr(stage.scheduler, "admin_memory_phase", None)):
+                    raise ValueError(
+                        f"Stage {stage.name!r} does not support worker memory control"
+                    )
+                handlers[stage.name] = partial(
+                    stage.scheduler.admin, ADMIN_MEMORY_CONTROL
+                )
+            memory_control = WorkerMemoryControl(handlers, worker=spec.process_name)
+            for stage in stages:
+                stage.memory_control = memory_control
         asyncio.run(_start_and_run())
     except BaseException:
         cleanup_constructed_stages(

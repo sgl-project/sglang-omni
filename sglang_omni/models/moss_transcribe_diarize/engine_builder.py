@@ -197,4 +197,5 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
+            "request_build_idle_callback": self.audio_encoder_service.is_idle,
         }

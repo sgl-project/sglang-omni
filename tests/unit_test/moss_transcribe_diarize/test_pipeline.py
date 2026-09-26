@@ -369,7 +369,7 @@ def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
 
     def make_encoder_service(model, *, max_batch_size):
         calls["encoder_services"].append((model, max_batch_size))
-        return object()
+        return SimpleNamespace(is_idle=lambda: True)
 
     monkeypatch.setattr(
         engine_builder, "BatchedAudioEncoderService", make_encoder_service

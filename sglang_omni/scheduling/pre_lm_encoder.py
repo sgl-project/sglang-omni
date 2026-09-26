@@ -39,6 +39,7 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         self.queue: queue.Queue[Any] = queue.Queue(maxsize=max_queue_size)
         self.worker_state_lock = threading.Lock()
         self.worker_error: Exception | None = None
+        self.pending_futures: set[concurrent.futures.Future[Any]] = set()
         self.thread = threading.Thread(
             target=self.worker,
             name=worker_name,
@@ -81,14 +82,25 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                 ) from self.worker_error
             else:
                 pass
-        self.enqueue(item, future)
+            self.pending_futures.add(future)
+        try:
+            self.enqueue(item, future)
+        except Exception:
+            self.complete_submission(future)
+            raise
         with self.worker_state_lock:
             worker_error = self.worker_error
-        if worker_error is not None and not future.done():
-            future.set_exception(worker_error)
-        else:
-            pass
+        if worker_error is not None:
+            self.set_exception(QueueEntry(item=item, future=future), worker_error)
         return future
+
+    def complete_submission(self, future: concurrent.futures.Future[Any]) -> None:
+        with self.worker_state_lock:
+            self.pending_futures.discard(future)
+
+    def is_idle(self) -> bool:
+        with self.worker_state_lock:
+            return not self.pending_futures
 
     @abstractmethod
     def next_batch(self) -> tuple[list[QueueEntry[ItemT]], bool]:
@@ -211,29 +223,26 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     ) -> None:
         pass
 
-    @staticmethod
-    def set_exception(entry: QueueEntry[ItemT], exc: Exception) -> None:
-        if entry.future.done():
-            return
-        else:
-            pass
+    def set_exception(self, entry: QueueEntry[ItemT], exc: Exception) -> None:
         try:
-            entry.future.set_exception(exc)
+            if not entry.future.done():
+                entry.future.set_exception(exc)
         except concurrent.futures.InvalidStateError:
             logger.warning("pre-LM encoder future completed before exception dispatch")
+        finally:
+            self.complete_submission(entry.future)
 
     def set_result(self, entry: QueueEntry[ItemT], embedding: EmbeddingT) -> None:
-        if entry.future.done():
-            return
-        else:
-            pass
         try:
-            result = self.future_result(embedding)
-            entry.future.set_result(result)
+            if not entry.future.done():
+                result = self.future_result(embedding)
+                entry.future.set_result(result)
         except concurrent.futures.InvalidStateError:
             logger.warning("pre-LM encoder future completed before result dispatch")
         except Exception as exc:
             self.set_exception(entry, exc)
+        finally:
+            self.complete_submission(entry.future)
 
     def notify_batch_start(self, batch: list[QueueEntry[ItemT]]) -> None:
         try:

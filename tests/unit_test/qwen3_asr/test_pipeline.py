@@ -434,7 +434,7 @@ def patch_engine_dependencies(
         infra_kwargs=[],
         attest_calls=[],
         graph_init_calls=[],
-        encoder_service=SimpleNamespace(close=lambda: None),
+        encoder_service=SimpleNamespace(close=lambda: None, is_idle=lambda: True),
         encoder_service_kwargs={},
         tokenizer=object(),
         stream_output_builder=object(),

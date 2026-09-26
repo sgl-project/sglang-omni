@@ -619,6 +619,10 @@ class ContinueGenerationRequest(AdminRequestBase):
     torch_empty_cache: bool = True
 
 
+class MemoryOccupationRequest(AdminRequestBase):
+    tags: list[Literal["weights", "kv_cache", "cuda_graph"]] | None = None
+
+
 class UpdateWeightFromDiskRequest(AdminRequestBase):
     model_path: str
     load_format: str | None = None

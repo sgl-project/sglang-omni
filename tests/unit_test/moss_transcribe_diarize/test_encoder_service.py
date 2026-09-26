@@ -95,6 +95,7 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
     service.queue = queue.Queue()
     service.worker_state_lock = threading.Lock()
     service.worker_error = None
+    service.pending_futures = set()
     service.batch_count = 0
     service.item_count = 0
     service.device = "cuda:7"
@@ -180,6 +181,7 @@ def test_batched_oom_falls_back_to_per_item_encoding(
     service.item_count = 0
     service.worker_state_lock = threading.Lock()
     service.worker_error = None
+    service.pending_futures = set()
     service.device = "cuda:5"
     cleanup_steps: list[str] = []
     selected_devices: list[str] = []
@@ -233,6 +235,7 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
     service = object.__new__(BatchedAudioEncoderService)
     service.worker_state_lock = threading.Lock()
     service.worker_error = None
+    service.pending_futures = set()
     retained_intermediates: list[weakref.ReferenceType[EncoderIntermediate]] = []
 
     def raise_non_oom_encoder_failure(_items: list[object]) -> list[object]:
@@ -330,6 +333,7 @@ def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
     service.item_count = 0
     service.worker_state_lock = threading.Lock()
     service.worker_error = None
+    service.pending_futures = set()
     service.device = torch.device("cpu")
     service.cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
     synchronized: list[None] = []

@@ -183,6 +183,9 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         def close(self) -> None:
             self.close_calls += 1
 
+        def is_idle(self) -> bool:
+            return True
+
     monkeypatch.setattr(
         fun_asr_builder,
         "build_cache_namespace",
@@ -279,6 +282,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         {"model_name": "Fun-ASR", "server_args": scheduler.server_args}
     ]
     assert adapter_kwargs["audio_encoder_service"] is encoder_services[0]
+    assert scheduler.request_build_idle_callback() is True
     assert scheduler.request_build_max_workers == 8
     assert scheduler.request_build_max_pending == 32
     assert stream_builder_calls == [
@@ -299,6 +303,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         "dummy", enable_pre_lm_encoder=False
     )
     assert scheduler_without_service.shutdown_callback is None
+    assert scheduler_without_service.request_build_idle_callback is None
 
     scheduler_graph_disabled = fun_asr_stages.create_sglang_fun_asr_executor(
         "dummy", server_args_overrides={"disable_cuda_graph": True}

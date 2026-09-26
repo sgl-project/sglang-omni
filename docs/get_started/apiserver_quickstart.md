@@ -199,6 +199,46 @@ Two things to remember:
 - the response body is audio bytes, not JSON
 - the actual output format may differ from the requested one if the encoder falls back to another supported codec
 
+## Stage memory release and resume
+
+SGLang-backed stages can release managed GPU allocations while idle and restore
+them before the next inference. For MOSS-Transcribe-Diarize, add
+`--asr.engine.enable_memory_saver true` to the launch command.
+
+Memory control affects the whole worker process. Stages sharing a worker must
+use the same memory-saver setting (unset means `false`) and all support memory
+control when it is enabled. Different workers can use different settings.
+Built-in SGLang AR engines currently each require their own process. Only
+`tp_size=1` is supported, without prefill/decode disaggregation (PD) or shared
+weight caches.
+
+```bash
+curl -X POST http://localhost:8000/release_memory_occupation \
+  -H 'Content-Type: application/json' \
+  -d '{"stages": ["asr"], "tags": ["weights", "kv_cache", "cuda_graph"]}'
+
+curl -X POST http://localhost:8000/resume_memory_occupation \
+  -H 'Content-Type: application/json' \
+  -d '{"stages": ["asr"]}'
+```
+
+These endpoints use [admin authentication](../developer_reference/rl_admin_control.md#authentication).
+Omitting `stages` targets all stages, including unsupported stages, which return
+an error. Omitted or empty `tags` selects all three allocation types. The Python
+client provides matching methods accepting a `{"tags": [...]}` payload, `stages`,
+and `timeout_s`.
+
+Release rejects busy workers without aborting requests. Released stages reject
+new inference until all released tags are resumed; an explicit generation pause
+is preserved. Repeated calls are idempotent. Failures after memory mutation starts
+keep the worker paused and require a restart.
+
+Responses report `worker`, `affected_stages`, and per-stage state. Operations are
+not atomic across workers. `/model_info` also exposes released tags and failure
+state. Enabling memory saver also enables CPU weight backups, so allow enough
+host RAM for the weights. CUDA contexts and allocations outside the managed
+allocator may remain on the GPU.
+
 ## Common Errors
 
 When requests fail, the server returns standard HTTP error codes:

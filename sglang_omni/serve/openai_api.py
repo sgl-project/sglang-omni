@@ -93,6 +93,7 @@ from sglang_omni.serve.protocol import (
     GenerateMetaInfo,
     GenerateResponse,
     InitWeightsUpdateGroupRequest,
+    MemoryOccupationRequest,
     ModelCard,
     ModelList,
     PauseGenerationRequest,
@@ -523,6 +524,28 @@ def register_admin(app: FastAPI, admin_api_key: str | None = None) -> None:
                 payload,
                 stages=req.stages,
                 timeout_s=timeout_or_default(req.timeout_s, 60.0),
+            )
+        )
+
+    @app.post("/release_memory_occupation", dependencies=[Depends(_auth)])
+    async def release_memory_occupation(req: MemoryOccupationRequest) -> JSONResponse:
+        client: Client = app.state.client
+        return admin_response(
+            await client.release_memory_occupation(
+                request_payload(req),
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 300.0),
+            )
+        )
+
+    @app.post("/resume_memory_occupation", dependencies=[Depends(_auth)])
+    async def resume_memory_occupation(req: MemoryOccupationRequest) -> JSONResponse:
+        client: Client = app.state.client
+        return admin_response(
+            await client.resume_memory_occupation(
+                request_payload(req),
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 300.0),
             )
         )
 

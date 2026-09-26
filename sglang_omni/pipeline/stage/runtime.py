@@ -50,9 +50,15 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
+from sglang_omni.proto.admin import (
+    ADMIN_MEMORY_CONTROL,
+    ADMIN_RELEASE_MEMORY_OCCUPATION,
+    ADMIN_RESUME_MEMORY_OCCUPATION,
+)
 from sglang_omni.proto.session import find_session_operation
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.memory_control import WorkerMemoryControl
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -124,6 +130,7 @@ class Stage:
         self.control_plane = control_plane
         self.input_handler = input_handler or DirectInput()
         self.scheduler = scheduler
+        self.memory_control: WorkerMemoryControl | None = None
         self.project_payload = project_payload or {}
         self.stream_targets = stream_targets or []
         self.get_stream_done_targets = get_stream_done_targets
@@ -1140,7 +1147,20 @@ class Stage:
 
     async def run_admin_operation(self, operation: Any) -> AdminResult:
         try:
-            handler = getattr(self.scheduler, "admin", None)
+            if operation.action == ADMIN_MEMORY_CONTROL:
+                raise ValueError("Memory phases are internal worker operations")
+            if operation.action in {
+                ADMIN_RELEASE_MEMORY_OCCUPATION,
+                ADMIN_RESUME_MEMORY_OCCUPATION,
+            }:
+                if self.memory_control is None:
+                    raise RuntimeError(
+                        "Stage memory control requires a supported worker "
+                        "with enable_memory_saver enabled"
+                    )
+                handler = self.memory_control.run
+            else:
+                handler = getattr(self.scheduler, "admin", None)
             if handler is None:
                 return self.admin_result(
                     operation,

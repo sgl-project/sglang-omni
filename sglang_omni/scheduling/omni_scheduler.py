@@ -30,7 +30,11 @@ import torch
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.managers.io_struct import AbortReq
+from sglang.srt.managers.io_struct import (
+    AbortReq,
+    ReleaseMemoryOccupationReqInput,
+    ResumeMemoryOccupationReqInput,
+)
 from sglang.srt.managers.schedule_batch import (
     FINISH_ABORT,
     NextBatchPlan,
@@ -39,10 +43,14 @@ from sglang.srt.managers.schedule_batch import (
 )
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
+from sglang.srt.managers.scheduler_components.weight_updater import (
+    SchedulerWeightUpdaterManager,
+)
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.runtime_context import get_model, get_serving
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.utils import broadcast_pyobj
+from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.model_runner.base import PendingStep
@@ -58,8 +66,10 @@ from sglang_omni.proto.admin import (
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
     ADMIN_INIT_WEIGHTS_UPDATE_GROUP,
+    ADMIN_MEMORY_CONTROL,
     ADMIN_MODEL_INFO,
     ADMIN_PAUSE_GENERATION,
+    ADMIN_RELEASE_MEMORY_OCCUPATION,
     ADMIN_UPDATE_WEIGHTS_FROM_DISK,
     ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED,
     ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
@@ -254,6 +264,7 @@ class OmniScheduler:
         prefill_coalesce_after_builds_during_decode: bool = False,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
+        request_build_idle_callback: Callable[[], bool] | None = None,
         shutdown_callback: Callable[[], None] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
@@ -275,6 +286,7 @@ class OmniScheduler:
         self.stream_done_handler = stream_done_handler
         self.abort_callback = abort_callback
         self.request_finished_callback = request_finished_callback
+        self.request_build_idle_callback = request_build_idle_callback
         self.shutdown_callback = shutdown_callback
         self.shutdown_lock = threading.Lock()
         self.request_admission_lock = threading.RLock()
@@ -440,6 +452,12 @@ class OmniScheduler:
         self.sessions: dict = {}
         self.forward_sleep_time = None
         self._engine_paused = False  # noqa: leading-underscore
+        self.memory_manager = None
+        self.memory_allocator = None
+        self.released_memory_tags: set[str] = set()
+        self.memory_transition_active = False
+        self.memory_transition_failed = False
+        self.paused_before_memory_release = False
         self.admin_lock = threading.Lock()
         self.admin_queue = _queue_mod.Queue()
         self.scheduler_thread_id: int | None = None
@@ -984,6 +1002,13 @@ class OmniScheduler:
             else:
                 pass
 
+            if self.memory_unavailable:
+                self.emit_request_error(
+                    msg.request_id,
+                    RuntimeError("Stage memory is released; resume memory first"),
+                )
+                continue
+
             if msg.type == "new_request":
                 self.completed_request_ids.pop(msg.request_id, None)
                 new_reqs.append(msg.data)
@@ -1393,16 +1418,13 @@ class OmniScheduler:
                     return
                 else:
                     pass
+                aborted = req_id in self.aborted_request_ids
                 self.pending_request_builds.pop(req_id, None)
-                if req_id in self.aborted_request_ids:
-                    continue
-                else:
-                    pass
             try:
                 req_data = future.result()
             except Exception as exc:
                 with self.request_admission_lock:
-                    if req_id in self.aborted_request_ids:
+                    if aborted or req_id in self.aborted_request_ids:
                         continue
                     else:
                         pass
@@ -1411,7 +1433,16 @@ class OmniScheduler:
                 self.abort(req_id)
                 continue
             with self.request_admission_lock:
-                if req_id in self.aborted_request_ids:
+                if aborted or req_id in self.aborted_request_ids:
+                    if (
+                        isinstance(req_data, DeferredAdmission)
+                        and not req_data.ready.done()
+                    ):
+                        self.pending_request_admissions[req_id] = (
+                            payload,
+                            pending_stream_done,
+                            req_data,
+                        )
                     continue
                 else:
                     pass
@@ -2353,10 +2384,17 @@ class OmniScheduler:
                 if len(self.aborted_request_ids) >= _ABORTED_REQUEST_ID_LIMIT:
                     # note (Gaokai): evict oldest-first so a still-quiescing
                     # abort survives.
-                    while len(self.aborted_request_ids) >= _ABORTED_REQUEST_ID_RETAINED:
-                        self.aborted_request_ids.discard(
-                            self.aborted_request_id_order.popleft()
-                        )
+                    for _ in range(len(self.aborted_request_id_order)):
+                        if len(self.aborted_request_ids) < _ABORTED_REQUEST_ID_RETAINED:
+                            break
+                        oldest = self.aborted_request_id_order.popleft()
+                        if (
+                            oldest in self.pending_request_builds
+                            or oldest in self.pending_request_admissions
+                        ):
+                            self.aborted_request_id_order.append(oldest)
+                        else:
+                            self.aborted_request_ids.discard(oldest)
                 else:
                     pass
                 self.aborted_request_ids.add(request_id)
@@ -2377,12 +2415,9 @@ class OmniScheduler:
                 if running_abort or should_keep_session_rows
                 else self.mark_request_finished_immediately(request_id)
             )
-            pending = self.pending_request_builds.pop(request_id, None)
-            if pending is not None:
-                pending[2].cancel()
-            else:
-                pass
-            self.pending_request_admissions.pop(request_id, None)
+            pending = self.pending_request_builds.get(request_id)
+            if pending is not None and pending[2].cancel():
+                self.pending_request_builds.pop(request_id)
             if self.backlogged_request_build_payloads:
                 retained = [
                     payload
@@ -2485,6 +2520,10 @@ class OmniScheduler:
             return self.admin_model_info()
         else:
             pass
+        if action == ADMIN_MEMORY_CONTROL:
+            return self.admin_memory_phase(payload)
+        if self.memory_unavailable:
+            raise RuntimeError("Stage memory is released; resume memory first")
         if action == ADMIN_PAUSE_GENERATION:
             return self.admin_pause_generation(payload)
         else:
@@ -2535,6 +2574,9 @@ class OmniScheduler:
                 "stage_tp_rank": self.tp_rank,
                 "stage_tp_size": self.tp_size,
                 "engine_paused": self._engine_paused,  # noqa: leading-underscore
+                "released_memory_tags": sorted(self.released_memory_tags),
+                "memory_transition_failed": self.memory_transition_failed,
+                "memory_transition_active": self.memory_transition_active,
                 "waiting_queue_size": waiting_queue_size,
                 "request_build_workers": self.request_build_max_workers,
                 "request_build_pending": request_build_pending,
@@ -2586,6 +2628,8 @@ class OmniScheduler:
 
     def admin_continue_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.admin_lock:
+            if self.memory_unavailable:
+                raise RuntimeError("Stage memory is released; resume memory first")
             if bool(payload.get("torch_empty_cache", True)):
                 self.empty_torch_cache()
             else:
@@ -2597,6 +2641,136 @@ class OmniScheduler:
             "message": "generation continued",
             "data": {"engine_paused": self._engine_paused},  # noqa: leading-underscore
         }
+
+    @property
+    def memory_unavailable(self) -> bool:
+        return bool(
+            self.released_memory_tags
+            or self.memory_transition_failed
+            or self.memory_transition_active
+        )
+
+    def admin_memory_phase(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Keep buffer copies separate from process-wide allocator transitions."""
+        phase = payload["phase"]
+        tags = payload["tags"]
+        releasing = payload["action"] == ADMIN_RELEASE_MEMORY_OCCUPATION
+        with self.admin_lock:
+            if phase in {"buffers", "apply", "commit"}:
+                assert self.memory_transition_active
+            if phase == "prepare":
+                if self.tp_size != 1:
+                    raise RuntimeError(
+                        "Memory occupation control currently requires tp_size=1"
+                    )
+                runner = self.tp_worker.model_runner
+                if not runner.server_args.enable_memory_saver:
+                    raise RuntimeError(
+                        "Enable this stage's engine.enable_memory_saver first"
+                    )
+                if runner.server_args.weight_cache_mode != "off":
+                    raise RuntimeError(
+                        "Memory saver does not support shared weight caches"
+                    )
+                if self.memory_transition_failed:
+                    raise RuntimeError(
+                        "Memory transition failed; restart this worker before serving"
+                    )
+                if self.memory_transition_active:
+                    raise RuntimeError(
+                        "Worker memory transition is already in progress"
+                    )
+                self.resolve_pending_async()
+                if releasing and (
+                    self.active_request_ids()
+                    or self.deferred_request_payloads
+                    or self.pending_stream_ingress
+                    or (
+                        self.request_build_idle_callback is not None
+                        and not self.request_build_idle_callback()
+                    )
+                    or not self.is_fully_idle()
+                ):
+                    raise RuntimeError(
+                        "Cannot release memory while active requests are present"
+                    )
+                tags = sorted(
+                    set(tags) - self.released_memory_tags
+                    if releasing
+                    else set(tags) & self.released_memory_tags
+                )
+                if not self.released_memory_tags:
+                    self.paused_before_memory_release = self._engine_paused
+                self.memory_transition_active = True
+                self._engine_paused = True
+                return {
+                    "success": True,
+                    "data": {
+                        "tags": tags,
+                        "released_memory_tags": sorted(self.released_memory_tags),
+                    },
+                }
+            elif phase == "buffers":
+                if self.memory_manager is None:
+                    self.memory_manager = SchedulerWeightUpdaterManager(
+                        tp_worker=self.tp_worker,
+                        draft_worker=None,
+                        tp_cpu_group=self.tp_cpu_group,
+                        memory_saver_adapter=TorchMemorySaverAdapter.create(False),
+                        flush_cache=self.flush_cache,
+                        is_fully_idle=self.is_fully_idle,
+                    )
+                if releasing:
+                    self.memory_manager.release_memory_occupation(
+                        ReleaseMemoryOccupationReqInput(tags=tags)
+                    )
+                else:
+                    self.memory_manager.resume_memory_occupation(
+                        ResumeMemoryOccupationReqInput(tags=tags)
+                    )
+                    torch.get_device_module(self.device).synchronize()
+            elif phase == "apply":
+                if self.memory_allocator is None:
+                    self.memory_allocator = TorchMemorySaverAdapter.create(True)
+                order = ["kv_cache", "weights", "cuda_graph"]
+                if not releasing:
+                    order.reverse()
+                for tag in order:
+                    if tag in tags:
+                        if releasing:
+                            self.memory_allocator.pause(tag)
+                        else:
+                            self.memory_allocator.resume(tag)
+                torch.get_device_module(self.device).synchronize()
+            elif phase == "commit":
+                if releasing:
+                    self.released_memory_tags.update(tags)
+                else:
+                    self.released_memory_tags.difference_update(tags)
+                self.memory_transition_active = False
+                self._engine_paused = (
+                    bool(self.released_memory_tags) or self.paused_before_memory_release
+                )
+            elif phase == "cancel":
+                if self.memory_transition_active:
+                    self._engine_paused = (
+                        bool(self.released_memory_tags)
+                        or self.paused_before_memory_release
+                    )
+                    self.memory_transition_active = False
+            elif phase == "fail":
+                self.memory_transition_active = False
+                self.memory_transition_failed = True
+                self._engine_paused = True
+            else:
+                raise ValueError(f"Unknown memory control phase: {phase}")
+            return {
+                "success": True,
+                "data": {
+                    "released_memory_tags": sorted(self.released_memory_tags),
+                    "engine_paused": self._engine_paused,
+                },
+            }
 
     def admin_update_weights_from_disk(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.run_weight_update_with_lifecycle(

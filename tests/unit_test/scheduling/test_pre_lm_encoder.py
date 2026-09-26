@@ -106,6 +106,24 @@ def test_successful_dispatch_attaches_and_caches() -> None:
         service.close()
 
 
+def test_timed_out_and_cancelled_submissions_stay_busy_until_worker_finishes() -> None:
+    service = Service(controlled_drain=True)
+    try:
+        timed_out = service.submit(1)
+        cancelled = service.submit(2)
+        with pytest.raises(TimeoutError):
+            timed_out.result(timeout=0)
+        assert cancelled.cancel()
+        assert not service.is_idle()
+        service.drain_gate.set()
+        assert timed_out.result(timeout=2) == 2
+    finally:
+        service.drain_gate.set()
+        service.close()
+    assert service.is_idle()
+    assert service.attachments == [(1, 2), (2, 4)]
+
+
 def test_stage_host_copy_runs_in_batch_context_and_reaches_cache() -> None:
     service = Service()
     service.stage_host_copies = True
