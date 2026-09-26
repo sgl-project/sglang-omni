@@ -2190,7 +2190,7 @@ class Stage:
             TorchProfiler.start(template, run_id=run_id)
         else:
             pass
-        if msg.event_dir is not None:
+        if msg.event_dir is not None and self.owns_external_io:
             try:
                 _get_recorder().start(
                     run_id=run_id, event_dir=msg.event_dir, stage=self.name

@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import multiprocessing
 import pickle
 import threading
+from collections import Counter, deque
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
+from sglang.srt.managers.scheduler_components.pool_stats_observer import PoolStats
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 
 import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
@@ -19,7 +27,10 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
+from sglang_omni.profiler.event_recorder import emit, get_recorder
+from sglang_omni.profiler.views import build_report
 from sglang_omni.proto import DataReadyMessage, SubmitMessage
+from sglang_omni.proto.messages import ProfilerStartMessage, ProfilerStopMessage
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -57,6 +68,100 @@ class CloseAwareControlPlane(RecordingStageControlPlane):
         while not self.closed:
             await asyncio.sleep(0)
         raise RuntimeError("control plane closed")
+
+
+def run_tp_profiler_rank(rank: int, event_dir: str, enable_torch: bool) -> None:
+    stage = make_stage(
+        name="thinker",
+        role="leader" if rank == 0 else "follower",
+        tp_rank=rank,
+        tp_size=2,
+    )
+    scheduler = OmniScheduler.__new__(OmniScheduler)
+    scheduler.running_batch = SimpleNamespace(reqs=[SimpleNamespace(rid="r1")])
+    scheduler.waiting_queue = []
+    scheduler.pending_request_builds = {}
+    scheduler.backlogged_request_build_payloads = deque()
+    scheduler.pool_stats_observer = SimpleNamespace(
+        get_pool_stats=lambda: PoolStats(50, 0.5, 25, 25)
+    )
+    batch = SimpleNamespace(
+        reqs=scheduler.running_batch.reqs, forward_mode=ForwardMode.DECODE
+    )
+    torch_profiler = Mock()
+    torch_profiler.is_active.return_value = False
+    torch_profiler.get_active_run_id.return_value = "tp2"
+    with patch.object(stage_runtime_module, "TorchProfiler", torch_profiler):
+        stage.on_profiler_start(
+            ProfilerStartMessage(
+                run_id="tp2",
+                trace_path_template="trace_{stage}",
+                event_dir=event_dir,
+                enable_torch=enable_torch,
+            )
+        )
+        try:
+            assert get_recorder().is_active() == (rank == 0)
+            assert torch_profiler.start.call_count == int(enable_torch)
+            scheduler.emit_batch_snapshot(batch)
+            for name in (
+                "scheduler_queue_enter",
+                "scheduler_prefill_start",
+                "scheduler_prefill_end",
+                "scheduler_request_build_start",
+                "scheduler_request_build_end",
+            ):
+                emit(request_id="r1", stage="thinker", event_name=name)
+            with patch.object(
+                omni_scheduler_module._Upstream, "_add_request_to_queue"
+            ):  # noqa: leading-underscore  # Delegated scheduler API.
+                scheduler._add_request_to_queue(  # noqa: leading-underscore  # Delegated scheduler API.
+                    SimpleNamespace(rid="r1", is_retracted=False), is_retracted=True
+                )
+        finally:
+            torch_profiler.is_active.return_value = enable_torch
+            stage.on_profiler_stop(ProfilerStopMessage(run_id="tp2"))
+        assert not get_recorder().is_active()
+        assert torch_profiler.stop.call_count == int(enable_torch)
+
+
+@pytest.mark.parametrize("enable_torch", [False, True])
+def test_tp2_profiler_records_one_logical_batch(
+    tmp_path: Path, enable_torch: bool
+) -> None:
+    context = multiprocessing.get_context("spawn")
+    processes = [
+        context.Process(
+            target=run_tp_profiler_rank, args=(rank, str(tmp_path), enable_torch)
+        )
+        for rank in range(2)
+    ]
+    try:
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=60)
+            assert process.exitcode == 0
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=10)
+    files = list(tmp_path.glob("events_*.jsonl"))
+    assert len(files) == 1
+    events = [json.loads(line) for line in files[0].read_text().splitlines()]
+    assert Counter(event["event_name"] for event in events) == {
+        "scheduler_batch_start": 1,
+        "scheduler_request_retracted": 1,
+        "scheduler_queue_enter": 1,
+        "scheduler_prefill_start": 1,
+        "scheduler_prefill_end": 1,
+        "scheduler_request_build_start": 1,
+        "scheduler_request_build_end": 1,
+    }
+    summary = build_report(tmp_path)["serving_summary"]["thinker"]
+    assert summary["decode_batch_size"]["count"] == 1
+    assert summary["observed_retractions"] == 1
 
 
 def test_aggregated_input_waits_per_request_without_cross_talk() -> None:

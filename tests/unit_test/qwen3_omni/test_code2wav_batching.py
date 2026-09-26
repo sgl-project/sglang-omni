@@ -1089,6 +1089,25 @@ def test_batch_end_event_reports_mixed_sub_batch_execution(monkeypatch) -> None:
         },
     ]
     assert end_meta["subbatch_decomposition"] == [2, 1]
+    from sglang_omni.profiler.views import RequestTimeline, serving_summary
+
+    timeline = RequestTimeline(
+        "req-a",
+        [
+            {
+                "event_name": name,
+                "stage": "code2wav",
+                "timestamp_ns": index,
+                "metadata": metadata,
+            }
+            for index, (name, metadata) in enumerate(events)
+        ],
+    )
+    summary = serving_summary({"req-a": timeline})["code2wav"]
+    assert summary["effective_batch_size"]["avg"] == 1.5
+    assert summary["graph_attempt_success_rate"] == 0.5
+    assert summary["graph_fallback_count"] == 1
+    assert summary["fallback_reason"] == {"key_miss": 1}
 
 
 def test_initial_codec_chunk_frames_fires_first_window_early() -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -432,14 +432,175 @@ def hop_breakdown(
 # ---------------------------------------------------------------------------
 
 
+MetricStats = dict[str, float | int]
+ServingSummary = dict[str, dict[str, MetricStats | float | int | None]]
+
+
+def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
+    """Aggregate request intervals and unweighted execution samples by stage.
+
+    Graph attempt success uses hits plus explicit fallbacks as its denominator.
+    Missing observations are omitted; an unobserved attempt success rate is null.
+    """
+    samples: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    modes: dict[str, Counter[str]] = defaultdict(Counter)
+    reasons: dict[str, Counter[str]] = defaultdict(Counter)
+    retractions: Counter[str] = Counter()
+    fallback_counts: Counter[str] = Counter()
+    interval_names = {
+        ("scheduler_queue_enter", "scheduler_prefill_start"): "queue_wait_ms",
+        ("scheduler_prefill_start", "scheduler_prefill_end"): "prefill_ms",
+        (
+            "scheduler_request_build_start",
+            "scheduler_request_build_end",
+        ): "request_build_ms",
+        ("code2wav_decode_start", "code2wav_decode_end"): "decode_ms",
+        ("code2wav_batch_start", "code2wav_batch_end"): "batch_ms",
+    }
+    for interval in compute_stage_intervals(
+        timelines, interval_events=tuple(interval_names)
+    ):
+        samples[interval.stage][
+            interval_names[(interval.open_event, interval.close_event)]
+        ].append(interval.duration_ms)
+
+    for timeline in timelines.values():
+        for event in timeline.events:
+            stage = event.get("stage", "unknown")
+            name = event.get("event_name")
+            metadata = event.get("metadata") or {}
+            if name == "scheduler_request_retracted":
+                retractions[stage] += 1
+            elif name == "scheduler_batch_start":
+                fields = {
+                    "batch_size": f"{metadata.get('batch_type', 'unknown')}_batch_size",
+                    **{
+                        key: key
+                        for key in (
+                            "running_requests",
+                            "waiting_requests",
+                            "kv_usage",
+                            "kv_used_tokens",
+                            "kv_available_tokens",
+                            "kv_evictable_tokens",
+                            "request_build_pending",
+                            "request_build_backlog",
+                        )
+                    },
+                }
+                for field_name, metric in fields.items():
+                    value = metadata.get(field_name)
+                    if isinstance(value, (int, float)):
+                        samples[stage][metric].append(value)
+                    else:
+                        pass
+            elif name in ("code2wav_batch_start", "code2wav_decode_start"):
+                for field_name in (
+                    "batch_size",
+                    "active_request_count",
+                    "inbox_depth",
+                    "oldest_wait_ms",
+                ):
+                    value = metadata.get(field_name)
+                    if isinstance(value, (int, float)):
+                        samples[stage][field_name].append(value)
+                    else:
+                        pass
+            elif name in ("code2wav_batch_end", "code2wav_decode_end"):
+                # note (AkazaAkane): sub-batches, when present, are authoritative even if empty.
+                executions = metadata.get("sub_batch_execution", [metadata])
+                for execution in executions:
+                    mode = execution.get("execution_mode")
+                    if isinstance(mode, str):
+                        modes[stage][mode] += 1
+                    else:
+                        pass
+                    value = execution.get(
+                        "batch_size", 1 if name == "code2wav_decode_end" else None
+                    )
+                    if isinstance(value, (int, float)):
+                        samples[stage]["effective_batch_size"].append(value)
+                    else:
+                        pass
+                    reason = execution.get("fallback_reason")
+                    if isinstance(reason, str) and reason:
+                        reasons[stage][reason] += 1
+                    else:
+                        pass
+                    if mode == "eager" and (
+                        reason or execution.get("graph_requested") is True
+                    ):
+                        fallback_counts[stage] += 1
+                    else:
+                        pass
+            else:
+                pass
+
+    summary: ServingSummary = {}
+    for stage in sorted(set(samples) | set(modes) | set(retractions)):
+        metrics: dict[str, MetricStats | float | int | None] = {}
+        for name, values in samples[stage].items():
+            values.sort()
+            metrics[name] = {
+                "count": len(values),
+                "avg": round(sum(values) / len(values), 3),
+                "p50": round(percentile(values, 0.50), 3),
+                "p95": round(percentile(values, 0.95), 3),
+                "max": values[-1],
+            }
+        if stage in retractions or any(
+            name in samples[stage] for name in ("running_requests", "waiting_requests")
+        ):
+            metrics["observed_retractions"] = retractions[stage]
+        else:
+            pass
+        if stage in modes:
+            hits = modes[stage]["cuda_graph"]
+            fallbacks = fallback_counts[stage]
+            metrics.update(
+                execution_mode=dict(modes[stage]),
+                fallback_reason=dict(reasons[stage]),
+                graph_hit_count=hits,
+                graph_fallback_count=fallbacks,
+                graph_attempt_success_rate=(
+                    hits / (hits + fallbacks) if hits + fallbacks else None
+                ),
+            )
+        else:
+            pass
+        summary[stage] = metrics
+    return summary
+
+
+def format_serving_summary(summary: ServingSummary) -> str:
+    """Render serving metrics with explicit sample counts and graph denominators."""
+    lines = ["=== Serving Summary ==="]
+    if not summary:
+        lines.append("(empty)")
+    else:
+        pass
+    for stage, metrics in summary.items():
+        lines.append(stage)
+        for name, value in metrics.items():
+            if isinstance(value, dict):
+                rendered = "  ".join(f"{key}={number}" for key, number in value.items())
+            elif name == "graph_attempt_success_rate" and value is not None:
+                rendered = f"{value:.1%} (hits / graph attempts)"
+            else:
+                rendered = "n/a" if value is None else str(value)
+            lines.append(f"  {name:<24} {rendered}")
+    return "\n".join(lines) + "\n"
+
+
 def build_report(source: str | Path | Iterable[str | Path]) -> dict[str, Any]:
-    """Return all three views as a single dict for JSON serialization."""
+    """Return all profiler views as a single dict for JSON serialization."""
     timelines = reconstruct_timelines(source)
     return {
         "timelines": {rid: tl.to_relative() for rid, tl in timelines.items()},
         "stage_breakdown": [row.to_dict() for row in stage_breakdown(timelines)],
         "hop_breakdown": [row.to_dict() for row in hop_breakdown(timelines)],
         "request_count": len(timelines),
+        "serving_summary": serving_summary(timelines),
     }
 
 

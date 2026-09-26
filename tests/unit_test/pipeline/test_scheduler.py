@@ -20,6 +20,8 @@ import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.managers.scheduler_components.pool_stats_observer import PoolStats
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
@@ -40,6 +42,71 @@ class SchedulerStageMetricsRecorder:
 
     def __init__(self, enabled: bool = False) -> None:
         self.enabled = enabled
+
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        (ForwardMode.EXTEND, "prefill"),
+        (ForwardMode.DECODE, "decode"),
+        (ForwardMode.MIXED, "mixed"),
+    ],
+)
+def test_scheduler_batch_snapshot(monkeypatch, mode, expected) -> None:
+    scheduler = OmniScheduler.__new__(OmniScheduler)
+    scheduler.running_batch = SimpleNamespace(reqs=[1, 2])
+    scheduler.waiting_queue = [1, 2, 3]
+    pool = PoolStats(
+        full_num_used=50,
+        full_token_usage=0.5,
+        full_available_size=25,
+        full_evictable_size=25,
+        is_hybrid_swa=True,
+        swa_token_usage=0.8,
+    )
+    scheduler.pool_stats_observer = SimpleNamespace(
+        get_pool_stats=Mock(return_value=pool)
+    )
+    scheduler.pending_request_builds = {"r3": None}
+    scheduler.backlogged_request_build_payloads = deque(["r4", "r5"])
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_recorder",
+        lambda: SimpleNamespace(is_active=lambda: True),
+    )
+    emit = Mock()
+    monkeypatch.setattr(omni_scheduler_module, "_emit_event", emit)
+    scheduler.emit_batch_snapshot(
+        SimpleNamespace(
+            reqs=[SimpleNamespace(rid="r1"), SimpleNamespace(rid="r2")],
+            forward_mode=mode,
+        )
+    )
+    emit.assert_called_once()
+    scheduler.pool_stats_observer.get_pool_stats.assert_called_once_with()
+    assert emit.call_args.kwargs["metadata"] == {
+        "batch_size": 2,
+        "batch_type": expected,
+        "forward_mode": mode.name,
+        "running_requests": 2,
+        "waiting_requests": 3,
+        "kv_usage": 0.8,
+        "kv_used_tokens": 50,
+        "kv_available_tokens": 25,
+        "kv_evictable_tokens": 25,
+        "request_build_pending": 1,
+        "request_build_backlog": 2,
+    }
+
+
+def test_scheduler_snapshot_inactive_does_not_read_state(monkeypatch) -> None:
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_recorder",
+        lambda: SimpleNamespace(is_active=lambda: False),
+    )
+    scheduler = OmniScheduler.__new__(OmniScheduler)
+    scheduler.emit_batch_snapshot(SimpleNamespace())
 
 
 @pytest.fixture(autouse=True)
@@ -558,9 +625,16 @@ def test_retracted_request_history_gets_its_own_storage_before_requeue(
     ]
 
 
-def test_retracted_request_without_history_is_requeued_untouched() -> None:
+def test_retracted_request_without_history_is_requeued_untouched(monkeypatch) -> None:
     scheduler = requeue_scheduler()
     retracted = history_request(is_retracted=True, snapshots=[], row=0)
+    emit = Mock()
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_recorder",
+        lambda: SimpleNamespace(is_active=lambda: True),
+    )
+    monkeypatch.setattr(omni_scheduler_module, "_emit_event", emit)
 
     OmniScheduler._add_request_to_queue(
         scheduler, retracted, is_retracted=True
@@ -568,6 +642,11 @@ def test_retracted_request_without_history_is_requeued_untouched() -> None:
 
     assert scheduler.waiting_queue == [retracted]
     assert retracted.omni_data.decode_input_embeds == []
+    emit.assert_called_once_with(
+        request_id=retracted.rid,
+        stage=None,
+        event_name="scheduler_request_retracted",
+    )
 
 
 @pytest.mark.parametrize(
@@ -892,7 +971,9 @@ def test_upstream_abort_translation_emits_only_on_entry_rank() -> None:
     assert aborts == [("req-follower", False)]
 
 
-def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
+def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata(
+    monkeypatch,
+) -> None:
     """OmniScheduler overrides upstream run_batch, so it must count forwards
     itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL
     gate (``forward_ct % INTERVAL == 0``) fires every step. One forward per
@@ -918,6 +999,8 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
     scheduler.forward_ct = 0
     scheduler._sched_idled = True  # noqa: leading-underscore  # production name
     scheduler.processed_tokens_counter = 0
+    snapshot = Mock()
+    monkeypatch.setattr(scheduler, "emit_batch_snapshot", snapshot)
 
     def batch(extend_num_tokens: int | None):
         return SimpleNamespace(
@@ -946,6 +1029,9 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
     assert async_batch.launch_ts >= sync_batch.launch_ts
     assert async_batch.after_idle_gap is False
     assert scheduler.processed_tokens_counter == 7
+    assert snapshot.call_count == 2
+    assert snapshot.call_args_list[0].args == (sync_batch,)
+    assert snapshot.call_args_list[1].args == (async_batch,)
 
 
 def test_omni_scheduler_resolve_drops_retracted_req() -> None:

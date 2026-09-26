@@ -13,7 +13,11 @@ import argparse
 import json
 import sys
 
-from sglang_omni.profiler.views import build_report, format_table
+from sglang_omni.profiler.views import (
+    build_report,
+    format_serving_summary,
+    format_table,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
                 report["hop_breakdown"],
                 ["src", "dst", "kind", "count", "total_ms", "avg_ms", "p95_ms"],
             )
+            + "\n"
+            + format_serving_summary(report["serving_summary"])
         )
 
     if args.out == "-":
