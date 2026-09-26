@@ -47,3 +47,21 @@ serially, or set `MINICPMO_PROMPT_CACHE_CAPACITY` to change the cache capacity.
 Both settings must be positive integers and are read when Code2Wav is created.
 The stage drains reference preparation on shutdown; a closed vocoder rejects
 new preparation calls.
+
+## Packed DiT compilation
+
+Variable-length Code2Wav compiles the packed DiT blocks by default without
+enabling CUDA graphs. To disable compilation:
+
+```text
+--code2wav.factory.enable_packed_dit_torch_compile false
+```
+
+This compiles `DiTBlock.forward_packed`, not the dense `DiTBlock.forward`.
+The packed layout stays dynamic; the attention and convolution operators
+remain part of the block, and an unsupported graph break fails rather than
+silently falling back. Inductor's own CUDA graphs are disabled so the
+compile-only configuration remains distinct from Flow CUDA graphs.
+After loading the Flow and HiFT weights, two nonuniform packed batches
+materialize the compiled path before Code2Wav reports readiness. Compilation
+or warmup failures abort startup; other serving shapes may still specialize.

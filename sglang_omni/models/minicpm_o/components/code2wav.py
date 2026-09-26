@@ -60,6 +60,7 @@ class MiniCPMOCode2Wav(nn.Module):
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
         enable_flow_variable_length: bool = False,
+        enable_packed_dit_torch_compile: bool = True,
     ) -> None:
         super().__init__()
         self.prompt_cache_capacity: int = positive_int_env(
@@ -107,11 +108,13 @@ class MiniCPMOCode2Wav(nn.Module):
             pass
         with self.device_context:
             self.token2wav = Token2Wav(
-                Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps
+                Path(asset_dir),
+                device=dev,
+                dtype=torch_dtype,
+                n_timesteps=n_timesteps,
+                enable_flow_variable_length=enable_flow_variable_length,
+                enable_packed_dit_torch_compile=enable_packed_dit_torch_compile,
             )
-        self.token2wav.flow.decoder.estimator.enable_variable_length = (
-            enable_flow_variable_length
-        )
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
@@ -181,6 +184,8 @@ class MiniCPMOCode2Wav(nn.Module):
             if len(self.prompt_cache) > self.prompt_cache_capacity:
                 self.prompt_cache.popitem(last=False)
                 self.reference_evictions += 1
+            else:
+                pass
         return prompt
 
     def prepare_references(
@@ -190,6 +195,8 @@ class MiniCPMOCode2Wav(nn.Module):
         with self.reference_lock:
             if self.references_closed:
                 raise RuntimeError("Code2Wav reference preparation is closed")
+            else:
+                pass
             resolved = [self.resolve_prompt_wav(reference) for reference in references]
             keys = [self.prompt_key(reference) for reference in resolved]
             unique = dict(zip(keys, resolved, strict=True))
@@ -200,6 +207,8 @@ class MiniCPMOCode2Wav(nn.Module):
                         max_workers=self.reference_workers,
                         thread_name_prefix="minicpmo-ref",
                     )
+                else:
+                    pass
                 futures = [
                     self.reference_executor.submit(self.speaker_prompt, reference)
                     for reference in unique.values()
@@ -230,6 +239,8 @@ class MiniCPMOCode2Wav(nn.Module):
             if self.reference_executor is not None:
                 self.reference_executor.shutdown(wait=True)
                 self.reference_executor = None
+            else:
+                pass
 
     def vocode(
         self,
@@ -239,8 +250,12 @@ class MiniCPMOCode2Wav(nn.Module):
         """Batch flow across references and preserve each HiFT sequence boundary."""
         if not token_sequences:
             return []
+        else:
+            pass
         if any(len(tokens) == 0 for tokens in token_sequences):
             raise ValueError("codec token sequences must be non-empty")
+        else:
+            pass
 
         batch_size = len(token_sequences)
         if isinstance(prompt_wav, (list, tuple)):
@@ -249,6 +264,8 @@ class MiniCPMOCode2Wav(nn.Module):
                     f"prompt_wav count {len(prompt_wav)} does not match "
                     f"token sequence count {batch_size}"
                 )
+            else:
+                pass
             references = list(prompt_wav)
         else:
             references = [prompt_wav] * batch_size

@@ -29,7 +29,10 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
 )
 from sglang_omni.models.minicpm_o.components.token2wav import vocoder
 from sglang_omni.models.minicpm_o.components.token2wav.dit import TimestepEmbedder
-from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
+from sglang_omni.models.minicpm_o.config import (
+    MiniCPMOCode2WavFactoryArgs,
+    MiniCPMOSpeechPipelineConfig,
+)
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
     code2wav_reference_audio,
@@ -299,10 +302,28 @@ def test_variable_length_option_reaches_dit(
 ) -> None:
     (tmp_path / "assets" / "token2wav").mkdir(parents=True)
     token2wav = MagicMock()
-    monkeypatch.setattr(vocoder, "Token2Wav", lambda *args, **kwargs: token2wav)
+    constructor = MagicMock(return_value=token2wav)
+    monkeypatch.setattr(vocoder, "Token2Wav", constructor)
     monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
     MiniCPMOCode2Wav(str(tmp_path), enable_flow_variable_length=enabled)
-    assert token2wav.flow.decoder.estimator.enable_variable_length is enabled
+    assert constructor.call_args.kwargs["enable_flow_variable_length"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_compile_option_reaches_packed_dit(
+    enabled: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "assets" / "token2wav").mkdir(parents=True)
+    token2wav = MagicMock()
+    constructor = MagicMock(return_value=token2wav)
+    monkeypatch.setattr(vocoder, "Token2Wav", constructor)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
+    MiniCPMOCode2Wav(
+        str(tmp_path),
+        enable_flow_variable_length=True,
+        enable_packed_dit_torch_compile=enabled,
+    )
+    assert constructor.call_args.kwargs["enable_packed_dit_torch_compile"] is enabled
 
 
 def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
@@ -313,6 +334,13 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.batch_wait_when_idle is False
     assert code2wav.factory.dtype is None
     assert code2wav.factory.enable_flow_variable_length is True
+    assert code2wav.factory.enable_packed_dit_torch_compile is True
+    assert (
+        MiniCPMOCode2WavFactoryArgs.model_validate(
+            {"enable_packed_dit_torch_compile": "false"}
+        ).enable_packed_dit_torch_compile
+        is False
+    )
 
 
 def test_vocode_slices_waveforms_to_token_lengths() -> None:

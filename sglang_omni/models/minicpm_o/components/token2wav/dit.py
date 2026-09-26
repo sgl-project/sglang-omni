@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable
+from types import MethodType
 
 import torch
 import torch.nn as nn
@@ -14,6 +16,8 @@ from einops import pack, repeat
 from torch.nn.attention.varlen import varlen_attn
 
 TIMESTEP_MAX_PERIOD = 10000
+PACKED_COMPILE_WARMUP_PROFILES = ((2, 32), (4, 48))
+logger = logging.getLogger(__name__)
 
 
 class MLP(torch.nn.Module):
@@ -378,6 +382,55 @@ class DiT(nn.Module):
         self.final_layer = FinalLayer(hidden_size, self.out_channels)
         self.initialize_weights()
 
+    def enable_compiled_packed_blocks(self) -> None:
+        """Compile the packed block method used by variable-length Flow."""
+        # note (wirybeaver): Flow owns CUDA graph capture when this stack is combined.
+        compiled = torch.compile(
+            DiTBlock.forward_packed,
+            dynamic=True,
+            fullgraph=True,
+            options={"triton.cudagraphs": False},
+        )
+        for block in self.blocks:
+            block.forward_packed = MethodType(compiled, block)
+
+    @torch.inference_mode()
+    def warmup_compiled_packed_blocks(self) -> None:
+        """Materialize the packed path before serving begins."""
+        parameter = next(self.parameters())
+        hidden_size = self.in_proj.out_features
+        with torch.autocast(parameter.device.type, dtype=torch.bfloat16):
+            for batch_size, mel_frames in PACKED_COMPILE_WARMUP_PROFILES:
+                x = torch.zeros(
+                    2 * batch_size,
+                    mel_frames,
+                    hidden_size,
+                    device=parameter.device,
+                    dtype=torch.bfloat16,
+                )
+                conditioning = torch.zeros(
+                    2 * batch_size,
+                    1,
+                    hidden_size,
+                    device=parameter.device,
+                    dtype=torch.bfloat16,
+                )
+                lengths = (
+                    mel_frames
+                    - torch.arange(
+                        batch_size, device=parameter.device, dtype=torch.int32
+                    )
+                ).repeat(2)
+                self.forward_packed(x, conditioning, lengths)
+        if parameter.device.type == "cuda":
+            torch.cuda.synchronize(parameter.device)
+        else:
+            pass
+        logger.info(
+            f"Materialized MiniCPM-o packed DiT compile before serving "
+            f"(torch_num_threads={torch.get_num_threads()})"
+        )
+
     def initialize_weights(self) -> None:
 
         def initialize_linear(module: nn.Module) -> None:
@@ -428,6 +481,8 @@ class DiT(nn.Module):
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 packed_input = self.in_proj(x).to(torch.bfloat16)
                 return self.forward_packed(packed_input, t.to(torch.bfloat16), lengths)
+        else:
+            pass
         x = self.in_proj(x)
         for block in self.blocks:
             x = block(x, t, attn_mask)
