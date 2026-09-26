@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import enum
 import json
 import logging
 import uuid
@@ -86,6 +87,13 @@ class StreamingASRStrategy(Protocol):
     ) -> str: ...
 
 
+class SessionState(enum.Enum):
+    RECEIVING = "receiving"
+    # transcription.done was received; only the pending finals are still running.
+    INPUT_DONE = "input_done"
+    CLOSED = "closed"
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -146,7 +154,7 @@ class RealtimeTranscriptionSession:
         self.client = client
         self.model_name = model_name
         self.session_id = session_id or new_id("sess")
-        self.closed = False
+        self.state = SessionState.RECEIVING
         self.event_index = 0
         self._send_lock = asyncio.Lock()
         self.transcription_config = transcription_config
@@ -189,11 +197,10 @@ class RealtimeTranscriptionSession:
         self._final_waiters: set[asyncio.Future[None]] = set()
         self._inflight_request_id: str | None = None
         self._decode_worker_task = self.spawn_decode_worker()
-        self._input_done = False
 
     async def run(self) -> None:
         await self.send(TranscriptionSessionCreated(session=self.session_object()))
-        while not self.closed:
+        while True:
             message = await self.websocket.receive()
             if message["type"] == "websocket.disconnect":
                 break
@@ -216,6 +223,8 @@ class RealtimeTranscriptionSession:
             await self.dispatch(payload)
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
+        if self.state is SessionState.CLOSED:
+            return
         try:
             event = parse_transcription_client_event(payload)
         except ValidationError as exc:
@@ -226,6 +235,13 @@ class RealtimeTranscriptionSession:
                 "invalid_request_error",
                 "unsupported_event",
                 f"Unsupported event type: {payload.get('type')!r}",
+            )
+            return
+        if self.state is SessionState.INPUT_DONE:
+            await self.send_error(
+                "invalid_request_error",
+                "input_already_done",
+                f"{event.type} is not accepted after transcription.done.",
             )
             return
         try:
@@ -243,7 +259,7 @@ class RealtimeTranscriptionSession:
             )
 
     async def send(self, event: dict[str, Any] | TranscriptionServerEvent) -> None:
-        if self.closed:
+        if self.state is SessionState.CLOSED:
             return
         if self.websocket.application_state != WebSocketState.CONNECTED:
             return
@@ -375,13 +391,6 @@ class RealtimeTranscriptionSession:
         await self.send(TranscriptionSessionUpdated(session=self.session_object()))
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
-        if self._input_done:
-            await self.send_error(
-                "invalid_request_error",
-                "input_already_done",
-                "Audio cannot be appended after transcription.done.",
-            )
-            return
         try:
             pcm = base64.b64decode(event.audio, validate=False)
         except (ValueError, binascii.Error):
@@ -574,7 +583,7 @@ class RealtimeTranscriptionSession:
         while True:
             await self._decode_event.wait()
             self._decode_event.clear()
-            if self.closed:
+            if self.state is SessionState.CLOSED:
                 return
 
             while self._pending_finals:
@@ -718,14 +727,7 @@ class RealtimeTranscriptionSession:
 
     async def handle_transcription_done(self, event: TranscriptionDone) -> None:
         del event
-        if self._input_done:
-            await self.send_error(
-                "invalid_request_error",
-                "input_already_done",
-                "transcription.done was already received.",
-            )
-            return
-        self._input_done = True
+        self.state = SessionState.INPUT_DONE
         await self.commit_buffer("session_end")
         if self._final_waiters:
             await asyncio.gather(*list(self._final_waiters))
@@ -738,7 +740,7 @@ class RealtimeTranscriptionSession:
         )
 
     async def teardown(self) -> None:
-        self.closed = True
+        self.state = SessionState.CLOSED
         self.active_segment = None
         request_id = self._inflight_request_id
         await self.cancel_and_abort(self._decode_worker_task, request_id)

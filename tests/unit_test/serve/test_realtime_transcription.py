@@ -233,6 +233,30 @@ async def test_audio_during_decode_coalesces_to_one_followup_refresh(
 
 
 @pytest.mark.asyncio
+async def test_events_after_done_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    session, websocket, client = await _session(monkeypatch)
+    await session.dispatch(_audio_event(_pcm(1.0)))
+    await session.dispatch({"type": "transcription.done"})
+    assert websocket.events[-1]["type"] == "transcription.completed"
+    worker = session._decode_worker_task
+
+    for event in (
+        {"type": "input_audio_buffer.clear"},
+        {"type": "input_audio_buffer.commit"},
+        {"type": "transcription.done"},
+        _audio_event(_pcm(0.1)),
+    ):
+        await session.dispatch(event)
+        assert websocket.events[-1]["type"] == "error"
+        assert websocket.events[-1]["error"]["code"] == "input_already_done"
+
+    # clear in particular must not spawn a fresh worker or a second decode.
+    assert session._decode_worker_task is worker
+    assert len(client.calls) == 1
+    await session.teardown()
+
+
+@pytest.mark.asyncio
 async def test_teardown_aborts_inflight_decode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
