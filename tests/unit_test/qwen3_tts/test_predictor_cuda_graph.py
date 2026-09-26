@@ -858,7 +858,7 @@ def test_a_declared_disable_also_drops_the_reference_encoder_buckets(
         lambda **kwargs: contexts.append(kwargs),
     )
 
-    builder = Qwen3TtsEngineBuilder()
+    builder = Qwen3TtsEngineBuilder(leading_silence_mask_frames=0)
     builder.dtype = "bfloat16"
     builder.before_memory_pool(
         model_worker=SimpleNamespace(model_runner=SimpleNamespace(model=FakeTalker())),

@@ -336,6 +336,39 @@ Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or
 response still contains decodable audio, but the utterance may be incomplete.
 Batch responses expose the same value as each item's `finish_reason`.
 
+#### Leading silence in x-vector mode
+
+Without a reference transcript the talker starts cold, and on most requests it
+opens with several frames of room-tone silence before speaking, which the
+listener hears as extra time to first audio. The engine therefore excludes
+silence codec ids from the first two frames of x-vector-only requests. The
+silence ids are derived at startup from the checkpoint's own codec (it encodes
+stationary noise up to -50 dBFS) and logged once. ICL, CustomVoice, and
+VoiceDesign requests are not affected.
+
+On SeedTTS EN (1088 clips, no reference text, seed 0):
+
+| Checkpoint | Frames masked | Median onset | Onsets > 160 ms | WER | Speaker similarity |
+|---|---|---|---|---|---|
+| 1.7B Base | 0 | 495 ms | 95% | 0.854% | 61.00 |
+| 1.7B Base | 2 (default) | 155 ms | 47% | 0.904% | 60.87 |
+| 0.6B Base | 0 | 480 ms | 86% | 1.532% | 58.41 |
+| 0.6B Base | 2 (default) | 75 ms | 23% | 1.072% | 58.10 |
+
+The mask changes which codec ids the first frames can sample, so outputs differ
+from the unmasked model. To turn it off:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --config examples/configs/qwen3_tts_1_7b.yaml \
+  --tts_engine.factory.leading_silence_mask_frames 0 \
+  --port 8000
+```
+
+Details and the full sweep are in
+[the leading-silence benchmark](../benchmarks/qwen3_tts_leading_silence.md).
+
 ### Language Hint
 
 `language` biases the model toward a target language. It defaults to `auto` (let the model
