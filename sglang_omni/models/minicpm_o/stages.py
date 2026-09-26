@@ -212,12 +212,14 @@ def create_code2wav_executor(
     dtype: str | None = None,
     max_batch_cost: int | None = None,
     enable_flow_variable_length: bool = False,
+    enable_packed_dit_torch_compile: bool = True,
 ) -> SimpleScheduler:
     model = MiniCPMOCode2Wav(
         model_path,
         device=str(resolve_concrete_device(device, gpu_id)),
         dtype=dtype,
         enable_flow_variable_length=enable_flow_variable_length,
+        enable_packed_dit_torch_compile=enable_packed_dit_torch_compile,
     )
 
     def codec_token_cost(payload: StagePayload) -> int:
