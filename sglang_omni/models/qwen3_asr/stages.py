@@ -16,7 +16,7 @@ def create_sglang_qwen3_asr_executor(
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
-    enable_torch_compile: bool = False,
+    enable_torch_compile: bool | None = None,
     torch_compile_max_bs: int = 1,
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 1,

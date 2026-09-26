@@ -1174,6 +1174,8 @@ def create_sglang_thinker_executor_from_config(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (zhaochenyang20): MoE CUDA graph capture fails on topk_ids dtype under torch compile.
+        enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
         sampling_backend="pytorch",
@@ -1342,6 +1344,8 @@ def create_talker_ar_executor_from_config(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (zhaochenyang20): the native rotary path under torch compile rejects fused_set_kv_buffer_arg.
+        enable_torch_compile=False,
         sampling_backend="pytorch",
         cuda_graph_backend_prefill=prefill_graph_backend,
         cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(

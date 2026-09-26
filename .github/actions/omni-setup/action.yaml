@@ -30,6 +30,8 @@ runs:
         # so it can safely reuse the architecture-specific prewarmed cache.
         echo "FLASHINFER_WORKSPACE_BASE=/root" >> "${GITHUB_ENV}"
         echo "FLASHINFER_JIT_DEBUG=0" >> "${GITHUB_ENV}"
+        # note (zhaochenyang20): speed thresholds assume each model's own compile setting.
+        echo "SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).

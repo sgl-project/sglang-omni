@@ -561,6 +561,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
             "cuda_graph_max_bs": 32,
             "device": current_platform.device_type,
             "disable_cuda_graph": not current_platform.enable_talker_graph(),
+            "enable_torch_compile": False,
             "max_running_requests": 32,
             "sampling_backend": "pytorch",
             "torch_compile_max_bs": 32,
