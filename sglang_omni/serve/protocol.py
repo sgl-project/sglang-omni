@@ -82,6 +82,7 @@ class ChatCompletionRequest(BaseModel):
     video_min_pixels: int | None = None
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
+    use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None

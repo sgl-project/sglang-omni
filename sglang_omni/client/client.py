@@ -850,6 +850,7 @@ def extract_inputs(request: GenerateRequest) -> Any:
             "video_min_pixels",
             "video_max_pixels",
             "video_total_pixels",
+            "use_audio_in_video",
         ):
             value = request.metadata.get(key)
             if value is not None:

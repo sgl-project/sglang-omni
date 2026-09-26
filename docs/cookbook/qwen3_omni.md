@@ -103,8 +103,18 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `video_min_pixels` | int | `null` | Minimum pixels per video frame |
 | `video_max_pixels` | int | `null` | Maximum pixels per video frame |
 | `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
+| `use_audio_in_video` | bool | `null` | Set to `true` to process embedded audio. Requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported. |
+
+Non-streaming chat requests return HTTP 400 for invalid media and HTTP 500 for
+server failures. With `stream=true`, errors detected after the event stream
+starts are sent as `data: {"error": {"message": "...", "type": "invalid_request_error", "code": 400}}`,
+followed by `data: [DONE]`. Server failures use `type: "server_error"` and
+`code: 500`. The HTTP status remains 200 once streaming has started; clients
+must check for an `error` event, including after partial output.
 
 ### Known Limitations
+
+- **Multiple videos must have the same sampled frame rate.** The processor accepts one frame rate for video token timestamps. Requests with different sampled frame rates are rejected with HTTP 400.
 
 - **`modalities: ["text", "audio"]` has no effect on a text-only server.** No error is raised — the response simply contains no audio. Use a speech-mode server (without `--text-only`) to get audio output.
 - **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.

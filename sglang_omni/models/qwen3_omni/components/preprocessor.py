@@ -35,6 +35,7 @@ from sglang_omni.preprocessing import (
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     ResourceHTTPConnection,
+    await_media_cleanup,
 )
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
@@ -75,6 +76,39 @@ def combine_cache_keys(*keys: str | None) -> str | None:
     else:
         pass
     return "|".join(parts)
+
+
+def merge_extracted_video_audio(
+    explicit_audios: Any,
+    extracted_audios: list[Any] | None,
+) -> tuple[Any, bool]:
+    """Merge video audio only when every video produced a non-empty waveform."""
+
+    if not extracted_audios:
+        return explicit_audios, False
+    else:
+        pass
+    missing = [audio is None or not len(audio) for audio in extracted_audios]
+    if all(missing):
+        return explicit_audios, False
+    else:
+        pass
+    if any(missing):
+        raise ValueError(
+            "use_audio_in_video requires every video in a multi-video request "
+            "to contain a decodable audio track"
+        )
+    else:
+        pass
+    if not explicit_audios:
+        return list(extracted_audios), True
+    else:
+        pass
+    explicit = (
+        explicit_audios if isinstance(explicit_audios, list) else [explicit_audios]
+    )
+    # Match the video-before-audio placeholder order in _build_multimodal_messages.
+    return [*extracted_audios, *explicit], True
 
 
 # Special-token attributes the HF Qwen3OmniMoeProcessor reads off the tokenizer.
@@ -581,38 +615,33 @@ class Qwen3OmniPreprocessor:
                 ),
             ]
             tasks = [asyncio.create_task(loader) for loader in loaders]
-            try:
-                images, videos_result, audios_result = await asyncio.gather(*tasks)
-            finally:
+
+            async def cleanup():
                 for task in tasks:
                     if not task.done():
                         task.cancel()
                     else:
                         pass
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await connection.close()
+                try:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                finally:
+                    await connection.close()
+
+            try:
+                images, videos_result, audios_result = await asyncio.gather(*tasks)
+            finally:
+                await await_media_cleanup(cleanup())
             videos, sampled_video_fps, extracted_audio_from_video = videos_result
 
-            # Merge extracted audio from videos with explicit audio (if any)
-            if extracted_audio_from_video:
-                # Filter out None values (videos without audio)
-                extracted_audio_from_video = [
-                    audio for audio in extracted_audio_from_video if audio is not None
-                ]
-                if extracted_audio_from_video:
-                    audio_from_video = True
-                    # Merge with explicit audio
-                    if audios_result:
-                        if isinstance(audios_result, list):
-                            audios = audios_result + extracted_audio_from_video
-                        else:
-                            audios = [audios_result] + extracted_audio_from_video
-                    else:
-                        audios = extracted_audio_from_video
-                else:
-                    audios = audios_result
-            else:
-                audios = audios_result
+            audios, audio_from_video = merge_extracted_video_audio(
+                audios_result,
+                extracted_audio_from_video,
+            )
+            effective_use_audio_in_video = (
+                bool(use_audio_in_video and audio_from_video)
+                if use_audio_in_video is not None
+                else None
+            )
         else:
             messages = inputs
             images = []
@@ -628,6 +657,7 @@ class Qwen3OmniPreprocessor:
             video_total_pixels = self.default_video_total_pixels
             sampled_video_fps = None
             use_audio_in_video = None
+            effective_use_audio_in_video = None
             video_seconds_per_chunk = None
             video_position_id_per_seconds = None
             audio_from_video = False
@@ -662,12 +692,15 @@ class Qwen3OmniPreprocessor:
         )
 
         videos_kwargs: dict[str, Any] = {}
-        if sampled_video_fps is not None:
-            videos_kwargs["fps"] = (
-                sampled_video_fps[0]
-                if len(sampled_video_fps) == 1
-                else sampled_video_fps
-            )
+        if sampled_video_fps:
+            # The HF processor uses one scalar FPS for video token timestamps.
+            if any(fps != sampled_video_fps[0] for fps in sampled_video_fps):
+                raise ValueError(
+                    "Qwen3-Omni requires all videos in a request to have the same sampled FPS"
+                )
+            else:
+                pass
+            videos_kwargs["fps"] = sampled_video_fps[0]
         elif resolved_video_fps is not None:
             videos_kwargs["fps"] = resolved_video_fps
         else:
@@ -688,8 +721,8 @@ class Qwen3OmniPreprocessor:
             videos_kwargs["total_pixels"] = resolved_video_total_pixels
         else:
             pass
-        if use_audio_in_video is not None:
-            videos_kwargs["use_audio_in_video"] = bool(use_audio_in_video)
+        if effective_use_audio_in_video is not None:
+            videos_kwargs["use_audio_in_video"] = effective_use_audio_in_video
         else:
             pass
         if resolved_video_seconds_per_chunk is not None:
@@ -744,8 +777,8 @@ class Qwen3OmniPreprocessor:
             "audio": build_audio_mm_inputs(hf_inputs),
             "video": build_video_mm_inputs(hf_inputs),
         }
-        if use_audio_in_video is not None:
-            full_mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
+        if effective_use_audio_in_video is not None:
+            full_mm_inputs["video"]["use_audio_in_video"] = effective_use_audio_in_video
         else:
             pass
 

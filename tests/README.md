@@ -46,7 +46,8 @@ tests/
     ├── preprocessing/
     │   ├── test_cache_key.py
     │   ├── test_resample_cache.py
-    │   └── test_transcription.py
+    │   ├── test_transcription.py
+    │   └── test_video.py
     ├── sampling/
     │   └── test_seed.py
     ├── vendor/
@@ -636,6 +637,9 @@ that happened to contain an older version of the test.
   - SGLang argument builders
   - backend policy and quantization compatibility contracts
   - tokenizer and preprocessing fallback behavior
+  - embedded-video audio ordering and silent-video handling; two videos plus
+    standalone audio through the real processor, including sampled frame-rate
+    validation, without model weights or accelerator hardware
   - audio cache identity from complete decoded content, mixed-batch cache
     hits, and cached output ownership across reused encoder buffers
     (`test_pipeline.py`, `test_audio_encoder_batch_dedup.py`). The output
@@ -820,6 +824,8 @@ that happened to contain an older version of the test.
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
   - OpenAI-compatible request/response behavior
+  - `use_audio_in_video` forwarding and HTTP 400/500 classification for invalid
+    media, mixed audio presence, unequal sampled frame rates, and server failures
   - shared speech-to-text form, request, response-format, and serialization mechanics,
     including headerless G.711 uploads getting a WAV container at read time
   - streaming response framing and failure semantics.
@@ -908,7 +914,14 @@ that happened to contain an older version of the test.
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
   resampling, audio-source resolution (including declared G.711 bytes getting
   a WAV container), duration validation, fingerprinting, downmixing, and
-  legacy input compatibility. `test_resource_connector.py` covers the
+  legacy input compatibility.
+  `test_video.py` covers embedded-audio decoding, resampling, downmixing,
+  absent/empty audio tracks, corrupt-media versus server errors, sibling-task
+  cancellation, and decoder-thread cleanup under repeated cancellation. Its small
+  video fixture uses PyAV, which is declared in all platform dependency sets.
+  Failure probes stop after 32 packets. Media-loader tests cover image, audio
+  and video sibling cleanup on failure and repeated cancellation.
+  `test_resource_connector.py` covers the
   `MultiModalResourceConnector` local-media policy: bare local paths and
   `file://` URLs are both scoped to `allowed_local_media_path` once it is
   configured, and `..` traversal and symlink escapes are rejected before
