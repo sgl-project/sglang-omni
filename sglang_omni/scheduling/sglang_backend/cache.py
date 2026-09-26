@@ -13,11 +13,6 @@ from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.runtime_context import get_memory, get_schedule, get_serving
 from sglang.srt.session.streaming_session import StreamingSession
 
-from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
-    EvictHeapRadixCache,
-)
-
-
 def create_tree_cache(
     req_to_token_pool: ReqToTokenPool,
     token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
@@ -48,6 +43,9 @@ def create_tree_cache(
     if get_memory().disable_radix_cache:
         cache: BasePrefixCache = ChunkCache(params)
     elif params.eviction_policy.lower() == "lru":
+        from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
+            EvictHeapRadixCache,
+        )
         cache = EvictHeapRadixCache(params)
     else:
         cache = RadixCache(params)
