@@ -257,6 +257,8 @@
 "settings.microphone" = "Microphone";
 "settings.systemDefault" = "System default";
 "settings.sounds" = "Play start and finish sounds";
+"settings.compactPopup" = "Compact recording popup";
+"settings.compactPopupNote" = "Shows only a small waveform capsule while you dictate. Press the shortcut again or click the capsule to finish, Esc to cancel. Turn off for the detailed popup with live text.";
 "settings.autoPaste" = "Insert text automatically at the original cursor";
 "settings.autoPasteNote" = "Keep the input focused until dictation finishes. Apps that hide their input fields use ⌘V; only their application and window can be checked. If the target changes, your transcript stays available to copy.";
 "settings.languages" = "Languages";

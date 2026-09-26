@@ -43,6 +43,9 @@ On first launch:
 3. Place the cursor in the destination input field. Press **Control + Option +
    Space**, wait for **Listening**, and speak. Press the shortcut again to finish.
    Keep the input focused until the result is inserted.
+   Prefer less on screen? **Settings → Keyboard & audio → Compact recording popup**
+   replaces the live-text popup with a small waveform capsule: dots while it
+   loads or processes, bars while it hears you.
 4. Press **Esc** to cancel. To use push-to-talk, enable **Hold shortcut to talk**
    in Settings, hold the entire shortcut while speaking, and release it to
    finish. You can also record a custom shortcut, including a single modifier

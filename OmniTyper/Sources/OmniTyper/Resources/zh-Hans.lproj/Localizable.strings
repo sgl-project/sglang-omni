@@ -257,6 +257,8 @@
 "settings.microphone" = "麦克风";
 "settings.systemDefault" = "系统默认";
 "settings.sounds" = "播放开始和结束提示音";
+"settings.compactPopup" = "极简录音浮窗";
+"settings.compactPopupNote" = "听写时只显示一个小声波胶囊。再按一次快捷键或点一下胶囊结束，Esc 取消。关闭后使用带实时文字的详细浮窗。";
 "settings.autoPaste" = "自动在原光标处写入文字";
 "settings.autoPasteNote" = "请保持输入框焦点，直到听写完成。对于未暴露输入框的应用，将使用 ⌘V 粘贴，只能核对应用和窗口。目标变化时，转写结果仍可复制。";
 "settings.languages" = "语言";

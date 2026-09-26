@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var model: AppModel!
     private var window: NSWindow!
     private var panel: NSPanel!
+    private let popup = PopupState()
+    private var wantsPopup = false
     private var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -33,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.setFrameAutosaveName("OmniTyperMainWindow")
         model.showMainWindow = { [weak self] in self?.openWindow() }
         model.showVoicePanel = { [weak self] in self?.showPanel() }
-        model.hideVoicePanel = { [weak self] in self?.panel?.orderOut(nil) }
+        model.hideVoicePanel = { [weak self] in self?.hidePanel() }
         setupMenu()
         if !ProcessInfo.processInfo.arguments.contains("--background") { openWindow() }
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--snapshot"),
@@ -96,14 +98,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 190),
                             styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
             panel.level = .floating; panel.isOpaque = false; panel.backgroundColor = .clear
-            panel.hasShadow = true; panel.hidesOnDeactivate = false
+            panel.hidesOnDeactivate = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            panel.contentView = NSHostingView(rootView: VoicePanel(model: model, recorder: model.recorder, worker: model.worker))
+            panel.contentView = NSHostingView(rootView: RecordingPopup(model: model, store: model.store, popup: popup))
         }
+        let compact = model.store.preferences.compactPopup == true
+        let size = compact ? PillPanel.windowSize : CGSize(width: 460, height: 190)
+        // Note (Yifei Leng): A window shadow would not follow the capsule while it scales, so it draws its own.
+        panel.hasShadow = !compact
+        if panel.frame.size != size { panel.setContentSize(size) }
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main
-        if let visible = screen?.visibleFrame { panel.setFrameOrigin(NSPoint(x: visible.midX - 230, y: visible.minY + 28)) }
+        if let visible = screen?.visibleFrame {
+            panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.minY + (compact ? 56 : 28)))
+        }
         panel.orderFrontRegardless()
+        wantsPopup = true
+        // Note (Yifei Leng): Flip after the window is on screen, so even a freshly built popup scales in.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.wantsPopup else { return }
+            self.popup.visible = true
+        }
+    }
+
+    private func hidePanel() {
+        wantsPopup = false
+        popup.visible = false
+        guard model.store.preferences.compactPopup == true else { panel?.orderOut(nil); return }
+        // Note (Yifei Leng): Let the capsule shrink away before its window leaves, unless it was shown again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, !self.wantsPopup else { return }
+            self.panel?.orderOut(nil)
+        }
     }
 
     private func saveSnapshot(_ path: String) {
