@@ -458,6 +458,22 @@ def test_check_leader_alive_rejects_recycled_pid():
     ipc_weights.check_leader_alive(ok, "before attach")  # matching start: no raise
 
 
+def test_check_leader_alive_requires_a_start_time_where_proc_supplies_one(monkeypatch):
+    # Note (Bright Hsu): both payload builders read the start time from proc, so
+    # on Linux it is never absent and off Linux it is never required. Pin the
+    # guard here, or dropping it leaves every suite green on both platforms.
+    monkeypatch.setattr(ipc_weights, "PROC_START_TIME_REQUIRED", True)
+    with pytest.raises(WeightShareError, match="no leader start time"):
+        ipc_weights.check_leader_alive(
+            {"pid": os.getpid(), "leader_start_time": None}, "before attach"
+        )
+
+    monkeypatch.setattr(ipc_weights, "PROC_START_TIME_REQUIRED", False)
+    ipc_weights.check_leader_alive(
+        {"pid": os.getpid(), "leader_start_time": None}, "before attach"
+    )  # no start-time source: attach instead of refusing a healthy leader
+
+
 def min_payload(**overrides):
     payload = {
         "format_version": ipc_weights._FORMAT_VERSION,  # noqa: leading-underscore  # production name

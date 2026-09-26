@@ -44,6 +44,7 @@ import logging
 import os
 import pickle
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -369,6 +370,11 @@ AUDIT_ONLY_WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
 SUPPORTED_WEIGHT_SHARE_ARCHITECTURES = frozenset(WEIGHT_SHARE_POLICIES)
 
 _FS_TRUST_ENFORCED = os.name == "posix"
+
+# Note (Bright Hsu): proc is Linux-only, so every other POSIX host reports no
+# start time at all. This stays a platform check rather than a probe of the
+# running process, so a Linux host with no procfs mounted keeps failing closed.
+PROC_START_TIME_REQUIRED = sys.platform == "linux"
 
 
 def validate_weight_share_architecture(architectures: Any) -> WeightSharePolicy:
@@ -1022,7 +1028,7 @@ def check_leader_alive(payload: dict[str, Any], when: str) -> None:
     # time; require the recorded start time on Linux so this never fails open.
     recorded_start = payload.get("leader_start_time")
     current_start = proc_start_time(int(leader_pid))
-    if _FS_TRUST_ENFORCED and recorded_start is None:
+    if PROC_START_TIME_REQUIRED and recorded_start is None:
         raise WeightShareError(
             f"weight-share handle for pid={leader_pid} has no leader start time "
             f"({when}); refusing to skip the recycled-pid check"
