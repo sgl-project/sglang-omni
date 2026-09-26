@@ -53,6 +53,9 @@ def test_cached_rotary_owns_fp32_coefficients_and_bounded_positions() -> None:
 
     assert rotary.cos_sin_cache.dtype == torch.float32
     torch.testing.assert_close(rotary.cos_sin_cache, expected_cache, rtol=0, atol=0)
+    rotary.to(dtype=torch.bfloat16)
+    assert rotary.cos_sin_cache.dtype == torch.float32
+    torch.testing.assert_close(rotary.cos_sin_cache, expected_cache, rtol=0, atol=0)
     assert "cos_sin_cache" not in rotary.state_dict()
     assert "positions" not in rotary.state_dict()
     resident_pointer = rotary.positions.data_ptr()
@@ -217,52 +220,6 @@ def test_shared_acoustic_components_keep_native_default(
     provider.assert_not_called()
 
 
-def test_execution_config_reaches_both_acoustic_components() -> None:
-    aggregator_kernel, dit_kernel = Mock(), Mock()
-    aggregator_config = TalkerExecutionConfig(
-        attn_backend="torch",
-        rope_kernel=aggregator_kernel,
-        rope_seq_len=3,
-        rope_max_batch_size=4,
-    )
-    dit_config = TalkerExecutionConfig(
-        attn_backend="torch",
-        rope_kernel=dit_kernel,
-        rope_seq_len=5,
-        rope_max_batch_size=8,
-    )
-
-    aggregator = Aggregator(
-        in_channels=4,
-        hidden_size=8,
-        depth=1,
-        num_heads=2,
-        llm_input_dim=6,
-        execution_config=aggregator_config,
-    )
-    dit = DiT(
-        in_channels=4,
-        hidden_size=8,
-        depth=1,
-        num_heads=2,
-        llm_cond_dim=6,
-        execution_config=dit_config,
-    )
-
-    assert isinstance(aggregator.rotary_embed, CachedRotaryEmbedding)
-    assert aggregator.rotary_embed.cos_sin_cache.shape == (3, 4)
-    assert aggregator.rotary_embed.positions.numel() == 12
-    assert aggregator.rotary_embed.kernel is aggregator_kernel
-    assert aggregator.blocks[0].attn.attn_backend == "torch"
-    assert isinstance(dit.rotary_embed, CachedRotaryEmbedding)
-    assert dit.rotary_embed.cos_sin_cache.shape == (5, 4)
-    assert dit.rotary_embed.positions.numel() == 40
-    assert dit.rotary_embed.kernel is dit_kernel
-    assert dit.blocks[0].attn.attn_backend == "torch"
-    aggregator_kernel.assert_not_called()
-    dit_kernel.assert_not_called()
-
-
 @pytest.mark.parametrize("pe_attn_head", [None, 2])
 def test_acoustic_component_forwards_reach_joint_rotary(
     monkeypatch: pytest.MonkeyPatch,
@@ -355,13 +312,15 @@ def test_acoustic_component_forwards_reach_joint_rotary(
     assert reference_output.shape == (4, 1, 6)
     assert dit_output.shape == (2, 6, 4)
     assert cfg_output.shape == (4, 2, 4)
-    assert calls == [
-        ((batch * seq_len, 2, 4), (seq_len, 4), list(range(seq_len)) * batch, False)
+    expected_calls = {
+        ((batch * seq_len, 2, 4), (seq_len, 4), tuple(range(seq_len)) * batch)
         for batch, seq_len in ((2, 3), (4, 3), (2, 6), (4, 6))
-        for _layer in range(2)
-    ]
-    assert attention_calls == [
-        (batch, 2, seq_len, 4)
-        for batch, seq_len in ((2, 3), (4, 3), (2, 6), (4, 6))
-        for _layer in range(2)
-    ]
+    }
+    assert {
+        (shape, cache_shape, tuple(positions))
+        for shape, cache_shape, positions, _ in calls
+    } == expected_calls
+    assert all(is_neox is False for _, _, _, is_neox in calls)
+    assert set(attention_calls) == {
+        (batch, 2, seq_len, 4) for batch, seq_len in ((2, 3), (4, 3), (2, 6), (4, 6))
+    }

@@ -26,6 +26,11 @@ from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggrega
 from sglang_omni.models.ming_omni.talker.talker_module.execution import (
     TalkerExecutionConfig,
 )
+from sglang_omni.models.ming_omni.talker.talker_module.packed_qkv import (
+    PACKED_QKV_SHARD_IDS,
+    PackedQKVLinear,
+    load_packed_qkv_shard,
+)
 from sglang_omni.models.ming_tts.flow_matching import (
     FlowLoss,
     build_cfm_sde_random,
@@ -882,16 +887,17 @@ class MingTTSSGLangModel(nn.Module):
         self.tail_attn_backend = tail_attn_backend
         aggregator_config = dict(self.config.aggregator_config)
         ditar_config = dict(self.config.ditar_config)
-        # note (yzxiao): Preserve Ming's cast-before-weight-multiply RMSNorm semantics.
+        # Note(yzxiao): Preserve Ming's cast-before-weight-multiply RMSNorm semantics.
         norm_layer = partial(RMSNorm, cast_x_before_out_mul=True)
-        # Note(yzxiao): Runtime policy overrides any checkpoint-provided
-        # execution config. Other shared-component callers keep native.
+        qkv_layer = PackedQKVLinear
+        # Note(yzxiao): Runtime policy overrides checkpoint execution settings.
         aggregator_config["execution_config"] = TalkerExecutionConfig(
             attn_backend=tail_attn_backend,
             rope_kernel=rope_kernel,
             rope_seq_len=1 + self.patch_size,
             rope_max_batch_size=aggregator_batch_capacity,
             norm_layer=norm_layer,
+            qkv_layer=qkv_layer,
         )
         ditar_config["execution_config"] = TalkerExecutionConfig(
             attn_backend=tail_attn_backend,
@@ -899,6 +905,7 @@ class MingTTSSGLangModel(nn.Module):
             rope_seq_len=1 + self.history_patch_size + self.patch_size,
             rope_max_batch_size=2 * tail_batch_capacity,
             norm_layer=norm_layer,
+            qkv_layer=qkv_layer,
         )
 
         self.linear_proj_audio = Aggregator(
@@ -1195,7 +1202,9 @@ class MingTTSSGLangModel(nn.Module):
             return mapped_name, f"{shard_id}:{expert_id}"
 
         for name in params_dict:
-            if name.endswith("gate_up_proj.weight"):
+            if name.endswith(("to_qkv.weight", "to_qkv.bias")):
+                report.add_required_shards(name, PACKED_QKV_SHARD_IDS)
+            elif name.endswith("gate_up_proj.weight"):
                 report.add_required_shards(name, ("0", "1"))
             elif name.endswith("experts.w13_weight"):
                 shards = []
@@ -1250,6 +1259,16 @@ class MingTTSSGLangModel(nn.Module):
             else:
                 pass
 
+            packed = load_packed_qkv_shard(name, loaded_weight, params_dict)
+            if packed is not None:
+                target_param, shard_id = packed
+                loaded_param_names.add(target_param)
+                report.add_loaded(owner, original_name, target_param=target_param)
+                report.add_loaded_shard(target_param, shard_id)
+                continue
+            else:
+                pass
+
             packed = load_fused_expert_weight(name, loaded_weight)
             if packed is not None:
                 target_param, shard_id = packed
@@ -1275,6 +1294,11 @@ class MingTTSSGLangModel(nn.Module):
                 load_param(param, loaded_weight)
                 loaded_param_names.add(name)
                 report.add_loaded(owner, original_name, target_param=name)
+                if ".to_qkv." in name:
+                    for shard_id in PACKED_QKV_SHARD_IDS:
+                        report.add_loaded_shard(name, shard_id)
+                else:
+                    pass
             else:
                 report.leftovers.append(original_name)
 

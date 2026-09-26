@@ -474,15 +474,10 @@ class MingStreamingTalkerScheduler:
             pass
         from transformers import AutoTokenizer
 
-        from sglang_omni.models.ming_omni.talker import (
-            MingOmniTalker,
-            MingOmniTalkerConfig,
-            SpkembExtractor,
-        )
+        from sglang_omni.models.ming_omni.talker import MingOmniTalker, SpkembExtractor
         from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
             AudioVAE,
         )
-        from sglang_omni.models.weight_loader import load_weights_by_prefix
 
         t_start = time.perf_counter()
         talker_dir = str(Path(self.model_path) / "talker")
@@ -491,16 +486,7 @@ class MingStreamingTalkerScheduler:
             talker_dir,
             self.device,
         )
-        config = MingOmniTalkerConfig.from_pretrained_dir(talker_dir)
-        if torch.device(self.device).type == "npu":
-            config.use_torch_attention()
-        else:
-            pass
-        talker = MingOmniTalker(config)
-        talker.eval()
-        weights = load_weights_by_prefix(talker_dir, prefix="")
-        talker.load_weights(weights.items())
-        talker.to(device=self.device, dtype=torch.bfloat16)
+        talker = MingOmniTalker.from_pretrained(talker_dir, device=self.device)
         talker.set_tokenizer(
             AutoTokenizer.from_pretrained(str(Path(talker_dir) / "llm"))
         )

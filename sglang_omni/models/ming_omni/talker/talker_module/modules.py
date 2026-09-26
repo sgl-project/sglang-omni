@@ -1,10 +1,9 @@
-from typing import Callable, Optional
-
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .rotary import apply_rotary_embedding
+from .execution import NormLayerFactory
+from .rotary import RotaryInputs, apply_rotary_embedding
 
 _FLASH_ATTN_IMPORT_ERROR: Exception | None = None
 flash_attn_func = None
@@ -91,12 +90,13 @@ class Attention(nn.Module):
         heads: int = 8,
         dim_head: int = 64,
         dropout: float = 0.0,
-        qk_norm: Optional[str] = None,
+        qk_norm: str | None = None,
         pe_attn_head: (
             int | None
         ) = None,  # number of attention head to apply rope, None for all
         attn_backend: str = "torch",  # "torch" or "flash_attn"
         attn_mask_enabled: bool = True,
+        qkv_layer: type[nn.Module] | None = None,
     ):
         super().__init__()
 
@@ -112,9 +112,13 @@ class Attention(nn.Module):
         self.inner_dim = dim_head * heads
         self.dropout = dropout
 
-        self.to_q = nn.Linear(dim, self.inner_dim)
-        self.to_k = nn.Linear(dim, self.inner_dim)
-        self.to_v = nn.Linear(dim, self.inner_dim)
+        self.to_qkv = qkv_layer(dim, self.inner_dim) if qkv_layer is not None else None
+        if self.to_qkv is None:
+            self.to_q = nn.Linear(dim, self.inner_dim)
+            self.to_k = nn.Linear(dim, self.inner_dim)
+            self.to_v = nn.Linear(dim, self.inner_dim)
+        else:
+            pass
         if qk_norm is None:
             self.q_norm = None
             self.k_norm = None
@@ -142,17 +146,22 @@ class Attention(nn.Module):
 
     def forward(
         self,
-        x: float,  # noised input x
-        mask=None,
-        rope=None,  # rotary position embedding for x
+        x: torch.Tensor,  # noised input x
+        mask: torch.Tensor | None = None,
+        rope: (
+            RotaryInputs | tuple[torch.Tensor, float | torch.Tensor | None] | None
+        ) = None,  # rotary position embedding for x
     ) -> torch.Tensor:
 
         batch_size = x.shape[0]
 
         # `sample` projections
-        query = self.to_q(x)
-        key = self.to_k(x)
-        value = self.to_v(x)
+        if self.to_qkv is None:
+            query = self.to_q(x)
+            key = self.to_k(x)
+            value = self.to_v(x)
+        else:
+            query, key, value = self.to_qkv(x).chunk(3, dim=-1)
 
         # attention
         inner_dim = key.shape[-1]
@@ -171,6 +180,7 @@ class Attention(nn.Module):
         else:
             pass
 
+        # apply rotary position embedding
         query, key = apply_rotary_embedding(
             query, key, rope, pe_attn_head=self.pe_attn_head
         )
@@ -268,7 +278,8 @@ class DiTBlock(nn.Module):
         pe_attn_head=None,
         attn_backend="flash_attn",  # "torch" or "flash_attn"
         attn_mask_enabled=True,
-        norm_layer: Callable[[int, float], nn.Module] = RMSNorm,
+        norm_layer: NormLayerFactory = RMSNorm,
+        qkv_layer: type[nn.Module] | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -282,6 +293,7 @@ class DiTBlock(nn.Module):
             pe_attn_head=pe_attn_head,
             attn_backend=attn_backend,
             attn_mask_enabled=attn_mask_enabled,
+            qkv_layer=qkv_layer,
         )
         self.norm2 = norm_layer(hidden_size, 1e-6)
         self.mlp = FeedForward(
@@ -303,7 +315,7 @@ class FinalLayer(nn.Module):
         self,
         hidden_size,
         out_channels,
-        norm_layer: Callable[[int, float], nn.Module] = RMSNorm,
+        norm_layer: NormLayerFactory = RMSNorm,
     ):
         super().__init__()
         self.norm_final = norm_layer(hidden_size, 1e-6)
