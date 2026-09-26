@@ -114,7 +114,6 @@ def build_sglang_server_args(
     else:
         pass
     kwargs.setdefault("device", platform_device_type())
-    kwargs.setdefault("enable_torch_compile", True)
     apply_torch_compile_cache_env()
     apply_platform_decode_cuda_graph_backend(kwargs)
     server_args = ServerArgs(**kwargs)

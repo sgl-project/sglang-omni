@@ -735,7 +735,7 @@ def test_moss_local_engine_uses_text_backbone_context(
     )
 
 
-def test_moss_tts_local_generation_defaults_enables_torch_compile() -> None:
+def test_moss_tts_local_generation_defaults_enable_torch_compile() -> None:
     from sglang_omni.models.moss_tts_local.engine_builder import (
         MossTtsLocalEngineBuilder,
     )

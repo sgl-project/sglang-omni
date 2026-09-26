@@ -87,23 +87,23 @@ def test_encoder_mem_reserve_reads_the_declared_fraction(tmp_path: Path) -> None
     )
 
 
-def test_builder_defaults_torch_compile_on(tmp_path: Path) -> None:
+def test_builder_keeps_torch_compile_off_by_default(tmp_path: Path) -> None:
     server_args = build_sglang_server_args(
         write_mini_llama_checkpoint(tmp_path), context_length=2048, device="cuda"
     )
 
-    assert resolution_result(server_args, "enable_torch_compile") is True
+    assert resolution_result(server_args, "enable_torch_compile") is False
 
 
-def test_builder_preserves_explicit_torch_compile_off(tmp_path: Path) -> None:
+def test_builder_forwards_stage_torch_compile_opt_in(tmp_path: Path) -> None:
     server_args = build_sglang_server_args(
         write_mini_llama_checkpoint(tmp_path),
         context_length=2048,
         device="cuda",
-        enable_torch_compile=False,
+        enable_torch_compile=True,
     )
 
-    assert resolution_result(server_args, "enable_torch_compile") is False
+    assert resolution_result(server_args, "enable_torch_compile") is True
 
 
 def test_torchinductor_cache_directory_defaults_to_sglang_omni_home_cache() -> None:
