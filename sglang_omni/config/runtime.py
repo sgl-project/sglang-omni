@@ -22,6 +22,7 @@ kwargs only when the factory declares them
 from __future__ import annotations
 
 import inspect
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -33,6 +34,8 @@ from sglang_omni.config.schema import (
     stage_process_name,
 )
 from sglang_omni.utils.imports import import_string
+
+logger = logging.getLogger(__name__)
 
 # Kwargs owned by placement and process construction. They are injected from
 # ``factory_arg_defaults`` (and only when the factory declares them), so a
@@ -83,6 +86,20 @@ def resolve_stage_typed_kwargs(stage_cfg: StageConfig) -> dict[str, Any]:
     if stage_cfg.engine is not None:
         server_args_overrides = stage_cfg.engine.overrides()
         if server_args_overrides:
+            # NPU: torch.compile not supported (dynamo crashes on is_cuda() replaced
+            # by transfer_to_npu + fake tensor doesn't recognize NPU device).
+            from sglang_omni.platforms import current_platform
+
+            if (
+                current_platform.is_npu()
+                and server_args_overrides.get("enable_torch_compile")
+            ):
+                logger.warning(
+                    "enable_torch_compile on NPU is not supported "
+                    "(dynamo crashes); disabling to avoid silent no-op or crash."
+                )
+                server_args_overrides = dict(server_args_overrides)
+                server_args_overrides["enable_torch_compile"] = False
             out["server_args_overrides"] = server_args_overrides
         else:
             pass
