@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import runpy
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -211,3 +212,167 @@ hook = _ExternalAdapter._required_external_hook
         assert probe.read_text(encoding="utf-8") == kept + local.replace(
             "_local_helper", "local_helper"
         )
+
+
+def file_violations(source: str, tmp_path: Path) -> list[tuple[int, str]]:
+    checker = load_checker()
+    path = tmp_path / "sample.py"
+    path.write_text(source, encoding="utf-8")
+    return [
+        (violation.lineno, violation.name) for violation in checker.check_file(path)
+    ]
+
+
+def test_noqa_in_class_body_does_not_exempt_class_name(tmp_path: Path) -> None:
+    source = """
+class _Hidden:
+    def method(self) -> int:
+        return 1  # noqa: leading-underscore
+"""
+    assert file_violations(source, tmp_path) == [(2, "_Hidden")]
+
+
+def test_noqa_in_function_body_does_not_exempt_def_name(tmp_path: Path) -> None:
+    source = """
+def _helper() -> int:
+    value = 1  # noqa: leading-underscore
+    return value
+"""
+    assert file_violations(source, tmp_path) == [(2, "_helper")]
+
+
+def test_noqa_in_block_body_does_not_exempt_header_attributes(
+    tmp_path: Path,
+) -> None:
+    source = """
+def run(request) -> None:
+    with request._lock:
+        is_locked = True  # noqa: leading-underscore
+    if request._ready:
+        is_ready = True  # noqa: leading-underscore
+    for entry in request._entries:
+        is_seen = True  # noqa: leading-underscore
+"""
+    assert file_violations(source, tmp_path) == [
+        (3, "_lock"),
+        (5, "_ready"),
+        (7, "_entries"),
+    ]
+
+
+def test_noqa_on_a_wrapped_block_header_covers_the_header(tmp_path: Path) -> None:
+    source = """
+def run(request) -> None:
+    with (
+        request._lock
+    ):  # noqa: leading-underscore
+        is_locked = True
+"""
+    assert file_violations(source, tmp_path) == []
+
+
+def test_noqa_on_a_wrapped_except_header_covers_the_header(tmp_path: Path) -> None:
+    source = """
+def run() -> None:
+    try:
+        pass
+    except (
+        errors._Timeout,
+    ):  # noqa: leading-underscore
+        pass
+"""
+    assert file_violations(source, tmp_path) == []
+
+
+def test_noqa_on_a_wrapped_header_with_an_inline_body(tmp_path: Path) -> None:
+    source = """
+def run(request) -> None:
+    with (
+        request._lock
+    ): pass  # noqa: leading-underscore
+"""
+    assert file_violations(source, tmp_path) == []
+
+
+def test_attribute_assignment_is_reported_once(tmp_path: Path) -> None:
+    source = "def attach(request) -> None:\n    request._cache_key = 1\n"
+    assert file_violations(source, tmp_path) == [(2, "_cache_key")]
+
+
+def test_fix_renames_definitions_but_not_attributes() -> None:
+    source = """
+import threading
+
+
+class Worker(threading.Thread):
+    def _setup(self) -> None:
+        self._cache = {}
+
+    def run(self) -> None:
+        self._setup()
+        self._target(*self._args)
+"""
+    with probe_model_file(source) as (_checker, probe):
+        result = run_checker("--fix", str(probe))
+        rewritten = probe.read_text(encoding="utf-8")
+    assert result.returncode == 1
+    assert rewritten == source.replace("_setup", "setup")
+    assert "--fix renames only class and function names" in result.stderr
+
+
+def test_fix_renames_an_inherited_method_call_in_the_same_file() -> None:
+    source = """
+class Base:
+    def _setup(self) -> int:
+        return 42
+
+
+class Derived(Base):
+    def run(self) -> int:
+        return self._setup()
+"""
+    with probe_model_file(source) as (_checker, probe):
+        result = run_checker("--fix", str(probe))
+        rewritten = probe.read_text(encoding="utf-8")
+        namespace = runpy.run_path(str(probe))
+    assert result.returncode == 0, result.stderr
+    assert rewritten == source.replace("_setup", "setup")
+    assert namespace["Derived"]().run() == 42
+
+
+def test_fix_keeps_a_method_name_it_cannot_rename_everywhere() -> None:
+    source = """
+class Worker:
+    def _setup(self) -> int:
+        return 1
+
+
+def use(worker: Worker) -> int:
+    return worker._setup()
+"""
+    with probe_model_file(source) as (_checker, probe):
+        result = run_checker("--fix", str(probe))
+        rewritten = probe.read_text(encoding="utf-8")
+        namespace = runpy.run_path(str(probe))
+    assert result.returncode == 1
+    assert rewritten == source
+    assert namespace["use"](namespace["Worker"]()) == 1
+
+
+def test_fix_keeps_a_function_name_that_a_local_already_uses() -> None:
+    source = """
+def _lock_for(name: str) -> str:
+    return name
+
+
+def build(name: str) -> str:
+    lock_for = _lock_for(name)
+    return lock_for
+"""
+    with probe_model_file(source) as (_checker, probe):
+        result = run_checker("--fix", str(probe))
+        rewritten = probe.read_text(encoding="utf-8")
+        namespace = runpy.run_path(str(probe))
+    assert result.returncode == 1
+    assert rewritten == source
+    assert namespace["build"]("value") == "value"

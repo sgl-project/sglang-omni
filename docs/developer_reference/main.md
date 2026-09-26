@@ -92,16 +92,18 @@ Its references retain the same name. A comment such as
 `# skip leading-underscore class and function names` is not an exemption.
 
 The pre-commit hook runs `scripts/check_leading_underscore.py` and only reports
-violations. It does not rewrite files. To rename violating definitions and
-supported references within one file, run the fixer:
+violations. It does not rewrite files. To rename violating class and function
+definitions and their references within the same file, run the fixer and review
+the diff:
 
 ```bash
 python scripts/check_leading_underscore.py --fix
 ```
 
-The fixer does not update callers in other files, pytest fixture parameters, or
-string references such as `monkeypatch.setattr(module, "_name", ...)`. Review the
-diff, preserve third-party API names, and update those references explicitly.
+The fixer never renames attributes, and it does not update callers in other
+files, pytest fixture parameters, or string references such as
+`monkeypatch.setattr(module, "_name", ...)`. Rename those by hand, preserve
+third-party API names, and update those references explicitly.
 
 Every `if` under `sglang_omni/` must have an `else`, or belong to an `if`/`elif`
 chain that ends in `else`. Returning, raising, or a one-line body does not

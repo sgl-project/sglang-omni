@@ -357,86 +357,10 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
 
 
 class Qwen3OmniMoeTalkerDecoderLayer(Qwen3OmniMoeThinkerTextDecoderLayer):
-    """Talker decoder layer: inherit from Thinker, only replace MLP with Shared Expert MoE."""
+    """Talker decoder layer with routed and gated shared experts."""
 
-    def __init__(
-        self,
-        config: Qwen3OmniMoeTalkerTextConfig,
-        layer_id: int,
-        quant_config: Optional[QuantizationConfig] = None,
-        prefix: str = "",
-        alt_stream: Optional[torch.cuda.Stream] = None,
-    ) -> None:
-        # Call parent's __init__ (Thinker's DecoderLayer)
-        super().__init__(
-            config=config,
-            layer_id=layer_id,
-            quant_config=quant_config,
-            prefix=prefix,
-            alt_stream=alt_stream,
-        )
-
-        # Replace MLP with Talker's Shared Expert MoE
-        self.mlp = Qwen3OmniMoeTalkerSparseMoeBlock(
-            layer_id=layer_id,
-            config=config,
-            quant_config=quant_config,
-            prefix=add_prefix("mlp", prefix),
-        )
-
-    def forward(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        residual: Optional[torch.Tensor],
-        captured_last_layer_outputs: Optional[List[torch.Tensor]] = None,
-        **kwargs,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        hidden_states, residual = (
-            self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-                hidden_states,
-                residual,
-                forward_batch,
-                captured_last_layer_outputs=captured_last_layer_outputs,
-                **kwargs,
-            )
-        )
-
-        if hidden_states.shape[0] != 0:
-            hidden_states = self.self_attn(
-                positions=positions,
-                hidden_states=hidden_states,
-                forward_batch=forward_batch,
-            )
-        else:
-            pass
-
-        hidden_states, residual = self.layer_communicator.prepare_mlp(
-            hidden_states, residual, forward_batch
-        )
-
-        should_allreduce_fusion = (
-            self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
-                forward_batch
-            )
-        )
-        use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
-            forward_batch
-        )
-
-        hidden_states = self.mlp(
-            hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
-        )
-
-        if should_allreduce_fusion:
-            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        else:
-            hidden_states, residual = self.layer_communicator.postprocess_layer(
-                hidden_states, residual, forward_batch
-            )
-
-        return hidden_states, residual
+    # note (ratish): avoid constructing discarded experts that stay alive until cyclic gc
+    sparse_moe_block_cls = Qwen3OmniMoeTalkerSparseMoeBlock
 
 
 # ---------------------------------------------------------------------------

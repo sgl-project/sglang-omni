@@ -155,6 +155,7 @@ class FakeAudioEncoderModel:
 
 class FakeCode2WavModel:
     def __init__(self, *, total_upsample: int = 2, output_deficit: int = 0) -> None:
+        self.decoder = torch.nn.Module()
         self.total_upsample = total_upsample
         self.output_deficit = output_deficit
         self.calls: list[tuple[int, ...]] = []

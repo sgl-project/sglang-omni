@@ -14,12 +14,14 @@ Checked names:
 
 Nested functions, and classes defined inside functions, may keep a leading
 underscore. Dunder names, a lone "_", and vendor copies are ignored. A line
-may opt out with "# noqa: leading-underscore". ALLOWED_DEFS is only the
-existing third-party method exceptions; those names are also ignored as
+may opt out with "# noqa: leading-underscore". On a class, def, with, if,
+or other block, the noqa covers the header, not the body. ALLOWED_DEFS is only
+the existing third-party method exceptions; those names are also ignored as
 attributes in the same file.
 
---fix rewrites one file at a time, like isort. Same-scope public-name
-collisions are left for the human to resolve. It does not rewrite other files.
+--fix renames class and function definitions and their references, one file at
+a time. It never renames attributes. Same-scope public-name collisions are left
+for the human to resolve.
 """
 
 from __future__ import annotations
@@ -139,13 +141,17 @@ class Site:
 class RenamePlan:
     module_renames: dict[str, str]
     method_renames: dict[str, dict[str, str]]
-    attribute_renames: dict[str, dict[str, str]]
 
     def is_empty(self) -> bool:
-        return (
-            not self.module_renames
-            and not self.method_renames
-            and not self.attribute_renames
+        return not self.module_renames and not self.method_renames
+
+    def without_methods(self, names: set[str]) -> RenamePlan:
+        kept = {
+            owner: {old: new for old, new in mapping.items() if old not in names}
+            for owner, mapping in self.method_renames.items()
+        }
+        return RenamePlan(
+            self.module_renames, {owner: m for owner, m in kept.items() if m}
         )
 
 
@@ -186,17 +192,6 @@ def is_self_or_cls(node: ast.AST) -> bool:
     return isinstance(node, ast.Name) and node.id in {"self", "cls"}
 
 
-def iter_assign_targets(target: ast.AST) -> list[ast.AST]:
-    if isinstance(target, (ast.Tuple, ast.List)):
-        nested: list[ast.AST] = []
-        for element in target.elts:
-            nested.extend(iter_assign_targets(element))
-        return nested
-    if isinstance(target, ast.Starred):
-        return iter_assign_targets(target.value)
-    return [target]
-
-
 class LeadingUnderscoreVisitor(ast.NodeVisitor):
     def __init__(self, path: Path, source_lines: list[str]) -> None:
         self.path = path
@@ -234,19 +229,6 @@ class LeadingUnderscoreVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self.function_depth -= 1
 
-    def visit_Assign(self, node: ast.Assign) -> None:
-        for target in node.targets:
-            self._record_assigned_attribute(target)
-        self.generic_visit(node)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self._record_assigned_attribute(node.target)
-        self.generic_visit(node)
-
-    def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self._record_assigned_attribute(node.target)
-        self.generic_visit(node)
-
     def visit_Attribute(self, node: ast.Attribute) -> None:
         column = (node.end_col_offset or 0) - len(node.attr)
         self._record_name(node.attr, node.lineno, column, "attribute", node)
@@ -255,13 +237,6 @@ class LeadingUnderscoreVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         self._record_getattr(node)
         self.generic_visit(node)
-
-    def _record_assigned_attribute(self, target: ast.AST) -> None:
-        for item in iter_assign_targets(target):
-            if not isinstance(item, ast.Attribute) or is_self_or_cls(item.value):
-                continue
-            column = (item.end_col_offset or 0) - len(item.attr)
-            self._record_name(item.attr, item.lineno, column, "attribute", item)
 
     def _record_getattr(self, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name) or node.func.id != "getattr":
@@ -290,12 +265,22 @@ class LeadingUnderscoreVisitor(ast.NodeVisitor):
 
     def statement_has_noqa(self, node: ast.AST) -> bool:
         current: ast.AST | None = node
-        while current is not None and not isinstance(current, ast.stmt):
+        while current is not None and not isinstance(
+            current, (ast.stmt, ast.excepthandler)
+        ):
             current = getattr(current, "parent", None)
         if current is None:
             return False
         start = current.lineno
-        end = current.end_lineno or start
+        body = getattr(current, "body", None)
+        if isinstance(body, list) and body:
+            first = body[0]
+            if self.source_lines[first.lineno - 1][: first.col_offset].strip():
+                end = first.lineno
+            else:
+                end = max(first.lineno - 1, start)
+        else:
+            end = current.end_lineno or start
         return any(
             has_noqa(self.source_lines[index]) for index in range(start - 1, end)
         )
@@ -358,10 +343,14 @@ def resolve_targets(raw_paths: list[str]) -> list[Path]:
 
 def format_violation(violation: Violation) -> str:
     rel = repo_relative(violation.path)
+    if violation.kind == "attribute":
+        hint = "rename it (--fix renames only class and function names)"
+    else:
+        hint = "run with --fix"
     return (
         f"{rel}:{violation.lineno}:{violation.col}: "
         f"leading-underscore {violation.kind} {violation.name!r}; "
-        f"nested functions may keep '_'; run with --fix, or use a public "
+        f"nested functions may keep '_'; {hint}, or use a public "
         f"name / '# noqa: {NOQA_CODE}'"
     )
 
@@ -404,9 +393,16 @@ class ScopeIndex(ast.NodeVisitor):
         self.class_stack: list[str] = []
         self.module_names: set[str] = set()
         self.class_names: dict[str, set[str]] = defaultdict(set)
+        self.class_bases: dict[str, list[str]] = {}
+        self.class_owners: dict[str, list[str]] = defaultdict(list)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.add_name(node.name)
+        owner = ".".join([*self.class_stack, node.name])
+        self.class_owners[node.name].append(owner)
+        self.class_bases[owner] = [
+            base.id for base in node.bases if isinstance(base, ast.Name)
+        ]
         self.class_stack.append(node.name)
         self.generic_visit(node)
         self.class_stack.pop()
@@ -439,16 +435,46 @@ class ScopeIndex(ast.NodeVisitor):
             self.module_names.add(name)
 
 
+def bound_names(tree: ast.AST) -> set[str]:
+    """Every name the file binds in any scope: locals, parameters, imports."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.alias):
+            names.add(node.asname or node.name.split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            if node.name:
+                names.add(node.name)
+            else:
+                pass
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest:
+                names.add(node.rest)
+            else:
+                pass
+        else:
+            pass
+    return names
+
+
 class RenamePlanner(ast.NodeVisitor):
-    def __init__(self, wanted: set[tuple[int, str]], index: ScopeIndex) -> None:
+    def __init__(
+        self, wanted: set[tuple[int, str]], index: ScopeIndex, bound: set[str]
+    ) -> None:
         self.wanted = wanted
         self.index = index
+        self.bound = bound
         self.function_depth = 0
         self.class_stack: list[str] = []
         self.module_renames: dict[str, str] = {}
         self.method_renames: dict[str, dict[str, str]] = defaultdict(dict)
-        self.attribute_renames: dict[str, dict[str, str]] = defaultdict(dict)
-        self.class_defs: dict[str, set[str]] = defaultdict(set)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.consider(node)
@@ -482,54 +508,35 @@ class RenamePlanner(ast.NodeVisitor):
             if not owner
             else self.index.class_names.get(owner, set())
         )
-        if new in existing:
+        if new in existing or (not owner and new in self.bound):
             return
         if owner:
             self.method_renames[owner][name] = new
-            self.class_defs[owner].add(name)
         else:
             self.module_renames[name] = new
 
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        if is_self_or_cls(node.value) and (node.lineno, node.attr) in self.wanted:
-            self.consider_attribute(node.attr)
-        self.generic_visit(node)
 
-    def consider_attribute(self, name: str) -> None:
-        owner = ".".join(self.class_stack)
-        if not owner or name in self.class_defs.get(owner, set()):
-            return
-        new = public_name(name)
-        if new in self.index.class_names.get(owner, set()):
-            return
-        self.attribute_renames[owner][name] = new
-
-
-def file_attribute_renames(plan: RenamePlan) -> dict[str, str]:
-    agreed: dict[str, set[str]] = defaultdict(set)
-    for mapping in plan.attribute_renames.values():
-        for old, new in mapping.items():
-            agreed[old].add(new)
-    return {old: next(iter(news)) for old, news in agreed.items() if len(news) == 1}
-
-
-def plan_renames(tree: ast.AST, violations: list[Violation]) -> RenamePlan:
-    index = ScopeIndex()
-    index.visit(tree)
-    planner = RenamePlanner({(item.lineno, item.name) for item in violations}, index)
-    planner.visit(tree)
-    return RenamePlan(
-        planner.module_renames,
-        dict(planner.method_renames),
-        dict(planner.attribute_renames),
+def plan_renames(
+    tree: ast.AST, violations: list[Violation], index: ScopeIndex
+) -> RenamePlan:
+    planner = RenamePlanner(
+        {(item.lineno, item.name) for item in violations}, index, bound_names(tree)
     )
+    planner.visit(tree)
+    return RenamePlan(planner.module_renames, dict(planner.method_renames))
 
 
 class FixVisitor(ast.NodeVisitor):
-    def __init__(self, source_lines: list[str], plan: RenamePlan) -> None:
+    def __init__(
+        self, source_lines: list[str], plan: RenamePlan, index: ScopeIndex
+    ) -> None:
         self.source_lines = source_lines
         self.plan = plan
-        self.file_attributes = file_attribute_renames(plan)
+        self.index = index
+        self.method_names = {
+            old for mapping in plan.method_renames.values() for old in mapping
+        }
+        self.unresolved: set[str] = set()
         self.function_depth = 0
         self.class_stack: list[str] = []
         self.sites: list[Site] = []
@@ -577,66 +584,23 @@ class FixVisitor(ast.NodeVisitor):
         if new:
             self.add_site(node.lineno, node.col_offset, node.id, new)
 
-    def visit_Call(self, node: ast.Call) -> None:
-        self.rename_getattr(node)
-        self.generic_visit(node)
-
     def visit_Attribute(self, node: ast.Attribute) -> None:
         new = self.attribute_rename(node)
         lineno = node.end_lineno or node.lineno
         if new and not has_noqa(self.source_lines[lineno - 1]):
             col = (node.end_col_offset or 0) - len(node.attr)
             self.add_site(lineno, col, node.attr, new)
+        elif node.attr in self.method_names:
+            self.unresolved.add(node.attr)
+        else:
+            pass
         self.generic_visit(node)
-
-    def rename_getattr(self, node: ast.Call) -> None:
-        if not isinstance(node.func, ast.Name) or node.func.id != "getattr":
-            return
-        if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant):
-            return
-        old = node.args[1].value
-        if not isinstance(old, str):
-            return
-        new = self.file_attributes.get(old)
-        if new is None:
-            return
-        constant = node.args[1]
-        if has_noqa(self.source_lines[constant.lineno - 1]):
-            return
-        literal = self.source_lines[constant.lineno - 1][
-            constant.col_offset : constant.end_col_offset
-        ]
-        if old not in literal:
-            return
-        self.add_site(
-            constant.lineno,
-            constant.col_offset,
-            literal,
-            literal.replace(old, new, 1),
-        )
 
     def attribute_rename(self, node: ast.Attribute) -> str | None:
         if is_self_or_cls(node.value):
-            renamed = self.method_rename(node.attr)
-            if renamed is not None:
-                return renamed
-            renamed = self.field_rename(node.attr)
-            if renamed is not None:
-                return renamed
-            return self.file_attributes.get(node.attr)
+            return self.method_rename(node.attr)
         if isinstance(node.value, ast.Name):
             return self.class_attr_rename(node.value.id, node.attr)
-        return None
-
-    def field_rename(self, name: str) -> str | None:
-        current = ".".join(self.class_stack)
-        while current:
-            mapping = self.plan.attribute_renames.get(current)
-            if mapping and name in mapping:
-                return mapping[name]
-            if "." not in current:
-                break
-            current = current.rsplit(".", 1)[0]
         return None
 
     def method_rename(self, name: str) -> str | None:
@@ -648,6 +612,21 @@ class FixVisitor(ast.NodeVisitor):
             if "." not in current:
                 break
             current = current.rsplit(".", 1)[0]
+        return self.inherited_method_rename(".".join(self.class_stack), name)
+
+    def inherited_method_rename(self, owner: str, name: str) -> str | None:
+        pending = list(self.index.class_bases.get(owner, []))
+        seen: set[str] = set()
+        while pending:
+            base = pending.pop()
+            owners = self.index.class_owners.get(base, [])
+            if base in seen or len(owners) != 1:
+                continue
+            seen.add(base)
+            mapping = self.plan.method_renames.get(owners[0], {})
+            if name in mapping:
+                return mapping[name]
+            pending.extend(self.index.class_bases.get(owners[0], []))
         return None
 
     def class_attr_rename(self, class_name: str, attr: str) -> str | None:
@@ -666,11 +645,19 @@ def fix_file(path: Path) -> tuple[int, list[Violation]]:
     before.visit(tree)
     if not before.violations:
         return 0, []
-    plan = plan_renames(tree, before.violations)
+    index = ScopeIndex()
+    index.visit(tree)
+    plan = plan_renames(tree, before.violations, index)
+    visitor = FixVisitor(lines, plan, index)
+    visitor.visit(tree)
+    if visitor.unresolved:
+        plan = plan.without_methods(visitor.unresolved)
+        visitor = FixVisitor(lines, plan, index)
+        visitor.visit(tree)
+    else:
+        pass
     if plan.is_empty():
         return 0, before.violations
-    visitor = FixVisitor(source.splitlines(), plan)
-    visitor.visit(tree)
     rewritten = apply_sites(source, visitor.sites)
     if rewritten != source:
         path.write_text(rewritten, encoding="utf-8")
@@ -729,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fix",
         action="store_true",
-        help="Rename violating names in-place (current file only)",
+        help="Rename violating class and function names in place (current file only)",
     )
     args = parser.parse_args(argv)
     targets = resolve_targets(args.paths)
