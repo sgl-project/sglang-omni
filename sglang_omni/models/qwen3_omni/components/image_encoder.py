@@ -12,8 +12,10 @@ import torch.nn as nn
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
 from sglang_omni.models.qwen3_omni.components.vision_compat import (
     Qwen3OmniMoeVisionEncoderCompat,
+    vision_attention_forward,
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils import instantiate_module
 
 logger = logging.getLogger(__name__)
@@ -128,6 +130,35 @@ def build_visual(
         strict=True,
     )
     optimize_patch_embed(visual)
+    if visual.device.type == current_platform.device_type:
+        visual.joint_rope_kernel = current_platform.get_joint_rope_inplace_kernel()
+    else:
+        pass
+    if visual.joint_rope_kernel is not None:
+        # Note(YzXiao): Warm the loaded Q/K specialization before requests can trigger JIT.
+        num_heads = vision_cfg.num_heads
+        head_dimension = vision_cfg.hidden_size // num_heads
+        warmup_qkv = torch.zeros(
+            (1, 3, num_heads, head_dimension),
+            dtype=visual.dtype,
+            device=visual.device,
+        )
+        cos_sin_cache = torch.zeros(
+            (1, head_dimension), dtype=torch.float32, device=visual.device
+        )
+        cos_sin_cache[:, : head_dimension // 2] = 1
+        positions = torch.zeros(1, dtype=torch.int64, device=visual.device)
+        visual.joint_rope_kernel(
+            warmup_qkv[:, 0],
+            warmup_qkv[:, 1],
+            cos_sin_cache,
+            positions,
+            is_neox=True,
+        )
+        for block in visual.blocks:
+            block.attn.forward = types.MethodType(vision_attention_forward, block.attn)
+    else:
+        pass
     return visual
 
 
