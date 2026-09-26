@@ -6,9 +6,11 @@ Most docs live under `docs/` as Markdown cookbooks and guides. Start there if yo
 
 ### Install Dependency
 
+Run the documentation commands from the repository root:
+
 ```bash
 apt-get update && apt-get install -y pandoc parallel retry
-pip install -r requirements.txt
+pip install -r docs/requirements.txt
 ```
 
 ### Update Documentation
@@ -19,10 +21,10 @@ Edit the Markdown (or RST) under `docs/`. New pages must be listed in `index.rst
 - Preview locally:
 
 ```bash
-bash serve.sh
+bash docs/serve.sh
 
 # custom port
-PORT=8080 make serve
+PORT=8080 bash docs/serve.sh
 ```
 
 ## Style
