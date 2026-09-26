@@ -80,6 +80,11 @@ struct WorkerClientTests {
             if op == 'failure':
                 print(json.dumps(dict(id=request['id'], ok=False, error='Model unavailable')), flush=True)
                 continue
+            if op == 'prepare':
+                print(json.dumps(dict(id=request['id'], event='progress', message='downloading', fraction=0.25)), flush=True)
+                time.sleep(0.3)
+                print(json.dumps(dict(id=request['id'], ok=True)), flush=True)
+                continue
             os.write(2, b'PRIVATE_TRANSCRIPT_DO_NOT_LOG\n')
             progress = json.dumps(dict(id=request['id'], event='progress', message='loading')).encode() + b'\n'
             final = json.dumps(dict(id=request['id'], ok=True, text='你好 café',
@@ -121,12 +126,24 @@ struct WorkerClientTests {
         #expect(client.isRunning, "An ordinary model failure keeps the protocol usable")
         _ = try await client.request(["op": "echo"], python: python)
 
+        let preparing = Task { try await client.request(["op": "prepare"], python: python) }
+        for _ in 0..<100 {
+            if client.downloadFraction != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(client.downloadFraction == 0.25)
+        #expect(client.isPreparingSpeech && !client.speechModelReady)
+        _ = try await preparing.value
+        #expect(client.downloadFraction == nil, "A finished download must not leave a progress bar behind")
+        #expect(client.speechModelReady && !client.isPreparingSpeech)
+
         for operation in ["invalid", "oversized", "crash"] {
             do {
                 _ = try await client.request(["op": operation], python: python)
                 Issue.record("\(operation) must fail the request")
             } catch { #expect(!(error is CancellationError)) }
             #expect(!client.isRunning)
+            #expect(!client.speechModelReady, "The speech server dies with its worker")
             _ = try await client.request(["op": "echo"], python: python)
         }
 

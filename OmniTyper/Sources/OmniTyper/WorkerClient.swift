@@ -17,9 +17,15 @@ final class WorkerClient: ObservableObject {
 
     private var showingReady = false
     @Published private(set) var isRunning = false
+    // Note (Yifei Leng): Only a model download reports a fraction, so any other progress event clears it.
+    @Published private(set) var downloadFraction: Double?
+    // Note (Yifei Leng): The speech server lives and dies with this worker process.
+    @Published private(set) var speechModelReady = false
+    var isPreparingSpeech: Bool { pending?.preparesSpeech == true }
 
     private struct Pending {
         let id: String
+        let preparesSpeech: Bool
         let continuation: CheckedContinuation<[String: Any], Error>
     }
 
@@ -63,7 +69,8 @@ final class WorkerClient: ObservableObject {
                     data.append(0x0A)
                     try ensureProcess(python: python)
                     guard let input else { throw Failure("worker.noInput") }
-                    pending = Pending(id: requestID, continuation: continuation)
+                    pending = Pending(id: requestID, preparesSpeech: payload["op"] as? String == "prepare",
+                                      continuation: continuation)
                     statusText = payload["op"] as? String == "prepare" ? L("worker.preparing") : L("worker.processing")
                     showingReady = false
                     let workerGeneration = generation
@@ -220,8 +227,10 @@ final class WorkerClient: ObservableObject {
             guard responseID == pending?.id else { continue }
             if message["event"] as? String == "progress" {
                 if let progress = message["message"] as? String { statusText = String(progress.prefix(300)); showingReady = false }
+                downloadFraction = (message["fraction"] as? Double).map { min(max($0, 0), 1) }
             } else if let ok = message["ok"] as? Bool {
                 if ok {
+                    if isPreparingSpeech { speechModelReady = true }
                     statusText = L("worker.ready"); showingReady = true
                     finish(.success(message))
                 } else {
@@ -241,6 +250,7 @@ final class WorkerClient: ObservableObject {
     }
 
     private func finish(_ result: Result<[String: Any], Error>) {
+        downloadFraction = nil
         guard let pending else { return }
         self.pending = nil
         timeoutTask?.cancel()
@@ -279,6 +289,7 @@ final class WorkerClient: ObservableObject {
         stdoutEnded = false
         exitStatus = nil
         isRunning = false
+        speechModelReady = false
         pythonPath = nil
         guard let child = process else { return }
         process = nil
