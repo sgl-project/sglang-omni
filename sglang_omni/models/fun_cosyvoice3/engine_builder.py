@@ -65,15 +65,6 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         # SGLang needs CosyVoice-BlankEN/ which has config.json (model_type: qwen2)
         return self.blanken_dir()
 
-    def uses_torch_mps(self) -> bool:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        return (
-            not use_mlx()
-            and self.device is not None
-            and torch.device(self.device).type == "mps"
-        )
-
     def generation_defaults(
         self,
         *,

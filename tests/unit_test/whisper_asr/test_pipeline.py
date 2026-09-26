@@ -43,6 +43,21 @@ def encoder_graph_builder(**kwargs):
     return builder
 
 
+@pytest.fixture(autouse=True)
+def _default_backend(monkeypatch):
+    """Pin the backend so these expectations do not depend on the environment."""
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
+
+    from sglang_omni.models.whisper_asr import engine_builder
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+    monkeypatch.setattr(
+        engine_builder.WhisperASREngineBuilder,
+        "uses_torch_mps",
+        lambda self: False,
+    )
+
+
 def test_whisper_stage_defaults() -> None:
     signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
 
