@@ -766,12 +766,14 @@ def pack_tensors(
 ) -> tuple[torch.Tensor, list[TensorMeta]]:
     target_device = torch.device(device)
     entries, chunks, offset = [], [], 0
+    has_snapshot = False
     for path, tensor in tensors.items():
         flat = tensor.contiguous().view(torch.uint8).reshape(-1)
         if flat.device != target_device:
             flat = flat.to(device=target_device)
         else:
             pass
+        has_snapshot = not tensor.is_contiguous() or flat.device != tensor.device
         padding = pad_offset(offset, dtype_alignment(tensor.dtype))
         if padding:
             chunks.append(torch.zeros(padding, dtype=torch.uint8, device=target_device))
@@ -791,10 +793,13 @@ def pack_tensors(
         )
         offset += int(flat.numel())
     if not chunks:
-        chunks.append(torch.zeros(1, dtype=torch.uint8, device=target_device))
+        packed = torch.zeros(1, dtype=torch.uint8, device=target_device)
+    elif len(chunks) == 1 and has_snapshot:
+        packed = chunks[0]
     else:
-        pass
-    return torch.cat(chunks), entries
+        # note (ischencheng): Relay backpressure can yield before copying producer data.
+        packed = torch.cat(chunks)
+    return packed, entries
 
 
 async def read_transfer_buffer(
@@ -802,7 +807,15 @@ async def read_transfer_buffer(
     request_id: str,
     data_ref: DataRef,
 ) -> torch.Tensor:
-    buf = torch.zeros(
+    transfer_size = data_ref.buffer.info["transfer_info"]["size"]
+    if data_ref.buffer.length != transfer_size:
+        raise ValueError(
+            f"buffer length {data_ref.buffer.length} does not match "
+            f"transfer size {transfer_size}"
+        )
+    else:
+        pass
+    buf = torch.empty(
         data_ref.buffer.length,
         dtype=torch.uint8,
         device=relay_device(relay),
