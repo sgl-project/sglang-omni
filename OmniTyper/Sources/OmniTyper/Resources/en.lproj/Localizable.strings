@@ -136,7 +136,7 @@
 "home.title" = "Say it. Make it yours.";
 "home.subtitle" = "Speak in any app. Let your Mac take care of the words.";
 "home.permissions.title" = "Make yourself at home";
-"home.permissions.axStale" = "Accessibility was granted before and has stopped applying. An update changes this build's signature, which invalidates the grant while System Settings still shows it enabled. Remove OmniTyper under Privacy & Security > Accessibility, or run tccutil reset Accessibility org.sglang.OmniTyper, then grant it again and restart OmniTyper.";
+"home.permissions.axStale" = "Accessibility was granted before and has stopped applying. Changing the signing identity or updating an ad-hoc build can invalidate the grant while System Settings still shows it enabled. Remove OmniTyper under Privacy & Security > Accessibility, or run tccutil reset Accessibility org.sglang.OmniTyper, then grant it again and restart OmniTyper. Local builds now reuse a fixed signing identity.";
 "home.permissions.body" = "Two macOS permissions connect your voice to wherever you write.";
 "home.permissions.mic" = "Hear you only while recording";
 "home.permissions.ax" = "Use the shortcut and insert at your cursor";
@@ -271,7 +271,15 @@
 "settings.runtime" = "Runtime location";
 "settings.python" = "Python executable";
 "settings.runtimeNote" = "Set up the runtime with OmniTyper/scripts/setup.sh before preparing models.";
-"settings.downloadNote" = "First use downloads ASR weights from Hugging Face. Audio stays on this Mac; no telemetry is collected.";
+"settings.downloadNote" = "First use downloads ASR weights from the selected source. Changing source reloads the model on the next use. Cached models work offline. Audio stays on this Mac; no telemetry is collected.";
+"settings.modelSource" = "Model download source";
+"settings.modelScope" = "ModelScope (China)";
+"settings.shortcutCheckNote" = "Checks system shortcuts and registered global hotkeys. Some apps use private keyboard listeners; if a shortcut still conflicts, change it in either app. Press Esc to cancel shortcut capture.";
+"shortcut.needsModifier" = "Include Command, Control, Option, or Shift, or use F1–F12.";
+"shortcut.systemConflict" = "This combination is reserved by macOS. Choose another shortcut or change it in System Settings → Keyboard → Keyboard Shortcuts.";
+"shortcut.appConflict" = "Another app has registered this shortcut. Choose another combination or disable that app’s shortcut.";
+"shortcut.checkFailed" = "macOS could not register this shortcut for the conflict check. Choose another combination.";
+"shortcut.listenFailed" = "The keyboard listener could not start. Enable OmniTyper in Accessibility, then restart the app if this message persists.";
 "settings.textAPI" = "Text API";
 "settings.textAPINote" = "Connect Ollama or another OpenAI-compatible server for cleanup, translation, editing, and answers.";
 "settings.baseURL" = "Base URL (including /v1)";

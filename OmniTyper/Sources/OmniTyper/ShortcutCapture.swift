@@ -11,7 +11,7 @@ struct ShortcutCapture {
     }
 
     private static let chordMask: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-    private static let functionKeys: Set<UInt16> = [96, 97, 98, 99, 100, 101, 109, 111]
+    static let functionKeys: Set<UInt16> = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111]
     private var pendingModifier: UInt16?
 
     static func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags? {

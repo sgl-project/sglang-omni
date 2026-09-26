@@ -33,6 +33,90 @@ def request(**changes):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_modelscope_selection_reaches_asr_and_rejects_unknown_models(self):
+        model = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
+        instance = worker.Worker()
+        instance.asr.start = Mock()
+        instance.asr.url = "http://127.0.0.1:1234"
+        result = instance.handle(request(op="prepare", asr_model=model))
+        self.assertTrue(result["ok"])
+        self.assertEqual(instance.asr.start.call_args.args[1], model)
+        with self.assertRaises(ValueError):
+            instance.handle(request(op="prepare", asr_model="unknown/model"))
+
+    def test_modelscope_snapshot_repairs_incomplete_cache_without_hugging_face(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def download(model, **options):
+                self.assertEqual(model, "aufklarer/Qwen3-ASR-0.6B-MLX-4bit")
+                self.assertEqual(
+                    options["revision"], "3478f178e267548f04a6b616ff10beeb1e644e54"
+                )
+                if not options.get("local_files_only"):
+                    for name in (
+                        "config.json",
+                        "tokenizer_config.json",
+                        "vocab.json",
+                        "merges.txt",
+                        "model.safetensors",
+                        "model.safetensors.index.json",
+                    ):
+                        (root / name).touch()
+                return str(root)
+
+            with (
+                patch(
+                    "modelscope_hub.compat.snapshot_download.snapshot_download",
+                    side_effect=download,
+                ),
+                patch(
+                    "huggingface_hub.snapshot_download",
+                    side_effect=AssertionError("Must not use HF"),
+                ),
+            ):
+                path = server.model_snapshot(
+                    "aufklarer/Qwen3-ASR-0.6B-MLX-4bit",
+                    "3478f178e267548f04a6b616ff10beeb1e644e54",
+                )
+            self.assertEqual(path, directory)
+            config = json.loads((root / "preprocessor_config.json").read_text())
+            self.assertEqual(config["feature_size"], 128)
+            self.assertEqual(config["sampling_rate"], 16000)
+            self.assertTrue(config["return_attention_mask"])
+            self.assertTrue((root / "model.safetensors").is_file())
+            with (
+                patch(
+                    "modelscope_hub.compat.snapshot_download.snapshot_download",
+                    side_effect=lambda *a, **kw: (
+                        directory
+                        if kw.get("local_files_only")
+                        else self.fail("Cache hit went online")
+                    ),
+                ),
+                patch(
+                    "huggingface_hub.snapshot_download",
+                    side_effect=AssertionError("Must not use HF"),
+                ),
+            ):
+                self.assertEqual(
+                    server.model_snapshot(
+                        "aufklarer/Qwen3-ASR-0.6B-MLX-4bit",
+                        "3478f178e267548f04a6b616ff10beeb1e644e54",
+                    ),
+                    directory,
+                )
+            (root / "vocab.json").unlink()
+            with patch(
+                "modelscope_hub.compat.snapshot_download.snapshot_download",
+                return_value=directory,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                    server.model_snapshot(
+                        "aufklarer/Qwen3-ASR-0.6B-MLX-4bit",
+                        "3478f178e267548f04a6b616ff10beeb1e644e54",
+                    )
+
     def test_invalid_boundary_data(self):
         bad_requests = [
             [],
@@ -465,8 +549,15 @@ class WorkerTests(unittest.TestCase):
         with (
             patch.object(server.subprocess, "Popen", return_value=process) as launch,
             patch.object(server, "model_snapshot", return_value="/cached/pinned-model"),
+            patch.object(server.os, "killpg") as kill,
         ):
             instance.start(Mock())
+            instance.start(Mock())
+            self.assertEqual(launch.call_count, 1)
+            self.assertEqual(kill.call_count, 0)
+            instance.start(Mock(), "aufklarer/Qwen3-ASR-0.6B-MLX-4bit")
+            self.assertEqual(launch.call_count, 2)
+            self.assertEqual(kill.call_args_list[0].args, (123456, signal.SIGTERM))
         args = launch.call_args.args[0]
         self.assertIn("--enable-realtime", args)
         self.assertEqual(args[args.index("--host") + 1], "127.0.0.1")
