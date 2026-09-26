@@ -118,6 +118,33 @@ def resolve_acoustic_dtype(value: str | torch.dtype) -> torch.dtype:
     }[name]
 
 
+def resolve_fp32_flex_attention(
+    requested_fp32_flex_attention: bool | None,
+    *,
+    device_type: str,
+    dtype: torch.dtype,
+    attention_backend: str,
+) -> bool:
+    supports_fp32_flex_attention = (
+        device_type == "cuda"
+        and dtype is torch.float32
+        and attention_backend.strip().lower() == "torch_sdpa"
+    )
+    if requested_fp32_flex_attention is None:
+        return supports_fp32_flex_attention
+    else:
+        enable_fp32_flex_attention = boolean(
+            "fp32_flex_attention", requested_fp32_flex_attention
+        )
+        if enable_fp32_flex_attention and not supports_fp32_flex_attention:
+            raise ValueError(
+                "MiniMax Music 3 fp32_flex_attention requires "
+                "CUDA, dtype=float32, and attention_backend=torch_sdpa"
+            )
+        else:
+            return enable_fp32_flex_attention
+
+
 class MiniMaxMusic3AcousticDecoder:
     """Flow-matching DIT + DAC decoder."""
 
@@ -134,6 +161,7 @@ class MiniMaxMusic3AcousticDecoder:
         compile_acoustic: bool = True,
         breakable_cuda_graph: bool = False,
         breakable_cuda_graph_min_free_gb: float | None = None,
+        fp32_flex_attention: bool | None,
         cache_dit_fn_compute_blocks: int = 2,
         cache_dit_bn_compute_blocks: int = 2,
         cache_dit_max_warmup_steps: int = 4,
@@ -172,6 +200,12 @@ class MiniMaxMusic3AcousticDecoder:
         self.attention_backend = attention_backend.strip().lower()
         self.cache_dit = boolean("cache_dit", cache_dit)
         self.compile_acoustic = boolean("compile_acoustic", compile_acoustic)
+        self.fp32_flex_attention = resolve_fp32_flex_attention(
+            fp32_flex_attention,
+            device_type=self.device.type,
+            dtype=self.dtype,
+            attention_backend=self.attention_backend,
+        )
         self.breakable_cuda_graph_requested = boolean(
             "breakable_cuda_graph", breakable_cuda_graph
         )
@@ -216,7 +250,7 @@ class MiniMaxMusic3AcousticDecoder:
             f"MiniMax Music 3 PyTorch DIT/DAV loaded device={self.device} dtype={self.dtype} dit_parameters={sum((parameter.numel() for parameter in self.dit.parameters()))} dav_parameters={sum((parameter.numel() for parameter in self.dav.parameters()))} folded_weight_norms={removed_weight_norms} elapsed={time.perf_counter() - load_started:.1f}s"
         )
         logger.info(
-            f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
+            f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} fp32_flex_attention={self.dit.fp32_flex_attention} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
         )
 
     def build_dit(
@@ -240,6 +274,7 @@ class MiniMaxMusic3AcousticDecoder:
             self.dit = MiniMaxMusic3DIT(
                 compute_dtype=self.dtype,
                 attention_backend=self.attention_backend,
+                fp32_flex_attention=self.fp32_flex_attention,
             )
         self.dit.load_state_dict(state, strict=True, assign=True)
         del state
