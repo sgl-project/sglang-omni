@@ -10,9 +10,9 @@ import torch
 import torch.nn.functional as F
 
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
-from sglang_omni.models.minicpm_o.components.token2wav.flow import (
+from sglang_omni.models.minicpm_o.components.token2wav.flow import CausalConditionalCFM
+from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
     CapturedFlowGraph,
-    CausalConditionalCFM,
     FlowCudaGraphRunner,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.flow_graph_shapes import (

@@ -8,16 +8,16 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from sglang_omni.models.minicpm_o.components.token2wav.dit import (
-    DiT,
-    PackedDiTCudaGraphRunner,
-)
+from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
     build_fixed_packed_layout,
     pack_fixed_capacity,
     unpack_fixed_capacity,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.flow import CausalConditionalCFM
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    PackedDiTCudaGraphRunner,
+)
 
 
 @pytest.mark.parametrize("row_lengths,capacity", [((4, 2), 8), ((8, 1, 8, 1), 20)])

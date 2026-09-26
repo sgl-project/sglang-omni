@@ -20,13 +20,12 @@ from librosa.filters import mel as librosa_mel
 from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
 )
-from sglang_omni.models.minicpm_o.components.token2wav.dit import (
-    DiT,
-    PackedDiTCudaGraphRunner,
-)
+from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 from sglang_omni.models.minicpm_o.components.token2wav.flow import (
     CausalConditionalCFM,
     CausalMaskedDiffWithXvec,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
     FlowCudaGraphRunner,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.flow_graph_shapes import (
@@ -34,6 +33,9 @@ from sglang_omni.models.minicpm_o.components.token2wav.flow_graph_shapes import 
     build_default_flow_cuda_graph_shapes,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    PackedDiTCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
 )
