@@ -10,6 +10,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+import aiohttp
+
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.dataset.socialomni import (
