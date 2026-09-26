@@ -412,6 +412,27 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
+    def prepare_inputs(
+        self,
+        x: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        spks: torch.Tensor | None = None,
+        cond: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        t = self.t_embedder(t).unsqueeze(1)
+        x = pack([x, mu], "b * t")[0]
+        if spks is not None:
+            spks = repeat(spks, "b c -> b c t", t=x.shape[-1])
+            x = pack([x, spks], "b * t")[0]
+        else:
+            pass
+        if cond is not None:
+            x = pack([x, cond], "b * t")[0]
+        else:
+            pass
+        return x.transpose(1, 2), t
+
     def forward(
         self,
         x: torch.Tensor,
@@ -424,18 +445,7 @@ class DiT(nn.Module):
         packed_layout: FixedPackedLayout | None = None,
         packed_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
-        t = self.t_embedder(t).unsqueeze(1)
-        x = pack([x, mu], "b * t")[0]
-        if spks is not None:
-            spks = repeat(spks, "b c -> b c t", t=x.shape[-1])
-            x = pack([x, spks], "b * t")[0]
-        else:
-            pass
-        if cond is not None:
-            x = pack([x, cond], "b * t")[0]
-        else:
-            pass
-        x = x.transpose(1, 2)
+        x, t = self.prepare_inputs(x, mu, t, spks, cond)
         if self.enable_variable_length and x.shape[0] > 2:
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 packed_input = self.in_proj(x).to(torch.bfloat16)
@@ -505,17 +515,17 @@ class DiT(nn.Module):
     ) -> torch.Tensor:
         """Run packed DiT blocks with static tensor shapes for graph replay."""
         padded_length = x.shape[1]
-        packed = pack_fixed_capacity(
-            x,
-            layout,
-            out=captured_graph.inputs[0] if captured_graph is not None else None,
-        )
         if captured_graph is not None:
             assert self.packed_graph_runner is not None
-            packed = self.packed_graph_runner.replay(
-                captured_graph, conditioning.squeeze(1)
-            )
+            workspace = captured_graph.workspace
+            workspace.dense_input[: x.shape[0] * x.shape[1]].copy_(x.flatten(0, 1))
+            workspace.conditioning[:-1].copy_(conditioning.squeeze(1))
+            packed = self.packed_graph_runner.replay(captured_graph)
         else:
+            packed = pack_fixed_capacity(
+                x,
+                layout,
+            )
             conditioning_rows = torch.cat(
                 (
                     conditioning.squeeze(1),

@@ -37,6 +37,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
     build_fixed_packed_layout,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    CapturedPackedFlowGraph,
     FlowCudaGraphRunner,
 )
 
@@ -76,33 +77,35 @@ class CausalConditionalCFM(torch.nn.Module):
         graph_runner = self.graph_runner
         packed_runner = self.estimator.packed_graph_runner
         is_packed = self.estimator.enable_variable_length and x.shape[0] > 1
-        graph_key = (
-            graph_runner.fit(x) if graph_runner is not None and not is_packed else None
-        )
         packed_capacity = (
             packed_runner.fit(x.shape[0], x.shape[2], packed_valid_frames)
             if packed_runner is not None and is_packed
             else None
         )
+        graph_key = (
+            graph_runner.fit(x)
+            if graph_runner is not None
+            and (not is_packed or packed_capacity is not None)
+            else None
+        )
         packed_layout = (
             build_fixed_packed_layout(
                 mask_in.bool().squeeze(1).sum(dim=1, dtype=torch.int32),
-                x.shape[2],
+                graph_key[1] if graph_key is not None else x.shape[2],
                 packed_capacity,
                 self.estimator.blocks[0].conv.kernel_size - 1,
             )
             if packed_capacity is not None
             else None
         )
-        if graph_key is not None:
-            active_runner = graph_runner
-        elif packed_layout is not None:
-            active_runner = packed_runner
-        else:
-            active_runner = None
-        with active_runner.lock if active_runner is not None else nullcontext():
+        with (
+            graph_runner.lock if graph_key is not None else nullcontext(),
+            packed_runner.lock if packed_layout is not None else nullcontext(),
+        ):
             captured_flow = (
-                graph_runner.prepare(graph_key, x, mu_in, mask_in, spks_in, cond_in)
+                graph_runner.prepare(
+                    graph_key, x, mu_in, mask_in, spks_in, cond_in, packed_layout
+                )
                 if graph_key is not None
                 else None
             )
@@ -112,7 +115,11 @@ class CausalConditionalCFM(torch.nn.Module):
                 else None
             )
             for step in range(1, len(t_span)):
-                if captured_flow is not None:
+                if isinstance(captured_flow, CapturedPackedFlowGraph):
+                    graph_runner.run_packed_step(
+                        captured_flow, packed_runner, captured_packed, t, dt
+                    )
+                elif captured_flow is not None:
                     graph_runner.run_step(captured_flow, t, dt)
                 else:
                     x = self.euler_step(

@@ -177,12 +177,6 @@ class Token2Wav(torch.nn.Module):
                 if flow_cuda_graph_capture_shapes is None
                 else flow_cuda_graph_capture_shapes
             )
-            if flow_graph_shapes:
-                runner = FlowCudaGraphRunner(self.flow.decoder, device=device)
-                runner.capture(flow_graph_shapes)
-                self.flow.decoder.graph_runner = runner
-            else:
-                pass
             packed_graph_shapes = (
                 SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES
                 if packed_dit_cuda_graph_capture_shapes is None
@@ -194,6 +188,12 @@ class Token2Wav(torch.nn.Module):
                 )
                 packed_runner.capture(packed_graph_shapes)
                 self.flow.decoder.estimator.packed_graph_runner = packed_runner
+            else:
+                pass
+            if flow_graph_shapes:
+                runner = FlowCudaGraphRunner(self.flow.decoder, device=device)
+                runner.capture(flow_graph_shapes)
+                self.flow.decoder.graph_runner = runner
             else:
                 pass
         else:
