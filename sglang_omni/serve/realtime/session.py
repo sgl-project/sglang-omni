@@ -89,7 +89,7 @@ class RealtimeSession:
          ``self.conversation``. Cancelled assistant output is omitted, and a
          client truncate event removes completed output interrupted in playback.
          Items share the committed user item ID as their turn ID. When
-         ``session_object.max_history_turns`` is set, complete oldest turns are
+         session_object.max_history_turns is set, complete oldest turns are
          dropped after each turn.
     """
 
@@ -164,7 +164,7 @@ class RealtimeSession:
         await self.send(
             make_event(
                 "session.created",
-                session=self._session_payload(),
+                session=self.session_payload(),
             )
         )
 
@@ -210,8 +210,12 @@ class RealtimeSession:
                     "max_history_turns must be null or a positive integer.",
                 )
                 return
+            else:
+                pass
             # Null is meaningful for this field: it restores unbounded history.
             update["max_history_turns"] = max_history_turns
+        else:
+            pass
         current = self.session_object.model_dump(mode="json")
         turn_detection_update = update.pop("turn_detection", _UNSET)
         try:
@@ -321,7 +325,7 @@ class RealtimeSession:
         else:
             pass
         self.session_object = candidate
-        self._enforce_history_bound()
+        self.enforce_history_bound()
         if replacement_vad is not None and had_pending_audio:
             await self.send(make_event("input_audio_buffer.cleared"))
         else:
@@ -329,11 +333,11 @@ class RealtimeSession:
         await self.send(
             make_event(
                 "session.updated",
-                session=self._session_payload(),
+                session=self.session_payload(),
             )
         )
 
-    def _session_payload(self) -> dict[str, Any]:
+    def session_payload(self) -> dict[str, Any]:
         payload = self.session_object.model_dump(exclude_none=True)
         # Null advertises the supported, unbounded state to clients.
         payload["max_history_turns"] = self.session_object.max_history_turns
@@ -718,7 +722,7 @@ class RealtimeSession:
                 )
             else:
                 pass
-            self._enforce_history_bound()
+            self.enforce_history_bound()
         finally:
             if response_output is not None:
                 self.pending_assistant_item_ids.discard(response_output.item_id)
@@ -726,17 +730,21 @@ class RealtimeSession:
             else:
                 pass
 
-    def _enforce_history_bound(self) -> None:
-        """Drop complete oldest turns beyond ``max_history_turns``."""
+    def enforce_history_bound(self) -> None:
+        """Drop complete oldest turns beyond max_history_turns."""
         max_turns = self.session_object.max_history_turns
         if max_turns is None:
             return
+        else:
+            pass
 
         retained_turn_ids: set[str] = set()
         for item in reversed(self.conversation):
             retained_turn_ids.add(item.turn_id)
             if len(retained_turn_ids) == max_turns:
                 break
+            else:
+                pass
         self.conversation[:] = [
             item for item in self.conversation if item.turn_id in retained_turn_ids
         ]

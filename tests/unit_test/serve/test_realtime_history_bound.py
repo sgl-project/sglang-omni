@@ -7,54 +7,56 @@ import pytest
 
 from sglang_omni.client.types import CompletionStreamChunk
 from sglang_omni.serve.realtime.session import RealtimeSession
-from tests.unit_test.serve.test_realtime_barge_in import _chunk, _session
-from tests.unit_test.serve.test_realtime_history_truncation import _assistant_item_id
+from tests.unit_test.serve.test_realtime_barge_in import make_chunk, make_session
+from tests.unit_test.serve.test_realtime_history_truncation import (
+    make_assistant_item_id,
+)
 
 StreamFactory = Callable[[], AsyncIterator[CompletionStreamChunk]]
 
 
-def _response_stream(text: str) -> StreamFactory:
+def response_stream(text: str) -> StreamFactory:
     async def response() -> AsyncIterator[CompletionStreamChunk]:
-        yield _chunk(text=text)
-        yield _chunk(finish_reason="stop")
-        yield _chunk(modality="audio")
-        yield _chunk(modality="audio", finish_reason="stop")
+        yield make_chunk(text=text)
+        yield make_chunk(finish_reason="stop")
+        yield make_chunk(modality="audio")
+        yield make_chunk(modality="audio", finish_reason="stop")
 
     return response
 
 
-def _transcription_stream(text: str) -> StreamFactory:
+def transcription_stream(text: str) -> StreamFactory:
     async def transcription() -> AsyncIterator[CompletionStreamChunk]:
-        yield _chunk(text=text)
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text=text)
+        yield make_chunk(finish_reason="stop")
 
     return transcription
 
 
-def _turn_streams(turns: int) -> list[StreamFactory]:
+def turn_streams(turns: int) -> list[StreamFactory]:
     streams: list[StreamFactory] = []
     for index in range(turns):
-        streams.append(_response_stream(f"answer-{index}"))
-        streams.append(_transcription_stream(f"question-{index}"))
+        streams.append(response_stream(f"answer-{index}"))
+        streams.append(transcription_stream(f"question-{index}"))
     return streams
 
 
-async def _run_turns(session: RealtimeSession, turns: int) -> None:
+async def run_turns(session: RealtimeSession, turns: int) -> None:
     for index in range(turns):
         await session.run_turn(f"user-item-{index}", "audio")
 
 
-def _history(session: RealtimeSession) -> list[tuple[str, str]]:
+def history_items(session: RealtimeSession) -> list[tuple[str, str]]:
     return [(item.role, item.text) for item in session.conversation]
 
 
 @pytest.mark.asyncio
 async def test_default_history_is_unbounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    session, _, _ = _session(monkeypatch, _turn_streams(3))
+    session, _, _ = make_session(monkeypatch, turn_streams(3))
 
-    await _run_turns(session, 3)
+    await run_turns(session, 3)
 
-    assert _history(session) == [
+    assert history_items(session) == [
         ("user", "question-0"),
         ("assistant", "answer-0"),
         ("user", "question-1"),
@@ -68,14 +70,14 @@ async def test_default_history_is_unbounded(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_bound_keeps_most_recent_complete_turns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, _, _ = _session(monkeypatch, _turn_streams(3))
+    session, _, _ = make_session(monkeypatch, turn_streams(3))
     await session.dispatch(
         {"type": "session.update", "session": {"max_history_turns": 2}}
     )
 
-    await _run_turns(session, 3)
+    await run_turns(session, 3)
 
-    assert _history(session) == [
+    assert history_items(session) == [
         ("user", "question-1"),
         ("assistant", "answer-1"),
         ("user", "question-2"),
@@ -98,19 +100,19 @@ async def test_bound_keeps_single_sided_turn_intact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     streams = [
-        _response_stream("answer-0"),
-        _transcription_stream("question-0"),
-        _response_stream(response_text),
-        _transcription_stream(transcript_text),
+        response_stream("answer-0"),
+        transcription_stream("question-0"),
+        response_stream(response_text),
+        transcription_stream(transcript_text),
     ]
-    session, _, _ = _session(monkeypatch, streams)
+    session, _, _ = make_session(monkeypatch, streams)
     await session.dispatch(
         {"type": "session.update", "session": {"max_history_turns": 1}}
     )
 
-    await _run_turns(session, 2)
+    await run_turns(session, 2)
 
-    assert _history(session) == expected_history
+    assert history_items(session) == expected_history
     assert {item.turn_id for item in session.conversation} == {"user-item-1"}
 
 
@@ -118,14 +120,14 @@ async def test_bound_keeps_single_sided_turn_intact(
 async def test_new_bound_applies_to_existing_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, _, _ = _session(monkeypatch, _turn_streams(3))
-    await _run_turns(session, 3)
+    session, _, _ = make_session(monkeypatch, turn_streams(3))
+    await run_turns(session, 3)
 
     await session.dispatch(
         {"type": "session.update", "session": {"max_history_turns": 1}}
     )
 
-    assert _history(session) == [
+    assert history_items(session) == [
         ("user", "question-2"),
         ("assistant", "answer-2"),
     ]
@@ -135,7 +137,7 @@ async def test_new_bound_applies_to_existing_history(
 async def test_session_events_echo_and_clear_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _ = _session(monkeypatch, [])
+    session, websocket, _ = make_session(monkeypatch, [])
 
     async def disconnect() -> dict[str, str]:
         return {"type": "websocket.disconnect"}
@@ -161,11 +163,27 @@ async def test_session_events_echo_and_clear_bound(
 
 
 @pytest.mark.asyncio
+async def test_omitted_bound_preserves_current_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _ = make_session(monkeypatch, [])
+    await session.dispatch(
+        {"type": "session.update", "session": {"max_history_turns": 5}}
+    )
+
+    await session.dispatch({"type": "session.update", "session": {"temperature": 0.5}})
+
+    assert session.session_object.max_history_turns == 5
+    assert websocket.events[-1]["type"] == "session.updated"
+    assert websocket.events[-1]["session"]["max_history_turns"] == 5
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("value", [0, -1])
 async def test_invalid_bound_rejected(
     value: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    session, websocket, _ = _session(monkeypatch, [])
+    session, websocket, _ = make_session(monkeypatch, [])
 
     await session.dispatch(
         {"type": "session.update", "session": {"max_history_turns": value}}
@@ -181,7 +199,7 @@ async def test_invalid_bound_rejected(
 async def test_non_integer_bound_returns_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _ = _session(monkeypatch, [])
+    session, websocket, _ = make_session(monkeypatch, [])
 
     await session.dispatch(
         {"type": "session.update", "session": {"max_history_turns": "1"}}
@@ -197,13 +215,13 @@ async def test_non_integer_bound_returns_error(
 async def test_truncate_evicted_assistant_item_returns_item_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _ = _session(monkeypatch, _turn_streams(2))
+    session, websocket, _ = make_session(monkeypatch, turn_streams(2))
     await session.dispatch(
         {"type": "session.update", "session": {"max_history_turns": 1}}
     )
 
     await session.run_turn("user-item-0", "audio")
-    evicted_item_id = _assistant_item_id(websocket.events)
+    evicted_item_id = make_assistant_item_id(websocket.events)
 
     await session.run_turn("user-item-1", "audio")
     history_before = list(session.conversation)
