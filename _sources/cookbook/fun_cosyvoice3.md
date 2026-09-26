@@ -265,18 +265,18 @@ On the other hand, decrease the admission budget to reduce latency and lower pea
 
 ### Vocoder Configuration
 
-Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs are on by default. `enable_dit_torch_compile` and `enable_flow_estimator_trt` stay opt-in and mutually exclusive.
+Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. `enable_flow_estimator_trt` stays opt-in and is mutually exclusive with DiT compile.
 
 The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
 
 ### torch.compile for the DiT backbone
 
-`torch.compile` is off by default. Enable it when you want the lowest DiT kernel-launch overhead. The first startup with an empty Inductor cache takes about 100 s and builds one symbolic (`dynamic=True`) graph for every utterance length; later starts reuse that cache. Keep the cache so you do not pay the compile cost again (`~/.cache/torch/inductor`, or `TORCHINDUCTOR_CACHE_DIR`).
+`torch.compile` is on by default. It reduces DiT kernel-launch overhead for supported TTS execution paths, including streaming PackedDiT. The compiled path uses symbolic dynamic shapes (`dynamic=True`) to support varying utterance lengths. Existing CUDA Graph behavior is unchanged. Pass `enable_dit_torch_compile=false` to run the DiT eager.
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --vocoder.factory.enable_dit_torch_compile true \
+  --vocoder.factory.enable_dit_torch_compile false \
   --port 8000
 ```
 
