@@ -13,6 +13,16 @@ import torch.nn.functional as F
 from einops import pack, repeat
 from torch.nn.attention.varlen import varlen_attn
 
+from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
+    FixedPackedLayout,
+    pack_fixed_capacity,
+    unpack_fixed_capacity,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    CapturedPackedDiTGraph,
+    PackedDiTCudaGraphRunner,
+)
+
 TIMESTEP_MAX_PERIOD = 10000
 
 
@@ -367,6 +377,7 @@ class DiT(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.enable_variable_length = enable_variable_length
+        self.packed_graph_runner: PackedDiTCudaGraphRunner | None = None
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.in_proj = nn.Linear(in_channels, hidden_size)
         self.blocks = nn.ModuleList(
@@ -401,15 +412,14 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-    def forward(
+    def prepare_inputs(
         self,
         x: torch.Tensor,
-        mask: torch.Tensor,
         mu: torch.Tensor,
         t: torch.Tensor,
         spks: torch.Tensor | None = None,
         cond: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         t = self.t_embedder(t).unsqueeze(1)
         x = pack([x, mu], "b * t")[0]
         if spks is not None:
@@ -421,13 +431,35 @@ class DiT(nn.Module):
             x = pack([x, cond], "b * t")[0]
         else:
             pass
-        x = x.transpose(1, 2)
-        attn_mask = mask.bool()
-        lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
+        return x.transpose(1, 2), t
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        spks: torch.Tensor | None = None,
+        cond: torch.Tensor | None = None,
+        *,
+        packed_layout: FixedPackedLayout | None = None,
+        packed_graph: CapturedPackedDiTGraph | None = None,
+    ) -> torch.Tensor:
+        x, t = self.prepare_inputs(x, mu, t, spks, cond)
         if self.enable_variable_length and x.shape[0] > 2:
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 packed_input = self.in_proj(x).to(torch.bfloat16)
-                return self.forward_packed(packed_input, t.to(torch.bfloat16), lengths)
+                conditioning = t.to(torch.bfloat16)
+                if packed_layout is not None:
+                    return self.forward_packed_fixed(
+                        packed_input, conditioning, packed_layout, packed_graph
+                    )
+                else:
+                    lengths = mask.bool().squeeze(1).sum(dim=1, dtype=torch.int32)
+                    return self.forward_packed(packed_input, conditioning, lengths)
+        else:
+            pass
+        attn_mask = mask.bool()
         x = self.in_proj(x)
         for block in self.blocks:
             x = block(x, t, attn_mask)
@@ -461,6 +493,67 @@ class DiT(nn.Module):
             dtype=torch.bool,
         )
         conv_valid[conv_positions] = True
+        x = self.run_packed_blocks(
+            x,
+            conditioning,
+            sequence_ids,
+            cu_seqlens,
+            max_length,
+            conv_positions,
+            conv_valid,
+        )
+        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
+        dense[valid] = x
+        return dense.transpose(1, 2)
+
+    def forward_packed_fixed(
+        self,
+        x: torch.Tensor,
+        conditioning: torch.Tensor,
+        layout: FixedPackedLayout,
+        captured_graph: CapturedPackedDiTGraph | None = None,
+    ) -> torch.Tensor:
+        """Run packed DiT blocks with static tensor shapes for graph replay."""
+        padded_length = x.shape[1]
+        if captured_graph is not None:
+            assert self.packed_graph_runner is not None
+            workspace = captured_graph.workspace
+            workspace.dense_input[: x.shape[0] * x.shape[1]].copy_(x.flatten(0, 1))
+            workspace.conditioning[:-1].copy_(conditioning.squeeze(1))
+            packed = self.packed_graph_runner.replay(captured_graph)
+        else:
+            packed = pack_fixed_capacity(
+                x,
+                layout,
+            )
+            conditioning_rows = torch.cat(
+                (
+                    conditioning.squeeze(1),
+                    conditioning.new_zeros((1, conditioning.shape[-1])),
+                ),
+                dim=0,
+            )
+            packed = self.run_packed_blocks(
+                packed,
+                conditioning_rows,
+                layout.row_ids,
+                layout.cu_seqlens,
+                padded_length,
+                layout.conv_positions,
+                layout.conv_valid,
+            )
+        return unpack_fixed_capacity(packed, layout).transpose(1, 2)
+
+    def run_packed_blocks(
+        self,
+        x: torch.Tensor,
+        conditioning: torch.Tensor,
+        sequence_ids: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_length: int,
+        conv_positions: torch.Tensor,
+        conv_valid: torch.Tensor,
+    ) -> torch.Tensor:
         for block in self.blocks:
             x = block.forward_packed(
                 x,
@@ -472,6 +565,4 @@ class DiT(nn.Module):
                 conv_valid,
             )
         x = self.final_layer.forward_packed(x, conditioning, sequence_ids)
-        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
-        dense[valid] = x
-        return dense.transpose(1, 2)
+        return x
