@@ -1,0 +1,32 @@
+:root {
+    font-family: system-ui, sans-serif;
+    color: #202124;
+    background: #fafafa;
+    line-height: 1.6;
+}
+main { max-width: 42rem; margin: 3rem auto; padding: 0 1rem; }
+h1 { margin-bottom: 0; }
+h2 { font-size: 1rem; }
+p { color: #5f6368; }
+.controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+button {
+    font: inherit;
+    padding: 0.5rem 1rem;
+    border: 1px solid #bbb;
+    border-radius: 0.4rem;
+    background: white;
+    cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button:focus-visible { outline: 2px solid #245dc1; outline-offset: 2px; }
+button[aria-pressed="true"] { background: #e4ecfa; }
+pre {
+    min-height: 10rem;
+    padding: 1rem;
+    border: 1px solid #ddd;
+    border-radius: 0.4rem;
+    background: white;
+    font: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

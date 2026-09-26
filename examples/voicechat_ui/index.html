@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>VoiceChat example</title>
+        <link rel="stylesheet" href="/voicechat-assets/style.css" />
+    </head>
+    <body>
+        <main>
+            <h1>VoiceChat</h1>
+            <p>直接与模型对话。建议戴耳机，每次最多 4 分钟。</p>
+            <div class="controls">
+                <button id="start">开始对话</button>
+                <button id="stop" disabled>结束</button>
+                <button id="mute" disabled aria-pressed="false">静音麦克风</button>
+            </div>
+            <p id="status" role="status">点击开始，并允许使用麦克风。</p>
+            <h2>模型回复</h2>
+            <pre id="transcript" aria-label="模型回复文本"></pre>
+        </main>
+        <script type="module" src="/voicechat-assets/app.mjs"></script>
+    </body>
+</html>
