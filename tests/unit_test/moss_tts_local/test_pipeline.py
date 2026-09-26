@@ -735,6 +735,21 @@ def test_moss_local_engine_uses_text_backbone_context(
     )
 
 
+def test_moss_tts_local_generation_defaults_enables_torch_compile() -> None:
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=True,
+        async_decode_min_batch_size=1,
+        total_gpu_memory_fraction=0.5,
+        codec_mem_reserve=0.0,
+    )
+
+    assert builder.generation_defaults(dtype="bfloat16")["enable_torch_compile"] is True
+
+
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

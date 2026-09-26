@@ -98,6 +98,7 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
     assert signature.parameters["pre_lm_max_pending"].default == 32
     assert signature.parameters["enable_encoder_cuda_graph"].default is False
+    assert signature.parameters["enable_torch_compile"].default is True
     assert signature.parameters["stream_emit_interval_s"].default == 0.05
 
 

@@ -9,8 +9,10 @@ same on an accelerator-less host.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.model_executor.cuda_graph_config import Backend
 
@@ -22,8 +24,15 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
-from sglang_omni.utils.gpu_compat import apply_torch_compile_cache_env
+from sglang_omni.utils.gpu_compat import (
+    apply_gpu_compat_env_defaults,
+    apply_torch_compile_cache_env,
+)
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
+
+DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY = str(
+    Path.home() / ".cache" / "sglang-omni" / "torchinductor"
+)
 
 
 def test_builder_record_is_resolved_with_the_cuda_graph_config_declared(
@@ -91,12 +100,42 @@ def test_builder_preserves_explicit_torch_compile_off(tmp_path: Path) -> None:
     assert resolution_result(server_args, "enable_torch_compile") is False
 
 
-def test_torch_compile_cache_env_sets_default_and_keeps_existing() -> None:
+def test_torchinductor_cache_directory_defaults_to_sglang_omni_home_cache() -> None:
     env: dict[str, str] = {}
-    cache_dir = apply_torch_compile_cache_env(env)
 
-    assert cache_dir == env["TORCHINDUCTOR_CACHE_DIR"]
-    assert cache_dir.endswith("sglang-omni/torchinductor")
+    cache_directory = apply_torch_compile_cache_env(env)
 
-    env["TORCHINDUCTOR_CACHE_DIR"] = "/tmp/custom-inductor"
-    assert apply_torch_compile_cache_env(env) == "/tmp/custom-inductor"
+    assert cache_directory == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
+
+
+def test_torchinductor_cache_directory_keeps_existing_value() -> None:
+    env = {"TORCHINDUCTOR_CACHE_DIR": "/var/cache/custom-torchinductor"}
+
+    assert apply_torch_compile_cache_env(env) == "/var/cache/custom-torchinductor"
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == "/var/cache/custom-torchinductor"
+
+
+def test_server_args_builder_pins_torchinductor_cache_directory_when_unset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+
+    build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path),
+        context_length=2048,
+        device="cuda",
+    )
+
+    assert (
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
+    )
+
+
+def test_gpu_compat_env_defaults_pin_torchinductor_cache_directory_when_unset() -> None:
+    env = {"FLASHINFER_USE_CUDA_NORM": "0"}
+
+    apply_gpu_compat_env_defaults(env)
+
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
