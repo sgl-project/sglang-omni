@@ -196,10 +196,17 @@ def decode_stage(*, process: str) -> StageConfig:
     )
 
 
+# Note (wenyao): Reserve about 20 seconds of speech at 12.5 frames/s for admission.
+TALKER_MAX_NEW_TOKENS_ESTIMATION = "256"
+
+
 def talker_stage_env() -> dict[str, str]:
     # Note (jeffro): FlashInfer CUTLASS fused finalize uses BF16 atomic-add;
     # accumulation order is not fixed and can flip Talker codec tokens.
-    env = {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}
+    env = {
+        "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
+        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": TALKER_MAX_NEW_TOKENS_ESTIMATION,
+    }
     if current_platform.is_rocm():
         # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
         # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
