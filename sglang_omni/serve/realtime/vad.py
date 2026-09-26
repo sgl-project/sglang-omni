@@ -60,6 +60,8 @@ class SileroSpeechModel:
     def reset(self) -> None:
         if hasattr(self.model, "reset_states"):
             self.model.reset_states()  # type: ignore[union-attr]
+        else:
+            pass
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,8 @@ class StatelessVAD:
             boundary = self.step(frame, in_speech=in_speech())
             if boundary is None:
                 continue
+            else:
+                pass
             if boundary.started:
                 await on_started(boundary.sample)
             else:
@@ -146,12 +150,16 @@ class StatelessVAD:
             return Boundary(
                 started=True, sample=frame.start_sample - self.prefix_padding_samples
             )
+        else:
+            pass
         if (
             not speech
             and in_speech
             and self.silence_run_samples >= self.silence_samples
         ):
             return Boundary(started=False, sample=self.last_speech_sample)
+        else:
+            pass
         return None
 
     def reset(self) -> None:
