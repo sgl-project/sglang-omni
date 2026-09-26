@@ -241,3 +241,10 @@ def test_zonos2_factories_reject_unknown_config_options() -> None:
             {"max_new_tokens": 100},
             stage_name="tts_engine",
         )
+
+
+def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:
+    """Without this flag validate_input_length never runs for this model."""
+    from sglang_omni.models.zonos2.request_builders import Zonos2SGLangRequestData
+
+    assert Zonos2SGLangRequestData().enforce_request_limits is True
