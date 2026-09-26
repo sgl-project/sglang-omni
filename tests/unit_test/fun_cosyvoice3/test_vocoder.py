@@ -983,10 +983,14 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
     }
 
 
+<<<<<<< HEAD
+def executor_compiles(monkeypatch, **kwargs) -> bool:
+=======
 def create_scheduler_recording_native_compile(
     monkeypatch,
     **kwargs,
 ) -> tuple[list[torch.nn.Module], FunCosyVoice3StreamingVocoderScheduler]:
+>>>>>>> upstream/main
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
@@ -1098,6 +1102,11 @@ def prepare_vocoder_startup(
     return fake_flow
 
 
+<<<<<<< HEAD
+def test_create_vocoder_executor_skips_dit_compile_by_default(monkeypatch) -> None:
+    assert not executor_compiles(monkeypatch)
+    assert executor_compiles(monkeypatch, enable_dit_torch_compile=True)
+=======
 @pytest.mark.parametrize("enable_dit_torch_compile", [False, True])
 def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     monkeypatch: pytest.MonkeyPatch,
@@ -1127,17 +1136,22 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     else:
         assert "native_compile" not in startup_events
     assert ("packed_warmup" in startup_events) is enable_dit_torch_compile
+>>>>>>> upstream/main
 
 
 def test_create_vocoder_executor_trt_alone_skips_the_default_compile(
     monkeypatch,
 ) -> None:
+<<<<<<< HEAD
+    assert not executor_compiles(monkeypatch, enable_flow_estimator_trt=True)
+=======
     compiled, _scheduler = create_scheduler_recording_native_compile(
         monkeypatch,
         enable_dit_torch_compile=False,
         enable_flow_estimator_trt=True,
     )
     assert compiled == []
+>>>>>>> upstream/main
 
 
 def test_create_vocoder_executor_rejects_trt_and_compile() -> None:

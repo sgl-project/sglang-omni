@@ -45,6 +45,11 @@ def make_inputs(estimator, t: int) -> tuple[torch.Tensor, ...]:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_compile_dit_backbone_dynamic_shapes_match_eager() -> None:
+<<<<<<< HEAD
+    pass
+
+=======
+>>>>>>> upstream/main
     estimator = TinyDiT().cuda().eval()
     original_forward = estimator.forward
     param_names = set(dict(estimator.named_parameters()))

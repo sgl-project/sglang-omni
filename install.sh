@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Install sglang-omni and the Apple Silicon Qwen3-ASR runtime.
+# Install sglang-omni and its Apple Silicon runtime prerequisites.
 #
-# This file intentionally does not bootstrap Homebrew. Homebrew's official
-# bootstrapper can require administrator approval and changes system state;
-# users should install it from https://brew.sh and then rerun this script.
+# The script is intentionally self-contained so it can be used as:
+#
+#   curl -fsSL https://raw.githubusercontent.com/sgl-project/sglang-omni/main/install.sh | bash
+#
+# It installs the shared Homebrew prerequisites and the currently validated
+# Apple audio model prerequisites by default, so one command is enough for
+# Qwen3-ASR, Qwen3-TTS, Whisper/Fun-ASR, and Fun-CosyVoice3.
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -11,6 +15,16 @@ readonly DEFAULT_OMNI_REPO="https://github.com/sgl-project/sglang-omni.git"
 readonly DEFAULT_OMNI_REF="main"
 readonly DEFAULT_SGLANG_REPO="https://github.com/sgl-project/sglang.git"
 readonly DEFAULT_SGLANG_REF="v0.5.20"
+readonly HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
+readonly COSYVOICE_REPO="https://github.com/FunAudioLLM/CosyVoice.git"
+readonly COSYVOICE_COMMIT="074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"
+readonly MATCHA_TTS_COMMIT="dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
+# Apple model prerequisite registry. Add a shared system formula, Omni extra,
+# or no-deps Python package here when a future Apple model needs one; the public
+# command and hosted-mode behavior stay unchanged.
+readonly APPLE_BREW_FORMULAS=(ffmpeg@7 sox uv)
+readonly APPLE_OMNI_EXTRAS=(fun-cosyvoice3)
+readonly APPLE_NO_DEPS_PACKAGES=(qwen-tts==0.1.1 einops)
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
 if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
@@ -26,8 +40,11 @@ readonly SGLANG_REF="${SGLANG_VERSION:-$DEFAULT_SGLANG_REF}"
 readonly CACHE_ROOT="${SGLANG_OMNI_CACHE:-${HOME}/.cache/sglang-omni}"
 readonly SGLANG_DIR="${SGLANG_SOURCE_DIR:-${CACHE_ROOT}/sglang-${SGLANG_REF//\//-}}"
 readonly OMNI_DIR="${SGLANG_OMNI_PROJECT_DIR:-${CACHE_ROOT}/sglang-omni-${OMNI_REF//\//-}}"
-readonly EXTRAS="${SGLANG_OMNI_EXTRAS:-}"
+readonly COSYVOICE_DIR="${SGLANG_OMNI_COSYVOICE_DIR:-${CACHE_ROOT}/CosyVoice}"
+readonly BOOTSTRAP_HOMEBREW="${SGLANG_OMNI_BOOTSTRAP_HOMEBREW:-1}"
+
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
+REQUESTED_EXTRAS="$(IFS=,; printf '%s' "${APPLE_OMNI_EXTRAS[*]}")${SGLANG_OMNI_EXTRAS:+,$SGLANG_OMNI_EXTRAS}"
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-300}"
 export UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-5}"
 
@@ -66,26 +83,33 @@ usage() {
   cat <<'EOF'
 Usage: ./install.sh [OPTIONS]
 
-Install sglang-omni and the Apple Silicon Qwen3-ASR runtime into an isolated
-Python 3.12 virtual environment. Homebrew must already be installed.
+Install sglang-omni and the currently validated Apple audio model
+prerequisites into an isolated Python 3.12 virtual environment. The one
+command setup covers Qwen3-ASR, Qwen3-TTS, Whisper/Fun-ASR, and
+Fun-CosyVoice3.
 
 Options:
-  --non-interactive  Disable Homebrew auto-update (CI use).
-  -h, --help         Show this help.
+  --non-interactive   Disable Homebrew auto-update and pass NONINTERACTIVE to
+                      Homebrew's bootstrapper (CI use; sudo may still be needed).
+  -h, --help          Show this help.
 
 Environment:
-  SGLANG_OMNI_VENV         Virtual environment path.
-  SGLANG_OMNI_CACHE        Cache root for source checkouts.
-  SGLANG_SOURCE_DIR        SGLang source checkout path.
-  SGLANG_VERSION            SGLang git tag/branch (default: v0.5.20).
-  SGLANG_REPO               SGLang repository URL.
-  SGLANG_OMNI_REPO          sglang-omni repository URL for hosted use.
-  SGLANG_OMNI_REF           sglang-omni branch/tag (default: main).
-  SGLANG_OMNI_PROJECT_DIR   sglang-omni checkout path for hosted use.
-  SGLANG_OMNI_EXTRAS        Optional extras, comma-separated.
-  NONINTERACTIVE=1          Same as --non-interactive.
-  UV_HTTP_TIMEOUT            Per-request timeout in seconds (default: 300).
-  UV_HTTP_RETRIES            Network retry count (default: 5).
+  SGLANG_OMNI_VENV           Virtual environment path.
+  SGLANG_OMNI_CACHE          Cache root for source checkouts.
+  SGLANG_SOURCE_DIR          SGLang source checkout path.
+  SGLANG_VERSION              SGLang git tag/branch (default: v0.5.20).
+  SGLANG_REPO                SGLang repository URL.
+  SGLANG_OMNI_REPO           sglang-omni repository URL for hosted use.
+  SGLANG_OMNI_REF             sglang-omni branch/tag (default: main).
+  SGLANG_OMNI_PROJECT_DIR     sglang-omni checkout path for hosted use.
+  SGLANG_OMNI_COSYVOICE_DIR   CosyVoice checkout path.
+  SGLANG_OMNI_EXTRAS          Additional comma-separated Python extras. The
+                              fun-cosyvoice3 extra is always included.
+  SGLANG_OMNI_BOOTSTRAP_HOMEBREW=0
+                              Require an existing native Homebrew install.
+  NONINTERACTIVE=1            Same as --non-interactive.
+  UV_HTTP_TIMEOUT             Per-request timeout in seconds (default: 300).
+  UV_HTTP_RETRIES             Network retry count (default: 5).
 
 The local checkout is installed when this script lives in an sglang-omni
 repository. If downloaded or piped from stdin, the configured repository/ref
@@ -157,13 +181,19 @@ find_brew() {
 
 BREW_BIN="$(find_brew || true)"
 if [[ -z "$BREW_BIN" ]]; then
-  cat >&2 <<'EOF'
-[sglang-omni-install][error] Homebrew is required but was not found.
-Install Homebrew from https://brew.sh, ensure `brew` is on PATH, and rerun
-this script. This installer deliberately does not run Homebrew's bootstrapper
-or request administrator privileges.
-EOF
-  exit 1
+  [[ "$BOOTSTRAP_HOMEBREW" != "0" ]] \
+    || die "Homebrew is not installed; unset SGLANG_OMNI_BOOTSTRAP_HOMEBREW=0 to allow the official bootstrapper"
+  command -v curl >/dev/null 2>&1 || die "curl is required to bootstrap Homebrew"
+  log "Homebrew was not found; running the official Homebrew bootstrapper"
+  HOMEBREW_INSTALLER="$(curl -fsSL "$HOMEBREW_INSTALL_URL")" \
+    || die "could not download the official Homebrew bootstrapper"
+  if [[ "$NONINTERACTIVE" == "1" ]]; then
+    NONINTERACTIVE=1 /bin/bash -c "$HOMEBREW_INSTALLER"
+  else
+    /bin/bash -c "$HOMEBREW_INSTALLER"
+  fi
+  BREW_BIN="$(find_brew || true)"
+  [[ -n "$BREW_BIN" ]] || die "Homebrew bootstrap completed but /opt/homebrew/bin/brew was not found"
 fi
 
 BREW_PREFIX="$($BREW_BIN --prefix)" || die "unable to determine the Homebrew prefix"
@@ -181,13 +211,16 @@ ensure_formula() {
     return 0
   fi
   log "Installing Homebrew formula: $formula"
-  if ! "$BREW_BIN" install "$formula"; then
-    die "Homebrew could not install $formula. Check 'brew doctor' and Homebrew directory permissions; no administrator command was run by this script"
-  fi
+  "$BREW_BIN" install "$formula" \
+    || die "Homebrew could not install $formula; check 'brew doctor' and directory permissions"
 }
 
-ensure_formula ffmpeg@7
-ensure_formula uv
+# These are shared by the supported Apple audio paths. ffmpeg@7 is keg-only
+# because torchcodec 0.15 supports FFmpeg 4 through 8, while unversioned
+# Homebrew ffmpeg may move beyond that range. sox is used by CosyVoice/Qwen3-TTS.
+for formula in "${APPLE_BREW_FORMULAS[@]}"; do
+  ensure_formula "$formula"
+done
 
 if ! command -v git >/dev/null 2>&1 || ! git --version >/dev/null 2>&1; then
   ensure_formula git
@@ -225,7 +258,6 @@ fetch_checkout_ref() {
       # Full object IDs must keep their meaning even if a tag has the same name.
       if [[ ! "$ref" =~ ^[[:xdigit:]]{40}$ && ! "$ref" =~ ^[[:xdigit:]]{64}$ ]]; then
         tag_ref="refs/tags/$ref"
-        # ls-remote also matches ref-name suffixes; require the exact tag ref.
         remote_tag="$(git -C "$destination" ls-remote --refs origin "$tag_ref" \
           | awk -v ref="$tag_ref" '$2 == ref { print $2 }')"
         if [[ -n "$remote_tag" ]]; then
@@ -279,10 +311,8 @@ clone_or_reuse() {
 clone_or_reuse "$SGLANG_DIR" "$SGLANG_REF" "$SGLANG_REPO" "SGLang"
 
 # SGLang keeps the CUDA-oriented project metadata in pyproject.toml and the
-# platform-neutral/MLX metadata in pyproject_other.toml. Its Python build also
-# references Rust and version files at the repository root, so stage the whole
-# checkout and replace only the staged metadata. The source checkout remains
-# untouched and the staged package is installed non-editably before cleanup.
+# platform-neutral/MLX metadata in pyproject_other.toml. Stage the whole
+# checkout and replace only the staged metadata, leaving the source untouched.
 SGLANG_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sglang-omni-sglang.XXXXXX")"
 cp -R "$SGLANG_DIR/." "$SGLANG_STAGE_DIR/"
 if [[ -f "$SGLANG_DIR/python/pyproject_other.toml" ]]; then
@@ -292,8 +322,7 @@ else
 fi
 
 log "Installing SGLang $SGLANG_REF with the all_mps extra"
-# The optional SGLang Rust extensions are not used by the MLX/Torch-MPS
-# Qwen3-ASR path. Skipping them avoids requiring a Rust toolchain on a clean Mac.
+# The optional SGLang Rust extensions are not used by the MLX/Torch-MPS path.
 SGLANG_BUILD_RUST_EXTS=none \
   "${UV_PIP_INSTALL[@]}" --prerelease=allow "$SGLANG_STAGE_DIR/python[all_mps]"
 
@@ -306,39 +335,161 @@ grep -q '^name = "sglang-omni"' "$PROJECT_DIR/pyproject.toml" \
   || die "project is not sglang-omni: $PROJECT_DIR"
 
 PROJECT_SPEC="$PROJECT_DIR"
-if [[ -n "$EXTRAS" ]]; then
-  PROJECT_SPEC="${PROJECT_DIR}[${EXTRAS}]"
+if [[ -n "$REQUESTED_EXTRAS" ]]; then
+  PROJECT_SPEC="${PROJECT_DIR}[${REQUESTED_EXTRAS}]"
 fi
-log "Installing sglang-omni${EXTRAS:+ with extras: $EXTRAS}"
+log "Installing sglang-omni${REQUESTED_EXTRAS:+ with extras: $REQUESTED_EXTRAS}"
 "${UV_PIP_INSTALL[@]}" --prerelease=allow -e "$PROJECT_SPEC"
 
-FFMPEG_LIB="$($BREW_BIN --prefix ffmpeg@7)/lib"
+verify_dependency_graph() {
+  local check_output check_status=0 bad_lines allowed_lines allowed_count
+  local summary_count found_count
+  trap - ERR
+  check_output="$(uv pip check --python "$PYTHON_BIN" 2>&1)" || check_status=$?
+  trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
+  if (( check_status == 0 )); then
+    printf '%s\n' "$check_output"
+    return 0
+  fi
+  # qwen-tts is deliberately installed with --no-deps because its metadata
+  # pins Transformers/Accelerate versions that conflict with Omni. On reruns,
+  # accept only those two known qwen-tts conflicts and fail on everything else.
+  allowed_lines="$(printf '%s\n' "$check_output" \
+    | grep -E '^The package `qwen-tts` requires `(transformers|accelerate)==[^`]+`, but `[^`]+` is installed$' || true)"
+  allowed_count="$(printf '%s\n' "$allowed_lines" | sed '/^$/d' | wc -l | tr -d ' ')"
+  summary_count="$(printf '%s\n' "$check_output" \
+    | grep -Ec '^Using Python .+ environment at: .+$|^Checked [0-9]+ packages in .+$|^Found [0-9]+ incompatibilities?$' || true)"
+  found_count="$(printf '%s\n' "$check_output" \
+    | sed -nE 's/^Found ([0-9]+) incompatibilities?$/\1/p')"
+  bad_lines="$(printf '%s\n' "$check_output" \
+    | grep -Ev '^$|^Using Python .+ environment at: .+$|^Checked [0-9]+ packages in .+$|^Found [0-9]+ incompatibilities?$|^The package `qwen-tts` requires `(transformers|accelerate)==[^`]+`, but `[^`]+` is installed$' || true)"
+  if [[ -n "$bad_lines" || "$allowed_count" != "2" \
+    || "$summary_count" != "3" || "$found_count" != "$allowed_count" ]]; then
+    [[ -z "$bad_lines" ]] || printf '%s\n' "$bad_lines" >&2
+    die "the installed Omni dependency graph is inconsistent"
+  fi
+  log "Accepting qwen-tts metadata conflicts from its intentional --no-deps install"
+  printf '%s\n' "$check_output"
+}
+
+verify_dependency_graph
+# qwen-tts declares an incompatible Transformers pin; install only the
+# package code and its small direct helper, keeping the Omni stack intact.
+log "Installing Qwen3-TTS model package without replacing the Omni stack"
+"${UV_PIP_INSTALL[@]}" --prerelease=allow --no-deps "${APPLE_NO_DEPS_PACKAGES[@]}"
+
+FFMPEG_PREFIX="$($BREW_BIN --prefix ffmpeg@7)"
+FFMPEG_BIN="$FFMPEG_PREFIX/bin"
+FFMPEG_LIB="$FFMPEG_PREFIX/lib"
 [[ -d "$FFMPEG_LIB" ]] || die "ffmpeg@7 library directory not found: $FFMPEG_LIB"
 
+inject_activation_hooks() {
+  local file marker end_marker tmp
+  marker="# >>> sglang-omni Apple audio environment >>>"
+  end_marker="# <<< sglang-omni Apple audio environment <<<"
+  for file in "$VENV_DIR/bin/activate" "$VENV_DIR/bin/activate.csh" "$VENV_DIR/bin/activate.fish"; do
+    [[ -f "$file" ]] || continue
+    if grep -Fqx "$marker" "$file"; then
+      tmp="$(mktemp "${file}.strip.XXXXXX")"
+      awk -v start="$marker" -v end="$end_marker" '
+        $0 == start { skip = 1; next }
+        $0 == end { skip = 0; next }
+        !skip { print }
+      ' "$file" > "$tmp"
+      mv "$tmp" "$file"
+    fi
+    {
+      printf '\n%s\n' "$marker"
+      printf '# Added by install.sh; keep this block idempotent.\n'
+      case "$file" in
+        *.csh)
+          printf 'if ( ":${PATH}:" !~ *":%s:"* ) setenv PATH "%s:${PATH}"\n' "$FFMPEG_BIN" "$FFMPEG_BIN"
+          printf 'if ( $?DYLD_LIBRARY_PATH ) then\n'
+          printf '  if ( ":${DYLD_LIBRARY_PATH}:" !~ *":%s:"* ) setenv DYLD_LIBRARY_PATH "%s:${DYLD_LIBRARY_PATH}"\n' "$FFMPEG_LIB" "$FFMPEG_LIB"
+          printf 'else\n  setenv DYLD_LIBRARY_PATH "%s"\nendif\n' "$FFMPEG_LIB"
+          ;;
+        *.fish)
+          printf 'if not contains -- "%s" $PATH\n  set -gx PATH "%s" $PATH\nend\n' "$FFMPEG_BIN" "$FFMPEG_BIN"
+          printf 'if set -q DYLD_LIBRARY_PATH\n'
+          printf '  if not contains -- "%s" (string split : "$DYLD_LIBRARY_PATH")\n    set -gx DYLD_LIBRARY_PATH "%s:$DYLD_LIBRARY_PATH"\n  end\n' "$FFMPEG_LIB" "$FFMPEG_LIB"
+          printf 'else\n  set -gx DYLD_LIBRARY_PATH "%s"\nend\n' "$FFMPEG_LIB"
+          ;;
+        *)
+          printf 'case ":${PATH:-}:" in\n  *":%s:"*) ;;\n  *) export PATH="%s${PATH:+:$PATH}" ;;\nesac\n' "$FFMPEG_BIN" "$FFMPEG_BIN"
+          printf 'case ":${DYLD_LIBRARY_PATH:-}:" in\n  *":%s:"*) ;;\n  *) export DYLD_LIBRARY_PATH="%s${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" ;;\nesac\n' "$FFMPEG_LIB" "$FFMPEG_LIB"
+          ;;
+      esac
+      case "$file" in
+        *.csh)
+          printf 'if ( $?PYTHONPATH ) then\n  if ( ":${PYTHONPATH}:" !~ *":%s:"* ) setenv PYTHONPATH "%s:${PYTHONPATH}"\nelse\n  setenv PYTHONPATH "%s"\nendif\n' "$COSYVOICE_DIR" "$COSYVOICE_DIR" "$COSYVOICE_DIR"
+          printf 'if ( $?PYTHONPATH ) then\n  if ( ":${PYTHONPATH}:" !~ *":%s:"* ) setenv PYTHONPATH "%s:${PYTHONPATH}"\nelse\n  setenv PYTHONPATH "%s"\nendif\n' "$COSYVOICE_DIR/third_party/Matcha-TTS" "$COSYVOICE_DIR/third_party/Matcha-TTS" "$COSYVOICE_DIR/third_party/Matcha-TTS"
+          ;;
+        *.fish)
+          printf 'if not contains -- "%s" (string split : "$PYTHONPATH")\n  set -gx PYTHONPATH "%s" $PYTHONPATH\nend\n' "$COSYVOICE_DIR" "$COSYVOICE_DIR"
+          printf 'if not contains -- "%s" (string split : "$PYTHONPATH")\n  set -gx PYTHONPATH "%s" $PYTHONPATH\nend\n' "$COSYVOICE_DIR/third_party/Matcha-TTS" "$COSYVOICE_DIR/third_party/Matcha-TTS"
+          ;;
+        *)
+          printf 'case ":${PYTHONPATH:-}:" in\n  *":%s:"*) ;;\n  *) export PYTHONPATH="%s${PYTHONPATH:+:$PYTHONPATH}" ;;\nesac\n' "$COSYVOICE_DIR" "$COSYVOICE_DIR"
+          printf 'case ":${PYTHONPATH:-}:" in\n  *":%s:"*) ;;\n  *) export PYTHONPATH="%s${PYTHONPATH:+:$PYTHONPATH}" ;;\nesac\n' "$COSYVOICE_DIR/third_party/Matcha-TTS" "$COSYVOICE_DIR/third_party/Matcha-TTS"
+          ;;
+      esac
+      printf '%s\n' "$end_marker"
+    } >> "$file"
+  done
+}
+
+clone_or_reuse "$COSYVOICE_DIR" "$COSYVOICE_COMMIT" "$COSYVOICE_REPO" "CosyVoice"
+git -C "$COSYVOICE_DIR" submodule update --init --recursive
+MATCHA_DIR="$COSYVOICE_DIR/third_party/Matcha-TTS"
+[[ -e "$MATCHA_DIR/.git" ]] || die "CosyVoice Matcha-TTS submodule is missing: $MATCHA_DIR"
+git -C "$MATCHA_DIR" fetch --depth 1 origin "$MATCHA_TTS_COMMIT"
+git -C "$MATCHA_DIR" checkout --detach --quiet FETCH_HEAD
+
+PYTHONPATH="$COSYVOICE_DIR:$COSYVOICE_DIR/third_party/Matcha-TTS${PYTHONPATH:+:$PYTHONPATH}" \
+  "$PYTHON_BIN" -c 'import cosyvoice; print("CosyVoice source checkout is importable")'
+"$PYTHON_BIN" - <<'PY'
+from sglang_omni.models.qwen3_tts.compat import (
+    apply_qwen_tts_transformers_compatibility_patches,
+)
+
+apply_qwen_tts_transformers_compatibility_patches()
+import qwen_tts  # noqa: E402
+
+assert hasattr(qwen_tts, "Qwen3TTSModel")
+print("Qwen3-TTS package is importable with the Omni compatibility shim")
+PY
+
+inject_activation_hooks
+
 log "Verifying the installed Python package and CLI"
-uv pip check --python "$PYTHON_BIN"
 "$PYTHON_BIN" -c 'import sglang_omni; print("sglang_omni", sglang_omni.__version__)'
 [[ -x "$VENV_DIR/bin/sgl-omni" ]] || die "sgl-omni console script was not installed"
 "$VENV_DIR/bin/sgl-omni" --help >/dev/null
+
+# Importing AudioDecoder alone does not load FFmpeg. Instantiate it with a
+# tiny in-memory WAV so the dynamic loader is exercised during installation.
 DYLD_LIBRARY_PATH="$FFMPEG_LIB${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
-SGLANG_USE_MLX=1 "$PYTHON_BIN" - <<'PY'
+PATH="$FFMPEG_BIN:$PATH" SGLANG_USE_MLX=1 "$PYTHON_BIN" - <<'PY'
+import io
+import struct
+import wave
+
 import mlx.core as mx
-from torchcodec.decoders import AudioDecoder  # noqa: F401
+from torchcodec.decoders import AudioDecoder
 
 assert mx.metal.is_available(), "MLX Metal is unavailable"
-print("MLX Metal and TorchCodec FFmpeg loading are available")
+with io.BytesIO() as stream:
+    with wave.open(stream, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(struct.pack("<h", 0) * 160)
+    decoder = AudioDecoder(stream.getvalue())
+    assert decoder.metadata.duration_seconds > 0
+print("MLX Metal and TorchCodec audio decoding are available")
 PY
 
 cat <<EOF
 
 Installation complete.
 Virtual environment: $VENV_DIR
-Activate it with:
-  source "$VENV_DIR/bin/activate"
-
-For TorchCodec/FFmpeg audio decoding, export:
-  export DYLD_LIBRARY_PATH="$FFMPEG_LIB\${DYLD_LIBRARY_PATH:+:\$DYLD_LIBRARY_PATH}"
-
-The Apple Silicon Qwen3-ASR examples are documented at:
-  $PROJECT_DIR/docs/cookbook/qwen3_asr.md
-EOF

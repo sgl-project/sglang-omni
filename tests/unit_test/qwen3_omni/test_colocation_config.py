@@ -100,6 +100,9 @@ def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
         "code2wav",
     ):
         assert make_stage(config, stage_name).gpu == 0
+<<<<<<< HEAD
+        assert make_stage(config, stage_name).process == stage_name
+=======
     for stage_name in ("image_encoder", "audio_encoder", "thinker", "talker_ar"):
         assert make_stage(config, stage_name).process == stage_name
     assert make_stage(config, "code2wav").process == "talker_ar"
@@ -123,6 +126,7 @@ def test_factory_kwargs_follow_whether_code2wav_shares_the_talker_process() -> N
     assert sharing_flags(colocated) == (True, True)
     make_stage(colocated, "code2wav").process = "code2wav"
     assert sharing_flags(colocated) == (False, False)
+>>>>>>> upstream/main
 
 
 @pytest.mark.parametrize(

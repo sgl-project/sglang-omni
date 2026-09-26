@@ -84,6 +84,11 @@ def test_compile_dit_backbone_warmup_matches_serving_grad_mode(monkeypatch) -> N
     assert modes == [(True, True)] * 4
 
 
+<<<<<<< HEAD
+def test_compile_dit_backbone_skips_non_module_estimator(monkeypatch) -> None:
+    flow = FakeFlow(NonModuleEstimator())
+
+=======
 @pytest.mark.parametrize(
     ("autocast_dtype", "parameter_dtype", "expected_dtype"),
     [
@@ -127,6 +132,7 @@ def test_compile_dit_backbone_warmup_uses_serving_dtype(
 def test_compile_dit_backbone_rejects_non_module_estimator(monkeypatch) -> None:
     flow = FakeFlow(NonModuleEstimator())
 
+>>>>>>> upstream/main
     def fail_compile(fn, dynamic=None):
         raise AssertionError("torch.compile must not run for a non-module estimator")
 

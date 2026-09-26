@@ -1276,7 +1276,10 @@ def create_code2wav_scheduler(
     enable_cuda_graph: bool = False,
     total_gpu_memory_fraction: float | None = None,
     fused_snake_activation: bool = True,
+<<<<<<< HEAD
+=======
     talker_in_process: bool = False,
+>>>>>>> upstream/main
 ):
     """Factory: returns Code2WavScheduler."""
     from sglang_omni.utils.device import resolve_concrete_device
@@ -1297,6 +1300,8 @@ def create_code2wav_scheduler(
         logger.info(f"Code2Wav fused SnakeBeta modules: {replaced}")
     else:
         pass
+<<<<<<< HEAD
+=======
     decode_stream: torch.Stream | None = None
     # note (ratish): the priority stream only orders code2wav ahead of the
     # talker's stream in the same context; alone in its process code2wav keeps
@@ -1309,6 +1314,7 @@ def create_code2wav_scheduler(
         )
     else:
         pass
+>>>>>>> upstream/main
     cuda_graph_runner = None
     if enable_cuda_graph:
         if enable_batching:

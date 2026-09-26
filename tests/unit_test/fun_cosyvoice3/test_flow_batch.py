@@ -83,7 +83,10 @@ class RecordingPackedEstimator:
         assert streaming == attention.streaming
         return self.forward
 
+<<<<<<< HEAD
+=======
 
+>>>>>>> upstream/main
 def make_packed(flow: FakeFlow) -> FunCosyVoice3Flow:
     return FunCosyVoice3Flow(flow, packed_estimator=flow.packed_estimator)
 

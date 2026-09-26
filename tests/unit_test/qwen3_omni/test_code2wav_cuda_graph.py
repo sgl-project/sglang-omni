@@ -216,8 +216,11 @@ def build_runner(
         num_quantizers=16,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         graph_keys=DEFAULT_GRAPH_KEYS,
+<<<<<<< HEAD
+=======
         model_footprint_bytes=100,
         decode_stream=None,
+>>>>>>> upstream/main
         device_api=backend,
     )
     return runner, backend, model
@@ -267,7 +270,11 @@ def test_build_captures_only_the_explicit_graph_keys() -> None:
     }
 
 
+<<<<<<< HEAD
+def test_build_uses_three_warmups_one_private_pool_and_atomic_publication() -> None:
+=======
 def test_build_uses_two_warmups_one_private_pool_and_atomic_publication() -> None:
+>>>>>>> upstream/main
     runner, backend, model = build_runner()
 
     assert backend.warmup_iterations == [2] * 4
@@ -548,8 +555,11 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
             num_quantizers=2,
             total_gpu_memory_fraction=1.0,
             graph_keys=DEFAULT_GRAPH_KEYS,
+<<<<<<< HEAD
+=======
             model_footprint_bytes=0,
             decode_stream=None,
+>>>>>>> upstream/main
         )
         scheduler = Code2WavScheduler(
             model,
@@ -855,8 +865,11 @@ def build_tiered_runner(
         num_quantizers=16,
         total_gpu_memory_fraction=0.5,
         graph_keys=TIERED_GRAPH_KEYS,
+<<<<<<< HEAD
+=======
         model_footprint_bytes=100,
         decode_stream=None,
+>>>>>>> upstream/main
         device_api=backend,
     )
 
@@ -1177,8 +1190,11 @@ def test_a_device_whose_platform_names_no_graph_backend_is_refused_at_build() ->
             total_gpu_memory_fraction=0.5,
             graph_keys=DEFAULT_GRAPH_KEYS,
             device_api=NoBackend(),
+<<<<<<< HEAD
+=======
             model_footprint_bytes=100,
             decode_stream=None,
+>>>>>>> upstream/main
         )
 
 
@@ -1191,8 +1207,11 @@ def test_an_indexless_device_is_refused_at_build() -> None:
             total_gpu_memory_fraction=0.5,
             graph_keys=DEFAULT_GRAPH_KEYS,
             device_api=FakeCudaBackend(),
+<<<<<<< HEAD
+=======
             model_footprint_bytes=100,
             decode_stream=None,
+>>>>>>> upstream/main
         )
 
 
@@ -1264,8 +1283,11 @@ def test_capture_pins_cover_warmup_capture_and_the_equivalence_check(
         total_gpu_memory_fraction=0.5,
         graph_keys=(GraphKey(batch_size=1, frames=10),),
         device_api=PhaseRecordingBackend(phase),
+<<<<<<< HEAD
+=======
         model_footprint_bytes=100,
         decode_stream=None,
+>>>>>>> upstream/main
     )
 
     assert runner.stats()["build"]["published_graph_count"] == 1

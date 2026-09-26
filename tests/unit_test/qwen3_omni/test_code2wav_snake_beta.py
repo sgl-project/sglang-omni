@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+<<<<<<< HEAD
+=======
 import itertools
+>>>>>>> upstream/main
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,11 +31,16 @@ def test_factory_installs_shared_snake_before_graph_capture(
     monkeypatch: pytest.MonkeyPatch, enabled: bool
 ) -> None:
     original = SnakeBeta(96).eval()
+<<<<<<< HEAD
+    model = SimpleNamespace(
+        decoder=torch.nn.Sequential(original),
+=======
     decoder = torch.nn.Sequential(original)
     model = SimpleNamespace(
         decoder=decoder,
         parameters=decoder.parameters,
         buffers=decoder.buffers,
+>>>>>>> upstream/main
         config=SimpleNamespace(num_quantizers=16),
         total_upsample=1920,
     )
@@ -85,9 +93,12 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
     model = code2wav_scheduler.load_code2wav_model(
         checkpoint, device="cuda:0", dtype="bfloat16"
     )
+<<<<<<< HEAD
+=======
     model_footprint_bytes = sum(
         tensor.nbytes for tensor in itertools.chain(model.parameters(), model.buffers())
     )
+>>>>>>> upstream/main
     graph_keys = tuple(
         dict.fromkeys(
             code2wav_scheduler.batched_graph_keys(10, 25, 16)
@@ -127,8 +138,11 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
             num_quantizers=model.config.num_quantizers,
             total_gpu_memory_fraction=0.2,
             graph_keys=graph_keys,
+<<<<<<< HEAD
+=======
             model_footprint_bytes=model_footprint_bytes,
             decode_stream=None,
+>>>>>>> upstream/main
         )
         assert eager_runner.stats()["enabled"], eager_runner.stats()
 
@@ -180,8 +194,11 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
             num_quantizers=model.config.num_quantizers,
             total_gpu_memory_fraction=0.2,
             graph_keys=graph_keys,
+<<<<<<< HEAD
+=======
             model_footprint_bytes=model_footprint_bytes,
             decode_stream=None,
+>>>>>>> upstream/main
         )
         assert fused_runner.stats()["enabled"], fused_runner.stats()
         for value, pcm in zip(codes, graph_expected):

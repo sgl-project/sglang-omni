@@ -54,6 +54,8 @@ def pin_cuda_platform(monkeypatch) -> None:
     )
 
 
+<<<<<<< HEAD
+=======
 class FakeDecodeStream:
     def __init__(self, *, device: torch.device, priority: int) -> None:
         self.device = device
@@ -64,6 +66,7 @@ class FakeDecodeStream:
         return (0, -3)
 
 
+>>>>>>> upstream/main
 class FakeCudaGraphRunner:
     def __init__(self, model, *, replay_error: Exception | None = None) -> None:
         self.model = model
