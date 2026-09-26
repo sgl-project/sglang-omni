@@ -295,9 +295,13 @@ def make_whisper_scheduler_adapters(
             pass
 
         temperature = float(params.get("temperature") or 0.0)
+        # note: the shared sampler applies repetition_penalty from
+        # req.sampling_params; dropping it here silently ignores the request field.
+        repetition_penalty = float(params.get("repetition_penalty") or 1.0)
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
+            repetition_penalty=repetition_penalty,
             top_p=1.0,
             stop_token_ids=[eos_token_id],
             logit_bias=language_token_bias if detect_language else logit_bias,
@@ -335,6 +339,7 @@ def make_whisper_scheduler_adapters(
             prompt_token_ids=prompt_token_ids,
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
+            repetition_penalty=repetition_penalty,
             audio_duration_s=audio_duration_s,
             language=language,
             detect_language=detect_language,
