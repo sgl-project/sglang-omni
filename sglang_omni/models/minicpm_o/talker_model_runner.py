@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import torch
@@ -121,24 +122,17 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             return
         else:
             pass
-        # note (MayDomine): a dummy vocabulary bin excludes ragged-window padding.
-        num = len(windows)
-        window_ids = torch.full((num, REP_PENALTY_WINDOW), vocab, dtype=torch.long)
-        for i, window in enumerate(windows):
-            window_ids[i, : len(window)] = torch.tensor(window, dtype=torch.long)
-        window_ids = window_ids.to(device)
-        counts = torch.zeros(num, vocab + 1, dtype=torch.float32, device=device)
-        counts.scatter_add_(
-            1, window_ids, torch.ones_like(window_ids, dtype=torch.float32)
-        )
-        counts = counts[:, :vocab]
-        alphas = (
-            torch.tensor(penalties, dtype=torch.float32, device=device).unsqueeze(1)
-            ** counts
-        )
-        rows_t = torch.tensor(penalized_rows, dtype=torch.long, device=device)
-        orig_dtype = logits.dtype
-        scores = logits[rows_t].to(torch.float32)
+        entries = [
+            (row, token, count, penalty)
+            for row, penalty, window in zip(penalized_rows, penalties, windows)
+            for token, count in Counter(window).items()
+        ]
+        rows, tokens, counts, token_penalties = zip(*entries)
+        rows_t = torch.tensor(rows, dtype=torch.long, device=device)
+        tokens_t = torch.tensor(tokens, dtype=torch.long, device=device)
+        alphas = torch.tensor(
+            token_penalties, dtype=torch.float32, device=device
+        ) ** torch.tensor(counts, dtype=torch.float32, device=device)
+        scores = logits[rows_t, tokens_t].to(torch.float32)
         penalized = torch.where(scores < 0, scores * alphas, scores / alphas)
-        scores = torch.where(counts > 0, penalized, scores)
-        logits[rows_t] = scores.to(orig_dtype)
+        logits[rows_t, tokens_t] = penalized.to(logits.dtype)
