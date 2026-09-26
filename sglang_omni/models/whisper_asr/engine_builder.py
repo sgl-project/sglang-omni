@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
@@ -20,6 +21,14 @@ from sglang_omni.scheduling.generation_batch_policy import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
+_WHISPER_METADATA_FILES = (
+    "config.json",
+    "preprocessor_config.json",
+    "tokenizer_config.json",
+    "generation_config.json",
+    "tokenizer.json",
+    "normalizer.json",
+)
 
 
 _TASK_PREFIX_SLACK_TOKENS = 8
@@ -236,9 +245,17 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
 
-        self.processor = AutoProcessor.from_pretrained(checkpoint_dir)
+        load_path = checkpoint_dir
+        try:
+            cached_dir = resolve_model_path(checkpoint_dir, local_files_only=True)
+        except OSError:
+            pass
+        else:
+            if all((cached_dir / name).is_file() for name in _WHISPER_METADATA_FILES):
+                load_path = str(cached_dir)
+        self.processor = AutoProcessor.from_pretrained(load_path)
         self.tokenizer = self.processor.tokenizer
-        self.generation_config = GenerationConfig.from_pretrained(checkpoint_dir)
+        self.generation_config = GenerationConfig.from_pretrained(load_path)
         self.encoder_token_count = int(
             self.processor.feature_extractor.nb_max_frames // 2
         )
@@ -249,7 +266,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             + _TASK_PREFIX_SLACK_TOKENS
         )
         self.decoder_context_len = int(
-            AutoConfig.from_pretrained(checkpoint_dir).max_target_positions or 448
+            AutoConfig.from_pretrained(load_path).max_target_positions or 448
         )
 
     def setup_model_resources(

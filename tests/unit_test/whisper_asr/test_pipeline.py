@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import inspect
 import sys
+from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -474,3 +476,102 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     )
     assert len(graph_init_calls) == 1
     assert len(attest_calls) == 1
+
+
+def _record_pre_infra_setup_targets(
+    monkeypatch: pytest.MonkeyPatch, resolver: Callable[..., Path]
+) -> list[str]:
+    """Record the model path used by each loader."""
+    targets: list[str] = []
+
+    def _loader(result: object) -> SimpleNamespace:
+        def from_pretrained(target: str) -> object:
+            targets.append(str(target))
+            return result
+
+        return SimpleNamespace(from_pretrained=from_pretrained)
+
+    fake_processor = SimpleNamespace(
+        tokenizer=object(),
+        feature_extractor=SimpleNamespace(nb_max_frames=3000),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoConfig=_loader(SimpleNamespace(max_target_positions=448)),
+            AutoProcessor=_loader(fake_processor),
+            GenerationConfig=_loader(object()),
+        ),
+    )
+    monkeypatch.setattr(whisper_asr_builder, "resolve_model_path", resolver)
+    builder = whisper_asr_builder.WhisperASREngineBuilder(
+        max_running_requests=16, max_new_tokens=32, mem_fraction_static=0.2
+    )
+    builder.pre_infra_setup("openai/whisper-large-v3")
+    return targets
+
+
+def test_whisper_asr_pre_infra_setup_loads_from_cached_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    for name in (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "normalizer.json",
+    ):
+        (tmp_path / name).touch()
+
+    def _resolve(model_path: str, *, local_files_only: bool) -> Path:
+        assert (model_path, local_files_only) == ("openai/whisper-large-v3", True)
+        return tmp_path
+
+    targets = _record_pre_infra_setup_targets(monkeypatch, _resolve)
+    assert targets == [str(tmp_path)] * 3
+
+
+@pytest.mark.parametrize(
+    "missing_file",
+    [
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "normalizer.json",
+    ],
+)
+def test_whisper_asr_pre_infra_setup_keeps_repo_id_for_partial_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, missing_file: str
+) -> None:
+    for name in (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "normalizer.json",
+        "vocab.json",
+        "merges.txt",
+    ):
+        if name != missing_file:
+            (tmp_path / name).touch()
+
+    def _resolve(model_path: str, *, local_files_only: bool) -> Path:
+        return tmp_path
+
+    targets = _record_pre_infra_setup_targets(monkeypatch, _resolve)
+    assert targets == ["openai/whisper-large-v3"] * 3
+
+
+def test_whisper_asr_pre_infra_setup_keeps_repo_id_on_cache_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _resolve(model_path: str, *, local_files_only: bool) -> Path:
+        raise OSError("not cached")
+
+    targets = _record_pre_infra_setup_targets(monkeypatch, _resolve)
+    assert targets == ["openai/whisper-large-v3"] * 3
