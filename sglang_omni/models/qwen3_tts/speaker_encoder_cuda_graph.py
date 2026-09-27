@@ -124,7 +124,9 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
                 fmax=SPEAKER_MEL_FMAX,
             )
         ).float()
-        self.mel_window = torch.hann_window(SPEAKER_MEL_N_FFT)
+        # note(ratish): the engine builds the model under a CUDA default device; the
+        # mel front end stays on the CPU.
+        self.mel_window = torch.hann_window(SPEAKER_MEL_N_FFT, device="cpu")
         self.pads = frozenset(
             conv.dilation[0] * (conv.kernel_size[0] - 1) // 2
             for conv in encoder.modules()

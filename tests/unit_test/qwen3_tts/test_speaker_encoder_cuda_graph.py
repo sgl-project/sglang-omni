@@ -93,7 +93,9 @@ def test_mel_matches_the_checkpoint_front_end_bitwise() -> None:
 def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
     device = torch.device("cuda", torch.cuda.current_device())
     encoder = small_speaker_encoder(torch.float32).to(device)
-    runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
+    # note(ratish): the engine constructs the model under a CUDA default device.
+    with torch.device(device):
+        runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
     assert runner.pads == {2, 3, 4}
     runner.capture((16, 32))
     assert sorted(runner.graphs) == [16, 32]
