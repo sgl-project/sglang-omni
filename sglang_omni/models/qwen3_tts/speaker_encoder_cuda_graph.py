@@ -22,11 +22,6 @@ SPEAKER_MEL_HOP = 256
 SPEAKER_MEL_FMIN = 0
 SPEAKER_MEL_FMAX = 12000
 SPEAKER_MEL_CLIP = 1e-5
-# note(ratish): a replay costs a launch floor, not the padded frames (the same
-# 1.05 ms at steps 32, 64 and 128, measured on H100), so the step only trades graph
-# count against padding; 1920 frames is the reference encoder's 256 codec frame
-# ceiling, so both captured encoders run eager past the same reference length.
-DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES = tuple(range(128, 1921, 128))
 
 
 def reflect_index(length: torch.Tensor, width: int, pad: int) -> torch.Tensor:
@@ -155,13 +150,16 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
             torch.clamp(torch.matmul(self.mel_basis, magnitude), min=SPEAKER_MEL_CLIP)
         )
 
-    def capture(self, bucket_frames: Iterable[int]) -> None:
+    def capture(self, codec_frame_buckets: Iterable[int], codec_hop: int) -> None:
+        """One graph per bucket of the reference encoder's ladder, in mel frames."""
         param = next(self.encoder.parameters())
         if param.device.type not in {"cuda", "musa"}:
             return
         else:
             pass
-        buckets = sorted(bucket_frames)
+        buckets = sorted(
+            frames * codec_hop // SPEAKER_MEL_HOP for frames in codec_frame_buckets
+        )
         with torch.cuda.device(param.device):
             pool = torch.cuda.graph_pool_handle()
             stream = torch.cuda.Stream(device=param.device)

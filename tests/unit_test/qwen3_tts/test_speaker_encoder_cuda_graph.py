@@ -96,7 +96,7 @@ def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
     with torch.device(device):
         runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
     assert runner.pads == {2, 3, 4}
-    runner.capture((16, 32))
+    runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
     assert sorted(runner.graphs) == [16, 32]
 
     rng = np.random.default_rng(3)

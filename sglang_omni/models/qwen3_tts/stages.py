@@ -23,9 +23,6 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
 )
-from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
-    DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES,
-)
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
@@ -242,20 +239,20 @@ def load_standalone_preprocessing_context(
     frontend = load_qwen3_tts_prompt_frontend(
         checkpoint_dir, device=device, dtype=torch_dtype
     )
+    speech_tokenizer = load_qwen3_tts_tokenizer(
+        checkpoint_dir,
+        device=device,
+        dtype=dtype,
+        attn_implementation=attn_implementation,
+    )
+    frontend.load_speech_tokenizer(speech_tokenizer)
     if frontend.speaker_encoder_graph_runner is not None:
         frontend.speaker_encoder_graph_runner.capture(
-            DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES
+            DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
+            speech_tokenizer.model.encode_downsample_rate,
         )
     else:
         pass
-    frontend.load_speech_tokenizer(
-        load_qwen3_tts_tokenizer(
-            checkpoint_dir,
-            device=device,
-            dtype=dtype,
-            attn_implementation=attn_implementation,
-        )
-    )
     processor = AutoProcessor.from_pretrained(checkpoint_dir, fix_mistral_regex=True)
     wrapper = Qwen3TTSModel(
         model=frontend,
@@ -280,9 +277,6 @@ def create_sglang_tts_engine_executor(
     reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
         DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
     ),
-    speaker_encoder_cuda_graph_bucket_frames: Sequence[int] = (
-        DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES
-    ),
     leading_silence_mask_frames: int = DEFAULT_LEADING_SILENCE_MASK_FRAMES,
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
@@ -293,9 +287,6 @@ def create_sglang_tts_engine_executor(
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         reference_encoder_cuda_graph_bucket_frames=(
             reference_encoder_cuda_graph_bucket_frames
-        ),
-        speaker_encoder_cuda_graph_bucket_frames=(
-            speaker_encoder_cuda_graph_bucket_frames
         ),
         leading_silence_mask_frames=leading_silence_mask_frames,
     ).build(
