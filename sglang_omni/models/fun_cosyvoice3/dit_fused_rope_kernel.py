@@ -7,60 +7,98 @@ import torch
 import triton
 import triton.language as tl
 
+PROJECTED_CHANNELS = 1024
+ROTARY_CHANNELS = 64
+WARPS_PER_BLOCK = 4
 
-@triton.jit(do_not_specialize=["seq_len"])
-def _partial_qk_rope(
-    Q,
-    K,
-    COS,
-    SIN,
-    Q_OUT,
-    K_OUT,
-    seq_len,
-    WIDTH: tl.constexpr,
-    ROT_DIM: tl.constexpr,
-    BLOCK: tl.constexpr,
-):
-    token = tl.program_id(0)
-    batch = tl.program_id(1)
-    channel = tl.arange(0, BLOCK)
-    offset = (batch * seq_len + token) * WIDTH + channel
-    rotated = channel < ROT_DIM
-    cos = tl.load(COS + token * ROT_DIM + channel, rotated, other=0)
-    sin = tl.load(SIN + token * ROT_DIM + channel, rotated, other=0)
-    # Interleaved pairs: [-x1, x0, -x3, x2, ...]. The tail is copied verbatim.
-    partner = (batch * seq_len + token) * WIDTH + (channel ^ 1)
-    sign = tl.where(channel % 2 == 0, -1.0, 1.0)
-    q = tl.load(Q + offset, channel < WIDTH, other=0).to(tl.float32)
-    k = tl.load(K + offset, channel < WIDTH, other=0).to(tl.float32)
-    q_pair = tl.load(Q + partner, rotated, other=0).to(tl.float32)
-    k_pair = tl.load(K + partner, rotated, other=0).to(tl.float32)
-    q_rot = q * cos + (sign * q_pair) * sin
-    k_rot = k * cos + (sign * k_pair) * sin
-    tl.store(Q_OUT + offset, tl.where(rotated, q_rot, q), channel < WIDTH)
-    tl.store(K_OUT + offset, tl.where(rotated, k_rot, k), channel < WIDTH)
+
+@triton.jit(do_not_specialize=["sequence_length"])
+def partial_qk_rope(
+    query_pointer: tl.tensor,
+    key_pointer: tl.tensor,
+    cosine_pointer: tl.tensor,
+    sine_pointer: tl.tensor,
+    rotated_query_pointer: tl.tensor,
+    rotated_key_pointer: tl.tensor,
+    sequence_length: int,
+    PROJECTION_WIDTH: tl.constexpr,
+    ROTARY_DIMENSION: tl.constexpr,
+    CHANNEL_BLOCK_SIZE: tl.constexpr,
+) -> None:
+    token_index = tl.program_id(0)
+    batch_index = tl.program_id(1)
+    channel_indices = tl.arange(0, CHANNEL_BLOCK_SIZE)
+    projection_offsets = (
+        batch_index * sequence_length + token_index
+    ) * PROJECTION_WIDTH + channel_indices
+    is_rotary_channel = channel_indices < ROTARY_DIMENSION
+    cosine = tl.load(
+        cosine_pointer + token_index * ROTARY_DIMENSION + channel_indices,
+        is_rotary_channel,
+        other=0,
+    )
+    sine = tl.load(
+        sine_pointer + token_index * ROTARY_DIMENSION + channel_indices,
+        is_rotary_channel,
+        other=0,
+    )
+    # note (wirybeaver): CosyVoice rotates interleaved pairs before splitting heads.
+    partner_offsets = (
+        batch_index * sequence_length + token_index
+    ) * PROJECTION_WIDTH + (channel_indices ^ 1)
+    rotation_sign = tl.where(channel_indices % 2 == 0, -1.0, 1.0)
+    query = tl.load(
+        query_pointer + projection_offsets, channel_indices < PROJECTION_WIDTH, other=0
+    ).to(tl.float32)
+    key = tl.load(
+        key_pointer + projection_offsets, channel_indices < PROJECTION_WIDTH, other=0
+    ).to(tl.float32)
+    partner_query = tl.load(
+        query_pointer + partner_offsets, is_rotary_channel, other=0
+    ).to(tl.float32)
+    partner_key = tl.load(key_pointer + partner_offsets, is_rotary_channel, other=0).to(
+        tl.float32
+    )
+    rotated_query = query * cosine + (rotation_sign * partner_query) * sine
+    rotated_key = key * cosine + (rotation_sign * partner_key) * sine
+    tl.store(
+        rotated_query_pointer + projection_offsets,
+        tl.where(is_rotary_channel, rotated_query, query),
+        channel_indices < PROJECTION_WIDTH,
+    )
+    tl.store(
+        rotated_key_pointer + projection_offsets,
+        tl.where(is_rotary_channel, rotated_key, key),
+        channel_indices < PROJECTION_WIDTH,
+    )
 
 
 def fused_qk_rope(
-    q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    query: torch.Tensor,
+    key: torch.Tensor,
+    cosine: torch.Tensor,
+    sine: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    # Private inference ABI: projections are contiguous [B, T, 1024], and
-    # tables are contiguous [1, T, 64] FP32. No input is modified or aliased.
-    q_out, k_out = torch.empty_like(q), torch.empty_like(k)
-    with torch.cuda.device(q.device):
-        _partial_qk_rope[(q.shape[1], q.shape[0])](
-            q,
-            k,
-            cos,
-            sin,
-            q_out,
-            k_out,
-            q.shape[1],
-            WIDTH=1024,
-            ROT_DIM=64,
-            BLOCK=1024,
-            num_warps=4,
-            # Match the native separate multiply/add rounding.
+    """Apply partial interleaved RoPE to contiguous Q and K projections."""
+    rotated_query = torch.empty_like(query)
+    rotated_key = torch.empty_like(key)
+    with torch.cuda.device(query.device):
+        partial_qk_rope[(query.shape[1], query.shape[0])](
+            query,
+            key,
+            cosine,
+            sine,
+            rotated_query,
+            rotated_key,
+            query.shape[1],
+            PROJECTION_WIDTH=PROJECTED_CHANNELS,
+            ROTARY_DIMENSION=ROTARY_CHANNELS,
+            CHANNEL_BLOCK_SIZE=PROJECTED_CHANNELS,
+            num_warps=WARPS_PER_BLOCK,
+            # note (wirybeaver): Native rotary uses separate multiply and add rounding.
             enable_fp_fusion=False,
         )
-    return q_out, k_out
+    return rotated_query, rotated_key
+
+
+__all__ = ["fused_qk_rope"]

@@ -15,6 +15,9 @@ import torch._dynamo as dynamo
 import torch.nn.functional as F
 from sglang.kernels.ops.attention.flash_attention import flash_attn_with_kvcache
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+from x_transformers.x_transformers import RotaryEmbedding
+
+from sglang_omni.models.fun_cosyvoice3.dit_fused_rope import RopeTables
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +273,26 @@ class RaggedRowAttention:
 PackedRowAttention = RowAttention | RaggedRowAttention
 
 
+def select_rotary_tables(
+    rotary_embedding: RotaryEmbedding,
+    sequence_length: int,
+    positions: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor] | RopeTables:
+    rotary_tables = rotary_embedding.forward_from_seq_len(sequence_length)
+    if isinstance(rotary_tables, RopeTables):
+        return RopeTables(
+            cosine=rotary_tables.cosine[:, positions],
+            sine=rotary_tables.sine[:, positions],
+        )
+    else:
+        rotary_frequencies, rotary_scale = rotary_tables
+        assert not isinstance(
+            rotary_scale, torch.Tensor
+        ), "the DiT's RoPE has no xpos scale"
+        rotary_frequencies = rotary_frequencies[:, positions]
+        return rotary_frequencies.cos(), rotary_frequencies.sin()
+
+
 class CompiledPackedForward(Protocol):
     """One compiled PackedDiT contract: causal or full-context."""
 
@@ -479,30 +502,29 @@ class PackedDiT:
         padded = scatter_rows(h, rows, rows.width)
         return gather_rows(self.dit.input_embed.conv_pos_embed(padded), rows)
 
-    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
-        """cos and sin, (1, total, rotary dims) each, in float32."""
-        freqs, scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
-        assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
-        freqs = freqs[:, rows.positions]
-        return freqs.cos(), freqs.sin()
+    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor] | RopeTables:
+        return select_rotary_tables(self.dit.rotary_embed, rows.width, rows.positions)
 
     @staticmethod
     def attend(
-        attn: torch.nn.Module,
+        attention_module: torch.nn.Module,
         x: torch.Tensor,
-        rope: tuple[torch.Tensor, torch.Tensor],
-        attention: PackedRowAttention,
+        rope: tuple[torch.Tensor, torch.Tensor] | RopeTables,
+        row_attention: PackedRowAttention,
     ) -> torch.Tensor:
-        # note (ratish): under autocast to_q, to_k and to_v would each cast the
-        # float32 norm output again.
-        x = x.to(attn.to_q.weight.dtype)
-        query = attn.to_q(x)
-        key = attn.to_k(x)
-        value = attn.to_v(x)
-        rotate_in_place(query, *rope)
-        rotate_in_place(key, *rope)
-        out = attention(query, key, value).to(query.dtype)
-        return attn.to_out[1](attn.to_out[0](out))
+        # note (ratish): under autocast the three projections would each recast
+        # the FP32 normalized states.
+        x = x.to(attention_module.to_q.weight.dtype)
+        query = attention_module.to_q(x)
+        key = attention_module.to_k(x)
+        value = attention_module.to_v(x)
+        if isinstance(rope, RopeTables):
+            query, key = rope.apply(query, key)
+        else:
+            rotate_in_place(query, *rope)
+            rotate_in_place(key, *rope)
+        output = row_attention(query, key, value).to(query.dtype)
+        return attention_module.to_out[1](attention_module.to_out[0](output))
 
 
 def gather_rows_tensor_geometry(padded: torch.Tensor, rows: PackedRows) -> torch.Tensor:
@@ -545,12 +567,9 @@ def rope_tensor_geometry(
     estimator: PackedDiT,
     rows: PackedRows,
     attention: RaggedRowAttention,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor] | RopeTables:
     width = attention.page_table.shape[1]
-    freqs, scale = estimator.dit.rotary_embed.forward_from_seq_len(width)
-    assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
-    freqs = freqs[:, rows.positions]
-    return freqs.cos(), freqs.sin()
+    return select_rotary_tables(estimator.dit.rotary_embed, width, rows.positions)
 
 
 def ragged_attention_tensor_geometry(
@@ -576,7 +595,7 @@ def ragged_attention_tensor_geometry(
 def attend_tensor_geometry(
     attn: torch.nn.Module,
     x: torch.Tensor,
-    rope: tuple[torch.Tensor, torch.Tensor],
+    rope: tuple[torch.Tensor, torch.Tensor] | RopeTables,
     attention: RaggedRowAttention,
     max_seqlen_q: int,
 ) -> torch.Tensor:
@@ -586,8 +605,11 @@ def attend_tensor_geometry(
     query = attn.to_q(x)
     key = attn.to_k(x)
     value = attn.to_v(x)
-    rotate_in_place(query, *rope)
-    rotate_in_place(key, *rope)
+    if isinstance(rope, RopeTables):
+        query, key = rope.apply(query, key)
+    else:
+        rotate_in_place(query, *rope)
+        rotate_in_place(key, *rope)
     output = ragged_attention_tensor_geometry(
         query, key, value, attention, max_seqlen_q
     ).to(query.dtype)
