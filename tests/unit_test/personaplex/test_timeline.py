@@ -79,7 +79,6 @@ def test_timeline_rows_and_generation_boundary():
     assert timeline.user_rows[num_prompt + 1].tolist() == [508, *range(501, 508)]
     assert timeline.user_rows.shape[0] == num_prompt + 5
     assert timeline.num_frames == 5
-    assert timeline.input_position(0) == num_prompt - 1
 
 
 def test_packaged_voice_rows_come_from_embeddings():

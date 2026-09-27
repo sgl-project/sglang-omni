@@ -162,10 +162,6 @@ class Timeline:
     num_prompt_positions: int
     num_frames: int
 
-    def input_position(self, forward_index: int) -> int:
-        """Position of the row forward j consumes (j = 0: last prefill row)."""
-        return self.num_prompt_positions - 1 + forward_index
-
 
 def build_timeline(
     prompt: PromptFrames,
