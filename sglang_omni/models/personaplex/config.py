@@ -17,8 +17,12 @@ from sglang_omni.models.personaplex.hf_config import PERSONAPLEX_ARCH
 
 MODEL_STAGES_PREFIX = "sglang_omni.models.personaplex.stages"
 PREPROCESSING_STAGE = "preprocessing"
+MIMI_ENCODE_STAGE = "mimi_encode"
 LM_STAGE = "lm"
 CODE2WAV_STAGE = "code2wav"
+# A full-duplex call visits these in order, one 80 ms unit at a time.
+REALTIME_STAGES = (PREPROCESSING_STAGE, MIMI_ENCODE_STAGE, LM_STAGE, CODE2WAV_STAGE)
+REALTIME_MAX_CALLS = 1
 
 
 def personaplex_stages_factory() -> list[StageConfig]:
@@ -27,10 +31,10 @@ def personaplex_stages_factory() -> list[StageConfig]:
             name=PREPROCESSING_STAGE,
             process="pipeline",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_preprocessing_executor",
-            next="mimi_encode",
+            next=MIMI_ENCODE_STAGE,
         ),
         StageConfig(
-            name="mimi_encode",
+            name=MIMI_ENCODE_STAGE,
             process="pipeline",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_mimi_encode_executor",
             gpu=0,
