@@ -435,10 +435,9 @@ class Qwen3TTSCodePredictor(nn.Module):
 class Qwen3TTSPromptBuilderMixin:
     """Prompt construction shared by the talker and the standalone prompt frontend.
 
-    Expects ``model`` (embedding tables and ``_feedback_buffer``), ``text_projection``,
-    ``code_predictor.model.codec_embedding``, ``speaker_encoder``,
-    ``speaker_encoder_graph_runner``, ``speech_tokenizer``, ``config``/``root_config``
-    and ``speaker_encoder_sample_rate`` on the instance.
+    Expects model (embedding tables and the feedback buffer), text_projection,
+    code_predictor.model.codec_embedding, speaker_encoder, speaker_encoder_graph_runner,
+    speech_tokenizer, config, root_config and speaker_encoder_sample_rate on the instance.
     """
 
     @property

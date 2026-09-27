@@ -17,16 +17,15 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import smallest_b
 
 logger = logging.getLogger(__name__)
 
-# The checkpoint's mel front end: a 1024 point STFT every 256 samples, mels to 12 kHz.
 SPEAKER_MEL_N_FFT = 1024
 SPEAKER_MEL_HOP = 256
 SPEAKER_MEL_FMIN = 0
 SPEAKER_MEL_FMAX = 12000
 SPEAKER_MEL_CLIP = 1e-5
-# note(ratish): a replay costs the same 1.05 ms on the H100 at steps 32, 64 and 128
-# (launch bound), so the step is the coarsest that keeps the padding under 1.4 s; 1920
-# mel frames is the reference encoder's largest bucket of 256 codec frames (7.5 mel
-# frames each), so both captured encoders run eager past the same reference length.
+# note(ratish): a replay costs a launch floor, not the padded frames (the same
+# 1.05 ms at steps 32, 64 and 128, measured on H100), so the step only trades graph
+# count against padding; 1920 frames is the reference encoder's 256 codec frame
+# ceiling, so both captured encoders run eager past the same reference length.
 DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES = tuple(range(128, 1921, 128))
 
 
@@ -124,8 +123,7 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
                 fmax=SPEAKER_MEL_FMAX,
             )
         ).float()
-        # note(ratish): the engine builds the model under a CUDA default device; the
-        # mel front end stays on the CPU.
+        # note(ratish): the engine constructs models under a CUDA default device.
         self.mel_window = torch.hann_window(SPEAKER_MEL_N_FFT, device="cpu")
         self.pads = frozenset(
             conv.dilation[0] * (conv.kernel_size[0] - 1) // 2
@@ -219,20 +217,11 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
         else:
             pass
         captured = self.graphs[bucket]
-        # note(ratish): the inputs, the replay and the clone all queue on the caller's
-        # stream, which every preprocessing worker shares, so the lock covers the
-        # enqueue and the clone reads the output before the next replay rewrites it.
+        # note(ratish): every worker enqueues on one shared stream, so the lock only
+        # orders the enqueue and the clone lands before the next replay.
         with self.lock:
             captured.static_mels[:, :, :frames].copy_(mels)
             captured.static_frames.fill_(frames)
             captured.graph.replay()
             self.replays += 1
             return captured.static_embedding.clone()
-
-
-__all__ = [
-    "DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES",
-    "Qwen3TTSSpeakerEncoderCudaGraphRunner",
-    "encode_bucketed",
-    "reflect_index",
-]
