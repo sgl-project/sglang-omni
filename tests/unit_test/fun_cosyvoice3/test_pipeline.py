@@ -13,14 +13,12 @@ from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import (
     FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
     FunCosyVoice3PipelineConfig,
-    reject_conflicting_dit_accelerators,
 )
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.pipeline.stage_workers import patched_spawn_env
-from sglang_omni.platforms import current_platform
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
@@ -103,6 +101,7 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
     # they are validated eagerly rather than passing through as extras.
     assert vocoder.factory.max_batch_size == 16
     assert vocoder.factory.max_batch_wait_ms == 30
+    assert vocoder.factory.enable_dit_fused_rope is True
     assert vocoder.factory.model_extra == {
         "flow_batch_admission_frames": 8000,
         "flow_merge_max_gap_frames": 384,
@@ -111,7 +110,6 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "enable_flow_cuda_graph": True,
         "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
-        "enable_dit_fused_rope": current_platform.is_cuda(),
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
@@ -149,7 +147,6 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         "enable_flow_cuda_graph": True,
         "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
-        "enable_dit_fused_rope": current_platform.is_cuda(),
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
@@ -163,39 +160,48 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         [5, 544],
         [7, 576],
     ]
-    assert args["enable_dit_fused_rope"] is current_platform.is_cuda()
+    assert args["enable_dit_fused_rope"] is True
 
 
-def test_fused_rope_override_can_compose_with_compile_and_flow_graphs() -> None:
-    manager = ConfigManager(FunCosyVoice3PipelineConfig(model_path="model"))
-    merged = manager.merge_config(
+def test_fused_rope_can_compose_with_compile_and_flow_graphs() -> None:
+    configuration = ConfigManager(FunCosyVoice3PipelineConfig(model_path="model"))
+    merged_configuration = configuration.merge_config(
         {
-            "vocoder.factory.enable_dit_fused_rope": True,
             "vocoder.factory.enable_dit_torch_compile": True,
         }
     )
-    vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
-    args = resolve_stage_typed_kwargs(vocoder)
-    assert args["enable_dit_fused_rope"] is True
-    assert args["enable_dit_torch_compile"] is True
-    assert args["enable_flow_cuda_graph"] is True
+    vocoder = merged_configuration.stage_named("vocoder")
+    factory_arguments = resolve_stage_typed_kwargs(vocoder)
+    assert factory_arguments["enable_dit_fused_rope"] is True
+    assert factory_arguments["enable_dit_torch_compile"] is True
+    assert factory_arguments["enable_flow_cuda_graph"] is True
 
 
-def test_fused_rope_rejects_trt_before_loading_models() -> None:
+def test_pipeline_rejects_tensorrt_with_fused_rope() -> None:
+    configuration = ConfigManager(FunCosyVoice3PipelineConfig(model_path="model"))
     with pytest.raises(ValueError, match="enable_dit_fused_rope"):
-        reject_conflicting_dit_accelerators(
-            enable_dit_torch_compile=False,
-            enable_flow_estimator_trt=True,
-            enable_dit_fused_rope=True,
-        )
-    manager = ConfigManager(FunCosyVoice3PipelineConfig(model_path="model"))
-    with pytest.raises(ValueError, match="enable_dit_fused_rope"):
-        manager.merge_config(
+        configuration.merge_config(
             {
-                "vocoder.factory.enable_dit_fused_rope": True,
                 "vocoder.factory.enable_flow_estimator_trt": True,
             }
         )
+
+
+def test_disabling_dit_accelerators_allows_tensorrt() -> None:
+    configuration = ConfigManager(FunCosyVoice3PipelineConfig(model_path="model"))
+    merged_configuration = configuration.merge_config(
+        {
+            "vocoder.factory.enable_dit_fused_rope": False,
+            "vocoder.factory.enable_dit_torch_compile": False,
+            "vocoder.factory.enable_flow_estimator_trt": True,
+        }
+    )
+    factory_arguments = resolve_stage_typed_kwargs(
+        merged_configuration.stage_named("vocoder")
+    )
+    assert factory_arguments["enable_dit_fused_rope"] is False
+    assert factory_arguments["enable_dit_torch_compile"] is False
+    assert factory_arguments["enable_flow_estimator_trt"] is True
 
 
 def test_fun_cosyvoice3_state_round_trip_preserves_wire_contract() -> None:
