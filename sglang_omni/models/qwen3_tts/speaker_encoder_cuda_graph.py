@@ -23,10 +23,11 @@ SPEAKER_MEL_HOP = 256
 SPEAKER_MEL_FMIN = 0
 SPEAKER_MEL_FMAX = 12000
 SPEAKER_MEL_CLIP = 1e-5
-# note(ratish): one bucket every 64 mel frames (0.68 s at 24 kHz); 1920 mel frames is
-# the reference encoder's largest bucket of 256 codec frames (7.5 mel frames each),
-# so both captured encoders run eager past the same reference length.
-DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES = tuple(range(64, 1921, 64))
+# note(ratish): a replay costs the same 1.05 ms on the H100 at steps 32, 64 and 128
+# (launch bound), so the step is the coarsest that keeps the padding under 1.4 s; 1920
+# mel frames is the reference encoder's largest bucket of 256 codec frames (7.5 mel
+# frames each), so both captured encoders run eager past the same reference length.
+DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES = tuple(range(128, 1921, 128))
 
 
 def reflect_index(length: torch.Tensor, width: int, pad: int) -> torch.Tensor:
