@@ -44,7 +44,7 @@ class RealtimeAudioBuffer:
         self.max_bytes = max_bytes
         self.buf = bytearray()
         self.start_sample = 0
-        # Across all channels, so it is also the byte size of one position.
+        # note (Jeffro): across all channels, so it is also the byte size of one position.
         self.bytes_per_sample = PCM16_BYTES_PER_SAMPLE * channels
 
     def append_b64(self, audio_b64: str) -> int:

@@ -89,7 +89,7 @@ class StreamingASRStrategy(Protocol):
 
 class SessionState(enum.Enum):
     RECEIVING = "receiving"
-    # transcription.done was received; only the pending finals are still running.
+    # note (Jeffro): transcription.done was received; only the pending finals are still running.
     INPUT_DONE = "input_done"
     CLOSED = "closed"
 
