@@ -14,7 +14,6 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.config.schema import stage_process_name
-from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
 
@@ -76,9 +75,9 @@ FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES: tuple[tuple[int, int], ..
     (1, 416),
 )
 
-_DIT_ACCELERATOR_CONFLICT = (
-    "enable_flow_estimator_trt and enable_dit_torch_compile both "
-    "target flow.decoder.estimator; enable only one"
+DIT_ACCELERATOR_CONFLICT = (
+    "enable_flow_estimator_trt cannot be combined with "
+    "enable_dit_torch_compile or enable_dit_fused_rope"
 )
 
 
@@ -86,17 +85,12 @@ def reject_conflicting_dit_accelerators(
     *,
     enable_dit_torch_compile: bool,
     enable_flow_estimator_trt: bool,
-    enable_dit_fused_rope: bool = False,
+    enable_dit_fused_rope: bool,
 ) -> None:
-    if enable_flow_estimator_trt and enable_dit_torch_compile:
-        raise ValueError(_DIT_ACCELERATOR_CONFLICT)
-    else:
-        pass
-    if enable_flow_estimator_trt and enable_dit_fused_rope:
-        raise ValueError(
-            "enable_flow_estimator_trt and enable_dit_fused_rope both "
-            "target flow.decoder.estimator; enable only one"
-        )
+    if enable_flow_estimator_trt and (
+        enable_dit_torch_compile or enable_dit_fused_rope
+    ):
+        raise ValueError(DIT_ACCELERATOR_CONFLICT)
     else:
         pass
 
@@ -119,6 +113,7 @@ class FunCosyVoice3VocoderFactoryArgs(FactoryArgs):
 
     mlx_model_path: str | None = Field(default=None)
     mlx_model_revision: str | None = Field(default=None)
+    enable_dit_fused_rope: bool = True
 
 
 class FunCosyVoice3VocoderStageConfig(StageConfig):
@@ -177,7 +172,6 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 # CUDA Graph and DiT torch.compile are on by default. TensorRT stays opt-in;
                 # stage_factory_kwargs sets the compile default.
                 enable_flow_estimator_trt=False,
-                enable_dit_fused_rope=current_platform.is_cuda(),
                 token_hop_len=25,
                 token_max_hop_len=100,
                 disable_hop_growth=False,
@@ -235,7 +229,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         reject_conflicting_dit_accelerators(
             enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile")),
             enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
-            enable_dit_fused_rope=bool(extras.get("enable_dit_fused_rope")),
+            enable_dit_fused_rope=vocoder.factory.enable_dit_fused_rope,
         )
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool | str]:

@@ -19,6 +19,10 @@ import torch
 import torch._dynamo as dynamo
 import torch.nn.functional as F
 
+from sglang_omni.models.fun_cosyvoice3.dit_fused_rope import (
+    RopeTables,
+    select_rotary_tables,
+)
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     CONV_CONTEXT_FRAMES,
     FA3_PAGE_SIZE,
@@ -48,7 +52,7 @@ class PrefixForward(Protocol):
         mel_conditioning: torch.Tensor,
         t: torch.Tensor,
         attention: PrefixRowAttention,
-        rope: tuple[torch.Tensor, torch.Tensor],
+        rope: tuple[torch.Tensor, torch.Tensor] | RopeTables,
         first_context: torch.Tensor,
         second_context: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]: ...
@@ -440,7 +444,7 @@ def forward_prefix(
     mel_conditioning: torch.Tensor,
     t: torch.Tensor,
     attention: PrefixRowAttention,
-    rope: tuple[torch.Tensor, torch.Tensor],
+    rope: tuple[torch.Tensor, torch.Tensor] | RopeTables,
     first_context: torch.Tensor,
     second_context: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -467,7 +471,9 @@ def forward_prefix(
         query, key, value = F.linear(
             norm, estimator.qkv_weights[layer], estimator.qkv_biases[layer]
         ).chunk(3, dim=-1)
-        if torch.compiler.is_compiling():
+        if isinstance(rope, RopeTables):
+            query, key = rope.apply(query, key)
+        elif torch.compiler.is_compiling():
             query = rotated(query, *rope)
             key = rotated(key, *rope)
         else:
@@ -521,7 +527,7 @@ def run_prefix_solve(
     speaker_embeddings: torch.Tensor,
     mel_conditioning: torch.Tensor,
     attention: PrefixRowAttention,
-    angles: torch.Tensor,
+    rotary_tables: torch.Tensor | tuple[torch.Tensor, float] | RopeTables,
     context: torch.Tensor,
     next_context: torch.Tensor,
     *,
@@ -538,8 +544,7 @@ def run_prefix_solve(
     speaker_embeddings_cfg = torch.cat(
         (speaker_embeddings, torch.zeros_like(speaker_embeddings)), dim=0
     )[attention.speaker_index].unsqueeze(0)
-    angles = angles[:, attention.positions]
-    rope = (angles.cos(), angles.sin())
+    rope = select_rotary_tables(rotary_tables, attention.positions)
     flow_time = torch.zeros(1, device=noise.device, dtype=speaker_embeddings.dtype)
     euler_steps = len(time_span) - 1
     x = noise
@@ -617,8 +622,7 @@ def solve_flow_euler_prefix(
         chunk_size=chunk_size,
         device=device,
     )
-    angles, scale = estimator.dit.rotary_embed.forward_from_seq_len(max(end_frames))
-    assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
+    rotary_tables = estimator.dit.rotary_embed.forward_from_seq_len(max(end_frames))
     euler_steps = len(time_span) - 1
     hidden_size = int(estimator.dit.input_embed.proj.out_features)
     contexts: list[torch.Tensor] = []
@@ -652,7 +656,7 @@ def solve_flow_euler_prefix(
         speaker_embeddings,
         mel_conditioning,
         attention,
-        angles,
+        rotary_tables,
         context,
         next_context,
         cfg_rate=cfg_rate,

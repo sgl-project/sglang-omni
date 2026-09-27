@@ -20,6 +20,10 @@ from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 from sglang.srt.utils.custom_op import register_custom_op
 
 from sglang_omni.models.fun_cosyvoice3.causal_conv import FusedConvPositionEmbedding
+from sglang_omni.models.fun_cosyvoice3.dit_fused_rope import (
+    RopeTables,
+    select_rotary_tables,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -429,7 +433,7 @@ class PackedDiT:
         t: torch.Tensor,
         rows: PackedRows,
         attention: PackedRowAttention,
-        rope: tuple[torch.Tensor, torch.Tensor],
+        rope: tuple[torch.Tensor, torch.Tensor] | RopeTables,
     ) -> torch.Tensor:
         """x, mu, cond, spks: (1, total, channels); t: (1,); rope: rope(rows).
         Returns (1, total, out_channels)."""
@@ -483,24 +487,31 @@ class PackedDiT:
             conv = (conv_pos_embed.conv1, conv_pos_embed.conv2)[conv_index]
             return conv(x.T.unsqueeze(0))[0].T
 
-    def rope_angles(self, frame_count: int) -> torch.Tensor:
-        """RoPE angles of positions [0, frame_count), (1, frame_count, rotary
-        dims), in float32."""
-        angles, scale = self.dit.rotary_embed.forward_from_seq_len(frame_count)
-        assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
-        return angles
+    def rope_angles(self, frame_count: int) -> torch.Tensor | RopeTables:
+        """Native angles or fused tables for positions [0, frame_count)."""
+        rotary_tables = self.dit.rotary_embed.forward_from_seq_len(frame_count)
+        if isinstance(rotary_tables, RopeTables):
+            return rotary_tables
+        else:
+            angles, scale = rotary_tables
+            assert not isinstance(
+                scale, torch.Tensor
+            ), "the DiT's RoPE has no xpos scale"
+            return angles
 
     @staticmethod
     def attend(
         attn: torch.nn.Module,
         x: torch.Tensor,
-        rope: tuple[torch.Tensor, torch.Tensor],
+        rope: tuple[torch.Tensor, torch.Tensor] | RopeTables,
         attention: PackedRowAttention,
         qkv_weight: torch.Tensor,
         qkv_bias: torch.Tensor,
     ) -> torch.Tensor:
         query, key, value = F.linear(x, qkv_weight, qkv_bias).chunk(3, dim=-1)
-        if torch.compiler.is_compiling():
+        if isinstance(rope, RopeTables):
+            query, key = rope.apply(query, key)
+        elif torch.compiler.is_compiling():
             query = rotated(query, *rope)
             key = rotated(key, *rope)
         else:
@@ -541,7 +552,7 @@ def solve_flow_euler_packed(
     cond: torch.Tensor,
     twin_rows: PackedRows,
     attention: PackedRowAttention,
-    angles: torch.Tensor,
+    angles: torch.Tensor | RopeTables,
     *,
     cfg_rate: float,
 ) -> torch.Tensor:
@@ -556,8 +567,7 @@ def solve_flow_euler_packed(
     flow_time = torch.zeros(1, device=noise.device, dtype=spks.dtype)
     # note(ratish): once per solve and outside the compiled forward,
     # whose graph would otherwise hold RoPE's autocast region and miss the AOT cache.
-    angles = angles[:, twin_rows.positions]
-    rope = (angles.cos(), angles.sin())
+    rope = select_rotary_tables(angles, twin_rows.positions)
     x = noise
     t, dt = time_span[0], time_span[1] - time_span[0]
     for step in range(1, len(time_span)):

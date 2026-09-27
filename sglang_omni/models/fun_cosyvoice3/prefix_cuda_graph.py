@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import torch
 
+from sglang_omni.models.fun_cosyvoice3.dit_fused_rope import RopeTables
 from sglang_omni.models.fun_cosyvoice3.packed_dit import CONV_CONTEXT_FRAMES, PackedDiT
 from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     PrefixCacheRow,
@@ -87,7 +88,9 @@ class PrefixCudaGraphRunner:
                     page_table_width=max_frames,
                 )
             )
-        self.angles = estimator.rope_angles(max_frames)
+        self.rotary_tables: torch.Tensor | RopeTables = estimator.rope_angles(
+            max_frames
+        )
         self.captured: list[CapturedPrefixSolve] = []
 
     @torch.inference_mode()
@@ -147,7 +150,7 @@ class PrefixCudaGraphRunner:
                         speaker_embeddings,
                         mel_conditioning,
                         attention,
-                        self.angles,
+                        self.rotary_tables,
                         context,
                         next_context,
                         cfg_rate=self.cfg_rate,
