@@ -74,6 +74,15 @@ class RecordingPackedEstimator:
         positions = rows.positions.to(x.dtype).view(1, -1, 1)
         return 0.1 * x + mu + spks + cond + 0.01 * positions
 
+    def forward_for_mode(
+        self,
+        streaming: bool,
+        *,
+        attention: SimpleNamespace,
+    ):
+        assert streaming == attention.streaming
+        return self.forward
+
 
 def make_packed(flow: FakeFlow) -> FunCosyVoice3Flow:
     return FunCosyVoice3Flow(flow, packed_estimator=flow.packed_estimator)

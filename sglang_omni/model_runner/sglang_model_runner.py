@@ -650,6 +650,7 @@ class SGLModelRunner(ModelRunner):
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
+            "PersonaPlexForCausalLM": "sglang_omni.models.personaplex.sglang_model:PersonaPlexForCausalLM",
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
         }
         for arch, path in sglang_omni_models.items():

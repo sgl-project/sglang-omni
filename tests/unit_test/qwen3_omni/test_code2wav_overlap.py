@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 
 import numpy as np
 import pytest
@@ -128,6 +129,7 @@ def make_gpu_scheduler(
     model: FakeCode2WavModel | torch.nn.Module | None = None,
     cuda_graph: bool = False,
     slow: bool = False,
+    decode_stream: torch.cuda.Stream | None = None,
 ) -> Code2WavScheduler:
     """Real-CUDA scheduler: real pinned buffers, real events, optionally a
     real graph runner over the serving-reachable serial keys."""
@@ -149,6 +151,8 @@ def make_gpu_scheduler(
             num_quantizers=2,
             total_gpu_memory_fraction=1.0,
             graph_keys=code2wav_scheduler.serial_threshold_graph_keys(10, 1),
+            model_footprint_bytes=0,
+            decode_stream=decode_stream,
         )
         assert runner.stats()["enabled"] is True
     scheduler = Code2WavScheduler(
@@ -159,6 +163,7 @@ def make_gpu_scheduler(
         enable_output_overlap=overlap,
         enable_cuda_graph=cuda_graph,
         cuda_graph_runner=runner,
+        decode_stream=decode_stream,
     )
     assert scheduler.pipeline_active is overlap
     if overlap:
@@ -458,7 +463,7 @@ def test_overlap_query_failure_quarantines_slot(monkeypatch, caplog) -> None:
     slot_event(slot).query_error = RuntimeError("event query failed")
     scheduler.abort("req-1")
 
-    scheduler.reap_retired_slots()
+    scheduler.reap_retired()
 
     assert scheduler.pinned_retired == []
     assert scheduler.pinned_quarantined == [slot]
@@ -1060,6 +1065,54 @@ def test_overlap_gpu_abort_midstream_neither_blocks_nor_reuses_inflight_slot(
 
 
 @pytest.mark.accelerator
+def test_overlap_gpu_abort_holds_chunks_while_a_queued_window_reads_them() -> None:
+    """An abort from another thread while a window's read of the chunks is
+    still queued on the decode stream must not free them: the state is their
+    only reference, and they go once the decode stream has passed the read."""
+    require_cuda()
+    device = torch.device("cuda", torch.cuda.current_device())
+    chunks = stage_chunks(device, 20)
+    scheduler = make_gpu_scheduler(
+        overlap=True, device=device, decode_stream=torch.cuda.Stream(device=device)
+    )
+    scheduler.on_serving_start()
+    try:
+        seed(scheduler)
+        feed(scheduler, "req-1", range(10), chunks=chunks)
+        torch.cuda._sleep(1_000_000_000)  # noqa: leading-underscore  # upstream name
+        feed(
+            scheduler,
+            "req-1",
+            range(10, 11),
+            chunks=[*chunks[:10], torch.stack(chunks[10:20])],
+        )
+        del chunks
+        refs = [weakref.ref(chunk) for chunk in scheduler.stream_states["req-1"].chunks]
+        assert scheduler.stream_states["req-1"].pending is not None
+
+        abort = threading.Thread(target=scheduler.abort, args=("req-1",))
+        abort.start()
+        abort.join()
+
+        (held,) = scheduler.retired_chunks
+        assert held.event.query() is False, "the window's read is still queued"
+        assert all(ref() is not None for ref in refs)
+        scheduler.reap_retired()
+        assert scheduler.retired_chunks == [held]
+        held.event.synchronize()
+        del held
+        scheduler.reap_retired()
+        assert scheduler.retired_chunks == []
+        assert all(ref() is None for ref in refs)
+
+        seed(scheduler, "req-2")
+        feed(scheduler, "req-2", range(10), chunks=stage_chunks(device, 10))
+        assert scheduler.stream_states["req-2"].audio_parts
+    finally:
+        torch.cuda.set_stream(torch.cuda.default_stream(device))
+
+
+@pytest.mark.accelerator
 def test_overlap_gpu_slot_on_other_device_than_process_current() -> None:
     """Slots live on ``cuda:1``; warm-up, probes, waits, flushes, reap and
     shutdown drain run from ``cuda:0`` and leave it current. (``decode_delta``
@@ -1127,7 +1180,7 @@ def test_overlap_gpu_slot_on_other_device_than_process_current() -> None:
         torch.cuda.set_device(0)
         scheduler.abort("req-2")
         assert scheduler.pinned_retired == [retired.slot]
-        scheduler.reap_retired_slots()
+        scheduler.reap_retired()
         assert torch.cuda.current_device() == 0
         assert scheduler.pinned_retired == [retired.slot], "still in flight"
         scheduler.on_serving_stop()

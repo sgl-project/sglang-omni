@@ -1170,16 +1170,14 @@ def compile_dit_backbone(
     warmup_mel_frames: int = 128,
     warmup_steps: int = 3,
     autocast_dtype: torch.dtype | None = None,
-) -> bool:
+) -> None:
 
     estimator = flow.decoder.estimator
     if not isinstance(estimator, torch.nn.Module):
-        logger.warning(
-            "Fun-CosyVoice3 DiT estimator is not a PyTorch module (%s); "
-            "skipping torch.compile",
-            type(estimator).__name__,
+        raise RuntimeError(
+            "Fun-CosyVoice3 DiT torch.compile requires a PyTorch estimator, "
+            f"got {type(estimator).__name__}"
         )
-        return False
     else:
         pass
     if warmup_mel_frames < 2:
@@ -1210,26 +1208,32 @@ def compile_dit_backbone(
         pass
     try:
         estimator.forward = torch.compile(original_forward, dynamic=True)
-        # note(ratish): serving feeds the Flow's dtype; the DiT's weights may
-        # already be in the autocast dtype.
+        # note(chenye): synthetic inputs must use the dtype serving presents to
+        # the estimator, including the effective autocast dtype.
         param = next(flow.parameters())
-        device, dtype = param.device, param.dtype
+        device = param.device
+        parameter_dtype = param.dtype
+        warmup_dtype = autocast_dtype or parameter_dtype
         mel_frame = int(warmup_mel_frames)
         with torch.inference_mode():
             for streaming in (False, True):
                 for _ in range(warmup_steps):
                     # CFG batch 2; mel dim 80 matches pinned checkpoint proj_out.
                     noisy_mel = torch.randn(
-                        2, 80, mel_frame, device=device, dtype=dtype
+                        2, 80, mel_frame, device=device, dtype=warmup_dtype
                     )
-                    mel_mask = torch.ones(2, 1, mel_frame, device=device, dtype=dtype)
+                    mel_mask = torch.ones(
+                        2, 1, mel_frame, device=device, dtype=warmup_dtype
+                    )
                     token_condition = torch.randn(
-                        2, 80, mel_frame, device=device, dtype=dtype
+                        2, 80, mel_frame, device=device, dtype=warmup_dtype
                     )
-                    flow_time = torch.zeros(1, device=device, dtype=dtype)
-                    speaker_embedding = torch.randn(2, 80, device=device, dtype=dtype)
+                    flow_time = torch.zeros(1, device=device, dtype=warmup_dtype)
+                    speaker_embedding = torch.randn(
+                        2, 80, device=device, dtype=warmup_dtype
+                    )
                     prompt_mel = torch.randn(
-                        2, 80, mel_frame, device=device, dtype=dtype
+                        2, 80, mel_frame, device=device, dtype=warmup_dtype
                     )
                     with torch.autocast(
                         device_type=current_platform.device_type,
@@ -1247,21 +1251,15 @@ def compile_dit_backbone(
                         )
     except Exception as exc:
         estimator.forward = original_forward
-        logger.warning(
-            "torch.compile for the Fun-CosyVoice3 DiT backbone failed "
-            "(%s: %s); the flow decoder will run eager",
-            type(exc).__name__,
-            exc,
-        )
-        return False
+        raise RuntimeError(
+            "Fun-CosyVoice3 native DiT torch.compile startup warmup failed"
+        ) from exc
     logger.info(
-        "Compiled Fun-CosyVoice3 DiT backbone (dynamic=True, autocast_dtype=%s, "
-        "warmup_mel_frames=%d, warmup_steps=%d, streaming=False/True)",
-        autocast_dtype,
-        warmup_mel_frames,
-        warmup_steps,
+        "Compiled Fun-CosyVoice3 DiT backbone "
+        f"(dynamic=True, autocast_dtype={autocast_dtype}, "
+        f"warmup_mel_frames={warmup_mel_frames}, warmup_steps={warmup_steps}, "
+        "streaming=False/True)"
     )
-    return True
 
 
 def create_preprocessing_executor(
@@ -2142,7 +2140,7 @@ def create_vocoder_executor(
     flow_batch_admission_frames: int = DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
     flow_merge_max_gap_frames: int = 384,
     flow_merge_pad_budget_percent: float = 25.0,
-    enable_dit_torch_compile: bool = False,
+    enable_dit_torch_compile: bool = True,
     enable_flow_cuda_graph: bool = True,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
@@ -2188,12 +2186,7 @@ def create_vocoder_executor(
             )
         else:
             pass
-        if enable_dit_torch_compile:
-            raise ValueError(
-                "enable_dit_torch_compile is unavailable on the native MLX vocoder"
-            )
-        else:
-            pass
+        # The CUDA DiT compile flag defaults on and does not apply here.
         vocoder = CosyVoice3MlxVocoderAdapter(
             load_cosyvoice3_mlx_vocoder(
                 mlx_model_path, revision=mlx_model_revision, expected_dtype=dtype
@@ -2293,5 +2286,9 @@ def create_vocoder_executor(
         token_max_hop_len=token_max_hop_len,
         disable_hop_growth=disable_hop_growth,
     )
+    if enable_dit_torch_compile:
+        scheduler.warmup_packed_dit_compile()
+    else:
+        pass
     scheduler.warmup_now()
     return scheduler

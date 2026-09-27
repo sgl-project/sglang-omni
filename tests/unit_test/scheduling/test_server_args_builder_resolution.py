@@ -9,8 +9,10 @@ same on an accelerator-less host.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.model_executor.cuda_graph_config import Backend
 
@@ -22,7 +24,22 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.utils.gpu_compat import (
+    apply_gpu_compat_env_defaults,
+    apply_torch_compile_cache_env,
+)
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
+
+DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY = str(
+    Path.home() / ".cache" / "sglang-omni" / "torchinductor"
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_torch_compile_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI exports the compile default, and the builder writes the cache directory."""
+    monkeypatch.delenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", raising=False)
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
 
 
 def test_builder_record_is_resolved_with_the_cuda_graph_config_declared(
@@ -69,3 +86,88 @@ def test_encoder_mem_reserve_reads_the_declared_fraction(tmp_path: Path) -> None
     assert resolution_result(server_args, "mem_fraction_static") == round(
         declared - 0.1, 3
     )
+
+
+def test_builder_enables_torch_compile_by_default(tmp_path: Path) -> None:
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path), context_length=2048, device="cuda"
+    )
+
+    assert resolution_result(server_args, "enable_torch_compile") is True
+
+
+def test_builder_keeps_stage_torch_compile_opt_out(tmp_path: Path) -> None:
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path),
+        context_length=2048,
+        device="cuda",
+        enable_torch_compile=False,
+    )
+
+    assert resolution_result(server_args, "enable_torch_compile") is False
+
+
+def test_builder_disables_torch_compile_by_default_when_ci_turns_default_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", "0")
+
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path), context_length=2048, device="cuda"
+    )
+
+    assert resolution_result(server_args, "enable_torch_compile") is False
+
+
+def test_builder_keeps_stage_torch_compile_opt_in_when_ci_turns_default_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", "0")
+
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path),
+        context_length=2048,
+        device="cuda",
+        enable_torch_compile=True,
+    )
+
+    assert resolution_result(server_args, "enable_torch_compile") is True
+
+
+def test_torchinductor_cache_directory_defaults_to_sglang_omni_home_cache() -> None:
+    env: dict[str, str] = {}
+
+    cache_directory = apply_torch_compile_cache_env(env)
+
+    assert cache_directory == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
+
+
+def test_torchinductor_cache_directory_keeps_existing_value() -> None:
+    env = {"TORCHINDUCTOR_CACHE_DIR": "/var/cache/custom-torchinductor"}
+
+    assert apply_torch_compile_cache_env(env) == "/var/cache/custom-torchinductor"
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == "/var/cache/custom-torchinductor"
+
+
+def test_server_args_builder_pins_torchinductor_cache_directory_when_unset(
+    tmp_path: Path,
+) -> None:
+    build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path),
+        context_length=2048,
+        device="cuda",
+    )
+
+    assert (
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
+    )
+
+
+def test_gpu_compat_env_defaults_pin_torchinductor_cache_directory_when_unset() -> None:
+    # note (zhaochenyang20): a set FlashInfer key skips the GPU topology probe.
+    env = {"FLASHINFER_USE_CUDA_NORM": "0"}
+
+    apply_gpu_compat_env_defaults(env)
+
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY

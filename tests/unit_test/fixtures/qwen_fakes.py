@@ -160,6 +160,12 @@ class FakeCode2WavModel:
         self.output_deficit = output_deficit
         self.calls: list[tuple[int, ...]] = []
 
+    def parameters(self) -> list[torch.Tensor]:
+        return []
+
+    def buffers(self) -> list[torch.Tensor]:
+        return []
+
     def __call__(self, codes: torch.Tensor) -> torch.Tensor:
         self.calls.append(tuple(codes.shape))
         samples = int(codes.shape[-1]) * self.total_upsample - self.output_deficit

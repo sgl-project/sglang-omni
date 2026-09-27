@@ -32,6 +32,7 @@ from sglang_omni.client.types import (
 )
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
+from sglang_omni.proto.request import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
 from sglang_omni.proto.session import (
     OutputChunk,
     SessionIdentity,
@@ -553,6 +554,16 @@ class Client:
         inputs = extract_inputs(request)
         params = build_params(request)
         metadata = dict(request.metadata)
+        if (
+            request.stage_sampling
+            and EXPLICIT_STAGE_SAMPLING_PARAMS_KEY not in metadata
+        ):
+            metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY] = {
+                stage: list(sampling)
+                for stage, sampling in params["stage_sampling"].items()
+            }
+        else:
+            pass
         if request.model:
             metadata.setdefault("model", request.model)
         else:
