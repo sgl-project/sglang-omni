@@ -22,6 +22,7 @@ from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
 SAMPLE_RATE = 24000
 NUM_MELS = 8
 ENC_DIM = 8
+PADS = frozenset({2, 3, 4})
 
 
 def small_speaker_encoder(dtype: torch.dtype) -> torch.nn.Module:
@@ -42,6 +43,11 @@ def small_speaker_encoder(dtype: torch.dtype) -> torch.nn.Module:
     return modeling.Qwen3TTSSpeakerEncoder(config).to(dtype).eval()
 
 
+def clip_of(frames: int, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    return rng.uniform(-1.0, 1.0, frames * SPEAKER_MEL_HOP).astype(np.float32)
+
+
 def test_reflect_index_gathers_the_reflect_pad_of_the_valid_frames() -> None:
     torch.manual_seed(1)
     x = torch.randn(1, 3, 12)
@@ -53,6 +59,13 @@ def test_reflect_index_gathers_the_reflect_pad_of_the_valid_frames() -> None:
         assert torch.equal(gathered, expected)
 
 
+def test_reflect_index_stays_inside_a_buffer_much_wider_than_the_clip() -> None:
+    index = reflect_index(torch.tensor([5]), 64, 4)
+    assert index.shape == (72,)
+    assert int(index.min()) == 0
+    assert int(index.max()) == 4
+
+
 def test_bucketed_forward_matches_the_encoder_on_the_valid_frames() -> None:
     encoder = small_speaker_encoder(torch.float64)
     torch.manual_seed(2)
@@ -62,11 +75,23 @@ def test_bucketed_forward_matches_the_encoder_on_the_valid_frames() -> None:
             eager = encoder(mels.transpose(1, 2))[0]
             padded = torch.randn(1, NUM_MELS, width, dtype=torch.float64)
             padded[:, :, :frames] = mels
-            bucketed = encode_bucketed(
-                encoder, padded, torch.tensor([frames]), frozenset({2, 3, 4})
-            )
+            bucketed = encode_bucketed(encoder, padded, torch.tensor([frames]), PADS)
             assert bucketed.shape == eager.shape == (ENC_DIM,)
             assert torch.allclose(bucketed, eager, atol=1e-9, rtol=1e-9)
+
+
+def test_bucketed_forward_is_bitwise_independent_of_the_buffer_tail() -> None:
+    encoder = small_speaker_encoder(torch.float32)
+    torch.manual_seed(5)
+    mels = torch.randn(1, NUM_MELS, 20)
+    with torch.inference_mode():
+        outputs = []
+        for tail_scale in (0.0, 1.0, 100.0):
+            padded = torch.randn(1, NUM_MELS, 32) * tail_scale
+            padded[:, :, :20] = mels
+            outputs.append(encode_bucketed(encoder, padded, torch.tensor([20]), PADS))
+    assert torch.equal(outputs[0], outputs[1])
+    assert torch.equal(outputs[0], outputs[2])
 
 
 def test_mel_matches_the_checkpoint_front_end_bitwise() -> None:
@@ -74,18 +99,42 @@ def test_mel_matches_the_checkpoint_front_end_bitwise() -> None:
     modeling = pytest.importorskip("qwen_tts.core.models.modeling_qwen3_tts")
     runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
     torch.manual_seed(4)
-    waveform = torch.rand(1, 40 * SPEAKER_MEL_HOP) * 2 - 1
-    expected = modeling.mel_spectrogram(
-        waveform,
-        n_fft=1024,
-        num_mels=NUM_MELS,
-        sampling_rate=SAMPLE_RATE,
-        hop_size=256,
-        win_size=1024,
-        fmin=0,
-        fmax=12000,
-    )
-    assert torch.equal(runner.mel(waveform), expected)
+    for samples in (40 * SPEAKER_MEL_HOP, 40 * SPEAKER_MEL_HOP + 100):
+        waveform = torch.rand(1, samples) * 2 - 1
+        expected = modeling.mel_spectrogram(
+            waveform,
+            n_fft=1024,
+            num_mels=NUM_MELS,
+            sampling_rate=SAMPLE_RATE,
+            hop_size=256,
+            win_size=1024,
+            fmin=0,
+            fmax=12000,
+        )
+        mel = runner.mel(waveform)
+        assert mel.shape == (1, NUM_MELS, samples // SPEAKER_MEL_HOP)
+        assert torch.equal(mel, expected)
+
+
+def test_runner_without_graphs_runs_the_encoder_eagerly() -> None:
+    encoder = small_speaker_encoder(torch.float32)
+    runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
+    runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
+    assert runner.graphs == {}
+    clip = clip_of(20, 6)
+    with torch.inference_mode():
+        embedding = runner.embed(clip)
+        eager = encoder(runner.mel(torch.from_numpy(clip).unsqueeze(0)).transpose(1, 2))
+    assert runner.misses == 1
+    assert runner.replays == 0
+    assert torch.equal(embedding, eager[0])
+
+
+def test_embed_rejects_a_clip_shorter_than_the_largest_reflect_pad() -> None:
+    encoder = small_speaker_encoder(torch.float32)
+    runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
+    with torch.inference_mode(), pytest.raises(AssertionError):
+        runner.embed(clip_of(4, 8))
 
 
 @pytest.mark.accelerator
@@ -95,22 +144,22 @@ def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
     encoder = small_speaker_encoder(torch.float32).to(device)
     with torch.device(device):
         runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
-    assert runner.pads == {2, 3, 4}
+    assert runner.pads == PADS
     runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
     assert sorted(runner.graphs) == [16, 32]
 
-    rng = np.random.default_rng(3)
-    clips = [
-        rng.uniform(-1.0, 1.0, frames * SPEAKER_MEL_HOP).astype(np.float32)
-        for frames in (32, 20, 5, 40)
-    ]
+    frames = (32, 20, 5, 24, 20, 40)
+    seeds = (0, 1, 2, 3, 1, 5)
+    clips = [clip_of(count, seed) for count, seed in zip(frames, seeds)]
     with torch.inference_mode():
         embeddings = [runner.embed(clip) for clip in clips]
         torch.cuda.synchronize(device)
-        assert runner.replays == 3
+        assert runner.replays == 5
         assert runner.misses == 1
         for clip, embedding in zip(clips, embeddings):
             mels = runner.mel(torch.from_numpy(clip).unsqueeze(0)).to(device)
             eager = encoder(mels.transpose(1, 2))[0]
             assert embedding.shape == (ENC_DIM,)
             assert torch.allclose(embedding, eager, atol=1e-4, rtol=1e-4)
+        assert torch.equal(embeddings[1], embeddings[4])
+        assert torch.equal(embeddings[5], runner.embed(clips[5]))
