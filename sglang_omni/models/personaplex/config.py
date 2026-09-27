@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The PersonaPlex pipeline: five stages on one GPU, the LM under SGLang."""
+"""The PersonaPlex pipelines on one GPU, the LM under SGLang.
+
+The default pipeline answers a whole recording; the realtime variant holds
+full-duplex calls over /v1/realtime.
+"""
 
 from typing import ClassVar
 
@@ -68,6 +72,41 @@ def personaplex_stages_factory() -> list[StageConfig]:
     ]
 
 
+def personaplex_realtime_stages_factory() -> list[StageConfig]:
+    """REALTIME_STAGES as one linear route, the only shape a session unit takes."""
+    return [
+        StageConfig(
+            name=PREPROCESSING_STAGE,
+            process="pipeline",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_realtime_preprocessing_executor",
+            next=MIMI_ENCODE_STAGE,
+        ),
+        StageConfig(
+            name=MIMI_ENCODE_STAGE,
+            process="pipeline",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_realtime_mimi_encode_executor",
+            gpu=0,
+            next=LM_STAGE,
+        ),
+        EngineStageConfig(
+            name=LM_STAGE,
+            process="lm",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_realtime_lm_executor",
+            factory=FactoryArgs(dtype="bfloat16"),
+            gpu=0,
+            engine=EngineArgs(mem_fraction_static=0.3),
+            next=CODE2WAV_STAGE,
+        ),
+        StageConfig(
+            name=CODE2WAV_STAGE,
+            process="lm",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_realtime_code2wav_executor",
+            gpu=0,
+            terminal=True,
+        ),
+    ]
+
+
 class PersonaPlexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = PERSONAPLEX_ARCH
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -83,4 +122,19 @@ class PersonaPlexPipelineConfig(PipelineConfig):
     stages: list[StageConfig] = Field(default_factory=personaplex_stages_factory)
 
 
+class PersonaPlexRealtimePipelineConfig(PersonaPlexPipelineConfig):
+    realtime_deployment_factory: ClassVar[str | None] = (
+        "sglang_omni.models.personaplex.realtime.create_realtime_deployment"
+    )
+
+    stages: list[StageConfig] = Field(
+        default_factory=personaplex_realtime_stages_factory
+    )
+
+
 EntryClass = PersonaPlexPipelineConfig
+
+Variants = {
+    "offline": PersonaPlexPipelineConfig,
+    "realtime": PersonaPlexRealtimePipelineConfig,
+}

@@ -1,0 +1,2 @@
+config_cls: PersonaPlexRealtimePipelineConfig
+model_path: nvidia/personaplex-7b-v1

@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER_FRAME
-from sglang_omni.models.personaplex.config import REALTIME_STAGES
+from sglang_omni.models.personaplex.config import (
+    REALTIME_STAGES,
+    PersonaPlexPipelineConfig,
+    PersonaPlexRealtimePipelineConfig,
+    Variants,
+)
 from sglang_omni.models.personaplex.realtime import (
     PersonaPlexOutputConverter,
     build_call_request,
@@ -80,6 +85,18 @@ def test_the_deployment_takes_24khz_audio_in_80ms_units_one_call_at_a_time():
     assert isinstance(first, CoordinatorAdapter)
     assert first.client is client and first.stages == list(REALTIME_STAGES)
     assert first.output_converter is not second.output_converter
+
+
+def test_the_realtime_variant_is_one_linear_route_that_streams_nothing():
+    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex")
+    stages = {stage.name: stage for stage in config.stages}
+    assert tuple(stages) == REALTIME_STAGES
+    for name, following in zip(REALTIME_STAGES, REALTIME_STAGES[1:]):
+        assert stages[name].next == following and not stages[name].stream_to
+    assert stages[REALTIME_STAGES[-1]].terminal
+    assert Variants["realtime"] is PersonaPlexRealtimePipelineConfig
+    assert Variants["offline"] is PersonaPlexPipelineConfig
+    assert PersonaPlexPipelineConfig.realtime_deployment_factory is None
 
 
 def test_instructions_become_the_role_prompt():
