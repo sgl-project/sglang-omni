@@ -109,16 +109,25 @@ class PersonaPlexModelRunner(ModelRunner):
         return data.talker_model_inputs["timeline"]
 
     def decode_feedback(self, data: SGLangARRequestData) -> DecodeFeedback:
-        """Cache device inputs and per-request decode state."""
+        """Cache device inputs and per-request decode state; user rows a call's
+        later units append are copied as they arrive."""
         inputs = data.talker_model_inputs
+        timeline = self.request_timeline(data)
         cached = inputs.get("decode_feedback")
         if cached is None:
-            timeline = self.request_timeline(data)
             cached = DecodeFeedback(
                 user_rows=timeline.user_rows.to(self.model_device),
                 agent_row=timeline.agent_row_before_start.to(self.model_device),
             )
             inputs["decode_feedback"] = cached
+        elif cached.user_rows.shape[0] < timeline.user_rows.shape[0]:
+            num_copied = cached.user_rows.shape[0]
+            cached.user_rows = torch.cat(
+                [
+                    cached.user_rows,
+                    timeline.user_rows[num_copied:].to(self.model_device),
+                ]
+            )
         else:
             pass
         return cached
