@@ -18,6 +18,9 @@ from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
 )
+from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
+    DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES,
+)
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -115,6 +118,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
             DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
         ),
+        speaker_encoder_cuda_graph_bucket_frames: Sequence[int] = (
+            DEFAULT_QWEN3_TTS_SPEAKER_ENCODER_BUCKET_FRAMES
+        ),
         leading_silence_mask_frames: int = (
             qwen3_stages.DEFAULT_LEADING_SILENCE_MASK_FRAMES
         ),
@@ -124,6 +130,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.reference_encoder_cuda_graph_bucket_frames = tuple(
             reference_encoder_cuda_graph_bucket_frames
+        )
+        self.speaker_encoder_cuda_graph_bucket_frames = tuple(
+            speaker_encoder_cuda_graph_bucket_frames
         )
         self.leading_silence_mask_frames = leading_silence_mask_frames
         self.silence_codec_ids: torch.Tensor | None = None
@@ -228,6 +237,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
         if disable_cuda_graph:
             return
+        else:
+            pass
+        if model.speaker_encoder_graph_runner is not None:
+            model.speaker_encoder_graph_runner.capture(
+                self.speaker_encoder_cuda_graph_bucket_frames
+            )
         else:
             pass
         # note(ratish): the bucket warmups also build cuDNN's attention plans,

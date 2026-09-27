@@ -45,6 +45,9 @@ from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
 )
+from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
+    Qwen3TTSSpeakerEncoderCudaGraphRunner,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
@@ -433,8 +436,9 @@ class Qwen3TTSPromptBuilderMixin:
     """Prompt construction shared by the talker and the standalone prompt frontend.
 
     Expects ``model`` (embedding tables and ``_feedback_buffer``), ``text_projection``,
-    ``code_predictor.model.codec_embedding``, ``speaker_encoder``, ``speech_tokenizer``,
-    ``config``/``root_config`` and ``speaker_encoder_sample_rate`` on the instance.
+    ``code_predictor.model.codec_embedding``, ``speaker_encoder``,
+    ``speaker_encoder_graph_runner``, ``speech_tokenizer``, ``config``/``root_config``
+    and ``speaker_encoder_sample_rate`` on the instance.
     """
 
     @property
@@ -462,30 +466,17 @@ class Qwen3TTSPromptBuilderMixin:
 
     @torch.inference_mode()
     def extract_speaker_embedding(self, audio, sr):
-        apply_qwen_tts_transformers_compatibility_patches()
-        from qwen_tts.core.models.modeling_qwen3_tts import mel_spectrogram
-
         if sr != self.speaker_encoder_sample_rate:
             raise ValueError(
                 f"Expected {self.speaker_encoder_sample_rate}Hz reference audio"
             )
         else:
             pass
-        if self.speaker_encoder is None:
+        if self.speaker_encoder_graph_runner is None:
             raise RuntimeError("Qwen3-TTS speaker encoder is not loaded")
         else:
             pass
-        mels = mel_spectrogram(
-            torch.from_numpy(audio).unsqueeze(0),
-            n_fft=1024,
-            num_mels=128,
-            sampling_rate=self.speaker_encoder_sample_rate,
-            hop_size=256,
-            win_size=1024,
-            fmin=0,
-            fmax=12000,
-        ).transpose(1, 2)
-        return self.speaker_encoder(mels.to(self.device).to(self.dtype))[0]
+        return self.speaker_encoder_graph_runner.embed(audio)
 
     @torch.inference_mode()
     def generate_speaker_prompt(self, voice_clone_prompt: dict[str, Any]):
@@ -971,8 +962,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self.speaker_encoder = Qwen3TTSSpeakerEncoder(
                 root_config.speaker_encoder_config
             )
+            self.speaker_encoder_graph_runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(
+                self.speaker_encoder, sample_rate=self.speaker_encoder_sample_rate
+            )
         else:
             self.speaker_encoder = None
+            self.speaker_encoder_graph_runner = None
         self.speech_tokenizer = None
 
         server_args = get_context().server_args
