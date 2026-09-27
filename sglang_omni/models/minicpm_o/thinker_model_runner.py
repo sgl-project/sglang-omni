@@ -5,11 +5,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import torch
+
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 
 if TYPE_CHECKING:
-    import torch
+    from sglang.srt.layers.logits_processor import LogitsProcessorOutput
     from sglang.srt.managers.schedule_batch import ScheduleBatch
     from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
@@ -31,7 +33,10 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     """Run the thinker and accumulate hidden states for speech conditioning."""
 
     def __init__(
-        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+        self,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+        eos_token_ids: list[int],
     ) -> None:
         from sglang.srt.model_executor.forward_batch_info import (
             CaptureHiddenMode,
@@ -52,6 +57,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self.image_token_id = -1
         self.video_token_id = -1
         self.audio_token_id = -1
+        self.eos_token_ids = eos_token_ids
 
         self.capture_hidden_mode = (
             CaptureHiddenMode.FULL
@@ -71,6 +77,39 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     ) -> CaptureHiddenMode:
         """Use deployment-wide capture; batch arguments follow the runner interface."""
         return self.capture_hidden_mode
+
+    def process_sampling_logits(
+        self,
+        logits_output: LogitsProcessorOutput,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Scale end-of-sequence logits by each request's length_penalty."""
+        logits = logits_output.next_token_logits
+        for row_idx, sched_req in enumerate(requests):
+            penalty = float(
+                sched_req.data.stage_payload.request.params.get("length_penalty", 1.0)
+            )
+            if penalty == 1.0:
+                continue
+            else:
+                pass
+            eos_logits = logits[row_idx, self.eos_token_ids]
+            logits[row_idx, self.eos_token_ids] = torch.where(
+                eos_logits > 0,
+                eos_logits / penalty,
+                eos_logits * penalty,
+            )
+
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
+        if not super().lookahead_eligible(batch):
+            return False
+        else:
+            pass
+        # note (ruinique): sample_lookahead skips process_sampling_logits.
+        return all(
+            req.omni_data.stage_payload.request.params.get("length_penalty", 1.0) == 1.0
+            for req in batch.reqs
+        )
 
     def post_process_outputs(
         self,
@@ -111,8 +150,6 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self, request_id: str, req_data: SGLangARRequestData
     ) -> None:
         """Flush the request's hidden accumulator with a single D2H copy."""
-        import torch
-
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return

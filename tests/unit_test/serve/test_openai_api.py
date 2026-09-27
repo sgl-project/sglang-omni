@@ -9,10 +9,12 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
+from sglang_omni.client.client import build_params
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
@@ -1231,6 +1233,31 @@ def test_chat_request_preserves_explicit_default_sampling_values() -> None:
         "top_k",
         "top_p",
     ]
+
+
+def test_chat_request_forwards_length_penalty() -> None:
+    req = ChatCompletionRequest(
+        model="openbmb/MiniCPM-o-4_5",
+        messages=[{"role": "user", "content": "hello"}],
+        length_penalty=1.5,
+    )
+
+    gen_req = build_chat_generate_request(req)
+
+    assert gen_req.extra_params["length_penalty"] == 1.5
+    assert build_params(gen_req)["length_penalty"] == 1.5
+
+
+@pytest.mark.parametrize("length_penalty", [0, -1.0])
+def test_chat_request_rejects_non_positive_length_penalty(
+    length_penalty: float,
+) -> None:
+    with pytest.raises(ValidationError):
+        ChatCompletionRequest(
+            model="openbmb/MiniCPM-o-4_5",
+            messages=[{"role": "user", "content": "hello"}],
+            length_penalty=length_penalty,
+        )
 
 
 def test_chat_request_does_not_mark_null_sampling_params_explicit() -> None:

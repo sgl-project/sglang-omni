@@ -52,6 +52,7 @@ class ChatCompletionRequest(BaseModel):
     top_k: int | None = None
     min_p: float | None = None
     repetition_penalty: float | None = None
+    length_penalty: float | None = Field(default=None, gt=0.0)
     max_tokens: int | None = None
     max_completion_tokens: int | None = None
     stop: str | list[str] | None = None
