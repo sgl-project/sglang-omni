@@ -7,9 +7,7 @@ from types import SimpleNamespace
 
 import torch
 
-from sglang_omni.models.minicpm_o.thinker_model_runner import (
-    MiniCPMOThinkerModelRunner,
-)
+from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 
 EOS_TOKEN_IDS = [1, 3]
