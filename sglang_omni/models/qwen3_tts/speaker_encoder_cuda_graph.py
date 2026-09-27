@@ -46,6 +46,15 @@ def time_delay_block(
     return F.relu(F.conv1d(x, conv.weight, conv.bias, dilation=conv.dilation))
 
 
+def masked_mean(
+    x: torch.Tensor, mask: torch.Tensor, length: torch.Tensor
+) -> torch.Tensor:
+    """Mean of x (1, channels, width) over its first length frames, accumulated and
+    divided in the precision torch.mean uses and rounded to the dtype of x once."""
+    accumulate = torch.promote_types(x.dtype, torch.float32)
+    return ((x * mask).sum(2, keepdim=True, dtype=accumulate) / length).to(x.dtype)
+
+
 def encode_bucketed(
     encoder: torch.nn.Module,
     mels: torch.Tensor,
@@ -72,14 +81,15 @@ def encode_bucketed(
             parts.append(time_delay_block(block, part, indices))
         x = time_delay_block(layer.tdnn2, torch.cat(parts, dim=1), indices)
         se = layer.se_block
-        mean = (x * mask).sum(2, keepdim=True) / length.to(x.dtype)
+        mean = masked_mean(x, mask, length)
         x = x * torch.sigmoid(se.conv2(F.relu(se.conv1(mean)))) + residual
         outputs.append(x)
     x = time_delay_block(encoder.mfa, torch.cat(outputs, dim=1), indices)
     asp = encoder.asp
-    weights = mask / length.to(x.dtype)
-    mean = (weights * x).sum(2)
-    std = torch.sqrt((weights * (x - mean.unsqueeze(2)).pow(2)).sum(2).clamp(asp.eps))
+    statistics = (
+        asp._compute_statistics
+    )  # noqa: leading-underscore  # upstream spelling
+    mean, std = statistics(x, mask / length.to(x.dtype))
     attention = torch.cat(
         [
             x,
@@ -90,8 +100,7 @@ def encode_bucketed(
     )
     attention = asp.conv(torch.tanh(time_delay_block(asp.tdnn, attention, indices)))
     attention = F.softmax(attention.masked_fill(mask == 0, float("-inf")), dim=2)
-    mean = (attention * x).sum(2)
-    std = torch.sqrt((attention * (x - mean.unsqueeze(2)).pow(2)).sum(2).clamp(asp.eps))
+    mean, std = statistics(x, attention)
     return encoder.fc(torch.cat((mean, std), dim=1).unsqueeze(2)).squeeze(-1)[0]
 
 
@@ -118,7 +127,9 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
                 fmax=SPEAKER_MEL_FMAX,
             )
         ).float()
-        self.mel_window = torch.hann_window(SPEAKER_MEL_N_FFT, device="cpu")
+        self.mel_window = torch.hann_window(
+            SPEAKER_MEL_N_FFT, dtype=torch.float32, device="cpu"
+        )
         self.pads = frozenset(
             conv.dilation[0] * (conv.kernel_size[0] - 1) // 2
             for conv in encoder.modules()

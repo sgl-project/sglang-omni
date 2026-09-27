@@ -16,6 +16,7 @@ from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
     SPEAKER_MEL_HOP,
     Qwen3TTSSpeakerEncoderCudaGraphRunner,
     encode_bucketed,
+    masked_mean,
     reflect_index,
 )
 
@@ -94,10 +95,30 @@ def test_bucketed_forward_is_bitwise_independent_of_the_buffer_tail() -> None:
     assert torch.equal(outputs[0], outputs[2])
 
 
+def test_masked_mean_rounds_once_like_mean() -> None:
+    x = torch.ones(1, 1, 288, dtype=torch.bfloat16)
+    x[:, :, 256] = 0
+    x[:, :, 257:] = 100
+    mask = (torch.arange(288) < 257).to(x.dtype)[None, None]
+    mean = masked_mean(x, mask, torch.tensor([257]))
+    assert mean.dtype == torch.bfloat16
+    assert torch.equal(mean, x[:, :, :257].mean(2, keepdim=True))
+    assert float(mean) == 0.99609375
+    x64 = x.double()
+    mean64 = masked_mean(x64, mask.double(), torch.tensor([257]))
+    assert mean64.dtype == torch.float64
+    assert torch.equal(mean64, x64[:, :, :257].mean(2, keepdim=True))
+
+
 def test_mel_matches_the_checkpoint_front_end_bitwise() -> None:
     encoder = small_speaker_encoder(torch.float32)
     modeling = pytest.importorskip("qwen_tts.core.models.modeling_qwen3_tts")
-    runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
+    default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
+    finally:
+        torch.set_default_dtype(default_dtype)
     torch.manual_seed(4)
     for samples in (40 * SPEAKER_MEL_HOP, 40 * SPEAKER_MEL_HOP + 100):
         waveform = torch.rand(1, samples) * 2 - 1
