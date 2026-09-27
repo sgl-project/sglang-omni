@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from sentencepiece import SentencePieceProcessor
 
 from sglang_omni.models.personaplex.architecture import MIMI_WEIGHTS_GLOB, SAMPLE_RATE
 from sglang_omni.models.personaplex.code2wav_stream import (
@@ -34,12 +35,13 @@ from sglang_omni.models.personaplex.prompts import (
     tokenize_text_prompt,
 )
 from sglang_omni.models.personaplex.request_builders import stage_request_params
+from sglang_omni.models.personaplex.session_hooks import PromptPreparer, encode_waveform
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.transcription import (
     police_request_audio,
     resolve_audio_source,
 )
-from sglang_omni.proto.request import StagePayload
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -77,11 +79,10 @@ def caller_audio_source(payload: StagePayload) -> str | bytes:
     return resolve_audio_source(payload)
 
 
-def create_preprocessing_executor(
-    model_path: str, **_
-) -> SimpleScheduler[StagePayload, StagePayload]:
-    model_dir = Path(resolve_model_path(model_path))
-    tokenizer = load_text_tokenizer(model_dir)
+def prompt_preparer(
+    model_dir: Path, tokenizer: SentencePieceProcessor
+) -> PromptPreparer:
+    """The role prompt and voice a request asks for, as the LM's prompt state."""
 
     def voice_prompt_size(prompt: VoicePrompt) -> int:
         return value_size_bytes((prompt.embeddings, prompt.tail_codes, prompt.waveform))
@@ -91,19 +92,9 @@ def create_preprocessing_executor(
         size_fn=voice_prompt_size,
     )
 
-    def preprocess(payload: StagePayload) -> StagePayload:
-        params = stage_request_params(payload.request.params, PREPROCESSING_STAGE)
-        # Note (wilsonzheng0327): Channel 0, not a downmix: in a two-party recording the
-        # agent is on channel 1.
-        channels = load_channels(
-            police_request_audio(caller_audio_source(payload)),
-            source_name="PersonaPlex",
-        )
-        caller = torch.as_tensor(channels[0], dtype=torch.float32)
-
-        state = PersonaPlexState.from_dict(payload.data)
-        state.num_samples = int(caller.shape[-1])
-        state.waveform = pad_to_whole_frames(caller)
+    def prepare_prompt(request: OmniRequest) -> PersonaPlexState:
+        params = stage_request_params(request.params, PREPROCESSING_STAGE)
+        state = PersonaPlexState()
         text_prompt = params.get(
             "text_prompt", params.get("instructions", DEFAULT_TEXT_PROMPT)
         )
@@ -129,6 +120,29 @@ def create_preprocessing_executor(
             state.voice_waveform = prompt.waveform
         else:
             pass
+        return state
+
+    return prepare_prompt
+
+
+def create_preprocessing_executor(
+    model_path: str, **_
+) -> SimpleScheduler[StagePayload, StagePayload]:
+    model_dir = Path(resolve_model_path(model_path))
+    prepare_prompt = prompt_preparer(model_dir, load_text_tokenizer(model_dir))
+
+    def preprocess(payload: StagePayload) -> StagePayload:
+        # Note (wilsonzheng0327): Channel 0, not a downmix: in a two-party recording the
+        # agent is on channel 1.
+        channels = load_channels(
+            police_request_audio(caller_audio_source(payload)),
+            source_name="PersonaPlex",
+        )
+        caller = torch.as_tensor(channels[0], dtype=torch.float32)
+
+        state = prepare_prompt(payload.request)
+        state.num_samples = int(caller.shape[-1])
+        state.waveform = pad_to_whole_frames(caller)
         payload.data = state.to_dict()
         return payload
 
@@ -148,21 +162,15 @@ def create_mimi_encode_executor(
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
 
-    def encode_waveform(waveform: torch.Tensor) -> torch.Tensor:
-        codes = codec.encode(
-            waveform.to(device=device, dtype=torch.float32).view(1, 1, -1)
-        )
-        return codes[0].T.cpu()
-
     def encode(payload: StagePayload) -> StagePayload:
         state = PersonaPlexState.from_dict(payload.data)
         if state.waveform is not None:
-            state.user_codes = encode_waveform(state.waveform)
+            state.user_codes = encode_waveform(codec, device, state.waveform)
             state.waveform = None
         else:
             pass
         if state.voice_waveform is not None:
-            state.voice_codes = encode_waveform(state.voice_waveform)
+            state.voice_codes = encode_waveform(codec, device, state.voice_waveform)
             state.voice_waveform = None
         else:
             pass
