@@ -1,5 +1,3 @@
-"""Causal audio encoding with stream-owned history buffers."""
-
 from __future__ import annotations
 
 import math
@@ -214,7 +212,6 @@ class AudioPerception(nn.Module):
     def forward(
         self, waveform_BL: torch.Tensor, *, stream: StreamingPerception | None = None
     ) -> torch.Tensor:
-        """Encode one utterance, resetting a supplied stream before graph reuse."""
         assert waveform_BL.shape[0] == 1
         assert waveform_BL.shape[1] % SAMPLES_PER_FRAME == 0
         if stream is None:
@@ -229,8 +226,9 @@ class AudioPerception(nn.Module):
 class StreamingPerception:
     """Incremental encoding, one 1280-sample block to one acoustic row.
 
-    Causal buffers keep fixed addresses across pushes and reset. Attention
-    uses only the valid prefix until its left-context window is full.
+    Attention keeps at most left_context+1 keys per layer, the convolutions
+    keep their causal left windows, and the featurizer keeps the STFT overlap
+    plus the preemphasis carry, so each push touches one frame of compute.
     """
 
     def __init__(self, perception: AudioPerception) -> None:
@@ -394,7 +392,6 @@ class StreamingPerception:
                 layer.norm_feed_forward2(hidden_11D)
             )
             hidden_11D = layer.norm_out(hidden_11D)
-        # note (Codex): The count saturates before capture, so replay needs no Python update.
         self.cached_frame_count = min(self.cached_frame_count + 1, self.max_keys)
         return self.perception.proj(hidden_11D)[0]
 

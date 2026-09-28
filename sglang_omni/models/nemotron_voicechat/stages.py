@@ -124,7 +124,6 @@ def create_perception_executor(
         payload.data = state.to_dict()
         return payload
 
-    # note (Codex): Serial requests reuse one graph while reset isolates their history.
     return SimpleScheduler(encode, max_concurrency=1)
 
 

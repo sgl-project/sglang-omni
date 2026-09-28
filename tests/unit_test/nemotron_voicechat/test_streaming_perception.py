@@ -1,5 +1,3 @@
-"""Streaming audio preserves causal history, reset, and caller-owned inputs."""
-
 from unittest.mock import Mock
 
 import pytest

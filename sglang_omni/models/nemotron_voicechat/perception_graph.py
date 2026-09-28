@@ -1,5 +1,3 @@
-"""CUDA graph replay once the causal Perception window reaches its fixed size."""
-
 import torch
 
 from sglang_omni.models.nemotron_voicechat.conformer import (
@@ -37,7 +35,6 @@ class GraphPerception(StreamingPerception):
                 for iteration in range(GRAPH_WARMUP_STEPS):
                     super().push(self.graph_input)
             current_stream.wait_stream(capture_stream)
-            # note (Codex): Warmup must not consume real causal history.
             for buffer, saved_value in zip(buffers, saved_values, strict=True):
                 buffer.copy_(saved_value)
             self.graph = torch.cuda.CUDAGraph()
@@ -48,5 +45,4 @@ class GraphPerception(StreamingPerception):
         assert self.graph_input is not None and self.graph_output is not None
         self.graph_input.copy_(samples)
         self.graph.replay()
-        # note (Codex): Offline callers retain every row after the next replay.
         return self.graph_output.clone()
