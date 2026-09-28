@@ -63,7 +63,7 @@ class CausalMaskedDiffWithDiT(nn.Module):
         self.pre_lookahead_len = config.pre_lookahead_len
 
         self.input_embedding = nn.Embedding(config.vocab_size, config.input_size)
-        self.spk_embed_affine_layer = nn.Linear(
+        self.speaker_embedding_projection = nn.Linear(
             config.spk_embed_dim, config.output_size
         )
         self.pre_lookahead_layer = PreLookaheadLayer(
@@ -111,7 +111,7 @@ class CausalMaskedDiffWithDiT(nn.Module):
         embedding = embedding / (
             mx.linalg.norm(embedding, axis=1, keepdims=True) + 1e-8
         )
-        embedding = self.spk_embed_affine_layer(embedding)
+        embedding = self.speaker_embedding_projection(embedding)
 
         token = mx.concatenate([prompt_token, token], axis=1)
         token_len = prompt_token_len + token_len

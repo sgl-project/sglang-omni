@@ -160,7 +160,7 @@ class FakeFlow(torch.nn.Module):
         self.output_size = channels
         self.token_mel_ratio = token_mel_ratio
         self.input_embedding = torch.nn.Embedding(32, channels)
-        self.spk_embed_affine_layer = torch.nn.Linear(3, channels, bias=False)
+        self.speaker_embedding_projection = torch.nn.Linear(3, channels, bias=False)
         self.pre_lookahead_layer = lambda x, context=None: x
         self.pre_lookahead_len = 3
         self.decoder = FakeDecoder(channels, max_frames=max_frames, estimator=estimator)
@@ -170,7 +170,7 @@ class FakeFlow(torch.nn.Module):
                 torch.arange(32 * channels, dtype=torch.float32).reshape(32, channels)
                 / 50
             )
-            self.spk_embed_affine_layer.weight.copy_(
+            self.speaker_embedding_projection.weight.copy_(
                 torch.arange(channels * 3, dtype=torch.float32).reshape(channels, 3)
                 / 20
             )

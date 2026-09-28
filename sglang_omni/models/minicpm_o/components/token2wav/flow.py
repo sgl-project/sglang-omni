@@ -145,7 +145,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         self.pre_lookahead_len = int(encoder.pre_lookahead_layer.pre_lookahead_len)
         self.up_rate = int(encoder.up_layer.stride)
         self.input_embedding = nn.Embedding(vocab_size, input_size)
-        self.spk_embed_affine_layer = torch.nn.Linear(spk_embed_dim, output_size)
+        self.speaker_embedding_projection = torch.nn.Linear(spk_embed_dim, output_size)
         self.encoder = encoder
         self.encoder_proj = torch.nn.Linear(self.encoder.output_dim, output_size)
         self.decoder = decoder
@@ -166,7 +166,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             f"prompt_tokens={prompt_tokens.shape[0]}"
         )
         speaker_embeddings = F.normalize(speaker_embeddings, dim=1)
-        speaker_embeddings = self.spk_embed_affine_layer(speaker_embeddings)
+        speaker_embeddings = self.speaker_embedding_projection(speaker_embeddings)
         prompt_row_lengths = prompt_token_lengths.tolist()
         generated_row_lengths = token_lengths.tolist()
         combined_tokens = pad_sequence(
