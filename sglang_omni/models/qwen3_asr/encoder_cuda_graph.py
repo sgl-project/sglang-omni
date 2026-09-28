@@ -308,17 +308,6 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         h = tower.act(h)
         return tower.proj2(h)[0]
 
-    def capture_pool(self) -> Any | None:
-        if not self.graph_backend.supports_graph_task_update:
-            return None
-        else:
-            pass
-        if self.graph_pool is None:
-            self.graph_pool = self.device_module.graph_pool_handle()
-        else:
-            pass
-        return self.graph_pool
-
     @contextmanager
     def capture_npu_attention_tasks(
         self, context: NpuGraphCaptureContext
@@ -343,24 +332,6 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         finally:
             for attention, original in replacements:
                 attention.qkv_backend = original
-
-    def update_npu_attention_tasks(
-        self,
-        entry: CapturedGraph,
-        cumulative_window_lens: list[int],
-    ) -> None:
-        update_stream = self.npu_update_stream
-        if update_stream is None:
-            raise RuntimeError("NPU encoder graph update stream is not initialized")
-        else:
-            pass
-        with self.device_module.stream(update_stream):
-            for task in entry.npu_update_tasks:
-                task.apply(
-                    self.device_module,
-                    update_stream,
-                    cumulative_window_lens,
-                )
 
     def capture(
         self,
@@ -430,7 +401,11 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             if self.graph_backend.supports_graph_task_update
             else nullcontext()
         )
-        pool = self.capture_pool()
+        if self.graph_backend.supports_graph_task_update and self.graph_pool is None:
+            self.graph_pool = self.device_module.graph_pool_handle()
+        else:
+            pass
+        pool = self.graph_pool
         with attention_capture:
             try:
                 with self.graph_backend.capture(
@@ -491,13 +466,12 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             pass
         bucket_size, dummy_sizes = plan
         effective_window_lens = tuple(window_lens + dummy_sizes)
-        graph_key = bucket_size
-        if graph_key in self.failed:
+        if bucket_size in self.failed:
             return None
         else:
             pass
 
-        entry = self.graphs.get(graph_key)
+        entry = self.graphs.get(bucket_size)
         if entry is None:
             try:
                 entry = self.capture(
@@ -513,11 +487,11 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             except Exception as exc:
                 logger.warning(
                     f"[qwen3-asr] encoder graph preparation failed for bucket "
-                    f"{graph_key}; leaving this bucket on the eager path: {exc}"
+                    f"{bucket_size}; leaving this bucket on the eager path: {exc}"
                 )
-                self.failed.add(graph_key)
+                self.failed.add(bucket_size)
                 return None
-            self.graphs[graph_key] = entry
+            self.graphs[bucket_size] = entry
         else:
             pass
 
@@ -542,12 +516,17 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             # stream is private, so no decoder submission lock is required.
             compute_stream = self.device_module.current_stream()
 
-            def _update() -> None:
+            def update_attention_tasks() -> None:
                 self.device_module.set_device(self.device)
-                self.npu_update_stream.wait_stream(compute_stream)
-                self.update_npu_attention_tasks(entry, cumulative_window_lens)
+                update_stream = self.npu_update_stream
+                update_stream.wait_stream(compute_stream)
+                with self.device_module.stream(update_stream):
+                    for task in entry.npu_update_tasks:
+                        task.apply(
+                            self.device_module, update_stream, cumulative_window_lens
+                        )
 
-            thread = threading.Thread(target=_update)
+            thread = threading.Thread(target=update_attention_tasks)
             thread.start()
             self.graph_backend.replay(entry.graph)
             thread.join()

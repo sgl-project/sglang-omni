@@ -19,7 +19,7 @@ MODEL_PATH="$(
 
 ### Ascend NPU graph execution
 
-For NPU graph execution with the pre-LM encoder and embedding cache, enable
+For NPU graph execution with the pre-LM encoder, enable
 per-stream Host task queues before starting the server:
 
 ```bash
@@ -31,6 +31,8 @@ unset ASCEND_LAUNCH_BLOCKING
 Use a torch_npu build that supports `PER_STREAM_QUEUE`. It requires
 `TASK_QUEUE_ENABLE=1` or `2`; an existing value of `1` can be retained.
 This is an NPU-specific runtime requirement, not a GPU setting.
+Startup rejects missing or conflicting values before creating model infrastructure;
+this configuration check does not attest support in the installed runtime.
 
 Cache hits follow the GPU caller-thread transfer path without an additional
 encoder-worker transfer or explicit cache-transfer synchronization. Separate

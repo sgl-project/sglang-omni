@@ -9,9 +9,8 @@ choice belongs on the platform rather than in a per-model branch.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 import torch
 
@@ -19,7 +18,8 @@ import torch
 class DeviceGraphBackend(Protocol):
     """Records a model-owned graph on one accelerator."""
 
-    supports_graph_task_update = False
+    # Ascend task groups: CPU sequence metadata, lazy capture and a shared pool.
+    supports_graph_task_update: bool = False
 
     def capture(
         self,

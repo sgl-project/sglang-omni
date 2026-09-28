@@ -286,7 +286,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
     def submit_cached_embedding(
         self, item: Any, embedding: torch.Tensor
     ) -> concurrent.futures.Future[torch.Tensor]:
-        """Attach a cached embedding on the caller thread without re-encoding."""
+        """Attach on the caller stream and return an already-completed future.
+
+        The future contains the CPU source; the device embedding is stored on item.
+        """
         expected = expected_audio_tokens(item)
         if expected is None or not self.is_valid(embedding, expected):
             raise ValueError("Qwen3-ASR cached embedding does not match the item")

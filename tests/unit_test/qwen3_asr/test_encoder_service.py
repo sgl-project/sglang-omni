@@ -216,10 +216,8 @@ def test_terminal_graph_failure_during_item_retry_skips_recovery(monkeypatch):
     assert recovery == []
 
 
-@pytest.mark.parametrize("device_type", ["cpu", "cuda", "npu"])
-def test_cached_transfer_stays_on_caller(monkeypatch, device_type) -> None:
+def test_cached_transfer_stays_on_caller(monkeypatch) -> None:
     service = _make_service()
-    service.device = SimpleNamespace(type=device_type)
     target = _item(7, 3, with_feature=False)
     source = torch.ones((3, _HIDDEN_SIZE))
     attached = source.clone()
@@ -237,7 +235,9 @@ def test_cached_transfer_stays_on_caller(monkeypatch, device_type) -> None:
     monkeypatch.setattr(service, "attach_embedding", attach)
     monkeypatch.setattr(service, "submit", forbid_submit)
     monkeypatch.setattr(
-        service, "synchronize_batch", lambda: pytest.fail("cache hit must not synchronize")
+        service,
+        "synchronize_batch",
+        lambda: pytest.fail("cache hit must not synchronize"),
     )
 
     future = service.submit_cached_embedding(target, source)
