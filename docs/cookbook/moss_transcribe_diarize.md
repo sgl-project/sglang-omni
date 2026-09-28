@@ -115,7 +115,7 @@ sgl-omni serve \
   --mem-fraction-static 0.80
 ```
 
-#### Intel XPU
+#### Intel GPU
 
 MOSS-TD with LLM and Whisper encoder XPUGraph capture has been validated in
 BF16 on one Intel Arc Pro B60 with 24 GB of memory. Save the following as
