@@ -40,21 +40,7 @@ Two input conventions matter:
 
 The reply text is the thinker's spoken tokens only; frames where the model is listening carry a marker token and are dropped from the text.
 
-### Perception CUDA graphs
-
-The Perception stage enables CUDA graph replay by default on CUDA devices once its causal attention cache is full. Earlier frames and CPU execution use eager mode. The first sufficiently long request includes graph warmup and capture; subsequent requests reuse the graph. Short recordings may finish before replay becomes useful.
-
-Each Perception worker retains one stream with fixed-capacity causal caches and processes one request at a time. It clears the stream's history before each recording without reallocating the caches. This speeds up Perception; the thinker, talker, and codec have separate execution costs.
-
-To disable Perception graph capture when constructing the pipeline configuration, replace that stage's factory arguments:
-
-```python
-from sglang_omni.config import FactoryArgs
-
-config.stage_named("perception").factory = FactoryArgs(
-    dtype="float32", enable_cuda_graph=False
-)
-```
+Perception uses CUDA graphs by default on CUDA devices; set the perception stage's `factory.enable_cuda_graph=False` to disable them.
 
 ## Request parameters
 
