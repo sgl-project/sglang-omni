@@ -2,12 +2,14 @@
 """Shared ServerArgs construction for SGLang AR engines."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.utils.gpu_compat import apply_torch_compile_cache_env
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 _DECODE_CUDA_GRAPH_ALIASES = {
@@ -113,6 +115,14 @@ def build_sglang_server_args(
     else:
         pass
     kwargs.setdefault("device", platform_device_type())
+    if kwargs.get("enable_torch_compile") is None:
+        # note (zhaochenyang20): CI sets 0 to keep the eager baseline its speed thresholds use.
+        kwargs["enable_torch_compile"] = (
+            os.environ.get("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", "1") != "0"
+        )
+    else:
+        pass
+    apply_torch_compile_cache_env()
     apply_platform_decode_cuda_graph_backend(kwargs)
     server_args = ServerArgs(**kwargs)
     server_args.resolve_once()

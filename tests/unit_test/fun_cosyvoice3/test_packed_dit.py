@@ -218,6 +218,34 @@ def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
         torch.testing.assert_close(actual, reference, rtol=1e-9, atol=1e-9)
 
 
+def test_packed_compile_requires_ragged_half_precision(monkeypatch) -> None:
+    estimator = PackedDiT(tiny_dit(), device=CPU)
+    compile_options: list[dict[str, object]] = []
+
+    def fake_compile(function, **kwargs):
+        compile_options.append(kwargs)
+        return function
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    assert not estimator.compile(torch.float32)
+    assert compile_options == []
+
+    estimator.is_ragged = True
+    assert not estimator.compile(torch.float32)
+    assert compile_options == []
+    assert estimator.compile(torch.bfloat16)
+    assert len(compile_options) == 2
+    assert estimator.compiled_causal_forward is not None
+    assert estimator.compiled_full_forward is not None
+    assert all(
+        call["backend"] == "inductor"
+        and call["dynamic"] is True
+        and call["fullgraph"] is True
+        and call["options"]["emulate_precision_casts"] is True
+        for call in compile_options
+    )
+
+
 def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
     dit = tiny_dit()
     padded = padded_inputs()

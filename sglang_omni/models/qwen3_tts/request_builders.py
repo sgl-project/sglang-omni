@@ -140,6 +140,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     stream_ref_sent: bool = False
     stream_codec_output: bool = False
     suppress_bootstrap_silence: bool = False
+    mask_leading_silence: bool = False
     ref_code: torch.Tensor | None = None
     ref_code_len: int = 0
     prompt_input_embeds: torch.Tensor | None = None
@@ -1735,6 +1736,9 @@ def build_sglang_qwen3_tts_request(
         subtalker_sampling_seed=subtalker_sampling_seed,
         stream_codec_output=state.stream_codec_output,
         suppress_bootstrap_silence=state.suppress_bootstrap_silence,
+        # note (luojiaxuan): only x-vector-only clones start cold; an ICL clone's
+        # leading pause continues the reference's trailing pause.
+        mask_leading_silence=state.x_vector_only_mode,
         engine_start_s=time.perf_counter(),
     )
     data.pending_text_queue = PendingTextTensorQueue.from_tensor(

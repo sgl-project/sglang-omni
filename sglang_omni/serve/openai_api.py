@@ -69,6 +69,7 @@ from sglang_omni.http.admin_auth import (
     resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
+from sglang_omni.proto import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
@@ -1097,6 +1098,12 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
 
     # Merge audio config, audios, images, and videos into metadata
     metadata: dict[str, Any] = {}
+    if req.stage_sampling:
+        metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY] = {
+            name: list(params) for name, params in req.stage_sampling.items()
+        }
+    else:
+        pass
     if req.audio:
         metadata["audio_config"] = req.audio
     else:
@@ -1277,6 +1284,18 @@ def build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateReque
         "return_indexer_topk": req.return_indexer_topk,
     }
     metadata = dict(req.metadata) if req.metadata else {}
+    if req.stage_sampling:
+        metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY] = {
+            name: sorted(
+                {
+                    "max_new_tokens" if key == "max_tokens" else key
+                    for key in params.model_fields_set
+                }
+            )
+            for name, params in req.stage_sampling.items()
+        }
+    else:
+        pass
     _record_explicit_generation_params(
         metadata,
         explicit_generation_params(req.sampling_params),

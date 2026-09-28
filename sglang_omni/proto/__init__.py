@@ -35,6 +35,7 @@ from .messages import (
 )
 from .request import (
     EXPLICIT_GENERATION_PARAMS_KEY,
+    EXPLICIT_STAGE_SAMPLING_PARAMS_KEY,
     OmniRequest,
     RequestInfo,
     RequestState,
@@ -74,6 +75,7 @@ __all__ = [
     "RequestState",
     "RequestInfo",
     "EXPLICIT_GENERATION_PARAMS_KEY",
+    "EXPLICIT_STAGE_SAMPLING_PARAMS_KEY",
     "OmniRequest",
     "StagePayload",
     "StageInfo",

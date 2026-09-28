@@ -31,6 +31,8 @@ from sglang_omni.models.qwen3_omni.request_builders import (
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
     operator_selected_prefill_backend,
     validate_generation_batch_policy,
@@ -1172,6 +1174,8 @@ def create_sglang_thinker_executor_from_config(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (zhaochenyang20): MoE CUDA graph capture fails on topk_ids dtype under torch compile.
+        enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
         sampling_backend="pytorch",
@@ -1288,6 +1292,11 @@ def create_sglang_thinker_executor_from_config(
     return scheduler
 
 
+# note (ratish): the talker prefills unchunked, so no chunk bounds the capture;
+# forwards above this many tokens run eager.
+TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
+
+
 def create_talker_ar_executor_from_config(
     model_path: str,
     *,
@@ -1312,6 +1321,7 @@ def create_talker_ar_executor_from_config(
 ):
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
+    from sglang_omni.platforms import current_platform
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -1326,13 +1336,22 @@ def create_talker_ar_executor_from_config(
     # Sampler.forward doesn't forward seed to flashinfer, so
     # under cuda graph the captured RNG is boot-dependent and ~5% of prompts
     # trigger degenerate AR loops (see #408). Revert once upstream lands.
+    if current_platform.is_cuda() and current_platform.enable_talker_graph():
+        prefill_graph_backend = CudaGraphBackend.BREAKABLE
+    else:
+        prefill_graph_backend = CudaGraphBackend.DISABLED
     overrides = build_generation_batch_overrides(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (zhaochenyang20): the native rotary path under torch compile rejects fused_set_kv_buffer_arg.
+        enable_torch_compile=False,
         sampling_backend="pytorch",
+        cuda_graph_backend_prefill=prefill_graph_backend,
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(
+            TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
+        ),
     )
-    from sglang_omni.platforms import current_platform
 
     # A platform may decline the default above; the caller's setting still wins.
     stated_disable = "disable_cuda_graph" in (server_args_overrides or {})
@@ -1383,6 +1402,9 @@ def create_talker_ar_executor_from_config(
         partial_start_min_chunks=partial_start_min_chunks,
         enable_talker_start_topology=enable_talker_start_topology,
         code2wav_in_process=code2wav_in_process,
+        operator_selected_prefill_backend=operator_selected_prefill_backend(
+            server_args_overrides
+        ),
         codec_coalesce_frames=codec_coalesce_frames,
         codec_coalesce_first_frames=codec_coalesce_first_frames,
         codec_coalesce_early_frames=codec_coalesce_early_frames,

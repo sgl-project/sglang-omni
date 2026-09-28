@@ -8,6 +8,7 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.runtime_context import get_model, get_schedule
@@ -51,6 +52,51 @@ def is_truthy(value: Any) -> bool:
 # ladder plus that bucket rather than a hand-picked list.
 QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(build_default_prefill_cuda_graph_bs(512))
 
+# note (luojiaxuan): on 1.7B and 0.6B Base the share of generated leading silence these probes cover
+# saturates at a -50 dBFS ceiling, and no speech frame falls in the set up to -40 dBFS.
+SILENCE_PROBE_FLOOR_DBFS = -90
+SILENCE_PROBE_CEILING_DBFS = -50
+SILENCE_PROBE_STEP_DB = 5
+SILENCE_PROBE_SECONDS = 8.0
+# note (luojiaxuan): white, pink and brown noise; recorded room tone is not white.
+SILENCE_PROBE_SPECTRAL_EXPONENTS = (0.0, 0.5, 1.0)
+
+
+def colored_noise(
+    spectral_exponent: float, num_samples: int, generator: np.random.Generator
+) -> np.ndarray:
+    """Unit-RMS noise whose amplitude spectrum falls as frequency ** -spectral_exponent."""
+    spectrum = np.fft.rfft(generator.standard_normal(num_samples))
+    frequencies = np.fft.rfftfreq(num_samples)
+    frequencies[0] = frequencies[1]
+    noise = np.fft.irfft(spectrum / frequencies**spectral_exponent, n=num_samples)
+    return (noise / np.sqrt(np.mean(noise**2))).astype(np.float32)
+
+
+def derive_silence_codec_ids(speech_tokenizer: Any, device: str) -> torch.Tensor:
+    """Codebook-0 ids the checkpoint's own codec assigns to stationary noise up to the ceiling."""
+    sample_rate = speech_tokenizer.get_input_sample_rate()
+    generator = np.random.default_rng(0)
+    shapes = [
+        colored_noise(exponent, int(SILENCE_PROBE_SECONDS * sample_rate), generator)
+        for exponent in SILENCE_PROBE_SPECTRAL_EXPONENTS
+    ]
+    levels_dbfs = (
+        float("-inf"),
+        *range(
+            SILENCE_PROBE_FLOOR_DBFS,
+            SILENCE_PROBE_CEILING_DBFS + 1,
+            SILENCE_PROBE_STEP_DB,
+        ),
+    )
+    waveforms = [
+        np.float32(10 ** (level / 20)) * shape
+        for level in levels_dbfs
+        for shape in shapes
+    ]
+    codes = speech_tokenizer.encode(waveforms, sr=sample_rate).audio_codes
+    return torch.unique(torch.cat([code[:, 0] for code in codes])).to(device)
+
 
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     model_name = "Qwen3-TTS"
@@ -69,6 +115,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
             DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
         ),
+        leading_silence_mask_frames: int = (
+            qwen3_stages.DEFAULT_LEADING_SILENCE_MASK_FRAMES
+        ),
     ) -> None:
         self.attn_implementation = attn_implementation
         self.prefill_coalesce_requests = prefill_coalesce_requests
@@ -76,6 +125,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self.reference_encoder_cuda_graph_bucket_frames = tuple(
             reference_encoder_cuda_graph_bucket_frames
         )
+        self.leading_silence_mask_frames = leading_silence_mask_frames
+        self.silence_codec_ids: torch.Tensor | None = None
         self.wrapper: Any | None = None
         self.stream_output_builder: Any | None = None
 
@@ -141,6 +192,18 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             attn_implementation=self.attn_implementation,
         )
         model.load_speech_tokenizer(speech_tokenizer)
+        # note (luojiaxuan): only Base checkpoints serve x-vector clones, so the
+        # other variants skip the probe and the per-step mask.
+        if self.leading_silence_mask_frames > 0 and model.tts_model_type == "base":
+            self.silence_codec_ids = derive_silence_codec_ids(speech_tokenizer, device)
+            logger.info(
+                f"Qwen3-TTS masks {self.silence_codec_ids.numel()} silence codec ids "
+                f"for the first {self.leading_silence_mask_frames} frames of "
+                f"x-vector-only clones: {self.silence_codec_ids.tolist()}"
+            )
+        else:
+            self.leading_silence_mask_frames = 0
+            self.silence_codec_ids = torch.empty(0, dtype=torch.long, device=device)
         processor = AutoProcessor.from_pretrained(
             checkpoint_dir,
             fix_mistral_regex=True,
@@ -220,7 +283,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "sglang_omni.models.qwen3_tts.model_runner"
         )
 
-        return model_runner_mod.Qwen3TTSModelRunner(model_worker, output_proc)
+        return model_runner_mod.Qwen3TTSModelRunner(
+            model_worker,
+            output_proc,
+            leading_silence_mask_frames=self.leading_silence_mask_frames,
+            silence_codec_ids=self.silence_codec_ids,
+        )
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         request_builder, result_adapter, self.stream_output_builder = (

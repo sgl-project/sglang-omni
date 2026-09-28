@@ -39,7 +39,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         max_new_tokens: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
-        enable_torch_compile: bool,
+        enable_torch_compile: bool | None,
         enable_encoder_torch_compile: bool,
         enable_encoder_cuda_graph: bool,
         enable_async_decode: bool,
