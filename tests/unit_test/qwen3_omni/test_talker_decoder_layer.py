@@ -89,8 +89,11 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
             return object()
 
     config = fake_config()
+    attention_calls: list = []
     monkeypatch.setattr(
-        thinker_module, "Qwen3OmniMoeThinkerTextAttention", lambda **kw: object()
+        thinker_module,
+        "Qwen3OmniMoeThinkerTextAttention",
+        lambda **kw: attention_calls.append(kw) or object(),
     )
     monkeypatch.setattr(
         thinker_module,
@@ -111,3 +114,13 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
     assert layer.mlp.kwargs["layer_id"] == 1
     assert layer.mlp.kwargs["config"] is config
     assert layer.mlp.kwargs["prefix"] == "mlp"
+
+    # A non-empty weight prefix must propagate to both submodule paths.
+    prefixed = Qwen3OmniMoeTalkerDecoderLayer(
+        config=config, layer_id=2, prefix="talker.layers.2"
+    )
+
+    assert len(built) == 2
+    assert prefixed.mlp.kwargs["layer_id"] == 2
+    assert prefixed.mlp.kwargs["prefix"] == "talker.layers.2.mlp"
+    assert attention_calls[-1]["prefix"] == "talker.layers.2.self_attn"
