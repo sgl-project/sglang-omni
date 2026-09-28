@@ -33,17 +33,3 @@ The reference conditions Token2wav's speaker embedding, prompt tokens, and mel
 features. Audio supplied in chat messages remains understanding input and is not
 automatically used as the speaker reference. Without an explicit reference,
 Token2wav uses the checkpoint's `assets/HT_ref_audio.wav` when available.
-
-The vocoder keeps an LRU cache of up to 32 speaker references by default, so switching back
-to a cached reference reuses its conditioning. Inline references are keyed by
-audio content; file references account for file metadata. Flow inference batches
-different references and token lengths together. HiFT groups rows by generated
-length to preserve waveform boundaries. Invalid references fail instead of
-silently using the default. Audio output remains non-streaming.
-
-Reference preparation uses up to 8 worker threads, preparing each unique
-reference once per batch. Set `stages.code2wav.factory.reference_workers` to
-change the thread count (1 prepares references serially) and
-`stages.code2wav.factory.prompt_cache_capacity` to change the cache capacity.
-Both must be positive integers. The stage drains reference preparation on
-shutdown and rejects later preparation of uncached references.

@@ -155,7 +155,6 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         embedding = self.spk_embed_affine_layer(embedding)
         prompt_token_lens = prompt_token_len.tolist()
         token_lens = token_len.tolist()
-        # Rows are prompt-then-generated at their own widths; the mask drops the tail.
         combined = pad_sequence(
             [
                 torch.cat([prompt_token[i, :prompt_length], token[i, :token_length]])

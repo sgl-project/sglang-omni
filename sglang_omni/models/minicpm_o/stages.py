@@ -232,7 +232,6 @@ def create_code2wav_executor(
         try:
             reference = code2wav_reference_audio(payload)
         except ValueError:
-            # Invalid references fail in their batch, where the stage reports errors.
             return
         model.prefetch_reference(payload.request_id, reference)
 

@@ -14,7 +14,6 @@ from einops import pack, repeat
 from torch.nn.attention.varlen import varlen_attn
 
 TIMESTEP_MAX_PERIOD = 10000
-# A lone CFG pair has no padding for packing to remove.
 MIN_PACKED_BATCH_SIZE = 3
 
 
@@ -111,7 +110,6 @@ class Attention(torch.nn.Module):
         q = self.to_q(x).view(-1, self.num_heads, self.head_dim)
         k = self.to_k(x).view(-1, self.num_heads, self.head_dim)
         v = self.to_v(x).view(-1, self.num_heads, self.head_dim)
-        # Autocast runs the norms in FP32; varlen attention needs one dtype.
         q = self.q_norm(q).to(v.dtype)
         k = self.k_norm(k).to(v.dtype)
         x = varlen_attn(q, k, v, cu_seqlens, cu_seqlens, max_length, max_length)
@@ -420,7 +418,11 @@ class DiT(nn.Module):
             pass
         x = x.transpose(1, 2)
         attn_mask = mask.bool()
-        if self.enable_variable_length and x.shape[0] >= MIN_PACKED_BATCH_SIZE:
+        if (
+            self.enable_variable_length
+            and x.shape[0] >= MIN_PACKED_BATCH_SIZE
+            and x.is_cuda
+        ):
             lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
             with torch.autocast(x.device.type, dtype=torch.bfloat16):
                 x = self.forward_packed(self.in_proj(x), t.to(torch.bfloat16), lengths)
@@ -442,7 +444,6 @@ class DiT(nn.Module):
         cu_seqlens = torch.nn.functional.pad(
             lengths.cumsum(0, dtype=torch.int32), (1, 0)
         )
-        # Zero guard frames keep causal convolutions from reading the previous row.
         guard_width = self.blocks[0].conv.kernel_size - 1
         sequence_ids = torch.repeat_interleave(
             torch.arange(batch_size, device=x.device), lengths

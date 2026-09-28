@@ -115,3 +115,50 @@ def test_packed_dit_matches_padded_dit_on_valid_frames() -> None:
             packed[row, :, :length].float(), padded[row, :, :length]
         )
         assert error < PACKED_MAX_RELATIVE_RMS_ERROR, f"row {row}"
+
+
+def test_variable_length_stays_padded_off_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch.manual_seed(0)
+    channels = 8
+    lengths = [5, 9, 3]
+    batch_size, padded_length = len(lengths), max(lengths)
+    model = DiT(
+        in_channels=4 * channels,
+        out_channels=channels,
+        depth=2,
+        num_heads=2,
+        head_dim=32,
+        hidden_size=64,
+    ).eval()
+    for parameter in model.parameters():
+        torch.nn.init.normal_(parameter, std=0.2)
+    frame_indices = torch.arange(padded_length).unsqueeze(0)
+    mask = (frame_indices < torch.tensor(lengths).unsqueeze(1)).unsqueeze(1).float()
+    noisy_mel, mu, cond = (
+        torch.randn(batch_size, channels, padded_length) for _ in range(3)
+    )
+    speaker_embeddings = torch.randn(batch_size, channels)
+    timesteps = torch.rand(batch_size)
+
+    def reject_packed_forward(
+        hidden: torch.Tensor,
+        conditioning: torch.Tensor,
+        sequence_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        raise AssertionError(
+            "packed attention is unavailable off CUDA, "
+            f"hidden={tuple(hidden.shape)} conditioning={tuple(conditioning.shape)} "
+            f"sequence_lengths={tuple(sequence_lengths.shape)}"
+        )
+
+    monkeypatch.setattr(model, "forward_packed", reject_packed_forward)
+    model.enable_variable_length = True
+    with torch.inference_mode():
+        variable_length = model(
+            noisy_mel, mask, mu, timesteps, speaker_embeddings, cond
+        )
+        model.enable_variable_length = False
+        padded = model(noisy_mel, mask, mu, timesteps, speaker_embeddings, cond)
+    torch.testing.assert_close(variable_length, padded)

@@ -29,12 +29,7 @@ SpeakerPrompt = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 
 
 class MiniCPMOCode2Wav(nn.Module):
-    """Convert codec tokens into a float32 waveform with Token2wav.
-
-    vocode runs on one compute thread. prefetch_reference and release_reference
-    may run concurrently from the stage event loop; reference_lock guards the
-    prompt cache, the in-flight preparations, and the per-request reservations.
-    """
+    """Convert codec tokens into a float32 waveform with Token2wav."""
 
     def __init__(
         self,
@@ -163,7 +158,6 @@ class MiniCPMOCode2Wav(nn.Module):
                 del self.pending_references[key]
             else:
                 pass
-            # A failed preparation is not cached, so the next batch retries it.
             if future.exception() is None:
                 self.prompt_cache[key] = future.result()
                 self.prompt_cache.move_to_end(key)
@@ -172,11 +166,6 @@ class MiniCPMOCode2Wav(nn.Module):
             self.evict_unreserved_references()
 
     def evict_unreserved_references(self) -> None:
-        """Trim the cache to capacity, least recent first; the caller holds reference_lock.
-
-        Queued requests pin their prompts, so the cache may exceed capacity by at
-        most the number of queued requests.
-        """
         overflow = len(self.prompt_cache) - self.prompt_cache_capacity
         if overflow <= 0:
             return
@@ -276,7 +265,6 @@ class MiniCPMOCode2Wav(nn.Module):
         prompt_tokens, prompt_token_lengths, speaker_embeddings, prompt_mels = zip(
             *self.prepare_references(references)
         )
-        # The flow reads each row's real prompt width from prompt_token_lengths.
         with torch.amp.autocast(
             self.token2wav.device.type,
             dtype=self.token2wav.dtype,
