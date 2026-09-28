@@ -341,11 +341,9 @@ def predictor_rope_dispatch(request: pytest.FixtureRequest) -> Iterator[str]:
 def test_rope_store_writes_the_cache_the_copy_path_writes(
     batch_size: int,
     predictor_rope_dispatch: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     device = torch.device("cuda")
     torch.manual_seed(11)
-    monkeypatch.setattr(talker_module, "apply_qk_norm", apply_qk_norm)
     attn = rope_attention(device)
     stores = Qwen3OmniTalker.resolve_predictor_rope_store(attn, device=device)
     stored = rope_store_talker(device, stores=stores)
