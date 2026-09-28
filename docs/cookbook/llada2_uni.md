@@ -63,11 +63,25 @@ before replay. This uses the existing SGLang operators without adding custom
 Triton kernels. Set `disable_cuda_graph: true` for the eager comparison, and
 exclude model loading, graph capture, and initial warmup requests from timing.
 
-Group-limited expert routing uses SGLang's `TopK` component in both eager and
-graph execution. It preserves FP32 router logits, sigmoid scoring, correction
-bias, and normalized routing weights. The fused implementation can change
-expert ordering and floating-point rounding, so validate model accuracy rather
-than expecting pixel-identical images across routing implementations.
+Group-limited expert routing defaults to the reference Torch implementation
+for both TP1 and TP2, in eager and graph execution. To opt into SGLang's fused
+`TopK`, add this startup option:
+
+```bash
+--thinker.engine.json_model_override_args '{"llada2_uni_topk_backend":"sglang"}'
+```
+
+Use `"torch"` instead of `"sglang"` to explicitly select the default. If other
+model overrides are needed, include them in the same JSON object. This setting
+is applied when the model loads on every thinker rank; restart the server to
+change it. No checkpoint files need editing.
+
+Both paths use FP32 router logits, sigmoid scoring, correction bias and
+normalized weights, but the fused implementation can change expert ordering
+and sigmoid rounding. In a controlled 1,050-question MMMU run, Torch/SGLang
+scored 517/500 at TP1 and 517/494 at TP2. SGLang reduced TP2 T2I/edit E2E from
+14.918/12.052 seconds to 14.070/11.715 seconds on H20-3e. These single-run
+results describe an observed tradeoff, not a guaranteed score or speedup.
 
 LLaDA-Uni thinker workers retain the same `CUDA_VISIBLE_DEVICES` list across
 TP ranks and select distinct local devices. The stage defaults

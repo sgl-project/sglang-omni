@@ -55,8 +55,10 @@ def test_expert_bias_loads_without_a_config_flag() -> None:
     torch.testing.assert_close(gate.expert_bias, expert_bias, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("backend", ["torch", "sglang"])
 def test_moe_expert_projections_return_rank_partials(
     monkeypatch: pytest.MonkeyPatch,
+    backend: str,
 ) -> None:
     routed_experts = Mock(return_value=nn.Identity())
     down_projection = Mock(return_value=nn.Identity())
@@ -74,12 +76,33 @@ def test_moe_expert_projections_return_rank_partials(
         hidden_size=8,
         moe_intermediate_size=16,
         num_shared_experts=1,
+        llada2_uni_topk_backend=backend,
     )
 
     thinker.LLaDA2MoeSparseMoeBlock(config, layer_id=0)
 
     assert routed_experts.call_args.kwargs["reduce_results"] is False
     assert down_projection.call_args.kwargs["reduce_results"] is False
+
+
+def test_reference_routing_bias_selects_experts_without_changing_weights() -> None:
+    block = thinker.LLaDA2MoeSparseMoeBlock.__new__(thinker.LLaDA2MoeSparseMoeBlock)
+    nn.Module.__init__(block)
+    block.gate = LLaDA2MoeGate(PretrainedConfig(num_experts=4, hidden_size=2))
+    block.num_experts = 4
+    block.num_experts_per_tok = 2
+    block.n_group = 2
+    block.topk_group = 1
+    block.routed_scaling_factor = 2.5
+    block.gate.expert_bias.copy_(torch.tensor([-2.0, -2.0, 0.0, 0.0]))
+
+    logits = torch.tensor([[3.0, 2.0, 0.0, 0.0]])
+    result = block.reference_topk(logits)
+
+    assert set(result.topk_ids[0].tolist()) == {2, 3}
+    torch.testing.assert_close(
+        result.topk_weights, torch.full((1, 2), 1.25), rtol=0, atol=0
+    )
 
 
 @pytest.mark.parametrize("tp_size", [1, 2])

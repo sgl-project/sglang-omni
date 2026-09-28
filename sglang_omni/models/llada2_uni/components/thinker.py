@@ -27,6 +27,7 @@ from sglang_omni.vendor.sglang.layers import (
     RMSNorm,
     RowParallelLinear,
     SiluAndMul,
+    StandardTopKOutput,
     TopK,
     VocabParallelEmbedding,
     get_moe_impl_class,
@@ -256,18 +257,27 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             config=config,
             params_dtype=self.router_dtype,
         )
-        self.topk = TopK(
-            top_k=self.num_experts_per_tok,
-            layer_id=layer_id,
-            use_grouped_topk=True,
-            num_expert_group=self.n_group,
-            topk_group=self.topk_group,
-            renormalize=self.num_experts_per_tok > 1,
-            scoring_func="sigmoid",
-            correction_bias=self.gate.expert_bias,
-            routed_scaling_factor=self.routed_scaling_factor,
-            apply_routed_scaling_factor_on_output=True,
-        )
+        topk_backend = getattr(config, "llada2_uni_topk_backend", "torch")
+        if topk_backend == "sglang":
+            self.topk = TopK(
+                top_k=self.num_experts_per_tok,
+                layer_id=layer_id,
+                use_grouped_topk=True,
+                num_expert_group=self.n_group,
+                topk_group=self.topk_group,
+                renormalize=self.num_experts_per_tok > 1,
+                scoring_func="sigmoid",
+                correction_bias=self.gate.expert_bias,
+                routed_scaling_factor=self.routed_scaling_factor,
+                apply_routed_scaling_factor_on_output=True,
+            )
+        elif topk_backend == "torch":
+            self.topk = None
+        else:
+            raise ValueError(
+                "llada2_uni_topk_backend must be 'torch' or 'sglang', "
+                f"got {topk_backend!r}"
+            )
 
         # FusedMoE implementation
         FusedMoE = get_moe_impl_class(quant_config)
@@ -300,7 +310,10 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         )
 
         router_logits = self.gate(hidden_states)
-        topk_output = self.topk(hidden_states, router_logits)
+        if self.topk is None:
+            topk_output = self.reference_topk(router_logits)
+        else:
+            topk_output = self.topk(hidden_states, router_logits)
         y = self.experts(hidden_states, topk_output)
 
         if self.shared_experts is not None:
@@ -315,6 +328,40 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             pass
 
         return y
+
+    def reference_topk(self, router_logits: torch.Tensor) -> StandardTopKOutput:
+        """Keep group selection and expert weighting in FP32 Torch arithmetic."""
+        scores = torch.sigmoid(router_logits.float())
+        routing_scores = scores + self.gate.expert_bias
+        num_tokens = scores.shape[0]
+        group_scores = (
+            routing_scores.view(num_tokens, self.n_group, -1)
+            .topk(2, dim=-1)[0]
+            .sum(dim=-1)
+        )
+        group_ids = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]
+        group_mask = torch.zeros_like(group_scores)
+        group_mask.scatter_(1, group_ids, 1)
+        expert_mask = (
+            group_mask.unsqueeze(-1)
+            .expand(num_tokens, self.n_group, self.num_experts // self.n_group)
+            .reshape(num_tokens, -1)
+        )
+        topk_ids = torch.topk(
+            routing_scores.masked_fill(~expert_mask.bool(), float("-inf")),
+            k=self.num_experts_per_tok,
+            dim=-1,
+            sorted=False,
+        )[1]
+        weights = torch.gather(scores, dim=1, index=topk_ids)
+        if self.num_experts_per_tok > 1:
+            weights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-20)
+        else:
+            pass
+        weights = weights * self.routed_scaling_factor
+        return StandardTopKOutput(
+            topk_weights=weights, topk_ids=topk_ids, router_logits=router_logits
+        )
 
 
 class LLaDA2MoeBlock(nn.Module):
