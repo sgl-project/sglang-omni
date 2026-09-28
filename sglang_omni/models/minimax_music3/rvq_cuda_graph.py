@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
 
 import torch
 from torch import Tensor
@@ -42,7 +41,7 @@ class RVQDepthCudaGraphRunner:
             raise ValueError("MiniMax Music 3 RVQ graph needs positive batch buckets")
         else:
             pass
-        self.graphs: dict[int, Any] = {}
+        self.graphs: dict[int, torch.cuda.CUDAGraph | torch.xpu.XPUGraph] = {}
         self.inputs: dict[int, tuple[Tensor, ...]] = {}
         self.outputs: dict[int, tuple[Tensor, Tensor, Tensor]] = {}
         self.allocated_bytes = 0
