@@ -17,6 +17,33 @@ MODEL_PATH="$(
 )"
 ```
 
+### Ascend NPU graph execution
+
+For NPU graph execution with the pre-LM encoder and embedding cache, enable
+per-stream Host task queues before starting the server:
+
+```bash
+export TASK_QUEUE_ENABLE=2
+export PER_STREAM_QUEUE=1
+unset ASCEND_LAUNCH_BLOCKING
+```
+
+Use a torch_npu build that supports `PER_STREAM_QUEUE`. It requires
+`TASK_QUEUE_ENABLE=1` or `2`; an existing value of `1` can be retained.
+This is an NPU-specific runtime requirement, not a GPU setting.
+
+Cache hits follow the GPU caller-thread transfer path without an additional
+encoder-worker transfer or explicit cache-transfer synchronization. Separate
+Host queues isolate graph-update submission from blocking copies on other
+streams. Normal encoder batch synchronization is unchanged. Per-stream queues
+do not replace device-stream dependencies or make pageable Host copies
+inherently asynchronous.
+
+The runtime feature is experimental; verify support in the installed build
+and do not combine it with fine-grained CPU binding. See the
+[TorchNPU stream-level TaskQueue documentation](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md)
+for runtime constraints.
+
 ### Apple Silicon (MLX)
 
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
