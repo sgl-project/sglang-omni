@@ -14,6 +14,7 @@ from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
 from sglang_omni.models.nemotron_voicechat.codec import RVQVAEDecoder
 from sglang_omni.models.nemotron_voicechat.conformer import (
     AudioPerception,
+    GraphPerception,
     StreamingPerception,
 )
 from sglang_omni.models.nemotron_voicechat.engine_builder import (
@@ -24,7 +25,6 @@ from sglang_omni.models.nemotron_voicechat.payload_types import (
     OUTPUT_SAMPLE_RATE,
     NemotronVoiceChatState,
 )
-from sglang_omni.models.nemotron_voicechat.perception_graph import GraphPerception
 from sglang_omni.models.weight_loader import (
     load_module,
     load_weights_by_prefix,

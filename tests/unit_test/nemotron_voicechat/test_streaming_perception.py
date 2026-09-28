@@ -7,10 +7,10 @@ from sglang_omni.models.nemotron_voicechat import stages
 from sglang_omni.models.nemotron_voicechat.conformer import (
     SAMPLES_PER_FRAME,
     AudioPerception,
+    GraphPerception,
     StreamingPerception,
 )
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
-from sglang_omni.models.nemotron_voicechat.perception_graph import GraphPerception
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
 
