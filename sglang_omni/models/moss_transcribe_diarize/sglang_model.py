@@ -115,7 +115,13 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
 
     def init_encoder_graphs(self, chunk_buckets, input_feature_len: int) -> None:
-        """Capture per-chunk-count device graphs for the Whisper encoder."""
+        """Capture per-chunk-count device graphs for the Whisper encoder.
+
+        Called from the stage factory after the model is on-device and device
+        graphs are enabled. input_feature_len is the fixed length of the
+        encoder's input_features time axis for one 30s window
+        (WhisperFeatureExtractor.nb_max_frames).
+        """
         buckets = [int(b) for b in (chunk_buckets or []) if int(b) >= 1]
         if not buckets:
             return
