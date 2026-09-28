@@ -26,6 +26,13 @@ MINI_LLAMA_CONFIG = {
 }
 
 
-def write_mini_llama_checkpoint(directory: Path) -> str:
-    (directory / "config.json").write_text(json.dumps(MINI_LLAMA_CONFIG))
+def write_mini_llama_checkpoint(
+    directory: Path,
+    *,
+    architectures: list[str] | None = None,
+) -> str:
+    config = dict(MINI_LLAMA_CONFIG)
+    if architectures is not None:
+        config["architectures"] = list(architectures)
+    (directory / "config.json").write_text(json.dumps(config))
     return str(directory)

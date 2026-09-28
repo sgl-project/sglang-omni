@@ -33,6 +33,18 @@ def get_decode_cuda_graph_bs(server_args: Any) -> Any:
     return cfg.cuda_graph_config.decode.bs
 
 
+def get_decode_cuda_graph_backend(server_args: Any) -> str:
+    """Read the resolved SGLang decode CUDA graph backend.
+
+    The disable switches, the per-phase backends and an explicit
+    cuda_graph_config all fold into this one field during resolution, in that
+    order of precedence, so it is the only honest answer to "will decode
+    replay a graph" -- the request a stage made is not.
+    """
+    cfg = resolved_view(server_args)
+    return cfg.cuda_graph_config.decode.backend
+
+
 def get_prefill_cuda_graph_backend(server_args: Any) -> str:
     """Read the resolved SGLang prefill CUDA graph backend."""
     cfg = resolved_view(server_args)

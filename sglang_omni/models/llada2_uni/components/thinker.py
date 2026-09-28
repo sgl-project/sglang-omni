@@ -13,7 +13,10 @@ from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
+from sglang_omni.vendor.sglang.distributed import (
+    get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_reduce,
+)
 from sglang_omni.vendor.sglang.layers import (
     AttentionType,
     MergedColumnParallelLinear,
@@ -27,6 +30,7 @@ from sglang_omni.vendor.sglang.layers import (
     VocabParallelEmbedding,
     get_moe_impl_class,
     get_rope,
+    should_skip_post_experts_all_reduce,
 )
 from sglang_omni.vendor.sglang.models import (
     apply_qk_norm,
@@ -170,6 +174,7 @@ class LLaDA2MoeMLP(nn.Module):
         config: PretrainedConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
+        reduce_results: bool = True,
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
@@ -178,11 +183,16 @@ class LLaDA2MoeMLP(nn.Module):
             bias=False,
             quant_config=quant_config,
         )
+        # reduce_results=False is for the shared-expert use, where the caller
+        # sums this output with the routed experts' partial sums and reduces the
+        # total once; reducing here too would double-count the shared branch.
+        # The dense-layer use keeps the default and reduces here.
         self.down_proj = RowParallelLinear(
             intermediate_size,
             config.hidden_size,
             bias=False,
             quant_config=quant_config,
+            reduce_results=reduce_results,
         )
         self.act_fn = SiluAndMul()
 
@@ -242,6 +252,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         self.n_group = config.n_group
         self.topk_group = config.topk_group
         self.routed_scaling_factor = config.routed_scaling_factor
+        self.tp_size = get_tensor_model_parallel_world_size()
 
         # Gate always runs at half / full precision for now.
         router_dtype = getattr(config, "router_dtype", None)
@@ -275,7 +286,10 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 config.moe_intermediate_size * config.num_shared_experts
             )
             self.shared_experts = LLaDA2MoeMLP(
-                config, shared_intermediate, quant_config
+                config,
+                shared_intermediate,
+                quant_config,
+                reduce_results=False,
             )
         else:
             self.shared_experts = None
@@ -323,6 +337,18 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         # Add shared expert output
         if self.shared_experts is not None:
             y = y + self.shared_experts(identity)
+        else:
+            pass
+
+        # FusedMoE is built with reduce_results=False and the shared expert's
+        # down_proj with reduce_results=False, so under TP every rank holds only
+        # a partial sum here: the routed experts are sharded, so a rank
+        # contributes nothing for tokens routed elsewhere. One all-reduce over
+        # the combined routed+shared output makes the ranks agree again.
+        if self.tp_size > 1 and not should_skip_post_experts_all_reduce(
+            is_tp_path=True
+        ):
+            y = tensor_model_parallel_all_reduce(y)
         else:
             pass
 
