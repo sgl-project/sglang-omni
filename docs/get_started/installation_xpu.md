@@ -12,7 +12,7 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni / Minimax-Music3 and MiniCPM-o) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3 and MiniCPM-o) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
 (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
 
@@ -197,5 +197,5 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, Qwen3-Omni, Minimax-Music3 and MiniCPM-o all serve end-to-end on Intel XPU**
-> (ASR, TTS, and MiniCPM-o single-card; Minimax-Music3 needs two cards; Qwen3-Omni thinker across 8 cards with tensor parallelism).
+> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, Qwen3-Omni, MiniMax Music 3 and MiniCPM-o all serve end-to-end on Intel XPU**
+> (ASR, TTS, and MiniCPM-o single-card; MiniMax Music 3 needs two cards; Qwen3-Omni thinker across 8 cards with tensor parallelism).
