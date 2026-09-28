@@ -131,10 +131,26 @@ def _make_engine_builder(
 
 
 @pytest.mark.parametrize(
+    ("is_npu", "configured", "expected"),
+    [
+        (True, {}, {"PER_STREAM_QUEUE": "1"}),
+        (False, {}, {}),
+        (True, {"PER_STREAM_QUEUE": "0"}, {"PER_STREAM_QUEUE": "0"}),
+    ],
+)
+def test_per_stream_queue_env_defaults(monkeypatch, is_npu, configured, expected):
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: is_npu)
+    config = Qwen3ASRPipelineConfig(model_path="test", env_defaults=configured)
+    assert config.resolved_env_defaults() == expected
+    assert config.env_defaults == configured
+
+
+@pytest.mark.parametrize(
     ("is_npu", "graphs", "per_stream", "task_queue", "blocking", "valid"),
     [
         (True, True, "1", "1", "0", True),
         (True, True, "1", "2", "0", True),
+        (True, True, "1", None, None, True),
         (True, True, "0", "2", "0", False),
         (True, True, "1", "0", "0", False),
         (True, True, "1", "2", "1", False),

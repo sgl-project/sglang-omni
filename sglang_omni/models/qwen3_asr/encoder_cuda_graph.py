@@ -32,10 +32,6 @@ else:
 logger = logging.getLogger(__name__)
 
 
-class EncoderGraphUnrecoverableError(RuntimeError):
-    """An NPU graph capture cannot be safely retried."""
-
-
 def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
     """Return token-count bucket sizes for encoder CUDA-graph capture.
 
@@ -407,29 +403,20 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             pass
         pool = self.graph_pool
         with attention_capture:
-            try:
-                with self.graph_backend.capture(
-                    pool=pool, thread_local_errors=True
-                ) as graph:
-                    static_out = run_once()
-                if self.graph_backend.supports_graph_task_update and len(
-                    capture_context.tasks
-                ) != len(self.tower.layers):
-                    raise RuntimeError(
-                        "NPU encoder graph did not capture one FIA task per encoder "
-                        f"layer: tasks={len(capture_context.tasks)} "
-                        f"layers={len(self.tower.layers)}"
-                    )
-                else:
-                    pass
-            except Exception as exc:
-                if not self.graph_backend.supports_graph_task_update:
-                    raise
-                else:
-                    pass
-                raise EncoderGraphUnrecoverableError(
-                    "NPU encoder graph capture failed; restart with graphs disabled"
-                ) from exc
+            with self.graph_backend.capture(
+                pool=pool, thread_local_errors=True
+            ) as graph:
+                static_out = run_once()
+            if self.graph_backend.supports_graph_task_update and len(
+                capture_context.tasks
+            ) != len(self.tower.layers):
+                raise RuntimeError(
+                    "NPU encoder graph did not capture one FIA task per encoder "
+                    f"layer: tasks={len(capture_context.tasks)} "
+                    f"layers={len(self.tower.layers)}"
+                )
+            else:
+                pass
         logger.info(
             "[qwen3-asr] captured encoder layer-stack graph bucket=%d windows=%d out=%s",
             bucket_size,
@@ -482,8 +469,6 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                         else None
                     ),
                 )
-            except EncoderGraphUnrecoverableError:
-                raise
             except Exception as exc:
                 logger.warning(
                     f"[qwen3-asr] encoder graph preparation failed for bucket "

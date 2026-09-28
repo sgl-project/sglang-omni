@@ -292,13 +292,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             and (self.enable_encoder_cuda_graph or not cfg.disable_cuda_graph)
             and (
                 os.environ.get("PER_STREAM_QUEUE") != "1"
-                or os.environ.get("TASK_QUEUE_ENABLE") not in {"1", "2"}
+                or os.environ.get("TASK_QUEUE_ENABLE", "1") not in {"1", "2"}
                 or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
             )
         ):
             raise ValueError(
                 "Qwen3-ASR NPU pre-LM graphs require PER_STREAM_QUEUE=1, "
-                "TASK_QUEUE_ENABLE=1 or 2, and ASCEND_LAUNCH_BLOCKING unset or 0 "
+                "TASK_QUEUE_ENABLE unset, 1 or 2, and ASCEND_LAUNCH_BLOCKING unset or 0 "
                 "before starting the server"
             )
         else:

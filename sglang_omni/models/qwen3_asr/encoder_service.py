@@ -29,9 +29,6 @@ import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputFormat
 from sglang.srt.utils import create_device_stream, device_stream_context
 
-from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
-    EncoderGraphUnrecoverableError,
-)
 from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
@@ -207,7 +204,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             getattr(item, "audio_fingerprint", None), expected_tokens
         )
         if cached is not None:
-            return self.submit_cached_embedding(item, cached)
+            self.attach_embedding(item, cached)
+            done: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+            done.set_result(cached)
+            return done
         else:
             pass
 
@@ -231,7 +231,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 self.merged += 1
                 follower_of = future
         if cached is not None:
-            return self.submit_cached_embedding(item, cached)
+            self.attach_embedding(item, cached)
+            completed: concurrent.futures.Future[torch.Tensor] = (
+                concurrent.futures.Future()
+            )
+            completed.set_result(cached)
+            return completed
         else:
             pass
         if leader:
@@ -282,23 +287,6 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
         follower_of.add_done_callback(attach_follower)
         return self.count_failed(completion)
-
-    def submit_cached_embedding(
-        self, item: Any, embedding: torch.Tensor
-    ) -> concurrent.futures.Future[torch.Tensor]:
-        """Attach on the caller stream and return an already-completed future.
-
-        The future contains the CPU source; the device embedding is stored on item.
-        """
-        expected = expected_audio_tokens(item)
-        if expected is None or not self.is_valid(embedding, expected):
-            raise ValueError("Qwen3-ASR cached embedding does not match the item")
-        else:
-            pass
-        self.attach_embedding(item, embedding)
-        completed: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
-        completed.set_result(embedding)
-        return completed
 
     def encode_item(self, item: Any) -> None:
         """Block until the item holds the LM-ready embedding.
@@ -542,28 +530,20 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc: Exception,
     ) -> Exception:
         failure = self.detach_failure(exc)
-        if isinstance(failure.exception, EncoderGraphUnrecoverableError):
-            # Let the base worker fail current/queued futures and stop. An
-            # incomplete graph handshake is not safe for OOM cleanup or retry.
+        if len(batch) == 1:
             logger.error(
-                f"Terminal encoder graph failure:\n{failure.formatted_traceback}"
+                "Qwen3-ASR audio encode failed:\n%s",
+                failure.formatted_traceback,
             )
-            raise failure.exception
         else:
-            if len(batch) == 1:
-                logger.error(
-                    "Qwen3-ASR audio encode failed:\n%s",
-                    failure.formatted_traceback,
-                )
-            else:
-                logger.error(
-                    "Qwen3-ASR batched audio encode failed for %d items; "
-                    "retrying per item:\n%s",
-                    len(batch),
-                    failure.formatted_traceback,
-                )
-            self.recover_after_failure(failure.exception)
-            return failure.exception
+            logger.error(
+                "Qwen3-ASR batched audio encode failed for %d items; "
+                "retrying per item:\n%s",
+                len(batch),
+                failure.formatted_traceback,
+            )
+        self.recover_after_failure(failure.exception)
+        return failure.exception
 
     def handle_item_failure(
         self,
@@ -571,18 +551,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc: Exception,
     ) -> Exception:
         failure = self.detach_failure(exc)
-        if isinstance(failure.exception, EncoderGraphUnrecoverableError):
-            logger.error(
-                f"Terminal encoder graph failure:\n{failure.formatted_traceback}"
-            )
-            raise failure.exception
-        else:
-            logger.error(
-                "Qwen3-ASR per-item audio encode retry failed:\n%s",
-                failure.formatted_traceback,
-            )
-            self.recover_after_failure(failure.exception)
-            return failure.exception
+        logger.error(
+            "Qwen3-ASR per-item audio encode retry failed:\n%s",
+            failure.formatted_traceback,
+        )
+        self.recover_after_failure(failure.exception)
+        return failure.exception
 
     @staticmethod
     def detach_failure(exc: Exception) -> DetachedFailure:
@@ -595,10 +569,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc.__traceback__ = None
         exc.__cause__ = None
         exc.__context__ = None
-        if isinstance(exc, EncoderGraphUnrecoverableError):
-            detached: Exception = EncoderGraphUnrecoverableError(message)
-        elif isinstance(exc, torch.OutOfMemoryError):
-            detached = torch.OutOfMemoryError(message)
+        if isinstance(exc, torch.OutOfMemoryError):
+            detached: Exception = torch.OutOfMemoryError(message)
         elif isinstance(exc, ValueError):
             detached = ValueError(message)
         else:

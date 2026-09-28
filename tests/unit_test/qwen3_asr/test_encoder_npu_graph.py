@@ -8,7 +8,6 @@ import pytest
 import torch
 
 from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
-    EncoderGraphUnrecoverableError,
     NpuGraphCaptureAttention,
     NpuGraphCaptureContext,
     Qwen3ASREncoderLayerStackGraphRunner,
@@ -317,7 +316,7 @@ def _capture_runner(backend):
     return runner
 
 
-def test_npu_capture_context_failure_is_terminal():
+def test_npu_capture_context_failure_leaves_bucket_eager():
     class CaptureContext:
         def __enter__(self):
             raise RuntimeError("simulated capture context failure")
@@ -327,8 +326,9 @@ def test_npu_capture_context_failure_is_terminal():
 
     runner = _capture_runner(SimpleNamespace(capture=lambda **kwargs: CaptureContext()))
 
-    with pytest.raises(EncoderGraphUnrecoverableError, match="capture failed"):
-        runner.run(torch.ones(4, 2), [4])
+    assert runner.run(torch.ones(4, 2), [4]) is None
+    assert runner.failed == {8}
+    assert runner.graphs == {}
 
 
 def test_npu_captures_share_one_graph_pool():
