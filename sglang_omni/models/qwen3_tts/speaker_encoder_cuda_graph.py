@@ -161,7 +161,8 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
         )
 
     def capture(self, codec_frame_buckets: Iterable[int], codec_hop: int) -> None:
-        """One graph per bucket of the reference encoder's ladder, in mel frames."""
+        """One graph per bucket of the reference encoder's ladder, in mel frames;
+        none when a capture fails, so every clip runs eager."""
         param = next(self.encoder.parameters())
         if param.device.type not in {"cuda", "musa"}:
             return
@@ -170,45 +171,55 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
         buckets = sorted(
             frames * codec_hop // SPEAKER_MEL_HOP for frames in codec_frame_buckets
         )
-        with torch.cuda.device(param.device):
-            pool = torch.cuda.graph_pool_handle()
-            stream = torch.cuda.Stream(device=param.device)
-            # note(ratish): largest first so the shared pool is sized once.
-            for frames in reversed(buckets):
-                static_mels = torch.zeros(
-                    (1, self.mel_basis.shape[0], frames),
-                    device=param.device,
-                    dtype=param.dtype,
-                )
-                static_frames = torch.full(
-                    (1,), frames, device=param.device, dtype=torch.long
-                )
-                stream.wait_stream(torch.cuda.current_stream(param.device))
-                with torch.inference_mode(), torch.cuda.stream(stream):
-                    for _ in range(2):
-                        encode_bucketed(
+        graphs: dict[int, CapturedSpeakerEncoderGraph] = {}
+        try:
+            with torch.cuda.device(param.device):
+                pool = torch.cuda.graph_pool_handle()
+                stream = torch.cuda.Stream(device=param.device)
+                # note(ratish): largest first so the shared pool is sized once.
+                for frames in reversed(buckets):
+                    static_mels = torch.zeros(
+                        (1, self.mel_basis.shape[0], frames),
+                        device=param.device,
+                        dtype=param.dtype,
+                    )
+                    static_frames = torch.full(
+                        (1,), frames, device=param.device, dtype=torch.long
+                    )
+                    stream.wait_stream(torch.cuda.current_stream(param.device))
+                    with torch.inference_mode(), torch.cuda.stream(stream):
+                        for _ in range(2):
+                            encode_bucketed(
+                                self.encoder, static_mels, static_frames, self.pads
+                            )
+                    graph = torch.cuda.CUDAGraph()
+                    with (
+                        torch.inference_mode(),
+                        torch.cuda.graph(
+                            graph,
+                            pool=pool,
+                            stream=stream,
+                            capture_error_mode="thread_local",
+                        ),
+                    ):
+                        static_embedding = encode_bucketed(
                             self.encoder, static_mels, static_frames, self.pads
                         )
-                graph = torch.cuda.CUDAGraph()
-                with (
-                    torch.inference_mode(),
-                    torch.cuda.graph(
-                        graph,
-                        pool=pool,
-                        stream=stream,
-                        capture_error_mode="thread_local",
-                    ),
-                ):
-                    static_embedding = encode_bucketed(
-                        self.encoder, static_mels, static_frames, self.pads
+                    stream.synchronize()
+                    graphs[frames] = CapturedSpeakerEncoderGraph(
+                        graph=graph,
+                        static_mels=static_mels,
+                        static_frames=static_frames,
+                        static_embedding=static_embedding,
                     )
-                stream.synchronize()
-                self.graphs[frames] = CapturedSpeakerEncoderGraph(
-                    graph=graph,
-                    static_mels=static_mels,
-                    static_frames=static_frames,
-                    static_embedding=static_embedding,
-                )
+        except Exception as exc:
+            logger.warning(
+                "Qwen3-TTS speaker encoder graph capture disabled the runner: "
+                f"{type(exc).__name__}: {exc}",
+                exc_info=True,
+            )
+            return
+        self.graphs = graphs
         logger.info(f"Qwen3-TTS speaker encoder graphs captured for {buckets} frames")
 
     def embed(self, waveform: np.ndarray) -> torch.Tensor:

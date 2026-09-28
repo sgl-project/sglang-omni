@@ -9,6 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.qwen3_tts import speaker_encoder_cuda_graph
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
@@ -184,3 +185,49 @@ def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
             assert torch.allclose(embedding, eager, atol=1e-4, rtol=1e-4)
         assert torch.equal(embeddings[1], embeddings[4])
         assert torch.equal(embeddings[5], runner.embed(clips[5]))
+
+
+def raise_out_of_memory() -> None:
+    raise torch.OutOfMemoryError("CUDA out of memory")
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    "failing_call, fail",
+    [(5, raise_out_of_memory), (6, torch.cuda.synchronize)],
+    ids=["warmup_of_the_second_bucket", "inside_the_capture_of_the_second_bucket"],
+)
+def test_a_failed_capture_leaves_no_graphs_and_the_runner_eager(
+    monkeypatch, caplog, failing_call: int, fail
+) -> None:
+    device = torch.device("cuda", torch.cuda.current_device())
+    encoder = small_speaker_encoder(torch.float32).to(device)
+    with torch.device(device):
+        runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
+    calls: list[int] = []
+
+    def failing_encode_bucketed(*args):
+        calls.append(len(calls) + 1)
+        if len(calls) == failing_call:
+            fail()
+        else:
+            pass
+        return encode_bucketed(*args)
+
+    monkeypatch.setattr(
+        speaker_encoder_cuda_graph, "encode_bucketed", failing_encode_bucketed
+    )
+    runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
+    assert calls == list(range(1, failing_call + 1))
+    assert runner.graphs == {}
+    assert "speaker encoder graph capture disabled the runner" in caplog.text
+
+    clip = clip_of(32, 9)
+    with torch.inference_mode():
+        embedding = runner.embed(clip)
+        mels = runner.mel(torch.from_numpy(clip).unsqueeze(0)).to(device)
+        eager = encoder(mels.transpose(1, 2))[0]
+    assert runner.misses == 1
+    assert runner.replays == 0
+    assert torch.equal(embedding, eager)
