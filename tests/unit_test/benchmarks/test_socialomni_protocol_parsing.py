@@ -244,3 +244,10 @@ def test_public_judge_record_redacts_endpoint_path() -> None:
         JudgeSpec("judge", "model", "https://judge.example/v1/private", None, 1)
     )
     assert record["base_url"] == "https://judge.example"
+
+
+def test_public_judge_record_brackets_ipv6_endpoint() -> None:
+    record = public_judge_record(
+        JudgeSpec("judge", "model", "http://[2001:db8::1]:8000/v1", None, 1)
+    )
+    assert record["base_url"] == "http://[2001:db8::1]:8000"

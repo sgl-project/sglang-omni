@@ -42,6 +42,8 @@ def public_judge_record(judge: JudgeSpec) -> dict[str, Any]:
     """Serialize judge metadata without persisting endpoint paths or credentials."""
     parts = urlsplit(judge.base_url)
     host = parts.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
     if parts.port is not None:
         host = f"{host}:{parts.port}"
     return {
@@ -425,4 +427,3 @@ def make_level1_send_fn(model: str, base_url: str):
         )
 
     return send
-
