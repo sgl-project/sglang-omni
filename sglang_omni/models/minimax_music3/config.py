@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import os
 from typing import ClassVar
 
+import torch
 from pydantic import Field
 
 from sglang_omni.config import (
@@ -15,38 +15,15 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 from .constants import DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
 
 _PKG = "sglang_omni.models.minimax_music3"
 
 
-VISIBILITY_ENV_VARS: dict[str, str] = {
-    "cuda": "CUDA_VISIBLE_DEVICES",
-    "musa": "MUSA_VISIBLE_DEVICES",
-    "npu": "ASCEND_RT_VISIBLE_DEVICES",
-    "xpu": "ZE_AFFINITY_MASK",
-}
-
-
 def visible_gpu_count() -> int:
-    """Accelerators this process could place a stage on, without creating a context.
-
-    The mask is read from the environment rather than from the backend's device
-    count, which caches whatever the driver saw when it first loaded.
-    """
-    import torch
-
-    from sglang_omni.platforms import current_platform
-
-    device_type = current_platform.device_type
-    mask = os.environ.get(VISIBILITY_ENV_VARS.get(device_type, ""))
-    if mask is not None:
-        entries = [entry.strip() for entry in mask.split(",")]
-        return len([entry for entry in entries if entry and entry != "-1"])
-    else:
-        pass
-    return torch.get_device_module(device_type).device_count()
+    return torch.get_device_module(current_platform.device_type).device_count()
 
 
 class DitDavFactoryArgs(FactoryArgs):

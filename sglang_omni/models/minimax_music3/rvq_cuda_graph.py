@@ -69,8 +69,8 @@ class RVQDepthCudaGraphRunner:
         )
         replay = torch.zeros((), device=self.device, dtype=torch.bool)
 
-        # The depth decoder's attention must reach a capturable kernel: XPU's
-        # default SDPA path enqueues work on events the graph cannot own.
+        # Note (polisettyvarma): The depth decoder's attention must reach a capturable kernel:
+        # XPU's default SDPA path enqueues work on events the graph cannot own.
         with (
             self.device_module.device(self.device),
             current_platform.graph_capture_attention(),

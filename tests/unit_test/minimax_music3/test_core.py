@@ -17,11 +17,9 @@ from sglang_omni.models.minimax_music3.acoustic import (
 )
 from sglang_omni.models.minimax_music3.chunking import chunk_windows
 from sglang_omni.models.minimax_music3.config import (
-    VISIBILITY_ENV_VARS,
     MiniMaxMusic3DualGPUPipelineConfig,
     MiniMaxMusic3PipelineConfig,
     MiniMaxMusic3SingleGPUPipelineConfig,
-    visible_gpu_count,
 )
 from sglang_omni.models.minimax_music3.dav import remove_weight_norm
 from sglang_omni.models.minimax_music3.dit import (
@@ -39,14 +37,18 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 
+def get_test_device_if_eligible() -> torch.device:
+    if current_platform.device_type not in ("cuda", "musa", "xpu"):
+        pytest.skip("Requires CUDA/MUSA/XPU device")
+    return current_platform.get_device(0)
+
+
 def rvq_graph_target() -> tuple[torch.device, DeviceGraphBackend]:
     """The device and graph backend the RVQ capture tests run on."""
     device = current_platform.get_device(0)
     backend = current_platform.get_device_graph_backend(device)
     if backend is None:
         pytest.skip(f"{device.type} records no model-owned graphs")
-    else:
-        pass
     return (device, backend)
 
 
@@ -97,7 +99,7 @@ def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
     # A request's codes must not depend on which other requests share its
     # decode batch, so a row sampled alone must match the same row sampled
     # inside a larger batch with the same seed and position.
-    device = current_platform.get_device(0)
+    device = get_test_device_if_eligible()
     torch.manual_seed(0)
     logits = torch.randn(3, 512, device=device)
     seeds = torch.tensor([11, 22, 33], device=device)
@@ -121,7 +123,7 @@ def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
 
 @pytest.mark.accelerator
 def test_sample_topk_seeded_advances_with_the_draw_position() -> None:
-    device = current_platform.get_device(0)
+    device = get_test_device_if_eligible()
     torch.manual_seed(0)
     logits = torch.randn(1, 512, device=device)
     seed = torch.tensor([11], device=device)
@@ -248,23 +250,6 @@ def test_minimax_music3_default_follows_the_visible_gpus(
     ).engine_stage
 
 
-def test_visible_gpu_count_reads_this_platforms_own_mask(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Counting through a CUDA-only variable hides every card on other backends."""
-    variable = VISIBILITY_ENV_VARS.get(current_platform.device_type)
-    if variable is None:
-        pytest.skip(f"{current_platform.device_type} masks no accelerators")
-    else:
-        pass
-    monkeypatch.setenv(variable, "6")
-    assert visible_gpu_count() == 1
-    monkeypatch.setenv(variable, "6,7")
-    assert visible_gpu_count() == 2
-    monkeypatch.setenv(variable, "-1")
-    assert visible_gpu_count() == 0
-
-
 def test_native_attention_preserves_checkpoint_state_dict_keys() -> None:
     with torch.device("meta"):
         model = MiniMaxMusic3DIT(
@@ -310,7 +295,7 @@ def test_dav_weight_norm_folding_preserves_output() -> None:
 
 @pytest.mark.accelerator
 def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
-    device = current_platform.get_device(0)
+    device = get_test_device_if_eligible()
     torch.manual_seed(17)
     module = (
         Attention(
@@ -454,9 +439,9 @@ class TinyCacheDiffusion(torch.nn.Module):
 
 @pytest.mark.accelerator
 def test_cache_dit_block_adapter_runs_hidden_only_pattern() -> None:
+    device = get_test_device_if_eligible()
     model = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)
     torch.nn.Module.__init__(model)
-    device = current_platform.get_device(0)
     model.diffusion_transformer = TinyCacheDiffusion().to(device).eval()
     model.enable_cache_dit(
         num_steps=4,
