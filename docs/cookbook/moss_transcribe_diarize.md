@@ -118,27 +118,16 @@ sgl-omni serve \
 #### Intel GPU
 
 MOSS-TD with LLM and Whisper encoder XPUGraph capture has been validated in
-BF16 on one Intel Arc Pro B60 with 24 GB of memory. Save the following as
-`moss_td_b60.yaml`:
-
-```yaml
-config_cls: MossTranscribeDiarizePipelineConfig
-model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize
-
-stages:
-  asr:
-    gpu: 0
-    engine:
-      mem_fraction_static: 0.70
-      max_running_requests: 16
-      cuda_graph_max_bs: 16
-      enable_torch_compile: false
-```
-
-Launch it with:
+BF16 on one Intel Arc Pro B60 with 24 GB of memory:
 
 ```bash
-sgl-omni serve --config moss_td_b60.yaml --port 8000
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --port 8000 \
+  --asr.engine.max_running_requests 16 \
+  --asr.engine.cuda_graph_max_bs 16 \
+  --asr.engine.enable_torch_compile false \
+  --mem-fraction-static 0.70
 ```
 
 The graph configuration names retain `cuda_graph` for compatibility, but
