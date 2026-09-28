@@ -14,12 +14,18 @@ hf download nvidia/personaplex-7b-v1
 
 It ships the 7B weights, the Mimi codec, the SentencePiece text model and `voices.tgz`, which is unpacked into `voices/` next to the checkpoint on first use, or into the temp directory when that folder cannot be written. Recorded voice prompts (`--voice some.wav`) also need `pip install pyloudnorm`; the packaged `.pt` voices do not.
 
-Everything runs on one accelerator. On an H200 the LM engine reserves
-`mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each.
-This value is a fraction of total device memory, so a smaller-memory device can
-need a higher fraction to fit the model weights.
+Everything runs on one accelerator. On an H200 the LM engine reserves `mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each. This value is a fraction of total device memory, so a smaller-memory device can need a higher fraction to fit the model weights.
 
 ## Running the offline example
+
+Five stages run under `MultiProcessPipelineRunner` (preprocessing, Mimi encode, the LM engine, text decode, streaming code2wav). Pick the CUDA GPU with `CUDA_VISIBLE_DEVICES`, or the Intel XPU with `ZE_AFFINITY_MASK`; stage settings take the same dotted flags as `serve`. Input conventions:
+
+- The recording is resampled to 24 kHz and **channel 0 is used**.
+- The reply is exactly as long as the input, offset by one frame: the model answers while it listens, so leave silence after the caller's last words if you want a full answer.
+- Prompt plus reply must fit the LM context, 8192 positions by default (about 10.8 minutes); a longer recording is rejected with the limit in the message and needs `--lm.engine.context_length`.
+- The reply text is the model's inner monologue with the frame markers (`PAD`, `EPAD`, `BOS`, `EOS`) removed.
+
+### CUDA GPU
 
 ```bash
 python examples/run_personaplex.py \
@@ -30,13 +36,12 @@ python examples/run_personaplex.py \
   --out reply.wav
 ```
 
-### Intel XPU (Arc Pro B60)
+### Intel GPU
 
-PersonaPlex was validated on one 24 GB Intel Arc Pro B60 with
-`--lm.engine.mem_fraction_static 0.70`:
+PersonaPlex was validated on one 24 GB Intel Arc Pro B60 with `--lm.engine.mem_fraction_static 0.70`:
 
 ```bash
-ZE_AFFINITY_MASK=0 python examples/run_personaplex.py \
+python examples/run_personaplex.py \
   --model-path nvidia/personaplex-7b-v1 \
   --audio /path/to/caller.wav \
   --voice NATF2 \
@@ -45,23 +50,7 @@ ZE_AFFINITY_MASK=0 python examples/run_personaplex.py \
   --lm.engine.mem_fraction_static 0.70
 ```
 
-The model weights used 14.57 GiB on the tested 23.91 GiB device. This setting
-created a 4,437-token KV cache and left 7.17 GiB free after cache allocation.
-The default `0.3` fraction is only 7.17 GiB on that device and cannot hold the
-weights.
-
-For backend comparisons, reuse
-[`assets/test/input_assistant.wav`](https://github.com/NVIDIA/personaplex/blob/3428dfd95309a7f3c84fd93259ded0f810d1ff91/assets/test/input_assistant.wav)
-from the NVIDIA PersonaPlex repository. The 40-second, mono, 24 kHz reference
-clip leaves enough time for a complete response; short clips can otherwise
-truncate the reply because output duration is fixed to input duration.
-
-Five stages run under `MultiProcessPipelineRunner` (preprocessing, Mimi encode, the LM engine, text decode, streaming code2wav). Pick the CUDA GPU with `CUDA_VISIBLE_DEVICES`, or the Intel XPU with `ZE_AFFINITY_MASK`; stage settings take the same dotted flags as `serve`. Input conventions:
-
-- The recording is resampled to 24 kHz and **channel 0 is used**.
-- The reply is exactly as long as the input, offset by one frame: the model answers while it listens, so leave silence after the caller's last words if you want a full answer.
-- Prompt plus reply must fit the LM context, 8192 positions by default (about 10.8 minutes); a longer recording is rejected with the limit in the message and needs `--lm.engine.context_length`.
-- The reply text is the model's inner monologue with the frame markers (`PAD`, `EPAD`, `BOS`, `EOS`) removed.
+The model weights used 14.57 GiB on the tested 23.91 GiB device. This setting created a 4,437-token KV cache and left 7.17 GiB free after cache allocation. The default `0.3` fraction is only 7.17 GiB on that device and cannot hold the weights.
 
 ## Serving over HTTP
 
