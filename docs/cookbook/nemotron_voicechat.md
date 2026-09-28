@@ -40,8 +40,6 @@ Two input conventions matter:
 
 The reply text is the thinker's spoken tokens only; frames where the model is listening carry a marker token and are dropped from the text.
 
-Perception uses CUDA graphs by default on CUDA devices; set the perception stage's `factory.enable_cuda_graph=False` to disable them.
-
 ## Request parameters
 
 | Parameter | Effect |
@@ -62,4 +60,4 @@ Audio randomness is governed by the checkpoint's own settings, read from `config
 
 ## Tests
 
-`tests/unit_test/nemotron_voicechat/` runs without checkpoint weights: request frame counts, streaming codec equivalence with whole-utterance decoding, and checkpoint-shim isolation. Perception tests cover causal history, request reset, reused input buffers, retained outputs, and the stage factory on CPU and CUDA; CUDA cases skip when no GPU is available.
+`tests/unit_test/nemotron_voicechat/` runs on CPU without weights: request frame counts, streaming codec equivalence with whole-utterance decoding, and checkpoint-shim isolation.
