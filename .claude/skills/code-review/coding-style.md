@@ -14,6 +14,10 @@ where they exist; where they don't, follow these rules.
 The overriding goal is simplicity: fewer, smaller files and fewer functions. Avoid
 speculative generality.
 
+Naming clarity is part of that bar, not a polish pass. A reader must know the
+unit of every name without opening the function body. Field jargon and short
+forms do not meet it. The NAMING section below is the rule.
+
 ## SIMPLICITY & NON-DUPLICATION
 
 - Introduce a helper, wrapper, or abstraction layer only when it is used at least
@@ -70,19 +74,39 @@ speculative generality.
   with `is_` / `has_` / `should_` / `can_`; do not add a second underscore
   in front. Public functions, variables, and constants must not have a
   leading underscore.
-- Precision beats brevity. Every parameter, local variable, function, method,
-  class, and type alias names the unit it is. A reader must know which
-  physical unit it is without reading the body or another file. Name that
-  unit, not the mechanism: `load_checkpoint`, `speaker_embedding`.
-- Write the full word. Do not clip a word, and do not use a generic role
-  when the unit is known.
+- **Name the unit, in full words. This is a hard requirement.** Every
+  parameter, local variable, function, method, class, and type alias must
+  say which physical unit it is. A reader must know that unit without
+  reading the body, a comment, or another file. A name that is only clear
+  after you already know the algorithm is the wrong name. Familiar field
+  shorthand is not an exception: if the short form hides the unit, expand
+  it. The same value keeps one name at every function it passes through.
+- Write the full word. Do not clip a word, glue an initialism together, or
+  use a generic role when the unit is known.
   Wrong: `op`, `SessionOp`, `rid`, `seq`, `cmd`, `ctx`, `req`, `fn`, `cb`,
-  `tmp`, `data`, `info`, `item`, `obj`, `handler`, `manager`.
+  `tmp`, `data`, `info`, `item`, `obj`, `handler`, `manager`, `cu_seqlens`,
+  `spks`, `cond`, `token_len`, `token_lens`, `prompt_feat`, `feat`, `dev`,
+  `key`, `args`, `h`, `c`.
   Right: `operation`, `SessionOperation`, `request_id`, `sequence`,
   `session_operation`, `session_context`, `request`, `request_compute`,
-  `session_hooks`.
-- Single letters only for loop indices (`i`, `j`) or math (`x`, `y`, `t`).
-  Do not append `T` to invent a type name.
+  `session_hooks`, `cumulative_sequence_lengths`, `speaker_embeddings`,
+  `mel_conditioning`, `token_lengths`, `prompt_mel`, `predicted_mel`,
+  `resolved_device`, `reference_key`, `angles`, `hidden_states`,
+  `timestep_embedding`.
+  `cu_seqlens` is the prefix sum of per-sequence lengths, so it is
+  `cumulative_sequence_lengths`. `spks` is `speaker_embeddings`. `cond` is
+  not a unit: mel prompt features are `mel_conditioning`, and the AdaLN
+  input is `timestep_embedding`. `token_len` / `token_lens` are
+  `token_lengths`. A cache key for a speaker reference is `reference_key`,
+  not `key`.
+- Single letters only for loop indices (`i`, `j`) or math symbols that are
+  the quantity (`x`, `y`, `t`, and established symbols such as `mu`, `q`,
+  `k`, `v`, `dt`). A letter that stands for a role (`h` for hidden states,
+  `c` for conditioning) is not math. Do not append `T` to invent a type name.
+- Do not rename a name that is the external contract. Keep a checkpoint or
+  YAML constructor key (`inference_cfg_rate`, `spk_embed_dim`), a state-dict
+  module attribute, and a callee's parameter when you only pass it
+  (`speech_feat=`). Rename your own local and your own parameter.
 
 ## TYPING & SIGNATURES
 

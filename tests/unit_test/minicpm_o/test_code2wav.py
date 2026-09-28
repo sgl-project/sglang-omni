@@ -406,7 +406,7 @@ def test_variable_length_option_reaches_dit(
 def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     factory = code2wav_stage_factory()
     assert factory.max_batch_size == 8
-    assert factory.max_batch_wait_ms == 100.0
+    assert factory.max_batch_wait_ms == 0.0
     assert factory.batch_wait_when_idle is False
     assert factory.dtype is None
     assert factory.enable_flow_variable_length is True

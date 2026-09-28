@@ -67,16 +67,22 @@ def test_timestep_embedding_autocast_keeps_fp32_frequencies(
 def test_packed_causal_conv_preserves_sequence_boundaries() -> None:
     torch.manual_seed(0)
     block = CausalConvBlock(4, 4).eval()
-    guard_width = block.kernel_size - 1
+    causal_padding_frames = block.kernel_size - 1
     rows = [torch.randn(length, 4) for length in (3, 5, 2)]
     expected = torch.cat([block(row.unsqueeze(0)).squeeze(0) for row in rows])
-    lengths = torch.tensor([len(row) for row in rows])
-    frame_count = int(lengths.sum())
-    sequence_ids = torch.repeat_interleave(torch.arange(len(rows)), lengths)
-    positions = torch.arange(frame_count) + (sequence_ids + 1) * guard_width
-    guarded_valid = torch.zeros(frame_count + len(rows) * guard_width, dtype=torch.bool)
-    guarded_valid[positions] = True
-    actual = block.forward_packed(torch.cat(rows), positions, guarded_valid)
+    sequence_lengths = torch.tensor([len(row) for row in rows])
+    frame_count = int(sequence_lengths.sum())
+    sequence_ids = torch.repeat_interleave(torch.arange(len(rows)), sequence_lengths)
+    real_frame_positions = (
+        torch.arange(frame_count) + (sequence_ids + 1) * causal_padding_frames
+    )
+    real_frame_mask = torch.zeros(
+        frame_count + len(rows) * causal_padding_frames, dtype=torch.bool
+    )
+    real_frame_mask[real_frame_positions] = True
+    actual = block.forward_packed(
+        torch.cat(rows), real_frame_positions, real_frame_mask
+    )
     torch.testing.assert_close(actual, expected)
 
 

@@ -6,6 +6,7 @@ No KV cache, no batching. Just: inbox.get() → run function → outbox.put().
 
 Same inbox/outbox interface as OmniScheduler so Stage doesn't need branching.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -107,13 +108,13 @@ class SimpleScheduler:
         self.cleanup_aborted_request(request_id)
         return True
 
-    def enqueue(self, msg: IncomingMessage) -> None:
+    def enqueue(self, message: IncomingMessage) -> None:
         """Runs on the stage event loop, so the arrival hook must not block."""
-        if msg.type == "new_request" and self.request_arrival_hook is not None:
-            self.request_arrival_hook(msg.data)
+        if message.type == "new_request" and self.request_arrival_hook is not None:
+            self.request_arrival_hook(message.data)
         else:
             pass
-        self.inbox.put(msg)
+        self.inbox.put(message)
 
     def message_cost(self, msg: IncomingMessage) -> int:
         if self.request_cost_fn is None or msg.type != "new_request":

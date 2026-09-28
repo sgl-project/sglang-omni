@@ -105,14 +105,25 @@ class Attention(torch.nn.Module):
         return x
 
     def forward_packed(
-        self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_length: int
+        self,
+        x: torch.Tensor,
+        cumulative_sequence_lengths: torch.Tensor,
+        maximum_sequence_length: int,
     ) -> torch.Tensor:
         q = self.to_q(x).view(-1, self.num_heads, self.head_dim)
         k = self.to_k(x).view(-1, self.num_heads, self.head_dim)
         v = self.to_v(x).view(-1, self.num_heads, self.head_dim)
         q = self.q_norm(q).to(v.dtype)
         k = self.k_norm(k).to(v.dtype)
-        x = varlen_attn(q, k, v, cu_seqlens, cu_seqlens, max_length, max_length)
+        x = varlen_attn(
+            q,
+            k,
+            v,
+            cumulative_sequence_lengths,
+            cumulative_sequence_lengths,
+            maximum_sequence_length,
+            maximum_sequence_length,
+        )
         x = self.proj(x.reshape(-1, self.inner_dim))
         return self.proj_drop(x)
 
@@ -147,8 +158,8 @@ class TimestepEmbedder(nn.Module):
             self.frequency_cache = self.frequencies.to(t)
         else:
             pass
-        args = (t * self.scale)[:, None] * self.frequency_cache[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        angles = (t * self.scale)[:, None] * self.frequency_cache[None]
+        embedding = torch.cat([torch.cos(angles), torch.sin(angles)], dim=-1)
         if self.frequency_embedding_size % 2:
             embedding = torch.cat(
                 [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
@@ -215,21 +226,35 @@ class CausalConvBlock(nn.Module):
 
     def forward_packed(
         self,
-        x: torch.Tensor,
-        guarded_positions: torch.Tensor,
-        guarded_valid: torch.Tensor,
+        hidden_states: torch.Tensor,
+        real_frame_positions: torch.Tensor,
+        real_frame_mask: torch.Tensor,
     ) -> torch.Tensor:
-        guarded = x.new_zeros(guarded_valid.shape[0], x.shape[1])
-        guarded[guarded_positions] = x
+        def apply_causal_convolution(
+            frames: torch.Tensor, convolution: nn.Module
+        ) -> torch.Tensor:
+            channel_first = frames.transpose(0, 1).unsqueeze(0)
+            convolved = convolution(channel_first)
+            return convolved.squeeze(0).transpose(0, 1)
 
-        guarded = self.block[1](guarded.transpose(0, 1).unsqueeze(0))
-        guarded = guarded.squeeze(0).transpose(0, 1)
-        guarded = self.block[3](guarded)
-        guarded = self.block[4](guarded)
-        guarded = guarded * guarded_valid.unsqueeze(1)
-        guarded = self.block[6](guarded.transpose(0, 1).unsqueeze(0))
-        guarded = guarded.squeeze(0).transpose(0, 1)
-        return guarded[guarded_positions]
+        first_convolution = self.block[1]
+        layer_norm = self.block[3]
+        activation = self.block[4]
+        second_convolution = self.block[6]
+        channels = hidden_states.shape[1]
+        expanded_hidden_states = hidden_states.new_zeros(
+            real_frame_mask.shape[0], channels
+        )
+        expanded_hidden_states[real_frame_positions] = hidden_states
+        expanded_hidden_states = apply_causal_convolution(
+            expanded_hidden_states, first_convolution
+        )
+        normalized_hidden_states = activation(layer_norm(expanded_hidden_states))
+        isolated_hidden_states = normalized_hidden_states * real_frame_mask.unsqueeze(1)
+        convolved_hidden_states = apply_causal_convolution(
+            isolated_hidden_states, second_convolution
+        )
+        return convolved_hidden_states[real_frame_positions]
 
 
 class DiTBlock(nn.Module):
@@ -263,7 +288,7 @@ class DiTBlock(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, c: torch.Tensor, attn_mask: torch.Tensor
+        self, x: torch.Tensor, timestep_embedding: torch.Tensor, attn_mask: torch.Tensor
     ) -> torch.Tensor:
         (
             shift_msa,
@@ -275,7 +300,7 @@ class DiTBlock(nn.Module):
             shift_conv,
             scale_conv,
             gate_conv,
-        ) = self.adaLN_modulation(c).chunk(9, dim=-1)
+        ) = self.adaLN_modulation(timestep_embedding).chunk(9, dim=-1)
         x = x + gate_msa * self.attn(
             modulate(self.norm1(x), shift_msa, scale_msa), attn_mask
         )
@@ -286,12 +311,12 @@ class DiTBlock(nn.Module):
     def forward_packed(
         self,
         x: torch.Tensor,
-        conditioning: torch.Tensor,
+        timestep_embedding: torch.Tensor,
         sequence_ids: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        max_length: int,
-        guarded_positions: torch.Tensor,
-        guarded_valid: torch.Tensor,
+        cumulative_sequence_lengths: torch.Tensor,
+        maximum_sequence_length: int,
+        real_frame_positions: torch.Tensor,
+        real_frame_mask: torch.Tensor,
     ) -> torch.Tensor:
         (
             shift_msa,
@@ -303,16 +328,16 @@ class DiTBlock(nn.Module):
             shift_conv,
             scale_conv,
             gate_conv,
-        ) = self.adaLN_modulation(conditioning)[sequence_ids].chunk(9, dim=-1)
+        ) = self.adaLN_modulation(timestep_embedding)[sequence_ids].chunk(9, dim=-1)
         x = x + gate_msa * self.attn.forward_packed(
             modulate(self.norm1(x), shift_msa, scale_msa),
-            cu_seqlens,
-            max_length,
+            cumulative_sequence_lengths,
+            maximum_sequence_length,
         )
         x = x + gate_conv * self.conv.forward_packed(
             modulate(self.norm3(x), shift_conv, scale_conv),
-            guarded_positions,
-            guarded_valid,
+            real_frame_positions,
+            real_frame_mask,
         )
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
@@ -327,8 +352,10 @@ class FinalLayer(nn.Module):
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-06)
         self.linear = nn.Linear(hidden_size, out_channels, bias=True)
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
+    def forward(
+        self, x: torch.Tensor, timestep_embedding: torch.Tensor
+    ) -> torch.Tensor:
+        shift, scale = self.adaLN_modulation(timestep_embedding).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
@@ -336,10 +363,10 @@ class FinalLayer(nn.Module):
     def forward_packed(
         self,
         x: torch.Tensor,
-        conditioning: torch.Tensor,
+        timestep_embedding: torch.Tensor,
         sequence_ids: torch.Tensor,
     ) -> torch.Tensor:
-        shift, scale = self.adaLN_modulation(conditioning)[sequence_ids].chunk(
+        shift, scale = self.adaLN_modulation(timestep_embedding)[sequence_ids].chunk(
             2, dim=-1
         )
         x = modulate(self.norm_final(x), shift, scale)
@@ -402,18 +429,20 @@ class DiT(nn.Module):
         mask: torch.Tensor,
         mu: torch.Tensor,
         t: torch.Tensor,
-        spks: torch.Tensor | None = None,
-        cond: torch.Tensor | None = None,
+        speaker_embeddings: torch.Tensor | None = None,
+        mel_conditioning: torch.Tensor | None = None,
     ) -> torch.Tensor:
         t = self.t_embedder(t).unsqueeze(1)
         x = pack([x, mu], "b * t")[0]
-        if spks is not None:
-            spks = repeat(spks, "b c -> b c t", t=x.shape[-1])
-            x = pack([x, spks], "b * t")[0]
+        if speaker_embeddings is not None:
+            speaker_embeddings = repeat(
+                speaker_embeddings, "b c -> b c t", t=x.shape[-1]
+            )
+            x = pack([x, speaker_embeddings], "b * t")[0]
         else:
             pass
-        if cond is not None:
-            x = pack([x, cond], "b * t")[0]
+        if mel_conditioning is not None:
+            x = pack([x, mel_conditioning], "b * t")[0]
         else:
             pass
         x = x.transpose(1, 2)
@@ -423,9 +452,11 @@ class DiT(nn.Module):
             and x.shape[0] >= MIN_PACKED_BATCH_SIZE
             and x.is_cuda
         ):
-            lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
+            sequence_lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
             with torch.autocast(x.device.type, dtype=torch.bfloat16):
-                x = self.forward_packed(self.in_proj(x), t.to(torch.bfloat16), lengths)
+                x = self.forward_packed(
+                    self.in_proj(x), t.to(torch.bfloat16), sequence_lengths
+                )
         else:
             x = self.in_proj(x)
             for block in self.blocks:
@@ -434,38 +465,44 @@ class DiT(nn.Module):
         return x
 
     def forward_packed(
-        self, x: torch.Tensor, conditioning: torch.Tensor, lengths: torch.Tensor
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        sequence_lengths: torch.Tensor,
     ) -> torch.Tensor:
         batch_size, padded_length, _ = x.shape
         frame_indices = torch.arange(padded_length, device=x.device)
-        valid_frames = frame_indices.unsqueeze(0) < lengths.unsqueeze(1)
+        valid_frames = frame_indices.unsqueeze(0) < sequence_lengths.unsqueeze(1)
         x = x[valid_frames]
-        conditioning = conditioning.squeeze(1)
-        cu_seqlens = torch.nn.functional.pad(
-            lengths.cumsum(0, dtype=torch.int32), (1, 0)
+        timestep_embedding = timestep_embedding.squeeze(1)
+        cumulative_sequence_lengths = torch.nn.functional.pad(
+            sequence_lengths.cumsum(0, dtype=torch.int32), (1, 0)
         )
-        guard_width = self.blocks[0].conv.kernel_size - 1
+        causal_padding_frames = self.blocks[0].conv.kernel_size - 1
         sequence_ids = torch.repeat_interleave(
-            torch.arange(batch_size, device=x.device), lengths
+            torch.arange(batch_size, device=x.device), sequence_lengths
         )
-        guarded_positions = (
-            torch.arange(x.shape[0], device=x.device) + (sequence_ids + 1) * guard_width
+        real_frame_positions = (
+            torch.arange(x.shape[0], device=x.device)
+            + (sequence_ids + 1) * causal_padding_frames
         )
-        guarded_valid = torch.zeros(
-            x.shape[0] + batch_size * guard_width, device=x.device, dtype=torch.bool
+        real_frame_mask = torch.zeros(
+            x.shape[0] + batch_size * causal_padding_frames,
+            device=x.device,
+            dtype=torch.bool,
         )
-        guarded_valid[guarded_positions] = True
+        real_frame_mask[real_frame_positions] = True
         for block in self.blocks:
             x = block.forward_packed(
                 x,
-                conditioning,
+                timestep_embedding,
                 sequence_ids,
-                cu_seqlens,
+                cumulative_sequence_lengths,
                 padded_length,
-                guarded_positions,
-                guarded_valid,
+                real_frame_positions,
+                real_frame_mask,
             )
-        x = self.final_layer.forward_packed(x, conditioning, sequence_ids)
+        x = self.final_layer.forward_packed(x, timestep_embedding, sequence_ids)
         dense = x.new_zeros(batch_size, padded_length, self.out_channels)
         dense[valid_frames] = x
         return dense.transpose(1, 2)

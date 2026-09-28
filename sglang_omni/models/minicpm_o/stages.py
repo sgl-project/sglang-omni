@@ -177,13 +177,15 @@ def vocode_code2wav_payloads(
     references: list[bytes | None] = []
     for payload in payloads:
         state = MiniCPMOPipelineState.from_dict(payload.data)
-        tokens = state.engine_outputs[TALKER_STAGE]["codec_tokens"].reshape(-1).tolist()
-        codec_tokens.append(tokens)
+        token_ids = (
+            state.engine_outputs[TALKER_STAGE]["codec_tokens"].reshape(-1).tolist()
+        )
+        codec_tokens.append(token_ids)
         references.append(code2wav_reference_audio(payload))
 
     logger.info(
         f"minicpm_code2wav_batch size={len(payloads)} "
-        f"max_codec_tokens={max(len(tokens) for tokens in codec_tokens)}"
+        f"max_codec_tokens={max(len(token_ids) for token_ids in codec_tokens)}"
     )
     waveforms = model.vocode(codec_tokens, references)
 
