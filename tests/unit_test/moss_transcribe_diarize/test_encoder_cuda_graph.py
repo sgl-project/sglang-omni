@@ -21,13 +21,15 @@ from sglang_omni.utils.device import resolve_concrete_device
 pytestmark = pytest.mark.accelerator
 
 DEVICE = resolve_concrete_device(None, 0)
-DEVICE_MODULE = torch.get_device_module(DEVICE)
-GRAPH_BACKEND = current_platform.get_device_graph_backend(DEVICE)
-HAS_DEVICE_GRAPH = (
-    DEVICE.type in ("cuda", "xpu")
-    and DEVICE_MODULE.is_available()
-    and GRAPH_BACKEND is not None
+DEVICE_MODULE = (
+    torch.get_device_module(DEVICE) if DEVICE.type in ("cuda", "xpu") else None
 )
+GRAPH_BACKEND = (
+    current_platform.get_device_graph_backend(DEVICE)
+    if DEVICE_MODULE is not None and DEVICE_MODULE.is_available()
+    else None
+)
+HAS_DEVICE_GRAPH = GRAPH_BACKEND is not None
 
 CKPT_GLOB = (
     "/root/.cache/huggingface/hub/"
