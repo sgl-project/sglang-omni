@@ -133,7 +133,6 @@ stages:
       max_running_requests: 16
       cuda_graph_max_bs: 16
       enable_torch_compile: false
-      model_loader_extra_config: '{"enable_multithread_load": false}'
 ```
 
 Launch it with:
@@ -146,8 +145,6 @@ The graph configuration names retain `cuda_graph` for compatibility, but
 SGLang selects the XPUGraph backend on XPU. The B60 validation uses
 `mem_fraction_static=0.70` to leave enough memory for all eight encoder graph
 buckets; `0.80` leaves too little graph-capture headroom on a 24 GB card.
-Single-threaded checkpoint loading avoids a Level Zero failure observed with
-multithreaded loading on this device.
 
 MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
 default target is 4 requests with a 12 ms oldest-request deadline. While more
