@@ -104,13 +104,9 @@ def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
     exposes, so this runs anywhere.
     """
     cuda = inspect.signature(torch.cuda.graph).parameters
-    assert "cuda_graph" in cuda and "capture_error_mode" in cuda
+    xpu = inspect.signature(torch.xpu.graph).parameters
 
-    try:
-        xpu_graph = torch.xpu.graph
-    except AttributeError:
-        pytest.skip("this PyTorch distribution does not expose torch.xpu.graph")
-    xpu = inspect.signature(xpu_graph).parameters
+    assert "cuda_graph" in cuda and "capture_error_mode" in cuda
     assert "xpu_graph" in xpu and "capture_error_mode" not in xpu
 
 
