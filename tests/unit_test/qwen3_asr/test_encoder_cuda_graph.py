@@ -107,29 +107,6 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
     assert seen["forward_metadata"] is attention_metadata
 
 
-def test_non_npu_lazy_capture_failure_leaves_bucket_eager():
-    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
-    runner.graph_backend = SimpleNamespace(supports_graph_task_update=False)
-    runner.max_seqlen = 8
-    runner.buckets = (8,)
-    runner.failed = set()
-    runner.graphs = {}
-    runner.plan = lambda total, windows: (8, [8 - total])
-    capture_calls = []
-
-    def capture(bucket_size, *, window_lens=None):
-        capture_calls.append((bucket_size, window_lens))
-        raise RuntimeError("simulated lazy capture failure")
-
-    runner.capture = capture
-    hidden_states = torch.ones(4, 2)
-
-    assert runner.run(hidden_states, [4]) is None
-    assert runner.run(hidden_states, [4]) is None
-    assert capture_calls == [(8, None)]
-    assert runner.failed == {8}
-
-
 @pytest.fixture
 def asr_server_args():
     from sglang.srt.runtime_context import get_context

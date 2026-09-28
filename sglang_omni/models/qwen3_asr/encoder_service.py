@@ -6,8 +6,8 @@ dedicated worker thread and CUDA stream. Request building submits encode
 and admits only after the future completes with the LM-ready embedding
 attached.
 
-A cache hit is resolved before mel extraction in the request builder and
-transferred directly on the caller's current stream.
+A cache hit is still resolved before mel extraction in the request builder,
+so repeated audio never enters this queue.
 """
 
 from __future__ import annotations
@@ -271,19 +271,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                     )
                 else:
                     pass
-                # The leader completed device work and registered the consumer
-                # stream before resolving its future. A late callback may run
-                # on the caller: publish metadata only, never submit device work.
-                self.set_precomputed_embedding(item, embedding)
-                if not completion.done():
-                    completion.set_result(embedding)
-                else:
-                    pass
+                self.attach_embedding(item, embedding)
+                completion.set_result(embedding)
             except Exception as exc:
-                if not completion.done():
-                    completion.set_exception(exc)
-                else:
-                    pass
+                completion.set_exception(exc)
 
         follower_of.add_done_callback(attach_follower)
         return self.count_failed(completion)
@@ -406,10 +397,6 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             embedding.record_stream(device_module.default_stream(embedding.device))
         else:
             pass
-        self.set_precomputed_embedding(item, embedding)
-
-    @staticmethod
-    def set_precomputed_embedding(item: Any, embedding: torch.Tensor) -> None:
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING

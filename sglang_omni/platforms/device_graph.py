@@ -31,13 +31,6 @@ class DeviceGraphBackend(Protocol):
         """Open a capture and yield the graph it records into."""
         ...
 
-    def replay(
-        self,
-        graph: Any,
-    ) -> None:
-        """Replay a recorded graph."""
-        graph.replay()
-
 
 class CudaDeviceGraphBackend(DeviceGraphBackend):
     """CUDA, and the backends that present through torch.cuda: HIP and MUSA."""

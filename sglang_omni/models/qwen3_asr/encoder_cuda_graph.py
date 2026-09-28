@@ -511,12 +511,12 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                             self.device_module, update_stream, cumulative_window_lens
                         )
 
-            thread = threading.Thread(target=update_attention_tasks)
-            thread.start()
-            self.graph_backend.replay(entry.graph)
-            thread.join()
+            update_thread = threading.Thread(target=update_attention_tasks)
+            update_thread.start()
+            entry.graph.replay()
+            update_thread.join()
         else:
-            self.graph_backend.replay(entry.graph)
+            entry.graph.replay()
         out = entry.output
         if out.dim() == 3:  # attention backends emit [1, tokens, dim]
             out = out.squeeze(0)

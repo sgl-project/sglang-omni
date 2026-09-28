@@ -97,34 +97,21 @@ def test_npu_backend_records_into_an_npu_graph(
     assert module.calls == [expected]
 
 
-def test_cuda_graph_context_declares_the_expected_keywords() -> None:
-    """The stub tests accept any keyword, so pin the real CUDA context here."""
+def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
+    """The stub tests above accept any keyword, so pin the real ones here.
+
+    Both contexts are plain Python classes that a build without the device still
+    exposes, so this runs anywhere.
+    """
     cuda = inspect.signature(torch.cuda.graph).parameters
     assert "cuda_graph" in cuda and "capture_error_mode" in cuda
 
-
-def test_xpu_graph_context_declares_the_expected_keywords() -> None:
-    """Some non-XPU PyTorch distributions do not expose the XPU graph API."""
     try:
         xpu_graph = torch.xpu.graph
     except AttributeError:
         pytest.skip("this PyTorch distribution does not expose torch.xpu.graph")
-
     xpu = inspect.signature(xpu_graph).parameters
     assert "xpu_graph" in xpu and "capture_error_mode" not in xpu
-
-
-@pytest.mark.parametrize(
-    "backend",
-    [CudaDeviceGraphBackend(), XpuDeviceGraphBackend(), NpuDeviceGraphBackend()],
-)
-def test_each_backend_replays_the_given_graph(backend) -> None:
-    calls = []
-    graph = SimpleNamespace(replay=lambda: calls.append("replay"))
-
-    backend.replay(graph)
-
-    assert calls == ["replay"]
 
 
 @pytest.mark.parametrize(

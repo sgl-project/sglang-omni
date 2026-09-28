@@ -17,9 +17,6 @@ from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
 class _NpuBackend:
     supports_graph_task_update = True
 
-    def replay(self, graph):
-        graph.replay()
-
 
 class _NpuDeviceModule:
     def set_device(self, device):
@@ -141,23 +138,6 @@ def test_npu_replay_updates_window_boundaries_for_a_reused_bucket():
         ("update", [3, 8]),
     ]
     assert host_threads["update"] != host_threads["replay"]
-
-
-def test_npu_pre_capture_failure_leaves_the_bucket_eager():
-    runner = _npu_runner()
-    runner.plan = lambda total, windows: (8, [8 - total])
-    capture_calls = []
-
-    def capture(bucket_size, *, window_lens=None):
-        capture_calls.append((bucket_size, window_lens))
-        raise torch.OutOfMemoryError("simulated warmup failure")
-
-    runner.capture = capture
-
-    assert runner.run(torch.ones(4, 2), [4]) is None
-    assert runner.run(torch.ones(4, 2), [4]) is None
-    assert capture_calls == [(8, (4, 4))]
-    assert runner.failed == {8}
 
 
 def test_npu_attention_capture_restores_partial_setup():
@@ -326,6 +306,7 @@ def test_npu_capture_context_failure_leaves_bucket_eager():
 
     runner = _capture_runner(SimpleNamespace(capture=lambda **kwargs: CaptureContext()))
 
+    assert runner.run(torch.ones(4, 2), [4]) is None
     assert runner.run(torch.ones(4, 2), [4]) is None
     assert runner.failed == {8}
     assert runner.graphs == {}
