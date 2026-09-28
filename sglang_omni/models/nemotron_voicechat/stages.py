@@ -85,22 +85,20 @@ def create_perception_executor(
     gpu_id: int | None = None,
     enable_cuda_graph: bool = True,
 ) -> SimpleScheduler:
-    concrete_device = resolve_concrete_device(device, gpu_id)
-    perception_model = AudioPerception(perception_config(model_path))
+    device = resolve_concrete_device(device, gpu_id)
+    module = AudioPerception(perception_config(model_path))
     load_module(
-        perception_model,
+        module,
         model_path,
         prefix=PERCEPTION_PREFIX,
         dtype=resolve_dtype(dtype),
-        device=concrete_device,
+        device=device,
         strict=True,
     )
-    perception_model.eval()
-    parameter_dtype = perception_model.proj.weight.dtype
+    module.eval()
+    parameter_dtype = module.proj.weight.dtype
     perception_stream = (
-        GraphPerception(perception_model)
-        if enable_cuda_graph
-        else StreamingPerception(perception_model)
+        GraphPerception(module) if enable_cuda_graph else StreamingPerception(module)
     )
 
     @torch.inference_mode()
@@ -111,8 +109,8 @@ def create_perception_executor(
             rearrange(waveform, "s -> 1 s") if waveform.ndim == 1 else waveform
         )
 
-        frames = perception_model(
-            waveform_1S.to(device=concrete_device, dtype=parameter_dtype),
+        frames = module(
+            waveform_1S.to(device=device, dtype=parameter_dtype),
             stream=perception_stream,
         )
         assert frames.shape[1] == state.num_frames + 1, (
@@ -124,7 +122,7 @@ def create_perception_executor(
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(encode, max_concurrency=1)
+    return SimpleScheduler(encode)
 
 
 def create_thinker_executor(
