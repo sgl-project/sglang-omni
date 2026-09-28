@@ -269,7 +269,9 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             with self.device_module.device(self.device):
                 self.device_module.empty_cache()
         except Exception:
-            logger.warning("MOSS-TD device cache cleanup failed after OOM", exc_info=True)
+            logger.warning(
+                "MOSS-TD device cache cleanup failed after OOM", exc_info=True
+            )
 
     def record_success(self, item_count: int) -> None:
         self.batch_count += 1

@@ -283,6 +283,63 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
     assert model.compiled_chunk_buckets == frozenset({1})
 
 
+def test_init_encoder_graphs_uses_platform_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from sglang_omni.models.moss_transcribe_diarize import sglang_model
+
+    backend = SimpleNamespace()
+    captured = SimpleNamespace()
+
+    class GraphRunner:
+        def __init__(
+            self,
+            encoder: torch.nn.Module,
+            num_mel_bins: int,
+            input_feature_len: int,
+            graph_backend: SimpleNamespace,
+        ) -> None:
+            captured.encoder = encoder
+            captured.num_mel_bins = num_mel_bins
+            captured.input_feature_len = input_feature_len
+            captured.graph_backend = graph_backend
+
+        def capture(self, buckets: list[int]) -> None:
+            captured.buckets = buckets
+
+    def get_graph_backend(device: torch.device) -> SimpleNamespace:
+        captured.device = device
+        return backend
+
+    monkeypatch.setattr(
+        sglang_model.current_platform,
+        "get_device_graph_backend",
+        get_graph_backend,
+    )
+    monkeypatch.setattr(sglang_model, "WhisperEncoderCudaGraphRunner", GraphRunner)
+
+    encoder = torch.nn.Linear(4, 4)
+    model = SimpleNamespace(
+        whisper_encoder=encoder,
+        encoder_graph_runner=None,
+        config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=80)),
+    )
+
+    sglang_model.MossTranscribeDiarizeForConditionalGeneration.init_encoder_graphs(
+        model, [2, 1], input_feature_len=3000
+    )
+
+    assert captured.device == next(encoder.parameters()).device
+    assert captured.encoder is encoder
+    assert captured.num_mel_bins == 80
+    assert captured.input_feature_len == 3000
+    assert captured.graph_backend is backend
+    assert captured.buckets == [2, 1]
+    assert model.encoder_graph_runner is not None
+
+
 def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
     from types import SimpleNamespace
 
