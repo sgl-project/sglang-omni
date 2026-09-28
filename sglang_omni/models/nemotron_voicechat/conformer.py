@@ -1,3 +1,7 @@
+"""Causal audio encoding with stream-owned history buffers."""
+
+from __future__ import annotations
+
 import math
 
 import torch
@@ -207,10 +211,16 @@ class AudioPerception(nn.Module):
             int(config["encoder"]["d_model"]), int(config["output_dim"])
         )
 
-    def forward(self, waveform_BL):
+    def forward(
+        self, waveform_BL: torch.Tensor, *, stream: StreamingPerception | None = None
+    ) -> torch.Tensor:
+        """Encode one utterance, resetting a supplied stream before graph reuse."""
         assert waveform_BL.shape[0] == 1
         assert waveform_BL.shape[1] % SAMPLES_PER_FRAME == 0
-        stream = StreamingPerception(self)
+        if stream is None:
+            stream = StreamingPerception(self)
+        else:
+            stream.reset()
         rows = [stream.push(block) for block in waveform_BL[0].split(SAMPLES_PER_FRAME)]
         rows.append(stream.flush())
         return torch.cat(rows).unsqueeze(0)
@@ -219,9 +229,8 @@ class AudioPerception(nn.Module):
 class StreamingPerception:
     """Incremental encoding, one 1280-sample block to one acoustic row.
 
-    Attention keeps at most left_context+1 keys per layer, the convolutions
-    keep their causal left windows, and the featurizer keeps the STFT overlap
-    plus the preemphasis carry, so each push touches one frame of compute.
+    Causal buffers keep fixed addresses across pushes and reset. Attention
+    uses only the valid prefix until its left-context window is full.
     """
 
     def __init__(self, perception: AudioPerception) -> None:
@@ -269,43 +278,37 @@ class StreamingPerception:
                 for layer in encoder.layers
             ]
 
-        self.reset()
-
-    def reset(self) -> None:
-        perception = self.perception
-        preprocessor = perception.preprocessor
-        self.preemphasis_carry = torch.zeros(1, device=self.device, dtype=self.dtype)
-        self.sample_buffer = torch.zeros(
+        self.preemphasis_carry = torch.empty(1, device=self.device, dtype=self.dtype)
+        self.sample_buffer = torch.empty(
             preprocessor.left_padding, device=self.device, dtype=self.dtype
         )
 
         num_mels = preprocessor.featurizer.fb.shape[1]
-        sub_cache_shapes = []
+        sub_cache_shapes: list[tuple[int, int, int, int]] = []
         channels, freqs = 1, num_mels
         for conv, _ in self.sub_stages:
             sub_cache_shapes.append((1, channels, SUBSAMPLING_CACHE_SIZE, freqs))
             channels = conv.out_channels
             freqs = freqs // SUBSAMPLING_STRIDE + 1
         self.sub_caches = [
-            torch.zeros(shape, device=self.device, dtype=self.dtype)
+            torch.empty(shape, device=self.device, dtype=self.dtype)
             for shape in sub_cache_shapes
         ]
 
         layers = perception.encoder.layers
         self.key_caches = [
-            torch.zeros(
-                0, self.num_heads, self.head_size, device=self.device, dtype=self.dtype
+            torch.empty(
+                self.max_keys,
+                self.num_heads,
+                self.head_size,
+                device=self.device,
+                dtype=self.dtype,
             )
             for _ in layers
         ]
-        self.value_caches = [
-            torch.zeros(
-                0, self.num_heads, self.head_size, device=self.device, dtype=self.dtype
-            )
-            for _ in layers
-        ]
+        self.value_caches = [torch.empty_like(keys) for keys in self.key_caches]
         self.conv_caches = [
-            torch.zeros(
+            torch.empty(
                 1,
                 layer.conv.depthwise_conv.in_channels,
                 layer.conv.depthwise_conv.left_padding,
@@ -314,7 +317,24 @@ class StreamingPerception:
             )
             for layer in layers
         ]
-        self.flushed = False
+        self.reset()
+
+    def state_buffers(self) -> list[torch.Tensor]:
+        return [
+            self.sample_buffer,
+            self.preemphasis_carry,
+            *self.sub_caches,
+            *self.key_caches,
+            *self.value_caches,
+            *self.conv_caches,
+        ]
+
+    @torch.inference_mode()
+    def reset(self) -> None:
+        for buffer in self.state_buffers():
+            buffer.zero_()
+        self.cached_frame_count: int = 0
+        self.flushed: bool = False
 
     @torch.inference_mode()
     def push(self, samples_S: torch.Tensor) -> torch.Tensor:
@@ -341,8 +361,8 @@ class StreamingPerception:
         previous_S = torch.cat((self.preemphasis_carry, samples_S[:-1]))
         preemphasized_S = samples_S - DEFAULT_PREEMPHASIS * previous_S
         window_W = torch.cat((self.sample_buffer, preemphasized_S))
-        self.sample_buffer = window_W[-preprocessor.left_padding :]
-        self.preemphasis_carry = samples_S[-1:]
+        self.sample_buffer.copy_(window_W[-preprocessor.left_padding :])
+        self.preemphasis_carry.copy_(samples_S[-1:])
 
         spectrum_FT = torch.stft(
             rearrange(window_W, "w -> 1 w"),
@@ -374,13 +394,15 @@ class StreamingPerception:
                 layer.norm_feed_forward2(hidden_11D)
             )
             hidden_11D = layer.norm_out(hidden_11D)
+        # note (Codex): The count saturates before capture, so replay needs no Python update.
+        self.cached_frame_count = min(self.cached_frame_count + 1, self.max_keys)
         return self.perception.proj(hidden_11D)[0]
 
     def subsample(self, mel_1TM: torch.Tensor) -> torch.Tensor:
         hidden_1CTM = rearrange(mel_1TM, "b t m -> b 1 t m")
         for stage, (conv, pointwise) in enumerate(self.sub_stages):
             hidden_1CTM = torch.cat((self.sub_caches[stage], hidden_1CTM), dim=2)
-            self.sub_caches[stage] = hidden_1CTM[:, :, -SUBSAMPLING_CACHE_SIZE:]
+            self.sub_caches[stage].copy_(hidden_1CTM[:, :, -SUBSAMPLING_CACHE_SIZE:])
             # The cache stands in for the module's causal time padding; only
             # the frequency axis still pads here.
             padded_1CTM = nn.functional.pad(hidden_1CTM, (*conv.causal_padding, 0, 0))
@@ -394,7 +416,12 @@ class StreamingPerception:
             rearrange(hidden_1CTM, "b c t m -> b t (c m)")
         )
 
-    def attend(self, index: int, attention, hidden_11D: torch.Tensor) -> torch.Tensor:
+    def attend(
+        self,
+        index: int,
+        attention: RelPositionMultiHeadAttention,
+        hidden_11D: torch.Tensor,
+    ) -> torch.Tensor:
         query_HS = rearrange(
             attention.linear_q(hidden_11D), "1 1 (h s) -> h s", h=self.num_heads
         )
@@ -404,14 +431,15 @@ class StreamingPerception:
         value_HS = rearrange(
             attention.linear_v(hidden_11D), "1 1 (h s) -> h s", h=self.num_heads
         )
-        keys_KHS = torch.cat((self.key_caches[index], key_HS[None]))[-self.max_keys :]
-        values_KHS = torch.cat((self.value_caches[index], value_HS[None]))[
-            -self.max_keys :
-        ]
-        self.key_caches[index] = keys_KHS
-        self.value_caches[index] = values_KHS
-
+        keys_KHS = torch.cat(
+            (self.key_caches[index][: self.cached_frame_count], key_HS[None])
+        )[-self.max_keys :]
+        values_KHS = torch.cat(
+            (self.value_caches[index][: self.cached_frame_count], value_HS[None])
+        )[-self.max_keys :]
         num_keys = keys_KHS.shape[0]
+        self.key_caches[index][:num_keys].copy_(keys_KHS)
+        self.value_caches[index][:num_keys].copy_(values_KHS)
         content_KH = einsum(
             query_HS + attention.pos_bias_u, keys_KHS, "h s, k h s -> k h"
         )
@@ -426,11 +454,13 @@ class StreamingPerception:
         attended_HS = einsum(weights_KH, values_KHS, "k h, k h s -> h s")
         return attention.linear_out(rearrange(attended_HS, "h s -> 1 1 (h s)"))
 
-    def convolve(self, index: int, conv, hidden_11D: torch.Tensor) -> torch.Tensor:
+    def convolve(
+        self, index: int, conv: ConformerConvolution, hidden_11D: torch.Tensor
+    ) -> torch.Tensor:
         gates_1Gt = conv.pointwise_conv1(rearrange(hidden_11D, "b t d -> b d t"))
         hidden_1Dt = nn.functional.glu(gates_1Gt, dim=1)
         window_1DT = torch.cat((self.conv_caches[index], hidden_1Dt), dim=2)
-        self.conv_caches[index] = window_1DT[:, :, 1:]
+        self.conv_caches[index].copy_(window_1DT[:, :, 1:])
         hidden_1Dt = nn.Conv1d.forward(conv.depthwise_conv, window_1DT)
         hidden_11D = conv.batch_norm(rearrange(hidden_1Dt, "b d t -> b t d"))
         hidden_1Dt = conv.activation(rearrange(hidden_11D, "b t d -> b d t"))

@@ -12,7 +12,10 @@ from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
     NemotronCode2WavScheduler,
 )
 from sglang_omni.models.nemotron_voicechat.codec import RVQVAEDecoder
-from sglang_omni.models.nemotron_voicechat.conformer import AudioPerception
+from sglang_omni.models.nemotron_voicechat.conformer import (
+    AudioPerception,
+    StreamingPerception,
+)
 from sglang_omni.models.nemotron_voicechat.engine_builder import (
     NemotronVoiceChatEngineBuilder,
     NemotronVoiceChatTalkerEngineBuilder,
@@ -21,6 +24,7 @@ from sglang_omni.models.nemotron_voicechat.payload_types import (
     OUTPUT_SAMPLE_RATE,
     NemotronVoiceChatState,
 )
+from sglang_omni.models.nemotron_voicechat.perception_graph import GraphPerception
 from sglang_omni.models.weight_loader import (
     load_module,
     load_weights_by_prefix,
@@ -74,20 +78,30 @@ def create_preprocessing_executor(model_path: str, **_):
 
 
 def create_perception_executor(
-    model_path: str, *, dtype=None, device=None, gpu_id=None
-):
-    device = resolve_concrete_device(device, gpu_id)
-    module = AudioPerception(perception_config(model_path))
+    model_path: str,
+    *,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    enable_cuda_graph: bool = True,
+) -> SimpleScheduler:
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    perception_model = AudioPerception(perception_config(model_path))
     load_module(
-        module,
+        perception_model,
         model_path,
         prefix=PERCEPTION_PREFIX,
         dtype=resolve_dtype(dtype),
-        device=device,
+        device=concrete_device,
         strict=True,
     )
-    module.eval()
-    parameter_dtype = module.proj.weight.dtype
+    perception_model.eval()
+    parameter_dtype = perception_model.proj.weight.dtype
+    perception_stream = (
+        GraphPerception(perception_model)
+        if enable_cuda_graph
+        else StreamingPerception(perception_model)
+    )
 
     @torch.inference_mode()
     def encode(payload: StagePayload) -> StagePayload:
@@ -97,7 +111,10 @@ def create_perception_executor(
             rearrange(waveform, "s -> 1 s") if waveform.ndim == 1 else waveform
         )
 
-        frames = module(waveform_1S.to(device=device, dtype=parameter_dtype))
+        frames = perception_model(
+            waveform_1S.to(device=concrete_device, dtype=parameter_dtype),
+            stream=perception_stream,
+        )
         assert frames.shape[1] == state.num_frames + 1, (
             f"Perception returned {frames.shape[1]} rows for {state.num_frames} "
             "frames of audio; expected one more than the frame count."
@@ -107,7 +124,8 @@ def create_perception_executor(
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(encode)
+    # note (Codex): Serial requests reuse one graph while reset isolates their history.
+    return SimpleScheduler(encode, max_concurrency=1)
 
 
 def create_thinker_executor(
