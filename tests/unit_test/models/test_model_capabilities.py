@@ -115,13 +115,13 @@ EXPECTED_MODEL_CAPABILITIES = {
 }
 
 
-def _package_for_architecture(architecture: str):
+def package_for_architecture(architecture: str):
     config_cls = PIPELINE_CONFIG_REGISTRY.configs.get(architecture)
     assert config_cls is not None, f"{architecture} is not registered"
     return importlib.import_module(config_cls.__module__.rsplit(".", 1)[0])
 
 
-def _capability_required_architectures() -> set[str]:
+def capability_required_architectures() -> set[str]:
     return {
         config_cls.architecture
         for config_cls in set(PIPELINE_CONFIG_REGISTRY.configs.values())
@@ -130,11 +130,11 @@ def _capability_required_architectures() -> set[str]:
 
 
 def test_expected_capabilities_cover_registered_required_configs() -> None:
-    assert _capability_required_architectures() == set(EXPECTED_MODEL_CAPABILITIES)
+    assert capability_required_architectures() == set(EXPECTED_MODEL_CAPABILITIES)
 
 
 def test_required_model_capability_configs_resolve_capabilities() -> None:
-    for architecture in sorted(_capability_required_architectures()):
+    for architecture in sorted(capability_required_architectures()):
         assert get_model_capabilities(architecture) is not None
 
 
@@ -154,7 +154,7 @@ def test_model_capabilities_are_frozen_and_explicit() -> None:
 
 @pytest.mark.parametrize("architecture", EXPECTED_MODEL_CAPABILITIES)
 def test_model_package_exports_capabilities(architecture: str) -> None:
-    module = _package_for_architecture(architecture)
+    module = package_for_architecture(architecture)
     capabilities = getattr(module, "CAPABILITIES", None)
 
     assert capabilities == EXPECTED_MODEL_CAPABILITIES[architecture]
@@ -217,10 +217,10 @@ def test_model_capabilities_are_static_architecture_metadata() -> None:
 
 
 def test_launcher_model_capabilities_log_summary() -> None:
-    from sglang_omni.serve.launcher import _model_capabilities_log_summary
+    from sglang_omni.serve.launcher import model_capabilities_log_summary
 
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    summary = _model_capabilities_log_summary(
+    summary = model_capabilities_log_summary(
         config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
     )
 
@@ -236,10 +236,10 @@ def test_launcher_model_capabilities_log_summary() -> None:
 
 
 def test_launcher_model_capabilities_log_summary_uses_static_architecture() -> None:
-    from sglang_omni.serve.launcher import _model_capabilities_log_summary
+    from sglang_omni.serve.launcher import model_capabilities_log_summary
 
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    summary = _model_capabilities_log_summary(
+    summary = model_capabilities_log_summary(
         config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
     )
 
@@ -251,13 +251,13 @@ def test_launcher_model_capabilities_log_summary_uses_static_architecture() -> N
 def test_launcher_emits_model_capabilities_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from sglang_omni.serve.launcher import _log_model_capabilities
+    from sglang_omni.serve.launcher import log_model_capabilities
 
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config(
         "VoxtralTTSForConditionalGeneration"
     )
     with caplog.at_level("INFO", logger="sglang_omni.serve.launcher"):
-        _log_model_capabilities(config_cls(model_path="dummy"))
+        log_model_capabilities(config_cls(model_path="dummy"))
 
     assert "Model capabilities:" in caplog.text
     assert '"architecture": "VoxtralTTSForConditionalGeneration"' in caplog.text
@@ -274,10 +274,10 @@ def test_launcher_model_capabilities_warning_isolated(
     def fail_summary(_pipeline_config: object) -> None:
         raise RuntimeError("capability lookup failed")
 
-    monkeypatch.setattr(launcher, "_model_capabilities_log_summary", fail_summary)
+    monkeypatch.setattr(launcher, "model_capabilities_log_summary", fail_summary)
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
 
     with caplog.at_level("WARNING", logger="sglang_omni.serve.launcher"):
-        launcher._log_model_capabilities(config_cls(model_path="dummy"))
+        launcher.log_model_capabilities(config_cls(model_path="dummy"))
 
     assert "Failed to resolve model capabilities for startup log" in caplog.text

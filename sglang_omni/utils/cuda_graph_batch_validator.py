@@ -16,55 +16,55 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class _BufferProbe:
+class BufferProbe:
     """Per-model ``(label, fn)`` extractors reading the allocated buffer first dim."""
 
     extractors: tuple[tuple[str, Callable[[Any], int]], ...]
     note: str = ""
 
 
-_BUFFER_PROBES: dict[str, _BufferProbe] = {
-    "HiggsTTSModel": _BufferProbe(
+_BUFFER_PROBES: dict[str, BufferProbe] = {
+    "HiggsTTSModel": BufferProbe(
         (
-            ("_sampler_pool.seeds", lambda m: m._sampler_pool.seeds.shape[0]),
-            ("_cg_codes_BN", lambda m: m._cg_codes_BN.shape[0]),
-            ("_cg_active_last_codes", lambda m: m._cg_active_last_codes.shape[0]),
+            ("sampler_pool.seeds", lambda m: m.sampler_pool.seeds.shape[0]),
+            ("cg_codes_BN", lambda m: m.cg_codes_BN.shape[0]),
+            ("cg_active_last_codes", lambda m: m.cg_active_last_codes.shape[0]),
         ),
         note="sampler pool = max_running_requests + 1 (one reserved padding row)",
     ),
-    "Qwen3TTSTalker": _BufferProbe(
-        (("_feedback_buffer", lambda m: m._feedback_buffer.shape[0]),)
+    "Qwen3TTSTalker": BufferProbe(
+        (("feedback_buffer", lambda m: m.feedback_buffer.shape[0]),)
     ),
-    "MossTTSDelaySGLangModel": _BufferProbe(
+    "MossTTSDelaySGLangModel": BufferProbe(
         (
             (
-                "_decode_input_embedding.weight",
-                lambda m: m._decode_input_embedding.weight.shape[0],
+                "decode_input_embedding.weight",
+                lambda m: m.decode_input_embedding.weight.shape[0],
             ),
         )
     ),
-    "MossTTSLocalSGLangModel": _BufferProbe(
+    "MossTTSLocalSGLangModel": BufferProbe(
         (
             (
-                "_decode_input_embedding.weight",
-                lambda m: m._decode_input_embedding.weight.shape[0],
+                "decode_input_embedding.weight",
+                lambda m: m.decode_input_embedding.weight.shape[0],
             ),
         )
     ),
-    "S2ProSGLangTextModel": _BufferProbe(
-        (("_vq_codes", lambda m: m._vq_codes.shape[0]),),
+    "S2ProSGLangTextModel": BufferProbe(
+        (("vq_codes", lambda m: m.vq_codes.shape[0]),),
         note="allocated only after setup_vq_decode()",
     ),
-    "VoxtralSGLangTTSModel": _BufferProbe(
+    "VoxtralSGLangTTSModel": BufferProbe(
         (
             (
-                "_decode_input_embed_buffer",
-                lambda m: m._decode_input_embed_buffer.shape[0],
+                "decode_input_embed_buffer",
+                lambda m: m.decode_input_embed_buffer.shape[0],
             ),
         )
     ),
-    "Qwen3OmniTalker": _BufferProbe(
-        (("_feedback_buffer", lambda m: m._feedback_buffer.shape[0]),)
+    "Qwen3OmniTalker": BufferProbe(
+        (("feedback_buffer", lambda m: m.feedback_buffer.shape[0]),)
     ),
 }
 
@@ -148,11 +148,15 @@ def evaluate_cuda_graph_batch_sizing(
                 f"buffer holds {buffer_capacity}; capture/replay above "
                 f"{buffer_capacity} overruns the model buffer."
             )
+        else:
+            pass
     elif buffer_capacity is None:
         findings.append(
             f"model-side buffer not read ({buffer_source}); validated serving "
             f"config vs. captured sizes only."
         )
+    else:
+        pass
 
     if expected_capture_target is not None:
         if max_captured is None:
@@ -169,6 +173,10 @@ def evaluate_cuda_graph_batch_sizing(
                 f"effective serving target {expected_capture_target}; replay at "
                 "larger runnable batch sizes will fall back or fail."
             )
+        else:
+            pass
+    else:
+        pass
 
     if (
         buffer_capacity is not None
@@ -181,11 +189,15 @@ def evaluate_cuda_graph_batch_sizing(
             f"max_running_requests ({max_running_requests}); peak concurrency "
             f"cannot be served."
         )
+    else:
+        pass
 
     if is_valid and not findings:
         findings.append(
             "captured sizes and model-side buffer track the serving config."
         )
+    else:
+        pass
 
     return CudaGraphBatchReport(
         stage=stage,
@@ -229,11 +241,15 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
     """
     if model is None:
         return None, "no model object on runner"
+    else:
+        pass
 
     cls = type(model).__name__
     probe = _BUFFER_PROBES.get(cls)
     if probe is None:
         return None, f"no buffer probe registered for model class {cls!r}"
+    else:
+        pass
 
     candidates = [("model", model)]
     try:
@@ -242,6 +258,8 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
         inner = None
     if inner is not None and inner is not model:
         candidates.append(("model.model", inner))
+    else:
+        pass
 
     smallest: int | None = None
     source = ""
@@ -254,6 +272,8 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
             if smallest is None or dim < smallest:
                 smallest = dim
                 source = f"{where}.{label}.shape[0]"
+            else:
+                pass
 
     if smallest is None:
         labels = ", ".join(label for label, _ in probe.extractors)
@@ -261,9 +281,13 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
             f"model class {cls!r} registered but none of its buffers resolved "
             f"({labels}); buffer may not be allocated yet"
         )
+    else:
+        pass
 
     if probe.note:
         source += f" ({probe.note})"
+    else:
+        pass
     return smallest, source
 
 
@@ -289,17 +313,23 @@ def attest_prefill_cuda_graphs(model_runner: Any, *, operator_selected: bool) ->
                 prefill_cfg.backend,
             )
             return
+        else:
+            pass
         raise RuntimeError(
             f"prefill CUDA graph backend {prefill_cfg.backend!r} was declared "
             "but SGLang did not construct PrefillCudaGraphRunner "
             f"(got {type(runner).__name__}); an eligibility gate disabled "
             "prefill graphs during capture"
         )
+    else:
+        pass
     if runner.prefill_backend_name != prefill_cfg.backend:
         raise RuntimeError(
             "prefill CUDA graph backend mismatch: declared "
             f"{prefill_cfg.backend!r}, captured {runner.prefill_backend_name!r}"
         )
+    else:
+        pass
     expected_buckets = sorted(int(b) for b in prefill_cfg.bs)
     if list(runner.capture_num_tokens) != expected_buckets:
         raise RuntimeError(
@@ -307,12 +337,16 @@ def attest_prefill_cuda_graphs(model_runner: Any, *, operator_selected: bool) ->
             f"policy: declared={expected_buckets}, "
             f"captured={list(runner.capture_num_tokens)}"
         )
+    else:
+        pass
     if not runner.buffer_registry.has_slot("input_embeds"):
         raise RuntimeError(
             "prefill CUDA graph runner has no input_embeds slot; "
             "enable_prefill_input_embeds did not reach the model config "
             "before SGLang ModelRunner construction"
         )
+    else:
+        pass
     logger.info(
         "prefill CUDA graphs attested: backend=%s buckets=%s",
         runner.prefill_backend_name,
@@ -348,6 +382,8 @@ def validate_stage(
             is_valid=True,
             findings=["CUDA graph is disabled; capture coverage audit skipped."],
         )
+    else:
+        pass
 
     try:
         request_slots = model_runner.req_to_token_pool.size

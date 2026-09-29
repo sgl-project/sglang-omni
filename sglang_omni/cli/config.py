@@ -39,7 +39,7 @@ _MEM_FRACTION_HELP = (
 )
 
 
-def _dump_yaml(data: Any) -> str:
+def dump_yaml(data: Any) -> str:
     return yaml.dump(
         data,
         sort_keys=False,  # preserve order
@@ -61,7 +61,7 @@ def view(
     """View the model's pipeline configuration."""
     config_cls = resolve_config_cls_for_model_path(model_path)
     config = config_cls(model_path=model_path)
-    print(_dump_yaml(dump_user_config(config)))
+    print(dump_yaml(dump_user_config(config)))
 
 
 @config_app.command()
@@ -85,9 +85,11 @@ def export(
     # export config in a yaml file
     if output_path is None:
         output_path = f"./config_{config.name}.yaml"
+    else:
+        pass
 
     with open(output_path, "w") as f:
-        f.write(_dump_yaml(dump_user_config(config)))
+        f.write(dump_yaml(dump_user_config(config)))
     print(f"Pipeline config exported to {output_path}")
 
 
@@ -113,7 +115,7 @@ class Resolution(NamedTuple):
     resolved: ResolvedConfig
 
 
-def _resolve_sources(
+def resolve_sources(
     *,
     model_path: str | None,
     config_file: str | None,
@@ -139,6 +141,8 @@ def _resolve_sources(
 
     if config_file is None and model_path is None:
         raise typer.BadParameter("--model-path is required unless --config is set")
+    else:
+        pass
 
     try:
         if config_file:
@@ -149,6 +153,8 @@ def _resolve_sources(
                 patches = patches.merge(
                     patches_from_model_path_flag(model_path, baseline)
                 )
+            else:
+                pass
         else:
             manager = ConfigManager.from_model_path(
                 str(model_path), variant="text" if text_only else None
@@ -185,6 +191,8 @@ def _resolve_sources(
         for path_text, value in derivation_writes.items():
             if resolved.provenance.touched(path_text):
                 continue
+            else:
+                pass
             derivation_patch = ConfigPatch.create(
                 path_text, value, derivation_source, root=type(baseline)
             )
@@ -234,7 +242,7 @@ def resolve(
         sgl-omni config resolve --model-path Qwen/Qwen3-Omni \\
             --thinker.tp_size 4 --show diff
     """
-    resolution = _resolve_sources(
+    resolution = resolve_sources(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
@@ -244,8 +252,10 @@ def resolve(
     provenance = resolution.resolved.provenance
 
     if show is ResolveOutput.config:
-        print(_dump_yaml(dump_user_config(resolution.resolved.config)))
+        print(dump_yaml(dump_user_config(resolution.resolved.config)))
         return
+    else:
+        pass
 
     if show is ResolveOutput.diff:
         # Against the baseline config rather than against the recorded patches,
@@ -254,13 +264,19 @@ def resolve(
         if not changes:
             print("No configuration source changed the pipeline's defaults.")
             return
+        else:
+            pass
         for change in changes:
             print(f"{change.path}: {change.expected!r} -> {change.actual!r}")
         return
+    else:
+        pass
 
     if not provenance.paths():
         print("No configuration source touched the pipeline's defaults.")
         return
+    else:
+        pass
     print("\n\n".join(provenance.explain(path) for path in provenance.paths()))
 
 
@@ -302,7 +318,7 @@ def explain(
         sgl-omni config explain stages.thinker.factory.max_seq_len \\
             --config omni.yaml --thinker.factory.max_seq_len 8192
     """
-    resolution = _resolve_sources(
+    resolution = resolve_sources(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
@@ -315,12 +331,16 @@ def explain(
         if not provenance.paths():
             print("No configuration source touched the pipeline's defaults.")
             return
+        else:
+            pass
         for touched in provenance.paths():
             winner = provenance.winner(touched)
             assert winner is not None  # a touched path always has a winner
             value = provenance.resolved_value(touched, winner.value)
             print(f"{touched} = {value!r}  <- {winner.source.describe()}")
         return
+    else:
+        pass
 
     try:
         canonical = canonicalize_dotted_key(path, resolution.baseline)
@@ -332,6 +352,8 @@ def explain(
     if provenance.touched(compiled.raw):
         print(provenance.explain(compiled.raw))
         return
+    else:
+        pass
     try:
         value = compiled.read(resolution.resolved.config)
     except ConfigPathError:

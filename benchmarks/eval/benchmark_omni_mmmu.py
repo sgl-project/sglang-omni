@@ -66,7 +66,6 @@ Speed (speed)
 | Qwen3-Omni | enable_audio=False | 6.542          | 21.356        | 1.202          | 76.5                           | local v1 sweep [H200, full-set, c=8, max_tokens=2048]       |
 """
 
-
 from __future__ import annotations
 
 import argparse
@@ -78,6 +77,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.benchmarker.conditions import (
+    add_fingerprint_argument,
+    fingerprint_fields,
+    warn_if_tail_percentile_is_thin,
+)
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.mmmu import load_mmmu_samples
@@ -109,6 +113,8 @@ class MMMUEvalConfig:
     max_samples: int | None = None
     max_tokens: int = 2048
     temperature: float = 0.0
+    seed: int | None = None
+    record_fingerprint: bool = False
     output_dir: str | None = None
     max_concurrency: int = 1
     warmup: int | None = None
@@ -157,6 +163,7 @@ async def run_mmmu_eval(
         api_url,
         max_tokens=config.max_tokens,
         temperature=config.temperature,
+        seed=config.seed,
         enable_audio=config.enable_audio,
         audio_dir=audio_dir,
     )
@@ -177,6 +184,7 @@ async def run_mmmu_eval(
     speed_metrics = compute_speed_metrics(
         request_results, wall_clock_s=runner.wall_clock_s
     )
+    warn_if_tail_percentile_is_thin(len(request_results))
 
     config_dict = {
         "model": config.model,
@@ -184,11 +192,13 @@ async def run_mmmu_eval(
         "max_samples": config.max_samples,
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
+        "seed": config.seed,
         "max_concurrency": config.max_concurrency,
         "warmup": resolve_warmup(config.warmup, config.max_concurrency),
         "request_rate": config.request_rate,
         "enable_audio": config.enable_audio,
         "asr_concurrency": config.asr_concurrency,
+        **fingerprint_fields(config.record_fingerprint, base_url),
     }
 
     results = {
@@ -221,6 +231,8 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
         max_samples=args.max_samples,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        seed=args.seed,
+        record_fingerprint=args.fingerprint,
         output_dir=args.output_dir,
         max_concurrency=args.max_concurrency,
         warmup=args.warmup,
@@ -271,6 +283,13 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Sampler seed sent on each chat request.",
+    )
+    add_fingerprint_argument(parser)
     parser.add_argument(
         "--warmup",
         type=int,

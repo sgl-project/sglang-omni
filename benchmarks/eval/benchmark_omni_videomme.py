@@ -63,7 +63,6 @@ Speed (full set)
 | Qwen3-Omni | thinker-only, full-set, c=4 | 2496      | 0      | 15.468         | 16.089           | 18.826        | 19.790        | 7.4                            | 115.0           | 287139           | 13769.0            | 34366523            | 0.258          | PR #411 [H100, c=4, max_tokens=256]                                 |
 """
 
-
 from __future__ import annotations
 
 import argparse
@@ -75,6 +74,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.benchmarker.conditions import (
+    add_fingerprint_argument,
+    fingerprint_fields,
+    warn_if_tail_percentile_is_thin,
+)
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.videomme import DEFAULT_REPO_ID as _VIDEOMME_DEFAULT_REPO
@@ -111,6 +115,8 @@ class VideoEvalConfig:
     max_samples: int | None = None
     max_tokens: int = 256
     temperature: float = 0.0
+    seed: int | None = None
+    record_fingerprint: bool = False
     video_fps: float | None = None
     video_max_frames: int | None = None
     video_min_pixels: int | None = None
@@ -154,7 +160,7 @@ async def run_video_eval(
             split=config.split,
             max_samples=config.max_samples,
         )
-    logger.info("Prepared %d %s samples", len(samples), task_label)
+    logger.info(f"Prepared {len(samples)} {task_label} samples")
     audio_output_dir = None
     if config.enable_audio:
         output_root = Path(config.output_dir or audio_output_dir_default)
@@ -173,6 +179,7 @@ async def run_video_eval(
         enable_audio_input=enable_audio_input,
         audio_output_dir=audio_output_dir,
         fixed_prompt=fixed_prompt,
+        seed=config.seed,
     )
     runner = BenchmarkRunner(
         RunConfig(
@@ -188,6 +195,7 @@ async def run_video_eval(
     per_sample = build_videomme_result_records(samples, request_results)
     summary = compute_videomme_metrics(per_sample)
     speed = compute_speed_metrics(request_results, wall_clock_s=runner.wall_clock_s)
+    warn_if_tail_percentile_is_thin(len(request_results))
     results = {
         "summary": summary,
         "speed": speed,
@@ -199,6 +207,7 @@ async def run_video_eval(
             "max_samples": config.max_samples,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
+            "seed": config.seed,
             "video_fps": config.video_fps,
             "video_max_frames": config.video_max_frames,
             "video_min_pixels": config.video_min_pixels,
@@ -211,6 +220,7 @@ async def run_video_eval(
             "asr_device": config.asr_device,
             "asr_concurrency": config.asr_concurrency,
             "lang": config.lang,
+            **fingerprint_fields(config.record_fingerprint, base_url),
         },
         "per_sample": per_sample,
     }
@@ -239,6 +249,8 @@ def video_eval_config_from_args(args: argparse.Namespace) -> VideoEvalConfig:
         max_samples=args.max_samples,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        seed=args.seed,
+        record_fingerprint=args.fingerprint,
         video_fps=args.video_fps,
         video_max_frames=args.video_max_frames,
         video_min_pixels=args.video_min_pixels,
@@ -272,6 +284,13 @@ def add_video_eval_args(parser: argparse.ArgumentParser, *, repo_help: str) -> N
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Sampler seed sent on each chat request.",
+    )
+    add_fingerprint_argument(parser)
     parser.add_argument("--video-fps", type=float, default=None)
     parser.add_argument("--video-max-frames", type=int, default=None)
     parser.add_argument("--video-min-pixels", type=int, default=None)

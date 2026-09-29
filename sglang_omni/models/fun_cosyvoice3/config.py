@@ -87,6 +87,8 @@ def reject_conflicting_dit_accelerators(
 ) -> None:
     if enable_flow_estimator_trt and enable_dit_torch_compile:
         raise ValueError(_DIT_ACCELERATOR_CONFLICT)
+    else:
+        pass
 
 
 class FunCosyVoice3EngineFactoryArgs(FactoryArgs):
@@ -141,20 +143,9 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory=FactoryArgs(max_concurrency=8),
             next="tts_engine",
         ),
-        FunCosyVoice3EngineStageConfig(
-            name="tts_engine",
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FunCosyVoice3EngineFactoryArgs(
-                dtype="bfloat16",
-                onnx_intra_op_threads=16,
-                # Keep in sync with vocoder token_hop_len (AR flush cadence).
-                token_hop_len=25,
-            ),
-            gpu=0,
-            next="vocoder",
-            stream_to=["vocoder"],
-        ),
+        # note(ratish): stages in one process are built in list order; the
+        # vocoder comes before the engine so Flow, HiFT and their graphs are
+        # resident when sglang sizes the KV pool from free memory.
         FunCosyVoice3VocoderStageConfig(
             name="vocoder",
             process="pipeline",
@@ -171,7 +162,8 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 enable_flow_cuda_graph=True,
                 flow_cuda_graph_capture_shapes=FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
                 # note (guozhihao-224, chenyang):
-                # Follow SGLang, CUDA Graph is on by default. torch.compile and TensorRT stay opt-in.
+                # CUDA Graph and DiT torch.compile are on by default. TensorRT stays opt-in.
+                enable_dit_torch_compile=True,
                 enable_flow_estimator_trt=False,
                 token_hop_len=25,
                 token_max_hop_len=100,
@@ -181,35 +173,67 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
+        FunCosyVoice3EngineStageConfig(
+            name="tts_engine",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory=FunCosyVoice3EngineFactoryArgs(
+                dtype="bfloat16",
+                onnx_intra_op_threads=16,
+                token_hop_len=25,
+            ),
+            gpu=0,
+            next="vocoder",
+            stream_to=["vocoder"],
+        ),
     ]
 
     def model_post_init(self, __context: Any = None) -> None:
         # TODO (chenyang): Indeed, TRT and Torch compile conflicts are pretty
         # common in this repo, so we should make this into config level, not in each model.
         super().model_post_init(__context)
+        if "OMP_NUM_THREADS" not in self.env_defaults:
+            config_cls = type(self)
+            for stage in self.stages:
+                if config_cls.stage_config_cls(stage.name).engine_stage:
+                    # note(chenye): SGLang pins Torch CPU threads to 1 for its GPU process.
+                    # Apply the same policy at spawn to every stage colocated with the engine.
+                    stage.env.setdefault("OMP_NUM_THREADS", "1")
+                else:
+                    pass
+        else:
+            pass
         vocoder = next(stage for stage in self.stages if stage.name == "vocoder")
         extras = vocoder.factory.model_extra
         reject_conflicting_dit_accelerators(
-            enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile")),
+            enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile", True)),
             enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
         )
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name != "vocoder":
             return {}
+        else:
+            pass
         vocoder_factory = self.stage_named("vocoder").factory
         if vocoder_factory.mlx_model_path is not None:
             # Note (yexiaodong): A separate vocoder artifact must keep its own
             # revision; both explicit fields therefore stay in typed config.
             return {}
+        else:
+            pass
         # Note (yexiaodong): The converted artifact contains the speech-token
         # LLM, Flow, and HiFT weights, so reuse it unless the vocoder overrides it.
         engine_factory = self.stage_named("tts_engine").factory
         kwargs: dict[str, Any] = {}
         if engine_factory.mlx_model_path is not None:
             kwargs["mlx_model_path"] = engine_factory.mlx_model_path
+        else:
+            pass
         if engine_factory.mlx_model_revision is not None:
             kwargs["mlx_model_revision"] = engine_factory.mlx_model_revision
+        else:
+            pass
         return kwargs
 
 

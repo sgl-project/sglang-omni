@@ -44,17 +44,19 @@ TALKER_PROMPT_FRAMES = 37
 TALKER_PLACEHOLDER_VOCAB = 8
 
 
-def _shim_dir(name: str, source: Path) -> Path:
+def shim_dir(name: str, source: Path) -> Path:
     source = source.resolve()
     shim = Path(tempfile.mkdtemp(prefix=f"sglang-omni-{name}-"))
     atexit.register(shutil.rmtree, shim, ignore_errors=True)
     for entry in source.iterdir():
         if entry.name != "config.json":
             (shim / entry.name).symlink_to(entry)
+        else:
+            pass
     return shim
 
 
-def _talker_config(source: Path) -> dict:
+def talker_config(source: Path) -> dict:
     speech = json.loads((source / "config.json").read_text())["model"][
         "speech_generation"
     ]["model"]
@@ -94,7 +96,7 @@ def _talker_config(source: Path) -> dict:
     }
 
 
-class _VoiceChatEngineBuilder(TtsEngineBuilder):
+class VoiceChatEngineBuilder(TtsEngineBuilder):
     scheduler_class: type
 
     def __init__(self, *, max_running_requests: int = 1) -> None:
@@ -129,7 +131,7 @@ class _VoiceChatEngineBuilder(TtsEngineBuilder):
         )
 
 
-class NemotronVoiceChatEngineBuilder(_VoiceChatEngineBuilder):
+class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
     model_name = "nemotron-voicechat"
     context_length = 8192
     scheduler_class = OmniScheduler
@@ -137,26 +139,26 @@ class NemotronVoiceChatEngineBuilder(_VoiceChatEngineBuilder):
     def __init__(self, *, max_running_requests: int = 1) -> None:
         super().__init__(max_running_requests=max_running_requests)
         self.model_arch_override = VOICECHAT_MODEL_ARCH_OVERRIDE
-        self._source: Path | None = None
+        self.source: Path | None = None
 
     def resolve_checkpoint(self, model_path):
         source = Path(resolve_model_path(model_path))
-        self._source = source
-        shim = _shim_dir("voicechat", source)
+        self.source = source
+        shim = shim_dir("voicechat", source)
         config = NemotronVoiceChatConfig.from_dict(
             json.loads((source / "config.json").read_text())
         )
         (shim / "config.json").write_text(config.to_json_string())
         return str(shim)
 
-    def _prompt_tokens(self) -> tuple[list[int], int]:
+    def prompt_tokens(self) -> tuple[list[int], int]:
         """The instruction a conversation opens with, and the padding id.
 
         Which token means begin, end and pad is the checkpoint's to say — the
         three are easy to confuse here, since this tokenizer's padding token is
         the frame-locked silence marker rather than anything called "pad".
         """
-        stt = json.loads((self._source / "config.json").read_text())["model"]["stt"][
+        stt = json.loads((self.source / "config.json").read_text())["model"]["stt"][
             "model"
         ]
         tokenizer_name = stt.get("pretrained_llm", "nvidia/NVIDIA-Nemotron-Nano-9B-v2")
@@ -189,8 +191,8 @@ class NemotronVoiceChatEngineBuilder(_VoiceChatEngineBuilder):
     def make_adapters(self, model):
         vocab_size = int(model.llm.config.vocab_size)
 
-        prompt_token_ids, pad_token_id = self._prompt_tokens()
-        self._model_runner_pad_id = pad_token_id
+        prompt_token_ids, pad_token_id = self.prompt_tokens()
+        self.model_runner_pad_id = pad_token_id
 
         def build(payload):
             return build_thinker_request(
@@ -206,7 +208,7 @@ class NemotronVoiceChatEngineBuilder(_VoiceChatEngineBuilder):
         return {"stream_output_builder": thinker_stream_output_builder}
 
 
-class NemotronVoiceChatTalkerEngineBuilder(_VoiceChatEngineBuilder):
+class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
     model_name = "nemotron-voicechat-talker"
     context_length = 4096
     scheduler_class = NemotronTalkerScheduler
@@ -218,11 +220,13 @@ class NemotronVoiceChatTalkerEngineBuilder(_VoiceChatEngineBuilder):
         self.model_arch_override = TALKER_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
+        else:
+            pass
 
     def resolve_checkpoint(self, model_path):
         source = Path(resolve_model_path(model_path))
-        shim = _shim_dir("voicechat-talker", source)
-        (shim / "config.json").write_text(json.dumps(_talker_config(source)))
+        shim = shim_dir("voicechat-talker", source)
+        (shim / "config.json").write_text(json.dumps(talker_config(source)))
         return str(shim)
 
     def make_model_runner(self, model_worker, output_proc):

@@ -19,7 +19,7 @@ from sglang_omni.models.qwen3_omni.components import (
 )
 from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
     Qwen3OmniThinkerForCausalLM,
-    _config_uses_mrope,
+    config_uses_mrope,
 )
 from sglang_omni.models.qwen3_omni.hf_config import (
     Qwen3OmniMoeTextConfig,
@@ -37,7 +37,7 @@ from sglang_omni.models.qwen3_omni.hf_config import (
     ],
 )
 def test_qwen_text_config_declares_mrope_only_for_mrope_sections(config, expected):
-    assert _config_uses_mrope(config) is expected
+    assert config_uses_mrope(config) is expected
 
 
 @pytest.mark.parametrize(
@@ -107,7 +107,9 @@ def test_real_qwen_config_drives_prefill_positions(
         mrope_positions=mrope_positions,
     )
 
-    selected = runner._get_layer_model_positions(forward_batch)
+    selected = runner._get_layer_model_positions(
+        forward_batch
+    )  # noqa: leading-underscore  # upstream name
     assert selected is (mrope_positions if expected_mrope else ordinary_positions)
 
 
@@ -123,7 +125,7 @@ def test_outer_thinker_forward_accepts_sidecar_request_identity():
     wrapper.model = fake_model
     wrapper.logits_processor = lambda *args: args[0]
     wrapper.lm_head = object()
-    wrapper._fused_rope_gate = None
+    wrapper.fused_rope_gate = None
     input_ids = torch.tensor([1, 2], dtype=torch.long)
     positions = torch.tensor([0, 1], dtype=torch.long)
     input_embeds = torch.ones((2, 3))

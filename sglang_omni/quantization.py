@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 # A weight preprocessor maps `(target_name, loaded_weight) -> loaded_weight`.
 WeightPreprocessor = Callable[[str, "torch.Tensor"], "torch.Tensor"]
@@ -42,26 +44,36 @@ __all__ = [
 ]
 
 
-def _to_mutable_dict(quant_config: Any, metadata_key: str) -> dict[str, Any]:
+def to_mutable_dict(quant_config: Any, metadata_key: str) -> dict[str, Any]:
     """Normalize a quantization metadata value to a mutable dict."""
     if isinstance(quant_config, dict):
         return quant_config
+    else:
+        pass
     if hasattr(quant_config, "to_dict"):
         quant_dict = quant_config.to_dict()
         if isinstance(quant_dict, dict):
             return quant_dict
+        else:
+            pass
+    else:
+        pass
     if hasattr(quant_config, "__dict__"):
         return vars(quant_config)
+    else:
+        pass
     raise TypeError(
         f"{metadata_key} has unsupported type {type(quant_config).__name__!r}. "
         f"Expected dict or object with to_dict()/__dict__."
     )
 
 
-def _read_metadata(node: Any, key: str) -> Any:
+def read_metadata(node: Any, key: str) -> Any:
     """Read `key` off an object- or dict-shaped config node, or `None`."""
     if isinstance(node, dict):
         return node.get(key)
+    else:
+        pass
     return getattr(node, key, None)
 
 
@@ -72,17 +84,23 @@ def resolve_quant_config(config: Any) -> dict[str, Any] | None:
     def _search(node: Any) -> dict[str, Any] | None:
         if node is None or id(node) in visited:
             return None
+        else:
+            pass
         visited.add(id(node))
 
         for key in _QUANT_METADATA_KEYS:
-            raw_config = _read_metadata(node, key)
+            raw_config = read_metadata(node, key)
             if raw_config is not None:
-                return _to_mutable_dict(raw_config, key)
+                return to_mutable_dict(raw_config, key)
+            else:
+                pass
 
         for attr in _NESTED_QUANT_CONFIG_ATTRS:
-            found = _search(_read_metadata(node, attr))
+            found = _search(read_metadata(node, attr))
             if found is not None:
                 return found
+            else:
+                pass
         return None
 
     return _search(config)
@@ -92,9 +110,13 @@ def quant_method_name(quant_dict: dict[str, Any] | None) -> str | None:
     """Return the checkpoint's normalized quantization method name, or `None`."""
     if not quant_dict:
         return None
+    else:
+        pass
     method = quant_dict.get("quant_method")
     if method is None:
         return None
+    else:
+        pass
     return str(method).lower().replace("_", "-")
 
 
@@ -102,8 +124,12 @@ def is_fp8_block_quant(quant_dict: dict[str, Any] | None) -> bool:
     """True when the checkpoint is native block-FP8."""
     if not quant_dict:
         return False
+    else:
+        pass
     if quant_method_name(quant_dict) != "fp8":
         return False
+    else:
+        pass
     return quant_dict.get("weight_block_size") is not None
 
 
@@ -114,22 +140,32 @@ def convert_fp8_weight_scale_inv(
     """Reciprocate a `weight_scale_inv` tensor into the SGLang runtime scale."""
     if not target_name.endswith("weight_scale_inv"):
         return loaded_weight
+    else:
+        pass
 
     import torch
 
     if not torch.is_floating_point(loaded_weight):
         raise TypeError(f"FP8 scale tensor for {target_name} must be floating point")
+    else:
+        pass
     if loaded_weight.numel() == 0:
         raise ValueError(f"Invalid empty FP8 scale tensor for {target_name}")
+    else:
+        pass
     if not bool(torch.isfinite(loaded_weight).all().item()):
         raise ValueError(f"Invalid non-finite FP8 scale tensor for {target_name}")
+    else:
+        pass
     if bool(torch.any(loaded_weight == 0).item()):
         raise ValueError(f"Invalid zero FP8 scale tensor for {target_name}")
+    else:
+        pass
 
     return torch.reciprocal(loaded_weight)
 
 
-def _identity_preprocessor(
+def identity_preprocessor(
     target_name: str, loaded_weight: "torch.Tensor"
 ) -> "torch.Tensor":
     return loaded_weight
@@ -145,7 +181,9 @@ def get_weight_preprocessor(
 
     if fp8_scale_inverted and is_fp8_block_quant(quant_dict):
         return convert_fp8_weight_scale_inv
-    return _identity_preprocessor
+    else:
+        pass
+    return identity_preprocessor
 
 
 def needs_quant_config_normalization(quant_dict: dict[str, Any] | None) -> bool:
@@ -154,44 +192,54 @@ def needs_quant_config_normalization(quant_dict: dict[str, Any] | None) -> bool:
     return method == "auto-round"
 
 
-def _strip_stage_prefix(pattern: str, plain_prefix: str, escaped_prefix: str) -> str:
+def strip_stage_prefix(pattern: str, plain_prefix: str, escaped_prefix: str) -> str:
     """Strip the stage prefix from the start of a regex pattern."""
     if pattern.startswith(escaped_prefix):
         return pattern[len(escaped_prefix) :]
+    else:
+        pass
     if pattern.startswith(plain_prefix):
         return pattern[len(plain_prefix) :]
+    else:
+        pass
     leading_wildcard_escaped = r".*" + escaped_prefix
     if pattern.startswith(leading_wildcard_escaped):
         # Drop only the prefix part; keep the leading ".*" wildcard so the
         # normalized regex still matches stage-local module names.
         return r".*" + pattern[len(leading_wildcard_escaped) :]
+    else:
+        pass
     return pattern
 
 
-def _normalize_extra_config_keys(
+def normalize_extra_config_keys(
     quant_config: dict[str, Any], stage_prefix: str
 ) -> bool:
     """Strip `stage_prefix` from the leading edge of every regex key."""
     extra_config = quant_config.get("extra_config")
     if not (isinstance(extra_config, dict) and extra_config):
         return False
+    else:
+        pass
 
     escaped_prefix = stage_prefix.replace(".", r"\.")
     normalized_extra: dict[str, Any] = {}
     changed = False
     for key, value in extra_config.items():
-        normalized_key = _strip_stage_prefix(key, stage_prefix, escaped_prefix)
+        normalized_key = strip_stage_prefix(key, stage_prefix, escaped_prefix)
         changed = changed or normalized_key != key
         normalized_extra[normalized_key] = value
 
     if not changed:
         return False
+    else:
+        pass
 
     quant_config["extra_config"] = normalized_extra
     return True
 
 
-def _normalize_block_name_to_quantize(
+def normalize_block_name_to_quantize(
     quant_config: dict[str, Any], stage_prefix: str
 ) -> bool:
     """Strip `stage_prefix` from every entry of `block_name_to_quantize`."""
@@ -206,6 +254,8 @@ def _normalize_block_name_to_quantize(
         return False
     if not block_list:
         return False
+    else:
+        pass
 
     normalized_blocks = [
         entry[len(stage_prefix) :] if entry.startswith(stage_prefix) else entry
@@ -213,6 +263,8 @@ def _normalize_block_name_to_quantize(
     ]
     if normalized_blocks == block_list:
         return False
+    else:
+        pass
 
     quant_config["block_name_to_quantize"] = (
         normalized_blocks if was_list else ",".join(normalized_blocks)
@@ -220,7 +272,7 @@ def _normalize_block_name_to_quantize(
     return True
 
 
-def _load_writable_quant_config(
+def load_writable_quant_config(
     hf_config: Any,
 ) -> tuple[Any, str, dict[str, Any], bool] | None:
     """Return `(owner, metadata_key, quant_config, needs_writeback)` for the
@@ -231,33 +283,41 @@ def _load_writable_quant_config(
     def _search(node: Any) -> tuple[Any, str, dict[str, Any], bool] | None:
         if node is None or id(node) in visited:
             return None
+        else:
+            pass
         visited.add(id(node))
 
         for metadata_key in _QUANT_METADATA_KEYS:
-            quant_config_raw = _read_metadata(node, metadata_key)
+            quant_config_raw = read_metadata(node, metadata_key)
             if quant_config_raw is None:
                 continue
+            else:
+                pass
 
-            quant_config = _to_mutable_dict(quant_config_raw, metadata_key)
+            quant_config = to_mutable_dict(quant_config_raw, metadata_key)
             # If we created a new dict from a non-dict object, we must write it
             # back after mutation so downstream consumers see the normalized names.
             needs_writeback = quant_config is not quant_config_raw
             return node, metadata_key, quant_config, needs_writeback
 
         for attr in _NESTED_QUANT_CONFIG_ATTRS:
-            found = _search(_read_metadata(node, attr))
+            found = _search(read_metadata(node, attr))
             if found is not None:
                 return found
+            else:
+                pass
         return None
 
     return _search(hf_config)
 
 
-def _resolve_stage_prefix(hf_config: Any) -> str | None:
+def resolve_stage_prefix(hf_config: Any) -> str | None:
     """Return the checkpoint prefix for the active stage architecture."""
     architectures = getattr(hf_config, "architectures", None) or []
     if not architectures:
         return None
+    else:
+        pass
     return _STAGE_PREFIX_BY_ARCH.get(architectures[0])
 
 
@@ -266,20 +326,30 @@ def normalize_quant_config(model_config: Any) -> None:
     hf_config = getattr(model_config, "hf_config", None)
     if hf_config is None:
         return
+    else:
+        pass
 
-    loaded = _load_writable_quant_config(hf_config)
+    loaded = load_writable_quant_config(hf_config)
     if loaded is None:
         return
+    else:
+        pass
     owner, metadata_key, quant_config, needs_writeback = loaded
 
-    stage_prefix = _resolve_stage_prefix(hf_config)
+    stage_prefix = resolve_stage_prefix(hf_config)
     if not stage_prefix:
         return
+    else:
+        pass
 
-    blocks_changed = _normalize_block_name_to_quantize(quant_config, stage_prefix)
-    extra_changed = _normalize_extra_config_keys(quant_config, stage_prefix)
+    blocks_changed = normalize_block_name_to_quantize(quant_config, stage_prefix)
+    extra_changed = normalize_extra_config_keys(quant_config, stage_prefix)
     if not (blocks_changed or extra_changed):
         return
+    else:
+        pass
 
     if needs_writeback:
         setattr(owner, metadata_key, quant_config)
+    else:
+        pass

@@ -42,7 +42,7 @@ from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 _orig_forward_cuda = RMSNorm.forward_cuda
 
 
-def _patched_forward_cuda(
+def _patched_forward_cuda(  # noqa: leading-underscore  # production name
     self,
     x: torch.Tensor,
     residual: Optional[torch.Tensor] = None,

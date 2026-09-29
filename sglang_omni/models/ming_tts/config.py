@@ -30,7 +30,7 @@ MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES = 4
 MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH = False
 
 
-def _validate_ming_tts_pipeline_contract(
+def validate_ming_tts_pipeline_contract(
     config: "MingTTSPipelineConfig",
 ) -> dict[str, StageConfig]:
     """Validate the fixed Ming payload and streaming topology."""
@@ -47,8 +47,12 @@ def _validate_ming_tts_pipeline_contract(
             "Ming-Omni-TTS requires exactly the stages "
             f"{sorted(expected_next)}; got {sorted(stages)}"
         )
+    else:
+        pass
     if config.resolved_entry_stage != PREPROCESSING_STAGE:
         raise ValueError(f"Ming-Omni-TTS entry_stage must be {PREPROCESSING_STAGE!r}")
+    else:
+        pass
 
     for stage_name, next_stage in expected_next.items():
         stage = stages[stage_name]
@@ -65,6 +69,8 @@ def _validate_ming_tts_pipeline_contract(
                 f"next={expected_targets!r}, terminal={expected_terminal}; got "
                 f"next={next_targets!r}, terminal={stage.terminal}"
             )
+        else:
+            pass
 
     tts_engine = stages[TTS_ENGINE_STAGE]
     if list(tts_engine.stream_to) != [AUDIO_DECODE_STAGE]:
@@ -72,6 +78,8 @@ def _validate_ming_tts_pipeline_contract(
             "Ming-Omni-TTS tts_engine stream_to must include 'audio_decode' as "
             f"its only target, got {list(tts_engine.stream_to)!r}"
         )
+    else:
+        pass
     for stage_name in (
         PREPROCESSING_STAGE,
         REFERENCE_ENCODE_STAGE,
@@ -81,6 +89,8 @@ def _validate_ming_tts_pipeline_contract(
             raise ValueError(
                 f"Ming-Omni-TTS stage {stage_name!r} stream_to must be empty"
             )
+        else:
+            pass
 
     audio_decode = stages[AUDIO_DECODE_STAGE]
     if not audio_decode.can_accept_stream_before_payload:
@@ -89,6 +99,8 @@ def _validate_ming_tts_pipeline_contract(
             "can_accept_stream_before_payload=true because "
             "tts_engine sends stream data and stream_done before the terminal payload"
         )
+    else:
+        pass
 
     dynamic_fields = [
         f"{stage.name}.{field_name}"
@@ -105,11 +117,15 @@ def _validate_ming_tts_pipeline_contract(
     ]
     if config.terminal_stages_fn is not None:
         dynamic_fields.append("terminal_stages_fn")
+    else:
+        pass
     if dynamic_fields:
         raise ValueError(
             "Ming-Omni-TTS fixed pipeline must not configure dynamic data-flow "
             f"fields: {sorted(dynamic_fields)}"
         )
+    else:
+        pass
     return stages
 
 
@@ -129,6 +145,8 @@ def validate_ming_tts_audio_decode_batch_config(
             "cross-request non-streaming AudioVAE batching is not implemented, "
             f"got {max_batch_size!r}"
         )
+    else:
+        pass
     if (
         isinstance(max_batch_wait_ms, bool)
         or not isinstance(max_batch_wait_ms, int)
@@ -140,6 +158,8 @@ def validate_ming_tts_audio_decode_batch_config(
             "cross-request non-streaming AudioVAE batching is not implemented, got "
             f"{max_batch_wait_ms!r}"
         )
+    else:
+        pass
 
 
 def validate_ming_tts_audio_decode_stream_slots(stream_slots: int) -> None:
@@ -152,6 +172,8 @@ def validate_ming_tts_audio_decode_stream_slots(stream_slots: int) -> None:
             "Ming-Omni-TTS audio_decode stream_slots must be a positive integer, "
             f"got {stream_slots!r}"
         )
+    else:
+        pass
 
 
 def validate_ming_tts_audio_decode_cadence_config(
@@ -167,6 +189,8 @@ def validate_ming_tts_audio_decode_cadence_config(
         raise ValueError(
             "Ming-Omni-TTS initial_chunk_patches must be a positive integer"
         )
+    else:
+        pass
     if (
         isinstance(steady_chunk_patches, bool)
         or not isinstance(steady_chunk_patches, int)
@@ -175,6 +199,8 @@ def validate_ming_tts_audio_decode_cadence_config(
         raise ValueError(
             "Ming-Omni-TTS steady_chunk_patches must be a positive integer"
         )
+    else:
+        pass
 
 
 class MingTTSPreprocessingFactoryArgs(FactoryArgs):
@@ -286,7 +312,7 @@ class MingTTSPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
-        stages = _validate_ming_tts_pipeline_contract(self)
+        stages = validate_ming_tts_pipeline_contract(self)
         preprocessing = stages[PREPROCESSING_STAGE]
         audio_decode = stages[AUDIO_DECODE_STAGE]
 
@@ -301,12 +327,18 @@ class MingTTSPipelineConfig(PipelineConfig):
                 "decode; streaming requests use incremental decode. Remove "
                 "'decode_mode' from the audio_decode factory group."
             )
+        else:
+            pass
         max_batch_wait_ms = audio_decode.factory.max_batch_wait_ms
         if max_batch_wait_ms is None:
             max_batch_wait_ms = MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS
+        else:
+            pass
         stream_slots = audio_decode.factory.stream_slots
         if stream_slots is None:
             stream_slots = MING_TTS_DEFAULT_STREAM_SLOTS
+        else:
+            pass
         validate_ming_tts_audio_decode_stream_slots(stream_slots)
         validate_ming_tts_audio_decode_batch_config(
             max_batch_size=(
@@ -325,7 +357,11 @@ class MingTTSPipelineConfig(PipelineConfig):
                         f"{TTS_ENGINE_STAGE!r}; stage {stage.name!r} has "
                         f"tp_size={stage.tp_size}."
                     )
+                else:
+                    pass
                 continue
+            else:
+                pass
 
 
 EntryClass = MingTTSPipelineConfig

@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 
-class _DuplicateKeyRefusingLoader(yaml.SafeLoader):
+class DuplicateKeyRefusingLoader(yaml.SafeLoader):
     """SafeLoader that refuses duplicate mapping keys instead of keeping the last.
 
     yaml.safe_load silently collapses ``model_path`` written twice before any
@@ -74,6 +74,8 @@ class _DuplicateKeyRefusingLoader(yaml.SafeLoader):
             key = self.construct_object(key_node, deep=deep)
             if isinstance(key, (dict, list, set)):
                 continue  # unhashable; let SafeLoader produce its own error
+            else:
+                pass
             if key in seen:
                 raise yaml.constructor.ConstructorError(
                     None,
@@ -81,6 +83,8 @@ class _DuplicateKeyRefusingLoader(yaml.SafeLoader):
                     f"duplicate mapping key {key!r}",
                     key_node.start_mark,
                 )
+            else:
+                pass
             seen.add(key)
         return super().construct_mapping(node, deep=deep)
 
@@ -139,6 +143,8 @@ def patches_from_dotted_cli(
                 f"line; write --{rest}",
                 raw=str(key),
             )
+        else:
+            pass
         canonical = canonicalize_dotted_key(str(key), config)
         compiled = ConfigPath.parse(canonical, type(config))
         if (
@@ -155,6 +161,8 @@ def patches_from_dotted_cli(
                 f"write one field below it, e.g. --{key}.<field> <value>",
                 raw=str(key),
             )
+        else:
+            pass
         patchset.add(
             ConfigPatch.create(
                 compiled,
@@ -216,6 +224,8 @@ def patches_from_shared_block(
             "shared must be a list of {select: ..., <settings>} "
             f"entries, got {type(shared_block).__name__}"
         )
+    else:
+        pass
 
     names = list(stage_names)
     patches = ConfigPatchSet()
@@ -223,13 +233,17 @@ def patches_from_shared_block(
         label = f"shared[{index}]"
         if not isinstance(entry, Mapping) or "select" not in entry:
             raise ValueError(f"{label} must be a mapping with a select: block")
+        else:
+            pass
         body = {key: value for key, value in entry.items() if key != "select"}
         if not body:
             raise ValueError(f"{label} selects stages but writes nothing")
-        matched = _select_stages(entry["select"], config_cls, names, label=label)
+        else:
+            pass
+        matched = select_stages(entry["select"], config_cls, names, label=label)
         source = ConfigSource(SourceKind.YAML_FILE, origin, detail=label)
         for stage_name in matched:
-            for path, value in _flatten(f"stages.{stage_name}", dict(body), config_cls):
+            for path, value in flatten(f"stages.{stage_name}", dict(body), config_cls):
                 patches.add(
                     ConfigPatch.create(
                         path,
@@ -242,7 +256,7 @@ def patches_from_shared_block(
     return patches
 
 
-def _select_stages(
+def select_stages(
     select: Any,
     config_cls: type[PipelineConfig],
     stage_names: list[str],
@@ -252,12 +266,16 @@ def _select_stages(
     """Resolve one ``select:`` block to the stage names it matches."""
     if not isinstance(select, Mapping) or not select:
         raise ValueError(f"{label}.select must be a non-empty mapping")
+    else:
+        pass
     unknown_keys = set(select) - {"stages", "engine", "exclude"}
     if unknown_keys:
         raise ValueError(
             f"{label}.select has unknown selector(s) {sorted(unknown_keys)}; "
             "supported: stages, engine, exclude"
         )
+    else:
+        pass
 
     matched = list(stage_names)
     if "stages" in select:
@@ -266,39 +284,57 @@ def _select_stages(
             isinstance(name, str) for name in wanted
         ):
             raise ValueError(f"{label}.select.stages must be a list of names")
+        else:
+            pass
         missing = [name for name in wanted if name not in stage_names]
         if missing:
             raise ValueError(
                 f"{label}.select.stages names unknown stage(s) {missing}; "
                 f"this pipeline has: {', '.join(stage_names)}"
             )
+        else:
+            pass
         matched = [name for name in matched if name in wanted]
+    else:
+        pass
     if "engine" in select:
         engine = select["engine"]
         if not isinstance(engine, bool):
             raise ValueError(
                 f"{label}.select.engine must be true or false, got {engine!r}"
             )
+        else:
+            pass
         if engine:
             matched = [
                 name
                 for name in matched
                 if config_cls.stage_config_cls(name).engine_stage
             ]
+        else:
+            pass
+    else:
+        pass
     excluded = select.get("exclude") or []
     if not isinstance(excluded, list) or not all(
         isinstance(name, str) for name in excluded
     ):
         raise ValueError(f"{label}.select.exclude must be a list of names")
+    else:
+        pass
     missing_excluded = [name for name in excluded if name not in stage_names]
     if missing_excluded:
         raise ValueError(
             f"{label}.select.exclude names unknown stage(s) {missing_excluded}; "
             f"this pipeline has: {', '.join(stage_names)}"
         )
+    else:
+        pass
     matched = [name for name in matched if name not in excluded]
     if not matched:
         raise ValueError(f"{label}.select matches no stage of this pipeline")
+    else:
+        pass
     return matched
 
 
@@ -318,11 +354,15 @@ def patches_from_stages_mapping(
     """
     if isinstance(stages_block, list):
         raise ValueError(_STAGES_LIST_GUIDANCE)
+    else:
+        pass
     if not isinstance(stages_block, Mapping):
         raise ValueError(
             "stages must be a mapping from stage name to stage settings, "
             f"got {type(stages_block).__name__}"
         )
+    else:
+        pass
 
     known = list(known_names)
     source = ConfigSource(SourceKind.YAML_FILE, origin)
@@ -334,21 +374,29 @@ def patches_from_stages_mapping(
                 f"stages keys must be stage names written as strings, "
                 f"got {stage_name!r}"
             )
+        else:
+            pass
         if not isinstance(body, Mapping):
             raise ValueError(f"stages.{stage_name} must be a mapping")
+        else:
+            pass
         if "name" in body:
             raise ValueError(
                 f"stages.{stage_name} must not set name: the mapping key is "
                 "the stage's name"
             )
+        else:
+            pass
         if stage_name not in known:
             raise ValueError(
                 f"stages.{stage_name}: no stage named {stage_name!r} in "
                 f"{config_cls.__name__}; stage topology lives in the model's "
                 f"config class. This pipeline has: {', '.join(known)}"
             )
+        else:
+            pass
         prefix = f"stages.{stage_name}"
-        for path, value in _flatten(prefix, dict(body), config_cls):
+        for path, value in flatten(prefix, dict(body), config_cls):
             # coerce applies the same lossless-scalar contract as dotted CLI
             # flags, so ``tp_size: 32.0`` is refused rather than lax-converted.
             patches.add(ConfigPatch.create(path, value, source, root=config_cls))
@@ -374,7 +422,7 @@ def sources_from_config_file(
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             try:
-                data = yaml.load(f, Loader=_DuplicateKeyRefusingLoader)
+                data = yaml.load(f, Loader=DuplicateKeyRefusingLoader)
             except yaml.YAMLError as exc:
                 raise ValueError(
                     f"Config file {file_path!r} is not valid YAML: {exc}"
@@ -383,16 +431,22 @@ def sources_from_config_file(
         raise ValueError(f"Config file {file_path!r} does not exist") from exc
     if not isinstance(data, dict):
         raise ValueError(f"Config file {file_path!r} must contain a mapping")
+    else:
+        pass
 
     data = dict(data)
     for block, guidance in _REMOVED_TOP_LEVEL_BLOCKS.items():
         if block in data:
             raise ValueError(f"Config file {file_path!r}: {guidance}")
+        else:
+            pass
 
     if "config_cls" not in data:
         raise ValueError(
             f"Config file {file_path!r} must name its pipeline class in " "config_cls"
         )
+    else:
+        pass
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(data["config_cls"])
     stages_block = data.pop("stages", None)
     shared_block = data.pop("shared", None)
@@ -417,6 +471,8 @@ def sources_from_config_file(
             ]
             if not missing:
                 raise
+            else:
+                pass
             for key in missing:
                 construction[key] = overrides[key]
 
@@ -424,7 +480,7 @@ def sources_from_config_file(
     source = ConfigSource(SourceKind.YAML_FILE, str(file_path))
     for key, value in overrides.items():
         if isinstance(value, dict) and not ConfigPath.parse(key, config_cls).is_leaf:
-            for leaf_path, leaf_value in _flatten(key, value, config_cls):
+            for leaf_path, leaf_value in flatten(key, value, config_cls):
                 patches.add(
                     ConfigPatch.create(leaf_path, leaf_value, source, root=config_cls)
                 )
@@ -439,6 +495,8 @@ def sources_from_config_file(
                 origin=str(file_path),
             )
         )
+    else:
+        pass
     if shared_block is not None:
         # Expanded against the settled stage list, so a selector can reach a
         # stage this same file added.
@@ -450,6 +508,8 @@ def sources_from_config_file(
                 origin=str(file_path),
             )
         )
+    else:
+        pass
     return config, patches
 
 
@@ -471,12 +531,14 @@ def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
         body.pop("name", None)
         if body.get("engine") is None:
             body.pop("engine", None)
+        else:
+            pass
         stages[stage["name"]] = body
     data["stages"] = stages
     return data
 
 
-def _flatten(
+def flatten(
     prefix: str,
     value: dict[str, Any],
     root: type[PipelineConfig],
@@ -491,7 +553,7 @@ def _flatten(
     for key, child in value.items():
         path = f"{prefix}.{key}"
         if isinstance(child, dict) and not ConfigPath.parse(path, root).is_leaf:
-            out.extend(_flatten(path, child, root))
+            out.extend(flatten(path, child, root))
         else:
             out.append((path, child))
     return out

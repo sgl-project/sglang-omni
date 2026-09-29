@@ -213,6 +213,8 @@ class ConfigPathError(ValueError):
         self.suggestions = tuple(suggestions)
         if self.suggestions:
             message = f"{message}\n  did you mean: " + ", ".join(self.suggestions)
+        else:
+            pass
         super().__init__(message)
 
 
@@ -252,16 +254,20 @@ class ConfigPath:
             raise ConfigPathError(
                 "Config path must be a non-empty string", raw=str(raw)
             )
+        else:
+            pass
 
         parts = raw.split(".")
         if any(not part for part in parts):
             raise ConfigPathError(f"Config path {raw!r} has an empty segment", raw=raw)
+        else:
+            pass
 
         segments: list[Segment] = []
         current: Any = root
         for index, part in enumerate(parts):
             prefix = ".".join(parts[:index])
-            segment = _descend(current, part, raw=raw, prefix=prefix)
+            segment = descend(current, part, raw=raw, prefix=prefix)
             if (
                 segment.kind is SegmentKind.NAMED_ITEM
                 and index == 1
@@ -280,6 +286,8 @@ class ConfigPath:
                     annotation=root.stage_config_cls(part),
                     container=segment.container,
                 )
+            else:
+                pass
             segments.append(segment)
             current = segments[-1].annotation
 
@@ -304,7 +312,7 @@ class ConfigPath:
         Lists of scalars are leaves: they are replaced as a whole, never
         indexed into.
         """
-        return not _is_traversable(self.value_type)
+        return not is_traversable(self.value_type)
 
     @property
     def stage_name(self) -> str | None:
@@ -313,6 +321,10 @@ class ConfigPath:
             if segment.kind is SegmentKind.NAMED_ITEM and index > 0:
                 if self.segments[index - 1].raw == "stages":
                     return segment.raw
+                else:
+                    pass
+            else:
+                pass
         return None
 
     def __str__(self) -> str:  # pragma: no cover - trivial
@@ -324,18 +336,20 @@ class ConfigPath:
 
     @property
     def visibility(self) -> PathVisibility:
-        return self._visibility_rule[0]
+        return self.visibility_rule[0]
 
     @property
     def visibility_reason(self) -> str:
-        return self._visibility_rule[1]
+        return self.visibility_rule[1]
 
     @property
-    def _visibility_rule(self) -> tuple[PathVisibility, str]:
-        generic = _generic_form(self.segments)
+    def visibility_rule(self) -> tuple[PathVisibility, str]:
+        generic = generic_form(self.segments)
         for pattern, visibility, reason in _VISIBILITY_RULES:
-            if _pattern_matches(pattern, generic):
+            if pattern_matches(pattern, generic):
                 return visibility, reason
+            else:
+                pass
         return PathVisibility.PUBLIC, ""
 
     def is_public(self) -> bool:
@@ -346,6 +360,8 @@ class ConfigPath:
         """Raise unless this path may be written by a user-facing source."""
         if self.is_public():
             return
+        else:
+            pass
         raise ConfigPathError(
             f"Config path {self.raw!r} is {self.visibility.value} and cannot be "
             f"set directly: {self.visibility_reason}",
@@ -369,8 +385,12 @@ class ConfigPath:
         annotation = self.value_type
         if not isinstance(value, str):
             if annotation is not Any and annotation is not None:
-                self._refuse_lossy_scalar(value, annotation)
+                self.refuse_lossy_scalar(value, annotation)
+            else:
+                pass
             return value
+        else:
+            pass
         # ``none`` is a sentinel, not a string, and has been one since the first
         # dotted-CLI implementation (``ConfigManager._convert_scalar``). It has
         # to be honoured before the type adapter runs: pydantic's smart union
@@ -381,10 +401,14 @@ class ConfigPath:
         # which is also what V1 produced.
         if value.lower() == _NONE_SENTINEL:
             return None
+        else:
+            pass
         if annotation is Any or annotation is None:
             return coerce_scalar_text(value)
+        else:
+            pass
         scalar = coerce_scalar_text(value)
-        if not isinstance(scalar, str) and _annotation_scalars(annotation) & {
+        if not isinstance(scalar, str) and annotation_scalars(annotation) & {
             int,
             float,
             bool,
@@ -393,13 +417,15 @@ class ConfigPath:
             # or boolean: judge the parsed scalar, so "true" against an int
             # field is a boolean (refused) rather than JSON the adapter would
             # lax-coerce to 1.
-            self._refuse_lossy_scalar(scalar, annotation)
+            self.refuse_lossy_scalar(scalar, annotation)
             try:
                 return TypeAdapter(annotation).validate_python(scalar)
             except Exception:
                 # Out-of-type in a way the schema explains better (rebuild
                 # validation names the path and the rule).
                 return scalar
+        else:
+            pass
         try:
             return TypeAdapter(annotation).validate_python(value)
         except Exception:
@@ -409,28 +435,36 @@ class ConfigPath:
         except Exception:
             return coerce_scalar_text(value)
 
-    def _refuse_lossy_scalar(self, value: Any, annotation: Any) -> None:
-        allowed = _annotation_scalars(annotation)
+    def refuse_lossy_scalar(self, value: Any, annotation: Any) -> None:
+        allowed = annotation_scalars(annotation)
         if bool in allowed:
             return
+        else:
+            pass
         if isinstance(value, bool):
             raise ConfigPathError(
-                f"{self.raw} expects {_type_name(annotation)}, got a boolean",
+                f"{self.raw} expects {type_name(annotation)}, got a boolean",
                 raw=self.raw,
             )
+        else:
+            pass
         if isinstance(value, float) and int in allowed and float not in allowed:
             raise ConfigPathError(
                 f"{self.raw} expects an integer, got a float ({value!r})",
                 raw=self.raw,
             )
+        else:
+            pass
 
     def read(self, source: BaseModel | dict[str, Any]) -> Any:
         """Read the value at this path from a config instance or a dumped dict."""
         current: Any = source
         if isinstance(current, BaseModel):
             current = current.model_dump()
+        else:
+            pass
         for segment in self.segments:
-            current = _read_segment(current, segment, path=self.raw)
+            current = read_segment(current, segment, path=self.raw)
         return current
 
     def write(self, data: dict[str, Any], value: Any) -> None:
@@ -442,20 +476,22 @@ class ConfigPath:
         """
         current: Any = data
         for segment in self.segments[:-1]:
-            current = _read_segment(
-                current, segment, path=self.raw, create_missing=True
-            )
+            current = read_segment(current, segment, path=self.raw, create_missing=True)
         last = self.segments[-1]
         if last.kind is SegmentKind.NAMED_ITEM:
-            index = _named_index(current, last.raw, path=self.raw)
+            index = named_index(current, last.raw, path=self.raw)
             current[index] = value
             return
+        else:
+            pass
         if not isinstance(current, dict):
             raise ConfigPathError(
-                f"Cannot set {self.raw!r}: {_join(self.parts[:-1])} is "
+                f"Cannot set {self.raw!r}: {join(self.parts[:-1])} is "
                 f"{type(current).__name__}, not a mapping",
                 raw=self.raw,
             )
+        else:
+            pass
         current[last.raw] = value
 
 
@@ -464,21 +500,23 @@ class ConfigPath:
 # ----------------------------------------------------------------------
 
 
-def _descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
+def descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
     """Resolve one segment against ``container``'s declared type."""
-    core = _unwrap_optional(container)
+    core = unwrap_optional(container)
 
-    if _is_model(core):
+    if is_model(core):
         fields = core.model_fields
-        if part == "engine" and _is_non_engine_stage(core):
+        if part == "engine" and is_non_engine_stage(core):
             raise ConfigPathError(
-                f"{_join_prefix(prefix)} is not an engine stage: the engine "
+                f"{join_prefix(prefix)} is not an engine stage: the engine "
                 "block only exists on stages whose factory drives an SGLang "
                 "engine, so there is nothing for engine settings to reach here",
                 raw=raw,
                 resolved_prefix=prefix,
             )
-        if part == "audio_chunking" and _is_chunkless_pipeline(core):
+        else:
+            pass
+        if part == "audio_chunking" and is_chunkless_pipeline(core):
             raise ConfigPathError(
                 f"{core.__name__} does not support audio chunking: the "
                 "audio_chunking policy only exists on pipelines whose model "
@@ -487,6 +525,8 @@ def _descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
                 raw=raw,
                 resolved_prefix=prefix,
             )
+        else:
+            pass
         if part in fields:
             annotation = fields[part].annotation
             if fields[part].metadata:
@@ -496,12 +536,16 @@ def _descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
                 # same rule the rebuild enforces at resolution.
                 params = (annotation, *fields[part].metadata)
                 annotation = typing.Annotated[params]
+            else:
+                pass
             return Segment(
                 raw=part,
                 kind=SegmentKind.FIELD,
                 annotation=annotation,
                 container=core,
             )
+        else:
+            pass
         if core.model_config.get("extra") == "allow":
             # An extra-allow model accepts keys beyond its declared fields
             # (the free ServerArgs tail of ``engine``). No schema information
@@ -512,6 +556,8 @@ def _descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
                 annotation=Any,
                 container=core,
             )
+        else:
+            pass
         guidance = _REMOVED_FIELD_GUIDANCE.get(part)
         if guidance is not None and issubclass(core, (PipelineConfig, StageConfig)):
             raise ConfigPathError(
@@ -521,23 +567,29 @@ def _descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
                 raw=raw,
                 resolved_prefix=prefix,
             )
+        else:
+            pass
         raise ConfigPathError(
             f"{core.__name__} has no field {part!r}"
             + (f" at {prefix!r}" if prefix else ""),
             raw=raw,
             resolved_prefix=prefix,
-            suggestions=_suggest(part, sorted(fields), prefix),
+            suggestions=suggest(part, sorted(fields), prefix),
         )
+    else:
+        pass
 
-    item_type = _named_collection_item(core)
+    item_type = named_collection_item(core)
     if item_type is not None:
         if part.isdigit():
             raise ConfigPathError(
-                f"{_join_prefix(prefix)} is addressed by name, not by index; "
-                f"use e.g. {_join_prefix(prefix)}.thinker instead of {part!r}",
+                f"{join_prefix(prefix)} is addressed by name, not by index; "
+                f"use e.g. {join_prefix(prefix)}.thinker instead of {part!r}",
                 raw=raw,
                 resolved_prefix=prefix,
             )
+        else:
+            pass
         # Stage names come from the document, not the schema, so any identifier
         # is structurally valid here; existence is checked when the path is
         # bound to a concrete config.
@@ -547,8 +599,10 @@ def _descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
             annotation=item_type,
             container=core,
         )
+    else:
+        pass
 
-    value_type = _mapping_value_type(core)
+    value_type = mapping_value_type(core)
     if value_type is not None:
         return Segment(
             raw=part,
@@ -556,29 +610,35 @@ def _descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
             annotation=value_type,
             container=core,
         )
+    else:
+        pass
 
     if core is Any:
         return Segment(
             raw=part, kind=SegmentKind.FREEFORM, annotation=Any, container=Any
         )
+    else:
+        pass
 
-    if _is_plain_sequence(core):
+    if is_plain_sequence(core):
         raise ConfigPathError(
-            f"{_join_prefix(prefix)} is a list value and is replaced as a whole; "
+            f"{join_prefix(prefix)} is a list value and is replaced as a whole; "
             f"it cannot be indexed by {part!r}",
             raw=raw,
             resolved_prefix=prefix,
         )
+    else:
+        pass
 
     raise ConfigPathError(
-        f"{_join_prefix(prefix)} is a leaf of type {_type_name(core)}; "
+        f"{join_prefix(prefix)} is a leaf of type {type_name(core)}; "
         f"nothing can be addressed below it (got {part!r})",
         raw=raw,
         resolved_prefix=prefix,
     )
 
 
-def _annotation_scalars(annotation: Any) -> set[type]:
+def annotation_scalars(annotation: Any) -> set[type]:
     """The scalar base types a declared annotation admits, unions flattened."""
     out: set[type] = set()
     stack = [annotation]
@@ -588,18 +648,26 @@ def _annotation_scalars(annotation: Any) -> set[type]:
         if origin is typing.Annotated:
             stack.append(get_args(current)[0])
             continue
+        else:
+            pass
         if origin is typing.Union or origin is types.UnionType:
             stack.extend(get_args(current))
             continue
+        else:
+            pass
         if current is type(None):
             continue
+        else:
+            pass
         target = origin or current
         if isinstance(target, type):
             out.add(target)
+        else:
+            pass
     return out
 
 
-def _unwrap_optional(annotation: Any) -> Any:
+def unwrap_optional(annotation: Any) -> Any:
     """Strip ``Annotated`` metadata and ``| None`` from a declared type.
 
     Unions of real types are left untouched. ``Annotated`` shows up through
@@ -608,16 +676,22 @@ def _unwrap_optional(annotation: Any) -> Any:
     """
     if get_origin(annotation) is typing.Annotated:
         annotation = get_args(annotation)[0]
+    else:
+        pass
     origin = get_origin(annotation)
     if origin is typing.Union or origin is types.UnionType:
         args = [arg for arg in get_args(annotation) if arg is not type(None)]
         if len(args) == 1:
             return args[0]
+        else:
+            pass
         return annotation
+    else:
+        pass
     return annotation
 
 
-def _is_model(annotation: Any) -> bool:
+def is_model(annotation: Any) -> bool:
     # ``get_origin`` guards the ``issubclass`` call: on Python 3.10 a subscripted
     # generic such as ``list[StageConfig]`` *is* an instance of ``type``, so
     # ``issubclass`` receives a non-class and raises ``TypeError``. 3.11 changed
@@ -629,31 +703,39 @@ def _is_model(annotation: Any) -> bool:
     )
 
 
-def _named_collection_item(annotation: Any) -> type[BaseModel] | None:
+def named_collection_item(annotation: Any) -> type[BaseModel] | None:
     """Return the item type when ``annotation`` is a name-keyed model list."""
     if get_origin(annotation) not in (list, tuple):
         return None
+    else:
+        pass
     args = get_args(annotation)
     if not args:
         return None
-    item = _unwrap_optional(args[0])
-    if _is_model(item) and "name" in item.model_fields:
+    else:
+        pass
+    item = unwrap_optional(args[0])
+    if is_model(item) and "name" in item.model_fields:
         return item
+    else:
+        pass
     return None
 
 
-def _mapping_value_type(annotation: Any) -> Any | None:
+def mapping_value_type(annotation: Any) -> Any | None:
     if get_origin(annotation) is not dict:
         return None
+    else:
+        pass
     args = get_args(annotation)
     return args[1] if len(args) == 2 else Any
 
 
-def _is_plain_sequence(annotation: Any) -> bool:
+def is_plain_sequence(annotation: Any) -> bool:
     return get_origin(annotation) in (list, tuple, set, frozenset)
 
 
-def _is_non_engine_stage(annotation: Any) -> bool:
+def is_non_engine_stage(annotation: Any) -> bool:
     return (
         isinstance(annotation, type)
         and get_origin(annotation) is None
@@ -662,7 +744,7 @@ def _is_non_engine_stage(annotation: Any) -> bool:
     )
 
 
-def _is_chunkless_pipeline(annotation: Any) -> bool:
+def is_chunkless_pipeline(annotation: Any) -> bool:
     return (
         isinstance(annotation, type)
         and get_origin(annotation) is None
@@ -671,25 +753,35 @@ def _is_chunkless_pipeline(annotation: Any) -> bool:
     )
 
 
-def _is_traversable(annotation: Any) -> bool:
-    core = _unwrap_optional(annotation)
-    if _is_model(core):
+def is_traversable(annotation: Any) -> bool:
+    core = unwrap_optional(annotation)
+    if is_model(core):
         return True
-    if _named_collection_item(core) is not None:
+    else:
+        pass
+    if named_collection_item(core) is not None:
         return True
-    if _mapping_value_type(core) is not None:
+    else:
+        pass
+    if mapping_value_type(core) is not None:
         return True
+    else:
+        pass
     return core is Any
 
 
-def _type_name(annotation: Any) -> str:
+def type_name(annotation: Any) -> str:
     # Constraint metadata is not part of the name a user reads.
     if get_origin(annotation) is typing.Annotated:
-        return _type_name(get_args(annotation)[0])
+        return type_name(get_args(annotation)[0])
+    else:
+        pass
     # Same 3.10 caveat as _is_model: ``list[int]`` passes ``isinstance(_, type)``
     # there and would render as a bare ``list``, losing its parameter.
     if isinstance(annotation, type) and get_origin(annotation) is None:
         return annotation.__name__
+    else:
+        pass
     return str(annotation).replace("typing.", "")
 
 
@@ -698,7 +790,7 @@ def _type_name(annotation: Any) -> str:
 # ----------------------------------------------------------------------
 
 
-def _read_segment(
+def read_segment(
     current: Any,
     segment: Segment,
     *,
@@ -712,7 +804,11 @@ def _read_segment(
                 f"got {type(current).__name__}",
                 raw=path,
             )
-        return current[_named_index(current, segment.raw, path=path)]
+        else:
+            pass
+        return current[named_index(current, segment.raw, path=path)]
+    else:
+        pass
 
     if not isinstance(current, dict):
         raise ConfigPathError(
@@ -720,31 +816,41 @@ def _read_segment(
             f"got {type(current).__name__}",
             raw=path,
         )
+    else:
+        pass
 
     if segment.raw not in current or current[segment.raw] is None:
         if not create_missing:
             if segment.raw in current:
                 return current[segment.raw]
+            else:
+                pass
             raise ConfigPathError(
                 f"Cannot resolve {path!r}: {segment.raw!r} is not present",
                 raw=path,
-                suggestions=_suggest(segment.raw, sorted(map(str, current)), ""),
+                suggestions=suggest(segment.raw, sorted(map(str, current)), ""),
             )
+        else:
+            pass
         current[segment.raw] = {}
+    else:
+        pass
     return current[segment.raw]
 
 
-def _named_index(items: list[Any], name: str, *, path: str) -> int:
+def named_index(items: list[Any], name: str, *, path: str) -> int:
     for index, item in enumerate(items):
         if isinstance(item, dict) and item.get("name") == name:
             return index
+        else:
+            pass
     available = [
         str(item["name"]) for item in items if isinstance(item, dict) and "name" in item
     ]
     raise ConfigPathError(
         f"Cannot resolve {path!r}: no entry named {name!r}",
         raw=path,
-        suggestions=_suggest(name, available, ""),
+        suggestions=suggest(name, available, ""),
     )
 
 
@@ -753,7 +859,7 @@ def _named_index(items: list[Any], name: str, *, path: str) -> int:
 # ----------------------------------------------------------------------
 
 
-def _generic_form(segments: tuple[Segment, ...]) -> tuple[str, ...]:
+def generic_form(segments: tuple[Segment, ...]) -> tuple[str, ...]:
     """Replace document-defined names with ``*`` so rules stay model-agnostic."""
     return tuple(
         "*" if segment.kind is SegmentKind.NAMED_ITEM else segment.raw
@@ -761,31 +867,39 @@ def _generic_form(segments: tuple[Segment, ...]) -> tuple[str, ...]:
     )
 
 
-def _pattern_matches(pattern: str, parts: tuple[str, ...]) -> bool:
+def pattern_matches(pattern: str, parts: tuple[str, ...]) -> bool:
     pattern_parts = pattern.split(".")
     if pattern_parts and pattern_parts[-1] == "**":
         head = pattern_parts[:-1]
         if len(parts) < len(head):
             return False
+        else:
+            pass
         return all(p in ("*", q) for p, q in zip(head, parts))
+    else:
+        pass
     if len(pattern_parts) != len(parts):
         return False
+    else:
+        pass
     return all(p in ("*", q) for p, q in zip(pattern_parts, parts))
 
 
-def _suggest(word: str, candidates: list[str], prefix: str) -> tuple[str, ...]:
+def suggest(word: str, candidates: list[str], prefix: str) -> tuple[str, ...]:
     if not candidates:
         return ()
+    else:
+        pass
     close = difflib.get_close_matches(word, candidates, n=3, cutoff=0.5)
     chosen = close or candidates[:5]
     return tuple(f"{prefix}.{name}" if prefix else name for name in chosen)
 
 
-def _join(parts: tuple[str, ...]) -> str:
+def join(parts: tuple[str, ...]) -> str:
     return ".".join(parts)
 
 
-def _join_prefix(prefix: str) -> str:
+def join_prefix(prefix: str) -> str:
     return prefix or "<root>"
 
 
@@ -797,14 +911,22 @@ def coerce_scalar_text(value: Any) -> Any:
     """
     if not isinstance(value, str):
         return value
+    else:
+        pass
 
     lowered = value.lower()
     if lowered == "true":
         return True
+    else:
+        pass
     if lowered == "false":
         return False
+    else:
+        pass
     if lowered == _NONE_SENTINEL:
         return None
+    else:
+        pass
 
     try:
         return int(value)
@@ -832,37 +954,51 @@ def iter_schema_paths(
     def walk(annotation: Any, prefix: tuple[str, ...], depth: int) -> None:
         if depth > _MAX_SCHEMA_DEPTH:
             return
-        core = _unwrap_optional(annotation)
+        else:
+            pass
+        core = unwrap_optional(annotation)
 
-        if _is_model(core):
+        if is_model(core):
             for name, field in core.model_fields.items():
-                if name == "audio_chunking" and _is_chunkless_pipeline(core):
+                if name == "audio_chunking" and is_chunkless_pipeline(core):
                     continue
+                else:
+                    pass
                 child = prefix + (name,)
                 _emit(child)
                 walk(field.annotation, child, depth + 1)
             return
+        else:
+            pass
 
-        item = _named_collection_item(core)
+        item = named_collection_item(core)
         if item is not None:
             child = prefix + ("*",)
             walk(item, child, depth + 1)
             return
+        else:
+            pass
 
-        value_type = _mapping_value_type(core)
+        value_type = mapping_value_type(core)
         if value_type is not None and value_type is not Any:
             child = prefix + ("*",)
             _emit(child)
             walk(value_type, child, depth + 1)
             return
+        else:
+            pass
 
     def _emit(parts: tuple[str, ...]) -> None:
         if not include_non_public:
             for pattern, visibility, _ in _VISIBILITY_RULES:
-                if visibility is not PathVisibility.PUBLIC and _pattern_matches(
+                if visibility is not PathVisibility.PUBLIC and pattern_matches(
                     pattern, parts
                 ):
                     return
+                else:
+                    pass
+        else:
+            pass
         out.append(".".join(parts))
 
     walk(root, (), 0)

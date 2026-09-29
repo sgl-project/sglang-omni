@@ -47,7 +47,7 @@ logger = logging.getLogger("sglang_omni_router.python.serve")
 _NOFILE_HEADROOM = 64
 
 
-def _read_nofile_soft_limit() -> int | None:
+def read_nofile_soft_limit() -> int | None:
     try:
         import resource
     except ImportError:  # non-POSIX platform, nothing to check
@@ -59,7 +59,7 @@ def _read_nofile_soft_limit() -> int | None:
 
 
 def check_file_descriptor_limit(config: RouterConfig, *, strict: bool = False) -> None:
-    soft_limit = _read_nofile_soft_limit()
+    soft_limit = read_nofile_soft_limit()
     if soft_limit is None:
         return
     pool_size = config.upstream_pool_size

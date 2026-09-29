@@ -44,10 +44,16 @@ class CudaDeviceGraphBackend:
         kwargs: dict[str, Any] = {}
         if pool is not None:
             kwargs["pool"] = pool
+        else:
+            pass
         if stream is not None:
             kwargs["stream"] = stream
+        else:
+            pass
         if thread_local_errors:
             kwargs["capture_error_mode"] = "thread_local"
+        else:
+            pass
         with torch.cuda.graph(cuda_graph=graph, **kwargs):
             yield graph
 
@@ -67,10 +73,16 @@ class NpuDeviceGraphBackend:
         kwargs: dict[str, Any] = {}
         if pool is not None:
             kwargs["pool"] = pool
+        else:
+            pass
         if stream is not None:
             kwargs["stream"] = stream
+        else:
+            pass
         if thread_local_errors:
             kwargs["capture_error_mode"] = "thread_local"
+        else:
+            pass
         with torch.npu.graph(npu_graph=graph, **kwargs):
             yield graph
 
@@ -93,8 +105,12 @@ class XpuDeviceGraphBackend:
         kwargs: dict[str, Any] = {}
         if pool is not None:
             kwargs["pool"] = pool
+        else:
+            pass
         if stream is not None:
             kwargs["stream"] = stream
+        else:
+            pass
         with torch.xpu.graph(xpu_graph=graph, **kwargs):
             yield graph
 

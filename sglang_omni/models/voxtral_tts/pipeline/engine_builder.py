@@ -20,7 +20,7 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
         self.voice_embeddings: dict[str, Any] = {}
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        self.decrypted_config_file = voxtral_stages._write_voxtral_sglang_config(
+        self.decrypted_config_file = voxtral_stages.write_voxtral_sglang_config(
             checkpoint_dir
         )
 
@@ -44,7 +44,9 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
 
     def customize_server_args(self, server_args: Any) -> None:
         if server_args.enable_torch_compile:
-            voxtral_stages._enable_inductor_gemm_autotune()
+            voxtral_stages.enable_inductor_gemm_autotune()
+        else:
+            pass
 
     def setup_model(
         self,
@@ -56,7 +58,7 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del model_worker, gpu_id, server_args
-        self.voice_embeddings = voxtral_stages._load_voxtral_voice_embeddings(
+        self.voice_embeddings = voxtral_stages.load_voxtral_voice_embeddings(
             checkpoint_dir,
             device,
         )

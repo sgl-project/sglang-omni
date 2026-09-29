@@ -10,10 +10,10 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 
-from sglang_omni.model_runner.model_worker import ModelWorker, _PrefillCudaGraphUsage
+from sglang_omni.model_runner.model_worker import ModelWorker, PrefillCudaGraphUsage
 
 
-def _forward_batch(
+def make_forward_batch(
     num_tokens: int,
     *,
     forward_mode: ForwardMode = ForwardMode.EXTEND,
@@ -25,8 +25,8 @@ def _forward_batch(
 
 
 def test_prefill_cuda_graph_usage_instances_do_not_share_buckets() -> None:
-    first = _PrefillCudaGraphUsage()
-    second = _PrefillCudaGraphUsage()
+    first = PrefillCudaGraphUsage()
+    second = PrefillCudaGraphUsage()
 
     first.replay_buckets[16] += 1
 
@@ -87,7 +87,7 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
     worker = object.__new__(ModelWorker)
     worker.dllm_algorithm = None
     worker.model_runner = runner
-    worker._prefill_cuda_graph_usage = _PrefillCudaGraphUsage()
+    worker.prefill_cuda_graph_usage = PrefillCudaGraphUsage()
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_model",
         lambda: SimpleNamespace(model_path="model", load_format="auto"),
@@ -112,16 +112,16 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
     )
     worker.tp_rank = 0
     worker.model_arch_override = None
-    ModelWorker.forward_batch_generation(worker, _forward_batch(5))
-    ModelWorker.forward_batch_generation(worker, _forward_batch(40))
-    ModelWorker.forward_batch_generation(worker, _forward_batch(31))
+    ModelWorker.forward_batch_generation(worker, make_forward_batch(5))
+    ModelWorker.forward_batch_generation(worker, make_forward_batch(40))
+    ModelWorker.forward_batch_generation(worker, make_forward_batch(31))
     ModelWorker.forward_batch_generation(
         worker,
-        _forward_batch(1, forward_mode=ForwardMode.DECODE),
+        make_forward_batch(1, forward_mode=ForwardMode.DECODE),
     )
     ModelWorker.forward_batch_generation(
         worker,
-        _forward_batch(1, forward_mode=ForwardMode.TARGET_VERIFY),
+        make_forward_batch(1, forward_mode=ForwardMode.TARGET_VERIFY),
     )
     ModelWorker.record_custom_prefill_eager(worker)
 

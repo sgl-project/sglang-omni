@@ -21,7 +21,7 @@ import yaml
 from benchmarks.benchmarker.utils import managed_omni_server
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.dataset.seedtts import load_seedtts_samples
-from tests.test_model.omni_router_utils import _find_available_port_range
+from tests.test_model.omni_router_utils import find_available_port_range
 
 MODEL_PATH = os.environ.get(
     "QWEN3_TTS_TEST_MODEL",
@@ -43,7 +43,7 @@ class Qwen3TTSServer(NamedTuple):
     log_file: Path
 
 
-def _pcm(wav_bytes: bytes) -> bytes:
+def make_pcm(wav_bytes: bytes) -> bytes:
     with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
         assert wav.getframerate() == 24000
         assert wav.getnchannels() == 1
@@ -53,7 +53,7 @@ def _pcm(wav_bytes: bytes) -> bytes:
     return pcm
 
 
-async def _model_info(base_url: str, stop: asyncio.Event) -> int:
+async def model_info(base_url: str, stop: asyncio.Event) -> int:
     max_batch_size = 0
     timeout = aiohttp.ClientTimeout(total=2)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -75,36 +75,36 @@ async def _model_info(base_url: str, stop: asyncio.Event) -> int:
     return max_batch_size
 
 
-async def _generate(
+async def generate(
     session: aiohttp.ClientSession,
     base_url: str,
     payload: dict,
 ) -> bytes:
     async with session.post(f"{base_url}/v1/audio/speech", json=payload) as response:
         response.raise_for_status()
-        return _pcm(await response.read())
+        return make_pcm(await response.read())
 
 
-async def _generate_serial(
+async def generate_serial(
     base_url: str,
     payloads: list[dict],
 ) -> list[bytes]:
     timeout = aiohttp.ClientTimeout(total=300)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        return [await _generate(session, base_url, payload) for payload in payloads]
+        return [await generate(session, base_url, payload) for payload in payloads]
 
 
-async def _generate_batch(
+async def generate_batch(
     base_url: str,
     payloads: list[dict],
 ) -> list[bytes]:
     stop = asyncio.Event()
-    poller = asyncio.create_task(_model_info(base_url, stop))
+    poller = asyncio.create_task(model_info(base_url, stop))
     timeout = aiohttp.ClientTimeout(total=300)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             outputs = await asyncio.gather(
-                *(_generate(session, base_url, payload) for payload in payloads)
+                *(generate(session, base_url, payload) for payload in payloads)
             )
     finally:
         stop.set()
@@ -114,7 +114,7 @@ async def _generate_batch(
     return outputs
 
 
-def _payload(sample, *, subtalker_dosample: bool | None = None) -> dict:
+def make_payload(sample, *, subtalker_dosample: bool | None = None) -> dict:
     return {
         "model": MODEL_PATH,
         "input": sample.target_text,
@@ -127,7 +127,7 @@ def _payload(sample, *, subtalker_dosample: bool | None = None) -> dict:
     }
 
 
-def _tts_engine_prefill_graph_info(base_url: str) -> dict:
+def tts_engine_prefill_graph_info(base_url: str) -> dict:
     """Read the resolved prefill-graph state from the running engine stage."""
     response = requests.post(
         f"{base_url}/model_info",
@@ -142,7 +142,7 @@ def _tts_engine_prefill_graph_info(base_url: str) -> dict:
     return items[0]["data"]["prefill_cuda_graph"]
 
 
-def _custom_voice_payload(text: str, *, subtalker_dosample: bool | None = None) -> dict:
+def custom_voice_payload(text: str, *, subtalker_dosample: bool | None = None) -> dict:
     return {
         "model": CUSTOM_VOICE_MODEL_PATH,
         "input": text,
@@ -156,7 +156,7 @@ def _custom_voice_payload(text: str, *, subtalker_dosample: bool | None = None) 
 
 
 @contextmanager
-def _qwen3_tts_server(
+def qwen3_tts_server(
     tmp_path_factory: pytest.TempPathFactory,
     name: str,
     model_path: str = MODEL_PATH,
@@ -184,7 +184,7 @@ def _qwen3_tts_server(
         ),
         encoding="utf-8",
     )
-    port = _find_available_port_range(1)
+    port = find_available_port_range(1)
     log_file = tmp_path_factory.mktemp(f"qwen3_tts_{name}_logs") / "server.log"
     with managed_omni_server(
         model_path=model_path,
@@ -197,7 +197,7 @@ def _qwen3_tts_server(
         yield Qwen3TTSServer(f"http://127.0.0.1:{port}", log_file)
 
 
-def _assert_uncached_reference_encode(log_file: Path) -> None:
+def assert_uncached_reference_encode(log_file: Path) -> None:
     assert (
         "Qwen3-TTS ad-hoc reference reference encode stats: "
         "{'hits': 0, 'misses': 1" in log_file.read_text(encoding="utf-8")
@@ -216,21 +216,21 @@ def test_qwen3_tts_deterministic_batch_invariance(
 
     payloads = []
     for sample in load_seedtts_samples(DATASET, 8, split="en"):
-        payload = _payload(sample)
+        payload = make_payload(sample)
         payload["input"] = " ".join([sample.target_text] * 3)
         payloads.append(payload)
     assert len({payload["ref_text"] for payload in payloads}) == 8
 
     payload = payloads[0]
-    with _qwen3_tts_server(tmp_path_factory, "b1") as server:
-        b1 = asyncio.run(_generate_serial(server.base_url, payloads))
-        repeated_b1 = asyncio.run(_generate_serial(server.base_url, [payload] * 2))
-        _assert_uncached_reference_encode(server.log_file)
+    with qwen3_tts_server(tmp_path_factory, "b1") as server:
+        b1 = asyncio.run(generate_serial(server.base_url, payloads))
+        repeated_b1 = asyncio.run(generate_serial(server.base_url, [payload] * 2))
+        assert_uncached_reference_encode(server.log_file)
 
-    with _qwen3_tts_server(tmp_path_factory, "b8") as server:
-        mixed_b8 = asyncio.run(_generate_batch(server.base_url, payloads))
-        _assert_uncached_reference_encode(server.log_file)
-        repeated_b8 = asyncio.run(_generate_batch(server.base_url, [payload] * 8))
+    with qwen3_tts_server(tmp_path_factory, "b8") as server:
+        mixed_b8 = asyncio.run(generate_batch(server.base_url, payloads))
+        assert_uncached_reference_encode(server.log_file)
+        repeated_b8 = asyncio.run(generate_batch(server.base_url, [payload] * 8))
 
     assert mixed_b8 == b1
     assert all(pcm == b1[0] for pcm in repeated_b1)
@@ -248,7 +248,7 @@ def test_qwen3_tts_mixed_sampled_argmax_batch_invariance(
 
     payloads = []
     for index, sample in enumerate(load_seedtts_samples(DATASET, 8, split="en")):
-        payload = _payload(sample, subtalker_dosample=index % 2 == 0)
+        payload = make_payload(sample, subtalker_dosample=index % 2 == 0)
         payload["input"] = " ".join([sample.target_text] * 3)
         payloads.append(payload)
     assert len({payload["ref_text"] for payload in payloads}) == 8
@@ -258,15 +258,15 @@ def test_qwen3_tts_mixed_sampled_argmax_batch_invariance(
     } == {False, True}
 
     payload = payloads[0]
-    with _qwen3_tts_server(tmp_path_factory, "b1") as server:
-        b1 = asyncio.run(_generate_serial(server.base_url, payloads))
-        repeated_b1 = asyncio.run(_generate_serial(server.base_url, [payload] * 2))
-        _assert_uncached_reference_encode(server.log_file)
+    with qwen3_tts_server(tmp_path_factory, "b1") as server:
+        b1 = asyncio.run(generate_serial(server.base_url, payloads))
+        repeated_b1 = asyncio.run(generate_serial(server.base_url, [payload] * 2))
+        assert_uncached_reference_encode(server.log_file)
 
-    with _qwen3_tts_server(tmp_path_factory, "b8") as server:
-        mixed_b8 = asyncio.run(_generate_batch(server.base_url, payloads))
-        _assert_uncached_reference_encode(server.log_file)
-        repeated_b8 = asyncio.run(_generate_batch(server.base_url, [payload] * 8))
+    with qwen3_tts_server(tmp_path_factory, "b8") as server:
+        mixed_b8 = asyncio.run(generate_batch(server.base_url, payloads))
+        assert_uncached_reference_encode(server.log_file)
+        repeated_b8 = asyncio.run(generate_batch(server.base_url, [payload] * 8))
 
     assert mixed_b8 == b1
     assert all(pcm == b1[0] for pcm in repeated_b1)
@@ -291,27 +291,27 @@ def test_qwen3_tts_custom_voice_deterministic_batch_invariance(
 
     payloads = []
     for sample in load_seedtts_samples(DATASET, 8, split="en"):
-        payloads.append(_custom_voice_payload(" ".join([sample.target_text] * 3)))
+        payloads.append(custom_voice_payload(" ".join([sample.target_text] * 3)))
     assert len({payload["input"] for payload in payloads}) == 8
 
     payload = payloads[0]
-    with _qwen3_tts_server(
+    with qwen3_tts_server(
         tmp_path_factory, "cv-b1", model_path=CUSTOM_VOICE_MODEL_PATH
     ) as server:
-        b1 = asyncio.run(_generate_serial(server.base_url, payloads))
-        repeated_b1 = asyncio.run(_generate_serial(server.base_url, [payload] * 2))
+        b1 = asyncio.run(generate_serial(server.base_url, payloads))
+        repeated_b1 = asyncio.run(generate_serial(server.base_url, [payload] * 2))
         # PCM equality alone stays green when the feature is absent: a stage
         # default that fails eligibility degrades to eager with a warning. Pin
         # that the graphs actually captured and replayed.
-        info = _tts_engine_prefill_graph_info(server.base_url)
+        info = tts_engine_prefill_graph_info(server.base_url)
         assert info["backend"] == "breakable", info
         assert info["replay_count"] > 0, info
 
-    with _qwen3_tts_server(
+    with qwen3_tts_server(
         tmp_path_factory, "cv-b8", model_path=CUSTOM_VOICE_MODEL_PATH
     ) as server:
-        mixed_b8 = asyncio.run(_generate_batch(server.base_url, payloads))
-        repeated_b8 = asyncio.run(_generate_batch(server.base_url, [payload] * 8))
+        mixed_b8 = asyncio.run(generate_batch(server.base_url, payloads))
+        repeated_b8 = asyncio.run(generate_batch(server.base_url, [payload] * 8))
 
     assert mixed_b8 == b1
     assert all(pcm == b1[0] for pcm in repeated_b1)

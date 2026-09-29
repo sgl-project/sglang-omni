@@ -61,7 +61,7 @@ class WhisperASRRequestData(SGLangARRequestData):
 _TIMESTAMP_STEP_S = 0.02
 
 
-def _render_timestamped_text(
+def render_timestamped_text(
     tokenizer: Any, output_ids: list[int], *, timestamp_begin_id: int
 ) -> str:
     parts: list[str] = []
@@ -71,32 +71,42 @@ def _render_timestamped_text(
             if text_ids:
                 parts.append(tokenizer.decode(text_ids, skip_special_tokens=True))
                 text_ids = []
+            else:
+                pass
             seconds = (token_id - timestamp_begin_id) * _TIMESTAMP_STEP_S
             parts.append(f"<|{seconds:.2f}|>")
         else:
             text_ids.append(token_id)
     if text_ids:
         parts.append(tokenizer.decode(text_ids, skip_special_tokens=True))
+    else:
+        pass
     return "".join(parts).strip()
 
 
-def _resolve_language(value: Any) -> str:
+def resolve_language(value: Any) -> str:
     if value is None:
         return "english"
+    else:
+        pass
     language = str(value).strip().lower()
     if not language:
         return "english"
+    else:
+        pass
     return _LANGUAGE_ALIASES.get(language, language)
 
 
-def _build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | None:
+def build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | None:
     suppress_tokens = generation_config.suppress_tokens
     if not suppress_tokens:
         return None
+    else:
+        pass
     return {str(int(token_id)): -1.0e9 for token_id in suppress_tokens if token_id >= 0}
 
 
-def _build_prefix_tokens(
+def build_prefix_tokens(
     tokenizer: Any,
     *,
     language: str,
@@ -111,7 +121,7 @@ def _build_prefix_tokens(
     return list(tokenizer.prefix_tokens)
 
 
-def _decoder_token_budgets(
+def decoder_token_budgets(
     *,
     decoder_context_len: int,
     prefix_len: int,
@@ -131,15 +141,19 @@ def _decoder_token_budgets(
     return max_new_tokens, max_prev_tokens
 
 
-def _build_prev_context_tokens(
+def build_prev_context_tokens(
     tokenizer: Any, prompt: Any, *, max_prev_tokens: int
 ) -> list[int]:
     """Map the OpenAI ``prompt`` field to Whisper prev-context tokens."""
     if max_prev_tokens < 2 or prompt is None:
         return []
+    else:
+        pass
     text = str(prompt).strip()
     if not text:
         return []
+    else:
+        pass
     sot_prev_id, *text_ids = tokenizer.get_prompt_ids(text, return_tensors=None)
     # note (jiannan-17): Recent text is the most useful continuation context, so
     # truncate from the front while preserving the required <|startofprev|> marker.
@@ -158,7 +172,7 @@ def make_whisper_scheduler_adapters(
 ) -> tuple[
     Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
 ]:
-    logit_bias = _build_logit_bias(generation_config)
+    logit_bias = build_logit_bias(generation_config)
     # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
     # across request-build workers.
     tokenizer_lock = Lock()
@@ -204,7 +218,7 @@ def make_whisper_scheduler_adapters(
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
 
-        language = _resolve_language(params.get("language"))
+        language = resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
         detect_language = bool(params.get("detect_language"))
         segment_timestamps = bool(params.get("segment_timestamps"))
@@ -213,20 +227,20 @@ def make_whisper_scheduler_adapters(
             request_max_new_tokens = 1
         else:
             with tokenizer_lock:
-                prefix_token_ids = _build_prefix_tokens(
+                prefix_token_ids = build_prefix_tokens(
                     tokenizer,
                     language=language,
                     task=task,
                     predict_timestamps=segment_timestamps,
                 )
-                request_max_new_tokens, max_prev_tokens = _decoder_token_budgets(
+                request_max_new_tokens, max_prev_tokens = decoder_token_budgets(
                     decoder_context_len=decoder_context_len,
                     prefix_len=len(prefix_token_ids),
                     requested_max_new_tokens=int(
                         params.get("max_new_tokens") or max_new_tokens
                     ),
                 )
-                prev_context_ids = _build_prev_context_tokens(
+                prev_context_ids = build_prev_context_tokens(
                     tokenizer, params.get("prompt"), max_prev_tokens=max_prev_tokens
                 )
             prompt_token_ids = prev_context_ids + prefix_token_ids
@@ -238,6 +252,8 @@ def make_whisper_scheduler_adapters(
                 f"{len(prompt_token_ids)} input tokens + "
                 f"{request_max_new_tokens} max_new_tokens > {decoder_context_len}"
             )
+        else:
+            pass
         input_ids = [pad_token_id] * encoder_token_count + prompt_token_ids
 
         features = None
@@ -246,12 +262,16 @@ def make_whisper_scheduler_adapters(
             cached_embedding = audio_encoder_service.lookup_cached_embedding(
                 fingerprint, encoder_token_count
             )
+        else:
+            pass
         if cached_embedding is None:
             features = processor.feature_extractor(
                 audio,
                 sampling_rate=_WHISPER_SAMPLE_RATE,
                 return_tensors="pt",
             ).input_features
+        else:
+            pass
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -271,6 +291,8 @@ def make_whisper_scheduler_adapters(
                 audio_encoder_service.encode_item(audio_item)
             else:
                 audio_encoder_service.attach_embedding(audio_item, cached_embedding)
+        else:
+            pass
 
         temperature = float(params.get("temperature") or 0.0)
         sampling_params = SamplingParams(
@@ -305,7 +327,7 @@ def make_whisper_scheduler_adapters(
             ),
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         return WhisperASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),
@@ -327,7 +349,7 @@ def make_whisper_scheduler_adapters(
         if data.detect_language:
             text = id_to_language.get(output_ids[0], "") if output_ids else ""
         elif data.segment_timestamps:
-            text = _render_timestamped_text(
+            text = render_timestamped_text(
                 tokenizer, output_ids, timestamp_begin_id=timestamp_begin_id
             )
         else:

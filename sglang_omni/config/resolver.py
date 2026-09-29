@@ -44,24 +44,24 @@ class ConfigResolver:
     """Applies a patch set to a baseline config."""
 
     def __init__(self, base: PipelineConfig) -> None:
-        self._base = base
+        self.base = base
 
     @property
     def config_cls(self) -> type[PipelineConfig]:
-        return type(self._base)
+        return type(self.base)
 
     def resolve(self, patchset: ConfigPatchSet) -> ResolvedConfig:
         patchset.require_no_conflicts()
 
-        data = self._base.model_dump()
+        data = self.base.model_dump()
         provenance = ProvenanceMap.from_patchset(patchset)
 
         ordered = patchset.ordered()
         for patch in ordered:
-            provenance.record_baseline(patch.key, _safe_read(patch.path, data))
+            provenance.record_baseline(patch.key, safe_read(patch.path, data))
 
         for patch in ordered:
-            _apply(data, patch)
+            apply(data, patch)
 
         # The baseline dump carries the name model_post_init derived from the
         # baseline's model_path. When a patch replaces model_path and nothing
@@ -71,9 +71,11 @@ class ConfigResolver:
         if (
             "model_path" in touched
             and "name" not in touched
-            and data.get("name") == self._base.model_path
+            and data.get("name") == self.base.model_path
         ):
             data["name"] = None
+        else:
+            pass
 
         config = self.config_cls(**data)
 
@@ -83,7 +85,7 @@ class ConfigResolver:
         # rewrite would explain a value the launch does not use.
         resolved_data = config.model_dump()
         for patch in ordered:
-            provenance.record_resolved(patch.key, _safe_read(patch.path, resolved_data))
+            provenance.record_resolved(patch.key, safe_read(patch.path, resolved_data))
 
         return ResolvedConfig(config=config, provenance=provenance, patches=patchset)
 
@@ -93,30 +95,32 @@ class ConfigResolver:
 # ----------------------------------------------------------------------
 
 
-def _apply(data: dict[str, Any], patch: ConfigPatch) -> None:
+def apply(data: dict[str, Any], patch: ConfigPatch) -> None:
     """Assign a leaf, or deep-merge a mapping written at a container path."""
     if patch.path.is_leaf or not isinstance(patch.value, dict):
         patch.path.write(data, deepcopy(patch.value))
         return
+    else:
+        pass
 
-    existing = _safe_read(patch.path, data)
+    existing = safe_read(patch.path, data)
     if isinstance(existing, dict):
-        patch.path.write(data, _deep_merge(existing, patch.value))
+        patch.path.write(data, deep_merge(existing, patch.value))
     else:
         patch.path.write(data, deepcopy(patch.value))
 
 
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     merged = deepcopy(base)
     for key, value in overlay.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
+            merged[key] = deep_merge(merged[key], value)
         else:
             merged[key] = deepcopy(value)
     return merged
 
 
-def _safe_read(path: ConfigPath, data: dict[str, Any]) -> Any:
+def safe_read(path: ConfigPath, data: dict[str, Any]) -> Any:
     """Read a path that may not exist yet (a new mapping key, for instance)."""
     try:
         return path.read(data)
@@ -150,14 +154,14 @@ def diff_configs(
     in ``tests/unit_test/config/test_v1_parity.py``, which requires this to
     come back empty for every probe the frozen V1 oracle also accepted.
     """
-    return _diff(_as_dump(expected), _as_dump(actual), "")
+    return diff(as_dump(expected), as_dump(actual), "")
 
 
-def _as_dump(value: PipelineConfig | dict[str, Any]) -> dict[str, Any]:
+def as_dump(value: PipelineConfig | dict[str, Any]) -> dict[str, Any]:
     return value.model_dump() if isinstance(value, PipelineConfig) else value
 
 
-def _diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
+def diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
     if isinstance(expected, dict) and isinstance(actual, dict):
         out: list[ConfigDifference] = []
         for key in sorted(set(expected) | set(actual)):
@@ -165,10 +169,14 @@ def _diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
             if key not in expected or key not in actual:
                 out.append(ConfigDifference(child, expected.get(key), actual.get(key)))
                 continue
-            out.extend(_diff(expected[key], actual[key], child))
+            else:
+                pass
+            out.extend(diff(expected[key], actual[key], child))
         return out
+    else:
+        pass
 
-    if _is_named_list(expected) and _is_named_list(actual):
+    if is_named_list(expected) and is_named_list(actual):
         out = []
         expected_by_name = {item["name"]: item for item in expected}
         actual_by_name = {item["name"]: item for item in actual}
@@ -181,15 +189,21 @@ def _diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
                     )
                 )
                 continue
-            out.extend(_diff(expected_by_name[name], actual_by_name[name], child))
+            else:
+                pass
+            out.extend(diff(expected_by_name[name], actual_by_name[name], child))
         return out
+    else:
+        pass
 
     if expected != actual:
         return [ConfigDifference(prefix, expected, actual)]
+    else:
+        pass
     return []
 
 
-def _is_named_list(value: Any) -> bool:
+def is_named_list(value: Any) -> bool:
     return (
         isinstance(value, list)
         and bool(value)

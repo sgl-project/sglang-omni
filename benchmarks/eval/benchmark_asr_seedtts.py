@@ -96,14 +96,13 @@ import time
 
 import requests
 
-from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
-from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.eval.asr_profiling import (
-    UtilizationSampler,
+from benchmarks.benchmarker.fingerprint import (
     collect_environment_fingerprint,
     collect_server_identity,
-    run_profiled_pass,
 )
+from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.eval.asr_profiling import UtilizationSampler, run_profiled_pass
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,

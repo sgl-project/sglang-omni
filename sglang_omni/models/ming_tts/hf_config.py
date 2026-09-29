@@ -146,8 +146,12 @@ class BailingMMTTSConfig(PretrainedConfig):
     ) -> None:
         if isinstance(llm_config, dict):
             llm_config = BailingMoeTTSConfig(**llm_config)
+        else:
+            pass
         if isinstance(audio_tokenizer_config, dict):
             audio_tokenizer_config = AudioVAEconfig(**audio_tokenizer_config)
+        else:
+            pass
 
         self.raw_model_type = model_type or self.model_type
         self.llm_config = llm_config
@@ -167,21 +171,29 @@ class BailingMMTTSConfig(PretrainedConfig):
         super().__init__(**kwargs)
         if is_default_init:
             return
+        else:
+            pass
 
         if self.raw_model_type != self.model_type:
             raise ValueError(
                 "Ming-Omni-TTS config must use model_type "
                 f"{self.model_type!r}; got {self.raw_model_type!r}"
             )
+        else:
+            pass
 
         if self.llm_config is None:
             raise ValueError("Ming-Omni-TTS config is missing llm_config")
+        else:
+            pass
         if getattr(self.llm_config, "model_type", None) != "bailing_moe":
             raise ValueError(
                 "Ming-Omni-TTS currently supports only the 16.8B MoE TTS "
                 "checkpoint (llm_config.model_type='bailing_moe'); dense "
                 "branch is currently unsupported."
             )
+        else:
+            pass
 
         for field in (
             "hidden_size",
@@ -198,9 +210,13 @@ class BailingMMTTSConfig(PretrainedConfig):
         ):
             if getattr(self.llm_config, field, None) is None:
                 raise ValueError(f"Ming-Omni-TTS llm_config is missing {field}")
+            else:
+                pass
 
         if self.audio_tokenizer_config is None:
             raise ValueError("Ming-Omni-TTS config is missing audio_tokenizer_config")
+        else:
+            pass
         if (
             int(getattr(self.audio_tokenizer_config, "sample_rate", 0))
             != MING_TTS_SAMPLE_RATE
@@ -209,6 +225,8 @@ class BailingMMTTSConfig(PretrainedConfig):
                 "Ming-Omni-TTS currently supports only "
                 f"audio_tokenizer_config.sample_rate {MING_TTS_SAMPLE_RATE}"
             )
+        else:
+            pass
         if not isinstance(
             getattr(self.audio_tokenizer_config, "enc_kwargs", None),
             dict,
@@ -216,6 +234,8 @@ class BailingMMTTSConfig(PretrainedConfig):
             raise ValueError(
                 "Ming-Omni-TTS audio_tokenizer_config.enc_kwargs is missing"
             )
+        else:
+            pass
         if not isinstance(
             getattr(self.audio_tokenizer_config, "dec_kwargs", None),
             dict,
@@ -223,23 +243,35 @@ class BailingMMTTSConfig(PretrainedConfig):
             raise ValueError(
                 "Ming-Omni-TTS audio_tokenizer_config.dec_kwargs is missing"
             )
+        else:
+            pass
         if self.audio_tokenizer_config.enc_kwargs.get("latent_dim") is None:
             raise ValueError(
                 "Ming-Omni-TTS audio_tokenizer_config.enc_kwargs.latent_dim "
                 "is missing"
             )
+        else:
+            pass
 
         if not isinstance(self.ditar_config, dict):
             raise ValueError("Ming-Omni-TTS config is missing ditar_config")
+        else:
+            pass
         for field in ("patch_size", "history_patch_size"):
             if self.ditar_config.get(field) is None:
                 raise ValueError(f"Ming-Omni-TTS ditar_config is missing {field}")
+            else:
+                pass
 
         if not isinstance(self.aggregator_config, dict):
             raise ValueError("Ming-Omni-TTS config is missing aggregator_config")
+        else:
+            pass
         for field in ("hidden_size", "depth", "num_heads"):
             if self.aggregator_config.get(field) is None:
                 raise ValueError(f"Ming-Omni-TTS aggregator_config is missing {field}")
+            else:
+                pass
 
     @property
     def sample_rate(self) -> int:
@@ -264,6 +296,8 @@ def register_ming_tts_hf_config() -> None:
     global _ming_tts_hf_config_registered
     if _ming_tts_hf_config_registered:
         return
+    else:
+        pass
 
     from transformers import AutoConfig
 

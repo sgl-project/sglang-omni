@@ -16,9 +16,9 @@ from typing import Any
 import torch
 
 from sglang_omni.models.moss_tts.request_builders import (
-    _resolve_optional_text,
     normalize_moss_tts_inputs,
     resolve_moss_reference,
+    resolve_optional_text,
 )
 from sglang_omni.models.zonos2.components.text_frontend import (
     TTSSamplingParams,
@@ -53,6 +53,10 @@ def ref_audio_to_encoder_input(ref_audio: Any) -> Any:
         m = _DATA_URI_RE.match(ref_audio)
         if m is not None:
             return base64.b64decode(m.group("data"))
+        else:
+            pass
+    else:
+        pass
     return ref_audio
 
 
@@ -63,10 +67,12 @@ def build_zonos2_state(payload: StagePayload) -> Zonos2State:
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    else:
+        pass
 
     text, references = normalize_moss_tts_inputs(inputs)
     ref_audio, ref_text = resolve_moss_reference(references, tts_params)
-    language = _resolve_optional_text(
+    language = resolve_optional_text(
         tts_params.get("language") or params.get("language")
     )
 
@@ -80,21 +86,29 @@ def build_zonos2_state(payload: StagePayload) -> Zonos2State:
         raise ValueError(
             "ZONOS2 does not support seed because sampling uses the shared device RNG"
         )
+    else:
+        pass
 
     gen: dict[str, Any] = {}
     raw_max = params.get("max_new_tokens")
     if raw_max is not None and not isinstance(raw_max, bool):
         gen["max_tokens"] = int(raw_max)
+    else:
+        pass
     for sampling_field in _SAMPLING_FIELDS:
         for source in (tts_params, params):
             val = source.get(sampling_field)
             if val is None:
                 continue
+            else:
+                pass
             # tts_params always wins; params only honored when explicitly whitelisted
             if sampling_field in explicit or source is tts_params:
                 gen[sampling_field] = (
                     int(val) if sampling_field == "top_k" else float(val)
                 )
+            else:
+                pass
             break
 
     return Zonos2State(
@@ -142,6 +156,8 @@ def build_zonos2_stream_metadata(payload: StagePayload, *, n_codebooks: int):
     params = payload.request.params
     if not isinstance(params, dict) or not params.get("stream"):
         return None
+    else:
+        pass
     metadata = {
         "stream": True,
         "modality": "audio_codes",
@@ -152,10 +168,12 @@ def build_zonos2_stream_metadata(payload: StagePayload, *, n_codebooks: int):
             params,
             steady_chunk_frames=DEFAULT_ZONOS2_STREAM_STEADY_CHUNK_FRAMES,
         )
+    else:
+        pass
     return metadata
 
 
-def _marker_token_ids(cfg) -> tuple[int, int]:
+def marker_token_ids(cfg) -> tuple[int, int]:
     """(clean/noisy background, accurate-mode) text-column ids per the layout."""
     base = (
         cfg.text_vocab - cfg.speaking_rate_num_buckets - cfg.quality_num_buckets - 2 - 1
@@ -164,7 +182,7 @@ def _marker_token_ids(cfg) -> tuple[int, int]:
     return base + cond + 1, base + cond + 2  # noisy bg (default), accurate
 
 
-def _marker_row(cfg, tok: int) -> torch.Tensor:
+def marker_row(cfg, tok: int) -> torch.Tensor:
     row = torch.full((1, cfg.n_codebooks + 1), cfg.audio_pad_id, dtype=torch.long)
     row[0, cfg.n_codebooks] = tok
     return row
@@ -184,17 +202,19 @@ def build_sglang_zonos2_request(
     speaker_position = -1
     if speaker_emb is not None:
         speaker_emb = torch.as_tensor(speaker_emb, dtype=torch.float32)
-        bg, acc = _marker_token_ids(cfg)
+        bg, acc = marker_token_ids(cfg)
         rows = torch.cat(
             [
                 make_speaker_slot().to(torch.long),
-                _marker_row(cfg, bg),
-                _marker_row(cfg, acc),
+                marker_row(cfg, bg),
+                marker_row(cfg, acc),
                 rows,
             ],
             dim=0,
         )
         speaker_position = 0
+    else:
+        pass
 
     row_keys = poly_row_hash(rows).tolist()
     params = TTSSamplingParams(

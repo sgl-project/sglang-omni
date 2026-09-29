@@ -26,7 +26,7 @@ BENCHMARK_SCRIPT_PATH = (
 )
 
 
-def _load_benchmark_module():
+def load_benchmark_module():
     spec = importlib.util.spec_from_file_location(
         "benchmark_asr_transcribe_diarize_entry",
         BENCHMARK_SCRIPT_PATH,
@@ -39,7 +39,7 @@ def _load_benchmark_module():
 
 
 def test_parse_args_defaults_to_movies800times_preset() -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
     args = module.parse_args([])
 
@@ -51,7 +51,7 @@ def test_parse_args_defaults_to_movies800times_preset() -> None:
 
 
 def test_parse_args_uses_aishell4_long_preset() -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
     args = module.parse_args(["--dataset", "aishell4_long"])
 
@@ -63,7 +63,7 @@ def test_parse_args_uses_aishell4_long_preset() -> None:
 
 
 def test_parse_args_uses_googletime_preset() -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
     args = module.parse_args(["--dataset", "googletime"])
 
@@ -75,7 +75,7 @@ def test_parse_args_uses_googletime_preset() -> None:
 
 
 def test_parse_args_supports_request_event_profiling() -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
     args = module.parse_args(
         [
@@ -93,7 +93,7 @@ def test_parse_args_supports_request_event_profiling() -> None:
 
 
 def test_parse_args_rejects_profiling_reused_results() -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
     with pytest.raises(SystemExit, match="2"):
         module.parse_args(
@@ -108,7 +108,7 @@ def test_parse_args_rejects_profiling_reused_results() -> None:
 def test_profiled_pass_delegates_shared_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
     args = module.parse_args(
         [
             "--dataset",
@@ -147,7 +147,9 @@ def test_profiled_pass_delegates_shared_lifecycle(
 
     monkeypatch.setattr(module, "run_profiled_pass", fake_run_profiled_pass)
 
-    profile = asyncio.run(module._run_profiled_pass(args, [], "http://router:8000"))
+    profile = asyncio.run(
+        module._run_profiled_pass(args, [], "http://router:8000")
+    )  # noqa: leading-underscore  # production name
 
     run_id = "moss-td-aishell4_long-c4-123"
     event_dir = f"/tmp/moss-profile/{run_id}"
@@ -177,7 +179,7 @@ def test_load_samples_uses_dataset_expected_sample_count(
     dataset: str,
     expected_sample_count: int,
 ) -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
     captured_kwargs: dict[str, object] = {}
 
     def fake_load_movies800_samples(**kwargs: object) -> list[object]:
@@ -186,7 +188,9 @@ def test_load_samples_uses_dataset_expected_sample_count(
 
     monkeypatch.setattr(module, "load_movies800_samples", fake_load_movies800_samples)
 
-    module._load_samples(module.parse_args(["--dataset", dataset]))
+    module._load_samples(
+        module.parse_args(["--dataset", dataset])
+    )  # noqa: leading-underscore  # production name
 
     assert captured_kwargs["max_samples"] is None
     assert captured_kwargs["expected_sample_count"] == expected_sample_count
@@ -278,20 +282,22 @@ def test_compute_diarization_metrics_marks_missing_timestamp_prediction_invalid(
 
 
 def test_build_metrics_section_prints_timestamp_metrics() -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
-    section = module._build_metrics_section(
-        "diarization_metrics_percent",
-        {
-            "speaker_timestamp_der": 12.3456,
-            "speaker_timestamp_der_valid_samples": 7,
-            "speaker_timestamp_der_skipped": 1,
-        },
-        (
-            "speaker_timestamp_der",
-            "speaker_timestamp_der_valid_samples",
-            "speaker_timestamp_der_skipped",
-        ),
+    section = (
+        module._build_metrics_section(  # noqa: leading-underscore  # production name
+            "diarization_metrics_percent",
+            {
+                "speaker_timestamp_der": 12.3456,
+                "speaker_timestamp_der_valid_samples": 7,
+                "speaker_timestamp_der_skipped": 1,
+            },
+            (
+                "speaker_timestamp_der",
+                "speaker_timestamp_der_valid_samples",
+                "speaker_timestamp_der_skipped",
+            ),
+        )
     )
 
     assert "speaker_timestamp_der:" in section
@@ -325,9 +331,9 @@ def test_compute_diarization_metrics_partitions_cer_above_50_percent() -> None:
 
 
 def test_build_key_metrics_section_prints_partitioned_cer_metrics() -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
-    section = module._build_key_metrics_section(
+    section = module._build_key_metrics_section(  # noqa: leading-underscore  # production name
         {
             "cer_no_spk": 21.68,
             "cer_no_spk_below_50_corpus": 5.50,
@@ -344,9 +350,9 @@ def test_build_key_metrics_section_prints_partitioned_cer_metrics() -> None:
 
 
 def test_build_key_metrics_section_prints_selected_metrics() -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
-    section = module._build_key_metrics_section(
+    section = module._build_key_metrics_section(  # noqa: leading-underscore  # production name
         {
             "cer_no_spk": 6.57,
             "cp_cer": 14.42,
@@ -383,7 +389,7 @@ def test_extract_prediction_text_prefers_top_level_text_for_timestamps() -> None
 def test_eval_saves_and_loads_aishell4_long_raw_asr_results(
     tmp_path: Path,
 ) -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
     args = Namespace(
         dataset="aishell4_long",
@@ -423,8 +429,12 @@ def test_eval_saves_and_loads_aishell4_long_raw_asr_results(
         )
     ]
 
-    path = module._save_asr_results(args, samples, outputs, wall_clock_s=1.3)
-    loaded_samples, loaded_outputs, loaded_config = module._load_asr_results(path)
+    path = module._save_asr_results(
+        args, samples, outputs, wall_clock_s=1.3
+    )  # noqa: leading-underscore  # production name
+    loaded_samples, loaded_outputs, loaded_config = module._load_asr_results(
+        path
+    )  # noqa: leading-underscore  # production name
 
     assert loaded_config["request_rate"] == "inf"
     assert loaded_config["max_new_tokens"] == 65536
@@ -439,7 +449,7 @@ def test_eval_saves_speed_results_before_accuracy_metrics(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
 
     args = Namespace(
         dataset="aishell4_long",
@@ -473,7 +483,7 @@ def test_eval_saves_speed_results_before_accuracy_metrics(
     ]
 
     profile = {"run_id": "profile-1", "stage_breakdown": {"asr": {"count": 1}}}
-    path = module._save_and_print_speed_results(
+    path = module._save_and_print_speed_results(  # noqa: leading-underscore  # production name
         args,
         outputs,
         wall_clock_s=2.0,
@@ -494,7 +504,7 @@ def test_eval_saves_speed_results_before_accuracy_metrics(
 
 
 def test_eval_saves_profile_in_final_results(tmp_path: Path) -> None:
-    module = _load_benchmark_module()
+    module = load_benchmark_module()
     profile = {"run_id": "profile-1", "hop_breakdown": {"asr->done": {"count": 1}}}
     payload = {
         "config": {},
@@ -505,7 +515,7 @@ def test_eval_saves_profile_in_final_results(tmp_path: Path) -> None:
         "per_sample": [],
     }
 
-    path = module._save_payload(
+    path = module._save_payload(  # noqa: leading-underscore  # production name
         Namespace(output_dir=str(tmp_path)),
         payload,
         profile=profile,

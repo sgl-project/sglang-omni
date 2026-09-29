@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    from torch import nn
+
     from sglang_omni.platforms.interface import JointRopeInplaceKernel
+else:
+    pass
 
 
 @dataclass(frozen=True)
@@ -18,3 +22,4 @@ class TalkerExecutionConfig:
     rope_kernel: JointRopeInplaceKernel | None = None
     rope_seq_len: int | None = None
     rope_max_batch_size: int | None = None
+    norm_layer: Callable[[int, float], "nn.Module"] | None = None

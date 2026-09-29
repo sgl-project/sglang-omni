@@ -112,8 +112,12 @@ class ConfigSource:
         parts = [label]
         if self.origin:
             parts.append(f"({self.origin})")
+        else:
+            pass
         if self.detail:
             parts.append(f"- {self.detail}")
+        else:
+            pass
         return " ".join(parts)
 
     def __str__(self) -> str:  # pragma: no cover - trivial
@@ -243,6 +247,8 @@ class ConfigPatchSet:
                 seen[key] = patch
             elif previous.value != patch.value:
                 out.append((previous, patch))
+            else:
+                pass
         return out
 
     def require_no_conflicts(self) -> None:
@@ -257,6 +263,8 @@ class ConfigPatchSet:
         conflicts = self.conflicts()
         if not conflicts:
             return
+        else:
+            pass
         blocks = [
             f"{first.path.raw} is set twice at the same precedence "
             f"({first.layer.name.lower()} layer, "

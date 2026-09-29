@@ -12,7 +12,7 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3 and MiniCPM-o) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
 (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
 
@@ -42,16 +42,6 @@ docker run -it --device /dev/dri --shm-size 32g --ipc host --network host sglang
 Built on Intel Deep Learning Essentials with the `+xpu` torch wheels. It deliberately does **not**
 source oneAPI — see [Runtime environment](#runtime-environment-important).
 
-Pinning SGLang does not pin the SYCL kernels: its XPU manifest requires `sgl-kernel-xpu`
-from git with no revision. The Dockerfile therefore pins that commit itself, so rebuilds
-are reproducible by default. Override it only to move deliberately:
-
-```bash
-docker build -f docker/xpu.Dockerfile \
-  --build-arg SGL_KERNEL_XPU_REF=<sgl-kernel-xpu commit sha> \
-  -t sglang-omni:xpu .
-```
-
 ## 🛠️ Option B: Install into an existing XPU env (recommended here)
 
 The helper swaps in `pyproject_xpu.toml`, installs with the XPU index, then restores the CUDA one:
@@ -80,6 +70,8 @@ Or do it manually (the same steps the script automates):
 cp pyproject.toml .pyproject.cuda.bak
 cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
+# torch+xpu provides triton-xpu; do not let openai-whisper replace it with CUDA Triton.
+pip install --no-deps openai-whisper==20250625
 cp -f .pyproject.cuda.bak pyproject.toml && rm .pyproject.cuda.bak   # restore CUDA pyproject
 ```
 
@@ -91,9 +83,10 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.19   # the pinned release
+git checkout v0.5.20   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
+pip install --no-deps xgrammar==0.1.33
 ```
 
 Use that commit: the XPU port targets this SGLang revision's APIs and does not carry
@@ -148,7 +141,7 @@ would replace this project's 5.12.1, and resolving `sox` lifts `numpy` past the
 
 ```bash
 apt-get update && apt-get install -y sox   # the Python sox package shells out to it
-pip install --no-deps sox einops
+pip install --no-deps sox
 pip install --no-deps qwen-tts==0.1.1
 ```
 
@@ -182,10 +175,27 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
        "messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'
 ```
 
+### MiniMax Music 3 (text-to-music, two XPUs)
+```bash
+# server
+sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 --mem-fraction-static 0.7
+# client request - Genre, instrumentation, tempo, and a production note
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "MiniMaxAI/MiniMax-Music3",
+    "input": "[Chorus]\nWe are the fire that never dies\nBurning bright against the sky",
+    "instructions": "An energetic arena rock anthem with distorted electric guitars, punchy live drums and a soaring male vocal at 130 BPM, wide stereo image, lightly compressed",
+    "seed": 7,
+    "max_new_tokens": 750
+  }' \
+  --output rock_1.wav
+```
+
 Health check for any of the above: `curl http://localhost:8000/v1/models`.
 
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni all serve end-to-end on Intel XPU**
-> (ASR single-card, TTS single-card, Qwen3-Omni thinker across 8 cards with tensor parallelism).
+> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, Qwen3-Omni, MiniMax Music 3 and MiniCPM-o all serve end-to-end on Intel XPU**
+> (ASR, TTS, and MiniCPM-o single-card; MiniMax Music 3 needs two cards; Qwen3-Omni thinker across 8 cards with tensor parallelism).

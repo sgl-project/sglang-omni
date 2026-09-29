@@ -10,10 +10,14 @@ from typing import Any
 def import_string(path: str) -> Any:
     if not path or not isinstance(path, str):
         raise ValueError("Import path must be a non-empty string")
+    else:
+        pass
 
     module_path, _, attr = path.rpartition(".")
     if not module_path or not attr:
         raise ValueError(f"Invalid import path: {path!r}")
+    else:
+        pass
 
     module = importlib.import_module(module_path)
     try:

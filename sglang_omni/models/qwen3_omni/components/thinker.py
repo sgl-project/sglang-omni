@@ -19,35 +19,45 @@ LM_HEAD_PREFIX = ("thinker.lm_head.", "lm_head.")
 TEXT_MODEL_CLASS = hf_modeling.Qwen3OmniMoeThinkerTextModel
 
 
-def _concat_features(value: Any) -> torch.Tensor | None:
+def concat_features(value: Any) -> torch.Tensor | None:
     if value is None:
         return None
+    else:
+        pass
     if isinstance(value, torch.Tensor):
         return value
+    else:
+        pass
     if isinstance(value, (list, tuple)):
         tensors = [v for v in value if isinstance(v, torch.Tensor)]
         if not tensors:
             return None
+        else:
+            pass
         return torch.cat(tensors, dim=0)
+    else:
+        pass
     return None
 
 
-def _should_tie_embeddings(config: Any) -> bool:
+def should_tie_embeddings(config: Any) -> bool:
     return bool(config.text_config.tie_word_embeddings)
 
 
-def _maybe_tie_weights(
+def maybe_tie_weights(
     *,
     config: Any,
     text_model: nn.Module,
     lm_head: nn.Module,
 ) -> None:
-    if not _should_tie_embeddings(config):
+    if not should_tie_embeddings(config):
         return
+    else:
+        pass
     lm_head.weight = text_model.embed_tokens.weight
 
 
-def _build_text_model(
+def build_text_model(
     model_path: str,
     *,
     thinker_cfg: Any,
@@ -65,7 +75,7 @@ def _build_text_model(
     )
 
 
-def _build_lm_head(
+def build_lm_head(
     model_path: str,
     *,
     thinker_cfg: Any,
@@ -76,7 +86,7 @@ def _build_lm_head(
         thinker_cfg.text_config.vocab_size,
         bias=False,
     )
-    if not _should_tie_embeddings(thinker_cfg):
+    if not should_tie_embeddings(thinker_cfg):
         lm_head = load_module(
             lm_head,
             model_path,
@@ -85,10 +95,12 @@ def _build_lm_head(
             device=None,
             strict=True,
         )
+    else:
+        pass
     return lm_head
 
 
-def _build_thinker_shell(
+def build_thinker_shell(
     thinker_cfg: Any,
 ) -> hf_modeling.Qwen3OmniMoeThinkerForConditionalGeneration:
     with init_empty_weights():
@@ -107,28 +119,28 @@ class Qwen3OmniSplitThinker(nn.Module):
         dtype: str | torch.dtype | None = None,
     ) -> None:
         super().__init__()
-        self._device = torch.device(device)
+        self.device = torch.device(device)
         torch_dtype = resolve_dtype(dtype)
         thinker_cfg = load_thinker_config(model_path)
 
-        text_model = _build_text_model(
+        text_model = build_text_model(
             model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
         )
-        lm_head = _build_lm_head(
+        lm_head = build_lm_head(
             model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
         )
-        _maybe_tie_weights(config=thinker_cfg, text_model=text_model, lm_head=lm_head)
+        maybe_tie_weights(config=thinker_cfg, text_model=text_model, lm_head=lm_head)
 
-        self.thinker = _build_thinker_shell(thinker_cfg)
+        self.thinker = build_thinker_shell(thinker_cfg)
         self.thinker.model = text_model
         self.thinker.lm_head = lm_head
         # Move only the text model and LM head to the thinker device.
-        self.thinker.model = self.thinker.model.to(self._device)
-        self.thinker.lm_head = self.thinker.lm_head.to(self._device)
+        self.thinker.model = self.thinker.model.to(self.device)
+        self.thinker.lm_head = self.thinker.lm_head.to(self.device)
 
     def to(self, *args, **kwargs):  # type: ignore[override]
         """Move only the active text components; avoid meta tensor errors."""
@@ -136,9 +148,13 @@ class Qwen3OmniSplitThinker(nn.Module):
         dtype = kwargs.get("dtype")
         if device is None and args:
             device = args[0]
+        else:
+            pass
 
         if device is not None:
-            self._device = torch.device(device)
+            self.device = torch.device(device)
+        else:
+            pass
 
         if device is not None and dtype is not None:
             self.thinker.model = self.thinker.model.to(device=device, dtype=dtype)
@@ -149,9 +165,11 @@ class Qwen3OmniSplitThinker(nn.Module):
         elif dtype is not None:
             self.thinker.model = self.thinker.model.to(dtype=dtype)
             self.thinker.lm_head = self.thinker.lm_head.to(dtype=dtype)
+        else:
+            pass
         return self
 
-    def _merge_embeddings(
+    def merge_embeddings(
         self,
         *,
         input_ids: torch.Tensor,
@@ -181,11 +199,15 @@ class Qwen3OmniSplitThinker(nn.Module):
                     "Audio placeholder count mismatch: "
                     f"tokens={audio_token_count} embeds={audio_embeds.shape[0]}"
                 )
+            else:
+                pass
             audio_embeds = audio_embeds.to(
                 device=inputs_embeds.device,
                 dtype=inputs_embeds.dtype,
             )
             inputs_embeds = inputs_embeds.masked_scatter(audio_mask, audio_embeds)
+        else:
+            pass
 
         # 2. Process image (matches HF order)
         if image_embeds is not None:
@@ -200,6 +222,8 @@ class Qwen3OmniSplitThinker(nn.Module):
                 dtype=inputs_embeds.dtype,
             )
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        else:
+            pass
 
         # 3. Process video last (matches HF order)
         if video_embeds is not None:
@@ -217,11 +241,15 @@ class Qwen3OmniSplitThinker(nn.Module):
                     "Video placeholder count mismatch: "
                     f"tokens={video_token_count} embeds={video_embeds.shape[0]}"
                 )
+            else:
+                pass
             video_embeds = video_embeds.to(
                 device=inputs_embeds.device,
                 dtype=inputs_embeds.dtype,
             )
             inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+        else:
+            pass
 
         return inputs_embeds, image_mask_out, video_mask_out
 
@@ -235,9 +263,9 @@ class Qwen3OmniSplitThinker(nn.Module):
         audio_embeds: torch.Tensor | list[torch.Tensor] | None = None,
         **kwargs: Any,
     ):
-        image_embeds_t = _concat_features(image_embeds)
-        video_embeds_t = _concat_features(video_embeds)
-        audio_embeds_t = _concat_features(audio_embeds)
+        image_embeds_t = concat_features(image_embeds)
+        video_embeds_t = concat_features(video_embeds)
+        audio_embeds_t = concat_features(audio_embeds)
         deepstack_visual_embeds = kwargs.pop("deepstack_visual_embeds", None)
         image_deepstack_visual_embeds = kwargs.pop(
             "image_deepstack_visual_embeds", None
@@ -248,7 +276,9 @@ class Qwen3OmniSplitThinker(nn.Module):
         visual_pos_masks = kwargs.pop("visual_pos_masks", None)
 
         if inputs_embeds is not None:
-            inputs_embeds = inputs_embeds.to(self._device)
+            inputs_embeds = inputs_embeds.to(self.device)
+        else:
+            pass
 
         # Track whether we manually merged embeddings
         manual_merge_done = False
@@ -259,8 +289,10 @@ class Qwen3OmniSplitThinker(nn.Module):
             or audio_embeds_t is not None
         ):
             inputs_embeds = self.thinker.get_input_embeddings()(
-                input_ids.to(self._device)
+                input_ids.to(self.device)
             )
+        else:
+            pass
 
         if inputs_embeds is not None and (
             image_embeds_t is not None
@@ -268,16 +300,16 @@ class Qwen3OmniSplitThinker(nn.Module):
             or audio_embeds_t is not None
         ):
             image_embeds_t = (
-                image_embeds_t.to(self._device) if image_embeds_t is not None else None
+                image_embeds_t.to(self.device) if image_embeds_t is not None else None
             )
             video_embeds_t = (
-                video_embeds_t.to(self._device) if video_embeds_t is not None else None
+                video_embeds_t.to(self.device) if video_embeds_t is not None else None
             )
             audio_embeds_t = (
-                audio_embeds_t.to(self._device) if audio_embeds_t is not None else None
+                audio_embeds_t.to(self.device) if audio_embeds_t is not None else None
             )
-            inputs_embeds, image_mask, video_mask = self._merge_embeddings(
-                input_ids=input_ids.to(self._device),
+            inputs_embeds, image_mask, video_mask = self.merge_embeddings(
+                input_ids=input_ids.to(self.device),
                 inputs_embeds=inputs_embeds,
                 image_embeds=image_embeds_t,
                 video_embeds=video_embeds_t,
@@ -296,6 +328,8 @@ class Qwen3OmniSplitThinker(nn.Module):
                     raise ValueError(
                         "Missing visual masks for merged deepstack embeddings."
                     )
+                else:
+                    pass
                 # Follow HF implementation: visual_pos_masks = image_mask | video_mask
                 # Both masks have shape (batch_size, seq_len, hidden_size)
                 visual_pos_masks_local = image_mask | video_mask
@@ -329,6 +363,8 @@ class Qwen3OmniSplitThinker(nn.Module):
                                 f"img_embed.shape[0]={img_embed.shape[0]}, "
                                 f"image_mask_joint.sum()={num_image_in_visual}"
                             )
+                    else:
+                        pass
 
                     if video_mask_joint.any():
                         num_video_in_visual = int(video_mask_joint.sum().item())
@@ -341,14 +377,22 @@ class Qwen3OmniSplitThinker(nn.Module):
                                 f"vid_embed.shape[0]={vid_embed.shape[0]}, "
                                 f"video_mask_joint.sum()={num_video_in_visual}"
                             )
+                    else:
+                        pass
                     merged.append(embed_joint)
                 deepstack_visual_embeds = merged
                 if visual_pos_masks is None:
                     visual_pos_masks = visual_pos_masks_local
+                else:
+                    pass
             elif image_deepstack_visual_embeds:
                 deepstack_visual_embeds = image_deepstack_visual_embeds
             elif video_deepstack_visual_embeds:
                 deepstack_visual_embeds = video_deepstack_visual_embeds
+            else:
+                pass
+        else:
+            pass
 
         # Only pass deepstack_visual_embeds if we haven't already merged embeddings
         # This avoids the HF model trying to merge visual features twice
@@ -363,11 +407,15 @@ class Qwen3OmniSplitThinker(nn.Module):
                     kwargs["visual_pos_masks"] = image_mask
                 else:
                     kwargs["visual_pos_masks"] = image_mask | video_mask
+            else:
+                pass
+        else:
+            pass
 
         return self.thinker(
-            input_ids=input_ids.to(self._device),
+            input_ids=input_ids.to(self.device),
             attention_mask=(
-                attention_mask.to(self._device)
+                attention_mask.to(self.device)
                 if isinstance(attention_mask, torch.Tensor)
                 else None
             ),

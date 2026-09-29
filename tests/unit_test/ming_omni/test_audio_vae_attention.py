@@ -48,7 +48,9 @@ def test_audio_vae_attention_backend_and_window(monkeypatch, is_npu):
         model.encoder.aggregator,
         model.decoder.decoder,
     ):
-        assert component.config._attn_implementation == ("sdpa" if is_npu else "eager")
+        assert component.config._attn_implementation == (
+            "sdpa" if is_npu else "eager"
+        )  # noqa: leading-underscore  # production name
         assert component.config.sliding_window == 4
     assert (config.enc_kwargs, config.dec_kwargs) == original
 

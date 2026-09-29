@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
     from sglang_omni.profiler.torch_profiler import TorchProfiler
+else:
+    pass
 
 
 # Note(yzxiao): Joint RoPE rotates all supplied Q/K heads in place. Same-dtype
@@ -93,6 +95,8 @@ class OmniPlatform(DeviceMixin):
         server_quantization = normalize_quantization(cfg.quantization)
         if server_quantization is not None:
             effective_quantization = server_quantization
+        else:
+            pass
         return effective_quantization
 
     def get_device_graph_backend(
@@ -105,6 +109,8 @@ class OmniPlatform(DeviceMixin):
         """
         if device.type != self.device_type:
             return None
+        else:
+            pass
         return self._get_device_graph_backend()
 
     def _get_device_graph_backend(self) -> DeviceGraphBackend | None:
@@ -115,6 +121,9 @@ class OmniPlatform(DeviceMixin):
         return True
 
     def enable_talker_graph(self) -> bool:
+        return True
+
+    def enable_tts_predictor_graph(self) -> bool:
         return True
 
     def enable_thinker_decode_graph(self) -> bool:
@@ -135,6 +144,8 @@ class OmniPlatform(DeviceMixin):
         backends = self.get_graph_capture_sdpa_backends()
         if not backends:
             return nullcontext()
+        else:
+            pass
 
         from torch.nn.attention import sdpa_kernel
 

@@ -24,6 +24,8 @@ class CompletedResult:
 def is_done_signal(item: Any) -> bool:
     if item is None:
         return True
+    else:
+        pass
     return isinstance(item, StreamSignal) and item.is_done and item.error is None
 
 
@@ -34,6 +36,8 @@ def text_to_uint8_tensor(text: str) -> torch.Tensor:
 def uint8_tensor_to_text(tensor: torch.Tensor) -> str:
     if tensor.dtype != torch.uint8:
         raise TypeError("uint8_tensor_to_text expects a torch.uint8 tensor")
+    else:
+        pass
     values = tensor.detach().cpu().flatten().tolist()
     return bytes(values).decode("utf-8", errors="ignore")
 
@@ -42,6 +46,8 @@ def split_whitespace_tokens(text: str, max_tokens: int) -> tuple[str, str]:
     parts = text.split()
     if len(parts) <= max_tokens:
         return text, ""
+    else:
+        pass
     return " ".join(parts[:max_tokens]), " ".join(parts[max_tokens:])
 
 
@@ -55,16 +61,28 @@ class SegmenterConfig:
     def __post_init__(self) -> None:
         if self.segment_min_tokens <= 0:
             raise ValueError("segment_min_tokens must be positive")
+        else:
+            pass
         if self.segment_max_tokens <= 0:
             raise ValueError("segment_max_tokens must be positive")
+        else:
+            pass
         if self.first_segment_min_tokens <= 0:
             raise ValueError("first_segment_min_tokens must be positive")
+        else:
+            pass
         if self.segment_min_tokens > self.segment_max_tokens:
             raise ValueError("segment_min_tokens must be <= segment_max_tokens")
+        else:
+            pass
         if self.first_segment_min_tokens > self.segment_max_tokens:
             raise ValueError("first_segment_min_tokens must be <= segment_max_tokens")
+        else:
+            pass
         if self.first_segment_max_wait_ms < 0:
             raise ValueError("first_segment_max_wait_ms must be non-negative")
+        else:
+            pass
 
 
 @dataclass(frozen=True)
@@ -82,67 +100,77 @@ class SegmenterState:
     ) -> None:
         self.config = config
         self.token_count_fn = token_count_fn
-        self._buffer = ""
-        self._segment_id = 0
-        self._first_text_ms: int | None = None
+        self.buffer = ""
+        self.segment_id = 0
+        self.first_text_ms: int | None = None
 
     def push(self, text: str, *, now_ms: int) -> list[TextSegment]:
-        if text and self._first_text_ms is None:
-            self._first_text_ms = now_ms
-        self._buffer += text
-        if not self._buffer:
+        if text and self.first_text_ms is None:
+            self.first_text_ms = now_ms
+        else:
+            pass
+        self.buffer += text
+        if not self.buffer:
             return []
+        else:
+            pass
 
-        tokens = self.token_count_fn(self._buffer)
+        tokens = self.token_count_fn(self.buffer)
         if tokens >= self.config.segment_max_tokens:
-            return [self._emit_max_window(now_ms=now_ms)]
+            return [self.emit_max_window(now_ms=now_ms)]
+        else:
+            pass
 
         first_timeout_ready = (
-            self._segment_id == 0
-            and self._first_text_ms is not None
+            self.segment_id == 0
+            and self.first_text_ms is not None
             and tokens >= self.config.first_segment_min_tokens
-            and now_ms - self._first_text_ms >= self.config.first_segment_max_wait_ms
+            and now_ms - self.first_text_ms >= self.config.first_segment_max_wait_ms
         )
         should_emit = (
             tokens >= self.config.segment_min_tokens
-            and self._has_segment_end_punctuation()
+            and self.has_segment_end_punctuation()
         ) or first_timeout_ready
         if not should_emit:
             return []
+        else:
+            pass
 
-        return [self._emit(is_final_segment=False)]
+        return [self.emit(is_final_segment=False)]
 
     def buffer_token_count(self) -> int:
-        return self.token_count_fn(self._buffer) if self._buffer else 0
+        return self.token_count_fn(self.buffer) if self.buffer else 0
 
     def flush(self) -> list[TextSegment]:
-        if not self._buffer:
+        if not self.buffer:
             return []
-        return [self._emit(is_final_segment=True)]
+        else:
+            pass
+        return [self.emit(is_final_segment=True)]
 
-    def _has_segment_end_punctuation(self) -> bool:
-        return self._buffer.rstrip().endswith(_SEGMENT_END_PUNCTUATION)
+    def has_segment_end_punctuation(self) -> bool:
+        return self.buffer.rstrip().endswith(_SEGMENT_END_PUNCTUATION)
 
-    def _emit_max_window(self, *, now_ms: int) -> TextSegment:
+    def emit_max_window(self, *, now_ms: int) -> TextSegment:
         text, remainder = split_whitespace_tokens(
-            self._buffer, self.config.segment_max_tokens
+            self.buffer, self.config.segment_max_tokens
         )
-        return self._emit_text(
+        return self.emit_text(
             text=text,
             remainder=remainder,
             is_final_segment=False,
             remainder_start_ms=now_ms if remainder else None,
         )
 
-    def _emit(self, *, is_final_segment: bool) -> TextSegment:
-        return self._emit_text(
-            text=self._buffer,
+    def emit(self, *, is_final_segment: bool) -> TextSegment:
+        return self.emit_text(
+            text=self.buffer,
             remainder="",
             is_final_segment=is_final_segment,
             remainder_start_ms=None,
         )
 
-    def _emit_text(
+    def emit_text(
         self,
         *,
         text: str,
@@ -151,11 +179,11 @@ class SegmenterState:
         remainder_start_ms: int | None,
     ) -> TextSegment:
         segment = TextSegment(
-            segment_id=self._segment_id,
+            segment_id=self.segment_id,
             text=text,
             is_final_segment=is_final_segment,
         )
-        self._segment_id += 1
-        self._buffer = remainder
-        self._first_text_ms = remainder_start_ms
+        self.segment_id += 1
+        self.buffer = remainder
+        self.first_text_ms = remainder_start_ms
         return segment

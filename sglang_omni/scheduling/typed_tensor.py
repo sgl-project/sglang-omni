@@ -35,6 +35,8 @@ def encode_typed_tensor(value: Any, *, key: str) -> dict[str, Any]:
         else:
             value = value.detach().cpu()
         value = value.numpy()
+    else:
+        pass
     array = np.asarray(value)
     if array.dtype.kind == "f":
         array = array.astype(np.float32, copy=False)
@@ -64,15 +66,25 @@ def decode_typed_tensor(
         if legacy is not None:
             if isinstance(legacy, list):
                 return torch.tensor(legacy)
+            else:
+                pass
             return legacy
+        else:
+            pass
+    else:
+        pass
 
     raw = data.get(f"{key}_bytes")
     shape = data.get(f"{key}_shape")
     if raw is None or shape is None:
         return None
+    else:
+        pass
     dtype = np.dtype(data.get(f"{key}_dtype", "uint16"))
     array = np.frombuffer(raw, dtype=dtype).reshape(shape)
     if array.dtype.kind == "f":
         # astype copies, so the tensor never aliases the read-only buffer.
         return torch.from_numpy(array.astype(array.dtype, copy=True))
+    else:
+        pass
     return torch.from_numpy(array.astype(np.int64))

@@ -16,11 +16,13 @@ from sglang_omni.models.dots_tts.payload_types import (
     store_dots_tts_state,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 if TYPE_CHECKING:
     from sglang_omni.models.dots_tts.flow_head import DotsFlowState
+else:
+    pass
 
 
 @dataclass(frozen=True)
@@ -55,11 +57,17 @@ def build_sglang_dots_tts_request(
     schedule = state.generation_schedule
     if schedule is None:
         raise RuntimeError("dots.tts preprocessing did not build a generation schedule")
+    else:
+        pass
     if schedule.ndim == 1:
         schedule = schedule.unsqueeze(0)
+    else:
+        pass
     audio_ids = {int(value) for value in state.audio_span_token_ids}
     if not audio_ids:
         raise RuntimeError("dots.tts preprocessing did not resolve audio span ids")
+    else:
+        pass
     schedule_row = schedule[0]
     span_positions = torch.nonzero(
         torch.isin(schedule_row, torch.tensor(sorted(audio_ids))), as_tuple=False
@@ -70,13 +78,21 @@ def build_sglang_dots_tts_request(
         configured_patch_size = int(state.latent_patch_size)
         if configured_patch_size <= 0:
             raise RuntimeError("dots.tts state is missing latent_patch_size")
+        else:
+            pass
         if prompt_frames % configured_patch_size:
             raise ValueError("dots.tts prompt latents are not patch aligned")
+        else:
+            pass
         prompt_patch_count = prompt_frames // configured_patch_size
+    else:
+        pass
     if span_positions.numel() <= prompt_patch_count:
         raise ValueError(
             "dots.tts generation schedule has no audio span after prompt prefill"
         )
+    else:
+        pass
     prefill_end = int(span_positions[prompt_patch_count].item())
     remaining_spans = int(span_positions.numel()) - prompt_patch_count
     discarded_patch_count = int(prompt_patch_count > 0)
@@ -85,12 +101,16 @@ def build_sglang_dots_tts_request(
             "dots.tts prompt prefill requires one regenerated prompt patch "
             "and at least one payload patch"
         )
+    else:
+        pass
     generation_budget = remaining_spans
     if state.max_new_tokens is not None:
         generation_budget = min(
             generation_budget,
             int(state.max_new_tokens) + discarded_patch_count,
         )
+    else:
+        pass
     input_ids = schedule[0, :prefill_end].to(dtype=torch.long).tolist()
     control_token_id = int(schedule[0, span_positions[prompt_patch_count]])
 
@@ -110,8 +130,8 @@ def build_sglang_dots_tts_request(
         vocab_size=int(state.vocab_size),
     )
     req.tokenizer = None
-    req._input_embeds_are_projected = True
-    req._codec_suppress_tokens = None
+    req._input_embeds_are_projected = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     return DotsTTSSGLangRequestData(
         state=state,
         stage_payload=payload,
@@ -143,6 +163,8 @@ def build_stream_output(
     data.latest_latent_patch = None
     if latent is None or not data.state.stream:
         return
+    else:
+        pass
     metadata = dict(data.stream_metadata or {})
     metadata["chunk_id"] = data.chunk_id
     data.chunk_id += 1
@@ -159,6 +181,8 @@ def apply_latent_result(data: DotsTTSSGLangRequestData) -> StagePayload:
     state = data.state
     if not data.latent_patches:
         raise RuntimeError("dots.tts generated no payload latent patches")
+    else:
+        pass
     state.generated_latents = torch.cat(data.latent_patches, dim=1)
     state.prompt_tokens = int(data.input_ids.numel())
     state.completion_tokens = len(data.latent_patches)

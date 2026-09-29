@@ -11,7 +11,7 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from .base import MediaIO, _is_url
+from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
 
 
@@ -85,6 +85,8 @@ async def ensure_image_list_async(
     """
     if images is None:
         return []
+    else:
+        pass
     items = images if isinstance(images, list) else [images]
 
     # Import here to avoid circular dependency
@@ -92,6 +94,8 @@ async def ensure_image_list_async(
         from .resource_connector import get_global_resource_connector
 
         media_connector = get_global_resource_connector()
+    else:
+        pass
 
     # Collect coroutines for URL items
     coroutines: list[asyncio.Task[Any] | None] = []
@@ -101,7 +105,7 @@ async def ensure_image_list_async(
     # First pass: identify URL items and create coroutines
     for idx, item in enumerate(items):
         if isinstance(item, (str, Path)):
-            if _is_url(item):
+            if is_url(item):
                 # Create coroutine for async URL fetching
                 coro = media_connector.fetch_image_async(
                     str(item), image_mode=image_mode
@@ -122,6 +126,8 @@ async def ensure_image_list_async(
         # Fill in the results at the correct indices
         for url_idx, result in zip(url_indices, results):
             normalized[url_idx] = result
+    else:
+        pass
 
     return normalized
 

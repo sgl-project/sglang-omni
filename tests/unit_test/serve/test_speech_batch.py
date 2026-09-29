@@ -15,7 +15,7 @@ from sglang_omni.client import ClientError
 from sglang_omni.client.types import SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_api import _create_speech_batch_with_disconnect_watch
+from sglang_omni.serve.openai_api import create_speech_batch_with_disconnect_watch
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 
 CONTEXT_LENGTH_ERROR = (
@@ -122,7 +122,7 @@ class CountingReferenceSpeechRequestValidator(SpeechRequestValidator):
         super().__init__(default_model="tts")
         self.reference_loads: list[str] = []
 
-    def _load_media_reference_descriptor(
+    def load_media_reference_descriptor(
         self, value: str, *, param: str
     ) -> dict[str, str]:
         self.reference_loads.append(value)
@@ -589,7 +589,7 @@ def test_batch_speech_request_disconnect_aborts_started_items() -> None:
         request = DisconnectingBatchRequest(client_impl)
 
         with pytest.raises(asyncio.CancelledError):
-            await _create_speech_batch_with_disconnect_watch(
+            await create_speech_batch_with_disconnect_watch(
                 request,
                 client=client_impl,
                 speech_service=service,

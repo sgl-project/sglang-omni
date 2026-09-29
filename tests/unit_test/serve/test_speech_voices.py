@@ -120,7 +120,7 @@ def test_voice_routes_upload_list_use_and_delete(tmp_path: Path, monkeypatch) ->
         files={
             "audio_sample": (
                 "reference.wav",
-                _reference_wav(),
+                reference_wav(),
                 "audio/wav",
             )
         },
@@ -172,7 +172,7 @@ def test_voice_store_restores_overwrites_and_invalidates_cache(tmp_path: Path) -
     first = store.upload(
         name="Guide",
         consent="consent-a",
-        audio_bytes=_reference_wav(frequency=220),
+        audio_bytes=reference_wav(frequency=220),
         filename="guide.wav",
         content_type="audio/wav",
     )
@@ -182,7 +182,7 @@ def test_voice_store_restores_overwrites_and_invalidates_cache(tmp_path: Path) -
     second = store.upload(
         name="guide",
         consent="consent-b",
-        audio_bytes=_reference_wav(frequency=330),
+        audio_bytes=reference_wav(frequency=330),
         filename="guide.wav",
         content_type="audio/wav",
         ref_text="new transcript",
@@ -212,7 +212,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
             store.upload(
                 name=name,
                 consent="consent",
-                audio_bytes=_reference_wav(),
+                audio_bytes=reference_wav(),
                 filename="bad.wav",
                 content_type="audio/wav",
             )
@@ -222,7 +222,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
             store.upload(
                 name=name,
                 consent="consent",
-                audio_bytes=_reference_wav(),
+                audio_bytes=reference_wav(),
                 filename="default.wav",
                 content_type="audio/wav",
             )
@@ -249,7 +249,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
         store.upload(
             name="silent",
             consent="consent",
-            audio_bytes=_reference_wav(amplitude=0.0),
+            audio_bytes=reference_wav(amplitude=0.0),
             filename="silent.wav",
             content_type="audio/wav",
         )
@@ -258,7 +258,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
         store.upload(
             name="short",
             consent="consent",
-            audio_bytes=_reference_wav(duration_s=0.25),
+            audio_bytes=reference_wav(duration_s=0.25),
             filename="short.wav",
             content_type="audio/wav",
         )
@@ -267,7 +267,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
         store.upload(
             name="long",
             consent="consent",
-            audio_bytes=_reference_wav(duration_s=30.1),
+            audio_bytes=reference_wav(duration_s=30.1),
             filename="long.wav",
             content_type="audio/wav",
         )
@@ -275,7 +275,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
     store.upload(
         name="one",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="one.wav",
         content_type="audio/wav",
     )
@@ -283,7 +283,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
         store.upload(
             name="two",
             consent="consent",
-            audio_bytes=_reference_wav(),
+            audio_bytes=reference_wav(),
             filename="two.wav",
             content_type="audio/wav",
         )
@@ -298,14 +298,14 @@ def test_voice_store_restore_preserves_max_uploaded_cap(tmp_path: Path) -> None:
     first = store.upload(
         name="older",
         consent="consent",
-        audio_bytes=_reference_wav(frequency=220),
+        audio_bytes=reference_wav(frequency=220),
         filename="older.wav",
         content_type="audio/wav",
     )
     second = store.upload(
         name="newer",
         consent="consent",
-        audio_bytes=_reference_wav(frequency=330),
+        audio_bytes=reference_wav(frequency=330),
         filename="newer.wav",
         content_type="audio/wav",
     )
@@ -325,7 +325,7 @@ def test_voice_store_restore_keeps_newest_duplicate_normalized_name(
     uploaded = store.upload(
         name="Guide",
         consent="consent-new",
-        audio_bytes=_reference_wav(frequency=330),
+        audio_bytes=reference_wav(frequency=330),
         filename="guide.wav",
         content_type="audio/wav",
     )
@@ -360,7 +360,7 @@ def test_voice_store_restore_skips_malformed_metadata(tmp_path: Path) -> None:
     uploaded = store.upload(
         name="Guide",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="guide.wav",
         content_type="audio/wav",
     )
@@ -413,7 +413,7 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     uploaded = store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="application/octet-stream",
     )
@@ -443,13 +443,13 @@ def test_speech_service_explicit_reference_overrides_uploaded_voice(
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="audio/wav",
     )
     service = SpeechRequestValidator(default_model="tts", voice_store=store)
     explicit_ref = "data:audio/wav;base64," + base64.b64encode(
-        _reference_wav(frequency=880)
+        reference_wav(frequency=880)
     ).decode("ascii")
 
     request = service.parse_request(
@@ -477,7 +477,7 @@ def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -497,7 +497,7 @@ def test_speech_service_allows_uploaded_voice_with_explicit_base_task_type(
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -518,7 +518,7 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
     first = store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(frequency=220),
+        audio_bytes=reference_wav(frequency=220),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -530,7 +530,7 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(frequency=330),
+        audio_bytes=reference_wav(frequency=330),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -570,7 +570,7 @@ def test_speech_service_rejects_batch_default_uploaded_voice_task_type(
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -630,7 +630,7 @@ def test_speech_service_can_disable_uploaded_voice_resolution(
     store.upload(
         name="Vivian",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="vivian.wav",
         content_type="audio/wav",
     )
@@ -683,7 +683,7 @@ def test_custom_voice_discovery_and_speech_share_checkpoint_config(
     store.upload(
         name="Uploaded",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="ref.wav",
         content_type="audio/wav",
     )
@@ -704,7 +704,7 @@ def test_custom_voice_discovery_and_speech_share_checkpoint_config(
     assert len(client_impl.requests) == 1
 
 
-def _reference_wav(
+def reference_wav(
     *,
     duration_s: float = 1.2,
     frequency: float = 440.0,

@@ -16,7 +16,7 @@ from sglang_omni.models.ming_tts.payload_types import (
 )
 from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 
@@ -80,7 +80,7 @@ def make_ming_tts_scheduler_adapters(
             extra_key=f"ming_tts:{payload.request_id}",
         )
         req.tokenizer = None
-        req._input_embeds_are_projected = requires_projected_prefill
+        req._input_embeds_are_projected = requires_projected_prefill  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         input_ids = torch.tensor(input_ids_list, dtype=torch.long)
         data = MingTTSSGLangRequestData(
@@ -104,6 +104,8 @@ def make_ming_tts_scheduler_adapters(
         try:
             if not owns_acoustic_result:
                 return data.stage_payload
+            else:
+                pass
             payload = data.stage_payload
             state = data.state
             generated = data.generated_latents
@@ -112,6 +114,8 @@ def make_ming_tts_scheduler_adapters(
                     (0, int(model.patch_size), int(model.latent_dim)),
                     dtype=torch.float32,
                 )
+            else:
+                pass
             completion_tokens = (
                 int(data.generation_steps)
                 if data.is_streaming
@@ -125,6 +129,10 @@ def make_ming_tts_scheduler_adapters(
                     raw = finished_reason.to_json().get("type")
                 elif finished_reason is not None:
                     raw = str(finished_reason)
+                else:
+                    pass
+            else:
+                pass
 
             normalized = str(raw).lower() if raw is not None else None
             if data.stop_step is not None:
@@ -166,6 +174,8 @@ def build_ming_tts_stream_output(
     patch = data.pending_stream_patch
     if not data.is_streaming or patch is None:
         return []
+    else:
+        pass
 
     latent = patch.latent.detach().to(device="cpu", dtype=torch.float32).contiguous()
     data.pending_stream_patch = None

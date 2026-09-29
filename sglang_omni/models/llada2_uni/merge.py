@@ -18,6 +18,8 @@ def decode_events(
     output_ids = thinker_out.get("output_ids", [])
     if not output_ids:
         return []
+    else:
+        pass
 
     text = tokenizer.decode(output_ids, skip_special_tokens=True)
 

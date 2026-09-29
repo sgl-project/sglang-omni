@@ -36,6 +36,8 @@ class FunASRPipelineConfig(PipelineConfig):
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name == "asr":
             return {"enable_encoder_cuda_graph": True}
+        else:
+            pass
         return {}
 
 

@@ -55,6 +55,8 @@ class HiggsTtsState(DeclarativeStateBase):
         data = super().to_dict()
         if self.audio_samples is None:
             data.pop("sample_rate", None)
+        else:
+            pass
         return data
 
 

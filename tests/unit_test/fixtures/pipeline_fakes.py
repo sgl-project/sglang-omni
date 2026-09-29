@@ -19,7 +19,7 @@ import torch
 
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 
 @dataclass
@@ -32,24 +32,24 @@ class EventLog:
 
 class FakeOp:
     def __init__(self, metadata: dict[str, Any], log: EventLog | None = None):
-        self._metadata = metadata
+        self.metadata_value = metadata
         self.log = log or EventLog()
         self.waited = False
         self.failed: BaseException | None = None
 
     @property
     def metadata(self) -> dict[str, Any]:
-        return self._metadata
+        return self.metadata_value
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         del timeout
         self.waited = True
-        self.log.append("op_wait", self._metadata.get("key"))
+        self.log.append("op_wait", self.metadata_value.get("key"))
         if self.failed is not None:
             raise self.failed
 
     def mark_receiver_done(self) -> None:
-        self.log.append("op_ack", self._metadata.get("key"))
+        self.log.append("op_ack", self.metadata_value.get("key"))
 
     def mark_receiver_failed(self, exc: BaseException) -> None:
         self.failed = exc
@@ -295,29 +295,29 @@ class ReplicaProcessProbeScheduler:
         self.inbox: queue.Queue[IncomingMessage] = queue.Queue()
         self.outbox: queue.Queue[OutgoingMessage] = queue.Queue()
         self.requires_tp_work_fanout = True
-        self._marker = marker
-        self._emit_stream = emit_stream
-        self._running = False
-        self._stream_chunks: dict[str, list[Any]] = {}
-        self._stream_done: set[str] = set()
+        self.marker = marker
+        self.emit_stream = emit_stream
+        self.running = False
+        self.stream_chunks: dict[str, list[Any]] = {}
+        self.stream_done: set[str] = set()
 
     def start(self) -> None:
-        self._running = True
-        while self._running:
+        self.running = True
+        while self.running:
             try:
                 msg = self.inbox.get(timeout=0.1)
             except queue.Empty:
                 continue
             if msg.type == "stream_chunk":
-                self._stream_chunks.setdefault(msg.request_id, []).append(msg.data.data)
+                self.stream_chunks.setdefault(msg.request_id, []).append(msg.data.data)
                 continue
             if msg.type == "stream_done":
-                self._stream_done.add(msg.request_id)
+                self.stream_done.add(msg.request_id)
                 continue
             if msg.type != "new_request":
                 continue
             try:
-                self._handle_request(msg)
+                self.handle_request(msg)
             except Exception as exc:
                 self.outbox.put(
                     OutgoingMessage(
@@ -327,13 +327,13 @@ class ReplicaProcessProbeScheduler:
                     )
                 )
 
-    def _handle_request(self, msg: IncomingMessage) -> None:
+    def handle_request(self, msg: IncomingMessage) -> None:
         payload = msg.data
         process_name = multiprocessing.current_process().name
         process_id = os.getpid()
-        if self._emit_stream:
-            payload.data[f"{self._marker}_process"] = process_name
-            payload.data[f"{self._marker}_pid"] = process_id
+        if self.emit_stream:
+            payload.data[f"{self.marker}_process"] = process_name
+            payload.data[f"{self.marker}_pid"] = process_id
             payload.data["producer_payload_id"] = id(payload)
             payload.data["_local_marker"] = threading.Lock()
             self.outbox.put(
@@ -344,17 +344,17 @@ class ReplicaProcessProbeScheduler:
                 )
             )
         else:
-            chunks = self._stream_chunks.pop(msg.request_id, [])
-            if len(chunks) != 1 or msg.request_id not in self._stream_done:
+            chunks = self.stream_chunks.pop(msg.request_id, [])
+            if len(chunks) != 1 or msg.request_id not in self.stream_done:
                 raise AssertionError(
                     f"request {msg.request_id} did not receive one completed stream"
                 )
-            self._stream_done.discard(msg.request_id)
+            self.stream_done.discard(msg.request_id)
             local_marker = payload.data.pop("_local_marker", None)
             if local_marker is None:
                 raise AssertionError("same-process payload lost its local marker")
-            payload.data[f"{self._marker}_process"] = process_name
-            payload.data[f"{self._marker}_pid"] = process_id
+            payload.data[f"{self.marker}_process"] = process_name
+            payload.data[f"{self.marker}_pid"] = process_id
             payload.data["same_payload_object"] = payload.data[
                 "producer_payload_id"
             ] == id(payload)
@@ -369,11 +369,11 @@ class ReplicaProcessProbeScheduler:
         )
 
     def stop(self) -> None:
-        self._running = False
+        self.running = False
 
     def abort(self, request_id: str) -> None:
-        self._stream_chunks.pop(request_id, None)
-        self._stream_done.discard(request_id)
+        self.stream_chunks.pop(request_id, None)
+        self.stream_done.discard(request_id)
 
 
 def make_replica_process_probe_scheduler(
@@ -563,7 +563,7 @@ def collect_event_names(log: EventLog) -> list[Any]:
 
 
 def make_noop_projector(marker: str) -> Callable[[StagePayload], StagePayload]:
-    def _project(payload: StagePayload) -> StagePayload:
+    def project(payload: StagePayload) -> StagePayload:
         return make_stage_payload(
             request_id=payload.request_id,
             inputs=payload.request.inputs,
@@ -571,7 +571,7 @@ def make_noop_projector(marker: str) -> Callable[[StagePayload], StagePayload]:
             data={"marker": marker, "data": payload.data},
         )
 
-    return _project
+    return project
 
 
 def make_scheduler_consuming_kv_budget(**kwargs: Any) -> FakeScheduler:

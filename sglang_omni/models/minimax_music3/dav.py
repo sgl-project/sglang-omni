@@ -27,11 +27,11 @@ class Snake1d(nn.Module):
         return snake(x, self.alpha)
 
 
-def _wn_conv(*args: Any, **kwargs: Any) -> nn.Module:
+def wn_conv(*args: Any, **kwargs: Any) -> nn.Module:
     return nn.utils.weight_norm(nn.Conv1d(*args, **kwargs))
 
 
-def _wn_conv_transpose(*args: Any, **kwargs: Any) -> nn.Module:
+def wn_conv_transpose(*args: Any, **kwargs: Any) -> nn.Module:
     return nn.utils.weight_norm(nn.ConvTranspose1d(*args, **kwargs))
 
 
@@ -53,9 +53,9 @@ class ResidualUnit(nn.Module):
         pad = (7 - 1) * dilation // 2
         self.block = nn.Sequential(
             Snake1d(dim),
-            _wn_conv(dim, dim, kernel_size=7, dilation=dilation, padding=pad),
+            wn_conv(dim, dim, kernel_size=7, dilation=dilation, padding=pad),
             Snake1d(dim),
-            _wn_conv(dim, dim, kernel_size=1),
+            wn_conv(dim, dim, kernel_size=1),
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -63,6 +63,8 @@ class ResidualUnit(nn.Module):
         if y.shape[-1] != x.shape[-1]:
             pad = (x.shape[-1] - y.shape[-1]) // 2
             x = x[..., pad : x.shape[-1] - pad]
+        else:
+            pass
         return x + y
 
 
@@ -71,7 +73,7 @@ class DecoderBlock(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             Snake1d(input_dim),
-            _wn_conv_transpose(
+            wn_conv_transpose(
                 input_dim,
                 output_dim,
                 kernel_size=2 * stride,
@@ -90,7 +92,7 @@ class DecoderBlock(nn.Module):
 class Decoder(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        layers: list[nn.Module] = [_wn_conv(1024, 1536, kernel_size=7, padding=3)]
+        layers: list[nn.Module] = [wn_conv(1024, 1536, kernel_size=7, padding=3)]
         rates = (8, 8, 4, 2)
         channels = 1536
         output_dim = channels
@@ -101,7 +103,7 @@ class Decoder(nn.Module):
         layers.extend(
             (
                 Snake1d(output_dim),
-                _wn_conv(output_dim, 1, kernel_size=7, padding=3),
+                wn_conv(output_dim, 1, kernel_size=7, padding=3),
                 nn.Tanh(),
             )
         )

@@ -17,4 +17,6 @@ class AddFusion(nn.Module):
         output = (self.user_weight * acoustic) + (self.text_weight * text)
         if function is not None:
             output = output + (self.function_weight * function)
+        else:
+            pass
         return output

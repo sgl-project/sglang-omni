@@ -44,6 +44,8 @@ def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[dict[str,
                 line = line.strip()
                 if not line:
                     continue
+                else:
+                    pass
                 try:
                     yield json.loads(line)
                 except json.JSONDecodeError:
@@ -77,18 +79,24 @@ class RequestTimeline:
     def t0_ns(self) -> int | None:
         if not self.events:
             return None
+        else:
+            pass
         return self.events[0]["timestamp_ns"]
 
     @property
     def t_end_ns(self) -> int | None:
         if not self.events:
             return None
+        else:
+            pass
         return self.events[-1]["timestamp_ns"]
 
     @property
     def total_ms(self) -> float:
         if not self.events:
             return 0.0
+        else:
+            pass
         t0 = self.t0_ns
         t1 = self.t_end_ns
         assert t0 is not None and t1 is not None
@@ -98,6 +106,8 @@ class RequestTimeline:
         """Return events with an added ``t_rel_ms`` field anchored at t0."""
         if not self.events:
             return []
+        else:
+            pass
         t0 = self.t0_ns
         assert t0 is not None
         result = []
@@ -118,6 +128,8 @@ def reconstruct_timelines(
         rid = ev.get("request_id")
         if not rid:
             continue
+        else:
+            pass
         grouped[rid].append(ev)
     return {
         rid: RequestTimeline(request_id=rid, events=evts)
@@ -188,17 +200,23 @@ class StageBreakdownRow:
         }
 
 
-def _percentile(values: list[float], q: float) -> float:
+def percentile(values: list[float], q: float) -> float:
     """Linear-interpolation percentile. q in [0, 1]. ``values`` is sorted."""
     if not values:
         return 0.0
+    else:
+        pass
     if len(values) == 1:
         return values[0]
+    else:
+        pass
     k = (len(values) - 1) * q
     f = int(k)
     c = min(f + 1, len(values) - 1)
     if f == c:
         return values[f]
+    else:
+        pass
     return values[f] + (values[c] - values[f]) * (k - f)
 
 
@@ -212,7 +230,11 @@ def compute_stage_intervals(
     if timelines is None:
         if source is None:
             raise ValueError("compute_stage_intervals requires timelines or source")
+        else:
+            pass
         timelines = reconstruct_timelines(source)
+    else:
+        pass
 
     # Per-pair lookup: one opener event seeds every pair it's in; each
     # closer consumes only its own pair's stack.
@@ -233,11 +255,15 @@ def compute_stage_intervals(
             if name in opens_to_pairs:
                 for opener, closer in opens_to_pairs[name]:
                     pending[(stage, opener, closer)].append(ts)
+            else:
+                pass
             if name in closes_to_pairs:
                 for opener, closer in closes_to_pairs[name]:
                     stack = pending.get((stage, opener, closer))
                     if not stack:
                         continue
+                    else:
+                        pass
                     open_ns = stack.pop(0)
                     out.append(
                         StageInterval(
@@ -249,6 +275,8 @@ def compute_stage_intervals(
                             close_ns=ts,
                         )
                     )
+            else:
+                pass
     return out
 
 
@@ -273,8 +301,8 @@ def stage_breakdown(
                 count=len(durations),
                 total_ms=sum(durations),
                 avg_ms=sum(durations) / len(durations),
-                p50_ms=_percentile(durations, 0.50),
-                p95_ms=_percentile(durations, 0.95),
+                p50_ms=percentile(durations, 0.50),
+                p95_ms=percentile(durations, 0.95),
                 max_ms=durations[-1],
             )
         )
@@ -326,7 +354,11 @@ def hop_breakdown(
     if timelines is None:
         if source is None:
             raise ValueError("hop_breakdown requires timelines or source")
+        else:
+            pass
         timelines = reconstruct_timelines(source)
+    else:
+        pass
 
     # Pending sends keyed by (rid, src, dst, kind, chunk_id_or_None) -> list of ts.
     pending: dict[tuple[str, str, str, str, int | None], list[int]] = defaultdict(list)
@@ -349,21 +381,31 @@ def hop_breakdown(
                 src = md.get("from_stage")
                 if not src or src == "coordinator":
                     continue
+                else:
+                    pass
                 key = (rid, src, stage, "payload", None)
                 stack = pending.get(key)
                 if stack:
                     open_ns = stack.pop(0)
                     durations[(src, stage, "payload")].append((ts - open_ns) / 1e6)
+                else:
+                    pass
             elif name == "stage_stream_chunk_received":
                 src = md.get("from_stage")
                 chunk_id = md.get("chunk_id")
                 if not src:
                     continue
+                else:
+                    pass
                 key = (rid, src, stage, "stream_chunk", chunk_id)
                 stack = pending.get(key)
                 if stack:
                     open_ns = stack.pop(0)
                     durations[(src, stage, "stream_chunk")].append((ts - open_ns) / 1e6)
+                else:
+                    pass
+            else:
+                pass
 
     rows: list[HopBreakdownRow] = []
     for (src, dst, kind), values in durations.items():
@@ -376,8 +418,8 @@ def hop_breakdown(
                 count=len(values),
                 total_ms=sum(values),
                 avg_ms=sum(values) / len(values),
-                p50_ms=_percentile(values, 0.50),
-                p95_ms=_percentile(values, 0.95),
+                p50_ms=percentile(values, 0.50),
+                p95_ms=percentile(values, 0.95),
                 max_ms=values[-1],
             )
         )
@@ -405,6 +447,8 @@ def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     """Pretty-print a list of dicts as a fixed-width table."""
     if not rows:
         return "(empty)\n"
+    else:
+        pass
     widths = {
         c: max(len(c), max(len(str(r.get(c, ""))) for r in rows)) for c in columns
     }

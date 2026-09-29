@@ -26,12 +26,16 @@ class KVBufferRegion:
                 f"KV buffer {self.name!r} bytes_per_page must be positive, "
                 f"got {self.bytes_per_page}"
             )
+        else:
+            pass
         byte_length = self.tensor.numel() * self.tensor.element_size()
         if byte_length % self.bytes_per_page != 0:
             raise ValueError(
                 f"KV buffer {self.name!r} byte length {byte_length} must be "
                 f"divisible by bytes_per_page {self.bytes_per_page}"
             )
+        else:
+            pass
         try:
             byte_view = self.tensor.view(torch.uint8).view(-1)
         except RuntimeError as error:
@@ -42,10 +46,14 @@ class KVBufferRegion:
 
     @property
     def page_count(self) -> int:
-        return self._byte_view.numel() // self.bytes_per_page
+        return (
+            self._byte_view.numel() // self.bytes_per_page
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def byte_view(self) -> torch.Tensor:
-        return self._byte_view
+        return (
+            self._byte_view
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 @dataclass(frozen=True)
@@ -61,6 +69,8 @@ class KVPool:
         devices = {buffer.tensor.device for buffer in self.buffers}
         if len(devices) != 1:
             raise ValueError("all KV pool buffers must live on the same device")
+        else:
+            pass
 
     @property
     def device(self) -> torch.device:
@@ -83,6 +93,8 @@ class KVPool:
     def validate_page_indices(self, page_indices: tuple[int, ...]) -> None:
         if min(page_indices) < 0:
             raise ValueError("KV page indices must be non-negative")
+        else:
+            pass
         max_page_index = max(page_indices)
         for buffer in self.buffers:
             if max_page_index >= buffer.page_count:
@@ -90,6 +102,8 @@ class KVPool:
                     f"KV page index {max_page_index} exceeds buffer "
                     f"{buffer.name!r} capacity {buffer.page_count}"
                 )
+            else:
+                pass
 
 
 @dataclass(frozen=True)

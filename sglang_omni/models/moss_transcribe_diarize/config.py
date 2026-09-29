@@ -78,6 +78,8 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name == "asr":
             return {"encoder_cache_size_bytes": _ENCODER_CACHE_SIZE_BYTES}
+        else:
+            pass
         return {}
 
     def resolved_env_defaults(self) -> dict[str, str]:

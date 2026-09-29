@@ -36,7 +36,7 @@ class VoiceMutation:
         operation: Literal["upload", "delete"],
         name: str,
     ) -> VoiceMutation | None:
-        normalized = _normalize_voice_name(name)
+        normalized = normalize_voice_name(name)
         if normalized is None:
             return None
         return cls(operation=operation, name=normalized)
@@ -98,7 +98,7 @@ class VoiceRoutingState:
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run_reconciliation())
+            self._task = asyncio.create_task(self.run_reconciliation())
 
     async def stop(self) -> None:
         if self._task is None:
@@ -183,7 +183,7 @@ class VoiceRoutingState:
         names = {
             normalized
             for name in voice_names
-            if (normalized := _normalize_voice_name(name)) is not None
+            if (normalized := normalize_voice_name(name)) is not None
         }
         names.discard(DEFAULT_VOICE_NAME)
         if not names:
@@ -200,12 +200,12 @@ class VoiceRoutingState:
             return True
         return bool(names & self._uploaded_names)
 
-    async def _run_reconciliation(self) -> None:
+    async def run_reconciliation(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
             await self._refresh_requested.wait()
             self._refresh_requested.clear()
-            if not await self._reconcile_once():
+            if not await self.reconcile_once():
                 continue
             retry = loop.call_later(
                 self._retry_interval_secs, self._refresh_requested.set
@@ -215,7 +215,7 @@ class VoiceRoutingState:
             finally:
                 retry.cancel()
 
-    async def _reconcile_once(self) -> bool:
+    async def reconcile_once(self) -> bool:
         if self._mutations_inflight > 0:
             return False
         owner = self.owner()
@@ -225,9 +225,9 @@ class VoiceRoutingState:
         registry_generation = self._registry_generation
         self._is_reconciling = True
         try:
-            uploaded_names = await self._fetch_uploaded_voice_names(owner)
+            uploaded_names = await self.fetch_uploaded_voice_names(owner)
         except (httpx.HTTPError, ValueError) as exc:
-            refresh_error = _registry_refresh_error(exc)
+            refresh_error = registry_refresh_error(exc)
             if self._last_refresh_error != refresh_error:
                 logger.warning(
                     f"voice_registry_hydration_failed worker={owner.display_id} "
@@ -260,7 +260,7 @@ class VoiceRoutingState:
         finally:
             self._is_reconciling = False
 
-    async def _fetch_uploaded_voice_names(self, owner: Worker) -> set[str]:
+    async def fetch_uploaded_voice_names(self, owner: Worker) -> set[str]:
         async with self._client.stream(
             "GET",
             f"{owner.url}/v1/audio/voices",
@@ -277,7 +277,7 @@ class VoiceRoutingState:
             payload = json.loads(body)
         except (json.JSONDecodeError, UnicodeDecodeError):
             raise ValueError("voice registry response must be valid JSON") from None
-        return _uploaded_voice_names(payload)
+        return uploaded_voice_names(payload)
 
     def apply(self, mutation: VoiceMutation) -> None:
         assert self._mutations_inflight > 0
@@ -287,7 +287,7 @@ class VoiceRoutingState:
             self._uploaded_names.discard(mutation.name)
 
 
-def _uploaded_voice_names(payload: Any) -> set[str]:
+def uploaded_voice_names(payload: Any) -> set[str]:
     if not isinstance(payload, dict):
         raise ValueError("voice list response must be an object")
     uploaded_names = payload.get("uploaded_voice_names")
@@ -296,7 +296,7 @@ def _uploaded_voice_names(payload: Any) -> set[str]:
             raise ValueError("uploaded_voice_names must be a list")
         names: set[str] = set()
         for item in uploaded_names:
-            normalized = _normalize_voice_name(item)
+            normalized = normalize_voice_name(item)
             if normalized is None:
                 raise ValueError("uploaded_voice_names must contain names")
             names.add(normalized)
@@ -309,14 +309,14 @@ def _uploaded_voice_names(payload: Any) -> set[str]:
     for item in uploaded:
         if not isinstance(item, dict):
             raise ValueError("uploaded voice metadata must be an object")
-        normalized = _normalize_voice_name(item.get("name"))
+        normalized = normalize_voice_name(item.get("name"))
         if normalized is None:
             raise ValueError("uploaded voice metadata must include a name")
         names.add(normalized)
     return names
 
 
-def _registry_refresh_error(exc: Exception) -> str:
+def registry_refresh_error(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         return f"HTTPStatusError:status={exc.response.status_code}"
     if isinstance(exc, VoiceRegistryResponseTooLargeError):
@@ -324,7 +324,7 @@ def _registry_refresh_error(exc: Exception) -> str:
     return type(exc).__name__
 
 
-def _normalize_voice_name(value: Any) -> str | None:
+def normalize_voice_name(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip().lower()

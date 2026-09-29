@@ -61,7 +61,7 @@ class RecordingTranslationClient:
         )
 
 
-def _translation_client(
+def translation_client(
     *,
     model_name: str = WHISPER_MODEL,
     supports_audio_translation: bool = True,
@@ -76,7 +76,7 @@ def _translation_client(
     return app, backend
 
 
-def _post_translation(
+def post_translation(
     app: FastAPI,
     *,
     model: str = WHISPER_MODEL,
@@ -93,7 +93,7 @@ def _post_translation(
     if language is not None:
         data["language"] = language
 
-    async def _post() -> httpx.Response:
+    async def post() -> httpx.Response:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
@@ -104,13 +104,13 @@ def _post_translation(
                 files={"file": ("sample.wav", audio, "audio/wav")},
             )
 
-    return asyncio.run(_post())
+    return asyncio.run(post())
 
 
 def test_whisper_translation_sets_translate_task_and_preserves_language() -> None:
-    client, backend = _translation_client()
+    client, backend = translation_client()
 
-    response = _post_translation(client, language="fr")
+    response = post_translation(client, language="fr")
 
     assert response.status_code == 200
     assert response.json() == {"text": "hello world"}
@@ -123,12 +123,12 @@ def test_whisper_translation_sets_translate_task_and_preserves_language() -> Non
 
 def test_unsupported_model_returns_openai_shaped_400_before_audio_read() -> None:
     model_name = UNSUPPORTED_MODEL
-    client, backend = _translation_client(
+    client, backend = translation_client(
         model_name=model_name,
         supports_audio_translation=False,
     )
 
-    response = _post_translation(client, model=model_name, audio=b"")
+    response = post_translation(client, model=model_name, audio=b"")
 
     assert response.status_code == 400
     assert response.headers["content-type"].startswith("application/json")
@@ -156,9 +156,9 @@ def test_translation_response_format_matrix(
     expected_status: int,
     expected_content_type: str,
 ) -> None:
-    client, backend = _translation_client()
+    client, backend = translation_client()
 
-    response = _post_translation(client, response_format=response_format)
+    response = post_translation(client, response_format=response_format)
 
     assert response.status_code == expected_status
     assert response.headers["content-type"].startswith(expected_content_type)
@@ -184,9 +184,9 @@ def test_translation_response_format_matrix(
 
 
 def test_omitted_language_detects_the_source() -> None:
-    client, backend = _translation_client()
+    client, backend = translation_client()
 
-    response = _post_translation(client, language=None)
+    response = post_translation(client, language=None)
 
     assert response.status_code == 200
     assert response.json()["text"] == "hello world"
@@ -194,9 +194,9 @@ def test_omitted_language_detects_the_source() -> None:
 
 
 def test_invalid_response_format_returns_openai_400() -> None:
-    client, backend = _translation_client()
+    client, backend = translation_client()
 
-    response = _post_translation(client, response_format="xml")
+    response = post_translation(client, response_format="xml")
 
     assert response.status_code == 400
     error = response.json()["error"]
@@ -215,7 +215,7 @@ def test_segment_format_without_adapter_timestamps_returns_400() -> None:
         supports_audio_translation=True,
     )
 
-    response = _post_translation(app, response_format="SRT")
+    response = post_translation(app, response_format="SRT")
 
     assert response.status_code == 400
     error = response.json()["error"]
@@ -234,7 +234,7 @@ def test_translation_timestamp_decode_error_uses_openai_envelope() -> None:
         supports_audio_translation=True,
     )
 
-    response = _post_translation(app, response_format="srt")
+    response = post_translation(app, response_format="srt")
 
     assert response.status_code == 400
     assert "detail" not in response.json()
@@ -245,9 +245,9 @@ def test_translation_timestamp_decode_error_uses_openai_envelope() -> None:
 
 
 def test_whisper_translation_stream_matches_transcription_sse_lifecycle() -> None:
-    client, backend = _translation_client()
+    client, backend = translation_client()
 
-    response = _post_translation(client, stream=True, language="de")
+    response = post_translation(client, stream=True, language="de")
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
@@ -269,9 +269,9 @@ def test_whisper_translation_stream_matches_transcription_sse_lifecycle() -> Non
 def test_translation_stream_rejects_formats_without_segment_timestamps(
     response_format: str,
 ) -> None:
-    client, backend = _translation_client()
+    client, backend = translation_client()
 
-    response = _post_translation(
+    response = post_translation(
         client,
         response_format=response_format,
         stream=True,
@@ -283,9 +283,9 @@ def test_translation_stream_rejects_formats_without_segment_timestamps(
 
 
 def test_unknown_model_rejected_with_404() -> None:
-    client, backend = _translation_client()
+    client, backend = translation_client()
 
-    response = _post_translation(client, model="unknown/model")
+    response = post_translation(client, model="unknown/model")
 
     assert response.status_code == 404
     error = response.json()["error"]

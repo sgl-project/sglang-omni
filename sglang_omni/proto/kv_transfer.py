@@ -30,8 +30,12 @@ class KVPoolLayout:
 
         if self.layout_id != other.layout_id or self.page_size != other.page_size:
             return False
+        else:
+            pass
         if len(self.buffers) != len(other.buffers):
             return False
+        else:
+            pass
         return all(
             source.name == destination.name
             and source.bytes_per_page == destination.bytes_per_page

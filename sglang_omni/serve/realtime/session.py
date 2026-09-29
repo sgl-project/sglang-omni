@@ -108,6 +108,8 @@ class RealtimeSession:
         turn_detection_capabilities = [TurnDetectionType.SERVER_VAD.value]
         if smart_turn_model is not None:
             turn_detection_capabilities.append(TurnDetectionType.SEMANTIC_VAD.value)
+        else:
+            pass
 
         self.session_object = SessionObject(
             id=self.session_id,
@@ -165,8 +167,12 @@ class RealtimeSession:
             message = await self.websocket.receive()
             if message["type"] == "websocket.disconnect":
                 break
+            else:
+                pass
             if message["type"] != "websocket.receive":
                 continue
+            else:
+                pass
             raw = message["text"]
             payload = json.loads(raw)
             assert isinstance(payload, dict), "Top-level payload must be a JSON object"
@@ -190,10 +196,12 @@ class RealtimeSession:
         turn_detection_update = update.pop("turn_detection", _UNSET)
         try:
             if turn_detection_update is not _UNSET:
-                current["turn_detection"] = self._merge_turn_detection(
+                current["turn_detection"] = self.merge_turn_detection(
                     current.get("turn_detection"),
                     turn_detection_update,
                 )
+            else:
+                pass
             candidate = SessionObject.model_validate(current | update)
         except ValueError as exc:
             await self.send_error(
@@ -211,6 +219,8 @@ class RealtimeSession:
                 "modalities must be ['text'] or ['text', 'audio'].",
             )
             return
+        else:
+            pass
         audio_requested = "audio" in modalities
         if audio_requested and not self.supports_audio_output:
             await self.send_error(
@@ -219,6 +229,8 @@ class RealtimeSession:
                 "Audio output is unavailable for this pipeline.",
             )
             return
+        else:
+            pass
         assert candidate.input_audio_format == "pcm16", "Only pcm16 is supported"
         if "output_audio_format" in update and candidate.output_audio_format != "pcm16":
             await self.send_error(
@@ -227,12 +239,14 @@ class RealtimeSession:
                 "Only PCM16 output audio is supported.",
             )
             return
+        else:
+            pass
 
         replacement_vad: TurnDetector | None = None
         turn_detection_changed = (
             turn_detection_update is not _UNSET
-            and self._detector_config(candidate.turn_detection)
-            != self._detector_config(self.session_object.turn_detection)
+            and self.detector_config(candidate.turn_detection)
+            != self.detector_config(self.session_object.turn_detection)
         )
         if turn_detection_changed:
             try:
@@ -248,10 +262,12 @@ class RealtimeSession:
                 candidate.turn_detection = TurnDetection.model_validate(
                     build.effective_config
                 )
-                if self._detector_config(
+                if self.detector_config(
                     candidate.turn_detection
-                ) != self._detector_config(self.session_object.turn_detection):
+                ) != self.detector_config(self.session_object.turn_detection):
                     replacement_vad = build.detector
+                else:
+                    pass
             except ValueError as exc:
                 await self.send_error(
                     "invalid_request_error",
@@ -272,6 +288,8 @@ class RealtimeSession:
                     "The requested turn detector could not be initialized.",
                 )
                 return
+        else:
+            pass
 
         had_pending_audio = (
             not self.audio_buffer.is_empty() or self.utterance_item_id is not None
@@ -280,9 +298,13 @@ class RealtimeSession:
             self.drop_buffer_and_reset_vad()
             self.speech_idle.set()
             self.vad = replacement_vad
+        else:
+            pass
         self.session_object = candidate
         if replacement_vad is not None and had_pending_audio:
             await self.send(make_event("input_audio_buffer.cleared"))
+        else:
+            pass
         await self.send(
             make_event(
                 "session.updated",
@@ -291,7 +313,7 @@ class RealtimeSession:
         )
 
     @staticmethod
-    def _detector_config(value: TurnDetection | None) -> dict[str, Any]:
+    def detector_config(value: TurnDetection | None) -> dict[str, Any]:
         # Resolve against the same runtime defaults build_turn_detector applies,
         # so a client that merely restates the active default doesn't compare
         # as "changed" and trigger a needless detector rebuild/buffer clear.
@@ -305,6 +327,8 @@ class RealtimeSession:
             )
             if eagerness == "auto":
                 eagerness = "medium"
+            else:
+                pass
             semantic_defaults = SemanticVADConfig.from_eagerness(eagerness)
             return {
                 "type": detection_type,
@@ -320,6 +344,8 @@ class RealtimeSession:
                     else effective.prefix_padding_ms
                 ),
             }
+        else:
+            pass
         vad_defaults = VADConfig()
         return {
             "type": detection_type,
@@ -341,12 +367,14 @@ class RealtimeSession:
         }
 
     @staticmethod
-    def _merge_turn_detection(
+    def merge_turn_detection(
         current: Mapping[str, Any] | None,
         update: Mapping[str, Any] | None,
     ) -> dict[str, Any] | None:
         if update is None:
             return dict(current) if current is not None else None
+        else:
+            pass
         current_data = dict(current or {})
         update_data = dict(update)
         current_type = str(
@@ -362,6 +390,8 @@ class RealtimeSession:
                 and current_data.get("interrupt_response") is not None
             ):
                 shared["interrupt_response"] = current_data["interrupt_response"]
+            else:
+                pass
             merged = {**shared, **update_data}
         if (
             requested_type == TurnDetectionType.SEMANTIC_VAD.value
@@ -371,10 +401,14 @@ class RealtimeSession:
                 "silence_duration_ms is only supported for server_vad; "
                 "use semantic_vad eagerness instead"
             )
+        else:
+            pass
         if requested_type == TurnDetectionType.SEMANTIC_VAD.value:
             merged["type"] = requested_type
             merged["eagerness"] = merged.get("eagerness") or "medium"
             merged.pop("silence_duration_ms", None)
+        else:
+            pass
         return merged
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
@@ -415,6 +449,8 @@ class RealtimeSession:
             )
             if response_has_audio and interrupt_response:
                 await self.cancel_active_response("turn_detected")
+            else:
+                pass
         elif emit.event_type == VADEvent.SPEECH_STOPPED:
             await self.send(
                 make_event(
@@ -427,6 +463,8 @@ class RealtimeSession:
                 await self.auto_commit_utterance(emit.sample_offset)
             finally:
                 self.speech_idle.set()
+        else:
+            pass
 
     def drop_buffer_and_reset_vad(self) -> None:
         discarded = self.audio_buffer.num_samples
@@ -446,6 +484,8 @@ class RealtimeSession:
     async def auto_commit_utterance(self, end_sample_offset: int) -> None:
         if self.audio_buffer.is_empty():
             return
+        else:
+            pass
         start_byte = self.utterance_start_byte or 0
         end_byte = min(
             self.sample_offset_to_buffer_byte(end_sample_offset),
@@ -453,6 +493,8 @@ class RealtimeSession:
         )
         if end_byte <= start_byte:
             return
+        else:
+            pass
         payload = self.audio_buffer.to_sliced_wav_data_uri(
             start_byte=start_byte, end_byte=end_byte
         )
@@ -463,6 +505,8 @@ class RealtimeSession:
         await self.response_queue.put((item_id, payload))
         if self.queue_drainer is None or self.queue_drainer.done():
             self.queue_drainer = asyncio.create_task(self.drain_queue())
+        else:
+            pass
 
     async def handle_audio_clear(self, event: InputAudioBufferClear) -> None:
         self.drop_buffer_and_reset_vad()
@@ -472,11 +516,13 @@ class RealtimeSession:
     async def handle_response_cancel(self, event: ResponseCancel) -> None:
         await self.cancel_active_response("client_cancelled")
 
-    def _remember_cancelled_assistant_item(self, item_id: str) -> None:
+    def remember_cancelled_assistant_item(self, item_id: str) -> None:
         self.cancelled_assistant_item_ids[item_id] = None
         if len(self.cancelled_assistant_item_ids) > _MAX_CANCELLED_ASSISTANT_ITEM_IDS:
             oldest_item_id = next(iter(self.cancelled_assistant_item_ids))
             del self.cancelled_assistant_item_ids[oldest_item_id]
+        else:
+            pass
 
     async def handle_conversation_item_truncate(
         self, event: ConversationItemTruncate
@@ -488,6 +534,8 @@ class RealtimeSession:
                 "content_index must be 0.",
             )
             return
+        else:
+            pass
 
         if event.item_id in self.pending_assistant_item_ids:
             self.truncated_assistant_item_ids.add(event.item_id)
@@ -507,7 +555,11 @@ class RealtimeSession:
                     f"Assistant item {event.item_id!r} was not found.",
                 )
                 return
+            else:
+                pass
             del self.conversation[item_index]
+        else:
+            pass
 
         await self.send(
             make_event(
@@ -523,7 +575,11 @@ class RealtimeSession:
             if self.response_start_pending:
                 if self.pending_response_cancel_reason is None:
                     self.pending_response_cancel_reason = reason
+                else:
+                    pass
                 return
+            else:
+                pass
             request_id = self.active_response_request_id
             if (
                 request_id is None
@@ -531,6 +587,8 @@ class RealtimeSession:
                 or self.cancelled_response_request_id == request_id
             ):
                 return
+            else:
+                pass
             # Mark first so already-buffered engine chunks are rejected while
             # the abort propagates through the pipeline.
             self.cancelled_response_request_id = request_id
@@ -540,6 +598,8 @@ class RealtimeSession:
 
         if response_task is not None and not response_task.done():
             response_task.cancel()
+        else:
+            pass
 
         async def abort_request() -> None:
             try:
@@ -554,11 +614,13 @@ class RealtimeSession:
 
         abort_task = asyncio.create_task(abort_request())
         self.active_response_abort_task = abort_task
-        abort_task.add_done_callback(self._clear_active_response_abort_task)
+        abort_task.add_done_callback(self.clear_active_response_abort_task)
 
-    def _clear_active_response_abort_task(self, task: asyncio.Task[None]) -> None:
+    def clear_active_response_abort_task(self, task: asyncio.Task[None]) -> None:
         if self.active_response_abort_task is task:
             self.active_response_abort_task = None
+        else:
+            pass
 
     async def drain_queue(self) -> None:
         while not self.closed:
@@ -566,6 +628,8 @@ class RealtimeSession:
             await self.speech_idle.wait()
             if self.closed:
                 break
+            else:
+                pass
             self.response_start_pending = True
             try:
                 self.active_task = asyncio.create_task(self.run_turn(item_id, payload))
@@ -588,6 +652,8 @@ class RealtimeSession:
         except asyncio.CancelledError:
             if self.response_cancel_reason is None or self.turn_cancel_requested:
                 raise
+            else:
+                pass
             response_output = None
         finally:
             self.active_response_task = None
@@ -595,12 +661,16 @@ class RealtimeSession:
         abort_task = self.active_response_abort_task
         if abort_task is not None:
             await asyncio.shield(abort_task)
+        else:
+            pass
         try:
             transcript = await self.run_transcription(item_id, audio_payload)
             if transcript:
                 self.conversation.append(
                     ConversationItem(role="user", text=transcript, item_id=item_id)
                 )
+            else:
+                pass
             if (
                 response_output is not None
                 and response_output.text
@@ -613,10 +683,14 @@ class RealtimeSession:
                         item_id=response_output.item_id,
                     )
                 )
+            else:
+                pass
         finally:
             if response_output is not None:
                 self.pending_assistant_item_ids.discard(response_output.item_id)
                 self.truncated_assistant_item_ids.discard(response_output.item_id)
+            else:
+                pass
 
     async def run_response(self, audio_payload: str) -> ResponseOutput:
         """Stream the assistant response and wait for every active terminal."""
@@ -638,6 +712,8 @@ class RealtimeSession:
         retain_for_history = False
         if wants_audio:
             self.pending_assistant_item_ids.add(resp_item_id)
+        else:
+            pass
 
         async def emit_terminals(
             *,
@@ -650,6 +726,8 @@ class RealtimeSession:
             nonlocal text_done, audio_done, response_done
             if response_done:
                 return
+            else:
+                pass
             if not text_done:
                 await self.send(
                     make_event(
@@ -662,6 +740,8 @@ class RealtimeSession:
                     )
                 )
                 text_done = True
+            else:
+                pass
             if include_audio and saw_audio and not audio_done:
                 await self.send(
                     make_event(
@@ -673,9 +753,13 @@ class RealtimeSession:
                     )
                 )
                 audio_done = True
+            else:
+                pass
             if error is not None:
                 await self.send_error(*error)
-            await self._send_response_done(
+            else:
+                pass
+            await self.send_response_done(
                 response_id=response_id,
                 item_id=resp_item_id,
                 response_text=response_text,
@@ -685,7 +769,9 @@ class RealtimeSession:
                 usage=usage,
             )
             if wants_audio and status == "cancelled":
-                self._remember_cancelled_assistant_item(resp_item_id)
+                self.remember_cancelled_assistant_item(resp_item_id)
+            else:
+                pass
             response_done = True
 
         async def emit_terminals_safely(**kwargs: Any) -> None:
@@ -722,6 +808,8 @@ class RealtimeSession:
                 if reason is not None:
                     self.cancelled_response_request_id = request_id
                     self.cancelled_response_reason = reason
+                else:
+                    pass
             if reason is not None:
                 await claim_terminal()
                 await emit_terminals_safely(
@@ -731,6 +819,8 @@ class RealtimeSession:
                     reason=reason,
                 )
                 return ResponseOutput(item_id=resp_item_id, text="")
+            else:
+                pass
 
             async for chunk in self.client.completion_stream(
                 response_request,
@@ -739,6 +829,8 @@ class RealtimeSession:
             ):
                 if self.cancelled_response_request_id == request_id:
                     continue
+                else:
+                    pass
 
                 if chunk.text and (chunk.modality == "text" or not text_acc):
                     text_acc.append(chunk.text)
@@ -752,6 +844,8 @@ class RealtimeSession:
                             delta=chunk.text,
                         )
                     )
+                else:
+                    pass
 
                 if wants_audio and chunk.modality == "audio" and chunk.audio_b64:
                     saw_audio = True
@@ -765,12 +859,20 @@ class RealtimeSession:
                             delta=chunk.audio_b64,
                         )
                     )
+                else:
+                    pass
 
                 if chunk.finish_reason is not None:
                     if chunk.modality == "text":
                         finish_reason = chunk.finish_reason
+                    else:
+                        pass
                     if chunk.usage is not None:
                         usage = dataclasses.asdict(chunk.usage)
+                    else:
+                        pass
+                else:
+                    pass
 
                 if (
                     chunk.modality == "text"
@@ -805,6 +907,8 @@ class RealtimeSession:
                         )
                     )
                     audio_done = True
+                else:
+                    pass
 
             response_text = "".join(text_acc)
             cancelled = await claim_terminal()
@@ -816,6 +920,8 @@ class RealtimeSession:
                     reason=self.cancelled_response_reason or "client_cancelled",
                 )
                 return ResponseOutput(item_id=resp_item_id, text="")
+            else:
+                pass
 
             if wants_audio and not saw_audio:
                 await emit_terminals_safely(
@@ -830,6 +936,8 @@ class RealtimeSession:
                     ),
                 )
                 return ResponseOutput(item_id=resp_item_id, text="")
+            else:
+                pass
 
             await emit_terminals_safely(
                 response_text=response_text,
@@ -848,6 +956,8 @@ class RealtimeSession:
                     status="cancelled",
                     reason=self.cancelled_response_reason or "client_cancelled",
                 )
+            else:
+                pass
             raise
         except Exception as exc:
             response_text = "".join(text_acc)
@@ -859,6 +969,8 @@ class RealtimeSession:
                         "exception": exc,
                     }
                 )
+            else:
+                pass
             if not response_done:
                 await emit_terminals_safely(
                     response_text=response_text,
@@ -879,24 +991,36 @@ class RealtimeSession:
                         )
                     ),
                 )
+            else:
+                pass
             return ResponseOutput(item_id=resp_item_id, text="")
         finally:
             if wants_audio and not retain_for_history:
                 self.pending_assistant_item_ids.discard(resp_item_id)
                 self.truncated_assistant_item_ids.discard(resp_item_id)
+            else:
+                pass
             if self.active_request_id == request_id:
                 self.active_request_id = None
+            else:
+                pass
             async with self.response_state_lock:
                 if self.active_response_request_id == request_id:
                     self.active_response_request_id = None
                     self.active_response_has_audio = False
+                else:
+                    pass
                 if self.cancelled_response_request_id == request_id:
                     self.cancelled_response_request_id = None
                     self.cancelled_response_reason = None
+                else:
+                    pass
                 if self.finalized_response_request_id == request_id:
                     self.finalized_response_request_id = None
+                else:
+                    pass
 
-    async def _send_response_done(
+    async def send_response_done(
         self,
         *,
         response_id: str,
@@ -910,6 +1034,8 @@ class RealtimeSession:
         content: list[dict[str, Any]] = [{"type": "text", "text": response_text}]
         if include_audio:
             content.append({"type": "audio", "transcript": response_text})
+        else:
+            pass
         await self.send(
             make_event(
                 "response.done",
@@ -951,8 +1077,12 @@ class RealtimeSession:
                             delta=chunk.text,
                         )
                     )
+                else:
+                    pass
                 if chunk.finish_reason is not None:
                     break
+                else:
+                    pass
 
             transcript = "".join(text_acc)
             await self.send(
@@ -967,7 +1097,7 @@ class RealtimeSession:
         finally:
             self.active_request_id = None
 
-    def _sampling(self) -> SamplingParams:
+    def sampling(self) -> SamplingParams:
         max_tokens = self.session_object.max_response_output_tokens
         return SamplingParams(
             temperature=self.session_object.temperature,
@@ -1000,7 +1130,7 @@ class RealtimeSession:
         return GenerateRequest(
             model=self.model_name,
             messages=messages,
-            sampling=self._sampling(),
+            sampling=self.sampling(),
             stream=True,
             output_modalities=list(self.session_object.modalities),
             metadata={"audios": [audio_payload]},
@@ -1014,7 +1144,7 @@ class RealtimeSession:
                 Message(role="system", content=_TRANSCRIPTION_PROMPT),
                 Message(role="user", content="Transcribe the spoken audio."),
             ],
-            sampling=self._sampling(),
+            sampling=self.sampling(),
             stream=True,
             output_modalities=["text"],
             metadata={"audios": [audio_payload]},
@@ -1023,8 +1153,12 @@ class RealtimeSession:
     async def send(self, event: dict[str, Any]) -> None:
         if self.closed:
             return
+        else:
+            pass
         if self.websocket.application_state != WebSocketState.CONNECTED:
             return
+        else:
+            pass
         event.setdefault("event_id", new_id("evt"))
         await self.websocket.send_text(json.dumps(event))
 
@@ -1036,7 +1170,7 @@ class RealtimeSession:
             )
         )
 
-    async def _cancel_and_abort(
+    async def cancel_and_abort(
         self, task: asyncio.Task | None, request_id: str | None
     ) -> None:
         """Cancel the owning turn, abort its engine request, absorb the result.
@@ -1047,10 +1181,14 @@ class RealtimeSession:
         """
         if task is None or task.done():
             return
+        else:
+            pass
         task.cancel()
         try:
             if request_id is not None:
                 await self.client.abort(request_id)
+            else:
+                pass
         except Exception as exc:
             asyncio.get_running_loop().call_exception_handler(
                 {
@@ -1066,9 +1204,13 @@ class RealtimeSession:
         self.closed = True
         self.turn_cancel_requested = True
         abort_task = self.active_response_abort_task
-        await self._cancel_and_abort(self.active_task, self.active_request_id)
+        await self.cancel_and_abort(self.active_task, self.active_request_id)
         if abort_task is not None:
             await asyncio.gather(abort_task, return_exceptions=True)
-        await self._cancel_and_abort(self.queue_drainer, None)
+        else:
+            pass
+        await self.cancel_and_abort(self.queue_drainer, None)
         if self.websocket.client_state == WebSocketState.CONNECTED:
             await self.websocket.close()
+        else:
+            pass
