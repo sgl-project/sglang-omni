@@ -56,6 +56,8 @@ class SGLangGenerationEngineBuilder(ABC):
     # Set True only by builders whose model has adopted the breakable prefill
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
+    # Opt in once the model is validated on the platform's attention backend.
+    uses_platform_attention_backend: ClassVar[bool] = False
 
     def build(
         self,
@@ -143,6 +145,10 @@ class SGLangGenerationEngineBuilder(ABC):
         else:
             pass
         sglang_backend.pin_resolved_device_type(overrides, concrete_device.type)
+        if self.uses_platform_attention_backend:
+            sglang_backend.apply_platform_attention_backend(overrides)
+        else:
+            pass
 
         server_args = sglang_backend.build_sglang_server_args(
             checkpoint_dir,
