@@ -9,6 +9,7 @@ import threading
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -16,9 +17,6 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
-from sglang_omni.models.minicpm_o.components.token2wav.speaker_prompt import (
-    SpeakerPrompt,
-)
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 
@@ -27,6 +25,16 @@ FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
+
+
+@dataclass(kw_only=True, frozen=True)
+class SpeakerPrompt:
+    """Prompt tokens, their lengths, the speaker embedding, and the prompt mel."""
+
+    prompt_tokens: torch.Tensor
+    prompt_token_lengths: torch.Tensor
+    speaker_embedding: torch.Tensor
+    prompt_mel: torch.Tensor
 
 
 class MiniCPMOCode2Wav(nn.Module):

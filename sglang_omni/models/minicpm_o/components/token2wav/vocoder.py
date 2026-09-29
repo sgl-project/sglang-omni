@@ -17,6 +17,7 @@ import whisper
 import yaml
 from librosa.filters import mel as librosa_mel
 
+from sglang_omni.models.minicpm_o.components.code2wav import SpeakerPrompt
 from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
 )
@@ -26,9 +27,6 @@ from sglang_omni.models.minicpm_o.components.token2wav.flow import (
     CausalMaskedDiffWithXvec,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
-from sglang_omni.models.minicpm_o.components.token2wav.speaker_prompt import (
-    SpeakerPrompt,
-)
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
 )

@@ -27,6 +27,7 @@ from sglang_omni.models.minicpm_o import stages
 from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
+    SpeakerPrompt,
 )
 from sglang_omni.models.minicpm_o.components.token2wav import vocoder
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
@@ -66,11 +67,11 @@ class Code2WavBuilder(Protocol):
     ) -> MiniCPMOCode2Wav: ...
 
 
-def fake_speaker_prompt(reference_audio: bytes) -> vocoder.SpeakerPrompt:
+def fake_speaker_prompt(reference_audio: bytes) -> SpeakerPrompt:
     """Prompt as wide as the reference, with every tensor tagged by its first byte."""
     reference_id = reference_audio[0]
     prompt_token_count = len(reference_audio)
-    return vocoder.SpeakerPrompt(
+    return SpeakerPrompt(
         prompt_tokens=torch.full(
             (1, prompt_token_count), reference_id, dtype=torch.int32
         ),
@@ -82,7 +83,7 @@ def fake_speaker_prompt(reference_audio: bytes) -> vocoder.SpeakerPrompt:
     )
 
 
-def fake_prepare_prompt(source: str | io.BytesIO) -> vocoder.SpeakerPrompt:
+def fake_prepare_prompt(source: str | io.BytesIO) -> SpeakerPrompt:
     if isinstance(source, str):
         reference_audio = Path(source).read_bytes()
     else:
@@ -486,7 +487,7 @@ def test_prepare_references_runs_in_parallel_and_restores_row_order(
     both_started = threading.Barrier(2, timeout=THREAD_WAIT_SECONDS)
     second_finished = threading.Event()
 
-    def prepare_out_of_order(source: io.BytesIO) -> vocoder.SpeakerPrompt:
+    def prepare_out_of_order(source: io.BytesIO) -> SpeakerPrompt:
         reference_audio = source.getvalue()
         both_started.wait()
         if reference_audio == b"a":
@@ -509,7 +510,7 @@ def test_failed_reference_batch_drains_workers_and_can_retry(
     failed = threading.Event()
     release_slow = threading.Event()
 
-    def fail_while_other_runs(source: io.BytesIO) -> vocoder.SpeakerPrompt:
+    def fail_while_other_runs(source: io.BytesIO) -> SpeakerPrompt:
         reference_audio = source.getvalue()
         if reference_audio == b"a":
             assert slow_started.wait(THREAD_WAIT_SECONDS)
@@ -549,7 +550,7 @@ def test_close_reference_pool_waits_for_running_preparation(
     release = threading.Event()
     preparation_threads: set[threading.Thread] = set()
 
-    def blocking_prepare(source: io.BytesIO) -> vocoder.SpeakerPrompt:
+    def blocking_prepare(source: io.BytesIO) -> SpeakerPrompt:
         preparation_threads.add(threading.current_thread())
         started.set()
         assert release.wait(THREAD_WAIT_SECONDS)
