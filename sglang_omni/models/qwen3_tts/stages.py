@@ -239,14 +239,20 @@ def load_standalone_preprocessing_context(
     frontend = load_qwen3_tts_prompt_frontend(
         checkpoint_dir, device=device, dtype=torch_dtype
     )
-    frontend.load_speech_tokenizer(
-        load_qwen3_tts_tokenizer(
-            checkpoint_dir,
-            device=device,
-            dtype=dtype,
-            attn_implementation=attn_implementation,
-        )
+    speech_tokenizer = load_qwen3_tts_tokenizer(
+        checkpoint_dir,
+        device=device,
+        dtype=dtype,
+        attn_implementation=attn_implementation,
     )
+    frontend.load_speech_tokenizer(speech_tokenizer)
+    if frontend.speaker_encoder_graph_runner is not None:
+        frontend.speaker_encoder_graph_runner.capture(
+            DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
+            speech_tokenizer.model.encode_downsample_rate,
+        )
+    else:
+        pass
     processor = AutoProcessor.from_pretrained(checkpoint_dir, fix_mistral_regex=True)
     wrapper = Qwen3TTSModel(
         model=frontend,

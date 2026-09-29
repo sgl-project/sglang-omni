@@ -72,12 +72,26 @@ def build_real_step_predictor_graph_talker(
     talker.predictor_k_cache = torch.zeros(
         1,
         max_batch_size,
-        num_kv_heads,
         predictor_len,
+        num_kv_heads,
         head_dim,
         device=device,
     )
     talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
+    talker.predictor_k_rows = [
+        layer.view(max_batch_size * predictor_len, -1)
+        for layer in talker.predictor_k_cache
+    ]
+    talker.predictor_v_rows = [
+        layer.view(max_batch_size * predictor_len, -1)
+        for layer in talker.predictor_v_cache
+    ]
+    talker.predictor_cache_slots = (
+        torch.arange(max_batch_size, device=device, dtype=torch.long)[None, :]
+        * predictor_len
+        + talker.predictor_positions[:, None]
+    ).contiguous()
+    talker.predictor_rope_stores_kv = False
     talker.predictor_decode_graph_batch_sizes = (1, 2, 4)
     talker.predictor_decode_graphs = {}
     talker.predictor_decode_graph_disabled = set()
