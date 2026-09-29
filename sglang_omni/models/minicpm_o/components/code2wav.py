@@ -111,7 +111,6 @@ class MiniCPMOCode2Wav(nn.Module):
         self.pending_references: dict[str, Future[SpeakerPrompt]] = {}
         self.reserved_reference_keys_by_request: dict[str, str] = {}
         self.reference_reservations: Counter[str] = Counter()
-        # Reentrant because a future that is already done runs its callback on submit.
         self.reference_lock = threading.RLock()
         self.reference_executor = ThreadPoolExecutor(
             max_workers=reference_workers, thread_name_prefix="minicpmo-reference"
