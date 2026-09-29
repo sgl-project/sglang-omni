@@ -134,7 +134,6 @@ class Token2Wav(torch.nn.Module):
         flow_weights = torch.load(
             model_path / "flow.pt", map_location="cpu", weights_only=True
         )
-        # note (Chenyang): flow.pt still stores this projection under the old name.
         checkpoint_speaker_projection = "spk_embed_affine_layer."
         self.flow.load_state_dict(
             {
