@@ -202,3 +202,44 @@ def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(
     assert result["summary"]["skipped"] == 0
     assert_wer_partitioned(result, max_wer_below_50_corpus=0, max_n_above_50=0)
     assert asr.DEFAULT_ASR_TRANSCRIBE_CONCURRENCY == 32
+
+
+def test_scorer_device_follows_the_named_accelerator(monkeypatch):
+    """The scorers pinned the card only when the device string said cuda, so on
+    any other accelerator every scorer stayed on whichever card was current.
+    """
+    import torch
+
+    from benchmarks.tasks.tts import set_scorer_device
+
+    selected: list[torch.device] = []
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: type(
+            "Module", (), {"set_device": staticmethod(selected.append)}
+        ),
+    )
+
+    set_scorer_device("xpu:5", "speaker-similarity")
+    set_scorer_device("cuda:1", "UTMOS")
+
+    assert selected == [torch.device("xpu", 5), torch.device("cuda", 1)]
+
+
+def test_scorer_device_selects_nothing_without_a_card_to_select(monkeypatch):
+    """cpu names no card, and a bare accelerator type names no index, so both
+    must leave the current device alone rather than raise.
+    """
+    import torch
+
+    from benchmarks.tasks.tts import set_scorer_device
+
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: pytest.fail(f"resolved a device module for {device}"),
+    )
+
+    set_scorer_device("cpu", "speaker-similarity")
+    set_scorer_device("xpu", "UTMOS")
