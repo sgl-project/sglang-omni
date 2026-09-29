@@ -399,6 +399,7 @@ def assert_workers_served_requests_since(
     handle: ManagedRouterHandle,
     before_snapshot: dict,
     label: str,
+    expected_workers: int = 2,
     min_total_requests: int | None = None,
     min_worker_share: float = 0.10,
 ) -> dict:
@@ -407,6 +408,7 @@ def assert_workers_served_requests_since(
     print_router_snapshot(f"{label} /diagnostics delta", delta_snapshot)
     assert_workers_served_requests(
         delta_snapshot,
+        expected_workers=expected_workers,
         min_total_requests=min_total_requests,
         min_worker_share=min_worker_share,
     )

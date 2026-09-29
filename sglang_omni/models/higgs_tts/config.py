@@ -89,7 +89,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 "compile_decode": False,
                 "decode_cuda_graph_frame_counts": (
                     tuple(range(1, 151))
-                    if current_platform.enable_code2wav_graph()
+                    if current_platform.enable_codec_decode_graph()
                     else ()
                 ),
             }

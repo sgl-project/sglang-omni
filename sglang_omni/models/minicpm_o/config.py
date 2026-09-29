@@ -116,8 +116,11 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         factory_path=f"{PKG}.stages.create_code2wav_executor",
         factory=FactoryArgs(
             max_batch_size=8,
-            max_batch_wait_ms=0.0,
+            max_batch_wait_ms=0,
             batch_wait_when_idle=False,
+            enable_flow_variable_length=True,
+            reference_workers=8,
+            prompt_cache_capacity=32,
         ),
         # Note (Chenyang): As a general comment and my usual understanding
         # of SGLang Omni, SGLang Omni has a poor runtime which leads to a

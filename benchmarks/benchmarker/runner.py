@@ -36,6 +36,9 @@ class RunConfig:
     warmup: int | None = None
     disable_tqdm: bool = False
     timeout_s: int = 300
+    # note (luojiaxuan): seeds the Poisson inter-arrival draws so every run
+    # offers the same arrival sequence; None draws a fresh sequence per run.
+    arrival_seed: int | None = None
 
     @property
     def effective_warmup(self) -> int:
@@ -129,23 +132,44 @@ class BenchmarkRunner:
             else None
         )
         pbar = tqdm(total=len(samples), disable=self.config.disable_tqdm)
+        loop = asyncio.get_running_loop()
+        open_loop = self.config.request_rate != float("inf")
+        # note (luojiaxuan): arrivals are planned as offsets from the dispatch
+        # start and each request waits for its own offset, so one late send
+        # does not push every later arrival back.
+        planned_offsets = (
+            np.cumsum(
+                np.random.default_rng(self.config.arrival_seed).exponential(
+                    1.0 / self.config.request_rate, len(samples)
+                )
+            )
+            if open_loop
+            else np.zeros(len(samples))
+        )
+        dispatch_start = loop.time()
 
-        async def _limited(sample: Any) -> RequestResult:
+        async def _limited(sample: Any, planned_at: float) -> RequestResult:
             if semaphore:
+                waited_for_slot = semaphore.locked()
                 async with semaphore:
+                    sent_at = loop.time()
                     result = await send_fn(session, sample)
+                result.waited_for_slot = waited_for_slot
             else:
+                sent_at = loop.time()
                 result = await send_fn(session, sample)
+            if open_loop:
+                result.dispatch_lateness_s = sent_at - planned_at
             pbar.update(1)
             return result
 
         try:
             tasks: list[asyncio.Task] = []
-            for sample in samples:
-                if self.config.request_rate != float("inf"):
-                    interval = np.random.exponential(1.0 / self.config.request_rate)
-                    await asyncio.sleep(interval)
-                tasks.append(asyncio.create_task(_limited(sample)))
+            for sample, offset in zip(samples, planned_offsets):
+                planned_at = dispatch_start + float(offset)
+                if open_loop:
+                    await asyncio.sleep(max(0.0, planned_at - loop.time()))
+                tasks.append(asyncio.create_task(_limited(sample, planned_at)))
 
             results: list[RequestResult] = list(await asyncio.gather(*tasks))
         finally:

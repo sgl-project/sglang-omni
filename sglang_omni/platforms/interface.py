@@ -120,6 +120,10 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
 
+    def enable_codec_decode_graph(self) -> bool:
+        """Check if current platform captures decode graphs for the Higgs TTS codec"""
+        return False
+
     def enable_talker_graph(self) -> bool:
         return True
 
