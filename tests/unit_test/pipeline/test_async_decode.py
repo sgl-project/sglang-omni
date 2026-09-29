@@ -1288,3 +1288,134 @@ def test_drop_stale_overrun_filters_decoding_reqs():
     live_decode = batch.reqs[2]
     out = s.drop_stale_overrun(batch)
     assert out.decoding_reqs == [live_decode]
+
+
+@pytest.mark.parametrize(
+    (
+        "available_tokens",
+        "finish_on_resolve",
+        "forced",
+        "expected_drain",
+        "expected_retract",
+        "already_finished",
+    ),
+    [
+        (16, False, False, False, False, False),
+        (0, False, False, True, True, False),
+        (0, True, False, True, False, False),
+        (16, False, True, True, True, False),
+        (16, False, False, False, False, True),
+    ],
+)
+def test_retract_commits_pending_outputs_and_rechecks_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    available_tokens: int,
+    finish_on_resolve: bool,
+    forced: bool,
+    expected_drain: bool,
+    expected_retract: bool,
+    already_finished: bool,
+) -> None:
+    import sglang.srt.managers.scheduler as upstream_scheduler
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+
+    import sglang_omni.scheduling.omni_scheduler as omni_scheduler
+
+    monkeypatch.setattr(upstream_scheduler, "TEST_RETRACT", forced)
+    monkeypatch.setattr(upstream_scheduler, "TEST_RETRACT_INTERVAL", 1)
+    monkeypatch.setattr(omni_scheduler, "TEST_RETRACT", forced)
+    monkeypatch.setattr(omni_scheduler, "TEST_RETRACT_INTERVAL", 1)
+    requests = [
+        types.SimpleNamespace(
+            rid=f"request-{index}",
+            origin_input_ids=[1],
+            output_ids=[2],
+            codes=[[2, 3]],
+            done=False,
+            is_retracted=False,
+        )
+        for index in range(2)
+    ]
+    requests[0].done = already_finished
+    capacity = [available_tokens]
+    retracted = []
+    prepared = []
+    batch = types.SimpleNamespace(reqs=list(requests), batch_is_full=True)
+    batch.filter_batch = lambda: setattr(
+        batch, "reqs", [request for request in batch.reqs if not request.done]
+    )
+    batch.batch_size = lambda: len(batch.reqs)
+    batch.is_empty = lambda: not batch.reqs
+    batch.new_tokens_required_next_decode = lambda selected_indices=None: len(
+        batch.reqs
+    )
+    batch.tree_cache = types.SimpleNamespace(req_to_token_pool=types.SimpleNamespace())
+    batch.spec_algorithm = None
+    batch.token_to_kv_pool_allocator = types.SimpleNamespace(
+        check_decode_capacity=lambda **arguments: (
+            capacity[0] >= arguments["num_tokens"]
+        ),
+        available_size=lambda: capacity[0],
+    )
+    batch.check_decode_mem = types.MethodType(ScheduleBatch.check_decode_mem, batch)
+    batch.prepare_for_decode = lambda: prepared.extend(batch.reqs)
+
+    def retract_decode() -> (
+        tuple[list[types.SimpleNamespace], float, list[types.SimpleNamespace]]
+    ):
+        victim = batch.reqs.pop()
+        # Both rails must include the completed launch before the KV is freed.
+        assert victim.output_ids == [2, 5]
+        assert victim.codes == [[2, 3], [5, 7]]
+        victim.is_retracted = True
+        retracted.append(victim)
+        capacity[0] += 8
+        return [victim], 0.5, []
+
+    batch.retract_decode = retract_decode
+    scheduler = OmniScheduler.__new__(OmniScheduler)
+    scheduler.async_pending = PendingDecode(
+        batch=batch, scheduler_output=None, device_step=None
+    )
+    scheduler.forward_ct = 1
+    scheduler.token_to_kv_pool_allocator = batch.token_to_kv_pool_allocator
+    scheduler.tree_cache = batch.tree_cache
+    scheduler.metrics_reporter = types.SimpleNamespace(enable_metrics=False)
+    scheduler.new_token_ratio_tracker = types.SimpleNamespace(
+        current=0.8, decay_step=lambda: None
+    )
+    queued = []
+    scheduler._add_request_to_queue = lambda request, is_retracted: queued.append(  # noqa: leading-underscore  # upstream contract
+        request
+    )
+    drained = []
+
+    def resolve_pending_async() -> None:
+        drained.append(True)
+        scheduler.async_pending = None
+        for request in requests:
+            request.output_ids.append(5)
+            request.codes.append([5, 7])
+        if finish_on_resolve:
+            requests[0].done = True
+            capacity[0] += 8
+        else:
+            pass
+
+    scheduler.resolve_pending_async = resolve_pending_async
+    result = scheduler.update_running_batch(batch)
+
+    assert result is batch
+    assert bool(drained) is expected_drain
+    assert bool(retracted) is expected_retract
+    assert queued == retracted
+    assert prepared == batch.reqs
+    assert all(not request.done for request in prepared)
+    assert batch.batch_is_full is not (
+        finish_on_resolve or already_finished or expected_retract
+    )
+    if expected_drain:
+        assert all(request.output_ids == [2, 5] for request in requests)
+    else:
+        assert scheduler.async_pending is not None
+        assert all(request.output_ids == [2] for request in requests)

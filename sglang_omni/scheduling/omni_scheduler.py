@@ -25,6 +25,7 @@ from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any, Callable
+from uuid import uuid4
 
 import torch
 from sglang.srt.environ import envs
@@ -37,6 +38,7 @@ from sglang.srt.managers.schedule_batch import (
     ScheduleBatch,
     retract_all,
 )
+from sglang.srt.managers.scheduler import TEST_RETRACT, TEST_RETRACT_INTERVAL
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.common import release_kv_cache
@@ -2857,6 +2859,14 @@ class OmniScheduler:
 
     def _add_request_to_queue(self, req: Any, is_retracted: bool = False) -> None:
         if req.is_retracted:
+            if getattr(req, "use_private_radix_on_retract", False):
+                # note (Eric): Replay may cache generated rows only in a private namespace.
+                req.extra_key = f"{req.extra_key}:retract:{uuid4().hex}"
+                req.skip_radix_cache_insert = False
+                req._omni_prompt_only_radix = False  # noqa: leading-underscore
+                req.use_private_radix_on_retract = False
+            else:
+                pass
             compact_decode_input_history(
                 req.omni_data
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -3326,6 +3336,21 @@ class OmniScheduler:
         else:
             pass
         return batch if batch.reqs else None
+
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        if (
+            self.async_pending is not None
+            and not batch.is_empty()
+            and (
+                (TEST_RETRACT and self.forward_ct % TEST_RETRACT_INTERVAL == 0)
+                or not batch.check_decode_mem()
+            )
+        ):
+            # note (Eric): commit acoustic outputs before retract frees their KV.
+            self.resolve_pending_async()
+        else:
+            pass
+        return _Upstream.update_running_batch(self, batch)
 
     def event_loop_async_decode(self) -> None:
         """One-step-lookahead decode loop (single stream + CUDA event).

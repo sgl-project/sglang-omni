@@ -289,6 +289,7 @@ def test_receiver_rejects_mismatched_pages_and_bounds_finished_ids(monkeypatch):
 
 def decode_scheduler():
     scheduler = object.__new__(OmniDecodeScheduler)
+    scheduler.async_pending = None
     scheduler.pd_admissions = queue.SimpleQueue()
     scheduler.pd_due_releases = queue.SimpleQueue()
     scheduler.pd_outstanding_releases = set()
