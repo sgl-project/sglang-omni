@@ -94,7 +94,7 @@ def test_reference_routing_bias_selects_experts_without_changing_weights() -> No
     block.n_group = 2
     block.topk_group = 1
     block.routed_scaling_factor = 2.5
-    block.gate.expert_bias.copy_(torch.tensor([-2.0, -2.0, 0.0, 0.0]))
+    block.gate.expert_bias.copy_(torch.tensor([-2.0, -2.0, 0.8, 0.2]))
 
     logits = torch.tensor([[3.0, 2.0, 0.0, 0.0]])
     result = block.reference_topk(logits)
