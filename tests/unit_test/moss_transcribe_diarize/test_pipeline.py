@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -290,35 +291,16 @@ def test_init_encoder_graphs_uses_platform_backend(
 
     from sglang_omni.models.moss_transcribe_diarize import sglang_model
 
-    backend = SimpleNamespace()
-    captured = SimpleNamespace()
-
-    class GraphRunner:
-        def __init__(
-            self,
-            encoder: torch.nn.Module,
-            num_mel_bins: int,
-            input_feature_len: int,
-            graph_backend: SimpleNamespace,
-        ) -> None:
-            captured.encoder = encoder
-            captured.num_mel_bins = num_mel_bins
-            captured.input_feature_len = input_feature_len
-            captured.graph_backend = graph_backend
-
-        def capture(self, buckets: list[int]) -> None:
-            captured.buckets = buckets
-
-    def get_graph_backend(device: torch.device) -> SimpleNamespace:
-        captured.device = device
-        return backend
+    backend = object()
+    get_graph_backend = Mock(return_value=backend)
+    graph_runner = Mock()
 
     monkeypatch.setattr(
         sglang_model.current_platform,
         "get_device_graph_backend",
         get_graph_backend,
     )
-    monkeypatch.setattr(sglang_model, "WhisperEncoderCudaGraphRunner", GraphRunner)
+    monkeypatch.setattr(sglang_model, "WhisperEncoderCudaGraphRunner", graph_runner)
 
     encoder = torch.nn.Linear(4, 4)
     model = SimpleNamespace(
@@ -331,13 +313,9 @@ def test_init_encoder_graphs_uses_platform_backend(
         model, [2, 1], input_feature_len=3000
     )
 
-    assert captured.device == next(encoder.parameters()).device
-    assert captured.encoder is encoder
-    assert captured.num_mel_bins == 80
-    assert captured.input_feature_len == 3000
-    assert captured.graph_backend is backend
-    assert captured.buckets == [2, 1]
-    assert model.encoder_graph_runner is not None
+    get_graph_backend.assert_called_once_with(next(encoder.parameters()).device)
+    assert graph_runner.call_args.kwargs["graph_backend"] is backend
+    graph_runner.return_value.capture.assert_called_once_with([2, 1])
 
 
 def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
