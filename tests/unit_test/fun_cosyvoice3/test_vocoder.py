@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import sys
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import numpy as np
 import pytest
@@ -854,6 +854,7 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
         device="cpu",
         flow_batch_admission_frames=2000,
         enable_dit_torch_compile=False,
+        enable_dit_fused_rope=False,
     )
     long_state = make_state(prompt_tokens=0)
     long_state.audio_codes = make_codes(2200)
@@ -883,7 +884,10 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         ),
     )
     scheduler = stages.create_vocoder_executor(
-        "model", device="cpu", enable_dit_torch_compile=False
+        "model",
+        device="cpu",
+        enable_dit_torch_compile=False,
+        enable_dit_fused_rope=False,
     )
 
     assert scheduler.max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
@@ -932,6 +936,7 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         flow_batch_admission_frames=200,
         flow_merge_max_gap_frames=0,
         flow_merge_pad_budget_percent=0,
+        enable_dit_fused_rope=False,
     )
 
     assert isinstance(scheduler, FunCosyVoice3StreamingVocoderScheduler)
@@ -976,11 +981,125 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
         max_batch_size=4,
         enable_dit_torch_compile=False,
         enable_flow_estimator_trt=True,
+        enable_dit_fused_rope=False,
     )
 
     assert captured == {
         "enable_flow_estimator_trt": True,
     }
+
+
+@pytest.fixture
+def fake_vocoder_flow(monkeypatch: pytest.MonkeyPatch) -> stages.FunCosyVoice3Flow:
+    native_flow = RunnableFakeFlow()
+    flow = stages.FunCosyVoice3Flow(
+        native_flow, packed_estimator=native_flow.packed_estimator
+    )
+
+    def load_flow_hift(
+        checkpoint_dir: str, device: str, fp16: bool, enable_flow_estimator_trt: bool
+    ) -> tuple[stages.FunCosyVoice3Flow, FakeHiFT]:
+        # note (wirybeaver): Factory routing is tested independently of checkpoint loading.
+        return flow, FakeHiFT()
+
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(stages, "load_cosyvoice3_flow_hift", load_flow_hift)
+    monkeypatch.setattr(
+        FunCosyVoice3StreamingVocoderScheduler, "warmup_now", lambda self: None
+    )
+    monkeypatch.setattr(
+        FunCosyVoice3StreamingVocoderScheduler,
+        "warmup_packed_dit_compile",
+        lambda self: None,
+    )
+    return flow
+
+
+def test_vocoder_installs_fused_rope_before_compile_and_capture(
+    monkeypatch: pytest.MonkeyPatch, fake_vocoder_flow: stages.FunCosyVoice3Flow
+) -> None:
+    accelerator_operations: list[Literal["fusion", "compile", "graph"]] = []
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cuda")
+    )
+    monkeypatch.setattr(stages.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def install_fused_rope(estimator: torch.nn.Module) -> None:
+        assert estimator is fake_vocoder_flow.decoder.estimator
+        accelerator_operations.append("fusion")
+
+    def compile_estimator(
+        flow: stages.FunCosyVoice3Flow, autocast_dtype: torch.dtype | None
+    ) -> None:
+        assert flow is fake_vocoder_flow
+        accelerator_operations.append("compile")
+
+    class RecordingGraphRunner:
+        def __init__(
+            self,
+            flow: stages.FunCosyVoice3Flow,
+            *,
+            device: torch.device,
+            autocast_dtype: torch.dtype | None,
+        ) -> None:
+            assert flow is fake_vocoder_flow
+
+        def capture(self, shapes: tuple[tuple[int, int], ...]) -> None:
+            accelerator_operations.append("graph")
+
+    monkeypatch.setattr(stages, "install_dit_fused_rope", install_fused_rope)
+    monkeypatch.setattr(stages, "compile_dit_backbone", compile_estimator)
+    monkeypatch.setattr(stages, "FlowCudaGraphRunner", RecordingGraphRunner)
+    stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        dtype="bfloat16",
+        enable_dit_fused_rope=True,
+        enable_dit_torch_compile=True,
+        enable_flow_cuda_graph=True,
+        flow_cuda_graph_capture_shapes=((1, 16),),
+    )
+    assert accelerator_operations == ["fusion", "compile", "graph"]
+
+
+@pytest.mark.parametrize(
+    ("device", "is_nvidia_cuda", "dtype", "enable_fusion", "should_install_fused_rope"),
+    [
+        ("cuda", True, "bfloat16", True, True),
+        ("cuda", True, "bfloat16", False, False),
+        ("cuda", True, "float16", True, False),
+        ("cpu", True, "bfloat16", True, False),
+    ],
+)
+def test_vocoder_routes_fused_rope_by_device_dtype_and_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_vocoder_flow: stages.FunCosyVoice3Flow,
+    device: Literal["cpu", "cuda"],
+    is_nvidia_cuda: bool,
+    dtype: Literal["float16", "bfloat16"],
+    enable_fusion: bool,
+    should_install_fused_rope: bool,
+) -> None:
+    installed_estimators: list[torch.nn.Module] = []
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device(device)
+    )
+    monkeypatch.setattr(stages.current_platform, "is_cuda", lambda: is_nvidia_cuda)
+    monkeypatch.setattr(stages, "install_dit_fused_rope", installed_estimators.append)
+    stages.create_vocoder_executor(
+        "model",
+        device=device,
+        dtype=dtype,
+        enable_dit_fused_rope=enable_fusion,
+        enable_dit_torch_compile=False,
+        enable_flow_cuda_graph=False,
+    )
+    expected_estimators = (
+        [fake_vocoder_flow.decoder.estimator] if should_install_fused_rope else []
+    )
+    assert installed_estimators == expected_estimators
 
 
 def create_scheduler_recording_native_compile(
@@ -1007,7 +1126,9 @@ def create_scheduler_recording_native_compile(
         compiled.append(flow)
 
     monkeypatch.setattr(stages, "compile_dit_backbone", fake_compile)
-    scheduler = stages.create_vocoder_executor("model", device="cpu", **kwargs)
+    scheduler = stages.create_vocoder_executor(
+        "model", device="cpu", enable_dit_fused_rope=False, **kwargs
+    )
     return compiled, scheduler
 
 
@@ -1115,6 +1236,7 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
         "model",
         device="cuda",
         enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_dit_fused_rope=False,
         enable_flow_cuda_graph=True,
         flow_cuda_graph_capture_shapes=FLOW_GRAPH_CAPTURE_SHAPES,
     )
@@ -1141,11 +1263,12 @@ def test_create_vocoder_executor_trt_alone_skips_the_default_compile(
 
 
 def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
-    with pytest.raises(ValueError, match="enable only one"):
+    with pytest.raises(ValueError, match="cannot be combined"):
         stages.create_vocoder_executor(
             "model",
             enable_dit_torch_compile=True,
             enable_flow_estimator_trt=True,
+            enable_dit_fused_rope=False,
         )
 
 
@@ -1283,6 +1406,7 @@ def test_create_vocoder_executor_rejects_non_positive_admission_budget(
             device="cpu",
             flow_batch_admission_frames=0,
             enable_dit_torch_compile=False,
+            enable_dit_fused_rope=False,
         )
 
 
@@ -1303,6 +1427,7 @@ def test_pipeline_config_sets_flow_batch_admission_by_default() -> None:
         "enable_flow_cuda_graph": True,
         "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
+        "enable_dit_fused_rope": True,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,

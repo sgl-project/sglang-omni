@@ -24,6 +24,7 @@ else:
     pass
 
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
+from sglang_omni.models.fun_cosyvoice3.dit_fused_rope import install_dit_fused_rope
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
@@ -2144,6 +2145,7 @@ def create_vocoder_executor(
     enable_flow_cuda_graph: bool = True,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
+    enable_dit_fused_rope: bool,
     hift_dtype: str = "float32",
     hift_max_padding_waste: float = 1.5,
     token_hop_len: int = TOKEN_HOP_LEN,
@@ -2164,6 +2166,7 @@ def create_vocoder_executor(
     reject_conflicting_dit_accelerators(
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_estimator_trt=enable_flow_estimator_trt,
+        enable_dit_fused_rope=enable_dit_fused_rope,
     )
     device = str(resolve_concrete_device(device, gpu_id))
 
@@ -2225,6 +2228,16 @@ def create_vocoder_executor(
         fp16=(dtype == "float16"),
         enable_flow_estimator_trt=enable_flow_estimator_trt,
     )
+    if (
+        enable_dit_fused_rope
+        and current_platform.is_cuda()
+        and torch.device(device).type == "cuda"
+        and dtype != "float16"
+    ):
+        install_dit_fused_rope(flow.decoder.estimator)
+        logger.info("Enabled Fun-CosyVoice3 Flow DiT fused partial Q/K RoPE")
+    else:
+        pass
 
     device_obj = torch.device(device)
     if enable_flow_cuda_graph and (
