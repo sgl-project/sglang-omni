@@ -703,6 +703,26 @@ def export_weights(
     }
     value_tensors = {n: t for n, t in tensors.items() if n not in ipc_tensors}
 
+    # A device tensor the serializer cannot alias would be embedded by value,
+    # which grows the handle file to the size of the checkpoint and shares
+    # nothing. Refuse instead of doing that silently.
+    unaliasable = {
+        n: t
+        for n, t in value_tensors.items()
+        if n not in private and t.device.type != "cpu"
+    }
+    if unaliasable:
+        devices = ", ".join(sorted({str(t.device) for t in unaliasable.values()}))
+        raise WeightShareError(
+            f"weight sharing cannot alias {len(unaliasable)} of {len(tensors)} "
+            f"tensors on {devices}: the serializer publishes zero-copy handles "
+            "only for devices it supports, so these would be embedded by value "
+            "and the handle file would grow to the size of the checkpoint while "
+            f"sharing nothing. Unset {ENV_WEIGHT_SHARE}."
+        )
+    else:
+        pass
+
     payload = {
         "format_version": _FORMAT_VERSION,
         "model_class": type(model).__name__,

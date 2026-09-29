@@ -131,6 +131,30 @@ def test_attach_is_assignment_not_inplace_copy(handle_path):
     assert follower.linear.weight.data_ptr() != before_ptr
 
 
+def test_unaliasable_device_tensors_are_refused_not_embedded(handle_path):
+    """The default predicate aliases CUDA tensors only, so on any other
+    accelerator every weight fell through to the by-value path: the handle file
+    grew to the size of the checkpoint and shared nothing. Measured on CPU, a
+    128 MiB model writes a 128 MiB file, so this has to fail loudly.
+    """
+    with torch.device("meta"):
+        model = nn.Linear(8, 8)
+
+    with pytest.raises(WeightShareError, match="cannot alias 2 of 2 tensors on meta"):
+        export_weights(model, handle_path, validate_secure=False)
+
+
+def test_cpu_tensors_still_take_the_by_value_path(handle_path):
+    """A CPU-resident model has no device handles to publish, so by-value is the
+    only option there and must not be mistaken for the broken accelerator case.
+    """
+    leader = TinyModel(seed=1)
+
+    export_weights(leader, handle_path, validate_secure=False)
+
+    assert os.path.exists(handle_path)
+
+
 def test_value_path_copies_without_aliasing(handle_path):
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)
