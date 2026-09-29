@@ -6,7 +6,12 @@ import subprocess
 import threading
 from contextlib import nullcontext
 
-from torch.profiler import ProfilerActivity, profile, supported_activities
+from torch.profiler import (
+    ProfilerActivity,
+    _ExperimentalConfig,
+    profile,
+    supported_activities,
+)
 
 from sglang_omni.platforms import current_platform
 
@@ -103,6 +108,7 @@ class TorchProfiler(ProfilerBase):
 
             cls.profiler = profile(
                 activities=profiler_activities(),
+                experimental_config=_ExperimentalConfig(profile_all_threads=True),
                 on_trace_ready=trace_handler,
                 record_shapes=os.environ.get("SGLANG_TORCH_PROFILER_RECORD_SHAPES")
                 == "1",
