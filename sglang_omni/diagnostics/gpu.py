@@ -11,6 +11,7 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.gpu_memory import (
     decode_nvml_string,
     format_bytes_gib,
@@ -18,6 +19,19 @@ from sglang_omni.utils.gpu_memory import (
     shutdown_nvml,
     try_import_pynvml,
 )
+
+# Each vendor masks its cards with its own variable, and the mask is what
+# decides the logical-to-physical mapping this report prints.
+VISIBLE_DEVICES_VARIABLES = {
+    "cuda": "CUDA_VISIBLE_DEVICES",
+    "xpu": "ZE_AFFINITY_MASK",
+    "npu": "ASCEND_RT_VISIBLE_DEVICES",
+}
+DEFAULT_VISIBLE_DEVICES_VARIABLE = "CUDA_VISIBLE_DEVICES"
+# Level Zero admits the cards named in ZE_AFFINITY_MASK in ascending order and
+# ignores the order they were written in, so ZE_AFFINITY_MASK=5,2 makes physical
+# 2 the logical 0. CUDA_VISIBLE_DEVICES honours the written order instead.
+ASCENDING_VISIBLE_MASK_DEVICES = frozenset({"xpu"})
 
 _BACKENDS = (
     ("attention", "flash-attn-4", "flash_attn.cute"),
@@ -342,6 +356,83 @@ def logical_devices(
     return devices
 
 
+def accelerator_logical_devices(
+    torch: Any,
+    device_type: str,
+    visible_devices: list[int | str],
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Enumerate a non-CUDA accelerator through its torch device module.
+
+    Returns the devices and the vendor driver version, which is reported per
+    device but pinned host-wide in practice.
+    """
+
+    device_module = torch.get_device_module(device_type)
+    if not device_module.is_available():
+        return [], None
+    else:
+        pass
+
+    if device_type in ASCENDING_VISIBLE_MASK_DEVICES and all(
+        isinstance(entry, int) for entry in visible_devices
+    ):
+        visible_devices = sorted(visible_devices)
+    else:
+        pass
+
+    devices: list[dict[str, Any]] = []
+    driver_version: str | None = None
+    for logical_index in range(int(device_module.device_count())):
+        try:
+            properties = device_module.get_device_properties(logical_index)
+        except Exception as exc:
+            warnings.append(
+                f"PyTorch {device_type} {logical_index} query failed: {exc}"
+            )
+            properties = None
+        visible_device = (
+            visible_devices[logical_index]
+            if logical_index < len(visible_devices)
+            else logical_index
+        )
+        if properties is not None and driver_version is None:
+            driver_version = getattr(properties, "driver_version", None)
+        else:
+            pass
+        uuid = normalize_uuid(getattr(properties, "uuid", None))
+        # A driver query, so it reports host-wide free memory the way NVML does
+        # on the CUDA arm; the allocator view would only see this process.
+        mem_get_info = getattr(device_module, "mem_get_info", None)
+        free_memory_bytes = None
+        if mem_get_info is None:
+            pass
+        else:
+            try:
+                free_memory_bytes = int(mem_get_info(logical_index)[0])
+            except Exception as exc:
+                warnings.append(
+                    f"free memory on {device_type}:{logical_index} is "
+                    f"unavailable: {exc}"
+                )
+        devices.append(
+            {
+                "logical_index": logical_index,
+                "visible_device": visible_device,
+                "physical_index": (
+                    visible_device if isinstance(visible_device, int) else None
+                ),
+                "uuid": uuid,
+                "pci_bus_id": None,
+                "name": getattr(properties, "name", None),
+                "compute_capability": None,
+                "total_memory_bytes": getattr(properties, "total_memory", None),
+                "free_memory_bytes": free_memory_bytes,
+            }
+        )
+    return devices, driver_version
+
+
 def collect_gpu_diagnostics(
     *,
     env: Mapping[str, str] | None = None,
@@ -351,19 +442,36 @@ def collect_gpu_diagnostics(
     """Collect diagnostics without loading model configuration or weights."""
 
     source_env = os.environ if env is None else env
-    visible_value = source_env.get("CUDA_VISIBLE_DEVICES")
+    device_type = current_platform.device_type
+    visible_variable = VISIBLE_DEVICES_VARIABLES.get(
+        device_type, DEFAULT_VISIBLE_DEVICES_VARIABLE
+    )
+    visible_value = source_env.get(visible_variable)
     visible_devices = parse_cuda_visible_devices(visible_value)
     torch = torch_module or importlib.import_module("torch")
-    pynvml = pynvml_module if pynvml_module is not None else try_import_pynvml()
 
-    inventory, system, warnings = nvml_inventory(pynvml)
-    try:
-        devices = logical_devices(torch, visible_devices, inventory, warnings)
-    finally:
-        if pynvml is not None:
-            shutdown_nvml(pynvml)
-        else:
-            pass
+    if current_platform.is_cuda_alike():
+        pynvml = pynvml_module if pynvml_module is not None else try_import_pynvml()
+        inventory, system, warnings = nvml_inventory(pynvml)
+        try:
+            devices = logical_devices(torch, visible_devices, inventory, warnings)
+        finally:
+            if pynvml is not None:
+                shutdown_nvml(pynvml)
+            else:
+                pass
+    elif current_platform.is_cpu():
+        # torch.cpu answers is_available and device_count, so enumerating it
+        # would invent a device that has no properties and no memory.
+        warnings = []
+        devices = []
+        system = {"driver_version": None, "cuda_driver_api_version": None}
+    else:
+        warnings = []
+        devices, driver_version = accelerator_logical_devices(
+            torch, device_type, visible_devices, warnings
+        )
+        system = {"driver_version": driver_version, "cuda_driver_api_version": None}
 
     backends = backend_inventory()
     warnings.extend(
@@ -372,9 +480,12 @@ def collect_gpu_diagnostics(
         if backend["installed"] and not backend["importable"]
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "environment": {
-            "cuda_visible_devices": visible_value,
+            "device_type": device_type,
+            "visible_devices_variable": visible_variable,
+            "visible_devices": visible_value,
+            "cuda_visible_devices": source_env.get("CUDA_VISIBLE_DEVICES"),
             **system,
             "cuda_runtime_version": cuda_runtime_version(),
             "pytorch_version": getattr(torch, "__version__", None),
@@ -382,6 +493,7 @@ def collect_gpu_diagnostics(
                 getattr(torch, "version", None), "cuda", None
             ),
             "cuda_available": bool(torch.cuda.is_available()),
+            "accelerator_available": bool(devices),
             "logical_device_count": len(devices),
         },
         "gpus": devices,
@@ -394,10 +506,15 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
     """Render a compact diagnostic summary for terminal output."""
 
     environment = report["environment"]
-    visible = environment["cuda_visible_devices"]
+    device_type = environment["device_type"]
+    visible = environment["visible_devices"]
     lines = [
         "SGLang-Omni GPU diagnostics (no model loaded)",
-        f"CUDA_VISIBLE_DEVICES: {visible if visible is not None else '<unset>'}",
+        f"Device type: {device_type}",
+        (
+            f"{environment['visible_devices_variable']}: "
+            f"{visible if visible is not None else '<unset>'}"
+        ),
         f"Driver: {environment['driver_version'] or 'unavailable'}",
         (
             "CUDA driver/runtime: "
@@ -412,7 +529,7 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
         "GPUs:",
     ]
     if not report["gpus"]:
-        lines.append("  No CUDA devices are visible to PyTorch.")
+        lines.append(f"  No {device_type} devices are visible to PyTorch.")
     else:
         pass
     for device in report["gpus"]:
