@@ -32,6 +32,7 @@ class DotsFlowResume:
 
 @dataclass
 class DotsTTSSGLangRequestData(SGLangARRequestData):
+    enforce_request_limits: bool = True
     state: DotsTTSState = field(default_factory=DotsTTSState)
     generation_schedule: torch.Tensor | None = None
     span_positions: torch.Tensor | None = None

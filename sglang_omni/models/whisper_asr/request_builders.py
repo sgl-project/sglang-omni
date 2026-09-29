@@ -47,6 +47,7 @@ _LANGUAGE_ALIASES = {
 
 @dataclass
 class WhisperASRRequestData(SGLangARRequestData):
+    enforce_request_limits: bool = True
     prompt_token_ids: list[int] | None = None
     output_ids: list[int] | None = None
     audio_duration_s: float = 0.0

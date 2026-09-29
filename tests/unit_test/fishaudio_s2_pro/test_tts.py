@@ -732,3 +732,12 @@ def test_lookahead_is_never_eligible_for_fish():
         custom_logit_processor=None,
     )
     assert runner.lookahead_eligible(SimpleNamespace(reqs=[req])) is False
+
+
+def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:
+    """Without this flag validate_input_length never runs for this model."""
+    from sglang_omni.models.fishaudio_s2_pro.request_builders import (
+        S2ProSGLangRequestData,
+    )
+
+    assert S2ProSGLangRequestData().enforce_request_limits is True
