@@ -60,6 +60,9 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
 
         return CudaDeviceGraphBackend()
 
+    def enable_codec_decode_graph(self) -> bool:
+        return True
+
     def get_stage_process_env(
         self,
         spec: StageLaunchConfig,

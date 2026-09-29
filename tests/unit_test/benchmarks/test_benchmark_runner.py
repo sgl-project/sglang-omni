@@ -81,7 +81,11 @@ async def test_open_loop_arrivals_overlap_in_flight_requests(
         await asyncio.sleep(0.3)
         return RequestResult(request_id=sample, is_success=True)
 
-    monkeypatch.setattr(np.random, "exponential", lambda _scale: 0.02)
+    class _FixedGaps:
+        def exponential(self, scale, size):
+            return np.full(size, 0.02)
+
+    monkeypatch.setattr(np.random, "default_rng", lambda _seed: _FixedGaps())
     runner = BenchmarkRunner(
         RunConfig(
             max_concurrency=0,
@@ -94,3 +98,107 @@ async def test_open_loop_arrivals_overlap_in_flight_requests(
 
     assert len(starts) == 8
     assert max(starts) - min(starts) < 0.25
+
+
+@pytest.mark.asyncio
+async def test_requests_that_queue_for_a_client_slot_are_marked() -> None:
+    async def _send(_session, sample: str) -> RequestResult:
+        await asyncio.sleep(0.05)
+        return RequestResult(request_id=sample, is_success=True)
+
+    runner = BenchmarkRunner(RunConfig(max_concurrency=1, warmup=0, disable_tqdm=True))
+    results = await runner.run(["a", "b", "c"], _send)
+
+    # note (luojiaxuan): with one slot and instant arrivals only the first
+    # request starts on time; the rest waited, so their clocks started late.
+    assert [r.waited_for_slot for r in results] == [False, True, True]
+
+
+@pytest.mark.asyncio
+async def test_requests_that_get_a_slot_at_once_are_not_marked() -> None:
+    async def _send(_session, sample: str) -> RequestResult:
+        await asyncio.sleep(0.05)
+        return RequestResult(request_id=sample, is_success=True)
+
+    runner = BenchmarkRunner(RunConfig(max_concurrency=8, warmup=0, disable_tqdm=True))
+    results = await runner.run(["a", "b", "c"], _send)
+
+    assert not any(r.waited_for_slot for r in results)
+
+
+def arrival_offsets(seed: int, rate: float, count: int) -> np.ndarray:
+    return np.cumsum(np.random.default_rng(seed).exponential(1.0 / rate, count))
+
+
+@pytest.mark.asyncio
+async def test_a_seeded_run_offers_the_same_arrival_sequence_every_time() -> None:
+    async def _run() -> list[float]:
+        starts: list[float] = []
+        loop = asyncio.get_running_loop()
+
+        async def _send(_session, sample: str) -> RequestResult:
+            starts.append(loop.time())
+            return RequestResult(request_id=sample, is_success=True)
+
+        runner = BenchmarkRunner(
+            RunConfig(
+                max_concurrency=0,
+                request_rate=100,
+                warmup=0,
+                disable_tqdm=True,
+                arrival_seed=7,
+            )
+        )
+        await runner.run([str(i) for i in range(6)], _send)
+        return [t - starts[0] for t in starts]
+
+    first, second = await _run(), await _run()
+    expected = arrival_offsets(7, 100, 6)
+    expected = expected - expected[0]
+    # note (luojiaxuan): sends land on the seeded schedule to within the
+    # event loop's timer slack, run after run.
+    assert np.allclose(first, expected, atol=0.01)
+    assert np.allclose(second, expected, atol=0.01)
+
+
+@pytest.mark.asyncio
+async def test_a_late_send_is_recorded_and_does_not_shift_later_arrivals() -> None:
+    async def _send(_session, sample: str) -> RequestResult:
+        if sample == "0":
+            # note (luojiaxuan): block the event loop so the next sends are
+            # late against their plan.
+            time.sleep(0.15)
+        return RequestResult(request_id=sample, is_success=True)
+
+    runner = BenchmarkRunner(
+        RunConfig(
+            max_concurrency=0,
+            request_rate=50,
+            warmup=0,
+            disable_tqdm=True,
+            arrival_seed=3,
+        )
+    )
+    results = await runner.run([str(i) for i in range(30)], _send)
+    lateness = [r.dispatch_lateness_s for r in results]
+
+    assert all(value is not None and value >= 0 for value in lateness)
+    assert max(lateness) > 0.05
+    # note (luojiaxuan): arrivals planned after the stall are sent on time
+    # again instead of inheriting the delay.
+    offsets = arrival_offsets(3, 50, 30)
+    on_time = [
+        value for value, offset in zip(lateness, offsets) if offset > offsets[0] + 0.2
+    ]
+    assert on_time and max(on_time) < 0.02
+
+
+@pytest.mark.asyncio
+async def test_closed_loop_runs_do_not_report_dispatch_lateness() -> None:
+    async def _send(_session, sample: str) -> RequestResult:
+        return RequestResult(request_id=sample, is_success=True)
+
+    runner = BenchmarkRunner(RunConfig(max_concurrency=2, warmup=0, disable_tqdm=True))
+    results = await runner.run(["a", "b"], _send)
+
+    assert all(r.dispatch_lateness_s is None for r in results)

@@ -158,6 +158,8 @@ def run_benchmark(
     max_samples: int | None = None,
     warmup: int = 1,
     stream: bool = False,
+    request_rate: float = float("inf"),
+    arrival_seed: int | None = None,
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
         model=TTS_MODEL_PATH,
@@ -168,6 +170,8 @@ def run_benchmark(
         max_samples=max_samples,
         warmup=warmup,
         stream=stream,
+        request_rate=request_rate,
+        arrival_seed=arrival_seed,
         ref_format=PRESET.ref_format,
         token_count=PRESET.token_count,
         voice=PRESET.voice,
@@ -539,11 +543,13 @@ def assert_stage_used_all_router_workers(
     results: dict,
     label: str,
     collector: MetricCheckCollector | None = None,
+    expected_workers: int = 2,
 ) -> None:
     kwargs = {
         "handle": router_server,
         "before_snapshot": before_workers,
         "label": label,
+        "expected_workers": expected_workers,
         "min_total_requests": results["summary"]["completed_requests"],
     }
     if collector is None:
