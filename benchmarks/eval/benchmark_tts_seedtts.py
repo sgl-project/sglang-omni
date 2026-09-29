@@ -215,6 +215,7 @@ class TtsSeedttsBenchmarkConfig:
     warmup: int | None = None
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
+    arrival_seed: int | None = None
     stream: bool = False
     initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
@@ -302,6 +303,7 @@ def _build_results_config(
         "warmup": _resolve_warmup(config),
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
+        "arrival_seed": config.arrival_seed,
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "max_running_requests": config.max_running_requests,
         "max_queued_requests": config.max_queued_requests,
@@ -419,6 +421,7 @@ async def run_tts_seedtts_benchmark(
             request_rate=config.request_rate,
             warmup=_resolve_warmup(config),
             disable_tqdm=config.disable_tqdm,
+            arrival_seed=config.arrival_seed,
         )
     )
     outputs = await runner.run(samples, send_fn)
@@ -503,6 +506,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         warmup=args.warmup,
         concurrency=args.concurrency,
         request_rate=args.request_rate,
+        arrival_seed=args.arrival_seed,
         stream=args.stream,
         initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
@@ -927,6 +931,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=float("inf"),
         help="Requests/s (inf = burst). Soak defaults to 2x capacity if omitted.",
+    )
+    parser.add_argument(
+        "--arrival-seed",
+        type=int,
+        default=None,
+        help="Seed for the open-loop Poisson arrivals; omit for a fresh sequence.",
     )
     parser.add_argument(
         "--stream",
