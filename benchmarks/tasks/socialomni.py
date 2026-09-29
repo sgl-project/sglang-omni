@@ -14,37 +14,24 @@ import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
-from benchmarks.dataset.socialomni import (
-    SocialOmniLevel1Sample,
-    SocialOmniLevel2Sample,
-    create_video_prefix,
-)
+from benchmarks.dataset.socialomni import SocialOmniLevel2Sample, create_video_prefix
+from benchmarks.metrics.socialomni import SOCIALOMNI_SCORE_BUCKETS
 from benchmarks.tasks.socialomni_protocol import (
-    JUDGE_MAX_TOKENS,
     JUDGE_PARSE_ATTEMPTS,
-    LEVEL1_MAX_TOKENS,
     LEVEL2_RESPONSE_MAX_TOKENS,
     LEVEL2_WHEN_MAX_TOKENS,
     JudgeSpec,
-    build_level1_prompt,
-    build_level1_result_records,
     build_judge_prompt,
     build_response_prompt,
     build_when_prompt,
     chat_completions_url,
     judge_payload,
-    load_judge_config,
-    make_level1_send_fn,
     model_payload,
-    parse_choice,
     parse_judge_score,
     parse_when,
-    public_judge_record,
     request_chat_completion,
-    validate_endpoint_url,
-    validate_judge_credentials,
 )
-from benchmarks.metrics.socialomni import SOCIALOMNI_SCORE_BUCKETS
+
 
 async def run_level2_model(
     samples: Sequence[SocialOmniLevel2Sample],

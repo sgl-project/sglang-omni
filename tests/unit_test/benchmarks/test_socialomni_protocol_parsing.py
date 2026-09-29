@@ -9,7 +9,7 @@ import pytest
 
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
-from benchmarks.tasks.socialomni import (
+from benchmarks.tasks.socialomni_protocol import (
     JudgeSpec,
     load_judge_config,
     parse_judge_score,
@@ -18,13 +18,13 @@ from benchmarks.tasks.socialomni import (
 )
 
 
-def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
+def level1_sample(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
 
 
-def _level2(index: int = 0) -> SocialOmniLevel2Sample:
+def level2_sample(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
         str(index),
         "/tmp/video.mp4",
@@ -38,7 +38,7 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     )
 
 
-def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
+def eval_config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
         "dataset_root": ".",
         "model": "qwen3-omni",
@@ -56,7 +56,7 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     return entrypoint.SocialOmniEvalConfig(**values)
 
 
-class _Response:
+class FakeResponse:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
         self.body = body
@@ -71,9 +71,9 @@ class _Response:
         return self.body
 
 
-class _Session:
-    def __init__(self, *responses: _Response):
-        self.responses = list(responses) or [_Response()]
+class FakeSession:
+    def __init__(self, *responses: FakeResponse):
+        self.responses = list(responses) or [FakeResponse()]
         self.calls = 0
 
     def post(self, *_args, **_kwargs):
@@ -168,14 +168,14 @@ def test_endpoint_credentials_are_rejected_without_echoing_url(tmp_path, url):
     assert "secret" not in str(caught.value)
     assert "api_key_env" not in str(caught.value)
     with pytest.raises(ValueError, match="base_url") as model_error:
-        _config(base_url=url)
+        eval_config(base_url=url)
     assert str(model_error.value) == str(caught.value)
 
 
 @pytest.mark.parametrize("rate", [0, -1, float("nan"), -float("inf")])
 def test_invalid_request_rate_is_rejected(rate):
     with pytest.raises(ValueError, match="request_rate"):
-        _config(request_rate=rate)
+        eval_config(request_rate=rate)
 
 
 def test_service_timeout_is_independent_from_request_timeout(monkeypatch):
@@ -203,10 +203,12 @@ def test_service_timeout_is_independent_from_request_timeout(monkeypatch):
             "3",
         ],
     )
-    parsed = entrypoint.SocialOmniEvalConfig(**vars(entrypoint._parser().parse_args()))
+    parsed = entrypoint.SocialOmniEvalConfig(
+        **vars(entrypoint.build_parser().parse_args())
+    )
     assert parsed.timeout_s == 2
     assert parsed.request_rate == 3
-    assert _config(timeout_s=2).server_timeout == 300
+    assert eval_config(timeout_s=2).server_timeout == 300
     with pytest.raises(RuntimeError, match="stop before evaluation"):
         entrypoint.main()
     assert observed == [("http://localhost:8000", 600)]

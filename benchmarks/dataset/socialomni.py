@@ -55,7 +55,7 @@ class SocialOmniLevel2Sample:
     reference_context: str
 
 
-def _level_dir(root: Path, level: str, metadata: str) -> Path:
+def resolve_level_dir(root: Path, level: str, metadata: str) -> Path:
     candidates = [root / "data" / level, root / level]
     if root.name == level:
         candidates.insert(0, root)
@@ -81,7 +81,7 @@ def _read_json(path: Path) -> Any:
         raise ValueError(f"Invalid SocialOmni metadata {path}: {exc}") from exc
 
 
-def _sha256(path: Path) -> str:
+def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -96,13 +96,13 @@ def _source_signature(path: Path) -> tuple[int, ...]:
 
 @lru_cache(maxsize=256)
 def _cached_source_digest(path: Path, signature: tuple[int, ...]) -> str:
-    digest = _sha256(path)
+    digest = sha256_file(path)
     if _source_signature(path) != signature:
         raise RuntimeError("Source video changed while computing its digest")
     return digest
 
 
-def _source_digest(path: Path) -> str:
+def source_digest(path: Path) -> str:
     signature = _source_signature(path)
     # Filesystems can coalesce timestamps for closely spaced writes.
     if time.time_ns() - signature[-1] < 1_000_000_000:
@@ -119,9 +119,12 @@ def inspect_socialomni_dataset(
         "level1": ("level_1", "dataset.json"),
         "level2": ("level_2", "annotations.json"),
     }
-    level_dirs = {level: _level_dir(root, *metadata_names[level]) for level in levels}
+    level_dirs = {
+        level: resolve_level_dir(root, *metadata_names[level]) for level in levels
+    }
     observed = {
-        level: _sha256(level_dirs[level] / metadata_names[level][1]) for level in levels
+        level: sha256_file(level_dirs[level] / metadata_names[level][1])
+        for level in levels
     }
     metadata_matches_expected_revision = all(
         observed[level] == SOCIALOMNI_METADATA_SHA256[level] for level in levels
@@ -205,7 +208,7 @@ def load_socialomni_level1_samples(
 ) -> list[SocialOmniLevel1Sample]:
     """Load speaker-attribution items while preserving nested media paths."""
     root = Path(dataset_root).expanduser().resolve()
-    level_dir = _level_dir(root, "level_1", "dataset.json")
+    level_dir = resolve_level_dir(root, "level_1", "dataset.json")
     payload = _read_json(level_dir / "dataset.json")
     if not isinstance(payload, list):
         raise TypeError("SocialOmni Level 1 dataset.json must contain an array")
@@ -314,7 +317,7 @@ def load_socialomni_level2_samples(
 ) -> list[SocialOmniLevel2Sample]:
     """Load all Level 2 items in source order."""
     root = Path(dataset_root).expanduser().resolve()
-    level_dir = _level_dir(root, "level_2", "annotations.json")
+    level_dir = resolve_level_dir(root, "level_2", "annotations.json")
     payload = _read_json(level_dir / "annotations.json")
     if isinstance(payload, dict):
         declared = payload.get("total_samples")

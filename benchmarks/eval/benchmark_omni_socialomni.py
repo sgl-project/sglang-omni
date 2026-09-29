@@ -32,7 +32,8 @@ from benchmarks.metrics.socialomni import (
     validate_judge_scores,
 )
 from benchmarks.runtime_metrics import collect_benchmark_provenance
-from benchmarks.tasks.socialomni import (
+from benchmarks.tasks.socialomni import run_judges, run_level2_model
+from benchmarks.tasks.socialomni_protocol import (
     JUDGE_MAX_TOKENS,
     LEVEL1_MAX_TOKENS,
     LEVEL2_RESPONSE_MAX_TOKENS,
@@ -41,8 +42,6 @@ from benchmarks.tasks.socialomni import (
     load_judge_config,
     make_level1_send_fn,
     public_judge_record,
-    run_judges,
-    run_level2_model,
     validate_endpoint_url,
     validate_judge_credentials,
 )
@@ -86,7 +85,7 @@ def _request_failure(result: RequestResult, phase: str) -> dict[str, str] | None
     }
 
 
-def _judges_complete(records: list[dict[str, Any]], configured: bool) -> bool:
+def has_complete_judges(records: list[dict[str, Any]], configured: bool) -> bool:
     if not configured:
         return False
     try:
@@ -273,7 +272,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             and record["gold_response_success"]
             and str(record["gold_response"]).strip()
         )
-        judges_complete = _judges_complete(records, bool(judges))
+        judges_complete = has_complete_judges(records, bool(judges))
         complete_metrics = (
             compute_socialomni_level2_metrics(records) if judges_complete else None
         )
@@ -312,7 +311,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
         }
         if len(records) >= SOCIALOMNI_PAPER_CORE_SIZE:
             core = records[:SOCIALOMNI_PAPER_CORE_SIZE]
-            core_complete = _judges_complete(core, bool(judges))
+            core_complete = has_complete_judges(core, bool(judges))
             core_metrics = (
                 compute_socialomni_level2_metrics(core) if core_complete else None
             )
@@ -338,7 +337,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
     return output
 
 
-def _parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--model", required=True)
@@ -372,7 +371,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = _parser().parse_args()
+    args = build_parser().parse_args()
     config = SocialOmniEvalConfig(**vars(args))
     server_url = config.base_url.rstrip("/")
     for suffix in ("/v1/chat/completions", "/chat/completions", "/v1"):

@@ -12,6 +12,7 @@ import shutil
 import uuid
 from pathlib import Path
 
+
 def resolve_ffmpeg_executable() -> str | None:
     system = shutil.which("ffmpeg")
     if system:
@@ -64,7 +65,7 @@ async def create_video_prefix(
     input_path: str | Path, timestamp_s: float, cache_dir: str | Path
 ) -> Path:
     """Re-encode video and audio up to the query time into an atomic cache entry."""
-    from .socialomni import PREFIX_ENCODING, _source_digest
+    from .socialomni import PREFIX_ENCODING, source_digest
 
     if not math.isfinite(timestamp_s) or timestamp_s <= 0:
         raise ValueError("timestamp_s must be finite and positive")
@@ -74,7 +75,7 @@ async def create_video_prefix(
     key = hashlib.sha256(
         json.dumps(
             {
-                "source_sha256": await asyncio.to_thread(_source_digest, source),
+                "source_sha256": await asyncio.to_thread(source_digest, source),
                 "timestamp_s": f"{timestamp_s:.6f}",
                 "encoding": PREFIX_ENCODING,
             },

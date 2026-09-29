@@ -10,7 +10,7 @@ from aiohttp import web
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
-from benchmarks.tasks.socialomni import (
+from benchmarks.tasks.socialomni_protocol import (
     JUDGE_MAX_TOKENS,
     JudgeSpec,
     build_judge_prompt,
@@ -23,13 +23,13 @@ from benchmarks.tasks.socialomni import (
 )
 
 
-def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
+def level1_sample(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
 
 
-def _level2(index: int = 0) -> SocialOmniLevel2Sample:
+def level2_sample(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
         str(index),
         "/tmp/video.mp4",
@@ -43,7 +43,7 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     )
 
 
-def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
+def eval_config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
         "dataset_root": ".",
         "model": "qwen3-omni",
@@ -61,7 +61,7 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     return entrypoint.SocialOmniEvalConfig(**values)
 
 
-class _Response:
+class FakeResponse:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
         self.body = body
@@ -76,9 +76,9 @@ class _Response:
         return self.body
 
 
-class _Session:
-    def __init__(self, *responses: _Response):
-        self.responses = list(responses) or [_Response()]
+class FakeSession:
+    def __init__(self, *responses: FakeResponse):
+        self.responses = list(responses) or [FakeResponse()]
         self.calls = 0
 
     def post(self, *_args, **_kwargs):
@@ -90,7 +90,7 @@ class _Session:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("retry", [None, "score", "http"])
 async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch, retry) -> None:
-    samples = [replace(_level2(0), gold_when="YES"), _level2(1)]
+    samples = [replace(level2_sample(0), gold_when="YES"), level2_sample(1)]
     seen = []
     runner_configs = []
     original_init = entrypoint.BenchmarkRunner.__init__
@@ -151,7 +151,9 @@ async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch, retry) -
 
     monkeypatch.setattr("benchmarks.tasks.socialomni.create_video_prefix", prepared)
     monkeypatch.setattr(
-        entrypoint, "load_socialomni_level1_samples", lambda *_a, **_k: [_level1()]
+        entrypoint,
+        "load_socialomni_level1_samples",
+        lambda *_a, **_k: [level1_sample()],
     )
     monkeypatch.setattr(
         entrypoint, "load_socialomni_level2_samples", lambda *_a, **_k: samples
@@ -165,7 +167,7 @@ async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch, retry) -
     )
     try:
         result = await entrypoint.run_socialomni(
-            _config(
+            eval_config(
                 level="both",
                 base_url=base_url,
                 judge_config=str(config_path),
@@ -205,7 +207,7 @@ async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch, retry) -
 
 
 def test_model_prompts_do_not_leak_reference_material() -> None:
-    sample = _level2()
+    sample = level2_sample()
     when = build_when_prompt(sample)
     response = build_response_prompt(sample)
     for secret in (sample.reference_context, sample.reference_response):
@@ -261,6 +263,6 @@ def test_choice_parser_is_strict(raw: str, expected: str) -> None:
 def test_level1_parses_only_the_final_answer_line(raw, expected) -> None:
     """Accept the final-line format requested by the Level 1 prompt."""
     result = RequestResult(request_id="one", text=raw, is_success=True)
-    record = build_level1_result_records([_level1()], [result])[0]
+    record = build_level1_result_records([level1_sample()], [result])[0]
     assert record["predicted_answer"] == expected
     assert record["raw_response"] == raw

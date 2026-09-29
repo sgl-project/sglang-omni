@@ -18,7 +18,7 @@ import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
-from benchmarks.metrics.socialomni import SOCIALOMNI_JUDGE_NAMES, SOCIALOMNI_SCORE_BUCKETS
+from benchmarks.metrics.socialomni import SOCIALOMNI_JUDGE_NAMES
 
 RETRYABLE_STATUS = frozenset({408, 429})
 # Reasoning-capable judges may consume hidden tokens before emitting the score.

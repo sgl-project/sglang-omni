@@ -7,16 +7,16 @@ import pytest
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
-from benchmarks.tasks.socialomni import JudgeSpec
+from benchmarks.tasks.socialomni_protocol import JudgeSpec
 
 
-def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
+def level1_sample(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
 
 
-def _level2(index: int = 0) -> SocialOmniLevel2Sample:
+def level2_sample(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
         str(index),
         "/tmp/video.mp4",
@@ -30,7 +30,7 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     )
 
 
-def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
+def eval_config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
         "dataset_root": ".",
         "model": "qwen3-omni",
@@ -48,7 +48,7 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     return entrypoint.SocialOmniEvalConfig(**values)
 
 
-class _Response:
+class FakeResponse:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
         self.body = body
@@ -63,9 +63,9 @@ class _Response:
         return self.body
 
 
-class _Session:
-    def __init__(self, *responses: _Response):
-        self.responses = list(responses) or [_Response()]
+class FakeSession:
+    def __init__(self, *responses: FakeResponse):
+        self.responses = list(responses) or [FakeResponse()]
         self.calls = 0
 
     def post(self, *_args, **_kwargs):
@@ -76,7 +76,7 @@ class _Session:
 
 @pytest.mark.asyncio
 async def test_level2_automatically_derives_first_200_view(monkeypatch) -> None:
-    samples = [_level2(index) for index in range(209)]
+    samples = [level2_sample(index) for index in range(209)]
     records = [
         {
             "sample_id": sample.sample_id,
@@ -178,7 +178,7 @@ async def test_invalid_judge_config_fails_before_level2_requests(
         return [], [], 0.0
 
     monkeypatch.setattr(entrypoint, "run_level2_model", fake_model)
-    config = _config(level="level2", judge_config=str(config_path))
+    config = eval_config(level="level2", judge_config=str(config_path))
     with pytest.raises(ValueError, match="exactly three judges"):
         await entrypoint.run_socialomni(config)
     assert not called
@@ -186,7 +186,7 @@ async def test_invalid_judge_config_fails_before_level2_requests(
 
 @pytest.mark.asyncio
 async def test_level2_status_requires_full_three_judge_run(monkeypatch) -> None:
-    samples = [_level2(index) for index in range(209)]
+    samples = [level2_sample(index) for index in range(209)]
     records = [
         {
             "sample_id": sample.sample_id,
@@ -238,7 +238,7 @@ async def test_level2_status_requires_full_three_judge_run(monkeypatch) -> None:
     monkeypatch.setattr(entrypoint, "run_judges", fake_judges)
 
     result = await entrypoint.run_socialomni(
-        _config(level="level2", judge_config="judges.json")
+        eval_config(level="level2", judge_config="judges.json")
     )
 
     assert result["summary"]["status"] == "complete"
@@ -256,8 +256,8 @@ def test_paper_core_judge_completeness_is_independent() -> None:
         for _ in range(209)
     ]
     records[-1]["gold_judge_scores"].pop("gpt-4o")
-    assert entrypoint._judges_complete(records[:200], True)
-    assert not entrypoint._judges_complete(records, True)
+    assert entrypoint.has_complete_judges(records[:200], True)
+    assert not entrypoint.has_complete_judges(records, True)
 
 
 def test_invalid_score_is_not_judge_complete() -> None:
@@ -271,4 +271,4 @@ def test_invalid_score_is_not_judge_complete() -> None:
             "qwen3-omni": 75,
         },
     }
-    assert not entrypoint._judges_complete([record], True)
+    assert not entrypoint.has_complete_judges([record], True)

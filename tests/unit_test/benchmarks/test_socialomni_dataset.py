@@ -23,12 +23,12 @@ from benchmarks.dataset.socialomni import (
 )
 
 
-def _write(path: Path, value: object) -> None:
+def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def _level1(sample_id: str, video: str, consistency: str) -> dict[str, object]:
+def level1_sample(sample_id: str, video: str, consistency: str) -> dict[str, object]:
     return {
         "id": sample_id,
         "video_path": video,
@@ -39,7 +39,7 @@ def _level1(sample_id: str, video: str, consistency: str) -> dict[str, object]:
     }
 
 
-def _level2(sample_id: str, video: str, answer: str) -> dict[str, object]:
+def level2_sample(sample_id: str, video: str, answer: str) -> dict[str, object]:
     return {
         "video_id": sample_id,
         "video_file": video,
@@ -70,20 +70,20 @@ def test_loaders_preserve_nested_paths_and_mini_groups(tmp_path: Path) -> None:
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
-    _write(
+    write_json(
         level1 / "dataset.json",
         [
-            _level1("visible", "nested/visible.mp4", "consistent"),
-            _level1("mismatch", "mismatch.mp4", "inconsistent"),
+            level1_sample("visible", "nested/visible.mp4", "consistent"),
+            level1_sample("mismatch", "mismatch.mp4", "inconsistent"),
         ],
     )
-    _write(
+    write_json(
         level2 / "annotations.json",
         {
             "total_samples": 2,
             "data": [
-                _level2("yes", "yes.mp4", "YES"),
-                _level2("no", "nested/no.mp4", "NO"),
+                level2_sample("yes", "yes.mp4", "YES"),
+                level2_sample("no", "nested/no.mp4", "NO"),
             ],
         },
     )
@@ -107,11 +107,11 @@ def test_inspect_dataset_matches_expected_metadata_hashes(
 ) -> None:
     level1 = tmp_path / "data" / "level_1" / "dataset.json"
     level2 = tmp_path / "data" / "level_2" / "annotations.json"
-    _write(level1, [])
-    _write(level2, {"total_samples": 0, "data": []})
+    write_json(level1, [])
+    write_json(level2, {"total_samples": 0, "data": []})
     expected_metadata = {
-        "level1": socialomni._sha256(level1),
-        "level2": socialomni._sha256(level2),
+        "level1": socialomni.sha256_file(level1),
+        "level2": socialomni.sha256_file(level2),
     }
     monkeypatch.setattr(socialomni, "SOCIALOMNI_METADATA_SHA256", expected_metadata)
 
@@ -159,7 +159,7 @@ def test_inspect_dataset_rejects_modified_metadata_as_expected_revision(
     tmp_path: Path, monkeypatch
 ) -> None:
     metadata = tmp_path / "data" / "level_1" / "dataset.json"
-    _write(metadata, [])
+    write_json(metadata, [])
     monkeypatch.setattr(socialomni, "SOCIALOMNI_METADATA_SHA256", {"level1": "0" * 64})
 
     identity = inspect_socialomni_dataset(tmp_path, ("level1",))
@@ -168,8 +168,8 @@ def test_inspect_dataset_rejects_modified_metadata_as_expected_revision(
 
 
 def test_inspect_dataset_checks_only_requested_levels(tmp_path: Path) -> None:
-    _write(tmp_path / "data" / "level_1" / "dataset.json", [])
-    _write(tmp_path / "data" / "level_2" / "annotations.json", "invalid")
+    write_json(tmp_path / "data" / "level_1" / "dataset.json", [])
+    write_json(tmp_path / "data" / "level_2" / "annotations.json", "invalid")
 
     identity = inspect_socialomni_dataset(tmp_path, ("level1",))
 
@@ -179,7 +179,7 @@ def test_inspect_dataset_checks_only_requested_levels(tmp_path: Path) -> None:
 @pytest.mark.parametrize("video", ["../escape.mp4", "/tmp/escape.mp4", "level_2/x.mp4"])
 def test_level1_rejects_path_escape(tmp_path: Path, video: str) -> None:
     level = tmp_path / "data" / "level_1"
-    _write(level / "dataset.json", [_level1("bad", video, "consistent")])
+    write_json(level / "dataset.json", [level1_sample("bad", video, "consistent")])
     with pytest.raises(ValueError, match="unsafe|wrong"):
         load_socialomni_level1_samples(tmp_path)
 
@@ -208,14 +208,14 @@ def test_metadata_symlink_containment(
         with pytest.raises(ValueError, match="metadata escapes dataset root"):
             inspect_socialomni_dataset(root, [level.replace("_", "")])
     else:
-        assert socialomni._level_dir(root, level, filename) == directory
+        assert socialomni.resolve_level_dir(root, level, filename) == directory
 
 
 def test_direct_level_name_preserves_nested_candidates(tmp_path):
     root = tmp_path / "level_1"
     directory = root / "data" / "level_1"
-    _write(directory / "dataset.json", [])
-    assert socialomni._level_dir(root, "level_1", "dataset.json") == directory
+    write_json(directory / "dataset.json", [])
+    assert socialomni.resolve_level_dir(root, "level_1", "dataset.json") == directory
 
 
 def test_level1_rejects_symlink_escape(tmp_path: Path) -> None:
@@ -225,7 +225,9 @@ def test_level1_rejects_symlink_escape(tmp_path: Path) -> None:
     videos = level / "videos"
     videos.mkdir(parents=True)
     (videos / "escape.mp4").symlink_to(outside)
-    _write(level / "dataset.json", [_level1("bad", "escape.mp4", "consistent")])
+    write_json(
+        level / "dataset.json", [level1_sample("bad", "escape.mp4", "consistent")]
+    )
     with pytest.raises(ValueError, match="escapes"):
         load_socialomni_level1_samples(tmp_path)
 
@@ -254,16 +256,16 @@ def test_source_digest_cache_invalidates_changed_media(
     path.write_bytes(b"first")
     original_stat = path.stat()
     time.sleep(1.1)
-    original_hash = socialomni._sha256
+    original_hash = socialomni.sha256_file
     reads = []
 
     def counted_hash(source):
         reads.append(source)
         return original_hash(source)
 
-    monkeypatch.setattr(socialomni, "_sha256", counted_hash)
-    first = socialomni._source_digest(path)
-    assert socialomni._source_digest(path) == first
+    monkeypatch.setattr(socialomni, "sha256_file", counted_hash)
+    first = socialomni.source_digest(path)
+    assert socialomni.source_digest(path) == first
     assert len(reads) == 1
     if replace_file:
         replacement = tmp_path / "replacement.mp4"
@@ -272,7 +274,7 @@ def test_source_digest_cache_invalidates_changed_media(
     else:
         path.write_bytes(b"other")
     os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
-    assert socialomni._source_digest(path) != first
+    assert socialomni.source_digest(path) != first
     assert len(reads) == 2
 
 
@@ -280,27 +282,27 @@ def test_recent_source_changes_bypass_digest_cache(tmp_path):
     path = tmp_path / "source.mp4"
     path.write_bytes(b"first")
     original_stat = path.stat()
-    first = socialomni._source_digest(path)
+    first = socialomni.source_digest(path)
     path.write_bytes(b"other")
     os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
-    assert socialomni._source_digest(path) != first
+    assert socialomni.source_digest(path) != first
 
 
 def test_source_digest_rejects_changes_during_hashing(tmp_path, monkeypatch):
     path = tmp_path / "source.mp4"
     path.write_bytes(b"first")
-    original_hash = socialomni._sha256
+    original_hash = socialomni.sha256_file
 
     def changing_hash(source):
         digest = original_hash(source)
         source.write_bytes(b"changed")
         return digest
 
-    monkeypatch.setattr(socialomni, "_sha256", changing_hash)
+    monkeypatch.setattr(socialomni, "sha256_file", changing_hash)
     with pytest.raises(RuntimeError, match="changed while computing"):
-        socialomni._source_digest(path)
-    monkeypatch.setattr(socialomni, "_sha256", original_hash)
-    assert socialomni._source_digest(path) == original_hash(path)
+        socialomni.source_digest(path)
+    monkeypatch.setattr(socialomni, "sha256_file", original_hash)
+    assert socialomni.source_digest(path) == original_hash(path)
 
 
 def test_prefix_command_reencodes_video_and_audio(tmp_path: Path) -> None:
@@ -465,7 +467,7 @@ async def test_prefix_media_ends_at_query_time(tmp_path: Path, monkeypatch) -> N
     def unexpected_hash(path):
         pytest.fail("Cached source must not be read again")
 
-    monkeypatch.setattr(socialomni, "_sha256", unexpected_hash)
+    monkeypatch.setattr(socialomni, "sha256_file", unexpected_hash)
     monkeypatch.setattr(socialomni, "resolve_ffmpeg_executable", lambda: None)
     assert await socialomni.create_video_prefix(source, 0.75, "cache") == prefix
     server_dir = tmp_path / "server"

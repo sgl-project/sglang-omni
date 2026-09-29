@@ -29,6 +29,13 @@ Metric semantics:
     to first decoded audio chunk arrival. Streaming only.
 ``audio_ttfp_median_s`` / ``audio_ttfp_p95_s`` / ``audio_ttfp_p99_s``
     Median / tail percentiles of TTFC.
+``audio_ttfp_from_arrival_median_s`` / ``_p95_s`` / ``_p99_s``
+    TTFC measured from each request's planned open-loop arrival instead of
+    its send, so a client that sends late cannot hide that delay. Open-loop
+    streaming runs only.
+``dispatch_lateness_p50_s`` / ``dispatch_lateness_p99_s`` / ``dispatch_lateness_max_s``
+    How long after its planned arrival each request was actually sent,
+    client-side slot waits included. Open-loop runs only.
 ``text_ttft_mean_s`` (TTFT)
     Mean time-to-first-text-token: client-side wall time from request send to
     first non-empty content delta. Streaming only; populated when the model
@@ -134,6 +141,14 @@ def compute_speed_metrics(
     text_ttfts = [
         o.text_ttft_s for o in successes if getattr(o, "text_ttft_s", None) is not None
     ]
+    lateness = [
+        o.dispatch_lateness_s for o in successes if o.dispatch_lateness_s is not None
+    ]
+    ttfps_from_arrival = [
+        o.audio_ttfp_s + o.dispatch_lateness_s
+        for o in successes
+        if o.audio_ttfp_s is not None and o.dispatch_lateness_s is not None
+    ]
     inter_chunk_deltas = [
         d for o in successes for d in getattr(o, "inter_chunk_s", []) or []
     ]
@@ -163,6 +178,9 @@ def compute_speed_metrics(
         "total_requests": len(outputs),
         "completed_requests": len(successes),
         "failed_requests": len(outputs) - len(successes),
+        "client_slot_waits": sum(
+            1 for o in outputs if getattr(o, "waited_for_slot", False)
+        ),
         "latency_mean_s": round(float(np.mean(latencies)), 3),
         "latency_median_s": round(float(np.median(latencies)), 3),
         "latency_p95_s": round(float(np.percentile(latencies, 95)), 3),
@@ -187,6 +205,21 @@ def compute_speed_metrics(
         metrics_summary["audio_ttfp_median_s"] = round(float(np.median(ttfps)), 4)
         metrics_summary["audio_ttfp_p95_s"] = round(float(np.percentile(ttfps, 95)), 4)
         metrics_summary["audio_ttfp_p99_s"] = round(float(np.percentile(ttfps, 99)), 4)
+    if ttfps_from_arrival:
+        for key, value in (
+            ("median", np.median(ttfps_from_arrival)),
+            ("p95", np.percentile(ttfps_from_arrival, 95)),
+            ("p99", np.percentile(ttfps_from_arrival, 99)),
+        ):
+            metrics_summary[f"audio_ttfp_from_arrival_{key}_s"] = round(float(value), 4)
+    if lateness:
+        metrics_summary["dispatch_lateness_p50_s"] = round(
+            float(np.median(lateness)), 4
+        )
+        metrics_summary["dispatch_lateness_p99_s"] = round(
+            float(np.percentile(lateness, 99)), 4
+        )
+        metrics_summary["dispatch_lateness_max_s"] = round(float(max(lateness)), 4)
     if text_ttfts:
         metrics_summary["text_ttft_mean_s"] = round(float(np.mean(text_ttfts)), 4)
         metrics_summary["text_ttft_median_s"] = round(float(np.median(text_ttfts)), 4)
@@ -419,4 +452,10 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         ),
         "audio_chunk_count": output.audio_chunk_count or None,
         "first_audio_payload_bytes": output.first_audio_payload_bytes or None,
+        "waited_for_slot": output.waited_for_slot,
+        "dispatch_lateness_s": (
+            round(output.dispatch_lateness_s, 4)
+            if output.dispatch_lateness_s is not None
+            else None
+        ),
     }

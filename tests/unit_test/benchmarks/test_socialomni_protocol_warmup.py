@@ -10,16 +10,16 @@ import pytest
 
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
-from benchmarks.tasks.socialomni import request_chat_completion
+from benchmarks.tasks.socialomni_protocol import request_chat_completion
 
 
-def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
+def level1_sample(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
 
 
-def _level2(index: int = 0) -> SocialOmniLevel2Sample:
+def level2_sample(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
         str(index),
         "/tmp/video.mp4",
@@ -33,7 +33,7 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     )
 
 
-def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
+def eval_config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
         "dataset_root": ".",
         "model": "qwen3-omni",
@@ -51,7 +51,7 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     return entrypoint.SocialOmniEvalConfig(**values)
 
 
-class _Response:
+class FakeResponse:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
         self.body = body
@@ -66,9 +66,9 @@ class _Response:
         return self.body
 
 
-class _Session:
-    def __init__(self, *responses: _Response):
-        self.responses = list(responses) or [_Response()]
+class FakeSession:
+    def __init__(self, *responses: FakeResponse):
+        self.responses = list(responses) or [FakeResponse()]
         self.calls = 0
 
     def post(self, *_args, **_kwargs):
@@ -80,9 +80,9 @@ class _Session:
 @pytest.mark.parametrize("status", [429, 501, 507])
 @pytest.mark.asyncio
 async def test_retryable_http_error_is_retried(monkeypatch, status: int) -> None:
-    session = _Session(
-        _Response(status, "retry"),
-        _Response(
+    session = FakeSession(
+        FakeResponse(status, "retry"),
+        FakeResponse(
             200,
             json.dumps({"choices": [{"message": {"content": "Answer: A"}}]}),
         ),
@@ -104,7 +104,7 @@ async def test_retryable_http_error_is_retried(monkeypatch, status: int) -> None
 
 @pytest.mark.asyncio
 async def test_non_retryable_http_error_is_not_retried() -> None:
-    session = _Session(_Response(400, "bad request"))
+    session = FakeSession(FakeResponse(400, "bad request"))
     result = await request_chat_completion(
         session,  # type: ignore[arg-type]
         api_url="http://example/v1/chat/completions",
@@ -118,7 +118,7 @@ async def test_non_retryable_http_error_is_not_retried() -> None:
 @pytest.mark.asyncio
 async def test_malformed_success_response_does_not_escape() -> None:
     result = await request_chat_completion(
-        _Session(_Response(200, "[]")),  # type: ignore[arg-type]
+        FakeSession(FakeResponse(200, "[]")),  # type: ignore[arg-type]
         api_url="http://example/v1/chat/completions",
         payload={},
         request_id="request",
@@ -149,7 +149,7 @@ async def test_malformed_success_response_does_not_escape() -> None:
 async def test_malformed_completion_is_recorded_as_failure(body) -> None:
     """HTTP 200 alone must not count as a completed model request."""
     result = await request_chat_completion(
-        _Session(_Response(200, json.dumps(body))),
+        FakeSession(FakeResponse(200, json.dumps(body))),
         api_url="http://example/v1/chat/completions",
         payload={},
         request_id="malformed",
@@ -166,8 +166,10 @@ async def test_malformed_completion_is_recorded_as_failure(body) -> None:
 )
 async def test_valid_completion_content(content, expected) -> None:
     result = await request_chat_completion(
-        _Session(
-            _Response(200, json.dumps({"choices": [{"message": {"content": content}}]}))
+        FakeSession(
+            FakeResponse(
+                200, json.dumps({"choices": [{"message": {"content": content}}]})
+            )
         ),
         api_url="http://example/v1/chat/completions",
         payload={},
@@ -210,7 +212,9 @@ def test_cli_checks_server_root_and_preserves_completion_url(
     monkeypatch.setenv("no_proxy", "127.0.0.1")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        entrypoint, "load_socialomni_level1_samples", lambda *_a, **_k: [_level1()]
+        entrypoint,
+        "load_socialomni_level1_samples",
+        lambda *_a, **_k: [level1_sample()],
     )
     monkeypatch.setattr(
         entrypoint,
@@ -282,7 +286,7 @@ async def test_invalid_usage_becomes_a_request_failure(field, invalid_count) -> 
     attempts = []
     body = json.dumps({"choices": [{"message": {"content": "YES"}}], "usage": usage})
     result = await request_chat_completion(
-        _Session(_Response(200, body)),
+        FakeSession(FakeResponse(200, body)),
         api_url="http://example/v1/chat/completions",
         payload={},
         request_id="one",

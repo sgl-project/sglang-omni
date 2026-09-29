@@ -11,13 +11,13 @@ from benchmarks.metrics.socialomni import (
 )
 
 
-def _scores(a: int, b: int, c: int) -> dict[str, int]:
+def judge_scores(a: int, b: int, c: int) -> dict[str, int]:
     return {"gpt-4o": a, "gemini-2.5-pro": b, "qwen3-omni": c}
 
 
 @pytest.mark.parametrize("score", [True, 25.0, "25", [], None, 80])
 def test_judge_scores_reject_invalid_types_and_buckets(score) -> None:
-    scores = _scores(25, 50, 75)
+    scores = judge_scores(25, 50, 75)
     scores["gpt-4o"] = score
     with pytest.raises(JudgeCompletenessError):
         validate_judge_scores(scores, "invalid")
@@ -71,7 +71,7 @@ def test_level2_computes_paper_metrics() -> None:
             "when_success": True,
             "gold_response": "one",
             "gold_response_success": True,
-            "gold_judge_scores": _scores(25, 50, 75),
+            "gold_judge_scores": judge_scores(25, 50, 75),
         },
         {
             "sample_id": "yes-missed",
@@ -80,7 +80,7 @@ def test_level2_computes_paper_metrics() -> None:
             "when_success": True,
             "gold_response": "two",
             "gold_response_success": True,
-            "gold_judge_scores": _scores(75, 75, 75),
+            "gold_judge_scores": judge_scores(75, 75, 75),
         },
         {
             "sample_id": "false-positive",
