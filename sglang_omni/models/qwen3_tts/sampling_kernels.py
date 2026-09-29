@@ -23,9 +23,7 @@ else:
     _TRITON_GATHER_SUPPORTED = False
 
 FUSED_SAMPLER_VOCAB_SIZE = 2048
-_FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
-# note (ratish): measured best of 4, 8 and 16 chunks at block_k 64;
-# re-measure when the kernels change.
+FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
 TOP_K_CHUNKS = 8
 
 
@@ -536,6 +534,7 @@ if has_triton_runtime():
         # note (ratish): the keys are unique, so the top block_k of the chunks'
         # top block_k sets is the row's top block_k in the same order.
         row = tl.program_id(0)
+        # note (ratish): the keys are stored as int64; topk must order them unsigned.
         candidates = tl.load(
             chunk_keys + row * num_candidates + tl.arange(0, num_candidates)
         ).to(tl.uint64)
@@ -765,7 +764,7 @@ def sample_from_sorted_logprobs_with_seed_small_k(
 
 def fused_raw_logit_block_k(max_top_k: int) -> int | None:
     """Return the power-of-two Triton selection width for a graph signature."""
-    if max_top_k not in _FUSED_RAW_LOGIT_TOP_KS:
+    if max_top_k not in FUSED_RAW_LOGIT_TOP_KS:
         return None
     else:
         pass
@@ -843,8 +842,6 @@ def sample_from_logits_with_seed_top_k_top_p(
     # note (ratish): the merge sorts TOP_K_CHUNKS * block_k keys,
     # so the split pays only while that is fewer than the row's keys.
     if max_top_k > 32 and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE:
-        # note (ratish): int64 storage for the uint64 keys; same-width integer casts
-        # in the kernels keep the bits.
         chunk_keys = torch.empty(
             (batch_size, TOP_K_CHUNKS * block_k),
             device=logits.device,
