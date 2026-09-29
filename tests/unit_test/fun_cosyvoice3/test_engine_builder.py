@@ -35,7 +35,9 @@ def test_mlx_engine_profile_disables_incompatible_scheduler_features(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     enable_mlx(monkeypatch)
-    builder = FunCosyVoice3EngineBuilder()
+    builder = FunCosyVoice3EngineBuilder(
+        repetition_aware_sampling="request_temperature"
+    )
     defaults = builder.generation_defaults(dtype="bfloat16")
 
     assert defaults["max_running_requests"] == 1
@@ -71,7 +73,9 @@ def test_mlx_engine_rejects_unsafe_overrides(
     setattr(server_args, field, value)
 
     with pytest.raises(ValueError, match=message):
-        FunCosyVoice3EngineBuilder().validate_before_infrastructure(server_args)
+        FunCosyVoice3EngineBuilder(
+            repetition_aware_sampling="request_temperature"
+        ).validate_before_infrastructure(server_args)
 
 
 def test_mlx_engine_passes_distinct_native_checkpoint(
@@ -81,6 +85,7 @@ def test_mlx_engine_passes_distinct_native_checkpoint(
     builder = FunCosyVoice3EngineBuilder(
         mlx_model_path="mlx-org/model",
         mlx_model_revision="mlx-revision",
+        repetition_aware_sampling="request_temperature",
     )
     builder.checkpoint_root = "/official/model"
 
@@ -94,7 +99,9 @@ def test_torch_mps_uses_single_request_native_attention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
-    builder = FunCosyVoice3EngineBuilder()
+    builder = FunCosyVoice3EngineBuilder(
+        repetition_aware_sampling="request_temperature"
+    )
     builder.device = "mps:0"
 
     defaults = builder.generation_defaults(dtype="bfloat16")

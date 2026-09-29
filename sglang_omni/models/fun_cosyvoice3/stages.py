@@ -23,7 +23,10 @@ if TYPE_CHECKING:
 else:
     pass
 
-from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
+from sglang_omni.models.fun_cosyvoice3.config import (
+    RepetitionAwareSamplingMode,
+    reject_conflicting_dit_accelerators,
+)
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
@@ -1291,6 +1294,7 @@ def create_sglang_tts_engine_executor(
     server_args_overrides: dict[str, Any] | None = None,
     onnx_intra_op_threads: int = 16,
     token_hop_len: int = TOKEN_HOP_LEN,
+    repetition_aware_sampling: RepetitionAwareSamplingMode = "request_temperature",
 ) -> Any:
     from sglang_omni.models.fun_cosyvoice3.engine_builder import (
         FunCosyVoice3EngineBuilder,
@@ -1298,6 +1302,7 @@ def create_sglang_tts_engine_executor(
 
     return FunCosyVoice3EngineBuilder(
         token_hop_len=token_hop_len,
+        repetition_aware_sampling=repetition_aware_sampling,
         onnx_intra_op_threads=onnx_intra_op_threads,
         mlx_model_path=mlx_model_path,
         mlx_model_revision=mlx_model_revision,

@@ -7,11 +7,13 @@ from contextlib import nullcontext
 from typing import Any
 
 import torch
+from sglang.srt.layers.sampler import sampling_from_probs_torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
+from sglang_omni.models.fun_cosyvoice3.config import RepetitionAwareSamplingMode
 from sglang_omni.models.fun_cosyvoice3.streaming import (
     TOKEN_HOP_LEN,
     first_ar_flush_tokens,
@@ -25,6 +27,9 @@ from .request_builders import accept_cosyvoice3_stream_token
 from .sglang_model import VOCAB_SIZE
 
 _COSYVOICE3_RAS_WINDOW_SIZE = 10
+# note (Yucheng Hu): the redraw reusing the first draw's seeded noise would be
+# conditioned on the rejected candidate having won that draw.
+COSYVOICE3_RAS_SEED_SALT = 0x2545F491
 
 
 class FunCosyVoice3ModelRunner(ModelRunner):
@@ -36,6 +41,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         output_processor: Any,
         *,
         token_hop_len: int = TOKEN_HOP_LEN,
+        repetition_aware_sampling: RepetitionAwareSamplingMode,
     ) -> None:
         super().__init__(tp_worker, output_processor)
         hop = int(token_hop_len)
@@ -48,6 +54,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         self.outbox: Any | None = None
         self.vocoder_target = "vocoder"
         self.cosyvoice3_recent_tokens: dict[str, list[int]] = {}
+        self.repetition_aware_sampling = repetition_aware_sampling
 
     def set_stream_outbox(self, outbox: Any) -> None:
         self.outbox = outbox
@@ -202,6 +209,77 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 next_token_logprobs,
                 next_token_ids,
                 requests,
+            )
+        else:
+            pass
+        return next_token_ids
+
+    def process_sampled_token_ids(
+        self,
+        logits_output: Any,
+        forward_batch: Any,
+        next_token_ids: torch.Tensor,
+        requests: list,
+    ) -> torch.Tensor:
+        """Redraw a sampled speech token that repeats within the recent window.
+
+        The redraw masks the candidate and samples the full distribution, so EOS
+        stays reachable after top-k/top-p collapses onto the repeated token.
+        """
+        sampling_info = forward_batch.sampling_info
+        if (
+            self.repetition_aware_sampling == "off"
+            or sampling_info.is_all_greedy
+            or not forward_batch.forward_mode.is_decode()
+        ):
+            return next_token_ids
+        else:
+            pass
+        # note (Yucheng Hu): the pytorch sampler softmaxes next_token_logits in place
+        # and applies top-k/top-p to a sorted copy.
+        probs = logits_output.next_token_logits
+        recent_token_rows = [
+            list(request.data.req.output_ids[-_COSYVOICE3_RAS_WINDOW_SIZE:])
+            for request in requests
+        ]
+        recent_token_ids = torch.tensor(
+            [
+                row + [-1] * (_COSYVOICE3_RAS_WINDOW_SIZE - len(row))
+                for row in recent_token_rows
+            ],
+            dtype=torch.long,
+        ).to(probs.device, non_blocking=True)
+        candidate_ids = next_token_ids.long().unsqueeze(1)
+        is_repeated = (
+            (recent_token_ids == candidate_ids).any(dim=1)
+            & (next_token_ids < VOCAB_SIZE)
+            & (sampling_info.top_ks != 1)
+        )
+        if self.repetition_aware_sampling == "unit_temperature":
+            redraw_probs = probs.pow(sampling_info.temperatures)
+        else:
+            redraw_probs = probs.to(torch.float32, copy=True)
+        redraw_probs.scatter_(1, candidate_ids, 0.0)
+        # note (Yucheng Hu): multinomial rejects an all-zero row, and a row
+        # whose whole mass sat on the candidate has nothing else to draw.
+        redraw_probs = torch.where(
+            redraw_probs.sum(dim=1, keepdim=True) > 0, redraw_probs, probs
+        )
+        redraw_seeds = (
+            None
+            if sampling_info.sampling_seed is None
+            else sampling_info.sampling_seed ^ COSYVOICE3_RAS_SEED_SALT
+        )
+        redraw_ids = sampling_from_probs_torch(
+            redraw_probs, redraw_seeds, forward_batch.positions
+        )
+        next_token_ids = torch.where(is_repeated, redraw_ids, next_token_ids)
+        if logits_output.next_token_logprobs is not None:
+            emitted_logprobs = torch.log(
+                probs.gather(1, next_token_ids.long().unsqueeze(1)).squeeze(1)
+            )
+            logits_output.next_token_logprobs = torch.where(
+                is_repeated, emitted_logprobs, logits_output.next_token_logprobs
             )
         else:
             pass
