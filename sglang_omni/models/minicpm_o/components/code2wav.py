@@ -9,7 +9,6 @@ import threading
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +16,10 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
-from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    SpeakerPrompt,
+    Token2Wav,
+)
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 
@@ -26,16 +28,6 @@ FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
-
-
-@dataclass(kw_only=True, frozen=True)
-class SpeakerPrompt:
-    """Prompt tokens, their lengths, the speaker embedding, and the prompt mel."""
-
-    prompt_tokens: torch.Tensor
-    prompt_token_lengths: torch.Tensor
-    speaker_embedding: torch.Tensor
-    prompt_mel: torch.Tensor
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -159,23 +151,12 @@ class MiniCPMOCode2Wav(nn.Module):
     ) -> Future[SpeakerPrompt]:
         """Start preparing one reference; the caller holds reference_lock."""
         source = io.BytesIO(reference) if isinstance(reference, bytes) else reference
-        future = self.reference_executor.submit(self.encode_reference, source)
+        future = self.reference_executor.submit(self.token2wav.prepare_prompt, source)
         self.pending_references[reference_key] = future
         future.add_done_callback(
             lambda completed: self.store_reference(reference_key, completed)
         )
         return future
-
-    def encode_reference(self, source: str | io.BytesIO) -> SpeakerPrompt:
-        prompt_tokens, prompt_token_lengths, speaker_embedding, prompt_mel = (
-            self.token2wav.prepare_prompt(source)
-        )
-        return SpeakerPrompt(
-            prompt_tokens=prompt_tokens,
-            prompt_token_lengths=prompt_token_lengths,
-            speaker_embedding=speaker_embedding,
-            prompt_mel=prompt_mel,
-        )
 
     def store_reference(
         self, reference_key: str, future: Future[SpeakerPrompt]

@@ -122,10 +122,10 @@ section below is the rule.
   A quoted annotation is only a forward reference inside the same class
   (`"ModelConfig"`). Do not quote a name to avoid importing it.
 - Do not use `if TYPE_CHECKING:`. It hides imports from runtime and from
-  pre-commit. Import the name at module level, or write the concrete type in
-  the annotation (`tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]`
-  instead of a gated alias). If an import is circular, move the shared type
-  into a third module.
+  pre-commit. Import the name at module level. If that import would be
+  circular, define the dataclass in the module that constructs the value
+  and import it from there. Do not add a module whose only job is to hold
+  that type, and do not replace it with an anonymous tuple of the fields.
 - Closed value sets → `Literal[...]` or `Enum`, not bare strings in comparisons.
 - No mutable function defaults: `def f(x=[])`/`= {}` are bugs. Use a `None` sentinel.
 - Every annotation names a concrete type: a dataclass, TypedDict, NamedTuple,
@@ -288,10 +288,11 @@ section below is the rule.
 - If two modules would import each other, break the cycle so both imports
   stay at the top of the file. Do not move one of them into a function, and
   do not park one after a class: the other import order still fails while
-  that module is half-initialized. The lower module returns its own values.
-  The module that owns the dataclass assembles that dataclass. It does not
-  make the lower module import it. Do not use `if TYPE_CHECKING:` to keep an
-  import "type-only" or to silence pre-commit.
+  that module is half-initialized. Put a dataclass in the module that
+  constructs it, and return that type. The higher module imports the
+  dataclass. It does not define the dataclass in a module the lower one
+  would have to import. Do not use `if TYPE_CHECKING:` to keep an import
+  "type-only" or to silence pre-commit.
 - For repository-internal imports, import from the defining module using the full
   package path, such as `from xxx.yy.zzz import kkk`, rather than through
   `__init__.py`. Keep package re-exports minimal and define an explicit

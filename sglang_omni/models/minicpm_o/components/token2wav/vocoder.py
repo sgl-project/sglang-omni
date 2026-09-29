@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -29,6 +30,17 @@ from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
 )
+
+
+@dataclass(kw_only=True, frozen=True)
+class SpeakerPrompt:
+    """Prompt tokens, their lengths, the speaker embedding, and the prompt mel."""
+
+    prompt_tokens: torch.Tensor
+    prompt_token_lengths: torch.Tensor
+    speaker_embedding: torch.Tensor
+    prompt_mel: torch.Tensor
+
 
 FLOW_TYPES = {
     "!new:cosyvoice2.flow.flow.CausalMaskedDiffWithXvec": CausalMaskedDiffWithXvec,
@@ -162,9 +174,7 @@ class Token2Wav(torch.nn.Module):
         self.hift.to(device).eval()
 
     @torch.inference_mode()
-    def prepare_prompt(
-        self, source: str | io.BytesIO
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def prepare_prompt(self, source: str | io.BytesIO) -> SpeakerPrompt:
         audio, sample_rate = torchaudio.load(source)
         if sample_rate != 16000:
             speech = torchaudio.transforms.Resample(sample_rate, 16000)(audio)
@@ -210,4 +220,9 @@ class Token2Wav(torch.nn.Module):
             ),
             mode="replicate",
         )
-        return prompt_tokens, prompt_token_lengths, speaker_embedding, prompt_mel
+        return SpeakerPrompt(
+            prompt_tokens=prompt_tokens,
+            prompt_token_lengths=prompt_token_lengths,
+            speaker_embedding=speaker_embedding,
+            prompt_mel=prompt_mel,
+        )
