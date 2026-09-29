@@ -137,8 +137,6 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         else:
             pass
 
-        import torch_npu
-
         cumulative_window_lens = (
             forward_metadata.cu_seqlens[1:].to(torch.int32).tolist()
         )
@@ -159,12 +157,15 @@ class NpuGraphCaptureAttention(torch.nn.Module):
             "num_heads": num_heads,
             "scale": scale,
             "sparse_mode": 0,
-            "pre_tokens": self.INT32_MAX,
-            "next_tokens": self.INT32_MAX,
+            "pre_tokens": NpuGraphCaptureAttention.INT32_MAX,
+            "next_tokens": NpuGraphCaptureAttention.INT32_MAX,
         }
         context = self.capture_context
         if context.workspace is None:
-            context.workspace = torch_npu._npu_fused_infer_attention_score_get_max_workspace(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            get_workspace = (
+                torch.ops.npu._npu_fused_infer_attention_score_get_max_workspace  # noqa: PGH004  # leading-underscore
+            )
+            context.workspace = get_workspace(
                 **fia_kwargs,
                 actual_seq_lengths=cumulative_window_lens,
                 actual_seq_lengths_kv=cumulative_window_lens,
@@ -172,7 +173,7 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         else:
             pass
 
-        operation = torch_npu.npu_fused_infer_attention_score.out
+        operation = torch.ops.npu.npu_fused_infer_attention_score.out
         operation_kwargs = {
             **fia_kwargs,
             "workspace": context.workspace,

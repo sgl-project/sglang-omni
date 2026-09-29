@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-import sys
 import threading
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -165,15 +164,17 @@ def test_npu_attention_capture_registers_and_applies_an_explicit_fia_task(monkey
     def operation(**kwargs):
         calls.append(("operation", kwargs))
 
-    monkeypatch.setitem(
-        sys.modules,
-        "torch_npu",
-        SimpleNamespace(
-            _npu_fused_infer_attention_score_get_max_workspace=lambda **kwargs: (
-                torch.empty(16)
-            ),
-            npu_fused_infer_attention_score=SimpleNamespace(out=operation),
-        ),
+    monkeypatch.setattr(
+        torch.ops.npu,
+        "_npu_fused_infer_attention_score_get_max_workspace",
+        lambda **kwargs: torch.empty(16),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        torch.ops.npu,
+        "npu_fused_infer_attention_score",
+        SimpleNamespace(out=operation),
+        raising=False,
     )
 
     class Event:
