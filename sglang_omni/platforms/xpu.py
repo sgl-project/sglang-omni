@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
-from sglang.srt.platforms.device_mixin import PlatformEnum
+from sglang.srt.platforms.xpu import XpuDeviceMixin
 
 from sglang_omni.platforms.interface import OmniPlatform
 
@@ -24,15 +24,10 @@ else:
     pass
 
 
-class XPUOmniPlatform(OmniPlatform):
-    _enum: PlatformEnum = PlatformEnum.XPU
-    device_name: str = "xpu"
-    device_type: str = "xpu"
-
-    def get_device(self, local_rank: int) -> "torch.device":
-        return torch.device("xpu", local_rank)
-
+class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
     def set_device(self, device: "torch.device | int") -> None:
+        # torch.xpu rejects an index-less device, unlike torch.cuda, so callers
+        # that name only the type would not resolve to the current card.
         index = device.index if isinstance(device, torch.device) else int(device)
         torch.xpu.set_device(0 if index is None else index)
 

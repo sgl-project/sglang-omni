@@ -46,6 +46,7 @@ from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.model_runner.base import PendingStep
+from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import (
     emit_model_path_end as _emit_model_path_end,
@@ -2907,11 +2908,7 @@ class OmniScheduler:
 
     @staticmethod
     def empty_torch_cache() -> None:
-        if not torch.cuda.is_available():
-            return
-        else:
-            pass
-        torch.cuda.empty_cache()
+        current_platform.empty_cache()
 
     def mark_running_request_aborted(self, request_id: str) -> bool:
         marked = False

@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+import logging
 import pickle
-import random
 import re
 from typing import List, Optional
 
 import numpy as np
 import torch
 import torch.distributed as dist
+
+logger = logging.getLogger(__name__)
 
 
 def get_layer_id(weight_name):
@@ -37,27 +39,24 @@ def add_prefix(name: str, prefix: str) -> str:
 
 
 def set_random_seed(seed: int) -> None:
-    """Set the random seed for all libraries."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    else:
-        pass
+    """Set the random seed for all libraries, including the current device."""
+    # Local import: platforms.interface imports this module for
+    # normalize_quantization, so a module-level import would be circular.
+    from sglang_omni.platforms import current_platform
+
+    current_platform.seed_everything(seed)
 
 
 def avail_gpu_mem(gpu_id: int) -> float | None:
-    """Return currently free GPU memory in GiB, or None when unavailable."""
+    """Return currently free device memory in GiB, or None when unavailable."""
+    from sglang_omni.platforms import current_platform
+
     try:
-        if not torch.cuda.is_available():
-            return None
-        else:
-            pass
-        free_bytes, _ = torch.cuda.mem_get_info(gpu_id)
-        return free_bytes / (1024**3)
-    except Exception:
+        free_bytes, _ = current_platform.get_available_memory(gpu_id)
+    except Exception as exc:
+        logger.debug(f"free device memory is unavailable for gpu_id={gpu_id}: {exc}")
         return None
+    return free_bytes / (1024**3)
 
 
 def broadcast_pyobj(

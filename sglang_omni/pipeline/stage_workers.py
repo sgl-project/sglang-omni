@@ -477,7 +477,7 @@ def stage_process_main(
         run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
         destroy_torch_distributed_process_group(log)
-        reclaim_process_cuda_memory(
+        reclaim_process_device_memory(
             stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
@@ -493,7 +493,7 @@ def stage_process_main(
             traceback.clear_frames(exc.__traceback__)
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
         destroy_torch_distributed_process_group(log)
-        reclaim_process_cuda_memory(
+        reclaim_process_device_memory(
             stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} exit after failure",
@@ -628,7 +628,7 @@ def destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         )
 
 
-def reclaim_process_cuda_memory(
+def reclaim_process_device_memory(
     gpu_ids: Iterable[int],
     log: logging.Logger,
     *,
@@ -640,45 +640,42 @@ def reclaim_process_cuda_memory(
     else:
         pass
     gc.collect()
+    if current_platform.is_cpu():
+        return
+    else:
+        pass
+    device_type = current_platform.device_type
     try:
         import torch
 
-        if not torch.cuda.is_available():
-            return
-        else:
-            pass
         log.warning(
-            "Reclaiming CUDA memory after %s on gpu_ids=%s",
-            reason,
-            gpu_id_list,
+            f"Reclaiming {device_type} memory after {reason} on gpu_ids={gpu_id_list}"
         )
         for gpu_id in gpu_id_list:
             try:
-                torch.cuda.set_device(int(gpu_id))
+                current_platform.set_device(int(gpu_id))
                 with suppress(Exception):
-                    torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-                with suppress(Exception):
-                    torch.cuda.ipc_collect()
+                    current_platform.synchronize()
+                current_platform.empty_cache()
+                if current_platform.is_cuda_alike():
+                    with suppress(Exception):
+                        torch.cuda.ipc_collect()
+                else:
+                    pass
             except Exception as exc:
                 log.warning(
-                    "CUDA memory reclaim failed for gpu_id=%s after %s: %s",
-                    gpu_id,
-                    reason,
-                    exc,
+                    f"{device_type} memory reclaim failed for gpu_id={gpu_id} after "
+                    f"{reason}: {exc}",
                     exc_info=True,
                 )
         gc.collect()
         log.warning(
-            "CUDA memory reclaim complete after %s on gpu_ids=%s",
-            reason,
-            gpu_id_list,
+            f"{device_type} memory reclaim complete after {reason} "
+            f"on gpu_ids={gpu_id_list}"
         )
     except Exception as exc:
         log.warning(
-            "CUDA memory reclaim skipped after %s: %s",
-            reason,
-            exc,
+            f"{device_type} memory reclaim skipped after {reason}: {exc}",
             exc_info=True,
         )
 
@@ -926,25 +923,25 @@ def apply_total_reserve_cap(
         return
     else:
         pass
-    import torch
-
-    if not torch.cuda.is_available():
+    if current_platform.is_cpu():
         return
     else:
         pass
+    import torch
+
+    device_type = current_platform.device_type
+    device_module = torch.get_device_module(device_type)
     device = int(gpu_id)
-    total = torch.cuda.get_device_properties(device).total_memory
+    total_memory_bytes = device_module.get_device_properties(device).total_memory
     _process_reserve_bytes[device] = (
         _process_reserve_bytes.get(device, 0) + spec.total_reserve_bytes
     )
-    fraction = min(1.0, _process_reserve_bytes[device] / total)
-    torch.cuda.set_per_process_memory_fraction(fraction, device)
+    fraction = min(1.0, _process_reserve_bytes[device] / total_memory_bytes)
+    device_module.set_per_process_memory_fraction(fraction, device)
     log.info(
-        "Stage %s: torch allocator capped at %d bytes on cuda:%d (fraction %.4f)",
-        spec.stage_name,
-        _process_reserve_bytes[device],
-        device,
-        fraction,
+        f"Stage {spec.stage_name}: torch allocator capped at "
+        f"{_process_reserve_bytes[device]} bytes on {device_type}:{device} "
+        f"(fraction {fraction:.4f})"
     )
 
 
