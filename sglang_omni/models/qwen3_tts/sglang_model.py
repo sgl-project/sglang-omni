@@ -25,7 +25,6 @@ from sglang.srt.runtime_context import get_context, get_exec, get_parallel, get_
 from sglang.srt.utils import add_prefix
 from sglang.srt.utils.common import is_pin_memory_available
 from torch import nn
-from torch.nn import functional as F
 
 from sglang_omni.models.qwen3_omni.components.talker import (  # noqa: E501
     Qwen3OmniMoeTalkerDenseMLP,
@@ -1045,8 +1044,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self.predictor_projected_embeddings = None
             self.predictor_projected_buffer = None
         else:
-            # note (ratish): a projected embedding row is a row of the projected
-            # table, so each predictor step gathers it instead of running a GEMM.
+            # note (ratish): the projection of an embedding row is that row of the
+            # projected table.
             self.predictor_projected_embeddings = torch.empty(
                 config.num_code_groups - 1,
                 config.code_predictor_config.vocab_size,
@@ -1786,15 +1785,17 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                         dtype=predictor_dtype
                     )
                     pos_summed.add_(new_embed[:, 0, :])
-                if projected_tables is None:
-                    new_predictor_embed = self.code_predictor.project_input(new_embed)
-                elif fused_embedding:
-                    new_predictor_embed = projected_buffer.unsqueeze(1)
-                else:
-                    new_predictor_embed = F.embedding(
-                        next_code.unsqueeze(1), projected_tables[layer_idx]
-                    )
                 if layer_idx < num_groups - 2:
+                    if projected_tables is None:
+                        new_predictor_embed = self.code_predictor.project_input(
+                            new_embed
+                        )
+                    elif fused_embedding:
+                        new_predictor_embed = projected_buffer.unsqueeze(1)
+                    else:
+                        new_predictor_embed = torch.nn.functional.embedding(
+                            next_code.unsqueeze(1), projected_tables[layer_idx]
+                        )
                     last_hidden = self.predictor_forward_tokens(
                         token_embeds=new_predictor_embed,
                         batch_size=batch_size,
@@ -2193,7 +2194,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
 
     @torch.no_grad()
     def post_load_weights(self) -> None:
-        """Project the codec embedding tables once their weights are final."""
+        """Rebuild the projected codec tables; the loaders call this after every
+        weight load."""
         if self.predictor_projected_embeddings is None:
             pass
         else:

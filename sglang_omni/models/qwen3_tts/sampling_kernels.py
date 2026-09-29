@@ -22,6 +22,12 @@ else:
     tl = None
     _TRITON_GATHER_SUPPORTED = False
 
+FUSED_SAMPLER_VOCAB_SIZE = 2048
+_FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
+# note (ratish): measured best of 4, 8 and 16 chunks at block_k 64;
+# re-measure when the kernels change.
+TOP_K_CHUNKS = 8
+
 
 def has_triton_runtime() -> bool:
     return triton is not None and not current_platform.is_npu()
@@ -757,13 +763,6 @@ def sample_from_sorted_logprobs_with_seed_small_k(
     return out
 
 
-_FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
-# note (ratish): eight chunks per row measured fastest on H100 (four and sixteen
-# slower); a chunk selects at most half its width, so the split covers widths 64 and 128.
-TOP_K_CHUNKS = 8
-TOP_K_CHUNK_WIDTH = 2048 // TOP_K_CHUNKS
-
-
 def fused_raw_logit_block_k(max_top_k: int) -> int | None:
     """Return the power-of-two Triton selection width for a graph signature."""
     if max_top_k not in _FUSED_RAW_LOGIT_TOP_KS:
@@ -804,7 +803,7 @@ def sample_from_logits_with_seed_top_k_top_p(
         or block_k is None
         or not logits.is_cuda
         or logits.ndim != 2
-        or logits.shape[1] != 2048
+        or logits.shape[1] != FUSED_SAMPLER_VOCAB_SIZE
         or logits.dtype is not torch.bfloat16
         or not logits.is_contiguous()
     ):
@@ -841,7 +840,11 @@ def sample_from_logits_with_seed_top_k_top_p(
         pass
 
     out = torch.empty((batch_size,), device=logits.device, dtype=torch.long)
-    if max_top_k > 32 and 2 * block_k <= TOP_K_CHUNK_WIDTH:
+    # note (ratish): the merge sorts TOP_K_CHUNKS * block_k keys,
+    # so the split pays only while that is fewer than the row's keys.
+    if max_top_k > 32 and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE:
+        # note (ratish): int64 storage for the uint64 keys; same-width integer casts
+        # in the kernels keep the bits.
         chunk_keys = torch.empty(
             (batch_size, TOP_K_CHUNKS * block_k),
             device=logits.device,
@@ -852,7 +855,7 @@ def sample_from_logits_with_seed_top_k_top_p(
             temperatures,
             chunk_keys,
             logits.stride(0),
-            TOP_K_CHUNK_WIDTH,
+            FUSED_SAMPLER_VOCAB_SIZE // TOP_K_CHUNKS,
             int(block_k),
             num_warps=4,
         )

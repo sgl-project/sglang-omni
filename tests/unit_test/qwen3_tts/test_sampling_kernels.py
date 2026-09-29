@@ -489,7 +489,6 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
     monkeypatch: pytest.MonkeyPatch,
     max_top_k: int,
 ) -> None:
-    """Both the one-kernel path and the chunked two-kernel path capture."""
     batch_size = 4
     logits = torch.randn(
         batch_size,

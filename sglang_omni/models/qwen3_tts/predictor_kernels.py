@@ -94,9 +94,7 @@ def gather_codec_embedding_and_add(
 ) -> bool:
     """Gather BF16 embedding rows and add them to an accumulator in one launch;
     with projected_weight, also gather the same rows of that table into projected.
-
-    Return ``False`` without writes when the caller must use the eager path.
-    """
+    Return False without writes when the caller must use the eager path."""
 
     if gather_codec_embedding_and_add_kernel is None:
         return False
@@ -181,15 +179,19 @@ def gather_codec_embedding_and_add(
     else:
         pass
 
+    assert (projected_weight is None) == (
+        projected is None
+    ), "projected_weight and projected are passed together"
     if projected_weight is None:
         projected_weight = embedding_weight
         projected = gathered
         projected_size = 0
     elif not (
-        projected is not None
-        and projected_weight.ndim == 2
+        projected_weight.ndim == 2
         and projected.ndim == 2
         and projected_weight.shape[0] == embedding_weight.shape[0]
+        # note (ratish): the grid spans the embedding width,
+        # so a projected row must fit in it.
         and projected_weight.shape[1] <= hidden_size
         and projected.shape == (batch_size, projected_weight.shape[1])
         and projected_weight.dtype == torch.bfloat16
