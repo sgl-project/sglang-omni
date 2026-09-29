@@ -231,6 +231,22 @@ def test_graph_bit_identical_to_eager(encoder_bundle, n):
     )
 
 
+def test_shared_pool_replays_buckets_out_of_capture_order(encoder_bundle):
+    encoder, num_mel_bins, runner = encoder_bundle
+    pos = make_pos()
+    saved_outputs = []
+    with current_platform.graph_capture_attention(), torch.no_grad():
+        for i, n in enumerate((1, 8, 2, 4, 1)):
+            torch.manual_seed(200 + i)
+            feat = make_feat(num_mel_bins, n)
+            eager = encoder(feat, pos, None)
+            graphed = runner.run(feat, pos, None)
+            assert torch.equal(eager, graphed), f"bucket={n} replay differs from eager"
+            saved_outputs.append((graphed, eager.clone()))
+    for graphed, eager in saved_outputs:
+        assert torch.equal(graphed, eager), "later replay changed a cloned output"
+
+
 def test_over_largest_bucket_falls_back_to_eager(encoder_bundle):
     """A chunk count above the largest captured bucket falls back to eager and
     still matches a direct eager call."""

@@ -70,9 +70,12 @@ class WhisperEncoderCudaGraphRunner:
         static_pos = torch.arange(encoder_len, device=self.device, dtype=torch.long)
         with current_platform.graph_capture_attention():
             self.warmup(static_feat, static_pos, forward_batch)
-            pool = self.device_module.graph_pool_handle()
+            if self.pool is None:
+                self.pool = self.device_module.graph_pool_handle()
+            else:
+                pass
             with self.graph_backend.capture(
-                pool=pool,
+                pool=self.pool,
                 stream=self.capture_stream,
                 thread_local_errors=True,
             ) as graph:
