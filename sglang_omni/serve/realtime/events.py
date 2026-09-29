@@ -52,6 +52,7 @@ class SessionConfig(EventBase):
     turn_detection: TurnDetection | None = None
     temperature: float | None = None
     max_response_output_tokens: int | str | None = None
+    max_history_turns: int | None = Field(default=None, strict=True)
 
 
 class TranscriptionSessionConfig(EventBase):
@@ -76,6 +77,7 @@ class SessionObject(EventBase):
     turn_detection: TurnDetection | None = None
     temperature: float = 0.8
     max_response_output_tokens: int | str = "inf"
+    max_history_turns: int | None = None
 
 
 # ================================

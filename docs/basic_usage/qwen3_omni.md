@@ -481,6 +481,32 @@ eagerness. Changing detector behavior rebuilds the detector and clears pending
 input audio; `interrupt_response` changes independently. Text-only responses
 are not interrupted automatically.
 
+Long-lived sessions accumulate conversation history in memory, and every turn
+replays the full history into the model prompt — prefill latency grows with
+each turn until the engine's context limit fails the request outright. Set
+`max_history_turns` in `session.update` to bound it:
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "max_history_turns": 20
+  }
+}
+```
+
+The server keeps the most recent N turns and drops older turns as complete
+units. A turn groups the history produced from one committed utterance; it can
+contain both the user transcript and assistant reply, or only one of them when
+transcription or response output is omitted. The system instructions are
+always kept.
+
+The default `null` leaves history unbounded. Omitting the field leaves the
+current bound unchanged, while sending `null` removes it. A newly configured
+bound applies immediately to completed history and is enforced again after
+each turn. The effective value is echoed in both `session.created` and
+`session.updated`.
+
 The browser example in `playground/qwen-omni/realtime` captures microphone
 input, negotiates turn-detection support per connection, and lets the user
 select text-only output or text plus streamed PCM16 audio playback.
