@@ -332,6 +332,33 @@ def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
     assert platform.get_device_graph_backend(torch.device("cpu")) is None
 
 
+def test_platforms_declare_async_stream_support() -> None:
+    """NPU has streams of its own but has never run the path that reads this."""
+    from sglang_omni.platforms.apple import AppleOmniPlatform
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+    from sglang_omni.platforms.npu import NPUOmniPlatform
+
+    supported = (
+        CUDAOmniPlatform,
+        ROCMOmniPlatform,
+        MUSAOmniPlatform,
+        xpu_platform.XPUOmniPlatform,
+    )
+    unsupported = (NPUOmniPlatform, CPUOmniPlatform, AppleOmniPlatform, OmniPlatform)
+
+    for platform_class in supported:
+        platform = platform_class()
+        assert platform.supports_async_streams(
+            SimpleNamespace(type=platform.device_type)
+        )
+        assert not platform.supports_async_streams(torch.device("meta"))
+    for platform_class in unsupported:
+        platform = platform_class()
+        assert not platform.supports_async_streams(
+            SimpleNamespace(type=platform.device_type)
+        )
+
+
 def test_xpu_names_the_sdpa_backends_a_graph_capture_can_use() -> None:
     from torch.nn.attention import SDPBackend
 

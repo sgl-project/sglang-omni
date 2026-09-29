@@ -236,6 +236,8 @@ def force_pipeline(scheduler: Code2WavScheduler, monkeypatch) -> list:
         lambda numel, dtype: torch.empty(numel, dtype=dtype),
     )
     monkeypatch.setattr(torch.cuda, "Event", FakeEvent)
+    # PinnedTransferSlot takes its event from the slot device's module.
+    monkeypatch.setattr(torch.cpu, "Event", FakeEvent)
     stream_devices: list = []
 
     def current_stream(device=None):
@@ -507,6 +509,7 @@ def test_overlap_record_failure_quarantines_current_slot(monkeypatch) -> None:
     event = FakeEvent()
     event.record_error = RuntimeError("event record failed")
     monkeypatch.setattr(torch.cuda, "Event", lambda: event)
+    monkeypatch.setattr(torch.cpu, "Event", lambda: event)
 
     with pytest.raises(RuntimeError, match="event record failed"):
         feed(scheduler, "req-1", range(10, 20))

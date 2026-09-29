@@ -22,6 +22,8 @@ else:
 class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
     """ROCm policy with PyTorch's CUDA-compatible HIP device surface."""
 
+    has_async_device_streams = True
+
     def _get_device_graph_backend(self) -> DeviceGraphBackend:
         from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
 

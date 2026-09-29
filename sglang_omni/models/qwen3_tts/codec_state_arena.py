@@ -12,6 +12,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
 )
+from sglang_omni.platforms import current_platform
 
 
 class Qwen3TTSCodecStateArena:
@@ -41,6 +42,8 @@ class Qwen3TTSCodecStateArena:
             pass
         self.decoder = decoder
         self.device = torch.device(device)
+        self.async_device = current_platform.supports_async_streams(self.device)
+        self.device_module = torch.get_device_module(self.device)
         self.dtype = dtype
         self._num_slots = int(num_slots)  # noqa: leading-underscore
         self.scratch_slot = self._num_slots  # noqa: leading-underscore
@@ -51,7 +54,7 @@ class Qwen3TTSCodecStateArena:
         )
         self.lock = threading.Lock()
         self.staging = threading.local()
-        self.release_events: dict[int, torch.cuda.Event] = {}
+        self.release_events: dict[int, Any] = {}
         self.free: list[int] = list(
             reversed(range(self._num_slots))
         )  # noqa: leading-underscore
@@ -93,7 +96,7 @@ class Qwen3TTSCodecStateArena:
             slot = self.free.pop()
             released = self.release_events.pop(slot, None)
         if released is not None:
-            torch.cuda.current_stream(self.device).wait_event(released)
+            self.device_module.current_stream(self.device).wait_event(released)
         else:
             pass
         self.zero_slot(slot)
@@ -101,9 +104,9 @@ class Qwen3TTSCodecStateArena:
 
     def release(self, slot: int) -> None:
         released = None
-        if self.device.type == "cuda":
-            released = torch.cuda.Event()
-            released.record(torch.cuda.current_stream(self.device))
+        if self.async_device:
+            released = self.device_module.Event()
+            released.record(self.device_module.current_stream(self.device))
         else:
             pass
         with self.lock:
@@ -153,7 +156,7 @@ class Qwen3TTSCodecStateArena:
     STAGING_RING = 4
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
-        if self.device.type != "cuda":
+        if not self.async_device:
             return torch.as_tensor(list(values), dtype=torch.long)
         else:
             pass
