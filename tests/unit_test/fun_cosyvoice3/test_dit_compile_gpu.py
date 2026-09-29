@@ -6,6 +6,16 @@ from __future__ import annotations
 
 import pytest
 import torch
+from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+
+from sglang_omni.models.fun_cosyvoice3 import stages
+from sglang_omni.models.fun_cosyvoice3.packed_dit import (
+    DIT_INDUCTOR_OPTIONS,
+    PackedDiT,
+    pack_rows,
+)
+
+cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
 
 pytestmark = pytest.mark.accelerator
 
@@ -27,9 +37,6 @@ def native_inputs(batch: int, frames: int) -> tuple[torch.Tensor, ...]:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_compile_dit_backbone_matches_eager_beyond_the_warmup_shapes() -> None:
-    cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
-    from sglang_omni.models.fun_cosyvoice3 import stages
-
     torch.manual_seed(5)
     dit = (
         cosyvoice_dit.DiT(
@@ -84,11 +91,7 @@ class ChunkMask(torch.nn.Module):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("static_chunk_size", [50, 0])
 def test_the_compiled_chunk_mask_matches_eager(static_chunk_size: int) -> None:
-    cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
-    from sglang_omni.models.fun_cosyvoice3.packed_dit import DIT_INDUCTOR_OPTIONS
-    from sglang_omni.models.fun_cosyvoice3.stages import patch_chunk_mask
-
-    patch_chunk_mask()
+    stages.patch_chunk_mask()
     eager = ChunkMask(cosyvoice_dit.add_optional_chunk_mask, static_chunk_size)
     compiled = torch.compile(eager, fullgraph=True, options=dict(DIT_INDUCTOR_OPTIONS))
     generator = torch.Generator(device="cuda").manual_seed(0)
@@ -104,11 +107,6 @@ def test_the_compiled_chunk_mask_matches_eager(static_chunk_size: int) -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_production_packed_dit_compile_matches_eager() -> None:
-    cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
-    from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
-
-    from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT, pack_rows
-
     if not _is_fa3_supported():
         pytest.skip("FA3 is unavailable on this device")
 

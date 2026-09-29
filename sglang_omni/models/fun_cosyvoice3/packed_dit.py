@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 # note (ratish, chenyang): a row's chunks share a key prefix, so FA3 pages are one frame.
 FA3_PAGE_SIZE = 1
 FA3_DTYPES = (torch.float16, torch.bfloat16)
-# note(ratish): the first call benchmark runs at a warmup shape where configs tie;
-# the heuristic config is the faster one at serving sizes, measured on H100.
+# note(ratish): the first call benchmark runs at a warmup shape, not a serving one,
+# so its pick can change between boots; the heuristic config is the same on every boot.
 DIT_INDUCTOR_OPTIONS: dict[str, bool] = {"triton.autotune_pointwise": False}
 PACKED_INDUCTOR_OPTIONS: dict[str, bool] = {
     **DIT_INDUCTOR_OPTIONS,
