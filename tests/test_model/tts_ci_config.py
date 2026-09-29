@@ -411,9 +411,9 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
     "cosyvoice3": TtsCiPreset(
         model=TtsCiModelPreset(
             model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-            # note (yxs): DiT torch.compile is on by default (#2372); with a cold
-            # Inductor cache two workers need about 3.5 minutes to start on H100.
-            startup_timeout=900,
+            # note(ratish): a cold Inductor cache compiles the DiT at startup;
+            # two workers take about 3 minutes to start.
+            startup_timeout=200,
             gate_thresholds=False,
         ),
         thresholds=TtsCiThresholdPreset(
