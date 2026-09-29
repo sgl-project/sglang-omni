@@ -24,12 +24,12 @@ import torch
 from sglang_omni.client.client import build_params
 from sglang_omni.config import FactoryArgs
 from sglang_omni.models.minicpm_o import stages
+from sglang_omni.models.minicpm_o.components import code2wav
 from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
     SpeakerPrompt,
 )
-from sglang_omni.models.minicpm_o.components.token2wav import vocoder
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
@@ -143,7 +143,7 @@ def fake_token2wav(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MagicMock
     token2wav.flow.inference.side_effect = fake_flow_inference
     token2wav.hift.side_effect = fake_hift
     token2wav.prepare_prompt.side_effect = fake_prepare_prompt
-    monkeypatch.setattr(vocoder, "Token2Wav", MagicMock(return_value=token2wav))
+    monkeypatch.setattr(code2wav, "Token2Wav", MagicMock(return_value=token2wav))
     monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
     return token2wav
 

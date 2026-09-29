@@ -18,6 +18,11 @@ Naming clarity is part of that bar, not a polish pass. A reader must know the
 unit of every name without opening the function body. Field jargon and short
 forms do not meet it. The NAMING section below is the rule.
 
+Imports are part of that bar too. A name used by a module is imported at
+module scope, where a reader can see it. An import inside a function is not
+a way to defer a heavy dependency or to paper over a cycle. The IMPORTS
+section below is the rule.
+
 ## SIMPLICITY & NON-DUPLICATION
 
 - Introduce a helper, wrapper, or abstraction layer only when it is used at least
@@ -274,14 +279,18 @@ forms do not meet it. The NAMING section below is the rule.
 
 - Group: stdlib / third-party / local, blank-line separated, alphabetical within group.
 - Manage import paths consistently at the project level. Don’t patch sys.path ad hoc in individual files.
-- Import at the top of the file. Do not lazy-import inside a function just
-  to keep the factory "light" or to hide a heavy dependency. Wrong: a
-  block of `from ... import ...` at the start of
-  `create_sglang_talker_executor_from_config`. Right: the same names at
-  module scope. Function-local imports are allowed only for optional
-  dependencies, necessary initialization ordering, or a documented
-  circular-dependency break. Do not use `if TYPE_CHECKING:` to keep an
-  import "type-only" or to silence pre-commit.
+- **Import at module scope. This is a hard requirement.** Do not import
+  inside a function, method, or factory. A heavy dependency is not a reason
+  to hide the import, and neither is a circular import. Wrong: `from
+  sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav`
+  as the first line of `MiniCPMOCode2Wav.__init__`. Right: the same import
+  at module scope.
+- If two modules would import each other, break the cycle so both imports
+  can stay at module scope. Do not move one of them into a function to make
+  the cycle load. When one module's class is the other's return type, the
+  import that needs that class sits after the class, still at module scope,
+  with a one-line note naming the cycle. Do not use `if TYPE_CHECKING:` to
+  keep an import "type-only" or to silence pre-commit.
 - For repository-internal imports, import from the defining module using the full
   package path, such as `from xxx.yy.zzz import kkk`, rather than through
   `__init__.py`. Keep package re-exports minimal and define an explicit

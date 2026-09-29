@@ -37,6 +37,9 @@ class SpeakerPrompt:
     prompt_mel: torch.Tensor
 
 
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
+
+
 class MiniCPMOCode2Wav(nn.Module):
     """Convert codec tokens into a float32 waveform with Token2wav."""
 
@@ -53,8 +56,6 @@ class MiniCPMOCode2Wav(nn.Module):
         prompt_cache_capacity: int,
     ) -> None:
         super().__init__()
-        from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
-
         resolved_device = torch.device(device)
         if resolved_device.type not in {"cuda", "xpu"}:
             raise ValueError(f"Token2wav requires a CUDA or XPU device, got {device}")
