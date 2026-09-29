@@ -26,11 +26,13 @@ from sglang_omni.models.minicpm_o.components.token2wav.flow import (
     CausalMaskedDiffWithXvec,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
+from sglang_omni.models.minicpm_o.components.token2wav.speaker_prompt import (
+    SpeakerPrompt,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
 )
 
-SpeakerPrompt = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 FLOW_TYPES = {
     "!new:cosyvoice2.flow.flow.CausalMaskedDiffWithXvec": CausalMaskedDiffWithXvec,
     "!new:cosyvoice2.transformer.upsample_encoder_v2.UpsampleConformerEncoderV2": UpsampleConformerEncoderV2,
@@ -132,8 +134,24 @@ class Token2Wav(torch.nn.Module):
             self.flow.to(dtype)
         else:
             pass
+        flow_weights = torch.load(
+            model_path / "flow.pt", map_location="cpu", weights_only=True
+        )
+        # note (Chenyang): flow.pt still stores this projection under the old name.
+        checkpoint_speaker_projection = "spk_embed_affine_layer."
         self.flow.load_state_dict(
-            torch.load(model_path / "flow.pt", map_location="cpu", weights_only=True),
+            {
+                (
+                    key.replace(
+                        checkpoint_speaker_projection,
+                        "speaker_embedding_projection.",
+                        1,
+                    )
+                    if key.startswith(checkpoint_speaker_projection)
+                    else key
+                ): value
+                for key, value in flow_weights.items()
+            },
             strict=True,
         )
         self.flow.to(device).eval()
@@ -194,4 +212,9 @@ class Token2Wav(torch.nn.Module):
             ),
             mode="replicate",
         )
-        return prompt_tokens, prompt_token_lengths, speaker_embedding, prompt_mel
+        return SpeakerPrompt(
+            prompt_tokens=prompt_tokens,
+            prompt_token_lengths=prompt_token_lengths,
+            speaker_embedding=speaker_embedding,
+            prompt_mel=prompt_mel,
+        )

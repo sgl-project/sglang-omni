@@ -70,11 +70,13 @@ def fake_speaker_prompt(reference_audio: bytes) -> vocoder.SpeakerPrompt:
     """Prompt as wide as the reference, with every tensor tagged by its first byte."""
     reference_id = reference_audio[0]
     prompt_token_count = len(reference_audio)
-    return (
-        torch.full((1, prompt_token_count), reference_id, dtype=torch.int32),
-        torch.tensor([prompt_token_count], dtype=torch.int32),
-        torch.full((1, 4), float(reference_id)),
-        torch.full(
+    return vocoder.SpeakerPrompt(
+        prompt_tokens=torch.full(
+            (1, prompt_token_count), reference_id, dtype=torch.int32
+        ),
+        prompt_token_lengths=torch.tensor([prompt_token_count], dtype=torch.int32),
+        speaker_embedding=torch.full((1, 4), float(reference_id)),
+        prompt_mel=torch.full(
             (1, prompt_token_count * FAKE_UP_RATE, FAKE_MEL_BINS), float(reference_id)
         ),
     )
@@ -321,7 +323,7 @@ def test_mixed_reference_batch_matches_single_row_mels(
     short_reference = io.BytesIO()
     sf.write(short_reference, audio[: audio.shape[0] // 2], sample_rate, format="wav")
     references = [str(reference_path), short_reference.getvalue(), str(reference_path)]
-    speech_tokens = model.token2wav.prepare_prompt(str(reference_path))[0]
+    speech_tokens = model.token2wav.prepare_prompt(str(reference_path)).prompt_tokens
     codec_tokens = speech_tokens.reshape(-1).tolist()
     sequences = [codec_tokens[:60], codec_tokens[10:110], codec_tokens[40:65]]
     generated_mels: list[torch.Tensor] = []
@@ -474,7 +476,7 @@ def test_prepare_references_prepares_identical_rows_once(
 ) -> None:
     model = build_code2wav_model(reference_workers=reference_workers)
     prompts = model.prepare_references([b"a"] * 8)
-    assert [prompt[0][0, 0].item() for prompt in prompts] == [ord("a")] * 8
+    assert [prompt.prompt_tokens[0, 0].item() for prompt in prompts] == [ord("a")] * 8
     fake_token2wav.prepare_prompt.assert_called_once()
 
 
@@ -496,7 +498,7 @@ def test_prepare_references_runs_in_parallel_and_restores_row_order(
     fake_token2wav.prepare_prompt.side_effect = prepare_out_of_order
     model = build_code2wav_model(reference_workers=2)
     prompts = model.prepare_references([b"a", b"b", b"a", b"b"])
-    assert [prompt[0][0, 0].item() for prompt in prompts] == [97, 98, 97, 98]
+    assert [prompt.prompt_tokens[0, 0].item() for prompt in prompts] == [97, 98, 97, 98]
     assert fake_token2wav.prepare_prompt.call_count == 2
 
 
@@ -533,7 +535,7 @@ def test_failed_reference_batch_drains_workers_and_can_retry(
 
     fake_token2wav.prepare_prompt.side_effect = fake_prepare_prompt
     prompts = model.prepare_references([b"a", b"b"])
-    assert [prompt[0][0, 0].item() for prompt in prompts] == [97, 98]
+    assert [prompt.prompt_tokens[0, 0].item() for prompt in prompts] == [97, 98]
 
 
 @pytest.mark.parametrize("reference_workers", [1, 2])
@@ -655,7 +657,7 @@ def test_prefetched_reference_serves_its_batch_without_second_preparation(
     model = build_code2wav_model()
     model.prefetch_reference("req-a", b"a")
     prompts = model.prepare_references([b"a"])
-    assert prompts[0][0][0, 0].item() == ord("a")
+    assert prompts[0].prompt_tokens[0, 0].item() == ord("a")
     fake_token2wav.prepare_prompt.assert_called_once()
 
 
@@ -692,7 +694,7 @@ def test_failed_prefetch_is_retried_by_its_batch(
     drain_reference_worker(model)
     fake_token2wav.prepare_prompt.side_effect = fake_prepare_prompt
     prompts = model.prepare_references([b"a"])
-    assert prompts[0][0][0, 0].item() == ord("a")
+    assert prompts[0].prompt_tokens[0, 0].item() == ord("a")
 
 
 def test_code2wav_stage_prepares_reference_on_arrival(

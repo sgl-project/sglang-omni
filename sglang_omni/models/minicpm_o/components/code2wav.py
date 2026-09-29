@@ -16,6 +16,9 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+from sglang_omni.models.minicpm_o.components.token2wav.speaker_prompt import (
+    SpeakerPrompt,
+)
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 
@@ -24,8 +27,6 @@ FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
-
-SpeakerPrompt = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -284,9 +285,7 @@ class MiniCPMOCode2Wav(nn.Module):
         speech_token_lengths = torch.tensor(
             token_lengths, dtype=torch.int32, device=device
         )
-        prompt_tokens, prompt_token_lengths, speaker_embeddings, prompt_mels = zip(
-            *self.prepare_references(references)
-        )
+        speaker_prompts = self.prepare_references(references)
         with torch.amp.autocast(
             self.token2wav.device.type,
             dtype=self.token2wav.dtype,
@@ -295,10 +294,16 @@ class MiniCPMOCode2Wav(nn.Module):
             mel = self.token2wav.flow.inference(
                 speech_tokens,
                 speech_token_lengths,
-                pad_sequence([tokens[0] for tokens in prompt_tokens], batch_first=True),
-                torch.cat(prompt_token_lengths),
-                pad_sequence([mels[0] for mels in prompt_mels], batch_first=True),
-                torch.cat(speaker_embeddings),
+                pad_sequence(
+                    [prompt.prompt_tokens[0] for prompt in speaker_prompts],
+                    batch_first=True,
+                ),
+                torch.cat([prompt.prompt_token_lengths for prompt in speaker_prompts]),
+                pad_sequence(
+                    [prompt.prompt_mel[0] for prompt in speaker_prompts],
+                    batch_first=True,
+                ),
+                torch.cat([prompt.speaker_embedding for prompt in speaker_prompts]),
                 self.token2wav.n_timesteps,
             )
 
