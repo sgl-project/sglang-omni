@@ -172,6 +172,88 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "response_format":"wav"}' -o out.wav
 ```
 
+### Audar-TTS-V1 Turbo (Arabic TTS with voice cloning, single XPU)
+
+Audar runs its LLM through llama.cpp from a GGUF file, and its NeuCodec reference
+encoder and vocoder in PyTorch. The `audar-tts` extra cannot be used here. It builds
+`llama-cpp-python` for the CPU, and on `xpu` the stage refuses a build that cannot
+offload rather than running the LLM on the CPU. Its `torchao==0.13.0` pin would also
+replace the environment's `torchao` `+xpu`. Build a SYCL wheel of the same version
+instead. oneAPI provides `icx`/`icpx`, so source it inside the build subshell only:
+
+```bash
+(
+  source /opt/intel/oneapi/2026.1/oneapi-vars.sh --force   # build shell only
+  CMAKE_ARGS="-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
+    -DGGML_SYCL_DNN=OFF -DGGML_SYCL_GRAPH=ON -DGGML_OPENMP=OFF -DLLAVA_BUILD=OFF" \
+    pip wheel --no-deps --no-binary llama-cpp-python llama-cpp-python==0.3.34 -w wheels/
+)
+```
+
+- `GGML_OPENMP=OFF`: with OpenMP on, `icx` links Intel's `libiomp5.so`, which the
+  PyTorch-XPU environment does not ship, so the library fails to load outside oneAPI.
+- `GGML_SYCL_DNN=OFF`: oneDNN would pull a second SYCL runtime next to the
+  `intel-sycl-rt` that the `+xpu` wheels bundle.
+
+The wheel's SYCL, oneMKL, TBB and compiler-runtime libraries come from the wheels
+that `torch+xpu` installs, and Level Zero comes from the GPU driver. Install it and
+NeuCodec with `--no-deps`, which keeps pip away from the `+xpu` torch family. NeuCodec
+runs without `kagglehub` and `hf_transfer`, the two `torchtune` requirements this
+skips. The environment's `torchao` already provides the `nf4tensor` module that
+`torchtune` imports.
+
+```bash
+pip install --no-deps wheels/llama_cpp_python-0.3.34-*.whl
+pip install --no-deps neucodec==0.0.6 torchtune==0.6.1 torchdata==0.11.0 \
+  vector-quantize-pytorch==1.17.8 local-attention==1.11.2 \
+  hyper-connections==0.4.11 torch-einops-utils==0.1.31
+```
+
+Serve without oneAPI sourced, as for every model here. `neuphonic/neucodec` is
+gated on Hugging Face, so accept its terms and export `HF_TOKEN` before the first
+start. Reference clips must be 5-15 seconds long.
+
+```bash
+sgl-omni serve --config examples/configs/audar_tts_turbo.yaml \
+  --model-path /path/to/Audar-TTS-V1-Turbo \
+  --allowed-local-media-path /path/to/references --host 0.0.0.0 --port 8000
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"/path/to/Audar-TTS-V1-Turbo","input":"مرحبا، أهلا وسهلا بكم.",
+       "ref_audio":"file:///path/to/references/voice.wav",
+       "ref_text":"النص المطابق للمقطع المرجعي.","response_format":"wav"}' -o out.wav
+```
+
+Notes for XPU:
+
+- In an ad-hoc script, import `torch` before `llama_cpp`. The SYCL library resolves
+  `libsvml.so` from the libraries torch loads. The stage already imports them in
+  that order.
+- Leave `GGML_SYCL_ENABLE_GRAPH` unset. llama.cpp's SYCL command graph produced the
+  same tokens, but decoding was 2.3-4x slower on an Arc Pro B60.
+- The vocoder can capture XPU graphs for exact output lengths (50 codes per second
+  of audio). Set the lengths in a YAML config, because a
+  `--vocoder.factory.decode_graph_code_counts` flag reaches the stage as text and is
+  rejected:
+
+  ```yaml
+  config_cls: AudarTTSPipelineConfig
+  model_path: audarai/Audar-TTS-V1-Turbo
+  stages:
+    vocoder:
+      factory:
+        decode_graph_code_counts: [150, 250]
+  ```
+
+  The graph covers the decoder up to the iSTFT head, which stays eager because
+  oneMKL's FFT cannot be captured. Any other length decodes eagerly. On an Arc Pro
+  B60 the graph halves that part at 50 codes, but gains 2% at 750. The llama.cpp
+  LLM dominates request latency and is not covered, so graphs pay off only when
+  requests repeat known lengths. They are off by default.
+- Every single-card server on a host takes its card as GPU 0 and waits on the same
+  startup lock. When other servers are starting, set
+  `SGLANG_OMNI_STARTUP_TIMEOUT=1800`.
+
 ### Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)
 
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.

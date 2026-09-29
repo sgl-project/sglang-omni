@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +21,7 @@ from sglang_omni.models.audar_tts.protocol import (
     parse_speech_codes,
 )
 from sglang_omni.models.audar_tts.request_builders import build_audar_state
+from sglang_omni.models.audar_tts.vocoder_graph import capture_decode_graphs
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.proto import StagePayload
@@ -33,12 +36,18 @@ from sglang_omni.scheduling.reference_encoder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
 DEFAULT_CODEC_MODEL = "neuphonic/neucodec"
 REFERENCE_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
 MAX_REFERENCE_SECONDS = 15.0
+# note (anupa): on an Arc Pro B60 a 67-token warmup still left the first
+# request 0.6s to first token against 0.1s later; 256 brings a 302-token first
+# request to 0.2s (5.8s with none), and 512 bought nothing more.
+XPU_WARMUP_PROMPT_TOKENS = 256
 
 
 @dataclass(frozen=True)
@@ -257,7 +266,12 @@ def create_tts_engine_executor(
     n_gpu_layers: int = -1,
 ) -> SimpleScheduler:
     try:
-        from llama_cpp import LLAMA_SPLIT_MODE_NONE, Llama
+        from llama_cpp import (
+            LLAMA_DEFAULT_SEED,
+            LLAMA_SPLIT_MODE_NONE,
+            Llama,
+            llama_supports_gpu_offload,
+        )
     except ImportError as exc:
         raise RuntimeError(
             "Audar-TTS requires the 'audar-tts' optional dependencies"
@@ -266,14 +280,21 @@ def create_tts_engine_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     concrete_device = resolve_concrete_device(device, gpu_id)
-    if concrete_device.type not in ("cpu", "cuda"):
+    if concrete_device.type not in ("cpu", "cuda", "xpu"):
         raise ValueError(
-            "Audar-TTS llama.cpp engine runs on cuda or cpu only; resolved "
+            "Audar-TTS llama.cpp engine runs on cuda, xpu or cpu only; resolved "
             f"device={concrete_device}"
+        )
+    elif concrete_device.type == "xpu" and not llama_supports_gpu_offload():
+        # note (anupa): a build without GGML_SYCL would take every layer on the
+        # CPU without a word.
+        raise RuntimeError(
+            "Audar-TTS on xpu needs llama-cpp-python built with GGML_SYCL=ON; "
+            "the installed build cannot offload to a GPU"
         )
     else:
         pass
-    main_gpu = concrete_device.index if concrete_device.type == "cuda" else 0
+    main_gpu = 0 if concrete_device.type == "cpu" else concrete_device.index
     if concrete_device.type == "cpu":
         # note (lennox): the n_gpu_layers default of -1 offloads every layer, so
         # a cpu resolution would still run on GPU 0 without this.
@@ -299,6 +320,20 @@ def create_tts_engine_executor(
     else:
         pass
     stop_token = stop_tokens[0]
+    if concrete_device.type == "xpu":
+        # note (anupa): the SYCL backend reorders the quantized weights on the
+        # first one-token decode, which changes the logits; without this the
+        # first request samples differently from later ones with its seed.
+        started = time.perf_counter()
+        llm.eval([stop_token] * XPU_WARMUP_PROMPT_TOKENS)
+        llm.eval([stop_token])
+        llm.reset()
+        logger.info(
+            f"Audar-TTS llama.cpp warmup on {concrete_device} took "
+            f"{time.perf_counter() - started:.2f}s"
+        )
+    else:
+        pass
 
     def _generate(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
@@ -319,10 +354,9 @@ def create_tts_engine_executor(
             pass
         llm.reset()
         seed = state.generation_kwargs.get("seed")
-        if seed is not None:
-            llm.set_seed(int(seed))
-        else:
-            pass
+        # note (anupa): Llama keeps the last seed it was given, so an unseeded
+        # request would otherwise sample with the previous request's seed.
+        llm.set_seed(LLAMA_DEFAULT_SEED if seed is None else int(seed))
 
         generated: list[int] = []
         pieces: list[str] = []
@@ -362,12 +396,31 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
+    decode_graph_code_counts: Sequence[int] = (),
 ) -> SimpleScheduler:
     from sglang_omni.utils.device import resolve_concrete_device
 
-    device = str(resolve_concrete_device(device, gpu_id))
+    if isinstance(decode_graph_code_counts, str):
+        # note (anupa): a dotted CLI flag hands an undeclared factory key over
+        # as text, so a list of counts has to come from the YAML config.
+        raise TypeError(
+            "Audar-TTS decode_graph_code_counts takes a list of code counts; set "
+            "it under stages: vocoder: factory: in a YAML config, got "
+            f"{decode_graph_code_counts!r}"
+        )
+    else:
+        pass
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    device = str(concrete_device)
     codec = load_codec(codec_model, codec_revision, device)
     lock = codec_lock(codec_model, codec_revision, device)
+    if decode_graph_code_counts:
+        with lock:
+            decode_graphs = capture_decode_graphs(
+                codec, concrete_device, decode_graph_code_counts
+            )
+    else:
+        decode_graphs = {}
 
     async def _decode(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
@@ -376,8 +429,13 @@ def create_vocoder_executor(
             raise RuntimeError("Audar-TTS vocoder requires non-empty audio codes")
         else:
             pass
+        decode_graph = decode_graphs.get(codes.numel())
         with lock, torch.inference_mode():
-            waveform = codec.decode_code(codes.to(device)[None, None, :])
+            if decode_graph is None:
+                waveform = codec.decode_code(codes.to(device)[None, None, :])
+            else:
+                hidden = decode_graph.replay(codes.to(device)[None, None, :])
+                waveform = codec.generator.head(hidden)[0]
         waveform = torch.as_tensor(waveform).detach().cpu().reshape(-1)
         state.audio_codes = None
         state.sample_rate = OUTPUT_SAMPLE_RATE
