@@ -47,7 +47,9 @@ async def await_media_cleanup(awaitable: Awaitable[_M]) -> _M:
     return result
 
 
-async def run_media_io(func: Callable[_P, _M], *args: _P.args, **kwargs: _P.kwargs) -> _M:
+async def run_media_io(
+    func: Callable[_P, _M], *args: _P.args, **kwargs: _P.kwargs
+) -> _M:
     """Wait for decoder threads to finish even when the request is cancelled."""
     future = asyncio.get_running_loop().run_in_executor(
         global_thread_pool, partial(func, *args, **kwargs)
