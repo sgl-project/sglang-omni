@@ -17,7 +17,6 @@ import whisper
 import yaml
 from librosa.filters import mel as librosa_mel
 
-from sglang_omni.models.minicpm_o.components.code2wav import SpeakerPrompt
 from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
 )
@@ -164,7 +163,9 @@ class Token2Wav(torch.nn.Module):
         self.hift.to(device).eval()
 
     @torch.inference_mode()
-    def prepare_prompt(self, source: str | io.BytesIO) -> SpeakerPrompt:
+    def prepare_prompt(
+        self, source: str | io.BytesIO
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         audio, sample_rate = torchaudio.load(source)
         if sample_rate != 16000:
             speech = torchaudio.transforms.Resample(sample_rate, 16000)(audio)
@@ -210,9 +211,4 @@ class Token2Wav(torch.nn.Module):
             ),
             mode="replicate",
         )
-        return SpeakerPrompt(
-            prompt_tokens=prompt_tokens,
-            prompt_token_lengths=prompt_token_lengths,
-            speaker_embedding=speaker_embedding,
-            prompt_mel=prompt_mel,
-        )
+        return prompt_tokens, prompt_token_lengths, speaker_embedding, prompt_mel

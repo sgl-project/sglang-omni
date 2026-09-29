@@ -286,11 +286,12 @@ section below is the rule.
   as the first line of `MiniCPMOCode2Wav.__init__`. Right: the same import
   at module scope.
 - If two modules would import each other, break the cycle so both imports
-  can stay at module scope. Do not move one of them into a function to make
-  the cycle load. When one module's class is the other's return type, the
-  import that needs that class sits after the class, still at module scope,
-  with a one-line note naming the cycle. Do not use `if TYPE_CHECKING:` to
-  keep an import "type-only" or to silence pre-commit.
+  stay at the top of the file. Do not move one of them into a function, and
+  do not park one after a class: the other import order still fails while
+  that module is half-initialized. The lower module returns its own values.
+  The module that owns the dataclass assembles that dataclass. It does not
+  make the lower module import it. Do not use `if TYPE_CHECKING:` to keep an
+  import "type-only" or to silence pre-commit.
 - For repository-internal imports, import from the defining module using the full
   package path, such as `from xxx.yy.zzz import kkk`, rather than through
   `__init__.py`. Keep package re-exports minimal and define an explicit

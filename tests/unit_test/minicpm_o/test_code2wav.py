@@ -28,7 +28,6 @@ from sglang_omni.models.minicpm_o.components import code2wav
 from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
-    SpeakerPrompt,
 )
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
@@ -67,23 +66,25 @@ class Code2WavBuilder(Protocol):
     ) -> MiniCPMOCode2Wav: ...
 
 
-def fake_speaker_prompt(reference_audio: bytes) -> SpeakerPrompt:
+def fake_speaker_prompt(
+    reference_audio: bytes,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Prompt as wide as the reference, with every tensor tagged by its first byte."""
     reference_id = reference_audio[0]
     prompt_token_count = len(reference_audio)
-    return SpeakerPrompt(
-        prompt_tokens=torch.full(
-            (1, prompt_token_count), reference_id, dtype=torch.int32
-        ),
-        prompt_token_lengths=torch.tensor([prompt_token_count], dtype=torch.int32),
-        speaker_embedding=torch.full((1, 4), float(reference_id)),
-        prompt_mel=torch.full(
+    return (
+        torch.full((1, prompt_token_count), reference_id, dtype=torch.int32),
+        torch.tensor([prompt_token_count], dtype=torch.int32),
+        torch.full((1, 4), float(reference_id)),
+        torch.full(
             (1, prompt_token_count * FAKE_UP_RATE, FAKE_MEL_BINS), float(reference_id)
         ),
     )
 
 
-def fake_prepare_prompt(source: str | io.BytesIO) -> SpeakerPrompt:
+def fake_prepare_prompt(
+    source: str | io.BytesIO,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     if isinstance(source, str):
         reference_audio = Path(source).read_bytes()
     else:
@@ -324,7 +325,7 @@ def test_mixed_reference_batch_matches_single_row_mels(
     short_reference = io.BytesIO()
     sf.write(short_reference, audio[: audio.shape[0] // 2], sample_rate, format="wav")
     references = [str(reference_path), short_reference.getvalue(), str(reference_path)]
-    speech_tokens = model.token2wav.prepare_prompt(str(reference_path)).prompt_tokens
+    speech_tokens = model.token2wav.prepare_prompt(str(reference_path))[0]
     codec_tokens = speech_tokens.reshape(-1).tolist()
     sequences = [codec_tokens[:60], codec_tokens[10:110], codec_tokens[40:65]]
     generated_mels: list[torch.Tensor] = []
@@ -487,7 +488,9 @@ def test_prepare_references_runs_in_parallel_and_restores_row_order(
     both_started = threading.Barrier(2, timeout=THREAD_WAIT_SECONDS)
     second_finished = threading.Event()
 
-    def prepare_out_of_order(source: io.BytesIO) -> SpeakerPrompt:
+    def prepare_out_of_order(
+        source: io.BytesIO,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         reference_audio = source.getvalue()
         both_started.wait()
         if reference_audio == b"a":
@@ -510,7 +513,9 @@ def test_failed_reference_batch_drains_workers_and_can_retry(
     failed = threading.Event()
     release_slow = threading.Event()
 
-    def fail_while_other_runs(source: io.BytesIO) -> SpeakerPrompt:
+    def fail_while_other_runs(
+        source: io.BytesIO,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         reference_audio = source.getvalue()
         if reference_audio == b"a":
             assert slow_started.wait(THREAD_WAIT_SECONDS)
@@ -550,7 +555,9 @@ def test_close_reference_pool_waits_for_running_preparation(
     release = threading.Event()
     preparation_threads: set[threading.Thread] = set()
 
-    def blocking_prepare(source: io.BytesIO) -> SpeakerPrompt:
+    def blocking_prepare(
+        source: io.BytesIO,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         preparation_threads.add(threading.current_thread())
         started.set()
         assert release.wait(THREAD_WAIT_SECONDS)
