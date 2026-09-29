@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from sglang.srt.utils.common import is_pin_memory_available
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.zonos2 import callbacks
@@ -21,6 +22,15 @@ from sglang_omni.models.zonos2.sampler import sample_tts
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+
+
+def sampling_parameter_tensor(
+    values: list[float] | list[int], device: torch.device
+) -> torch.Tensor:
+    """Stage sampling parameters on the host before their device transfer."""
+    return torch.tensor(
+        values, device="cpu", pin_memory=is_pin_memory_available(device)
+    ).to(device, non_blocking=True)
 
 
 class Zonos2ModelRunner(ModelRunner):
@@ -210,11 +220,11 @@ class Zonos2ModelRunner(ModelRunner):
             break_mask = self.break_mask_ring(row_t, model.audio_vocab, dev)
             codes, keys, feedback = model.run_tail_graph(
                 hidden,
-                torch.tensor([x.temperature for x in p], device=dev),
-                torch.tensor([x.top_k for x in p], device=dev),
-                torch.tensor([x.top_p for x in p], device=dev),
-                torch.tensor([x.min_p for x in p], device=dev),
-                torch.tensor([x.repetition_penalty for x in p], device=dev),
+                sampling_parameter_tensor([x.temperature for x in p], dev),
+                sampling_parameter_tensor([x.top_k for x in p], dev),
+                sampling_parameter_tensor([x.top_p for x in p], dev),
+                sampling_parameter_tensor([x.min_p for x in p], dev),
+                sampling_parameter_tensor([x.repetition_penalty for x in p], dev),
                 rep_ids,
                 break_mask,
             )
@@ -229,12 +239,12 @@ class Zonos2ModelRunner(ModelRunner):
             any_min_p = any(x.min_p > 0.0 for x in p)
             codes = self.sampler(
                 logits,
-                temperature=torch.tensor([x.temperature for x in p], device=dev),
-                top_k=torch.tensor([x.top_k for x in p], device=dev),
-                top_p=torch.tensor([x.top_p for x in p], device=dev),
-                min_p=torch.tensor([x.min_p for x in p], device=dev),
-                repetition_penalty=torch.tensor(
-                    [x.repetition_penalty for x in p], device=dev
+                temperature=sampling_parameter_tensor([x.temperature for x in p], dev),
+                top_k=sampling_parameter_tensor([x.top_k for x in p], dev),
+                top_p=sampling_parameter_tensor([x.top_p for x in p], dev),
+                min_p=sampling_parameter_tensor([x.min_p for x in p], dev),
+                repetition_penalty=sampling_parameter_tensor(
+                    [x.repetition_penalty for x in p], dev
                 ),
                 top_k_max=top_k_max,
                 rep_token_ids=rep_ids,

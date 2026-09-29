@@ -15,10 +15,12 @@ from sglang_omni.models.zonos2.config import (
     Zonos2PipelineConfig,
 )
 from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
+from sglang_omni.models.zonos2.model_runner import sampling_parameter_tensor
 from sglang_omni.models.zonos2.request_builders import (
     build_zonos2_state,
     build_zonos2_stream_metadata,
 )
+from sglang_omni.models.zonos2.sampler import sample_tts
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
@@ -241,3 +243,51 @@ def test_zonos2_factories_reject_unknown_config_options() -> None:
             {"max_new_tokens": 100},
             stage_name="tts_engine",
         )
+
+
+@pytest.mark.parametrize(
+    "device_name",
+    [
+        "cpu",
+        pytest.param(
+            "cuda:0",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA required"
+            ),
+        ),
+    ],
+)
+def test_sampling_parameter_transfer_preserves_heterogeneous_rows(
+    device_name: str,
+) -> None:
+    device = torch.device(device_name)
+    values = {
+        "temperature": [0.0, 0.7, 1.2],
+        "top_k": [0, 2, 3],
+        "top_p": [1.0, 0.8, 0.95],
+        "min_p": [0.0, 0.05, 0.1],
+        "repetition_penalty": [1.0, 1.1, 1.4],
+    }
+    expected = {
+        name: torch.tensor(rows, device=device) for name, rows in values.items()
+    }
+    staged = {
+        name: sampling_parameter_tensor(rows, device) for name, rows in values.items()
+    }
+    for name in values:
+        assert staged[name].device == expected[name].device
+        assert staged[name].dtype == expected[name].dtype
+        assert torch.equal(staged[name], expected[name])
+    logits = torch.arange(24, device=device, dtype=torch.float32).reshape(3, 2, 4) / 10
+    repetition = torch.tensor([[[3], [2]], [[1], [3]], [[2], [0]]], device=device)
+    devices = [device.index] if device.type == "cuda" else []
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(42)
+        original_codes = sample_tts(
+            logits, **expected, top_k_max=3, rep_token_ids=repetition
+        )
+        torch.manual_seed(42)
+        staged_codes = sample_tts(
+            logits, **staged, top_k_max=3, rep_token_ids=repetition
+        )
+    assert torch.equal(staged_codes, original_codes)
