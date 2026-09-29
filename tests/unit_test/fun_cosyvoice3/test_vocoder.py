@@ -55,7 +55,7 @@ class FakeEstimator(torch.nn.Module):
 class RunnableFakeFlow(_PackedFlow):
     def __init__(self):
         super().__init__(channels=80, max_frames=8192)
-        self.speaker_embedding_projection = torch.nn.Linear(192, 80)
+        self.spk_embed_affine_layer = torch.nn.Linear(192, 80)
 
 
 class GraphRunnableFakeFlow(RunnableFakeFlow):
@@ -99,7 +99,7 @@ def packed_compile_scheduler(
     flow = SimpleNamespace(
         output_size=80,
         token_mel_ratio=2,
-        speaker_embedding_projection=SimpleNamespace(in_features=192),
+        spk_embed_affine_layer=SimpleNamespace(in_features=192),
         packed_estimator=packed_estimator,
     )
     vocoder = SimpleNamespace(
@@ -294,7 +294,7 @@ class BatchCapableFakeFlow(torch.nn.Module):
         self.output_size = 80
         self.token_mel_ratio = 2
         self.input_embedding = torch.nn.Embedding(32, 80)
-        self.speaker_embedding_projection = torch.nn.Linear(192, 80)
+        self.spk_embed_affine_layer = torch.nn.Linear(192, 80)
         self.pre_lookahead_layer = lambda x, context=None: x
         self.pre_lookahead_len = 3
         self.decoder = SimpleNamespace(

@@ -82,7 +82,7 @@ def test_pad_flow_prompt_repeats_last_frame_to_hop_multiple() -> None:
 class FakeFlow(_PackedFlow):
     def __init__(self) -> None:
         super().__init__(channels=80, max_frames=512)
-        self.speaker_embedding_projection = torch.nn.Linear(192, 80, bias=False)
+        self.spk_embed_affine_layer = torch.nn.Linear(192, 80, bias=False)
         self.input_embedding = torch.nn.Embedding(VOCAB_SIZE, 80)
 
 

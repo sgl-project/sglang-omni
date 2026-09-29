@@ -192,7 +192,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
             prompt_feat=torch.zeros(
                 1, self.token_hop_len * TOKEN_MEL_RATIO, flow.output_size
             ),
-            embedding=torch.zeros(1, flow.speaker_embedding_projection.in_features),
+            embedding=torch.zeros(1, flow.spk_embed_affine_layer.in_features),
         )
 
     def latch_stream_contract(

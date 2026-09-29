@@ -195,7 +195,7 @@ def pack_flow_inputs(
             )
         else:
             pass
-        expected_embedding_size = flow.speaker_embedding_projection.in_features
+        expected_embedding_size = flow.spk_embed_affine_layer.in_features
         if item.embedding.shape[1] != expected_embedding_size:
             raise ValueError(
                 f"input {index} embedding width must be {expected_embedding_size}"
@@ -405,7 +405,7 @@ class FlowCudaGraphRunner:
         mel_mask = torch.ones(
             batch_size, 1, mel_frame, device=model_device, dtype=parameter_dtype
         )
-        speaker_dim = int(self.flow.speaker_embedding_projection.out_features)
+        speaker_dim = int(self.flow.spk_embed_affine_layer.out_features)
         speaker_embedding = torch.zeros(
             batch_size, speaker_dim, device=model_device, dtype=speaker_dtype
         )
@@ -564,7 +564,7 @@ def prepare_flow_conditioning(
 ) -> FlowConditioning:
     """Encoder, prompt mel, noise and time schedule of one Flow call in the
     padded (rows, channels, frames) layout, with each row's mel length."""
-    speaker_embedding = flow.speaker_embedding_projection(
+    speaker_embedding = flow.spk_embed_affine_layer(
         F.normalize(packed.embedding, dim=1)
     )
     token_embedding = flow.input_embedding(torch.clamp(packed.token, min=0))

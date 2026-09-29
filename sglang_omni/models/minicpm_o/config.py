@@ -127,7 +127,7 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         # underutilized GPU/SMs. To address this, we recommend users to set
         # batchs for your compute but never wait for grouping the batchs.
         # As SGLang Omni Runtime moves better, we shall probably wait several
-        # ms for grouping the batchs; code2wav already does, see the factory.
+        # ms for grouping the batchs, but right now, set it to 0.0.
         gpu=gpu,
         terminal=True,
     )
