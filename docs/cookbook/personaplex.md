@@ -50,8 +50,6 @@ python examples/run_personaplex.py \
   --lm.engine.mem_fraction_static 0.70
 ```
 
-The model weights used 14.57 GiB on the tested 23.91 GiB device. This setting created a 4,437-token KV cache and left 7.17 GiB free after cache allocation. The default `0.3` fraction is only 7.17 GiB on that device and cannot hold the weights.
-
 ## Serving over HTTP
 
 ```bash
