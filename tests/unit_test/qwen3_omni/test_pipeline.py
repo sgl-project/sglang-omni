@@ -1080,6 +1080,120 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     assert scheduler.server_args is server_args
 
 
+@pytest.mark.parametrize("prefill_backend", ["breakable", "disabled"])
+def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
+    monkeypatch: pytest.MonkeyPatch, prefill_backend: str
+) -> None:
+    from sglang.srt.utils import hf_transformers_utils
+
+    from sglang_omni.models.qwen3_omni import (
+        bootstrap,
+        request_builders,
+        talker_model_runner,
+        talker_scheduler,
+    )
+    from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
+    from sglang_omni.scheduling import sglang_backend
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+    from sglang_omni.utils import cuda_graph_batch_validator
+
+    server_args = SimpleNamespace(
+        disable_cuda_graph=False,
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(backend=prefill_backend)
+        ),
+    )
+    captured = {}
+    attest_calls = []
+    graph_init_samplers = []
+    talker_config = SimpleNamespace(
+        text_config=SimpleNamespace(vocab_size=3072),
+        codec_bos_id=1,
+        codec_eos_token_id=2,
+        codec_nothink_id=3,
+        codec_think_bos_id=4,
+        codec_think_eos_id=5,
+        codec_pad_id=6,
+        speaker_id={"ethan": 0},
+    )
+    model_config = SimpleNamespace(
+        model_path="model",
+        vocab_size=10,
+        hf_config=SimpleNamespace(
+            thinker_config=SimpleNamespace(
+                audio_token_id=7, image_token_id=8, video_token_id=9
+            ),
+            talker_config=talker_config,
+            tts_bos_token_id=10,
+            tts_eos_token_id=11,
+            tts_pad_token_id=12,
+            im_start_token_id=13,
+            im_end_token_id=14,
+            system_token_id=15,
+            user_token_id=16,
+            assistant_token_id=17,
+        ),
+    )
+    model_runner = SimpleNamespace(
+        model=SimpleNamespace(), sampler=object(), model_config=model_config
+    )
+    model_worker = SimpleNamespace(model_runner=model_runner, model_config=model_config)
+
+    def fake_create_infrastructure(*args, **kwargs):
+        captured.update(kwargs)
+        return (model_worker, object(), object(), object(), model_config)
+
+    class FakeTalkerScheduler(SimpleNamespace):
+        outbox = object()
+
+        def bind_model_runner(self, runner) -> None:
+            self.model_runner = runner
+
+    monkeypatch.setattr(
+        talker_scheduler, "configure_talker_server_args", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        scheduling_bootstrap, "create_sglang_infrastructure", fake_create_infrastructure
+    )
+    monkeypatch.setattr(
+        scheduling_bootstrap,
+        "init_sglang_cuda_graphs",
+        lambda worker: graph_init_samplers.append(worker.model_runner.model.sampler),
+    )
+    monkeypatch.setattr(
+        cuda_graph_batch_validator,
+        "attest_prefill_cuda_graphs",
+        lambda runner, *, operator_selected: attest_calls.append(
+            (runner, operator_selected, len(graph_init_samplers))
+        ),
+    )
+    monkeypatch.setattr(
+        hf_transformers_utils, "get_tokenizer", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "make_talker_scheduler_adapters",
+        lambda **kwargs: (object(), object(), object(), object()),
+    )
+    monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda: object())
+    monkeypatch.setattr(talker_scheduler, "QwenTalkerScheduler", FakeTalkerScheduler)
+    monkeypatch.setattr(
+        talker_model_runner,
+        "QwenTalkerModelRunner",
+        lambda *args, **kwargs: object(),
+    )
+
+    bootstrap.create_talker_scheduler(
+        server_args, operator_selected_prefill_backend=True
+    )
+
+    is_breakable = prefill_backend == CudaGraphBackend.BREAKABLE
+    assert captured["enable_prefill_input_embeds"] is is_breakable
+    assert captured["defer_cuda_graph_capture"] is True
+    assert graph_init_samplers == [model_runner.sampler]
+    assert attest_calls == ([(model_runner, True, 1)] if is_breakable else [])
+
+
 def test_qwen_broadcast_and_dotted_conflict_is_never_silent() -> None:
     """Two spellings of one leaf at one precedence stay an error."""
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")

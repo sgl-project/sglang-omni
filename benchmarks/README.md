@@ -18,6 +18,8 @@ benchmarks/
 └── results/        # (gitignored) evaluation outputs
 ```
 
+PersonaPlex reference comparisons: [evaluation setup and limits](eval/personaplex.md).
+
 ## Quick Start
 
 ```bash

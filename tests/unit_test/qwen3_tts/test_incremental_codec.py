@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 
 import pytest
@@ -17,6 +18,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     incremental_causal_transconv1d,
     incremental_transformer,
 )
+from sglang_omni.utils import snake_beta
 
 
 def random_partitions(total: int, seed: int) -> list[int]:
@@ -991,3 +993,56 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
                 graph_mapping[key], eager_mapping[key], rtol=2e-4, atol=2e-5
             )
     assert arena.gather([bystander]).frame_positions.tolist() == [0]
+
+
+@pytest.mark.benchmark
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_real_tts_decoder_and_incremental_pcm_equal() -> None:
+    checkpoint = os.environ.get("QWEN3_TTS_TOKENIZER_PATH")
+    if checkpoint is None:
+        pytest.skip("Set QWEN3_TTS_TOKENIZER_PATH to run the real checkpoint gate")
+    from sglang_omni.models.qwen3_tts.compat import (
+        apply_qwen_tts_transformers_compatibility_patches,
+    )
+    from sglang_omni.models.qwen3_tts.incremental_codec import (
+        Qwen3TTSIncrementalCodecState,
+        Qwen3TTSIncrementalDecoder,
+    )
+
+    apply_qwen_tts_transformers_compatibility_patches()
+    from qwen_tts import Qwen3TTSTokenizer
+
+    tokenizer = Qwen3TTSTokenizer.from_pretrained(
+        checkpoint,
+        device_map="cuda:0",
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+    )
+    decoder = tokenizer.model.decoder.eval()
+    generator = torch.Generator(device="cuda:0").manual_seed(42)
+    codes = [
+        torch.randint(
+            decoder.config.codebook_size,
+            (batch, decoder.config.num_quantizers, frames),
+            device="cuda:0",
+            generator=generator,
+        )
+        for batch, frames in ((1, 2), (1, 24), (1, 35), (8, 24))
+    ]
+    with torch.inference_mode():
+        expected = [decoder(value).clone() for value in codes]
+        incremental = Qwen3TTSIncrementalDecoder(decoder)
+        state = Qwen3TTSIncrementalCodecState()
+        parts = codes[1].split((2, 6, 8, 8), dim=-1)
+        incremental_expected = [
+            incremental.decode(part, state).clone() for part in parts
+        ]
+
+        assert snake_beta.fuse_vocoder_decoder(decoder) == 29
+        for value, pcm in zip(codes, expected):
+            assert torch.equal(decoder(value), pcm), tuple(value.shape)
+        incremental = Qwen3TTSIncrementalDecoder(decoder)
+        state = Qwen3TTSIncrementalCodecState()
+        for part, pcm in zip(parts, incremental_expected):
+            assert torch.equal(incremental.decode(part, state), pcm)

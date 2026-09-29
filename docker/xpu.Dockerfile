@@ -92,15 +92,17 @@ RUN pip install --no-cache-dir --no-deps xgrammar==0.1.33
 
 # --no-build-isolation installs no build requirement, so setuptools is pinned here:
 # below 77 it rejects the PEP 639 license metadata in pyproject_xpu.toml.
+# --no-deps keeps openai-whisper from replacing triton-xpu.
 COPY . /workspace/sglang-omni
 RUN cd /workspace/sglang-omni \
     && pip install --no-cache-dir -U 'setuptools>=77.0.0' \
     && cp pyproject_xpu.toml pyproject.toml \
-    && pip install --no-cache-dir -e . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX}
+    && pip install --no-cache-dir -e . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX} \
+    && pip install --no-cache-dir --no-deps openai-whisper==20250625
 
 # --no-deps: qwen-tts pins Transformers 4.57.3, which would replace the stack above,
 # and resolving sox lifts numpy past the numba==0.65.1 ceiling.
-RUN pip install --no-cache-dir --no-deps sox einops \
+RUN pip install --no-cache-dir --no-deps sox \
     && pip install --no-cache-dir --no-deps qwen-tts==0.1.1
 
 WORKDIR /workspace/sglang-omni

@@ -212,9 +212,12 @@ checks every exact pin in `pyproject.toml` against what is installed.
 
 The image also installs Qwen-TTS without its conflicting dependencies, system
 SoX, the Descript DAC packages, and the Audar/CosyVoice extras. Apply the
-project's dependency overrides when resolving these packages. The CI import
-gate checks Qwen-TTS after the compatibility patch, DAC and NeuCodec imports,
-and the SoX executable. It imports llama.cpp before Torch to catch system NCCL
+project's dependency overrides when resolving these packages. CosyVoice itself
+has no package release, so the CI venv setup clones it at the commit the
+Fun-CosyVoice3 cookbook pins, with its Matcha-TTS submodule, and adds both to
+the venv through a `.pth` file. The CI import gate checks Qwen-TTS after the
+compatibility patch, DAC, NeuCodec, CosyVoice and Matcha-TTS imports, and the
+SoX executable. It imports llama.cpp before Torch to catch system NCCL
 conflicts; the image prioritizes Torch's NCCL library. A package listing alone
 does not prove a usable runtime.
 

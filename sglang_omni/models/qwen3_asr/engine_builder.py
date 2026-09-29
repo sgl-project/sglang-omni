@@ -45,7 +45,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         async_decode_min_batch_size: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
-        enable_torch_compile: bool,
+        enable_torch_compile: bool | None,
         torch_compile_max_bs: int,
         mm_attention_backend: str | None,
         request_build_max_workers: int,

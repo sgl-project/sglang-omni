@@ -216,6 +216,8 @@ def build_runner(
         num_quantizers=16,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         graph_keys=DEFAULT_GRAPH_KEYS,
+        model_footprint_bytes=100,
+        decode_stream=None,
         device_api=backend,
     )
     return runner, backend, model
@@ -246,6 +248,8 @@ def test_build_captures_only_the_explicit_graph_keys() -> None:
         num_quantizers=16,
         total_gpu_memory_fraction=0.5,
         graph_keys=graph_keys,
+        model_footprint_bytes=100,
+        decode_stream=None,
         device_api=backend,
     )
 
@@ -263,10 +267,10 @@ def test_build_captures_only_the_explicit_graph_keys() -> None:
     }
 
 
-def test_build_uses_three_warmups_one_private_pool_and_atomic_publication() -> None:
+def test_build_uses_two_warmups_one_private_pool_and_atomic_publication() -> None:
     runner, backend, model = build_runner()
 
-    assert backend.warmup_iterations == [3] * 4
+    assert backend.warmup_iterations == [2] * 4
     assert [tuple(graph.static_input.shape) for graph in backend.graphs] == [
         (1, 16, 35),
         (1, 16, 30),
@@ -318,6 +322,27 @@ def test_build_reuses_one_private_stream_for_all_warmups_and_captures() -> None:
     assert private_stream is not None
     assert all(stream is private_stream for stream in backend.warmup_streams)
     assert all(stream is private_stream for stream in backend.capture_streams)
+
+
+def test_build_warms_up_and_captures_on_the_decode_stream() -> None:
+    decode_stream = object()
+    backend = FakeCudaBackend()
+    runner = Code2WavCudaGraphRunner.build(
+        FakeModel(),
+        device="cuda:0",
+        num_quantizers=16,
+        total_gpu_memory_fraction=0.5,
+        graph_keys=DEFAULT_GRAPH_KEYS,
+        model_footprint_bytes=100,
+        decode_stream=decode_stream,
+        device_api=backend,
+    )
+
+    assert runner.stats()["enabled"] is True
+    assert backend.new_stream_devices == []
+    assert len(backend.capture_streams) == len(DEFAULT_GRAPH_KEYS)
+    assert all(stream is decode_stream for stream in backend.warmup_streams)
+    assert all(stream is decode_stream for stream in backend.capture_streams)
 
 
 def test_stats_report_only_operational_state() -> None:
@@ -469,6 +494,8 @@ def test_real_cuda_shared_pool_replays_batch_sizes_with_eager_parity() -> None:
         num_quantizers=2,
         total_gpu_memory_fraction=1.0,
         graph_keys=graph_keys,
+        model_footprint_bytes=0,
+        decode_stream=None,
     )
 
     stats = runner.stats()
@@ -521,6 +548,8 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
             num_quantizers=2,
             total_gpu_memory_fraction=1.0,
             graph_keys=DEFAULT_GRAPH_KEYS,
+            model_footprint_bytes=0,
+            decode_stream=None,
         )
         scheduler = Code2WavScheduler(
             model,
@@ -826,8 +855,37 @@ def build_tiered_runner(
         num_quantizers=16,
         total_gpu_memory_fraction=0.5,
         graph_keys=TIERED_GRAPH_KEYS,
+        model_footprint_bytes=100,
+        decode_stream=None,
         device_api=backend,
     )
+
+
+def test_process_allocation_above_the_stage_budget_still_captures() -> None:
+    backend = SequencedBackend(
+        snapshots=[
+            (900, 950),  # before: another stage in the process holds 800
+            (960, 1010),  # after the serial keys
+        ],
+    )
+    runner = Code2WavCudaGraphRunner.build(
+        FakeModel(),
+        device="cuda:0",
+        num_quantizers=16,
+        total_gpu_memory_fraction=0.5,
+        graph_keys=DEFAULT_GRAPH_KEYS,
+        model_footprint_bytes=100,
+        decode_stream=None,
+        device_api=backend,
+    )
+
+    stats = runner.stats()
+    assert stats["enabled"] is True
+    assert stats["build"]["published_graph_count"] == len(DEFAULT_GRAPH_KEYS)
+    assert stats["memory"]["stage_budget_bytes"] == 500
+    assert stats["memory"]["loaded_model_footprint_bytes"] == 100
+    assert stats["memory"]["graph_budget_bytes"] == 400
+    assert stats["memory"]["graph_footprint_bytes"] == 60
 
 
 def test_tier1_publishes_full_matrix_within_budget() -> None:
@@ -1119,6 +1177,8 @@ def test_a_device_whose_platform_names_no_graph_backend_is_refused_at_build() ->
             total_gpu_memory_fraction=0.5,
             graph_keys=DEFAULT_GRAPH_KEYS,
             device_api=NoBackend(),
+            model_footprint_bytes=100,
+            decode_stream=None,
         )
 
 
@@ -1131,6 +1191,8 @@ def test_an_indexless_device_is_refused_at_build() -> None:
             total_gpu_memory_fraction=0.5,
             graph_keys=DEFAULT_GRAPH_KEYS,
             device_api=FakeCudaBackend(),
+            model_footprint_bytes=100,
+            decode_stream=None,
         )
 
 
@@ -1202,10 +1264,12 @@ def test_capture_pins_cover_warmup_capture_and_the_equivalence_check(
         total_gpu_memory_fraction=0.5,
         graph_keys=(GraphKey(batch_size=1, frames=10),),
         device_api=PhaseRecordingBackend(phase),
+        model_footprint_bytes=100,
+        decode_stream=None,
     )
 
     assert runner.stats()["build"]["published_graph_count"] == 1
-    inner = ["warmup"] * 3 + ["capture", "eager", "replay"]
+    inner = ["warmup"] * 2 + ["capture", "eager", "replay"]
     if is_xpu:
         assert events == ["pin_enter", *inner, "pin_exit"]
         assert all(probe is not original_probe for probe in seen_probe)

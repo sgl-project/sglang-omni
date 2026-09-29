@@ -44,7 +44,7 @@ ln -sfn "${HOST}" "./${VENV_NAME}"
 source "${VENV_NAME}/bin/activate"
 
 mapfile -t MISSING_REQUIREMENTS < <(
-  python "${SCRIPT_DIR}/omni_missing_dependencies.py" --extra minicpm-o pyproject.toml
+  python "${SCRIPT_DIR}/omni_missing_dependencies.py" --extra minicpm-o --extra fun-cosyvoice3 pyproject.toml
 )
 if [ "${#MISSING_REQUIREMENTS[@]}" -gt 0 ]; then
   echo "Installing dependencies missing from the image:"
@@ -60,6 +60,15 @@ if [ "${#OVERRIDE_REQUIREMENTS[@]}" -gt 0 ]; then
   python -m pip install --no-deps "${OVERRIDE_REQUIREMENTS[@]}"
 fi
 uv pip install --no-deps -e .
+
+COSYVOICE_COMMIT=074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+COSYVOICE_PATH="${HOST}/src/CosyVoice"
+git clone --filter=blob:none --no-checkout https://github.com/FunAudioLLM/CosyVoice.git "${COSYVOICE_PATH}"
+git -C "${COSYVOICE_PATH}" checkout --detach "${COSYVOICE_COMMIT}"
+git -C "${COSYVOICE_PATH}" submodule update --init --depth=1 third_party/Matcha-TTS
+# Note (Jiannan Li): TTS jobs replace PYTHONPATH, so persist both source paths in the venv.
+printf '%s\n' "${COSYVOICE_PATH}" "${COSYVOICE_PATH}/third_party/Matcha-TTS" \
+  > "${HOST}/lib/python3.12/site-packages/cosyvoice.pth"
 
 if ! bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "${VENV_NAME}"; then
   exit 1

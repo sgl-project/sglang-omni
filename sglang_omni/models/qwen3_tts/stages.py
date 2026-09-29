@@ -54,6 +54,11 @@ _NPU_UNSUPPORTED_ATTN_IMPLEMENTATIONS = frozenset(
     {"flash_attention_2", "flash_attention_3", "flash_attention_4"}
 )
 
+# note (luojiaxuan): on SeedTTS EN x-vector-only clones, masking two frames cuts
+# the share of onsets past 160 ms from 95% to 47% (1.7B Base) and from 86% to 23%
+# (0.6B Base); a third frame changes nothing further.
+DEFAULT_LEADING_SILENCE_MASK_FRAMES = 2
+
 
 def resolve_qwen3_tts_attn_implementation(
     device: str | torch.device,
@@ -234,14 +239,20 @@ def load_standalone_preprocessing_context(
     frontend = load_qwen3_tts_prompt_frontend(
         checkpoint_dir, device=device, dtype=torch_dtype
     )
-    frontend.load_speech_tokenizer(
-        load_qwen3_tts_tokenizer(
-            checkpoint_dir,
-            device=device,
-            dtype=dtype,
-            attn_implementation=attn_implementation,
-        )
+    speech_tokenizer = load_qwen3_tts_tokenizer(
+        checkpoint_dir,
+        device=device,
+        dtype=dtype,
+        attn_implementation=attn_implementation,
     )
+    frontend.load_speech_tokenizer(speech_tokenizer)
+    if frontend.speaker_encoder_graph_runner is not None:
+        frontend.speaker_encoder_graph_runner.capture(
+            DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
+            speech_tokenizer.model.encode_downsample_rate,
+        )
+    else:
+        pass
     processor = AutoProcessor.from_pretrained(checkpoint_dir, fix_mistral_regex=True)
     wrapper = Qwen3TTSModel(
         model=frontend,
@@ -266,6 +277,7 @@ def create_sglang_tts_engine_executor(
     reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
         DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
     ),
+    leading_silence_mask_frames: int = DEFAULT_LEADING_SILENCE_MASK_FRAMES,
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
@@ -276,6 +288,7 @@ def create_sglang_tts_engine_executor(
         reference_encoder_cuda_graph_bucket_frames=(
             reference_encoder_cuda_graph_bucket_frames
         ),
+        leading_silence_mask_frames=leading_silence_mask_frames,
     ).build(
         model_path,
         device=device,

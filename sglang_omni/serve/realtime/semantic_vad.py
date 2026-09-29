@@ -7,38 +7,21 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
-import torch
-from silero_vad import load_silero_vad
 
-from .vad import VAD_FRAME_SAMPLES, VAD_SAMPLE_RATE, Emit, VADEvent
+from .vad import (
+    VAD_FRAME_SAMPLES,
+    VAD_SAMPLE_RATE,
+    Emit,
+    SileroSpeechModel,
+    SpeechProbabilityModel,
+    VADEvent,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class SemanticEOUModel(Protocol):
     def predict(self, audio: np.ndarray, sample_rate: int) -> float: ...
-
-
-class SpeechProbabilityModel(Protocol):
-    def predict(self, frame: np.ndarray, sample_rate: int) -> float: ...
-
-    def reset(self) -> None: ...
-
-
-class SileroSpeechModel:
-    def __init__(self) -> None:
-        self.model = load_silero_vad(onnx=True)
-
-    def predict(self, frame: np.ndarray, sample_rate: int) -> float:
-        with torch.inference_mode():
-            tensor = torch.from_numpy(frame).unsqueeze(0)
-            return float(self.model(tensor, sample_rate).item())
-
-    def reset(self) -> None:
-        if hasattr(self.model, "reset_states"):
-            self.model.reset_states()  # type: ignore[union-attr]
-        else:
-            pass
 
 
 @dataclass(frozen=True)

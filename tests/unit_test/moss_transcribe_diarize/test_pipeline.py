@@ -193,7 +193,7 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
 
     assert signature.parameters["max_running_requests"].default == 16
     assert signature.parameters["mem_fraction_static"].default == 0.80
-    assert signature.parameters["enable_torch_compile"].default is False
+    assert signature.parameters["enable_torch_compile"].default is None
     assert signature.parameters["torch_compile_max_bs"].default == 4
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
