@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
@@ -1398,6 +1400,116 @@ def test_fish_reference_encode_service_failure_does_not_poison(
     result = service.get_or_encode({"bytes": b"ref"})
     assert torch.equal(result, torch.tensor([[5, 6]], dtype=torch.long))
     assert codec.calls == 2
+
+
+@pytest.mark.parametrize("gpu_id", [None, 2])
+def test_fish_preprocessing_loads_codec_on_placed_device(
+    monkeypatch: pytest.MonkeyPatch, gpu_id: int | None
+) -> None:
+    from transformers import PreTrainedTokenizerFast
+
+    from sglang_omni.models.fishaudio_s2_pro import stages
+
+    loaded_devices: list[str] = []
+    precision_calls: list[str] = []
+    codec = SimpleNamespace(sample_rate=16000)
+
+    def load_codec(checkpoint_dir: str, device: str) -> SimpleNamespace:
+        assert checkpoint_dir == "checkpoint"
+        loaded_devices.append(device)
+        return codec
+
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda path: "checkpoint")
+    monkeypatch.setattr(stages, "configure_preprocessing_threads", lambda count: 1)
+    monkeypatch.setattr(stages, "load_codec", load_codec)
+    monkeypatch.setattr(
+        stages,
+        "resolve_concrete_device",
+        lambda device, index: torch.device("cuda", index),
+    )
+    monkeypatch.setattr(
+        PreTrainedTokenizerFast,
+        "from_pretrained",
+        lambda path: FakeFishTokenizer(),
+    )
+    monkeypatch.setattr(
+        stages.torch, "set_float32_matmul_precision", precision_calls.append
+    )
+    monkeypatch.setattr(stages.torch.backends.cuda.matmul, "allow_tf32", True)
+    monkeypatch.setattr(stages.torch.backends.cudnn, "allow_tf32", True)
+    monkeypatch.setattr(stages.torch.backends.cudnn, "benchmark", True)
+
+    scheduler = stages.create_preprocessing_executor("model", gpu_id=gpu_id)
+    scheduler.executor.shutdown()
+
+    assert loaded_devices == ["cpu" if gpu_id is None else "cuda:2"]
+    assert precision_calls == ([] if gpu_id is None else ["highest"])
+    assert stages.torch.backends.cuda.matmul.allow_tf32 is (gpu_id is None)
+    assert stages.torch.backends.cudnn.allow_tf32 is (gpu_id is None)
+    assert stages.torch.backends.cudnn.benchmark is (gpu_id is None)
+
+
+@pytest.mark.accelerator
+def test_fish_reference_cuda_serializes_through_cpu_result_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent distinct references select the placed GPU and complete one at a time."""
+    from sglang_omni.models.fishaudio_s2_pro import stages
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    device = torch.device("cuda", torch.cuda.device_count() - 1)
+    state_lock = threading.Lock()
+    start = threading.Barrier(4)
+
+    class Codec:
+        sample_rate = 16000
+
+        def __init__(self) -> None:
+            self.active = 0
+            self.peak_active = 0
+
+        def encode(
+            self, audios: torch.Tensor, audio_lengths: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            assert audios.device == audio_lengths.device == device
+            assert audios.dtype == torch.float32
+            assert audio_lengths.dtype == torch.long
+            assert torch.cuda.current_device() == device.index
+            with state_lock:
+                self.active += 1
+                self.peak_active = max(self.peak_active, self.active)
+            return audios.to(torch.long).unsqueeze(1), audio_lengths
+
+    codec = Codec()
+    copy_to_cpu = torch.Tensor.cpu
+
+    def complete_copy(tensor: torch.Tensor) -> torch.Tensor:
+        time.sleep(0.02)
+        result = copy_to_cpu(tensor)
+        with state_lock:
+            codec.active -= 1
+        return result
+
+    monkeypatch.setattr(torch.Tensor, "cpu", complete_copy)
+    hook = stages.FishReferenceEncodeHook(
+        codec=codec, checkpoint_id="checkpoint", device=device
+    )
+
+    def encode_reference(index: int) -> torch.Tensor:
+        start.wait(timeout=5)
+        return hook.encode_reference_waveform(
+            torch.full((1, 8), index, dtype=torch.float32), 16000
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(encode_reference, range(4)))
+    assert codec.peak_active == 1
+    assert codec.active == 0
+    for index, result in enumerate(results):
+        assert result.device.type == "cpu"
+        assert result.dtype == torch.long
+        assert torch.equal(result, torch.full((1, 8), index, dtype=torch.long))
 
 
 def test_fish_reference_path_mutation_returns_but_does_not_cache(

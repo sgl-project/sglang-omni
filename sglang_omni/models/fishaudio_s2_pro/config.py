@@ -11,6 +11,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.config.schema import stage_process_name
 
 _PKG = "sglang_omni.models.fishaudio_s2_pro"
 
@@ -54,6 +55,26 @@ class S2ProPipelineConfig(PipelineConfig):
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
+
+    def validate_processes(self) -> None:
+        super().validate_processes()
+        preprocessing = self.stage_named("preprocessing")
+        if preprocessing.gpu is None:
+            return
+        else:
+            pass
+        process_name = stage_process_name(preprocessing)
+        if any(
+            stage.name != preprocessing.name
+            and stage_process_name(stage) == process_name
+            for stage in self.stages
+        ):
+            raise ValueError(
+                "CUDA reference encoding requires preprocessing in a dedicated "
+                "process because its FP32 backend settings are process-global"
+            )
+        else:
+            pass
 
 
 EntryClass = S2ProPipelineConfig

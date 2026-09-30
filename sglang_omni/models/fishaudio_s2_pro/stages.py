@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +30,7 @@ from sglang_omni.scheduling.reference_encoder import (
     TensorReferenceEncodeHook,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.device import resolve_concrete_device
 
 logger = logging.getLogger(__name__)
 
@@ -207,8 +210,16 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
     storage_dtype = torch.long
     output_dtype = torch.long
 
-    def __init__(self, *, codec: Any, checkpoint_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        codec: Any,
+        checkpoint_id: str,
+        device: torch.device = torch.device("cpu"),
+    ) -> None:
         self.codec = codec
+        self.device = device
+        self.encode_lock = threading.Lock() if device.type == "cuda" else nullcontext()
         self.model_revision = str(checkpoint_id)
         config = f"sample_rate:{int(codec.sample_rate)}"
         self.encoder_config_hash = _hash_bytes(config.encode("utf-8"))
@@ -297,22 +308,31 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
             pass
         audio = torchaudio.functional.resample(audio, sr, self.codec.sample_rate)
         audios = audio.squeeze(0).unsqueeze(0)
-        audio_lengths = torch.tensor([audios.shape[1]], dtype=torch.long)
-        with torch.no_grad():
+        device_context = (
+            torch.cuda.device(self.device)
+            if self.device.type == "cuda"
+            else nullcontext()
+        )
+        with self.encode_lock, device_context, torch.no_grad():
+            audios = audios.to(self.device)
+            audio_lengths = torch.tensor(
+                [audios.shape[1]], dtype=torch.long, device=self.device
+            )
             indices, _ = self.codec.encode(audios, audio_lengths)
             if indices.ndim == 3:
                 indices = indices[0]
             else:
                 pass
-        return indices.cpu()
+            return indices.cpu()
 
 
 def create_preprocessing_executor(
     model_path: str,
     *,
     max_concurrency: int = 8,
+    gpu_id: int | None = None,
 ):
-    """Returns a threaded scheduler for CPU-heavy preprocessing."""
+    """Build threaded preprocessing with optional CUDA reference encoding."""
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
     worker_count = max(int(max_concurrency), 1)
@@ -333,9 +353,23 @@ def create_preprocessing_executor(
 
     tokenizer = PreTrainedTokenizerFast.from_pretrained(checkpoint_dir)
     adapter = S2ProTokenizerAdapter(tokenizer)
-    codec = load_codec(checkpoint_dir, "cpu")
+    if gpu_id is None:
+        device = torch.device("cpu")
+    else:
+        device = resolve_concrete_device(None, gpu_id)
+        if device.type != "cuda":
+            raise ValueError("Fish reference GPU encoding requires a CUDA device")
+        else:
+            pass
+        torch.set_float32_matmul_precision("highest")
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cudnn.benchmark = False
+    codec = load_codec(checkpoint_dir, str(device))
     reference_encode_service = ReferenceEncodeService(
-        FishReferenceEncodeHook(codec=codec, checkpoint_id=checkpoint_dir),
+        FishReferenceEncodeHook(
+            codec=codec, checkpoint_id=checkpoint_dir, device=device
+        ),
         max_items=256,
         max_bytes=64 * 1024 * 1024,
         timeout_s=130.0,
