@@ -1,10 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import logging
+
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+
+logger = logging.getLogger(__name__)
+
+try:
+    import torchada  # noqa: F401
+except ImportError as exc:
+    logger.warning(
+        f"Failed to import torchada: {exc}. MUSA platform compatibility will not work."
+    )
 
 
 class MUSAOmniPlatform(CUDAOmniPlatform):
