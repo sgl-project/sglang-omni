@@ -46,7 +46,9 @@ class WhisperEncoderCudaGraphRunner:
         self.forward_batch = None
 
     def enough_free_vram(self) -> tuple[bool, int]:
-        free_gib = get_available_gpu_memory(self.device.type, self.device.index)
+        free_gib = get_available_gpu_memory(
+            self.device.type, self.device.index, empty_cache=False
+        )
         free = int(free_gib * (1 << 30))
         return free >= self.min_free_bytes, free
 

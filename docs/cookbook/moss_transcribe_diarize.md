@@ -19,7 +19,7 @@ Transcriptions support `response_format=srt` or `response_format=vtt` with real 
 
 ## Architecture and Optimization
 
-MOSS-TD (short for MOSS-Transcribe-Diarize) is served through SGLang-Omni for two reasons. First, SGLang-Omni's multi-stage pipeline is a natural fit — ASR follows the same encoder → prefill → decode pattern that the framework already orchestrates for TTS. Second, ASR is a category of multimodal-input models, and many of the optimizations we have built in SGLang-Omni (device graph capture, async decode, continuous batching, KV cache management) transfer directly to the ASR setting.
+MOSS-TD (short for MOSS-Transcribe-Diarize) is served through SGLang-Omni for two reasons. First, SGLang-Omni's multi-stage pipeline is a natural fit — ASR follows the same encoder → prefill → decode pattern that the framework already orchestrates for TTS. Second, ASR is a category of multimodal-input models, and many of the optimizations we have built in SGLang-Omni (CUDA Graph capture, async decode, continuous batching, KV cache management) transfer directly to the ASR setting.
 
 ### Inference Pipeline
 
@@ -35,7 +35,7 @@ For long audio (up to ~90 min), the token sequence after encoding can reach tens
 
 ### ASR vs TTS
 
-ASR and TTS share much of the same serving infrastructure in sglang-omni — both use `OmniScheduler` for scheduling, share device graph / KV Cache management / continuous batching, and are built on the same Qwen3 LLM backbone. The key differences lie in what they encode, what they generate, and how their pipelines are structured:
+ASR and TTS share much of the same serving infrastructure in sglang-omni — both use `OmniScheduler` for scheduling, share CUDA Graph / KV Cache management / continuous batching, and are built on the same Qwen3 LLM backbone. The key differences lie in what they encode, what they generate, and how their pipelines are structured:
 
 | Dimension | ASR (MOSS-TD) | TTS (Higgs / MOSS-TTS) |
 |---|---|---|
@@ -76,11 +76,11 @@ At c=1 with longer audio, AR Decode takes 94%+ of total time — the leverage is
 
 The optimization stack mirrors [what we built for TTS](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md), sharing the same core infrastructure with ASR-specific adaptations.
 
-**Device Graph.** The LLM decode step pads batch size to predefined buckets (1, 2, 4, 8, …) and replays a captured graph, eliminating kernel launch overhead on every token. SGLang-Omni uses CUDA Graph on NVIDIA GPUs and XPUGraph on Intel GPUs. This is the single biggest optimization for AR Decode. Breakable prefill graphs bucket over token count instead, and the ladder starts at 1 and 2: a fully cached prefix still re-prefills its last token, and that 1-token extend would otherwise pad to the 4-token floor and exceed SGLang's 2x padding guard, falling back to eager. The 2-token bucket sits exactly on that guard, so it replays either way and only saves the padding. The Whisper encoder gets the same treatment, bucketed over chunk count (`encoder_chunk_buckets`, default `1..8` ≈ 4 min of audio).
+**CUDA Graph.** The LLM decode step pads batch size to predefined buckets (1, 2, 4, 8, …) and replays a captured CUDA graph, eliminating kernel launch overhead on every token. This is the single biggest optimization for AR Decode. Breakable prefill graphs bucket over token count instead, and the ladder starts at 1 and 2: a fully cached prefix still re-prefills its last token, and that 1-token extend would otherwise pad to the 4-token floor and exceed SGLang's 2x padding guard, falling back to eager. The 2-token bucket sits exactly on that guard, so it replays either way and only saves the padding. The Whisper encoder gets the same treatment, bucketed over chunk count (`encoder_chunk_buckets`, default `1..8` ≈ 4 min of audio).
 
 **Decoder Torch Compile.** The default pipeline compiles Qwen3 decoder shapes through batch size 4 and uses the eager decoder above that cap. Override the cap with `--torch-compile-max-bs`, or disable decoder compilation with `--torch-compile off`. Compilation runs once per captured decode bucket at startup (`max-autotune-no-cudagraphs`), so cold start pays an autotuning cost before the server accepts traffic. This setting is independent of the encoder compile option below.
 
-**Encoder Torch Compile (opt-in).** `encoder_torch_compile=True` swaps the encoder device graph for `torch.compile` (default mode) with kernel fusion. The two are mutually exclusive. Reduce-overhead mode must not be used: its cudagraph trees corrupt memory alongside the decode device graphs that always run in this process (illegal memory access after ~60s of serving). The cost is a one-time per-bucket compile at startup; `dynamic=False` means only the warmed chunk counts are accelerated, anything else runs eager.
+**Encoder Torch Compile (opt-in).** `encoder_torch_compile=True` swaps the encoder CUDA graph for `torch.compile` (default mode) with kernel fusion. The two are mutually exclusive. Reduce-overhead mode must not be used: its cudagraph trees corrupt memory alongside the decode CUDA graphs that always run in this process (illegal memory access after ~60s of serving). The cost is a one-time per-bucket compile at startup; `dynamic=False` means only the warmed chunk counts are accelerated, anything else runs eager.
 
 **Async Decode.** Same one-step lookahead as TTS: launch the current decode step's GPU work, then resolve the previous step's host-side work (D2H copy, finish detection, result dispatch) in parallel. MOSS-TD enables lookahead starting at batch size 1 by default. Set `--async-lookahead-min-batch-size 2` to keep batch-size-1 decode synchronous, or use `--decode-mode sync` to disable lookahead for the stage. Two alternating pinned host buffers prevent read/write races between the GPU's async D2H write and the CPU's read. For the full mechanism and code pointers, see [Asynchronous Decode + Lookahead](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md#asynchronous-decode--lookahead) in the TTS optimization guide.
 
@@ -98,7 +98,8 @@ Unlike TTS where the same reference voice is reused across many prompts (high hi
 
 ### Launching Commands
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
+Install `sglang-omni` with [Installation](../get_started/installation.md) on CUDA or
+[Intel XPU installation](../get_started/installation_xpu.md) on Intel GPUs, then download the model:
 
 ```bash
 hf download OpenMOSS-Team/MOSS-Transcribe-Diarize
@@ -114,6 +115,14 @@ sgl-omni serve \
   --asr.engine.cuda_graph_max_bs 16 \
   --mem-fraction-static 0.80
 ```
+
+MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
+default target is 4 requests with a 12 ms oldest-request deadline. While more
+request builds are pending, the scheduler waits for either limit; after build
+work drains, it releases immediately only when decode is idle. During active
+decode, it continues coalescing until the target or deadline. Override the two
+limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
+set the request target to `0` to disable coalescing.
 
 #### Intel GPU
 
@@ -134,14 +143,6 @@ The graph configuration names retain `cuda_graph` for compatibility, but
 SGLang selects the XPUGraph backend on XPU. The B60 validation uses
 `mem_fraction_static=0.70` to leave enough memory for all eight encoder graph
 buckets; `0.80` leaves too little graph-capture headroom on a 24 GB card.
-
-MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
-default target is 4 requests with a 12 ms oldest-request deadline. While more
-request builds are pending, the scheduler waits for either limit; after build
-work drains, it releases immediately only when decode is idle. During active
-decode, it continues coalescing until the target or deadline. Override the two
-limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
-set the request target to `0` to disable coalescing.
 
 ### Sending Requests
 
