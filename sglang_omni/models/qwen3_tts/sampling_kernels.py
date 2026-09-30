@@ -25,6 +25,8 @@ else:
 FUSED_SAMPLER_VOCAB_SIZE = 2048
 FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
 TOP_K_CHUNKS = 8
+TOP_K_CHUNK_WARPS = 2
+TOP_K_MERGE_KEYS_PER_WARP = 64
 
 
 def has_triton_runtime() -> bool:
@@ -349,6 +351,29 @@ if has_triton_runtime():
         return sorted_scores, sorted_token_ids
 
     @triton.jit
+    def bitonic_index_bit(log2_num_keys: tl.constexpr, index_bit: tl.constexpr):
+        """Bit index_bit of each key index, in the keys' 2 x ... x 2 view."""
+        return tl.reshape(
+            tl.arange(0, 2),
+            [1] * (log2_num_keys - index_bit - 1) + [2] + [1] * index_bit,
+        )
+
+    @triton.jit
+    def bitonic_merge_runs(
+        keys, log2_num_keys: tl.constexpr, log2_run_keys: tl.constexpr, is_descending
+    ):
+        """Sort each bitonic run of keys, descending where is_descending is 1."""
+        for step in tl.static_range(log2_run_keys):
+            partner_keys = tl.flip(keys, log2_num_keys - log2_run_keys + step)
+            is_right = bitonic_index_bit(log2_num_keys, log2_run_keys - 1 - step)
+            keys = tl.where(
+                (keys > partner_keys) != (is_descending ^ is_right).to(tl.int1),
+                partner_keys,
+                keys,
+            )
+        return keys
+
+    @triton.jit
     def sample_sorted_top_k(
         sorted_scores,
         sorted_token_ids,
@@ -514,8 +539,13 @@ if has_triton_runtime():
             logits, temperatures, row, logits_stride_b, vocab_offsets
         )
         chunk_offsets = (row * tl.num_programs(1) + chunk) * block_k
+        run_offsets = tl.arange(0, block_k)
+        # note (ratish): even chunks store their run ascending and odd ones
+        # descending, the order the merge's bitonic rounds take.
         tl.store(
-            chunk_keys + chunk_offsets + tl.arange(0, block_k),
+            chunk_keys
+            + chunk_offsets
+            + tl.where(chunk % 2 == 0, block_k - 1 - run_offsets, run_offsets),
             tl.topk(packed, k=block_k),
         )
 
@@ -529,17 +559,43 @@ if has_triton_runtime():
         out,
         num_candidates: tl.constexpr,
         block_k: tl.constexpr,
+        log2_num_candidates: tl.constexpr,
+        log2_block_k: tl.constexpr,
         has_top_p: tl.constexpr,
     ):
         # note (ratish): the keys are unique, so the top block_k of the chunks'
         # top block_k sets is the row's top block_k in the same order.
         row = tl.program_id(0)
-        # note (ratish): the keys are stored as int64; topk must order them unsigned.
+        # note (ratish): the keys are stored as int64; the merge must order them unsigned.
         candidates = tl.load(
             chunk_keys + row * num_candidates + tl.arange(0, num_candidates)
         ).to(tl.uint64)
-        top_packed = tl.topk(candidates, k=block_k)
-        sorted_scores, sorted_token_ids = unpack_top_keys(top_packed, block_k)
+        candidates = tl.reshape(candidates, [2] * log2_num_candidates)
+        # note (ratish): the rounds tl.topk runs after sorting its runs: keep the
+        # larger key of each pair of runs, then re-sort the kept run.
+        for log2_covered_keys in tl.static_range(
+            log2_block_k + 1, log2_num_candidates + 1
+        ):
+            candidates = tl.max(
+                candidates, axis=log2_num_candidates - log2_covered_keys
+            )
+            if log2_covered_keys < log2_num_candidates:
+                candidates = bitonic_merge_runs(
+                    candidates,
+                    log2_num_candidates - log2_covered_keys + log2_block_k,
+                    log2_block_k,
+                    bitonic_index_bit(
+                        log2_num_candidates - log2_covered_keys + log2_block_k,
+                        log2_block_k,
+                    ),
+                )
+            else:
+                candidates = bitonic_merge_runs(
+                    candidates, log2_block_k, log2_block_k, 1
+                )
+        sorted_scores, sorted_token_ids = unpack_top_keys(
+            tl.reshape(candidates, [block_k]), block_k
+        )
         sample_sorted_top_k(
             sorted_scores,
             sorted_token_ids,
@@ -839,11 +895,17 @@ def sample_from_logits_with_seed_top_k_top_p(
         pass
 
     out = torch.empty((batch_size,), device=logits.device, dtype=torch.long)
-    # note (ratish): the merge sorts TOP_K_CHUNKS * block_k keys,
-    # so the split pays only while that is fewer than the row's keys.
-    if max_top_k > 32 and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE:
+    # note (ratish): the split launch is measured on sm_90 only; other devices keep
+    # the single kernel. Each chunk keeps two runs, so it runs a halving round.
+    if (
+        max_top_k > 32
+        and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE
+        and torch.version.hip is None
+        and torch.cuda.get_device_capability(logits.device) == (9, 0)
+    ):
+        num_candidates = TOP_K_CHUNKS * block_k
         chunk_keys = torch.empty(
-            (batch_size, TOP_K_CHUNKS * block_k),
+            (batch_size, num_candidates),
             device=logits.device,
             dtype=torch.int64,
         )
@@ -854,7 +916,7 @@ def sample_from_logits_with_seed_top_k_top_p(
             logits.stride(0),
             FUSED_SAMPLER_VOCAB_SIZE // TOP_K_CHUNKS,
             int(block_k),
-            num_warps=4,
+            num_warps=TOP_K_CHUNK_WARPS,
         )
         seeded_top_k_merge_sample_kernel[(batch_size,)](
             chunk_keys,
@@ -863,10 +925,12 @@ def sample_from_logits_with_seed_top_k_top_p(
             seeds,
             positions,
             out,
-            TOP_K_CHUNKS * int(block_k),
-            int(block_k),
+            num_candidates,
+            block_k,
+            num_candidates.bit_length() - 1,
+            block_k.bit_length() - 1,
             bool(has_top_p),
-            num_warps=8,
+            num_warps=block_k // TOP_K_MERGE_KEYS_PER_WARP,
         )
     else:
         seeded_top_k_top_p_sample_kernel[(batch_size,)](
