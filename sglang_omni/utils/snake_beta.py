@@ -93,8 +93,47 @@ if HAS_TRITON:
         y = (xv + m).to(tl.bfloat16)
         tl.store(y_ptr + ptrs, y, mask=mask)
 
+    @triton.jit(do_not_specialize=["C", "positions"])
+    def snake_beta_channels_last_kernel(
+        x_ptr,
+        y_ptr,
+        alpha_ptr,
+        beta_ptr,
+        C,
+        positions,
+        eps,
+        BLOCK_POSITIONS: tl.constexpr,
+        BLOCK_CHANNELS: tl.constexpr,
+    ):
+        # The same rounding chain as snake_beta_kernel over a [B, T, C] layout: one
+        # program handles BLOCK_POSITIONS (b, t) positions by BLOCK_CHANNELS channels.
+        rows = tl.program_id(0).to(tl.int64) * BLOCK_POSITIONS + tl.arange(
+            0, BLOCK_POSITIONS
+        )
+        c = tl.program_id(1) * BLOCK_CHANNELS + tl.arange(0, BLOCK_CHANNELS)
+        channel_mask = c < C
+        a_raw = tl.load(alpha_ptr + c, mask=channel_mask, other=0).to(tl.float32)
+        b_raw = tl.load(beta_ptr + c, mask=channel_mask, other=0).to(tl.float32)
+        a = libdevice.exp(a_raw).to(tl.bfloat16).to(tl.float32)
+        b = libdevice.exp(b_raw).to(tl.bfloat16).to(tl.float32)
+        t = (b + eps).to(tl.bfloat16).to(tl.float32)
+        r = libdevice.div_rn(1.0, t).to(tl.bfloat16).to(tl.float32)
+
+        mask = (rows < positions)[:, None] & channel_mask[None, :]
+        ptrs = rows[:, None] * C + c[None, :]
+        xv = tl.load(x_ptr + ptrs, mask=mask, other=0).to(tl.float32)
+        s = (xv * a[None, :]).to(tl.bfloat16).to(tl.float32)
+        sn = libdevice.sin(s).to(tl.bfloat16).to(tl.float32)
+        p = (sn * sn).to(tl.bfloat16).to(tl.float32)
+        m = (r[None, :] * p).to(tl.bfloat16).to(tl.float32)
+        y = (xv + m).to(tl.bfloat16)
+        tl.store(y_ptr + ptrs, y, mask=mask)
+
 else:
     pass
+
+CHANNELS_LAST_BLOCK_POSITIONS = 32
+CHANNELS_LAST_BLOCK_CHANNELS = 64
 
 
 def block_for(t: int) -> int:
@@ -115,22 +154,43 @@ def launch(
 ) -> torch.Tensor:
     batch, channels, t = x.shape
     out = torch.empty_like(x)
-    block = block_for(t)
-    grid = (batch * channels, triton.cdiv(t, block))
-    with torch.cuda.device_of(x):
-        snake_beta_kernel[grid](
-            x,
-            out,
-            alpha,
-            beta,
-            channels,
-            t,
-            eps,
-            BLOCK=block,
-            num_warps=4,
-            enable_reflect_ftz=False,
-            enable_fp_fusion=False,
+    if x.is_contiguous():
+        block = block_for(t)
+        grid = (batch * channels, triton.cdiv(t, block))
+        with torch.cuda.device_of(x):
+            snake_beta_kernel[grid](
+                x,
+                out,
+                alpha,
+                beta,
+                channels,
+                t,
+                eps,
+                BLOCK=block,
+                num_warps=4,
+                enable_reflect_ftz=False,
+                enable_fp_fusion=False,
+            )
+    else:
+        grid = (
+            triton.cdiv(batch * t, CHANNELS_LAST_BLOCK_POSITIONS),
+            triton.cdiv(channels, CHANNELS_LAST_BLOCK_CHANNELS),
         )
+        with torch.cuda.device_of(x):
+            snake_beta_channels_last_kernel[grid](
+                x,
+                out,
+                alpha,
+                beta,
+                channels,
+                batch * t,
+                eps,
+                BLOCK_POSITIONS=CHANNELS_LAST_BLOCK_POSITIONS,
+                BLOCK_CHANNELS=CHANNELS_LAST_BLOCK_CHANNELS,
+                num_warps=4,
+                enable_reflect_ftz=False,
+                enable_fp_fusion=False,
+            )
     return out
 
 
@@ -139,11 +199,11 @@ def fused_snake_beta(
 ) -> torch.Tensor | None:
     """Fused SnakeBeta. Returns None outside the supported envelope.
 
-    Envelope: x [B, C, T] bfloat16 contiguous CUDA with T <= 65535 * 1024,
-    alpha/beta bfloat16 [C] on the same device. Inside the envelope the result
-    is bitwise identical to the eager SnakeBeta.forward with no_div_by_zero
-    eps, and the call never synchronizes with the host (safe under CUDA graph
-    capture).
+    Envelope: x [B, C, T] bfloat16 CUDA, contiguous or channels last (its
+    [B, T, C] transpose contiguous), with T <= 65535 * 1024, alpha/beta bfloat16
+    [C] on the same device. Inside the envelope the result has x's layout and is
+    bitwise identical to the eager SnakeBeta.forward with no_div_by_zero eps, and
+    the call never synchronizes with the host (safe under CUDA graph capture).
     """
     if not HAS_TRITON:
         return None
@@ -155,7 +215,9 @@ def fused_snake_beta(
         return None
     elif x.device.type != "cuda" or alpha.device != x.device or beta.device != x.device:
         return None
-    elif x.dim() != 3 or not x.is_contiguous() or x.numel() == 0:
+    elif x.dim() != 3 or x.numel() == 0:
+        return None
+    elif not (x.is_contiguous() or x.transpose(1, 2).is_contiguous()):
         return None
     elif x.shape[2] > MAX_T:
         return None
@@ -206,10 +268,12 @@ def prewarm(device: torch.device) -> None:
     else:
         pass
     with torch.cuda.device(device):
+        ab = torch.zeros((96,), dtype=torch.bfloat16, device=device)
         for t in (2, 128, 256, 1024):  # one T per BLOCK bucket
             x = torch.zeros((1, 96, t), dtype=torch.bfloat16, device=device)
-            ab = torch.zeros((96,), dtype=torch.bfloat16, device=device)
             launch(x, ab, ab, 0.0)
+        channels_last = torch.zeros((1, 2, 96), dtype=torch.bfloat16, device=device)
+        launch(channels_last.transpose(1, 2), ab, ab, 0.0)
 
 
 def prewarm_replacements(
