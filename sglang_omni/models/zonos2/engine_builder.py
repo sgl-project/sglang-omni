@@ -11,6 +11,8 @@ import shutil
 import tempfile
 from typing import Any
 
+import torch
+
 from sglang_omni.models.zonos2.hf_config import (
     Zonos2Config,
     load_zonos2_pretrained_config,
@@ -18,11 +20,14 @@ from sglang_omni.models.zonos2.hf_config import (
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
+
+ZONOS2_DEFAULT_MEM_FRACTION_STATIC = 0.5
 
 
 def build_config_shim(model_path: str, cfg: Zonos2Config) -> str:
@@ -134,7 +139,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         ),
         max_running_requests: int = 16,
         cuda_graph_max_bs: int = 16,
-        mem_fraction_static: float = 0.5,
+        mem_fraction_static: float | None = None,
     ) -> None:
         self.fp8 = fp8
         self.frame_graph = frame_graph
@@ -145,6 +150,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         self.max_running_requests = max_running_requests
         self.cuda_graph_max_bs = cuda_graph_max_bs
         self.mem_fraction_static = mem_fraction_static
+        self.device: str | None = None
         self.cuda_graph_bs: list[int] = []
 
     def resolve_checkpoint(self, model_path: str) -> str:
@@ -166,16 +172,33 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
             # async-decode lookahead overlaps the resolve D2H with the next
             # forward; the overlap scheduler must be enabled for it.
             "disable_overlap_schedule": not self.async_decode,
-            "enable_torch_compile": True,
-            "mem_fraction_static": self.mem_fraction_static,
+            "enable_torch_compile": current_platform.enable_zonos2_torch_compile(),
+            "mem_fraction_static": (
+                ZONOS2_DEFAULT_MEM_FRACTION_STATIC
+                if self.mem_fraction_static is None
+                else self.mem_fraction_static
+            ),
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
             "dtype": dtype,
         }
-        if self.fp8:
+        if self.fp8 and current_platform.supports_fp8_moe():
             # Dynamic FP8 on the MoE experts (bf16 -> fp8 at load, halving the
             # expert weights); bf16 nn.Linear projections are unaffected.
             defaults["quantization"] = "fp8"
+            return defaults
+        elif self.fp8:
+            logger.warning(
+                f"ZONOS2 fp8 is not supported on {current_platform.device_type}; "
+                "serving bf16 MoE experts"
+            )
+        else:
+            pass
+        mem_fraction_floor = current_platform.zonos2_bf16_mem_fraction_static(
+            torch.device(self.device or "cpu")
+        )
+        if self.mem_fraction_static is None and mem_fraction_floor is not None:
+            defaults["mem_fraction_static"] = mem_fraction_floor
         else:
             pass
         return defaults
@@ -211,12 +234,15 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         # Opt-in tail CUDA graph: capture the per-frame head+sample+embed+hash
         # tail (otherwise eager in the runner), one graph per decode bucket with
         # the default sampling params; the runner falls back to eager otherwise.
-        if self.frame_graph:
+        graph_backend = current_platform.get_device_graph_backend(model.device)
+        if self.frame_graph and graph_backend is not None:
             from sglang_omni.models.zonos2.components.text_frontend import (
                 TTSSamplingParams,
             )
 
-            model.capture_tail_graphs(self.cuda_graph_bs, TTSSamplingParams())
+            model.capture_tail_graphs(
+                self.cuda_graph_bs, TTSSamplingParams(), graph_backend
+            )
         else:
             pass
 
@@ -226,7 +252,8 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         return Zonos2ModelRunner(
             model_worker,
             output_proc,
-            compile_sampler=self.compile_sampler,
+            compile_sampler=self.compile_sampler
+            and current_platform.enable_zonos2_torch_compile(),
             frame_graph=self.frame_graph,
             async_decode=self.async_decode,
             stream_emit_chunk_frames=self.stream_emit_chunk_frames,

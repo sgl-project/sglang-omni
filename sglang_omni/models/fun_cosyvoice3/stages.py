@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import importlib
 import logging
 import os
@@ -14,8 +15,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
+import torch._dynamo as dynamo
+import torch._inductor.config as inductor_config
 import torch.nn.functional as F
+from torch._inductor.runtime.compile_tasks import _set_triton_libdevice_path
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
+from x_transformers.x_transformers import apply_rotary_pos_emb
 
 if TYPE_CHECKING:
     from cosyvoice.flow.flow import CausalMaskedDiffWithDiT
@@ -29,6 +34,7 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     is_flow_estimator_trt,
 )
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
+    DIT_INDUCTOR_OPTIONS,
     PackedDiT,
     gather_rows,
     pack_rows,
@@ -75,7 +81,6 @@ COSYVOICE_INSTALL_HINT = (
     "in the serving environment before launching Fun-CosyVoice3."
 )
 
-CHUNK_MASK_COMPILE_DISABLED = False
 CAUSAL_CONV_CACHE_PATCHED = False
 
 FLOW_CUDA_GRAPH_FRAME_BUCKET = 16
@@ -423,6 +428,9 @@ class FlowCudaGraphRunner:
     def capture(self, capture_shapes: tuple[tuple[int, int], ...]) -> None:
         # Note (chenyang): Capture on a side stream so other
         # kernels on default-stream are not recorded.
+        # note(ratish): CosyVoice's loader leaves an onnxruntime session in a cycle;
+        # a collection inside the capture would free it there and invalidate the graph.
+        gc.collect()
         graphs: dict[tuple[int, int], CapturedFlowCudaGraph] = {}
         current_stream = torch.cuda.current_stream(self.device)
         stream = torch.cuda.Stream(device=self.device)
@@ -1185,29 +1193,37 @@ def compile_dit_backbone(
     else:
         pass
 
-    original_forward = estimator.forward
-    torch._inductor.config.fx_graph_cache = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    torch._dynamo.config.cache_size_limit = 1024  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    torch._dynamo.config.accumulated_cache_size_limit = 1024  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    # note (guozhihao-224): inductor NaN-compares subsequent_chunk_mask in
-    # DiT.forward; keep the mask eager.
-    global CHUNK_MASK_COMPILE_DISABLED
-    if not CHUNK_MASK_COMPILE_DISABLED:
-        try:
-            import cosyvoice.flow.DiT.dit as dit_mod
-        except ImportError:
-            dit_mod = None
-        if dit_mod is not None:
-            dit_mod.add_optional_chunk_mask = torch.compiler.disable(
-                dit_mod.add_optional_chunk_mask
-            )
-            CHUNK_MASK_COMPILE_DISABLED = True
-        else:
-            pass
-    else:
-        pass
     try:
-        estimator.forward = torch.compile(original_forward, dynamic=True)
+        from cosyvoice.flow.DiT import modules as cosyvoice_dit_modules
+    except ImportError as exc:
+        raise RuntimeError(COSYVOICE_INSTALL_HINT) from exc
+
+    original_forward = estimator.forward
+    inductor_config.fx_graph_cache = True
+    dynamo.config.cache_size_limit = 1024
+    dynamo.config.accumulated_cache_size_limit = 1024
+    # note(ratish): Inductor picks CUDA's libdevice on its first kernel build;
+    # cache entries record the file, so a warm boot's first lookups would miss.
+    with inductor_config.patch({"eager_numerics.use_pytorch_libdevice": True}):
+        _set_triton_libdevice_path()
+    # note(ratish): the AOT cache refuses the autocast-disabled regions around RoPE;
+    # these match without them: an outer product and elementwise ops.
+    rotary = estimator.rotary_embed
+    assert rotary.scale is None, "the DiT's RoPE has no xpos scale"
+
+    def rotary_frequencies(positions: torch.Tensor) -> tuple[torch.Tensor, float]:
+        freqs = positions.to(rotary.inv_freq.dtype)[None, :, None] * rotary.inv_freq
+        freqs = freqs / rotary.interpolation_factor
+        return torch.stack((freqs, freqs), dim=-1).flatten(-2), 1.0
+
+    rotary.forward = rotary_frequencies
+    cosyvoice_dit_modules.apply_rotary_pos_emb = apply_rotary_pos_emb.__wrapped__
+    try:
+        # note(ratish): not dynamic=True, which makes the LayerNorm eps a symbol;
+        # Inductor cannot keep it and restarts the compile.
+        estimator.forward = torch.compile(
+            original_forward, options=dict(DIT_INDUCTOR_OPTIONS)
+        )
         # note(chenye): synthetic inputs must use the dtype serving presents to
         # the estimator, including the effective autocast dtype.
         param = next(flow.parameters())
@@ -1235,6 +1251,11 @@ def compile_dit_backbone(
                     prompt_mel = torch.randn(
                         2, 80, mel_frame, device=device, dtype=warmup_dtype
                     )
+                    # note(ratish): hints, not constraints;
+                    # batch and length start symbolic, not learned from later calls.
+                    for tensor in (noisy_mel, mel_mask, token_condition, prompt_mel):
+                        dynamo.maybe_mark_dynamic(tensor, (0, 2))
+                    dynamo.maybe_mark_dynamic(speaker_embedding, 0)
                     with torch.autocast(
                         device_type=current_platform.device_type,
                         dtype=autocast_dtype,
@@ -1256,7 +1277,7 @@ def compile_dit_backbone(
         ) from exc
     logger.info(
         "Compiled Fun-CosyVoice3 DiT backbone "
-        f"(dynamic=True, autocast_dtype={autocast_dtype}, "
+        f"(automatic dynamic, autocast_dtype={autocast_dtype}, "
         f"warmup_mel_frames={warmup_mel_frames}, warmup_steps={warmup_steps}, "
         "streaming=False/True)"
     )

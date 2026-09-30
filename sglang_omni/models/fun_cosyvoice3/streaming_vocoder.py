@@ -138,7 +138,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         # note(ratish): one hop and one final through Flow and HiFT before the
         # stage publishes readiness, so the first request pays neither the
         # attention kernel load nor the f0 cast.
-        item = self.make_warmup_flow_input()
+        item = self.make_warmup_flow_input(self.token_hop_len + PRE_LOOKAHEAD_LEN)
         # note(ratish): under the vocoder's stream, so the warmup and not the
         # first request builds that stream's memory pool and cuBLAS workspaces,
         # which PyTorch keeps per stream.
@@ -167,27 +167,29 @@ class FunCosyVoice3StreamingVocoderScheduler(
             return
         else:
             pass
-        item = self.make_warmup_flow_input()
+        hop_tokens = self.token_hop_len + PRE_LOOKAHEAD_LEN
+        first = [self.make_warmup_flow_input(hop_tokens)]
+        # note(ratish): a second row count and length,
+        # so the sizes serving varies turn symbolic at startup, not on a request.
+        second = [
+            self.make_warmup_flow_input(hop_tokens),
+            self.make_warmup_flow_input(hop_tokens + self.token_hop_len),
+        ]
         started = time.monotonic()
-        try:
-            with self.vocoder.stream_context:
-                self.vocoder.hop_batch([item])
-                self.vocoder.leftover_batch([item])
-        except Exception:
-            packed_estimator.disable_compile()
-            raise
+        with self.vocoder.stream_context:
+            for items in (first, second):
+                self.vocoder.hop_batch(items)
+                self.vocoder.leftover_batch(items)
         logger.info(
-            f"Fun-CosyVoice3 PackedDiT causal/full compile warmup completed "
-            f"during process startup with torch_num_threads="
-            f"{torch.get_num_threads()} ({time.monotonic() - started:.1f} s)"
+            f"Fun-CosyVoice3 PackedDiT compile warmup, hop and final, with "
+            f"torch_num_threads={torch.get_num_threads()} "
+            f"({time.monotonic() - started:.1f} s)"
         )
 
-    def make_warmup_flow_input(self) -> FlowBatchInput:
+    def make_warmup_flow_input(self, token_count: int) -> FlowBatchInput:
         flow = self.vocoder.flow
         return FlowBatchInput(
-            token=torch.zeros(
-                1, self.token_hop_len + PRE_LOOKAHEAD_LEN, dtype=torch.int32
-            ),
+            token=torch.zeros(1, token_count, dtype=torch.int32),
             prompt_token=torch.zeros(1, self.token_hop_len, dtype=torch.int32),
             prompt_feat=torch.zeros(
                 1, self.token_hop_len * TOKEN_MEL_RATIO, flow.output_size

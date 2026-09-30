@@ -57,6 +57,20 @@ class XPUOmniPlatform(OmniPlatform):
         # Capture leaves the scheduler thread's stream recording; host reads fail.
         return False
 
+    def enable_zonos2_torch_compile(self) -> bool:
+        return False
+
+    def supports_fp8_moe(self) -> bool:
+        return False
+
+    def zonos2_bf16_mem_fraction_static(self, device: torch.device) -> float | None:
+        if device.type != self.device_type:
+            return None
+        else:
+            # Measured on an Arc Pro B60: 14.34 GiB of bf16 experts plus a
+            # 5.98 GiB KV pool.
+            return 0.85
+
     def _get_device_graph_backend(self) -> DeviceGraphBackend:
         from sglang_omni.platforms.device_graph import XpuDeviceGraphBackend
 

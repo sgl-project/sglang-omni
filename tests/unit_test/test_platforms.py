@@ -271,6 +271,17 @@ def test_xpu_captures_the_qwen3_omni_talker_decode() -> None:
     assert CPUOmniPlatform().enable_talker_graph() is True
 
 
+def test_xpu_keeps_the_zonos2_ar_engine_uncompiled() -> None:
+    assert xpu_platform.XPUOmniPlatform().enable_zonos2_torch_compile() is False
+    assert OmniPlatform().enable_zonos2_torch_compile() is True
+    assert CPUOmniPlatform().enable_zonos2_torch_compile() is True
+
+
+def test_xpu_serves_the_zonos2_moe_experts_without_fp8() -> None:
+    assert xpu_platform.XPUOmniPlatform().supports_fp8_moe() is False
+    assert OmniPlatform().supports_fp8_moe() is True
+
+
 def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
     assert OmniPlatform().enable_thinker_decode_graph() is True
@@ -396,3 +407,20 @@ def test_only_cuda_opts_into_the_codec_decode_graph() -> None:
         platforms.AppleOmniPlatform,
     ):
         assert platform_type().enable_codec_decode_graph() is False, platform_type
+
+
+def test_only_xpu_names_a_measured_bf16_static_pool_floor() -> None:
+    platform = XPUOmniPlatform()
+    assert platform.zonos2_bf16_mem_fraction_static(torch.device("xpu", 0)) == 0.85
+    assert platform.zonos2_bf16_mem_fraction_static(torch.device("cpu")) is None
+    for platform_type in (
+        OmniPlatform,
+        CPUOmniPlatform,
+        CUDAOmniPlatform,
+        ROCMOmniPlatform,
+        platforms.NPUOmniPlatform,
+        platforms.MUSAOmniPlatform,
+        platforms.AppleOmniPlatform,
+    ):
+        for device in (torch.device("cpu"), torch.device("cuda", 0)):
+            assert platform_type().zonos2_bf16_mem_fraction_static(device) is None
