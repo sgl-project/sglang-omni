@@ -54,28 +54,24 @@ def load_platform_class(qualname: str) -> type[OmniPlatform]:
 
 
 def as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
-    if platform.is_cpu():
-        return CPUOmniPlatform()
-    else:
-        pass
     if platform.is_cuda():
         return CUDAOmniPlatform()
-    else:
-        pass
-    if platform.is_musa():
-        return MUSAOmniPlatform()
-    else:
-        pass
-    if platform.is_npu():
-        return NPUOmniPlatform()
     else:
         pass
     if platform.is_rocm():
         return ROCMOmniPlatform()
     else:
         pass
+    if platform.is_cpu():
+        return CPUOmniPlatform()
+    else:
+        pass
     if platform.is_xpu():
         return XPUOmniPlatform()
+    else:
+        pass
+    if platform.is_npu():
+        return NPUOmniPlatform()
     else:
         pass
     # Note (yexiaodong): Explicit CPU and registered platform selections must
