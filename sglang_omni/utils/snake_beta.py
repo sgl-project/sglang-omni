@@ -54,6 +54,8 @@ except Exception:  # pragma: no cover
 
 # note (ratish): CUDA caps the launch's second axis, cdiv(T, 1024), at 65,535
 MAX_T = 65535 * 1024
+CHANNELS_LAST_BLOCK_POSITIONS = 32
+CHANNELS_LAST_BLOCK_CHANNELS = 64
 
 logger = logging.getLogger(__name__)
 
@@ -131,9 +133,6 @@ if HAS_TRITON:
 
 else:
     pass
-
-CHANNELS_LAST_BLOCK_POSITIONS = 32
-CHANNELS_LAST_BLOCK_CHANNELS = 64
 
 
 def block_for(t: int) -> int:
