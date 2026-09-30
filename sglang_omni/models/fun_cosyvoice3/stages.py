@@ -89,6 +89,9 @@ FLOW_CUDA_GRAPH_FRAME_BUCKET = 16
 # must use a T that is a multiple of this step size. For example, 489
 # frames would be padded to 496 frames, replayed, and then cropped back
 # to 489 frames.
+# note(ratish): the HiFT decode's left receptive field in mel frames, its causal
+# paddings over each stage's samples per frame (28.5, 24 from the stage 0 resblocks).
+HIFT_DECODE_CONTEXT_FRAMES = 29
 
 
 class MpsHiFTAdapter:
@@ -137,6 +140,26 @@ class FlowBatchInput:
     prompt_token: torch.Tensor
     prompt_feat: torch.Tensor
     embedding: torch.Tensor
+
+
+@dataclass(kw_only=True, frozen=True)
+class HiftStepRow:
+    """One stream's mel history in a streaming HiFT step and the samples it has emitted."""
+
+    history: torch.Tensor
+    emitted_samples: int
+    is_final: bool
+
+
+@dataclass(kw_only=True, frozen=True)
+class HiftDecodeWindow:
+    """The mel frames a row's decode covers, from start_frame, emitting from
+    emitted_frame up to end_frame."""
+
+    row: HiftStepRow
+    start_frame: int
+    emitted_frame: int
+    end_frame: int
 
 
 @dataclass(frozen=True)
@@ -1484,7 +1507,14 @@ class CosyVoice3Vocoder(BatchVocoderBase):
         self.flow_merge_pad_budget_percent = flow_merge_pad_budget_percent
         self.hift_autocast_dtype = AUTOCAST_DTYPES[hift_dtype]
         self.hift_max_padding_waste = hift_max_padding_waste
-        self.hift_samples_per_mel_frame: int | None = None
+        self.hift_samples_per_mel_frame = int(
+            np.prod(hift.upsample_rates) * hift.istft_params["hop_len"]
+        )
+        # note(ratish): a non-final HiFT call holds back the F0 predictor's and
+        # conv_pre's look right, and the trailing frame its ISTFT trims.
+        self.hift_hold_frames = (
+            hift.f0_predictor.condnet[0].causal_padding + hift.conv_pre_look_right + 1
+        )
         # note(ratish): the AR shares this process and the default stream; on its
         # own stream the vocoder's kernels and host copies do not queue behind the
         # AR's. It waits once for what the default stream holds at this point.
@@ -1674,7 +1704,7 @@ class CosyVoice3Vocoder(BatchVocoderBase):
     def hop_batch(self, items: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         """Causal Flow for one hop per row, the rows packed along the sequence
         with attention within each row; the scheduler keeps the frames past
-        token_offset. HiFT stays per request.
+        token_offset and runs HiFT over the step.
         """
         with torch.autocast(
             device_type=current_platform.device_type,
@@ -1686,7 +1716,7 @@ class CosyVoice3Vocoder(BatchVocoderBase):
     def leftover_batch(self, items: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         """Non-streaming Flow over each row's whole token history for the
         stream's last chunk, the rows packed along the sequence; the scheduler
-        keeps the frames past token_offset. HiFT stays per request.
+        keeps the frames past token_offset and runs HiFT over the step.
 
         # note (guozhihao-224): the last chunk keeps DiT bidirectional;
         # streaming=True did not move SeedTTS EN stream TTFC/QPS and dropped
@@ -1715,6 +1745,131 @@ class CosyVoice3Vocoder(BatchVocoderBase):
         held = max(int(speech_offset), 0)
         delta = tts_speech[:, held:].detach().cpu()
         return delta, tts_mel.detach(), int(tts_speech.shape[1])
+
+    @torch.inference_mode()
+    def hift_step(self, rows: Sequence[HiftStepRow]) -> list[tuple[torch.Tensor, int]]:
+        """HiFT over the rows of a streaming step. Returns each row's new samples
+        and its emitted sample count afterwards."""
+        windows: list[HiftDecodeWindow] = []
+        for row in rows:
+            history_frames = int(row.history.shape[2])
+            emitted_frame = row.emitted_samples // self.hift_samples_per_mel_frame
+            if row.is_final:
+                end_frame = history_frames
+            else:
+                end_frame = max(history_frames - self.hift_hold_frames, emitted_frame)
+            windows.append(
+                HiftDecodeWindow(
+                    row=row,
+                    start_frame=max(emitted_frame - HIFT_DECODE_CONTEXT_FRAMES, 0),
+                    emitted_frame=emitted_frame,
+                    end_frame=end_frame,
+                )
+            )
+        # Note (Jiaxin Deng): a final row padded to a wider row would end at
+        # the padding, not at its own ISTFT edge, and the whole tail is emitted.
+        # note(ratish): hift_group aligns finals right for that. A final whose
+        # window starts at the history's start needs its left edge as well.
+        groups: dict[int | None, list[int]] = {}
+        for index, window in enumerate(windows):
+            if window.row.is_final and window.start_frame == 0:
+                final_width: int | None = int(window.row.history.shape[2])
+            else:
+                final_width = None
+            groups.setdefault(final_width, []).append(index)
+        outputs: dict[int, tuple[torch.Tensor, int]] = {}
+        for members in groups.values():
+            decoded = self.hift_group([windows[index] for index in members])
+            outputs.update(zip(members, decoded, strict=True))
+        return [outputs[index] for index in range(len(rows))]
+
+    def hift_group(
+        self, windows: Sequence[HiftDecodeWindow]
+    ) -> list[tuple[torch.Tensor, int]]:
+        hift = self.hift
+        samples_per_frame = self.hift_samples_per_mel_frame
+        channels = self.flow.output_size
+        history_frame_counts = [int(window.row.history.shape[2]) for window in windows]
+        window_frame_counts = [
+            history_frames - window.start_frame
+            for history_frames, window in zip(
+                history_frame_counts, windows, strict=True
+            )
+        ]
+        max_history_frames = max(history_frame_counts)
+        max_window_frames = max(window_frame_counts)
+        mel_history = windows[0].row.history.new_zeros(
+            len(windows), channels, max_history_frames
+        )
+        for index, (window, history_frames) in enumerate(
+            zip(windows, history_frame_counts, strict=True)
+        ):
+            mel_history[index, :, :history_frames] = window.row.history[0]
+        # note(ratish): a final right aligned ends at the decode's edge as in its own
+        # call, and the padding before its context is past the decode's receptive field.
+        origin_frames = [
+            window.start_frame
+            - (max_window_frames - window_frames if window.row.is_final else 0)
+            for window, window_frames in zip(windows, window_frame_counts, strict=True)
+        ]
+        window_mel = mel_history.new_zeros(len(windows), channels, max_window_frames)
+        window_source = mel_history.new_zeros(
+            len(windows), 1, max_window_frames * samples_per_frame
+        )
+        for index, (window, history_frames, origin) in enumerate(
+            zip(windows, history_frame_counts, origin_frames, strict=True)
+        ):
+            window_mel[
+                index, :, window.start_frame - origin : history_frames - origin
+            ] = mel_history[index, :, window.start_frame : history_frames]
+        # Note (Jiaxin Deng): F0 and the sine source keep the whole history: the
+        # source phase is a cumulative sum and its noise is position-indexed.
+        # note(ratish): hops run F0 finalized too. Only its look right frames
+        # differ, and a hop's emitted frames end before them.
+        f0_device = next(hift.f0_predictor.parameters()).device
+        f0 = hift.f0_predictor(
+            mel_history.to(device=f0_device, dtype=torch.float64), finalize=True
+        ).to(mel_history)
+        # note(ratish): source chunks aim at this group's decode frames, at least one
+        # whole history; the source needs less memory per frame than the decode.
+        source_rows = max(1, len(windows) * max_window_frames // max_history_frames)
+        for first in range(0, len(windows), source_rows):
+            excitation = hift.f0_upsamp(f0[first : first + source_rows, None])
+            excitation, _, _ = hift.m_source(excitation.transpose(1, 2))
+            excitation = excitation.transpose(1, 2)
+            for index in range(first, min(first + source_rows, len(windows))):
+                window = windows[index]
+                origin = origin_frames[index]
+                history_frames = history_frame_counts[index]
+                window_source[
+                    index,
+                    :,
+                    (window.start_frame - origin)
+                    * samples_per_frame : (history_frames - origin)
+                    * samples_per_frame,
+                ] = excitation[
+                    index - first,
+                    :,
+                    window.start_frame
+                    * samples_per_frame : history_frames
+                    * samples_per_frame,
+                ]
+        speech = hift.decode(x=window_mel, s=window_source, finalize=True)
+        speech = speech.detach().cpu()
+        return [
+            (
+                speech[
+                    index : index + 1,
+                    (window.emitted_frame - origin)
+                    * samples_per_frame : (window.end_frame - origin)
+                    * samples_per_frame,
+                ].contiguous(),
+                window.end_frame * samples_per_frame,
+            )
+            for index, (window, origin) in enumerate(
+                zip(windows, origin_frames, strict=True)
+            )
+        ]
 
     def make_flow_input(
         self,
@@ -1802,13 +1957,6 @@ class CosyVoice3Vocoder(BatchVocoderBase):
         with hift_autocast:
             wav, _ = self.hift.inference(speech_feat=padded, finalize=True)
         wav = wav.detach()
-        if self.hift_samples_per_mel_frame is None:
-            stride = int(self.hift.istft_params["hop_len"])
-            for rate in self.hift.upsample_rates:
-                stride *= int(rate)
-            self.hift_samples_per_mel_frame = stride
-        else:
-            pass
         samples_per_frame = self.hift_samples_per_mel_frame
         return [
             wav[index : index + 1, : length * samples_per_frame].cpu()

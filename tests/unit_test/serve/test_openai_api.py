@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -13,7 +15,7 @@ from fastapi.testclient import TestClient
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
     EXPLICIT_GENERATION_PARAMS_KEY,
@@ -237,6 +239,47 @@ class PrefetchedBlockingStreamingSpeechClient:
             finish_reason=None,
         )
         await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class TwoChunkStreamingSpeechClient:
+    def __init__(
+        self, *, fail_after_first_chunk: bool = False, usage_first: bool = False
+    ) -> None:
+        self.fail_after_first_chunk = fail_after_first_chunk
+        self.usage_first = usage_first
+        self.aborted: list[str] = []
+
+    async def generate(
+        self, request: GenerateRequest, request_id: str | None = None
+    ) -> AsyncIterator[GenerateChunk]:
+        usage = UsageInfo(prompt_tokens=3, completion_tokens=2, total_tokens=5)
+        if self.usage_first:
+            yield GenerateChunk(
+                request_id=request_id or "speech-1", modality="audio", usage=usage
+            )
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            audio_data=[0.0, 0.1],
+            sample_rate=24000,
+        )
+        if self.fail_after_first_chunk:
+            raise RuntimeError("vocoder failed")
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            audio_data=[-0.1, 0.0],
+            sample_rate=24000,
+        )
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            finish_reason="stop",
+            usage=None if self.usage_first else usage,
+        )
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
@@ -1309,6 +1352,7 @@ def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
             gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
             request_id="req-1",
             speed=1.0,
+            stream_format="audio",
         )
         body = response.body_iterator
         assert await anext(body) == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
@@ -1329,12 +1373,90 @@ def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None
                 gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
                 request_id="req-1",
                 speed=1.0,
+                stream_format="audio",
             )
         )
         await client.started.wait()
         request.disconnected.set()
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(drive())
+
+
+@pytest.mark.parametrize("usage_first", [False, True])
+def test_speech_sse_stream_sends_deltas_then_done_with_usage(
+    usage_first: bool,
+) -> None:
+    client = TestClient(
+        create_app(
+            TwoChunkStreamingSpeechClient(usage_first=usage_first), model_name="tts"
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "response_format": "pcm", "stream_format": "sse"},
+    )
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.iter_lines()
+        if line
+    ]
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-sample-rate"] == "24000"
+    assert [event["type"] for event in events] == [
+        "speech.audio.delta",
+        "speech.audio.delta",
+        "speech.audio.done",
+    ]
+    assert base64.b64decode(events[0]["audio"]) == encode_pcm([0.0, 0.1], 24000)
+    assert base64.b64decode(events[1]["audio"]) == encode_pcm([-0.1, 0.0], 24000)
+    assert events[2]["usage"] == {
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "total_tokens": 5,
+    }
+
+
+def test_speech_sse_stream_failure_ends_with_error_event() -> None:
+    speech_client = TwoChunkStreamingSpeechClient(fail_after_first_chunk=True)
+    client = TestClient(create_app(speech_client, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "response_format": "pcm", "stream_format": "sse"},
+    )
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.iter_lines()
+        if line
+    ]
+    assert response.status_code == 200
+    assert [event["type"] for event in events] == ["speech.audio.delta", "error"]
+    assert events[1]["error"]["type"] == "server_error"
+    assert "vocoder failed" in events[1]["error"]["message"]
+    assert len(speech_client.aborted) == 1
+
+
+def test_sse_speech_response_close_aborts_inner_speech_stream() -> None:
+    async def drive() -> None:
+        client = PrefetchedBlockingStreamingSpeechClient()
+        response = await speech_audio_response(
+            request=ConnectedRequest(),
+            client=client,
+            gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
+            request_id="req-1",
+            speed=1.0,
+            stream_format="sse",
+        )
+        body = response.body_iterator
+        assert (await anext(body)).startswith("data: ")
+        await body.aclose()
         assert client.aborted == ["req-1"]
 
     asyncio.run(drive())

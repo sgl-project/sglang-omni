@@ -57,6 +57,11 @@ MAX_BS = 16
 BUCKETS = (1, 2, 4, 8, 16)
 DTYPE = torch.bfloat16
 BF16_GEMM_ROUNDING = {"atol": 2**-6, "rtol": 2**-7}
+BF16_UNIT_ROUNDOFF = 2**-8
+FP32_UNIT_ROUNDOFF = 2**-24
+CHECKPOINT_HIDDEN = 2048
+CHECKPOINT_PREDICTOR_HIDDEN = 1024
+CHECKPOINT_VOCAB = 2048
 
 
 class TupleLinear(nn.Module):
@@ -136,6 +141,8 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker.predictor_embedding_buffer = torch.empty(
         MAX_BS, HIDDEN, device=device, dtype=DTYPE
     )
+    talker.predictor_projected_embeddings = None
+    talker.predictor_projected_buffer = None
     talker.sampled_token_ids = torch.zeros(MAX_BS, dtype=torch.long, device=device)
 
     talker.sub_batch_size = 0
@@ -360,6 +367,111 @@ def test_missing_embedding_buffer_uses_original_graph_path():
 
     assert torch.equal(fused_codes, fallback_codes)
     assert torch.equal(fused_embeds, fallback_embeds)
+
+
+def with_projected_tables(talker: Qwen3TTSTalker) -> Qwen3TTSTalker:
+    device = talker.predictor_k_cache.device
+    talker.predictor_projected_embeddings = torch.empty(
+        NUM_CODE_GROUPS - 2, PRED_VOCAB, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.predictor_projected_buffer = torch.empty(
+        MAX_BS, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.post_load_weights()
+    return talker
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 4, 16])
+def test_projected_tables_graph_matches_eager_and_the_unfused_gather(batch_size: int):
+    device = torch.device("cuda")
+    fused_talker = with_projected_tables(build_talker(device))
+    unfused_talker = with_projected_tables(build_talker(device))
+    object.__delattr__(unfused_talker, "predictor_embedding_buffer")
+    requests = uniform_requests(batch_size, top_k=5, top_p=0.9)
+    fused_talker.prepare_decode_buffers(requests)
+    unfused_talker.prepare_decode_buffers(requests)
+
+    for step in range(3):
+        layer0, hidden, positions = step_inputs(batch_size, device, step=step)
+        eager_codes, eager_embeds = run_eager(fused_talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(fused_talker, layer0, hidden, positions)
+        unfused_codes, unfused_embeds = run_forward(
+            unfused_talker, layer0, hidden, positions
+        )
+        assert torch.equal(graph_codes, eager_codes), f"step={step}"
+        assert torch.equal(graph_embeds, eager_embeds), f"step={step}"
+        assert torch.equal(unfused_codes, eager_codes), f"step={step}"
+        assert torch.equal(unfused_embeds, eager_embeds), f"step={step}"
+
+    assert len(fused_talker.predictor_graphs) == 1
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+def test_projected_tables_decode_the_codes_the_projection_decodes(batch_size: int):
+    device = torch.device("cuda")
+    table_talker = with_projected_tables(build_talker(device))
+    projection_talker = build_talker(device)
+    requests = uniform_requests(batch_size, dosample=False)
+    table_talker.prepare_decode_buffers(requests)
+    projection_talker.prepare_decode_buffers(requests)
+    layer0, hidden, positions = step_inputs(batch_size, device)
+
+    table_codes, table_embeds = run_eager(table_talker, layer0, hidden, positions)
+    projection_codes, projection_embeds = run_eager(
+        projection_talker, layer0, hidden, positions
+    )
+
+    assert torch.equal(table_codes, projection_codes)
+    assert torch.equal(table_embeds, projection_embeds)
+
+
+@pytest.mark.accelerator
+def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    monkeypatch.setattr(
+        torch.backends.cuda.matmul, "allow_bf16_reduced_precision_reduction", False
+    )
+    device = torch.device("cuda")
+    talker = build_talker(device)
+    projection = nn.Linear(
+        CHECKPOINT_HIDDEN, CHECKPOINT_PREDICTOR_HIDDEN, bias=True
+    ).to(device, DTYPE)
+    embeddings = nn.ModuleList(
+        [
+            nn.Embedding(CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(device, DTYPE)
+            for _ in range(3)
+        ]
+    )
+    talker.code_predictor.model.codec_embedding = embeddings
+    talker.code_predictor.project_input = projection
+    talker.predictor_projected_embeddings = torch.empty(
+        len(embeddings) - 1,
+        CHECKPOINT_VOCAB,
+        CHECKPOINT_PREDICTOR_HIDDEN,
+        device=device,
+        dtype=DTYPE,
+    )
+    talker.post_load_weights()
+
+    codes = torch.tensor([0, CHECKPOINT_VOCAB - 1, 1024, 1024, 7], device=device)
+    weight = projection.weight.float()
+    bias = projection.bias.float()
+    accumulation = (CHECKPOINT_HIDDEN + 1) * FP32_UNIT_ROUNDOFF
+    accumulation = accumulation / (1 - accumulation)
+    for index, table in enumerate(talker.predictor_projected_embeddings):
+        rows = embeddings[index].weight[codes].float()
+        reference = torch.nn.functional.linear(rows, weight, bias)
+        magnitude = rows.abs() @ weight.abs().T + bias.abs()
+        rounding_bound = (
+            BF16_UNIT_ROUNDOFF * reference.abs() + 2 * accumulation * magnitude
+        )
+        assert (
+            (table[codes].float() - reference).abs() <= rounding_bound
+        ).all(), f"codebook={index}"
 
 
 @pytest.mark.accelerator
