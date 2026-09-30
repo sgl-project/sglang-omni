@@ -49,7 +49,6 @@ class VendorSRTPlatform(SRTPlatform, VendorDeviceMixin):
         ROCMOmniPlatform,
         XPUOmniPlatform,
         platforms.NPUOmniPlatform,
-        platforms.MUSAOmniPlatform,
         platforms.AppleOmniPlatform,
     ],
 )
@@ -63,6 +62,17 @@ def test_joint_rope_is_unavailable_without_a_platform_provider(
 
     assert platform_type().get_joint_rope_inplace_kernel() is None
     cuda_provider.assert_not_called()
+
+
+def test_musa_runtime_platform_resolves_to_the_omni_musa_platform() -> None:
+    class MusaSRTPlatform(SRTPlatform):
+        _enum = PlatformEnum.MUSA
+        device_name = "musa"
+        device_type = "musa"
+
+    platform = platforms.as_omni_platform(MusaSRTPlatform())
+
+    assert type(platform) is platforms.MUSAOmniPlatform
 
 
 def test_cuda_joint_rope_getter_returns_upstream_kernel_without_calling_it(
