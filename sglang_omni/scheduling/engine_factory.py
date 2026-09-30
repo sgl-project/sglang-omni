@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from numbers import Integral
 from typing import Any, ClassVar
 
+import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -265,6 +266,22 @@ class SGLangGenerationEngineBuilder(ABC):
         # The shared builder treats checkpoint resolution as a family policy.
         # Subclasses override this when they need a resolved local snapshot.
         return model_path
+
+    @staticmethod
+    def uses_mlx() -> bool:
+        """True when this process runs the native MLX backend."""
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        return bool(use_mlx())
+
+    def uses_torch_mps(self) -> bool:
+        """True when this stage runs Torch on Metal, without the MLX runner."""
+        # current_platform is process-wide and reports MPS for CPU stages too.
+        return (
+            not self.uses_mlx()
+            and self.device is not None
+            and torch.device(self.device).type == "mps"
+        )
 
     @abstractmethod
     def generation_defaults(

@@ -11,6 +11,7 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.models.whisper_asr.request_builders import MAX_PREV_CONTEXT_TOKENS
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -139,7 +140,7 @@ def resolve_encoder_graph_buckets(
     if max_running_requests is not None:
         if max_running_requests < 1:
             raise ValueError(
-                "max_running_requests must be >= 1, " f"got {max_running_requests}"
+                f"max_running_requests must be >= 1, got {max_running_requests}"
             )
         else:
             pass
@@ -232,6 +233,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.context_length = 0
         self.decoder_context_len = 0
         self.audio_encoder_service: Any | None = None
+        self.device: str | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -297,6 +299,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
         del server_args
+        if self.uses_mlx():
+            # The MLX runner encodes audio itself, into the cross-attention cache.
+            self.audio_encoder_service = None
+            return
         if not self.enable_pre_lm_encoder:
             return
         else:
@@ -330,6 +336,11 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             service.pin_host_memory,
         )
 
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        if self.uses_mlx() and getattr(server_args, "mlx_enable_sampling", False):
+            raise ValueError("Whisper MLX currently requires mlx_enable_sampling=False")
+        super().validate_before_infrastructure(server_args)
+
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(
@@ -341,7 +352,21 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["chunked_prefill_size"] = 0
         # Note (Akazaakane): Timestamped Whisper requests install an internal
         # per-request processor; this flag permits SGLang to execute it.
-        overrides["enable_custom_logit_processor"] = True
+        # The MLX path decodes greedily and rejects logit processors.
+        overrides["enable_custom_logit_processor"] = not self.uses_mlx()
+        if self.uses_mlx() or self.uses_torch_mps():
+            # Stage EngineArgs override generation_defaults, so clamp here.
+            requested = overrides.get("max_running_requests")
+            if requested is not None and int(requested) != 1:
+                logger.warning(
+                    "Whisper %s decodes one request at a time; overriding "
+                    "max_running_requests=%s with 1",
+                    "MLX" if self.uses_mlx() else "Torch MPS",
+                    requested,
+                )
+            overrides["max_running_requests"] = 1
+            return
+
         if (
             overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED
             or "cuda_graph_bs_prefill" in overrides
@@ -362,6 +387,41 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        if self.uses_mlx():
+            if not current_platform.is_mps():
+                raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
+            # Encoder output lives outside the KV pool, so radix reuse and
+            # chunked prefill would drop it.
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "mem_fraction_static": self.mem_fraction_static,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": 0,
+                # flashinfer's Triton KV writer fails on Apple.
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "dtype": dtype,
+            }
+        if self.uses_torch_mps():
+            # Unified memory over-reports free memory; cap the KV pool.
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "mem_fraction_static": self.mem_fraction_static,
+                "max_total_tokens": self.context_length,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": 0,
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "dtype": dtype,
+            }
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
@@ -374,6 +434,21 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+
+    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        if self.uses_mlx():
+            from sglang_omni.model_runner.mlx_model_worker import (
+                MlxSchedulerModelRunner,
+            )
+
+            return MlxSchedulerModelRunner(model_worker, output_proc)
+        if self.uses_torch_mps():
+            from sglang_omni.models.whisper_asr.torch_mps_runner import (
+                WhisperTorchMpsModelRunner,
+            )
+
+            return WhisperTorchMpsModelRunner(model_worker, output_proc)
+        return super().make_model_runner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
