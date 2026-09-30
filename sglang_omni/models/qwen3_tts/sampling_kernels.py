@@ -896,7 +896,7 @@ def sample_from_logits_with_seed_top_k_top_p(
 
     out = torch.empty((batch_size,), device=logits.device, dtype=torch.long)
     # note (ratish): the split launch is measured on sm_90 only; other devices keep
-    # the single kernel. Each chunk keeps two runs, so it runs a halving round.
+    # the single kernel. Each chunk holds at least two runs, so it runs a halving round.
     if (
         max_top_k > 32
         and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE

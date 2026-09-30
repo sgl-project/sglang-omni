@@ -1045,9 +1045,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self.predictor_projected_buffer = None
         else:
             # note (ratish): the projection of an embedding row is that row of the
-            # projected table.
+            # projected table; the last codebook feeds no predictor step, so has none.
             self.predictor_projected_embeddings = torch.empty(
-                config.num_code_groups - 1,
+                config.num_code_groups - 2,
                 config.code_predictor_config.vocab_size,
                 projection.out_features,
                 device=device,
@@ -1762,6 +1762,10 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 )
                 pos_codes[:, layer_idx + 1].copy_(next_code)
                 codec_embedding = self.code_predictor.model.codec_embedding[layer_idx]
+                has_next_step = layer_idx < num_groups - 2
+                should_gather_projection = (
+                    projected_tables is not None and has_next_step
+                )
                 fused_embedding = (
                     use_fused_embedding
                     and embedding_buffer.dtype == predictor_dtype
@@ -1771,11 +1775,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                         embedding_buffer,
                         pos_summed,
                         projected_weight=(
-                            None
-                            if projected_tables is None
-                            else projected_tables[layer_idx]
+                            projected_tables[layer_idx]
+                            if should_gather_projection
+                            else None
                         ),
-                        projected=projected_buffer,
+                        projected=(
+                            projected_buffer if should_gather_projection else None
+                        ),
                     )
                 )
                 if fused_embedding:
@@ -1785,7 +1791,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                         dtype=predictor_dtype
                     )
                     pos_summed.add_(new_embed[:, 0, :])
-                if layer_idx < num_groups - 2:
+                if has_next_step:
                     if projected_tables is None:
                         new_predictor_embed = self.code_predictor.project_input(
                             new_embed
