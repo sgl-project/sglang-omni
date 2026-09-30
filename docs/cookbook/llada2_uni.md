@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) accepts text and image input and supports text output, text-to-image generation, and image editing.
 
 ## Highlights
 
@@ -20,13 +20,92 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline
-(`preprocessing → image_encoder → thinker → decode`) on a single GPU. The
-thinker disables CUDA graph by default for this experimental DLLM path.
+The default `omni` pipeline runs preprocessing, image encoding, and the
+DLLM thinker, then routes to text and image decoders. The image decoder
+uses diffusers' ZImage backbone, SigVQ conditioning, and a VAE. This is
+LLaDA2-Uni's semantic decoder, not the LLaDA-Image text-conditioned model.
+The `text` variant retains the four-stage text-output pipeline.
+
+The CFG thinker currently uses synchronous eager execution. An explicit
+CUDA graph request is rejected until CFG graph metadata is supported.
 
 ```bash
-sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.engine.enable_torch_compile false
 ```
+
+The cookbook explicitly disables `torch.compile` to match the validated
+generation settings. CUDA Graph execution is controlled separately.
+
+## Image Generation and Editing
+
+Use `POST /v1/images/generations` for T2I and `POST /v1/images/edits` for
+editing. These routes use SGLang Diffusion's image request and response
+schemas while executing Omni's Thinker and selected image decoder backend.
+`dllm_steps` controls VQ token generation; `num_inference_steps` controls
+decoder diffusion sampling. `guidance_scale` sets Thinker CFG, not an
+additional CFG pass in the image decoder.
+
+```python
+import base64
+from pathlib import Path
+
+import requests
+
+request = {
+    "model": "inclusionAI/LLaDA2.0-Uni",
+    "prompt": "A sailboat on a calm lake.",
+    "size": "1024x1024",
+    "response_format": "b64_json",
+    "decode_mode": "decoder-turbo",
+    "num_inference_steps": 8,
+    "dllm_steps": 8,
+    "guidance_scale": 4.0,
+    "seed": 42,
+}
+response = requests.post(
+    "http://localhost:8000/v1/images/generations", json=request, timeout=600
+)
+response.raise_for_status()
+image = response.json()["data"][0]
+Path("generated.png").write_bytes(base64.b64decode(image["b64_json"]))
+```
+
+Edits accept multipart form data with exactly one `image`/`image[]` upload or
+`url`/`url[]` reference. Dimensions follow the processed source grid; omit
+`size`, `width`, and `height`. Set `cfg_text_scale` and `cfg_image_scale` for
+editing guidance. Omitting them retains the model's task-specific defaults.
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -F 'image=@source.png' \
+  -F 'prompt=Change the background to a beach.' \
+  -F 'response_format=b64_json' \
+  -F 'decode_mode=decoder-turbo' \
+  -F 'num_inference_steps=8' \
+  -F 'cfg_text_scale=4.0' -F 'cfg_image_scale=1.5' -F 'seed=42'
+```
+
+Both routes are non-streaming, support one PNG (`n=1`), and return
+`{id, created, data: [...]}`. `response_format=b64_json` returns raw base64;
+`response_format=url` returns an inline PNG data URL without server-side file
+retention. T2I accepts either `size` or paired `width`/`height`, defaulting to
+1024x1024. Unsupported native sampling controls are rejected rather than ignored.
+The old chat image-generation entrypoint remains available for existing clients.
+
+For thinking T2I, set `mode: "thinking"`. To retrieve both thinking text and
+the image, use `/v1/chat/completions` with `modalities: ["text", "image"]`
+and `image_generation.mode: "thinking"`.
+The text pass has a 2048-token budget and stops at `<boi>`. The image pass
+retains the generated context and applies CFG to the VQ tokens. Both passes
+must fit the thinker's configured context length. Thinking mode does not
+support editing.
+
+The server selects a patch-aligned source grid near a 512x512 pixel budget,
+then resizes proportionally and center-crops the image to that grid. Small
+images are enlarged without black padding; images already matching the grid
+are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
+Image understanding retains its separate preprocessing and pixel budgets.
 
 ## Text Input
 
@@ -135,18 +214,16 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 |---|---|---|---|
 | `model` | string | `null` | Model identifier |
 | `messages` | list | (required) | List of chat messages, each with `role` and `content` |
-| `modalities` | list | `["text"]` | Output modalities (only `["text"]` is supported) |
+| `modalities` | list | `["text"]` | Use `["text"]` for understanding or `["image"]` for generation/editing |
+| `image_generation` | object | `null` | Image generation options shown above |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
 ### Incoming Features
 
-- Text-to-image generation
-- Text-to-Image Generation with Thinking
 - Interleaved Generation
 
 ## Known Limitations
 
-- Text output is supported for text and image input. Image generation and
-  interleaved generation are not wired to the OpenAI-compatible response path
-  yet.
+- Image generation and editing return one image per non-streaming request.
+- Interleaved generation is not supported.
