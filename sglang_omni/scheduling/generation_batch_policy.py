@@ -48,11 +48,6 @@ def get_prefill_cuda_graph_backend(server_args: Any) -> str:
     return cfg.cuda_graph_config.prefill.backend
 
 
-def get_prefill_attention_backend(server_args: Any) -> str | None:
-    """Read the resolved SGLang prefill attention backend, split settings included."""
-    return attention_backends_of(resolved_view(server_args))[0]
-
-
 def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
     max_bs = int(max_bs)
     if max_bs < 1:
@@ -432,18 +427,18 @@ def validate_prefill_graph_policy(
         return
     else:
         pass
-    attention_backend = attention_backends_of(cfg)[0]
-    if (
-        backend == CudaGraphBackend.FULL
-        and attention_backend not in FULL_PREFILL_ATTENTION_BACKENDS
-    ):
-        supported = ", ".join(sorted(FULL_PREFILL_ATTENTION_BACKENDS))
-        errors.append(
-            "full prefill CUDA graphs need a prefill attention backend in "
-            f"({supported}), got {attention_backend!r}; set "
-            "cuda_graph_backend_prefill='breakable'"
-        )
-        return
+    if backend == CudaGraphBackend.FULL:
+        attention_backend = attention_backends_of(cfg)[0]
+        if attention_backend not in FULL_PREFILL_ATTENTION_BACKENDS:
+            supported = ", ".join(sorted(FULL_PREFILL_ATTENTION_BACKENDS))
+            errors.append(
+                "full prefill CUDA graphs need a prefill attention backend in "
+                f"({supported}), got {attention_backend!r}; set "
+                "cuda_graph_backend_prefill='breakable'"
+            )
+            return
+        else:
+            pass
     else:
         pass
 
