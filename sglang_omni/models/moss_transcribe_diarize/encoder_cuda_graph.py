@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-chunk-count device graph for the MOSS-TD Whisper encoder.
+"""Per-chunk-count CUDA graph for the MOSS-TD Whisper encoder.
 
 The Whisper encoder is a fixed-shape, stateless pure function: input mel
 [num_chunks, num_mel_bins, input_feature_len] -> [num_chunks, encoder_len, d_model].
