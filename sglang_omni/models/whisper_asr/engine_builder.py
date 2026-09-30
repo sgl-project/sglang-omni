@@ -362,7 +362,9 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        return {
+        from sglang_omni.platforms import current_platform
+
+        defaults: dict[str, Any] = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -374,6 +376,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        # The platform owns whether Whisper's encoder-decoder cross attention
+        # needs a specific backend (SGLang's default forces CUDA-only flashinfer).
+        cross_attn_backend = current_platform.cross_attention_backend()
+        if cross_attn_backend is not None:
+            defaults["attention_backend"] = cross_attn_backend
+        return defaults
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model

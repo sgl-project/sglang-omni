@@ -136,6 +136,11 @@ class OmniPlatform(DeviceMixin):
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
 
+    def cross_attention_backend(self) -> str | None:
+        """Attention backend for encoder-decoder cross attention, or None to keep
+        the engine's platform default."""
+        return None
+
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""
         return True

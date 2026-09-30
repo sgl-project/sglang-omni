@@ -6,7 +6,10 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import torch
-from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.interface import OmniPlatform
@@ -29,15 +32,18 @@ class XPUOmniPlatform(OmniPlatform):
     device_name: str = "xpu"
     device_type: str = "xpu"
 
-    def get_device(self, local_rank: int) -> "torch.device":
+    def get_device(self, local_rank: int) -> torch.device:
         return torch.device("xpu", local_rank)
 
-    def set_device(self, device: "torch.device | int") -> None:
+    def set_device(self, device: torch.device | int) -> None:
         index = device.index if isinstance(device, torch.device) else int(device)
         torch.xpu.set_device(0 if index is None else index)
 
     def enable_code2wav_graph(self):
         return True
+
+    def cross_attention_backend(self) -> str | None:
+        return "torch_native"
 
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:
@@ -87,6 +93,18 @@ class XPUOmniPlatform(OmniPlatform):
 
         cfg = resolved_view(server_args)
         moe_runner_backend = cfg.moe_runner_backend
+        if (
+            model_arch_override == "WhisperForConditionalGeneration"
+            and any(
+                backend != self.cross_attention_backend()
+                for backend in attention_backends_of(cfg)
+            )
+        ):
+            raise ValueError(
+                "Whisper ASR on Intel XPU requires torch_native for both "
+                "prefill and decode attention; remove the backend override "
+                "or set both phases to torch_native."
+            )
         if model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
