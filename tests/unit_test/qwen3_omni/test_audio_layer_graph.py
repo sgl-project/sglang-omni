@@ -8,12 +8,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 from sglang_omni.models.qwen3_omni.components import audio_layer_graph
+from sglang_omni.models.qwen3_omni.components.audio_attention import (
+    FusedAudioAttention,
+    SegmentSplits,
+)
 from sglang_omni.models.qwen3_omni.components.audio_layer_graph import (
     DEFAULT_TOKEN_BUCKETS,
     AudioLayerGraphRunner,
     packed_attention_backend,
+    packed_attention_forward,
     resolve_packed_attention,
 )
 
@@ -324,3 +330,75 @@ def test_replay_matches_the_uncaptured_packed_stack_across_bucket_boundaries() -
             replayed = runner.maybe_replay(hidden, cu_seqlens, segments)
             assert replayed is not None
             torch.testing.assert_close(replayed, uncaptured)
+
+
+def test_fused_packed_attention_matches_unfused_strided_inputs() -> None:
+    torch.manual_seed(0)
+    config = hf_modeling.Qwen3OmniMoeAudioEncoderConfig(
+        d_model=HEADS * HEAD_DIM, encoder_attention_heads=HEADS
+    )
+    attention = hf_modeling.Qwen3OmniMoeAudioAttention(config).eval()
+    fused = FusedAudioAttention(attention, SegmentSplits())
+    segments = [31, 17, 5]
+    hidden = torch.randn(sum(segments), config.d_model)
+    cu_seqlens = _cu_seqlens(segments, torch.device("cpu"))
+    with torch.no_grad():
+        expected = packed_attention_forward(
+            attention, _SegmentedSdpa(), hidden, cu_seqlens, WINDOW
+        )
+        actual = packed_attention_forward(
+            fused, _SegmentedSdpa(), hidden, cu_seqlens, WINDOW
+        )
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_fused_graph_matches_unfused_stack_across_bucket_boundaries() -> None:
+    torch.manual_seed(0)
+    device = torch.device("cuda", 0)
+    config = hf_modeling.Qwen3OmniMoeAudioEncoderConfig(
+        d_model=HEADS * HEAD_DIM,
+        encoder_attention_heads=HEADS,
+        encoder_ffn_dim=2 * HEADS * HEAD_DIM,
+    )
+    tower = _RealTower()
+    tower.layers = nn.ModuleList(
+        hf_modeling.Qwen3OmniMoeAudioEncoderLayer(config) for _ in range(2)
+    )
+    tower = tower.to(device, torch.bfloat16).eval()
+    runner = AudioLayerGraphRunner(
+        tower, device=device, window=WINDOW, token_buckets=(128, 256, 512)
+    )
+    runner.resolve_attention()
+    assert runner.disabled_reason is None, runner.disabled_reason
+    cases = (
+        [104, 23],
+        [104, 24],
+        [104, 25],
+        [104, 104, 47],
+        [104, 104, 48],
+        [104, 104, 49],
+        [37, 90],
+    )
+    hidden_states = [
+        torch.randn(sum(segments), config.d_model, device=device, dtype=torch.bfloat16)
+        for segments in cases
+    ]
+    with torch.no_grad():
+        expected = [
+            runner.run_layers(hidden, _cu_seqlens(segments, device), WINDOW)
+            for hidden, segments in zip(hidden_states, cases)
+        ]
+        splits = SegmentSplits()
+        for layer in tower.layers:
+            layer.self_attn = FusedAudioAttention(layer.self_attn, splits)
+        runner.capture_all()
+        assert runner.has_graphs, runner.disabled_reason
+        for hidden, segments, reference in zip(hidden_states, cases, expected):
+            cu_seqlens = _cu_seqlens(segments, device)
+            eager = runner.run_layers(hidden, cu_seqlens, WINDOW)
+            replayed = runner.maybe_replay(hidden, cu_seqlens, segments)
+            assert replayed is not None
+            torch.testing.assert_close(eager, reference, rtol=2e-2, atol=2e-2)
+            torch.testing.assert_close(replayed, reference, rtol=2e-2, atol=2e-2)

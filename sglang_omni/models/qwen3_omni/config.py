@@ -119,7 +119,7 @@ def audio_encoder_stage(
         name="audio_encoder",
         process=process,
         factory_path=f"{_PKG}.stages.create_audio_encoder_executor",
-        factory=FactoryArgs(enable_layer_cuda_graph=True),
+        factory=FactoryArgs(enable_layer_cuda_graph=True, enable_fused_qkv=False),
         gpu=gpu,
         disable_direct_cuda_ipc_payload=True,
         **encoder_join_edges(speech_enabled=speech_enabled),

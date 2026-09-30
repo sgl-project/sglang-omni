@@ -1053,6 +1053,7 @@ def create_audio_encoder_executor(
     gpu_id: int | None = None,
     dtype: str | None = None,
     enable_layer_cuda_graph: bool = False,
+    enable_fused_qkv: bool = False,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
@@ -1063,6 +1064,7 @@ def create_audio_encoder_executor(
         device=device,
         dtype=dtype,
         enable_layer_cuda_graph=enable_layer_cuda_graph,
+        enable_fused_qkv=enable_fused_qkv,
     )
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,

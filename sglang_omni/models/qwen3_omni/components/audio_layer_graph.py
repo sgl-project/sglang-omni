@@ -10,6 +10,8 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
+from sglang_omni.models.qwen3_omni.components.audio_attention import project_audio_qkv
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOKEN_BUCKETS: tuple[int, ...] = (128, 256, 512, 1024, 2048, 4096)
@@ -68,10 +70,7 @@ def packed_attention_forward(
     max_seqlen: int,
 ) -> torch.Tensor:
     seq_length, _ = hidden_states.size()
-    heads = attention.num_heads
-    query_states = attention.q_proj(hidden_states).reshape(seq_length, heads, -1)
-    key_states = attention.k_proj(hidden_states).reshape(seq_length, heads, -1)
-    value_states = attention.v_proj(hidden_states).reshape(seq_length, heads, -1)
+    query_states, key_states, value_states = project_audio_qkv(attention, hidden_states)
     # An int max_seqlen avoids the device-to-host max() that would break capture.
     attn_output = packed_attention(
         query_states,
