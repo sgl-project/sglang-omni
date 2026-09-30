@@ -413,7 +413,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
             # note(ratish): a cold Inductor cache compiles the DiT at startup;
             # two workers take about 3 minutes to start.
-            startup_timeout=200,
+            startup_timeout=300,
             gate_thresholds=False,
         ),
         thresholds=TtsCiThresholdPreset(
