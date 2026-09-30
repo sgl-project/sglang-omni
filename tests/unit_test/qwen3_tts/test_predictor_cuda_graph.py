@@ -432,6 +432,9 @@ def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    monkeypatch.setattr(
+        torch.backends.cuda.matmul, "allow_bf16_reduced_precision_reduction", False
+    )
     device = torch.device("cuda")
     talker = build_talker(device)
     projection = nn.Linear(
