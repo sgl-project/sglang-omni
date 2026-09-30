@@ -12,6 +12,13 @@ from sglang_omni.models.auk.flow_matching import AuKFlowMatching
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 
 
+@pytest.fixture(autouse=True)
+def torch_backend(monkeypatch):
+    monkeypatch.setattr(
+        "sglang.srt.hardware_backend.mlx.runtime.use_mlx", lambda: False
+    )
+
+
 def make_rope(freqs: torch.Tensor) -> Rope:
     """What AuKDit.forward hands a block once the fused kernel is on."""
     return Rope(freqs, 1.0, freqs.cos(), freqs.sin())
@@ -62,6 +69,7 @@ def test_qk_fusion_supports_native_bf16_backbone():
     assert all(torch.isfinite(output).all() for output in actual)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA Triton")
 def test_request_lengths_do_not_specialize_the_kernel():
     pytest.importorskip("triton")
     from sglang_omni.models.auk.fused_qk_norm_rope import norm_rope_kernel
