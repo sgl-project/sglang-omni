@@ -51,6 +51,7 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
   --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
   --thinker.process thinker --thinker.tp_size 2 --thinker.gpu '[0, 1]' \
   --thinker.engine.disable_cuda_graph false \
+  --thinker.engine.enable_torch_compile false \
   --thinker.engine.cuda_graph_bs '[1, 2, 3, 4]'
 ```
 
@@ -106,6 +107,7 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
   --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
   --thinker.process thinker --thinker.tp_size 2 --thinker.gpu '[0, 1]' \
   --thinker.engine.disable_cuda_graph false \
+  --thinker.engine.enable_torch_compile false \
   --thinker.engine.cuda_graph_bs '[1, 2, 3, 4]'
 ```
 
