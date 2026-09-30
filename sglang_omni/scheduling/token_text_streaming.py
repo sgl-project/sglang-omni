@@ -51,8 +51,6 @@ def make_token_text_stream_output_builder(
         else:
             pass
 
-        # note (guozhihao): Fun sets allow_terminal_flush so empty data can flush
-        # when finished(); MOSS leaves it False and empty data stays silent.
         token_data = req_output.data
         is_terminal = bool(req.finished()) if allow_terminal_flush else False
         token_id: int | None = None
@@ -105,8 +103,7 @@ def make_token_text_stream_output_builder(
             pass
 
         delta = decode_fn(pending)
-        # note (guozhihao): trailing U+FFFD hold is independent of terminal flush so a
-        # follow-up can enable MOSS flush without also emitting incomplete UTF-8.
+        # note (JingwenGu): hold incomplete UTF-8 until more tokens or terminal flush.
         if delta.endswith("\ufffd") and not (
             is_terminal and emit_trailing_replacement_on_terminal
         ):

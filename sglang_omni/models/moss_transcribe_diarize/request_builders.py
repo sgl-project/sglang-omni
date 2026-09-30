@@ -667,7 +667,6 @@ def make_moss_transcribe_diarize_stream_output_builder(
         build_message_data=lambda delta: {
             "text": delta,
             "modality": "text",
-            "stage_name": "asr",
         },
         build_message_metadata=lambda token_id: {
             "modality": "text",
@@ -677,8 +676,8 @@ def make_moss_transcribe_diarize_stream_output_builder(
         last_emit_attr="_moss_stream_last_emit_t",
         eos_token_id=resolved_eos,
         min_emit_interval_s=min_emit_interval_s,
-        allow_terminal_flush=False,
-        emit_trailing_replacement_on_terminal=False,
+        allow_terminal_flush=True,
+        emit_trailing_replacement_on_terminal=True,
     )
 
 

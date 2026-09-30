@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Literal
 
 from transformers import AutoConfig, GenerationConfig
 
@@ -77,6 +77,8 @@ def create_sglang_moss_transcribe_diarize_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    stage_name: str | None = None,
+    pd_role: Literal["prefill", "decode"] | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 16,
     max_new_tokens: int | None = None,
@@ -114,7 +116,19 @@ def create_sglang_moss_transcribe_diarize_executor(
         if encoder_chunk_buckets is not None
         else _DEFAULT_ENCODER_CHUNK_BUCKETS
     )
-    return MossTranscribeDiarizeEngineBuilder(
+    builder_cls = MossTranscribeDiarizeEngineBuilder
+    pd_kwargs = {}
+    if pd_role is not None:
+        from sglang_omni.models.moss_transcribe_diarize.pd import (
+            MossTranscribeDiarizePDEngineBuilder,
+        )
+
+        builder_cls = MossTranscribeDiarizePDEngineBuilder
+        pd_kwargs = {"pd_role": pd_role, "stage_name": stage_name}
+    else:
+        pass
+    return builder_cls(
+        **pd_kwargs,
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         context_length=context_length,

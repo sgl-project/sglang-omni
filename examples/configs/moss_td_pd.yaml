@@ -1,0 +1,3 @@
+# Single host, TP=1: encoder + prefill on GPU 0, decode on GPU 1.
+config_cls: MossTranscribeDiarizePDPipelineConfig
+model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize

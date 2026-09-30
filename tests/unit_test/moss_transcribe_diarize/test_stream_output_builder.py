@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     make_moss_transcribe_diarize_stream_output_builder,
 )
@@ -51,7 +53,9 @@ def make_req_data(*, stream: bool = True, inflight_middle_chunks: int = 0) -> An
         ),
         data={},
     )
-    req = SimpleNamespace(inflight_middle_chunks=inflight_middle_chunks)
+    req = SimpleNamespace(
+        inflight_middle_chunks=inflight_middle_chunks, finished=lambda: False
+    )
     return SimpleNamespace(req=req, stage_payload=stage_payload)
 
 
@@ -76,7 +80,7 @@ def test_emits_text_delta_when_streaming():
     assert msg.type == "stream"
     assert msg.request_id == "req-1"
     assert msg.target is None
-    assert msg.data == {"text": "[0.00]", "modality": "text", "stage_name": "asr"}
+    assert msg.data == {"text": "[0.00]", "modality": "text"}
     assert msg.metadata == {"modality": "text", "token_id": 1}
 
 
@@ -253,3 +257,21 @@ def test_explicit_eos_token_id_overrides_tokenizer():
 
     assert [m.data["text"] for m in builder("r", rd, make_req_output(1))] == ["A"]
     assert builder("r", rd, make_req_output(7)) == []
+
+
+@pytest.mark.parametrize("pending_bytes", [b"BC", b"B\xe4"])
+def test_terminal_flush_preserves_buffered_text(pending_bytes: bytes) -> None:
+    builder = interval_builder({1: b"A", 2: pending_bytes}, interval_s=3600.0)
+    request_data = make_req_data()
+    assert [
+        message.data["text"]
+        for message in builder("r", request_data, make_req_output(1))
+    ] == ["A"]
+    assert builder("r", request_data, make_req_output(2)) == []
+    assert builder.flush("r", request_data) == []
+
+    request_data.req.finished = lambda: True
+    assert [message.data["text"] for message in builder.flush("r", request_data)] == [
+        pending_bytes.decode("utf-8", errors="replace")
+    ]
+    assert builder.flush("r", request_data) == []

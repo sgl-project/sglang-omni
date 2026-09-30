@@ -83,7 +83,7 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
         return {}
 
     def resolved_env_defaults(self) -> dict[str, str]:
-        asr_stage = next(stage for stage in self.stages if stage.name == "asr")
+        asr_stage = self.stage_named(self.resolved_entry_stage)
         configured_workers = asr_stage.factory.request_build_max_workers
         request_build_workers = max(
             int(
@@ -112,4 +112,59 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
         return {**derived, **self.env_defaults}
 
 
+class MossTranscribeDiarizePDPipelineConfig(MossTranscribeDiarizePipelineConfig):
+    """Single-host PD: audio encoding and prefill on P, token generation on D."""
+
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "asr_prefill": MossTDStageConfig,
+        "asr_decode": MossTDStageConfig,
+    }
+    entry_stage: str = "asr_prefill"
+    stages: list[StageConfig] = [
+        MossTDStageConfig(
+            name="asr_prefill",
+            process="asr_prefill",
+            factory_path=f"{_PKG}.stages.create_sglang_moss_transcribe_diarize_executor",
+            factory=MossTDFactoryArgs(
+                encoder_cache_size_bytes=_ENCODER_CACHE_SIZE_BYTES,
+                enable_async_decode=False,
+                request_build_max_workers=_REQUEST_BUILD_MAX_WORKERS,
+                request_build_max_pending=16,
+            ),
+            engine=EngineArgs(
+                max_running_requests=16,
+                enable_torch_compile=False,
+                disable_radix_cache=True,
+                page_size=1,
+            ),
+            gpu=0,
+            next="asr_decode",
+        ),
+        MossTDStageConfig(
+            name="asr_decode",
+            process="asr_decode",
+            factory_path=f"{_PKG}.stages.create_sglang_moss_transcribe_diarize_executor",
+            factory=MossTDFactoryArgs(
+                encoder_cache_size_bytes=0,
+                enable_async_decode=False,
+                request_build_max_workers=1,
+            ),
+            engine=EngineArgs(
+                max_running_requests=16,
+                enable_torch_compile=False,
+                disable_radix_cache=True,
+                page_size=1,
+            ),
+            gpu=1,
+            terminal=True,
+        ),
+    ]
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+        return {
+            "pd_role": {"asr_prefill": "prefill", "asr_decode": "decode"}[stage_name]
+        }
+
+
 EntryClass = MossTranscribeDiarizePipelineConfig
+Variants = {"pd": MossTranscribeDiarizePDPipelineConfig}
