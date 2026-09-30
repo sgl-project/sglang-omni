@@ -53,6 +53,45 @@ def test_speech_generation_uses_served_model_and_default_voice() -> None:
     assert generate_request.metadata["tts_params"]["voice"] == "default"
 
 
+@pytest.mark.parametrize("sample_rate", [8000, 24000])
+def test_speech_service_accepts_model_supported_sample_rates(sample_rate: int) -> None:
+    service = SpeechRequestValidator(
+        default_model="qwen3-tts",
+        supported_output_sample_rates=frozenset({8000, 24000}),
+    )
+
+    request = service.parse_request({"input": "hello", "sample_rate": sample_rate})
+
+    assert request.sample_rate == sample_rate
+
+
+def test_speech_service_rejects_unsupported_sample_rate() -> None:
+    service = SpeechRequestValidator(
+        default_model="qwen3-tts",
+        supported_output_sample_rates=frozenset({8000, 24000}),
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "sample_rate": 16000})
+
+    assert exc_info.value.param == "sample_rate"
+    assert "supported rates: 8000, 24000" in exc_info.value.message
+
+
+@pytest.mark.parametrize("sample_rate", [0, -8000])
+def test_speech_service_rejects_non_positive_sample_rate(sample_rate: int) -> None:
+    service = SpeechRequestValidator(
+        default_model="qwen3-tts",
+        supported_output_sample_rates=frozenset({8000, 24000}),
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "sample_rate": sample_rate})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "sample_rate"
+
+
 @pytest.mark.parametrize(
     ("options", "required", "supports"),
     [

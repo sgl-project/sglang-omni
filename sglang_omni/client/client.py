@@ -275,6 +275,7 @@ class Client:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -313,18 +314,14 @@ class Client:
             axis = -1 if arrays[0].ndim > 1 else 0
             audio_data = np.concatenate(arrays, axis=axis)
 
-        encode_kwargs: dict[str, Any] = {
-            "response_format": response_format,
-            "speed": speed,
-            "allow_format_fallback": allow_format_fallback,
-        }
-        if sample_rate is not None:
-            encode_kwargs["sample_rate"] = sample_rate
-        else:
-            pass
-
         audio_bytes, mime_type = await asyncio.to_thread(
-            encode_audio, audio_data, **encode_kwargs
+            encode_audio,
+            audio_data,
+            response_format=response_format,
+            sample_rate=sample_rate or DEFAULT_SAMPLE_RATE,
+            output_sample_rate=output_sample_rate,
+            speed=speed,
+            allow_format_fallback=allow_format_fallback,
         )
 
         # Derive actual format from MIME type (encode_audio may fall back
@@ -341,7 +338,7 @@ class Client:
             audio_bytes=audio_bytes,
             mime_type=mime_type,
             format=actual_format,
-            sample_rate=sample_rate,
+            sample_rate=output_sample_rate or sample_rate,
             usage=last_chunk.usage if last_chunk else None,
             finish_reason=last_chunk.finish_reason if last_chunk else None,
         )

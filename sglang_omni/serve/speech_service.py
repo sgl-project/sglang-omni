@@ -90,6 +90,7 @@ class SpeechRequestValidator:
         speech_reference_text_required: bool = False,
         speech_reference_text_excludes_instructions: bool = False,
         additional_speech_languages: frozenset[str] = frozenset(),
+        supported_output_sample_rates: frozenset[int] = frozenset(),
         max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
         allowed_local_media_path: str | Path | None = None,
         allowed_media_domains: list[str] | None = None,
@@ -139,6 +140,7 @@ class SpeechRequestValidator:
             else frozenset()
         )
         self.required_speech_reference_count = required_speech_reference_count
+        self.supported_output_sample_rates = supported_output_sample_rates
         self.speech_reference_text_required = speech_reference_text_required
         self.max_speech_input_chars = max_speech_input_chars
         self.speech_reference_text_excludes_instructions = (
@@ -281,6 +283,7 @@ class SpeechRequestValidator:
         else:
             pass
         updates["response_format"] = response_format
+        self.validate_sample_rate(request.sample_rate)
 
         if not TTS_SPEED_MIN <= float(request.speed) <= TTS_SPEED_MAX:
             raise bad_request(
@@ -593,6 +596,7 @@ class SpeechRequestValidator:
                 gen_req,
                 request_id=request_id,
                 response_format=prepared.request.response_format,
+                output_sample_rate=prepared.request.sample_rate,
                 speed=prepared.request.speed,
                 allow_format_fallback=False,
             )
@@ -686,6 +690,7 @@ class SpeechRequestValidator:
     def validate_batch_defaults(self, batch: CreateSpeechBatchRequest) -> None:
         response_format = normalize_response_format(batch.response_format)
         self.validate_encoder_dependency(response_format)
+        self.validate_sample_rate(batch.sample_rate)
         if not TTS_SPEED_MIN <= float(batch.speed) <= TTS_SPEED_MAX:
             raise bad_request(
                 f"speed must be between {TTS_SPEED_MIN} and {TTS_SPEED_MAX}",
@@ -808,6 +813,7 @@ class SpeechRequestValidator:
             "token_count",
             "duration_tokens",
             "seed",
+            "sample_rate",
         ):
             if field_name in payload and payload[field_name] is not None:
                 value = payload[field_name]
@@ -816,7 +822,13 @@ class SpeechRequestValidator:
                         f"{field_name} must be an integer", param=field_name
                     )
                 else:
-                    pass
+                    if field_name == "sample_rate" and value <= 0:
+                        raise bad_request(
+                            "sample_rate must be greater than 0",
+                            param="sample_rate",
+                        )
+                    else:
+                        pass
             else:
                 pass
         if "top_k" in payload and payload["top_k"] is not None:
@@ -920,6 +932,26 @@ class SpeechRequestValidator:
             raise service_unavailable(message, param="response_format")
         else:
             pass
+
+    def validate_sample_rate(self, sample_rate: int | None) -> None:
+        if sample_rate is None:
+            return
+        elif sample_rate in self.supported_output_sample_rates:
+            return
+        elif self.supported_output_sample_rates:
+            supported = ", ".join(
+                str(rate) for rate in sorted(self.supported_output_sample_rates)
+            )
+            raise bad_request(
+                f"sample_rate={sample_rate} is not supported by the current TTS "
+                f"model; supported rates: {supported}",
+                param="sample_rate",
+            )
+        else:
+            raise bad_request(
+                "sample_rate is not supported by the current TTS model",
+                param="sample_rate",
+            )
 
 
 def explicit_generation_params(request: CreateSpeechRequest) -> list[str]:

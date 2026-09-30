@@ -34,6 +34,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "Qwen3TTSForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
+    supported_output_sample_rates: ClassVar[frozenset[int]] = frozenset({8000, 24000})
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "tts_engine": EngineStageConfig,

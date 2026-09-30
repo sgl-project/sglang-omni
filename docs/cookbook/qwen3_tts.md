@@ -123,10 +123,10 @@ initial and follow-up vocoder graph-capture paths (`initial_cuda_graph` and
 
 Two SGLang generation-stage knobs bound how the server behaves past saturation:
 
-| Knob | Meaning | Qwen3-TTS default |
-|---|---|---|
-| `--tts_engine.engine.max_running_requests` | Concurrent running slots | `64` |
-| `--tts_engine.engine.max_queued_requests` | Waiting-queue depth before fast-reject | `64` |
+| Knob                                       | Meaning                                | Qwen3-TTS default |
+| ------------------------------------------ | -------------------------------------- | ----------------- |
+| `--tts_engine.engine.max_running_requests` | Concurrent running slots               | `64`              |
+| `--tts_engine.engine.max_queued_requests`  | Waiting-queue depth before fast-reject | `64`              |
 
 Every request enters the waiting queue first, so `max_queued_requests`
 must be **≥ 1**. Capacity is about `running + queued`. Extra arrivals get
@@ -139,11 +139,11 @@ defaults to 4 request-build workers with pending depth 16.
 Every Qwen3-TTS checkpoint (Base, CustomVoice, VoiceDesign) defaults to the
 breakable prefill CUDA-graph backend with a token ladder up to 512:
 
-| Knob | Meaning | Default |
-|---|---|---|
-| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` |
-| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
-| `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
+| Knob                                             | Meaning                                           | Default                                        |
+| ------------------------------------------------ | ------------------------------------------------- | ---------------------------------------------- |
+| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable`                                    |
+| `--tts_engine.engine.cuda_graph_bs_prefill`      | Prefill token-count ladder to capture             | shared ladder through `512`, plus a `1` bucket |
+| `--tts_engine.engine.cuda_graph_max_bs_prefill`  | Cap for the ladder                                | top of the ladder                              |
 
 The default is the shared ladder with one bucket added. A replay falls
 back to eager when its bucket exceeds twice the real token count, and the
@@ -348,12 +348,12 @@ VoiceDesign requests are not affected.
 
 On SeedTTS EN (1088 clips, no reference text, seed 0):
 
-| Checkpoint | Frames masked | Median onset | Onsets > 160 ms | WER | Speaker similarity |
-|---|---|---|---|---|---|
-| 1.7B Base | 0 | 495 ms | 95% | 0.854% | 61.00 |
-| 1.7B Base | 2 (default) | 155 ms | 47% | 0.904% | 60.87 |
-| 0.6B Base | 0 | 480 ms | 86% | 1.532% | 58.41 |
-| 0.6B Base | 2 (default) | 75 ms | 23% | 1.072% | 58.10 |
+| Checkpoint | Frames masked | Median onset | Onsets > 160 ms | WER    | Speaker similarity |
+| ---------- | ------------- | ------------ | --------------- | ------ | ------------------ |
+| 1.7B Base  | 0             | 495 ms       | 95%             | 0.854% | 61.00              |
+| 1.7B Base  | 2 (default)   | 155 ms       | 47%             | 0.904% | 60.87              |
+| 0.6B Base  | 0             | 480 ms       | 86%             | 1.532% | 58.41              |
+| 0.6B Base  | 2 (default)   | 75 ms        | 23%             | 1.072% | 58.10              |
 
 The mask changes which codec ids the first frames can sample, so outputs differ
 from the unmasked model. To turn it off:
@@ -368,6 +368,26 @@ sgl-omni serve \
 
 Details and the full sweep are in
 [the leading-silence benchmark](../benchmarks/qwen3_tts_leading_silence.md).
+
+### Output Sample Rate
+
+Qwen3-TTS generates at 24 kHz internally. Set `"sample_rate": 8000` to have
+the speech API downsample the returned audio on the server. Both buffered WAV
+responses and PCM streaming are supported; omit the field or use `24000` for
+the native rate.
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+    "voice": "Vivian",
+    "input": "This response is encoded at eight kilohertz.",
+    "response_format": "wav",
+    "sample_rate": 8000
+  }' \
+  --output output-8khz.wav
+```
 
 ### Language Hint
 
@@ -496,31 +516,31 @@ only the first chunk.
 
 ## Generation Parameters
 
-| Parameter | Default | Notes |
-|---|---|---|
-| `model` | served model | Served model identifier |
-| `input` | (required) | Text to synthesize |
-| `voice` | `default` | Voice identifier. For Base reference cloning, the reference clip provides the speaker conditioning |
-| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
-| `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
-| `language` | `auto` | Target-language hint (see list above) |
-| `temperature` | `0.9` | Sampling temperature |
-| `top_p` | `1.0` | Top-p sampling |
-| `top_k` | `50` | Top-k sampling |
-| `repetition_penalty` | `1.05` | Repetition penalty |
-| `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
-| `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Stream raw PCM audio chunks |
+| Parameter                    | Default                         | Notes                                                                                                                                                                                                     |
+| ---------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`                      | served model                    | Served model identifier                                                                                                                                                                                   |
+| `input`                      | (required)                      | Text to synthesize                                                                                                                                                                                        |
+| `voice`                      | `default`                       | Voice identifier. For Base reference cloning, the reference clip provides the speaker conditioning                                                                                                        |
+| `references`                 | `null`                          | Reference clip for cloning. Each item has `audio_path` and `text`                                                                                                                                         |
+| `ref_audio` / `ref_text`     | `null`                          | Shorthand for `references[0].audio_path` / `references[0].text`                                                                                                                                           |
+| `language`                   | `auto`                          | Target-language hint (see list above)                                                                                                                                                                     |
+| `temperature`                | `0.9`                           | Sampling temperature                                                                                                                                                                                      |
+| `top_p`                      | `1.0`                           | Top-p sampling                                                                                                                                                                                            |
+| `top_k`                      | `50`                            | Top-k sampling                                                                                                                                                                                            |
+| `repetition_penalty`         | `1.05`                          | Repetition penalty                                                                                                                                                                                        |
+| `max_new_tokens`             | `2048`                          | Maximum number of generated codec tokens                                                                                                                                                                  |
+| `seed`                       | `null`                          | Random seed for reproducibility                                                                                                                                                                           |
+| `stream`                     | `false`                         | Stream raw PCM audio chunks                                                                                                                                                                               |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
-| `stream_codec_output` | `true` | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign |
-| `suppress_bootstrap_silence` | `true` | Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set `false` to keep the leading silence |
+| `stream_codec_output`        | `true`                          | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign                                                                    |
+| `suppress_bootstrap_silence` | `true`                          | Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set `false` to keep the leading silence     |
 
 ## Model Variants
 
-| Checkpoint | Parameters | Config |
-|---|---|---|
-| `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | 0.6B | `examples/configs/qwen3_tts_0_6b.yaml` |
-| `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | 1.7B | `examples/configs/qwen3_tts_1_7b.yaml` |
+| Checkpoint                      | Parameters | Config                                 |
+| ------------------------------- | ---------- | -------------------------------------- |
+| `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | 0.6B       | `examples/configs/qwen3_tts_0_6b.yaml` |
+| `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | 1.7B       | `examples/configs/qwen3_tts_1_7b.yaml` |
 
 Both expose an identical request API. The 1.7B model has higher capacity (typically better
 quality) at a larger memory and latency cost; the 0.6B model is lighter and faster.
@@ -529,10 +549,10 @@ quality) at a larger memory and latency cost; the 0.6B model is lighter and fast
 
 CustomVoice generates speech with built-in speakers through the same pipeline. Use it without reference audio; omit `ref_audio`, `ref_text`, `references`, and `x_vector_only_mode`. Omit `task_type` or set it to `CustomVoice`.
 
-| Checkpoint | Config | Instruction guidance |
-|---|---|---|
+| Checkpoint                             | Config                                             | Instruction guidance                                     |
+| -------------------------------------- | -------------------------------------------------- | -------------------------------------------------------- |
 | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Accepted for backward compatibility, but not recommended |
-| `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Supported |
+| `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Supported                                                |
 
 Both released checkpoints provide `Serena`, `Vivian`, `Uncle_Fu`, `Ryan`, `Aiden`, `Ono_Anna`, `Sohee`, `Eric`, and `Dylan`. Speaker matching is case-insensitive; an omitted or `default` voice selects `Vivian`. `GET /v1/audio/voices` lists `default` and the served checkpoint's speakers. Unknown speakers or supplied cloning fields return HTTP 400; uploaded reference voices are not used for CustomVoice synthesis.
 
@@ -573,16 +593,16 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 Qwen3-TTS-12Hz-0.6B-Base on Seed-TTS EN (1088 utterances, reference voice cloning from each
 prompt), concurrency 16, WER scored with HF Whisper-large-v3. Hardware: 1× H200 SXM.
 
-| Metric | Value |
-|---|---|
-| WER (corpus, excl. runaway outliers) | 1.07% |
-| WER (per-sample median / p95) | 0.00% / 9.09% |
-| WER (corpus micro-avg, raw) | 18.29% |
-| Runaway samples (>50% WER) | 2 / 1088 (0.2%) |
-| Latency mean / median (s) | 6.61 / 6.24 |
-| RTF mean / median | 1.51 / 1.48 |
-| Output throughput (tok/s) | 115.4 |
-| Completed / failed requests | 1088 / 0 |
+| Metric                               | Value           |
+| ------------------------------------ | --------------- |
+| WER (corpus, excl. runaway outliers) | 1.07%           |
+| WER (per-sample median / p95)        | 0.00% / 9.09%   |
+| WER (corpus micro-avg, raw)          | 18.29%          |
+| Runaway samples (>50% WER)           | 2 / 1088 (0.2%) |
+| Latency mean / median (s)            | 6.61 / 6.24     |
+| RTF mean / median                    | 1.51 / 1.48     |
+| Output throughput (tok/s)            | 115.4           |
+| Completed / failed requests          | 1088 / 0        |
 
 Typical output is clean (0.00% median WER, 9.09% p95). Two utterances (0.2%) ran away into a
 repetition loop and generated ~164 s of looping audio up to `max_new_tokens`, which alone lifts
@@ -596,17 +616,17 @@ Qwen3-TTS-12Hz-1.7B-CustomVoice on the full Seed-TTS-Eval EN and ZH splits, conc
 
 The server used `--tts_engine.engine.max_running_requests 64`, `--tts_engine.engine.cuda_graph_max_bs 64`, `--tts_engine.engine.torch_compile_max_bs 64`, `--vocoder.process vocoder`, `--tts_engine.gpu_memory_fraction 0.85`, and `--vocoder.gpu_memory_fraction 0.10`; `torch.compile` remained disabled. Streaming used the default `1 -> 2 -> 4` chunk ramp without a request-level override. Each language/mode was measured once, in non-streaming EN/ZH then streaming EN/ZH order on the same warmed server. The target GPU had no external GPU process during timed windows; host CPU, memory, and I/O were shared with another profiling task.
 
-| Metric | Non-streaming EN | Non-streaming ZH | Streaming EN | Streaming ZH |
-|---|---:|---:|---:|---:|
-| Samples | 1088 | 2020 | 1088 | 2020 |
-| Corpus WER/CER | 1.608% | 0.984% | 2.085% | 0.927% |
-| Corpus WER/CER (excl. >50% outliers) | 1.359% | 0.984% | 1.454% | 0.927% |
-| Samples above 50% WER/CER | 3 | 0 | 4 | 0 |
-| UTMOS | 4.1723 | 3.1824 | 4.1500 | 3.1789 |
-| QPS | 14.788 | 13.307 | 10.098 | 8.333 |
-| Latency mean (s) | 1.075 | 1.198 | 1.573 | 1.915 |
-| RTF mean | 0.2335 | 0.2079 | 0.3380 | 0.3332 |
-| TTFA mean (s) | N/A | N/A | 0.1213 | 0.1047 |
+| Metric                               | Non-streaming EN | Non-streaming ZH | Streaming EN | Streaming ZH |
+| ------------------------------------ | ---------------: | ---------------: | -----------: | -----------: |
+| Samples                              |             1088 |             2020 |         1088 |         2020 |
+| Corpus WER/CER                       |           1.608% |           0.984% |       2.085% |       0.927% |
+| Corpus WER/CER (excl. >50% outliers) |           1.359% |           0.984% |       1.454% |       0.927% |
+| Samples above 50% WER/CER            |                3 |                0 |            4 |            0 |
+| UTMOS                                |           4.1723 |           3.1824 |       4.1500 |       3.1789 |
+| QPS                                  |           14.788 |           13.307 |       10.098 |        8.333 |
+| Latency mean (s)                     |            1.075 |            1.198 |        1.573 |        1.915 |
+| RTF mean                             |           0.2335 |           0.2079 |       0.3380 |       0.3332 |
+| TTFA mean (s)                        |              N/A |              N/A |       0.1213 |       0.1047 |
 
 Corpus WER (EN) / CER (ZH) is total edit distance divided by total reference words / characters and includes every sample. The filtered row excludes samples whose own WER/CER exceeds 50% and recomputes the corpus rate. UTMOS is the mean predicted audio-quality score, not a listening-test score. These independently sampled runs are not a paired comparison of streaming and non-streaming quality; the Base result also uses different conditioning and a different ASR evaluator.
 

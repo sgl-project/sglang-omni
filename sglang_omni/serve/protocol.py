@@ -345,6 +345,7 @@ class CreateSpeechRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
+    sample_rate: int | None = Field(default=None, gt=0)
     speed: float = 1.0
     stream: bool = False
 
@@ -388,6 +389,7 @@ class SpeechBatchItem(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: Any = None
+    sample_rate: object | None = None
     speed: Any = None
     stream: Any = None
     task_type: Any = None
@@ -423,6 +425,7 @@ class CreateSpeechBatchRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
+    sample_rate: int | None = Field(default=None, gt=0)
     speed: float = 1.0
     stream: bool = False
     task_type: str | None = None
@@ -479,6 +482,7 @@ class SpeechStreamSessionConfig(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "pcm"
+    sample_rate: int | None = Field(default=None, gt=0)
     speed: float = 1.0
     stream_audio: bool = False
     split_granularity: str = "sentence"

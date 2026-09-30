@@ -12,8 +12,8 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
-from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.audio import encode_audio, encode_pcm
+from sglang_omni.client.types import GenerateRequest, SpeechResult
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
     EXPLICIT_GENERATION_PARAMS_KEY,
@@ -140,17 +140,26 @@ class SuccessfulSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
-    ):
-        from sglang_omni.client.types import SpeechResult
-
+    ) -> SpeechResult:
         del request_id, speed, allow_format_fallback
         self.speech_requests.append(request)
+        if output_sample_rate is None:
+            audio_bytes = b"RIFF"
+        else:
+            audio_bytes, _ = encode_audio(
+                [0.0] * self.sample_rate,
+                response_format=response_format,
+                sample_rate=self.sample_rate,
+                output_sample_rate=output_sample_rate,
+            )
         return SpeechResult(
-            audio_bytes=b"RIFF",
+            audio_bytes=audio_bytes,
             mime_type=f"audio/{response_format}",
             format=response_format,
+            sample_rate=output_sample_rate or self.sample_rate,
             finish_reason=self.finish_reason,
         )
 
@@ -188,9 +197,10 @@ class FailingSpeechGenerateClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
-    ):
+    ) -> SpeechResult:
         del request, request_id, response_format, speed, allow_format_fallback
         raise ClientError(self.error)
 
@@ -271,9 +281,10 @@ class BlockingNonStreamingSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
-    ):
+    ) -> SpeechResult:
         del request, request_id, response_format, speed, allow_format_fallback
         self.started.set()
         await asyncio.Future()
@@ -723,6 +734,29 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
+
+
+def test_speech_endpoint_resamples_wav_to_requested_sample_rate() -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulSpeechClient(),
+            model_name="qwen3-tts",
+            supported_output_sample_rates=frozenset({8000, 24000}),
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "response_format": "wav",
+            "sample_rate": 8000,
+        },
+    )
+
+    assert response.status_code == 200
+    assert int.from_bytes(response.content[24:28], "little") == 8000
+    assert int.from_bytes(response.content[40:44], "little") == 8000 * 2
 
 
 def test_create_app_passes_model_specific_speech_input_limit() -> None:
@@ -1298,6 +1332,32 @@ def test_speech_stream_headers_use_chunk_sample_rate() -> None:
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
     assert response.content == expected
+
+
+def test_speech_stream_resamples_to_requested_sample_rate() -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulSpeechClient(),
+            model_name="qwen3-tts",
+            supported_output_sample_rates=frozenset({8000, 24000}),
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "qwen3-tts",
+            "input": "hello",
+            "voice": "default",
+            "stream": True,
+            "response_format": "pcm",
+            "sample_rate": 8000,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-sample-rate"] == "8000"
+    assert len(response.content) == 4
 
 
 def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:

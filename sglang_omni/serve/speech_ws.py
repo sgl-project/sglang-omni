@@ -11,6 +11,7 @@ from collections import deque
 from collections.abc import Awaitable
 from typing import Any
 
+import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from starlette.websockets import WebSocketState
@@ -22,6 +23,7 @@ from sglang_omni.client.audio import (
     encode_pcm,
     select_audio_delta,
 )
+from sglang_omni.client.audio_resampling import StreamingAudioResampler
 from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechStreamSessionConfig
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -128,6 +130,7 @@ class SpeechWebSocketSession:
                     "type": "session.configured",
                     "session_id": self.session_id,
                     "response_format": self.config.response_format,
+                    "sample_rate": self.config.sample_rate,
                     "stream_audio": self.config.stream_audio,
                     "split_granularity": self.config.split_granularity,
                 }
@@ -370,12 +373,32 @@ class SpeechWebSocketSession:
         total_bytes = 0
         chunk_count = 0
         started = False
+        source_sample_rate: int | None = None
+        resampler: StreamingAudioResampler | None = None
         async for chunk in self.client.generate(gen_req, request_id=request_id):
             if chunk.audio_data is None:
                 continue
             else:
                 pass
-            sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+            sample_rate = chunk.sample_rate or source_sample_rate or DEFAULT_SAMPLE_RATE
+            if source_sample_rate is None:
+                source_sample_rate = sample_rate
+                if (
+                    self.config.sample_rate is not None
+                    and self.config.sample_rate != source_sample_rate
+                ):
+                    resampler = StreamingAudioResampler(
+                        source_sample_rate, self.config.sample_rate
+                    )
+                else:
+                    pass
+            elif sample_rate != source_sample_rate:
+                raise RuntimeError(
+                    "Speech WebSocket sample rate changed from "
+                    f"{source_sample_rate} to {sample_rate}"
+                )
+            else:
+                pass
             audio_data, emitted_samples = select_audio_delta(
                 chunk.audio_data,
                 emitted_samples=emitted_samples,
@@ -389,6 +412,11 @@ class SpeechWebSocketSession:
                 audio_data, sample_rate = apply_speed(
                     audio_data, self.config.speed, sample_rate
                 )
+            else:
+                pass
+            if resampler is not None:
+                audio_data = resampler.process(audio_data)
+                sample_rate = resampler.target_sample_rate_hz
             else:
                 pass
             audio_bytes = encode_pcm(audio_data, sample_rate)
@@ -409,6 +437,23 @@ class SpeechWebSocketSession:
             await self.send_audio_frame(audio_bytes, active_request_id=request_id)
             total_bytes += len(audio_bytes)
             chunk_count += 1
+        if resampler is not None:
+            final_audio = resampler.process(
+                np.empty((0,), dtype=np.float32), is_final=True
+            )
+            final_bytes = encode_pcm(final_audio, resampler.target_sample_rate_hz)
+            if final_bytes:
+                if not started:
+                    await self.send_audio_start(
+                        request_id=request_id,
+                        sentence_index=sentence_index,
+                        sentence=sentence,
+                        sample_rate=resampler.target_sample_rate_hz,
+                    )
+                    started = True
+                await self.send_audio_frame(final_bytes, active_request_id=request_id)
+                total_bytes += len(final_bytes)
+                chunk_count += 1
         if chunk_count == 0:
             raise ClientError("No audio output generated from the pipeline.")
         else:
@@ -434,6 +479,7 @@ class SpeechWebSocketSession:
             gen_req,
             request_id=request_id,
             response_format=request.response_format,
+            output_sample_rate=request.sample_rate,
             speed=request.speed,
             allow_format_fallback=False,
         )

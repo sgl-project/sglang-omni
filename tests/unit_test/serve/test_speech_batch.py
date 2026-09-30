@@ -26,6 +26,7 @@ CONTEXT_LENGTH_ERROR = (
 class RecordingBatchSpeechClient:
     def __init__(self) -> None:
         self.requests: list[Any] = []
+        self.output_sample_rates: list[int | None] = []
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
@@ -36,11 +37,13 @@ class RecordingBatchSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
         del request_id, speed, allow_format_fallback
         self.requests.append(request)
+        self.output_sample_rates.append(output_sample_rate)
         return SpeechResult(
             audio_bytes=f"audio:{request.prompt}".encode(),
             mime_type=f"audio/{response_format}",
@@ -60,6 +63,7 @@ class BlockingBatchSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -99,6 +103,7 @@ class MixedBatchSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -209,6 +214,31 @@ def test_batch_speech_preserves_order_and_item_errors() -> None:
     assert body["results"][3]["error"]["param"] == "items.3.input"
     assert body["results"][4]["error"]["param"] == "items.4.input"
     assert [request.prompt for request in client_impl.requests] == ["first", "third"]
+
+
+def test_batch_speech_item_sample_rate_overrides_batch_default() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(
+        create_app(
+            client_impl,
+            model_name="qwen3-tts",
+            supported_output_sample_rates=frozenset({8000, 24000}),
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "sample_rate": 8000,
+            "items": [
+                {"input": "first"},
+                {"input": "second", "sample_rate": 24000},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert client_impl.output_sample_rates == [8000, 24000]
 
 
 def test_batch_speech_rejects_invalid_envelope_before_item_work() -> None:
