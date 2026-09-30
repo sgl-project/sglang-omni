@@ -5,6 +5,7 @@ from __future__ import annotations
 import struct
 import sys
 import types
+from queue import Queue
 
 import numpy as np
 import pytest
@@ -24,6 +25,9 @@ from sglang_omni.models.moss_tts_local.local_transformer import (
     MossTTSLocalTransformer,
     rotate_half_interleaved,
 )
+from sglang_omni.models.moss_tts_local.mlx.scheduler_runner import (
+    MossTTSLocalMlxSchedulerModelRunner,
+)
 from sglang_omni.models.moss_tts_local.payload_types import (
     MossTTSLocalState,
     moss_tts_local_special_token_defaults,
@@ -39,10 +43,49 @@ from sglang_omni.models.moss_tts_local.request_builders import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import (
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 N_VQ = 12
+
+
+def test_mlx_scheduler_discards_finished_rows_and_streams_active_request() -> None:
+    runner = object.__new__(MossTTSLocalMlxSchedulerModelRunner)
+    completed_rows = {"finished": [[60, 7, 8]], "active": [[60, 3, 4]]}
+    runner.tp_worker = types.SimpleNamespace(
+        _mlx_runner=types.SimpleNamespace(
+            model=types.SimpleNamespace(
+                config=types.SimpleNamespace(audio_end_token_id=61)
+            ),
+            pop_completed_rows=lambda request_id: completed_rows.pop(request_id),
+        )
+    )
+    runner.resolve_skip_rids = {"finished"}
+    runner.outbox = Queue()
+    requests = [
+        SchedulerRequest(
+            request_id=request_id,
+            data=MossTTSLocalSGLangRequestData(stream_metadata={"stream": True}),
+        )
+        for request_id in ("finished", "active")
+    ]
+    runner.post_process_outputs(
+        None,
+        SchedulerOutput(requests=requests, batch_data=None),
+        {"active": RequestOutput(request_id="active", data=60)},
+    )
+
+    assert requests[0].data.output_rows == []
+    assert requests[1].data.output_rows[0].tolist() == [60, 3, 4]
+    message = runner.outbox.get_nowait()
+    assert message.request_id == "active"
+    assert message.data.tolist() == [60, 3, 4]
+    assert runner.outbox.empty()
 
 
 @pytest.mark.parametrize(
@@ -757,11 +800,9 @@ def test_moss_local_engine_skips_redundant_worker_processor(
     monkeypatch: pytest.MonkeyPatch,
     use_mlx: bool,
 ) -> None:
-    from sglang.srt.hardware_backend.mlx import runtime
-
     from sglang_omni.models.moss_tts_local import engine_builder
 
-    monkeypatch.setattr(runtime, "use_mlx", lambda: use_mlx)
+    monkeypatch.setattr(engine_builder, "use_mlx", lambda: use_mlx)
     if use_mlx:
         monkeypatch.setattr(engine_builder.current_platform, "is_mps", lambda: True)
     else:
@@ -779,11 +820,9 @@ def test_moss_local_engine_skips_redundant_worker_processor(
 
 
 def test_moss_local_torch_mps_disables_cuda_scheduler_features(monkeypatch) -> None:
-    from sglang.srt.hardware_backend.mlx import runtime
-
     from sglang_omni.models.moss_tts_local import engine_builder
 
-    monkeypatch.setattr(runtime, "use_mlx", lambda: False)
+    monkeypatch.setattr(engine_builder, "use_mlx", lambda: False)
     monkeypatch.setattr(engine_builder.current_platform, "is_mps", lambda: True)
     builder = engine_builder.MossTtsLocalEngineBuilder(
         enable_async_decode=False,

@@ -3,29 +3,45 @@
 
 from __future__ import annotations
 
-from typing import Any
+from queue import Queue
+from typing import TYPE_CHECKING
 
 import torch
 
 from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerModelRunner
 from sglang_omni.models.moss_tts_local.request_builders import (
     MOSS_STREAM_TRANSPORT_BATCH_FRAMES,
+    MossTTSLocalSGLangRequestData,
 )
-from sglang_omni.scheduling.messages import OutgoingMessage
-from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.types import RequestOutput, SchedulerOutput
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+else:
+    pass
 
 
 class MossTTSLocalMlxSchedulerModelRunner(MlxSchedulerModelRunner):
     """Copies completed MLX code rows into the existing MOSS result adapter."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any) -> None:
+    def __init__(
+        self, tp_worker: MlxTpModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
-        self.outbox: Any | None = None
+        self.outbox: Queue[OutgoingMessage] | None = None
 
-    def set_stream_outbox(self, outbox: Any) -> None:
+    def set_stream_outbox(self, outbox: Queue[OutgoingMessage]) -> None:
         self.outbox = outbox
 
-    def flush_stream_rows(self, request_id: str, data: Any, *, force: bool) -> None:
+    def flush_stream_rows(
+        self, request_id: str, data: MossTTSLocalSGLangRequestData, *, force: bool
+    ) -> None:
         if data.stream_metadata is None or self.outbox is None:
             return
         else:
@@ -53,13 +69,15 @@ class MossTTSLocalMlxSchedulerModelRunner(MlxSchedulerModelRunner):
             )
         )
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(
+        self, request_id: str, req_data: MossTTSLocalSGLangRequestData
+    ) -> None:
         self.flush_stream_rows(request_id, req_data, force=True)
 
     def post_process_outputs(
         self,
-        result: Any,
-        scheduler_output: Any,
+        result: GenerationBatchResult,
+        scheduler_output: SchedulerOutput,
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result
@@ -69,13 +87,11 @@ class MossTTSLocalMlxSchedulerModelRunner(MlxSchedulerModelRunner):
         end_id = int(native_runner.model.config.audio_end_token_id)
         for request in scheduler_output.requests:
             rows = native_runner.pop_completed_rows(request.request_id)
-            if len(rows) != 1:
-                raise RuntimeError(
-                    "MOSS-TTS Local MLX expected one completed row for "
-                    f"{request.request_id}, got {len(rows)}"
-                )
+            if request.request_id in self.resolve_skip_rids:
+                continue
             else:
                 pass
+            assert len(rows) == 1
             output = outputs[request.request_id]
             if output.data is None or int(output.data) == end_id:
                 self.flush_stream_rows(request.request_id, request.data, force=True)

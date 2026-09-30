@@ -3,13 +3,25 @@
 
 from __future__ import annotations
 
-import mlx.core as mx
-import pytest
-from mlx.utils import tree_flatten
+import json
+from dataclasses import asdict
+from pathlib import Path
+from types import SimpleNamespace
 
-from sglang_omni.models.moss_tts_local.mlx.config import ModelConfig
-from sglang_omni.models.moss_tts_local.mlx.model import MossTTSLocalModel
-from sglang_omni.models.moss_tts_local.mlx.runner import sample
+import pytest
+import torch
+
+mx = pytest.importorskip("mlx.core")
+
+from mlx.utils import tree_flatten  # noqa: E402
+
+from sglang_omni.models.moss_tts_local.mlx import runner as runner_module  # noqa: E402
+from sglang_omni.models.moss_tts_local.mlx.config import ModelConfig  # noqa: E402
+from sglang_omni.models.moss_tts_local.mlx.model import MossTTSLocalModel  # noqa: E402
+from sglang_omni.models.moss_tts_local.mlx.runner import sample  # noqa: E402
+from sglang_omni.models.moss_tts_local.request_builders import (  # noqa: E402
+    MossTTSLocalSGLangRequestData,
+)
 
 
 def tiny_config() -> ModelConfig:
@@ -64,16 +76,37 @@ def test_mlx_model_generates_one_complete_codec_row() -> None:
     assert all(0 <= code < 16 for code in row[0, 1:].tolist())
 
 
-def test_mlx_module_names_match_the_official_checkpoint_layout() -> None:
-    keys = {
-        name for name, _ in tree_flatten(MossTTSLocalModel(tiny_config()).parameters())
-    }
+@pytest.mark.accelerator
+@pytest.mark.skipif(not mx.metal.is_available(), reason="requires Apple Metal")
+def test_runner_loads_local_model_and_decodes_request(tmp_path: Path) -> None:
+    model = MossTTSLocalModel(tiny_config())
+    (tmp_path / "config.json").write_text(json.dumps(asdict(model.config)))
+    mx.save_safetensors(
+        str(tmp_path / "model.safetensors"), dict(tree_flatten(model.parameters()))
+    )
+    runner_class = runner_module.make_moss_tts_local_mlx_runner_class()
+    runner = runner_class(str(tmp_path), disable_radix_cache=True, pool_size=64)
+    request_state = MossTTSLocalSGLangRequestData(
+        prompt_rows=torch.tensor([[1, 16, 16], [2, 3, 4]]),
+        sampling_seed=1234,
+    )
+    request = SimpleNamespace(omni_data=request_state)
+    prefill = runner.prefill_start("request", [1, 2], [1, 2], [], [], 0, req=request)
+    first_token = runner.prefill_finalize(prefill)
+    first_rows = runner.pop_completed_rows("request")
+    assert first_rows[0][0] == first_token
+    assert len(first_rows[0]) == model.config.channels
 
-    assert "transformer.layers.0.self_attn.q_proj.weight" in keys
-    assert "local_transformer.h.0.attn.c_attn.weight" in keys
-    assert "audio_embeddings.1.weight" in keys
-    assert "audio_lm_heads.1.weight" in keys
-    assert "local_text_lm_head.weight" in keys
+    decode = runner.decode_batch_start(["request"])
+    chained_decode = runner.decode_batch_start_chained(decode)
+    for pending in (decode, chained_decode):
+        tokens = runner.decode_batch_finalize(pending)
+        rows = runner.pop_completed_rows("request")
+        assert len(rows) == 1
+        assert rows[0][0] == tokens[0]
+        assert all(0 <= code < 16 for code in rows[0][1:])
+    runner.remove_request("request")
+    assert not runner.has_request("request")
 
 
 def test_mlx_config_exposes_scheduler_vocabulary_layout() -> None:

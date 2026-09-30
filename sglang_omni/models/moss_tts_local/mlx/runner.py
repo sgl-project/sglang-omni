@@ -5,11 +5,43 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from dataclasses import dataclass
 
 import mlx.core as mx
+import torch
+from mlx_lm.utils import load_model
+from sglang.srt.hardware_backend.mlx.kv_cache import ContiguousAttentionKVCache
+from sglang.srt.hardware_backend.mlx.model_runner import (
+    MlxModelRunner,
+    MlxPendingDecode,
+    MlxPendingPrefill,
+)
+from sglang.srt.hardware_backend.mlx.remote_code_gate import (
+    ensure_remote_code_allowed,
+    resolve_model_directory,
+)
+from sglang.srt.hardware_backend.mlx.sampling import MlxLogprobSpec
+from sglang.srt.managers.schedule_batch import Req
+
+from sglang_omni.models.moss_tts_local.mlx.config import ModelConfig
+from sglang_omni.models.moss_tts_local.mlx.model import MossTTSLocalModel
+from sglang_omni.models.moss_tts_local.request_builders import (
+    MossTTSLocalSGLangRequestData,
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(kw_only=True)
+class MossPendingPrefill(MlxPendingPrefill):
+    moss_row: mx.array
+    moss_step: int
+
+
+@dataclass(kw_only=True)
+class MossPendingDecode(MlxPendingDecode):
+    moss_rows: mx.array
+    moss_step: int
 
 
 def apply_top_k(logits: mx.array, value: int) -> mx.array:
@@ -57,23 +89,16 @@ def sample(
     return mx.random.categorical(logits, axis=-1, key=key).astype(mx.int32)
 
 
-class MossTTSLocalMlxModelRunner:
+class MossTTSLocalMlxModelRunner(MlxModelRunner):
     """One-request native MLX runner with lazy, chainable frame decoding."""
 
     @property
-    def config(self):
+    def config(self) -> ModelConfig:
         return self.model.config
 
-    def load_model(self) -> None:
-        from mlx_lm.utils import load_model
-        from sglang.srt.hardware_backend.mlx.remote_code_gate import (
-            ensure_remote_code_allowed,
-            resolve_model_directory,
-        )
-
-        from .config import ModelConfig
-        from .model import MossTTSLocalModel
-
+    def _load_model(
+        self,
+    ) -> None:  # noqa: leading-underscore  # SGLang initialization hook.
         model_path = resolve_model_directory(self.model_path, revision=self.revision)
         ensure_remote_code_allowed(model_path, self.trust_remote_code)
         logger.info(f"Loading native MLX MOSS-TTS Local model: {model_path}")
@@ -86,42 +111,8 @@ class MossTTSLocalMlxModelRunner:
         logger.info(f"Loaded native MLX MOSS-TTS Local model in {elapsed_seconds:.2f}s")
         self.request_rows: dict[str, mx.array] = {}
         self.request_steps: dict[str, int] = {}
-        self.request_params: dict[str, dict[str, Any]] = {}
+        self.request_params: dict[str, MossTTSLocalSGLangRequestData] = {}
         self.completed_rows: dict[str, list[list[int]]] = {}
-
-    @staticmethod
-    def request_data(req: Any) -> Any:
-        data = getattr(
-            req,
-            "_omni_data",  # noqa: leading-underscore  # SGLang request API
-            None,
-        )
-        if data is None:
-            raise RuntimeError("MOSS-TTS Local MLX request is missing Omni state")
-        else:
-            pass
-        return data
-
-    @staticmethod
-    def to_mx_rows(rows: Any) -> mx.array:
-        return mx.array(rows.detach().to("cpu").numpy(), dtype=mx.int32)
-
-    def remember_request(self, req_id: str, data: Any) -> None:
-        if float(data.audio_repetition_penalty) != 1.0:
-            raise NotImplementedError(
-                "MOSS-TTS Local MLX currently requires audio_repetition_penalty=1"
-            )
-        else:
-            pass
-        self.request_params[req_id] = {
-            "text_temperature": float(data.text_temperature),
-            "text_top_p": float(data.text_top_p),
-            "text_top_k": int(data.text_top_k),
-            "audio_temperature": float(data.audio_temperature),
-            "audio_top_p": float(data.audio_top_p),
-            "audio_top_k": int(data.audio_top_k),
-            "seed": int(data.sampling_seed),
-        }
 
     def decode_frame(self, req_id: str, hidden: mx.array, step: int) -> mx.array:
         params = self.request_params[req_id]
@@ -130,20 +121,20 @@ class MossTTSLocalMlxModelRunner:
         def sample_text(logits: mx.array) -> mx.array:
             return sample(
                 logits,
-                temperature=params["text_temperature"],
-                top_p=params["text_top_p"],
-                top_k=params["text_top_k"],
-                seed=params["seed"],
+                temperature=params.text_temperature,
+                top_p=params.text_top_p,
+                top_k=params.text_top_k,
+                seed=params.sampling_seed,
                 position=step * channels,
             )
 
         def sample_audio(logits: mx.array, channel: int) -> mx.array:
             return sample(
                 logits,
-                temperature=params["audio_temperature"],
-                top_p=params["audio_top_p"],
-                top_k=params["audio_top_k"],
-                seed=params["seed"],
+                temperature=params.audio_temperature,
+                top_p=params.audio_top_p,
+                top_k=params.audio_top_k,
+                seed=params.sampling_seed,
                 position=step * channels + channel + 1,
             )
 
@@ -159,22 +150,13 @@ class MossTTSLocalMlxModelRunner:
         prefix_slot_ids: list[int],
         new_slot_ids: list[int],
         req_pool_idx: int,
-        req: Any | None = None,
+        req: Req | None = None,
         needs_logits: bool = True,
         logit_edit_row: mx.array | None = None,
-        logprob_spec: Any = None,
-    ):
-        from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingPrefill
-
-        del new_token_ids, new_slot_ids, needs_logits
-        if req is None:
-            raise ValueError("MOSS-TTS Local MLX prefill requires its request")
-        else:
-            pass
-        if prefix_slot_ids or not self.disable_radix_cache:
-            raise RuntimeError("MOSS-TTS Local MLX requires disable_radix_cache=True")
-        else:
-            pass
+        logprob_spec: MlxLogprobSpec | None = None,
+    ) -> MossPendingPrefill:
+        assert req is not None
+        assert not prefix_slot_ids and self.disable_radix_cache
         if logit_edit_row is not None or logprob_spec is not None:
             raise NotImplementedError(
                 "MOSS-TTS Local MLX does not expose text logprobs"
@@ -182,21 +164,25 @@ class MossTTSLocalMlxModelRunner:
         else:
             pass
 
-        data = self.request_data(req)
-        self.remember_request(req_id, data)
+        data: MossTTSLocalSGLangRequestData = req.omni_data
+        if data.audio_repetition_penalty != 1.0:
+            raise NotImplementedError(
+                "MOSS-TTS Local MLX currently requires audio_repetition_penalty=1"
+            )
+        else:
+            pass
+        self.request_params[req_id] = data
         rows = data.prompt_rows
         if data.output_rows:
-            import torch
-
             rows = torch.cat([rows, torch.stack(data.output_rows)], dim=0)
         else:
             pass
-        rows_mx = self.to_mx_rows(rows)[None, ...]
+        rows_mx = mx.array(rows.detach().cpu().numpy(), dtype=mx.int32)[None, ...]
         cache = self._acquire_cache()  # noqa: leading-underscore  # SGLang MLX API
         hidden = self.model.backbone(rows_mx, cache)[:, -1, :]
         step = len(data.output_rows)
         next_row = self.decode_frame(req_id, hidden, step)
-        pending = MlxPendingPrefill(
+        return MossPendingPrefill(
             lazy_token=next_row[:, 0],
             cache=cache,
             req_id=req_id,
@@ -204,12 +190,11 @@ class MossTTSLocalMlxModelRunner:
             req_pool_idx=req_pool_idx,
             synced_offset=0,
             lazy_logprobs=None,
+            moss_row=next_row,
+            moss_step=step,
         )
-        pending.moss_row = next_row
-        pending.moss_step = step
-        return pending
 
-    def prefill_finalize(self, pending) -> int:
+    def prefill_finalize(self, pending: MossPendingPrefill) -> int:
         token = super().prefill_finalize(pending)
         row = [int(value) for value in pending.moss_row[0].tolist()]
         self.request_rows[pending.req_id] = pending.moss_row[:, None, :]
@@ -217,42 +202,33 @@ class MossTTSLocalMlxModelRunner:
         self.completed_rows.setdefault(pending.req_id, []).append(row)
         return token
 
-    def decode_pending(self, req_ids: list[str], rows: mx.array, caches, step: int):
-        from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
-
-        hidden = mx.concatenate(
-            [
-                self.model.backbone(rows[index : index + 1], caches[index])[:, -1, :]
-                for index in range(len(req_ids))
-            ],
-            axis=0,
-        )
-        next_rows = mx.concatenate(
-            [
-                self.decode_frame(req_id, hidden[index : index + 1], step)
-                for index, req_id in enumerate(req_ids)
-            ],
-            axis=0,
-        )
-        pending = MlxPendingDecode(
+    def decode_pending(
+        self,
+        req_ids: list[str],
+        rows: mx.array,
+        caches: list[list[ContiguousAttentionKVCache]],
+        step: int,
+    ) -> MossPendingDecode:
+        hidden = self.model.backbone(rows, caches[0])[:, -1, :]
+        next_rows = self.decode_frame(req_ids[0], hidden, step)
+        return MossPendingDecode(
             lazy_tokens=next_rows[:, 0],
             req_ids=req_ids,
             caches=caches,
             lazy_logprobs=None,
             logprob_spec=None,
             edit_rows=None,
+            moss_rows=next_rows,
+            moss_step=step,
         )
-        pending.moss_rows = next_rows
-        pending.moss_step = step
-        return pending
 
     def decode_batch_start(
         self,
         req_ids: list[str],
         edit_rows: mx.array | None = None,
-        logprob_spec: Any = None,
-        logits_hook: Any = None,
-    ):
+        logprob_spec: MlxLogprobSpec | None = None,
+        logits_hook: None = None,
+    ) -> MossPendingDecode:
         if len(req_ids) != 1:
             raise NotImplementedError(
                 "MOSS-TTS Local MLX currently supports one request"
@@ -273,7 +249,9 @@ class MossTTSLocalMlxModelRunner:
             self.request_steps[rid],
         )
 
-    def decode_batch_start_chained(self, previous):
+    def decode_batch_start_chained(
+        self, previous: MossPendingDecode
+    ) -> MossPendingDecode:
         return self.decode_pending(
             previous.req_ids,
             previous.moss_rows[:, None, :],
@@ -281,7 +259,7 @@ class MossTTSLocalMlxModelRunner:
             previous.moss_step + 1,
         )
 
-    def decode_batch_finalize(self, pending) -> list[int]:
+    def decode_batch_finalize(self, pending: MossPendingDecode) -> list[int]:
         tokens = super().decode_batch_finalize(pending)
         rows = pending.moss_rows.tolist()
         for rid, row_array, row in zip(pending.req_ids, pending.moss_rows, rows):
@@ -306,10 +284,5 @@ class MossTTSLocalMlxModelRunner:
         self.remove_request(req_id)
 
 
-def make_moss_tts_local_mlx_runner_class():
-    from sglang.srt.hardware_backend.mlx.model_runner import MlxModelRunner
-
-    class MossTTSLocalMlxRunner(MossTTSLocalMlxModelRunner, MlxModelRunner):
-        pass
-
-    return MossTTSLocalMlxRunner
+def make_moss_tts_local_mlx_runner_class() -> type[MossTTSLocalMlxModelRunner]:
+    return MossTTSLocalMlxModelRunner

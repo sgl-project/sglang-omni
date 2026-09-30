@@ -7,6 +7,7 @@ import importlib
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
+from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -32,10 +33,10 @@ if TYPE_CHECKING:
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.moss_tts_local.mlx.runner import MossTTSLocalMlxModelRunner
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
     from sglang_omni.models.moss_tts_local.mlx.scheduler_runner import (
         MossTTSLocalMlxSchedulerModelRunner,
     )
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
     from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend.output_processor import (
@@ -89,8 +90,6 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         self.device: str | None = None
 
     def uses_torch_mps(self) -> bool:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
         return not use_mlx() and self.device is not None and current_platform.is_mps()
 
     def generation_defaults(
@@ -98,14 +97,12 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         *,
         dtype: str,
     ) -> GenerationDefaults:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        if use_mlx():
+        if use_mlx() or self.uses_torch_mps():
             if not current_platform.is_mps():
                 raise RuntimeError("MOSS-TTS Local MLX requires Apple Silicon")
             else:
                 pass
-            return {
+            defaults: GenerationDefaults = {
                 "max_running_requests": 1,
                 "dtype": dtype,
                 "disable_cuda_graph": True,
@@ -117,25 +114,16 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
                 "mem_fraction_static": 0.6,
                 "skip_tokenizer_init": True,
             }
-        else:
-            pass
-        if self.uses_torch_mps():
-            return {
-                "max_running_requests": 1,
-                "dtype": dtype,
-                "disable_cuda_graph": True,
-                "disable_overlap_schedule": True,
-                "disable_radix_cache": True,
-                "enable_torch_compile": False,
-                "max_total_tokens": self.context_length,
-                "max_prefill_tokens": self.context_length,
-                "chunked_prefill_size": -1,
-                "mem_fraction_static": 0.6,
-                "attention_backend": "torch_native",
-                "sampling_backend": "pytorch",
-                "trust_remote_code": True,
-                "skip_tokenizer_init": True,
-            }
+            if self.uses_torch_mps():
+                defaults.update(
+                    max_total_tokens=self.context_length,
+                    attention_backend="torch_native",
+                    sampling_backend="pytorch",
+                    trust_remote_code=True,
+                )
+            else:
+                pass
+            return defaults
         else:
             pass
         defaults: GenerationDefaults = {
@@ -222,7 +210,6 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         server_args: object,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         self.model = (
             model_worker._mlx_runner  # noqa: leading-underscore  # SGLang MLX API
@@ -233,8 +220,6 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
     def post_cuda_graph_setup(
         self, model: MossTTSLocalSGLangModel, server_args: ServerArgs
     ) -> None:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
         if use_mlx() or self.uses_torch_mps():
             return
         else:
@@ -257,8 +242,6 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         model_worker: ModelWorker | MlxTpModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> MossTTSLocalModelRunner | MossTTSLocalMlxSchedulerModelRunner:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
         if use_mlx():
             from sglang_omni.models.moss_tts_local.mlx.scheduler_runner import (
                 MossTTSLocalMlxSchedulerModelRunner,
