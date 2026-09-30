@@ -5646,8 +5646,8 @@ def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
     assert result.data["finish_reason"] == "stop"
 
 
-def test_qwen3_tts_result_adapter_infers_length_at_generation_budget() -> None:
-    """Without a scheduler reason, reaching the budget is still a length stop."""
+def test_qwen3_tts_result_adapter_does_not_infer_length_from_token_count() -> None:
+    """Token count alone cannot distinguish budget exhaustion from boundary EOS."""
     payload = make_payload(inputs="target")
     data = Qwen3TTSSGLangRequestData(
         req=SimpleNamespace(output_ids=[]),
@@ -5658,7 +5658,7 @@ def test_qwen3_tts_result_adapter_infers_length_at_generation_budget() -> None:
 
     result = apply_sglang_qwen3_tts_result(payload, data)
 
-    assert result.data["finish_reason"] == "length"
+    assert result.data["finish_reason"] == "stop"
 
 
 def test_qwen3_tts_state_round_trips_finish_reason() -> None:
@@ -5989,6 +5989,7 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
 
     assert prepared.state.task_type == "CustomVoice"
     assert prepared.state.voice == "Ryan"
+    assert prepared.gen_kwargs["max_new_tokens"] == 192
     assert [name for name, _ in calls] == ["custom"]
     kwargs = calls[0][1]
     assert kwargs["voice"] == "Ryan"
@@ -6046,6 +6047,7 @@ def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
 
     assert prepared.state.task_type == "VoiceDesign"
     assert prepared.state.instructions == "A warm adult voice."
+    assert prepared.gen_kwargs["max_new_tokens"] == 192
     assert len(calls) == 1
     assert calls[0]["instruct_id"] is not None
 

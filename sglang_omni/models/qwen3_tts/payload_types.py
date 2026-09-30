@@ -30,6 +30,7 @@ class Qwen3TTSState(DeclarativeStateBase):
     stream_codec_output: bool = wire(True, codec="bool")
     suppress_bootstrap_silence: bool = wire(False, codec="bool")
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
+    explicit_max_new_tokens: bool = wire(False, codec="bool")
     seed: int | None = None
     audio_codes: Any | None = wire(None, codec="tensor_list")
     finish_reason: str | None = None

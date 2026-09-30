@@ -332,9 +332,18 @@ with open("output.wav", "wb") as f:
 ```
 
 Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or
-`X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length`
-response still contains decodable audio, but the utterance may be incomplete.
-Batch responses expose the same value as each item's `finish_reason`.
+`X-Finish-Reason: length` when generation reaches the effective `max_new_tokens`
+budget. For Qwen3-TTS, only an explicit `length` finish is treated as an
+incomplete generation. A normal codec EOS remains successful even when it lands
+exactly on the budget. The non-streaming speech endpoint discards incomplete
+audio and, when neither `seed` nor `max_new_tokens` was explicitly set, retries
+once with a fresh seed. If the retry still hits the budget (or the caller fixed
+`seed` / `max_new_tokens`), the request returns HTTP 500. Raw PCM streams
+terminate instead of ending cleanly, WebSocket errors tell clients to discard
+partial audio, and batch items are returned as errors without audio. Base,
+CustomVoice, and VoiceDesign requests use a default codec budget of
+`min(configured, max(192, 12 * text_tokens))` unless the caller sets
+`max_new_tokens` explicitly.
 
 #### Leading silence in x-vector mode
 

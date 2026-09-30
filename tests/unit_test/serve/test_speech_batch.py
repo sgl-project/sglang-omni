@@ -211,6 +211,28 @@ def test_batch_speech_preserves_order_and_item_errors() -> None:
     assert [request.prompt for request in client_impl.requests] == ["first", "third"]
 
 
+def test_qwen3_tts_batch_discards_length_finished_audio() -> None:
+    client = TestClient(
+        create_app(
+            RecordingBatchSpeechClient(),
+            model_name="qwen3-tts",
+            architectures=["Qwen3TTSForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={"items": [{"input": "third"}]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (0, 1)
+    assert body["results"][0]["status"] == "error"
+    assert "audio_data" not in body["results"][0]
+    assert "incomplete" in body["results"][0]["error"]["message"]
+
+
 def test_batch_speech_rejects_invalid_envelope_before_item_work() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(

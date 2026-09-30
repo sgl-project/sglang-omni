@@ -73,6 +73,24 @@ class StreamingSpeechClient:
         del request_id
 
 
+class LengthAfterAudioStreamingSpeechClient(StreamingSpeechClient):
+    async def generate(self, request: Any, request_id: str | None = None):
+        self.generated_prompts.append(request.prompt)
+        yield GenerateChunk(
+            request_id=request_id or "speech-ws",
+            modality="audio",
+            audio_data=[0.0, 0.1, -0.1, 0.0],
+            sample_rate=self.sample_rate,
+        )
+        yield GenerateChunk(
+            request_id=request_id or "speech-ws",
+            modality="audio",
+            audio_data=[0.0, 0.1, -0.1, 0.0],
+            sample_rate=self.sample_rate,
+            finish_reason="length",
+        )
+
+
 class BlockingStreamingSpeechClient:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -335,6 +353,31 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
         assert session_done["total_sentences"] == 2
 
     assert client_impl.generated_prompts == ["Hello.", "Second"]
+
+
+def test_qwen3_tts_websocket_marks_partial_length_audio_for_discard() -> None:
+    client = TestClient(
+        create_app(
+            LengthAfterAudioStreamingSpeechClient(),
+            model_name="qwen3-tts",
+            architectures=["Qwen3TTSForConditionalGeneration"],
+        )
+    )
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(session_config(response_format="pcm", stream_audio=True))
+        assert websocket.receive_json()["type"] == "session.configured"
+        websocket.send_json({"type": "input.text", "text": "Hello."})
+        assert websocket.receive_json()["type"] == "audio.start"
+        assert websocket.receive_bytes()
+        error = websocket.receive_json()
+        done = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert error["partial_audio"] is True
+    assert error["action"] == "discard"
+    assert done["type"] == "audio.done"
+    assert done["error"] is True
 
 
 def test_speech_websocket_commit_flushes_segments_without_closing() -> None:

@@ -70,6 +70,7 @@ from sglang_omni.http.admin_auth import (
 )
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
+from sglang_omni.sampling.seed import new_random_sampling_seed
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
@@ -105,6 +106,12 @@ from sglang_omni.serve.protocol import (
     UsageResponse,
     VoiceListResponse,
     WeightsCheckerRequest,
+)
+from sglang_omni.serve.qwen3_tts_codec_guard import (
+    can_retry_qwen3_tts_codec_limit,
+    is_qwen3_tts_architecture,
+    qwen3_tts_codec_limit_error_from_result,
+    speech_result_exhausted_codec_budget,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.schema import CapabilityResponse
@@ -1502,6 +1509,9 @@ def register_speech(app: FastAPI) -> None:
                     gen_req=gen_req,
                     request_id=request_id,
                     speed=req.speed,
+                    reject_codec_length=is_qwen3_tts_architecture(
+                        getattr(app.state, "architectures", None)
+                    ),
                 )
             except ClientError as exc:
                 return speech_generation_failure_response(request_id, exc)
@@ -1525,6 +1535,46 @@ def register_speech(app: FastAPI) -> None:
                 response_format=req.response_format,
                 speed=req.speed,
             )
+            if is_qwen3_tts_architecture(
+                getattr(app.state, "architectures", None)
+            ) and speech_result_exhausted_codec_budget(result):
+                if can_retry_qwen3_tts_codec_limit(
+                    seed=req.seed,
+                    max_new_tokens=req.max_new_tokens,
+                ):
+                    retry_seed = new_random_sampling_seed()
+                    retry_request = req.model_copy(update={"seed": retry_seed})
+                    retry_gen_req = speech_service.build_generate_request(
+                        retry_request,
+                        validate=False,
+                        reference_descriptors=prepared.reference_descriptors,
+                        uploaded_voice=prepared.uploaded_voice,
+                    )
+                    retry_request_id = f"speech-{uuid.uuid4()}"
+                    logger.warning(
+                        f"Qwen3-TTS request {request_id} hit codec budget; "
+                        f"retrying once as {retry_request_id} with seed={retry_seed}"
+                    )
+                    result = await await_speech_response(
+                        request=request,
+                        client=client,
+                        gen_req=retry_gen_req,
+                        request_id=retry_request_id,
+                        response_format=req.response_format,
+                        speed=req.speed,
+                    )
+                    if speech_result_exhausted_codec_budget(result):
+                        return speech_error_response(
+                            qwen3_tts_codec_limit_error_from_result(result)
+                        )
+                    else:
+                        pass
+                else:
+                    return speech_error_response(
+                        qwen3_tts_codec_limit_error_from_result(result)
+                    )
+            else:
+                pass
         except ClientError as exc:
             return speech_generation_failure_response(request_id, exc)
         except Exception as exc:
@@ -1544,14 +1594,25 @@ def register_speech(app: FastAPI) -> None:
         else:
             pass
         if result.usage is not None:
-            if result.usage.prompt_tokens is not None:
-                headers["X-Prompt-Tokens"] = str(result.usage.prompt_tokens)
-            else:
-                pass
-            if result.usage.completion_tokens is not None:
-                headers["X-Completion-Tokens"] = str(result.usage.completion_tokens)
-            else:
-                pass
+            headers.update(
+                {
+                    name: str(tokens)
+                    for name, tokens in (
+                        ("X-Prompt-Tokens", result.usage.prompt_tokens),
+                        ("X-Completion-Tokens", result.usage.completion_tokens),
+                        (
+                            "X-SGLang-Omni-Input-Tokens",
+                            result.usage.prompt_tokens,
+                        ),
+                        (
+                            "X-SGLang-Omni-Output-Tokens",
+                            result.usage.completion_tokens,
+                        ),
+                        ("X-SGLang-Omni-Total-Tokens", result.usage.total_tokens),
+                    )
+                    if tokens is not None
+                }
+            )
             if result.usage.engine_time_s is not None:
                 headers["X-Engine-Time"] = str(result.usage.engine_time_s)
             else:
@@ -1603,6 +1664,30 @@ def register_speech_batch(app: FastAPI) -> None:
             return speech_error_response(mapped)
 
         response = SpeechBatchResponse.model_validate(response)
+        if is_qwen3_tts_architecture(getattr(app.state, "architectures", None)):
+            for result in response.results:
+                if result.status == "success" and speech_result_exhausted_codec_budget(
+                    result
+                ):
+                    error = qwen3_tts_codec_limit_error_from_result(result)
+                    result.status = "error"
+                    result.audio_data = None
+                    result.format = None
+                    result.media_type = None
+                    result.error = openai_error_payload(
+                        error.message,
+                        error_type=error.error_type,
+                        param=error.param,
+                        code=error.code,
+                    )["error"]
+                else:
+                    pass
+        else:
+            pass
+        response.succeeded = sum(
+            1 for result in response.results if result.status == "success"
+        )
+        response.failed = len(response.results) - response.succeeded
         return JSONResponse(content=response.model_dump(exclude_none=True))
 
 
@@ -1651,6 +1736,9 @@ def register_speech_ws(app: FastAPI) -> None:
             websocket,
             client=app.state.client,
             speech_service=app.state.speech_service,
+            reject_codec_length=is_qwen3_tts_architecture(
+                getattr(app.state, "architectures", None)
+            ),
         )
         await session.run()
 
@@ -1690,6 +1778,7 @@ async def speech_audio_response(
     gen_req: GenerateRequest,
     request_id: str,
     speed: float,
+    reject_codec_length: bool = False,
 ) -> StreamingResponse:
     """Build a raw PCM stream after deriving headers from the first audio chunk."""
     emitted_samples = 0
@@ -1724,6 +1813,10 @@ async def speech_audio_response(
             except StopAsyncIteration:
                 stream_completed = True
                 break
+            if reject_codec_length and speech_result_exhausted_codec_budget(chunk):
+                raise qwen3_tts_codec_limit_error_from_result(chunk)
+            else:
+                pass
             if chunk.audio_data is None:
                 continue
             else:
@@ -1774,6 +1867,10 @@ async def speech_audio_response(
             yield first_audio_bytes
 
             async for chunk in chunk_stream:
+                if reject_codec_length and speech_result_exhausted_codec_budget(chunk):
+                    raise qwen3_tts_codec_limit_error_from_result(chunk)
+                else:
+                    pass
                 if chunk.audio_data is None:
                     continue
                 else:
