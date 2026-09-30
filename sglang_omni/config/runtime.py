@@ -175,6 +175,7 @@ def resolve_factory_signature_args(
     args: dict[str, Any],
     *,
     defaults: Mapping[str, Any],
+    runtime_server_args_overrides: Mapping[str, object] | None = None,
     require_gpu_id: bool = False,
     stage_name: str | None = None,
 ) -> dict[str, Any]:
@@ -207,6 +208,24 @@ def resolve_factory_signature_args(
         else:
             pass
 
+    if not runtime_server_args_overrides:
+        return args
+
+    accepts_any_kwarg = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in sig.parameters.values()
+    )
+    if "server_args_overrides" not in sig.parameters and not accepts_any_kwarg:
+        return args
+
+    runtime_overrides = dict(runtime_server_args_overrides)
+    runtime_extra_labels = dict(runtime_overrides.pop("extra_metric_labels", {}) or {})
+    server_args_overrides = dict(args.get("server_args_overrides") or {})
+    extra_metric_labels = dict(server_args_overrides.get("extra_metric_labels") or {})
+    extra_metric_labels.update(runtime_extra_labels)
+    server_args_overrides.update(runtime_overrides)
+    server_args_overrides["extra_metric_labels"] = extra_metric_labels
+    args["server_args_overrides"] = server_args_overrides
     return args
 
 

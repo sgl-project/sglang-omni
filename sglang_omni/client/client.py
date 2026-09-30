@@ -342,6 +342,8 @@ class Client:
             mime_type=mime_type,
             format=actual_format,
             sample_rate=sample_rate,
+            duration_s=max(round(to_numpy(audio_data).shape[-1] / speed), 1)
+            / (sample_rate or DEFAULT_SAMPLE_RATE),
             usage=last_chunk.usage if last_chunk else None,
             finish_reason=last_chunk.finish_reason if last_chunk else None,
         )

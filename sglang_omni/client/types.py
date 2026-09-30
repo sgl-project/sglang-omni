@@ -235,6 +235,7 @@ class SpeechResult:
     mime_type: str
     format: str
     sample_rate: int | None = None
+    duration_s: float | None = None
     usage: UsageInfo | None = None
     finish_reason: str | None = None
 

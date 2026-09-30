@@ -374,6 +374,14 @@ def serve(
             help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
         ),
     ] = False,
+    enable_metrics: Annotated[
+        bool,
+        typer.Option(
+            "--enable-metrics",
+            "--enable_metrics",
+            help="Enable Prometheus metrics and mount the /metrics endpoint.",
+        ),
+    ] = False,
 ) -> None:
     """Serve the pipeline.
 
@@ -470,6 +478,7 @@ def serve(
         model_name=model_name,
         log_level=log_level,
         enable_realtime=enable_realtime,
+        enable_metrics=enable_metrics,
         allowed_local_media_path=validate_allowed_local_media_path(
             allowed_local_media_path
         ),

@@ -14,6 +14,7 @@ from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
+from sglang_omni.metrics.runtime import RuntimeMetrics
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
     EXPLICIT_GENERATION_PARAMS_KEY,
@@ -920,6 +921,24 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
 
     assert chunks
     assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
+
+
+def test_metrics_endpoint_is_disabled_by_default() -> None:
+    app = create_app(object())
+
+    assert "/metrics" not in {route.path for route in app.routes}
+    assert app.state.metrics is None
+
+
+def test_metrics_endpoint_is_enabled_with_runtime_metrics() -> None:
+    metrics = RuntimeMetrics()
+    app = create_app(object(), metrics=metrics)
+
+    response = TestClient(app).get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert app.state.metrics is metrics
 
 
 def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:

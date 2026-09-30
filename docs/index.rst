@@ -130,6 +130,7 @@ Supported Models
    basic_usage/qwen3_omni.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
+   basic_usage/metrics.md
    basic_usage/process_topology.md
    basic_usage/tts_process_topology.md
    basic_usage/process_topology_migration.md
