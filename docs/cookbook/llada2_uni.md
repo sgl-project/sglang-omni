@@ -47,6 +47,9 @@ following stage overrides in the pipeline YAML for two decoder GPUs:
 
 ```yaml
 stages:
+  thinker:
+    engine:
+      enable_torch_compile: false
   image_decode:
     gpu: [1, 2]
     sp_size: 2
