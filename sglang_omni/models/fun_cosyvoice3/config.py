@@ -162,8 +162,8 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 enable_flow_cuda_graph=True,
                 flow_cuda_graph_capture_shapes=FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
                 # note (guozhihao-224, chenyang):
-                # CUDA Graph and DiT torch.compile are on by default. TensorRT stays opt-in.
-                enable_dit_torch_compile=True,
+                # CUDA Graph and DiT torch.compile are on by default. TensorRT stays opt-in;
+                # stage_factory_kwargs sets the compile default.
                 enable_flow_estimator_trt=False,
                 token_hop_len=25,
                 token_max_hop_len=100,
@@ -205,8 +205,10 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             pass
         vocoder = next(stage for stage in self.stages if stage.name == "vocoder")
         extras = vocoder.factory.model_extra
+        # note(ratish): only explicit flags reach here;
+        # stage_factory_kwargs sets the compile default.
         reject_conflicting_dit_accelerators(
-            enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile", True)),
+            enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile")),
             enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
         )
 
@@ -216,16 +218,22 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         else:
             pass
         vocoder_factory = self.stage_named("vocoder").factory
+        # note(ratish): the resolver reads a stage literal back as an explicit choice;
+        # a set enable_dit_torch_compile overrides this default.
+        kwargs: dict[str, Any] = {
+            "enable_dit_torch_compile": not bool(
+                vocoder_factory.model_extra.get("enable_flow_estimator_trt")
+            )
+        }
         if vocoder_factory.mlx_model_path is not None:
             # Note (yexiaodong): A separate vocoder artifact must keep its own
             # revision; both explicit fields therefore stay in typed config.
-            return {}
+            return kwargs
         else:
             pass
         # Note (yexiaodong): The converted artifact contains the speech-token
         # LLM, Flow, and HiFT weights, so reuse it unless the vocoder overrides it.
         engine_factory = self.stage_named("tts_engine").factory
-        kwargs: dict[str, Any] = {}
         if engine_factory.mlx_model_path is not None:
             kwargs["mlx_model_path"] = engine_factory.mlx_model_path
         else:

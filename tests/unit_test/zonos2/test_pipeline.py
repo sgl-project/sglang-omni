@@ -14,7 +14,10 @@ from sglang_omni.models.zonos2.config import (
     Zonos2MultiGPUPipelineConfig,
     Zonos2PipelineConfig,
 )
-from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
+from sglang_omni.models.zonos2.engine_builder import (
+    ZONOS2_DEFAULT_MEM_FRACTION_STATIC,
+    Zonos2EngineBuilder,
+)
 from sglang_omni.models.zonos2.request_builders import (
     build_zonos2_state,
     build_zonos2_stream_metadata,
@@ -22,6 +25,9 @@ from sglang_omni.models.zonos2.request_builders import (
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+from sglang_omni.platforms.cpu import CPUOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.speech_service import SpeechRequestValidator
@@ -218,6 +224,90 @@ def test_zonos2_engine_builder_resolves_context_length(monkeypatch) -> None:
     builder = Zonos2EngineBuilder()
     assert builder.resolve_checkpoint("fake-zonos2") == "/tmp/shim"
     assert builder.context_length == 6144
+
+
+@pytest.mark.parametrize(
+    ("platform_class", "device", "captures"),
+    [
+        (XPUOmniPlatform, "xpu:0", True),
+        (XPUOmniPlatform, "cpu", False),
+        (CPUOmniPlatform, "cpu", False),
+    ],
+)
+def test_zonos2_shipped_frame_graph_default_captures_only_where_its_device_records(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_class: type[OmniPlatform],
+    device: str,
+    captures: bool,
+) -> None:
+    monkeypatch.setattr(eb, "current_platform", platform_class())
+
+    stage_factory_kwargs = Zonos2PipelineConfig(
+        model_path="fake-model"
+    ).stage_factory_kwargs("tts_engine")
+    assert stage_factory_kwargs["frame_graph"] is True
+    builder = Zonos2EngineBuilder(**stage_factory_kwargs)
+    captured: list[list[int]] = []
+    model = SimpleNamespace(
+        device=torch.device(device),
+        capture_tail_graphs=lambda buckets, params, graph_backend: captured.append(
+            buckets
+        ),
+    )
+
+    builder.post_cuda_graph_setup(model, server_args=None)
+
+    assert bool(captured) is captures
+
+
+@pytest.mark.parametrize(
+    ("fp8", "configured_fraction", "expected_fraction"),
+    [
+        (True, None, 0.85),
+        (False, None, 0.85),
+        (True, 0.6, 0.6),
+        (False, 0.95, 0.95),
+    ],
+)
+def test_zonos2_bf16_static_pool_floor_lifts_only_an_unset_stage_fraction(
+    monkeypatch: pytest.MonkeyPatch,
+    fp8: bool,
+    configured_fraction: float | None,
+    expected_fraction: float,
+) -> None:
+    monkeypatch.setattr(eb, "current_platform", XPUOmniPlatform())
+    builder = Zonos2EngineBuilder(fp8=fp8, mem_fraction_static=configured_fraction)
+    builder.device = "xpu:0"
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert "quantization" not in defaults
+    assert defaults["mem_fraction_static"] == expected_fraction
+
+
+def test_zonos2_bf16_experts_keep_the_stage_default_where_no_floor_is_measured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(eb, "current_platform", CPUOmniPlatform())
+    builder = Zonos2EngineBuilder(fp8=False)
+    builder.device = "cpu"
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert "quantization" not in defaults
+    assert defaults["mem_fraction_static"] == ZONOS2_DEFAULT_MEM_FRACTION_STATIC
+
+
+def test_zonos2_fp8_experts_leave_the_stage_default_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(eb, "current_platform", CPUOmniPlatform())
+    builder = Zonos2EngineBuilder(fp8=True)
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults["quantization"] == "fp8"
+    assert defaults["mem_fraction_static"] == ZONOS2_DEFAULT_MEM_FRACTION_STATIC
 
 
 def test_zonos2_engine_builder_keeps_power_of_two_cuda_graph_buckets() -> None:

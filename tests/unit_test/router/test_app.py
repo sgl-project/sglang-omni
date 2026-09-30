@@ -2714,6 +2714,95 @@ def test_speech_stream_requires_speech_and_streaming_capabilities() -> None:
     assert body == b"data: [DONE]\n\n"
 
 
+def test_speech_sse_stream_format_requires_streaming_capability() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/speech":
+            seen_workers.append(request_netloc(request))
+            return httpx.Response(
+                200,
+                content=b"event: speech.audio.done\ndata: {}\n\n",
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"speech"}),
+        WorkerConfig(url="http://worker-b:8102", capabilities={"speech", "streaming"}),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+    payload = {
+        "model": "qwen3-tts",
+        "input": "hello",
+        "response_format": "pcm",
+        "stream_format": "sse",
+    }
+
+    with TestClient(app) as client:
+        for body in (payload, payload | {"stream": False}):
+            response = client.post("/v1/audio/speech", json=body)
+            assert response.status_code == 200, response.text
+
+    assert seen_workers == ["worker-b:8102", "worker-b:8102"]
+
+
+@pytest.mark.parametrize("is_large_body", [False, True])
+def test_speech_sse_stream_format_without_streaming_worker_is_rejected(
+    is_large_body: bool,
+) -> None:
+    forwarded: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        forwarded.append(request.url.path)
+        return httpx.Response(200, content=b"PCM", request=request)
+
+    def post_speech(
+        client: TestClient, stream_format: str, headers: dict[str, str]
+    ) -> httpx.Response:
+        payload = {
+            "model": "qwen3-tts",
+            "input": "hello",
+            "response_format": "pcm",
+            "stream_format": stream_format,
+        }
+        body = (
+            large_json_body(payload) if is_large_body else json.dumps(payload).encode()
+        )
+        return client.post(
+            "/v1/audio/speech",
+            content=body,
+            headers={"content-type": "application/json"} | headers,
+        )
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"speech", "audio_input"})
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        assert post_speech(client, "sse", {}).status_code == 503
+        conflict = post_speech(client, "sse", {"x-sglang-omni-route-stream": "false"})
+        assert conflict.status_code == 400
+        assert "conflicts with JSON body stream" in conflict.text
+        assert post_speech(client, "audio", {}).status_code == 200
+
+    assert forwarded == ["/v1/audio/speech"]
+
+
 @pytest.mark.parametrize(
     "payload",
     [

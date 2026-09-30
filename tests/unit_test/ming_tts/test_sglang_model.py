@@ -36,6 +36,9 @@ def test_ming_tts_owns_tail_execution_geometry(
     from sglang_omni.models.ming_omni.talker.talker_module.execution import (
         TalkerExecutionConfig,
     )
+    from sglang_omni.models.ming_omni.talker.talker_module.packed_qkv import (
+        PackedQKVLinear,
+    )
     from sglang_omni.models.ming_tts import sglang_model
 
     stale_execution_config = TalkerExecutionConfig(
@@ -120,6 +123,7 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_seq_len=3,
         rope_max_batch_size=expected_aggregator_capacity,
         norm_layer=norm_layer,
+        qkv_layer=PackedQKVLinear,
     )
     assert dit_execution == TalkerExecutionConfig(
         attn_backend=sglang_model.MING_TTS_TAIL_ATTN_BACKEND,
@@ -127,6 +131,7 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_seq_len=6,
         rope_max_batch_size=2 * expected_tail_capacity,
         norm_layer=norm_layer,
+        qkv_layer=PackedQKVLinear,
     )
     assert model.decode_input_embedding.num_embeddings == expected_tail_capacity
     assert config.aggregator_config["execution_config"] is stale_execution_config

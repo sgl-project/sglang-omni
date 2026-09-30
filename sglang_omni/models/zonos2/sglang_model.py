@@ -22,6 +22,7 @@ from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 from sglang_omni.models.zonos2.hf_config import Zonos2Config
 from sglang_omni.models.zonos2.radix_hash import poly_row_hash
 from sglang_omni.models.zonos2.sampler import sample_tts
+from sglang_omni.platforms.device_graph import DeviceGraphBackend
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     RadixAttention,
@@ -384,7 +385,10 @@ class Zonos2SGLangModel(nn.Module):
 
     @torch.no_grad()
     def capture_tail_graphs(
-        self, buckets: list[int], params: TTSSamplingParams
+        self,
+        buckets: list[int],
+        params: TTSSamplingParams,
+        graph_backend: DeviceGraphBackend,
     ) -> None:
         """Allocate static buffers + bake the structural sampler flags, then
         capture one tail graph per batch bucket."""
@@ -393,6 +397,7 @@ class Zonos2SGLangModel(nn.Module):
         mb = max(buckets)
         dev, dt = self.device, self.dtype
         f32, i64 = torch.float32, torch.long
+        device_module = torch.get_device_module(self.device)
         self.cg = {
             "hidden": torch.zeros(mb, dim, device=dev, dtype=dt),
             "temperature": torch.full((mb,), params.temperature, device=dev, dtype=f32),
@@ -412,22 +417,24 @@ class Zonos2SGLangModel(nn.Module):
         self.tail_top_k_max = params.top_k if 0 < params.top_k < V else 0
         self.tail_any_top_p = 0.0 < params.top_p < 1.0
         self.tail_any_min_p = params.min_p > 0.0
-        self.tail_buckets = sorted(buckets)
-        self.tail_graphs = {}
-        s = torch.cuda.Stream()
-        s.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(s):
-            for bs in self.tail_buckets:
-                for _ in range(3):
+        tail_buckets = sorted(buckets)
+        tail_graphs = {}
+        with device_module.device(self.device):
+            warmup_stream = device_module.Stream(device=self.device)
+            warmup_stream.wait_stream(device_module.current_stream(self.device))
+            with device_module.stream(warmup_stream):
+                for bs in tail_buckets:
+                    for _ in range(3):
+                        self.tail_compute(bs)
+            device_module.current_stream(self.device).wait_stream(warmup_stream)
+            device_module.synchronize(self.device)
+            for bs in tail_buckets:
+                with graph_backend.capture() as graph:
                     self.tail_compute(bs)
-        torch.cuda.current_stream().wait_stream(s)
-        torch.cuda.synchronize()
-        for bs in self.tail_buckets:
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g):
-                self.tail_compute(bs)
-            self.tail_graphs[bs] = g
-        torch.cuda.synchronize()
+                tail_graphs[bs] = graph
+            device_module.synchronize(self.device)
+        self.tail_graphs = tail_graphs
+        self.tail_buckets = tail_buckets
 
     @torch.no_grad()
     def run_tail_graph(

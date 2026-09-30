@@ -14,8 +14,10 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano and
 MiniCPM-o) plus the API server;
-`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
-(S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
+`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
+but its DAC codec is not a core dep on any platform — see
+[ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
+families (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
 > `egg-info` instead of a PEP 660 editable install. The installer always passes it.
@@ -172,6 +174,38 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "response_format":"wav"}' -o out.wav
 ```
 
+### ZONOS2 (MoE TTS, single XPU)
+
+ZONOS2 needs the Descript DAC codec. `--no-deps` is required:
+`descript-audiotools==0.7.2` pins `protobuf<3.20`, which would downgrade this
+environment's `protobuf` to 3.19.6. The other packages on the line are the codec's
+own dependencies.
+
+```bash
+pip install --no-deps "descript-audiotools==0.7.2" "descript-audio-codec==1.0.0" \
+  argbind julius pyloudnorm pystoi torch-stoi flatten-dict randomname \
+  ffmpy fire markdown2 importlib_resources \
+  tensorboard tensorboard-data-server absl-py Markdown Werkzeug
+python -c "import dac; print('ok')"
+```
+
+Voice cloning transcodes the reference clip with **ffmpeg**, so `ffmpeg` must be on
+`PATH`. Then serve — `params.json` auto-selects the architecture, so `--model-path`
+is all that is needed:
+
+```bash
+sgl-omni serve --model-path Zyphra/zonos2 --host 0.0.0.0 --port 8000
+# clone a voice from a reference clip:
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Hello from Intel XPU.",
+       "references":[{"audio_path":"/path/to/ref.wav","text":"reference transcript"}]}' \
+  -o out.wav
+```
+
+On XPU, ZONOS2 keeps its MoE experts in bf16 and leaves `torch.compile` off; decode
+graphs stay on by default. All three are applied automatically.
+
 ### Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)
 
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
@@ -214,6 +248,7 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Qwen3-TTS, Qwen3-Omni, MiniMax Music 3 and
+> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Qwen3-TTS, ZONOS2, Qwen3-Omni, MiniMax Music 3 and
 > MiniCPM-o all serve end-to-end on Intel XPU** (ASR, Fun-ASR, TTS and MiniCPM-o single-card;
-> MiniMax Music 3 needs two cards; Qwen3-Omni thinker across 8 cards with tensor parallelism).
+> ZONOS2 single-card with decode graphs; MiniMax Music 3 needs two cards; Qwen3-Omni thinker
+> across 8 cards with tensor parallelism).
