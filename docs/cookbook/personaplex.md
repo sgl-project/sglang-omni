@@ -38,7 +38,7 @@ python examples/run_personaplex.py \
 
 ### Intel GPU
 
-PersonaPlex was validated on one 24 GB Intel Arc Pro B60 with `--lm.engine.mem_fraction_static 0.70`:
+First follow the [Intel XPU installation instructions](../get_started/installation_xpu.md). PersonaPlex was validated on one 24 GB Intel Arc Pro B60 with `--lm.engine.mem_fraction_static 0.70`:
 
 ```bash
 python examples/run_personaplex.py \
