@@ -1107,10 +1107,13 @@ def test_channels_last_code2wav_runs_every_snake_on_the_fused_kernel(
     model = make_tiny_code2wav("cuda", torch.bfloat16)
     model.use_channels_last()
     replaced = snake_beta.fuse_vocoder_decoder(model.decoder)
+    assert replaced > 0
     launches: list[tuple[int, ...]] = []
     original_launch = snake_beta.launch
 
-    def counted_launch(x, alpha, beta, eps):
+    def counted_launch(
+        x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor, eps: float
+    ) -> torch.Tensor:
         launches.append(x.stride())
         return original_launch(x, alpha, beta, eps)
 

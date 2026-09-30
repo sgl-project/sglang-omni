@@ -17,6 +17,7 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
+from sglang_omni.models.qwen3_omni.components.code2wav import Qwen3OmniCode2Wav
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavCudaGraphRunner,
     Code2WavRunResult,
@@ -110,7 +111,7 @@ def batched_graph_keys(
 
 def load_code2wav_model(
     model_path: str, *, device: str = "cuda", dtype: str | None = None
-):
+) -> Qwen3OmniCode2Wav:
     """Load Code2Wav model from HF checkpoint."""
     from transformers import AutoConfig
 
@@ -119,8 +120,6 @@ def load_code2wav_model(
     torch_dtype = resolve_dtype(dtype)
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     code2wav_config = config.code2wav_config
-    from sglang_omni.models.qwen3_omni.components.code2wav import Qwen3OmniCode2Wav
-
     model = Qwen3OmniCode2Wav._from_config(code2wav_config)  # noqa: leading-underscore
     model = load_module(
         model,
