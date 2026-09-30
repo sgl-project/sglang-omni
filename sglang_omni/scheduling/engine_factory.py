@@ -12,8 +12,10 @@ from typing import Any, ClassVar
 from sglang.srt.arg_groups.model_override_base import resolved_view
 
 from sglang_omni.scheduling.generation_batch_policy import (
+    FULL_PREFILL_ATTENTION_BACKENDS,
     CudaGraphBackend,
     build_generation_batch_overrides,
+    get_prefill_attention_backend,
     get_prefill_cuda_graph_backend,
     operator_selected_prefill_backend,
     validate_generation_batch_policy,
@@ -157,12 +159,36 @@ class SGLangGenerationEngineBuilder(ABC):
             pass
         sglang_backend.pin_resolved_device_type(overrides, concrete_device.type)
 
-        server_args = sglang_backend.build_sglang_server_args(
-            checkpoint_dir,
-            context_length=self.context_length,
-            **overrides,
-        )
-        self.customize_server_args(server_args)
+        def resolve_server_args() -> Any:
+            server_args = sglang_backend.build_sglang_server_args(
+                checkpoint_dir,
+                context_length=self.context_length,
+                **overrides,
+            )
+            self.customize_server_args(server_args)
+            return server_args
+
+        server_args = resolve_server_args()
+        if (
+            not operator_selected
+            and get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.FULL
+        ):
+            # note (luojiaxuan): full is only the model's default here, so a
+            # prefill attention backend that cannot capture it keeps the
+            # breakable graph; an operator's explicit full fails validation.
+            attention_backend = get_prefill_attention_backend(server_args)
+            if attention_backend not in FULL_PREFILL_ATTENTION_BACKENDS:
+                logger.info(
+                    f"{self.model_name}: prefill attention backend "
+                    f"{attention_backend!r} cannot capture a full prefill graph; "
+                    "using the breakable prefill graph"
+                )
+                overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+                server_args = resolve_server_args()
+            else:
+                pass
+        else:
+            pass
         cfg = resolved_view(server_args)
         if (
             overrides.get("chunked_prefill_size") is None

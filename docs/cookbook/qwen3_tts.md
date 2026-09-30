@@ -146,12 +146,17 @@ CustomVoice, the breakable backend elsewhere.
 | `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
 | `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
 
-`full` replays the whole prefill forward as one graph; `breakable` captures
-per-layer segments and runs attention eagerly between them. Each backend is
-accepted only on models that declare it, so a stage that has not adopted
-`full` still rejects it. SGLang logs the full prefill backend as
-experimental and its own compatibility rules never auto-disable it, so the
-incompatibility list in the generation batch policy is what guards it here.
+`full` captures the prefill transformer body, attention included, as one
+graph per token bucket; the codec head and sampling still run outside it.
+`breakable` captures per-layer segments and runs attention eagerly between
+them. Each backend is accepted only on models that declare it, so a stage that
+has not adopted `full` still rejects it. `full` also needs a prefill attention
+backend that captures an ordinary prefill batch, `fa3` or `flashinfer` in
+SGLang 0.5.20: with any other backend the CustomVoice default stays
+`breakable`, and an explicit `full` fails at startup. SGLang logs the full
+prefill backend as experimental and its own compatibility rules never
+auto-disable it, so the generation batch policy's checks are what guard it
+here.
 
 The default is the shared ladder with one bucket added. A replay falls
 back to eager when its bucket exceeds twice the real token count, and the
@@ -162,10 +167,10 @@ are exactly one token, and they are the only shapes that fall back: 2 and
 fallback rate to zero.
 
 CustomVoice prompts are a few dozen tokens, where the breakable graph's
-per-layer segments are launch-bound, so CustomVoice replays the whole prefill
-as one graph. The full backend is selected by the checkpoint's
-`tts_model_type`; Base prefills also carry reference audio and keep the
-breakable backend until the full one is measured on them.
+per-layer segments are launch-bound, so CustomVoice captures the prefill
+transformer body as one graph. The full backend is selected by the
+checkpoint's `tts_model_type`; Base prefills also carry reference audio and
+keep the breakable backend until the full one is measured on them.
 
 Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`, or
 fall back to `breakable`. The default costs extra graph capture during

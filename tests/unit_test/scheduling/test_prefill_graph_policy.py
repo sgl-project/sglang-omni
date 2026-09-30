@@ -29,9 +29,14 @@ def make_server_args(
     chunked_prefill_size: int | None = 8192,
     max_prefill_tokens: int = 16384,
     disable_cuda_graph: bool = False,
+    attention_backend: str = "fa3",
+    prefill_attention_backend: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         max_running_requests=4,
+        attention_backend=attention_backend,
+        prefill_attention_backend=prefill_attention_backend,
+        decode_attention_backend=None,
         disable_cuda_graph=disable_cuda_graph,
         enable_torch_compile=False,
         torch_compile_max_bs=None,
@@ -99,6 +104,27 @@ def test_full_prefill_backend_needs_the_model_to_declare_it() -> None:
         server_args=make_server_args(prefill_backend="full", prefill_bs=(128,)),
         allowed_prefill_backends=("breakable", "full"),
     )
+
+
+def test_full_prefill_backend_needs_an_attention_backend_that_captures_it() -> None:
+    def full_policy(**attention: Any) -> None:
+        validate_generation_batch_policy(
+            model_name="Test TTS",
+            server_args=make_server_args(
+                prefill_backend="full", prefill_bs=(128,), **attention
+            ),
+            allowed_prefill_backends=("breakable", "full"),
+        )
+
+    full_policy(attention_backend="fa3")
+    full_policy(attention_backend="flashinfer")
+    full_policy(attention_backend="triton", prefill_attention_backend="fa3")
+    for attention in (
+        {"attention_backend": "triton"},
+        {"attention_backend": "fa3", "prefill_attention_backend": "triton"},
+    ):
+        with pytest.raises(ValueError, match="need a prefill attention backend"):
+            full_policy(**attention)
 
 
 def test_piecewise_prefill_backend_is_rejected() -> None:
@@ -559,6 +585,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     from sglang_omni.utils import cuda_graph_batch_validator
 
     infra_kwargs_seen: list[dict[str, Any]] = []
+    infra_prefill_backends: list[str] = []
     attest_calls: list[tuple[Any, bool]] = []
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
@@ -573,11 +600,14 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
             prefill_bs=prefill_bs,
             prefill_max_bs=overrides.get("cuda_graph_max_bs_prefill"),
             locked=locked,
+            attention_backend=overrides.get("attention_backend", "fa3"),
+            prefill_attention_backend=overrides.get("prefill_attention_backend"),
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del gpu_id, server_args
+        del gpu_id
         infra_kwargs_seen.append(dict(kwargs))
+        infra_prefill_backends.append(server_args.cuda_graph_config.prefill.backend)
         model_runner = SimpleNamespace(
             model=SimpleNamespace(),
             init_cuda_graphs=lambda: None,
@@ -655,6 +685,44 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     assert "enable_prefill_input_embeds" not in infra_kwargs_seen[-1]
     assert len(attest_calls) == 1
 
+    class FullBuilder(PolicyBuilder):
+        supports_full_prefill_cuda_graph = True
+
+        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+            del dtype
+            return {
+                "max_running_requests": 4,
+                "cuda_graph_backend_prefill": "full",
+                "cuda_graph_bs_prefill": [128, 256],
+            }
+
+    FullBuilder().build("model")
+
+    assert infra_prefill_backends[-1] == "full"
+    assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
+    assert attest_calls[-1][1] is False
+
+    # note (luojiaxuan): a default full on an attention backend that cannot
+    # capture it keeps the breakable graph, and its prefill embeds buffer.
+    FullBuilder().build("model", server_args_overrides={"attention_backend": "triton"})
+
+    assert infra_prefill_backends[-1] == "breakable"
+    assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
+    assert attest_calls[-1][1] is False
+
+    # note (luojiaxuan): an explicit full the attention backend cannot capture
+    # fails the policy check, before any prefill graph is captured.
+    attests = len(attest_calls)
+    with pytest.raises(ValueError, match="need a prefill attention backend"):
+        FullBuilder().build(
+            "model",
+            server_args_overrides={
+                "cuda_graph_backend_prefill": "full",
+                "prefill_attention_backend": "triton",
+            },
+        )
+    assert len(attest_calls) == attests
+
 
 def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
     from sglang_omni.scheduling import sglang_backend
@@ -712,22 +780,6 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
                 "cuda_graph_bs_prefill": [128, 256],
             },
         )
-
-
-def test_a_tts_builder_widens_the_policy_only_when_the_model_declares_full() -> None:
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-
-    class Breakable(TtsEngineBuilder):
-        model_name = "Breakable TTS"
-        context_length = 123
-        supports_breakable_prefill_cuda_graph = True
-
-    class Full(Breakable):
-        model_name = "Full TTS"
-        supports_full_prefill_cuda_graph = True
-
-    assert Breakable.allowed_prefill_cuda_graph_backends(Breakable) == ("breakable",)
-    assert Full.allowed_prefill_cuda_graph_backends(Full) == ("breakable", "full")
 
 
 def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets() -> None:
