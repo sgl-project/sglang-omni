@@ -1,15 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3-Omni code2wav whose convolutions run channels last on CUDA."""
+"""Qwen3-Omni code2wav whose convolutions run channels last."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+    Qwen3OmniMoeCode2WavConfig,
+)
 from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeCausalConvNet,
     Qwen3OmniMoeCausalTransConvNet,
     Qwen3OmniMoeCode2Wav,
+    Qwen3OmniMoeCode2WavDecoderBlock,
+    Qwen3OmniMoeCode2WavDecoderResidualUnit,
+    Qwen3OmniMoeConvNeXtBlock,
+    SnakeBeta,
 )
+
+from sglang_omni.utils.snake_beta import FusedSnakeBeta
 
 
 def causal_conv(
@@ -58,6 +67,10 @@ def causal_transconv(
             conv.weight.unsqueeze(2),
             conv.bias,
             stride=(1, conv.stride[0]),
+            padding=(0, conv.padding[0]),
+            output_padding=(0, conv.output_padding[0]),
+            groups=conv.groups,
+            dilation=(1, conv.dilation[0]),
         )
         .squeeze(2)
         .transpose(1, 2)
@@ -65,18 +78,49 @@ def causal_transconv(
     return output[:, module.left_pad : output.shape[1] - module.right_pad].contiguous()
 
 
-def snake_activation(
+def channels_last_block(
     module: torch.nn.Module, hidden_states: torch.Tensor
 ) -> torch.Tensor:
-    """Run a (B, C, L) SnakeBeta on a (B, L, C) activation."""
-    return module(hidden_states.transpose(1, 2)).transpose(1, 2)
+    """Run one code2wav module on a (B, L, C) activation as its forward runs on (B, C, L)."""
+    if isinstance(module, Qwen3OmniMoeCausalConvNet):
+        return causal_conv(module, hidden_states)
+    elif isinstance(module, Qwen3OmniMoeCausalTransConvNet):
+        return causal_transconv(module, hidden_states)
+    elif isinstance(module, (SnakeBeta, FusedSnakeBeta)):
+        return module(hidden_states.transpose(1, 2)).transpose(1, 2)
+    elif isinstance(module, Qwen3OmniMoeConvNeXtBlock):
+        # note (ratish): the depthwise conv stays on PyTorch's own (B, C, L) kernel,
+        # faster than cuDNN's channels-last depthwise and free of its per-shape setup.
+        normed = module.norm(
+            module.dwconv(hidden_states.transpose(1, 2)).transpose(1, 2)
+        )
+        return hidden_states + module.gamma * module.pwconv2(
+            module.act(module.pwconv1(normed))
+        )
+    elif isinstance(module, Qwen3OmniMoeCode2WavDecoderResidualUnit):
+        output = hidden_states
+        for block in (module.act1, module.conv1, module.act2, module.conv2):
+            output = channels_last_block(block, output)
+        return output + hidden_states
+    elif isinstance(module, Qwen3OmniMoeCode2WavDecoderBlock):
+        for block in module.block:
+            hidden_states = channels_last_block(block, hidden_states)
+        return hidden_states
+    else:
+        raise TypeError(
+            f"no channels-last form for code2wav module {type(module).__name__}"
+        )
 
 
 class Qwen3OmniCode2Wav(Qwen3OmniMoeCode2Wav):
-    """Code2Wav carrying (B, L, C) activations so cuDNN reads every conv channels last."""
+    """Code2Wav that carries (B, L, C) activations once its convs are channels last."""
 
-    def lay_out_convs_channels_last(self) -> None:
-        """Store every conv weight channels last so no call reformats it."""
+    def __init__(self, config: Qwen3OmniMoeCode2WavConfig) -> None:
+        super().__init__(config)
+        self.is_channels_last = False
+
+    def use_channels_last(self) -> None:
+        """Store every conv weight channels last and run the channels-last forward."""
         for module in self.modules():
             if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d)):
                 module.weight.data = (
@@ -84,48 +128,25 @@ class Qwen3OmniCode2Wav(Qwen3OmniMoeCode2Wav):
                 )
             else:
                 pass
+        self.is_channels_last = True
 
     def forward(self, codes: torch.Tensor) -> torch.Tensor:
-        if codes.shape[1] != self.config.num_quantizers:
+        if not self.is_channels_last:
+            return super().forward(codes)
+        elif codes.shape[1] != self.config.num_quantizers:
             raise ValueError(
                 f"Expected {self.config.num_quantizers} layer of codes, "
                 f"got {codes.shape[1]}"
             )
-        elif codes.device.type != "cuda":
-            return super().forward(codes)
         else:
             pass
         hidden_states = self.code_embedding(codes + self.code_offset).mean(1)
         hidden_states = self.pre_transformer(
             inputs_embeds=hidden_states
         ).last_hidden_state
-        for transconv, convnext in self.upsample:
-            hidden_states = causal_transconv(transconv, hidden_states)
-            residual = hidden_states
-            # note (ratish): the depthwise conv stays on PyTorch's own NCL kernel, faster
-            # than cuDNN's channels-last depthwise and free of its per-shape plan setup.
-            hidden_states = convnext.dwconv(hidden_states.transpose(1, 2))
-            hidden_states = convnext.norm(hidden_states.transpose(1, 2))
-            hidden_states = convnext.pwconv2(
-                convnext.act(convnext.pwconv1(hidden_states))
-            )
-            hidden_states = residual + convnext.gamma * hidden_states
-        waveform = causal_conv(self.decoder[0], hidden_states)
-        for decoder_block in self.decoder[1:-2]:
-            waveform = snake_activation(decoder_block.block[0], waveform)
-            waveform = causal_transconv(decoder_block.block[1], waveform)
-            for residual_unit in decoder_block.block[2:]:
-                residual = waveform
-                waveform = causal_conv(
-                    residual_unit.conv1,
-                    snake_activation(residual_unit.act1, waveform),
-                )
-                waveform = causal_conv(
-                    residual_unit.conv2,
-                    snake_activation(residual_unit.act2, waveform),
-                )
-                waveform = waveform + residual
-        waveform = causal_conv(
-            self.decoder[-1], snake_activation(self.decoder[-2], waveform)
-        )
-        return waveform.transpose(1, 2).clamp(min=-1, max=1)
+        for blocks in self.upsample:
+            for block in blocks:
+                hidden_states = channels_last_block(block, hidden_states)
+        for block in self.decoder:
+            hidden_states = channels_last_block(block, hidden_states)
+        return hidden_states.transpose(1, 2).clamp(min=-1, max=1)

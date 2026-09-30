@@ -13,9 +13,6 @@ import torch
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeCode2WavConfig,
 )
-from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
-    Qwen3OmniMoeCode2Wav,
-)
 
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
@@ -1093,8 +1090,8 @@ def test_channels_last_code2wav_matches_the_hf_forward(
     codes = torch.randint(0, 16, (batch_size, 2, frames), device="cuda")
 
     with torch.inference_mode():
-        expected = Qwen3OmniMoeCode2Wav.forward(model, codes)
-        model.lay_out_convs_channels_last()
+        expected = model(codes)
+        model.use_channels_last()
         actual = model(codes)
 
     assert actual.shape == expected.shape
@@ -1108,7 +1105,7 @@ def test_channels_last_code2wav_runs_every_snake_on_the_fused_kernel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model = make_tiny_code2wav("cuda", torch.bfloat16)
-    model.lay_out_convs_channels_last()
+    model.use_channels_last()
     replaced = snake_beta.fuse_vocoder_decoder(model.decoder)
     launches: list[tuple[int, ...]] = []
     original_launch = snake_beta.launch
@@ -1125,11 +1122,3 @@ def test_channels_last_code2wav_runs_every_snake_on_the_fused_kernel(
 
     assert len(launches) == replaced
     assert all(stride[1] == 1 for stride in launches)
-
-
-def test_code2wav_keeps_the_hf_forward_off_cuda() -> None:
-    model = make_tiny_code2wav("cpu", torch.float32)
-    codes = torch.randint(0, 16, (1, 2, 5))
-
-    with torch.inference_mode():
-        assert torch.equal(model(codes), Qwen3OmniMoeCode2Wav.forward(model, codes))

@@ -22,6 +22,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavRunResult,
     GraphKey,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
@@ -129,8 +130,8 @@ def load_code2wav_model(
         device=device,
         strict=False,
     )
-    if torch.device(device).type == "cuda":
-        model.lay_out_convs_channels_last()
+    if current_platform.is_cuda() and torch.device(device).type == "cuda":
+        model.use_channels_last()
     else:
         pass
     return model.eval()
