@@ -85,29 +85,6 @@ def fake_native_mish(x: torch.Tensor) -> torch.Tensor:
     return torch.empty_like(x)
 
 
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::native_layer_norm",
-    mutates_args=(),
-    device_types="cuda",
-)
-def native_layer_norm(
-    x: torch.Tensor,
-    normalized_size: int,
-    eps: float,
-) -> torch.Tensor:
-    """Keep CUDA autocast's eager FP32 LayerNorm contract."""
-    return F.layer_norm(x.float(), (normalized_size,), None, None, eps)
-
-
-@native_layer_norm.register_fake
-def fake_native_layer_norm(
-    x: torch.Tensor,
-    normalized_size: int,
-    eps: float,
-) -> torch.Tensor:
-    return torch.empty_like(x, dtype=torch.float32)
-
-
 @dataclass(frozen=True)
 class PackedRows:
     lengths: tuple[int, ...]
@@ -292,6 +269,9 @@ class PackedDiT:
         device = torch.device(device)
         self.is_ragged = device.type == "cuda" and _is_fa3_supported()
         self.is_compiled = False
+        blocks = len(self.dit.transformer_blocks)
+        self.qkv_weights: tuple[torch.Tensor | None, ...] = (None,) * blocks
+        self.qkv_biases: tuple[torch.Tensor | None, ...] = (None,) * blocks
         logger.info(
             "Fun-CosyVoice3 Flow row attention on %s: %s",
             device,
@@ -337,6 +317,53 @@ class PackedDiT:
             return False
         else:
             pass
+
+        fused_weights: list[torch.Tensor] = []
+        fused_biases: list[torch.Tensor | None] = []
+        fused_bytes = 0
+        with torch.no_grad():
+            for block in self.dit.transformer_blocks:
+                attn = block.attn
+
+                qkv_weight = torch.cat(
+                    (
+                        attn.to_q.weight,
+                        attn.to_k.weight,
+                        attn.to_v.weight,
+                    ),
+                    dim=0,
+                )
+                if attn.to_q.bias is None:
+                    qkv_bias = None
+                else:
+                    assert attn.to_k.bias is not None
+                    assert attn.to_v.bias is not None
+                    qkv_bias = torch.cat(
+                        (
+                            attn.to_q.bias,
+                            attn.to_k.bias,
+                            attn.to_v.bias,
+                        ),
+                        dim=0,
+                    )
+
+                fused_weights.append(qkv_weight)
+                fused_biases.append(qkv_bias)
+                fused_bytes += qkv_weight.nbytes
+                if qkv_bias is not None:
+                    fused_bytes += qkv_bias.nbytes
+                else:
+                    pass
+
+        self.qkv_weights = tuple(fused_weights)
+        self.qkv_biases = tuple(fused_biases)
+        logger.info(
+            "Materialized PackedDiT fused QKV weights+biases for %d blocks "
+            "(%.1f MiB)",
+            len(self.qkv_weights),
+            fused_bytes / (1024 * 1024),
+        )
+
         # note(ratish): not dynamic=True, which makes the head count and size symbolic;
         # the reshape into FA3's layout then copies query and key in every block.
         self.forward = torch.compile(
@@ -370,27 +397,23 @@ class PackedDiT:
         h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
         h = self.conv_pos_embed(h, rows) + h
         residual = h
-        for block in dit.transformer_blocks:
-            attn_norm = block.attn_norm
-            modulation = attn_norm.linear(attn_norm.silu(t))
-            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-                torch.chunk(modulation, 6, dim=1)
-            )
-            norm = layer_norm(attn_norm.norm, h) * (1 + scale_msa[:, None])
-            norm = norm + shift_msa[:, None]
+        for block_index, block in enumerate(dit.transformer_blocks):
+            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(h, emb=t)
             h = h + gate_msa.unsqueeze(1) * self.attend(
-                block.attn, norm, rope, attention
+                block.attn,
+                norm,
+                rope,
+                attention,
+                self.qkv_weights[block_index],
+                self.qkv_biases[block_index],
             )
-            ff_norm = layer_norm(block.ff_norm, h) * (1 + scale_mlp[:, None])
-            ff_norm = ff_norm + shift_mlp[:, None]
+            ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
             h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
         if dit.long_skip_connection is not None:
             h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
         else:
             pass
-        norm_out = dit.norm_out
-        scale, shift = torch.chunk(norm_out.linear(norm_out.silu(t)), 2, dim=1)
-        h = layer_norm(norm_out.norm, h) * (1 + scale)[:, None, :] + shift[:, None, :]
+        h = dit.norm_out(h, t)
         return dit.proj_out(h)
 
     def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
@@ -413,13 +436,22 @@ class PackedDiT:
         x: torch.Tensor,
         rope: tuple[torch.Tensor, torch.Tensor],
         attention: PackedRowAttention,
+        qkv_weight: torch.Tensor | None,
+        qkv_bias: torch.Tensor | None,
     ) -> torch.Tensor:
-        # note (ratish): under autocast to_q, to_k and to_v would each cast the
-        # float32 norm output again.
-        x = x.to(attn.to_q.weight.dtype)
-        query = attn.to_q(x)
-        key = attn.to_k(x)
-        value = attn.to_v(x)
+        if qkv_weight is None:
+            # note (ratish): under autocast to_q, to_k and to_v would each cast the
+            # float32 norm output again.
+            x = x.to(attn.to_q.weight.dtype)
+            query = attn.to_q(x)
+            key = attn.to_k(x)
+            value = attn.to_v(x)
+        else:
+            # note(chenye): one fused projection removes two GEMM launches per
+            # transformer block while leaving the model's original Q/K/V modules
+            # intact.
+            x = x.to(qkv_weight.dtype)
+            query, key, value = F.linear(x, qkv_weight, qkv_bias).chunk(3, dim=-1)
         if torch.compiler.is_compiling():
             query = rotated(query, *rope)
             key = rotated(key, *rope)
@@ -428,15 +460,6 @@ class PackedDiT:
             rotate_in_place(key, *rope)
         out = attention(query, key, value).to(query.dtype)
         return attn.to_out[1](attn.to_out[0](out))
-
-
-def layer_norm(module: torch.nn.LayerNorm, h: torch.Tensor) -> torch.Tensor:
-    # note(ratish): Inductor rewrites the layer norm and Mish in its own arithmetic;
-    # the custom ops keep the eager kernels, so the compiled forward stays exact.
-    if torch.compiler.is_compiling():
-        return native_layer_norm(h, module.normalized_shape[0], module.eps)
-    else:
-        return module(h)
 
 
 def mish(x: torch.Tensor) -> torch.Tensor:

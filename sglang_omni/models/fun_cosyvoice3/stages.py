@@ -690,24 +690,15 @@ def prepare_flow_conditioning(
     )
 
 
-@torch.inference_mode()
-def generate_flow(
-    flow: FunCosyVoice3Flow,
-    packed: PackedFlowBatch,
-    *,
-    streaming: bool = False,
-    finalize: bool = True,
-) -> torch.Tensor:
-    """Padded Flow call, the graphed non-streaming path or the eager solve."""
-    conditioning = prepare_flow_conditioning(flow, packed, finalize=finalize)
+def flow_mel_mask(conditioning: FlowConditioning) -> torch.Tensor:
+    """Build the padded mel mask used by native Flow execution."""
     token_condition = conditioning.token_condition
-    decoder = flow.decoder
     # Note (chenyang): int64 matches torch.arange's default so the comparison
     # below does not mix integer dtypes.
     mel_lengths = torch.tensor(
         conditioning.mel_lengths, dtype=torch.int64, device=token_condition.device
     )
-    mel_mask = (
+    return (
         (
             torch.arange(
                 token_condition.shape[2], device=token_condition.device
@@ -717,7 +708,26 @@ def generate_flow(
         .unsqueeze(1)
         .to(token_condition.dtype)
     )
-    if streaming or not finalize or flow.cuda_graph_runner is None:
+
+
+@torch.inference_mode()
+def generate_flow(
+    flow: FunCosyVoice3Flow,
+    packed: PackedFlowBatch,
+    *,
+    streaming: bool = False,
+    finalize: bool = True,
+) -> torch.Tensor:
+    """Run buffered Flow through CUDA Graph, PackedDiT, or native eager.
+
+    Streaming and non-final calls use the native compatibility path.
+    """
+    conditioning = prepare_flow_conditioning(flow, packed, finalize=finalize)
+    token_condition = conditioning.token_condition
+    decoder = flow.decoder
+    mel_mask: torch.Tensor | None = None
+    if streaming or not finalize:
+        mel_mask = flow_mel_mask(conditioning)
         return solve_flow_euler(
             decoder,
             conditioning.noisy_mel,
@@ -730,16 +740,28 @@ def generate_flow(
         )
     else:
         pass
-    generated = flow.cuda_graph_runner.run(
-        conditioning.noisy_mel,
-        conditioning.time_span,
-        token_condition,
-        mel_mask,
-        conditioning.speaker_embedding,
-        conditioning.prompt_mel,
-    )
-    if generated is not None:
-        return generated
+    if flow.cuda_graph_runner is not None:
+        mel_mask = flow_mel_mask(conditioning)
+        generated = flow.cuda_graph_runner.run(
+            conditioning.noisy_mel,
+            conditioning.time_span,
+            token_condition,
+            mel_mask,
+            conditioning.speaker_embedding,
+            conditioning.prompt_mel,
+        )
+        if generated is not None:
+            return generated
+        else:
+            pass
+    else:
+        pass
+    if flow.packed_estimator is not None:
+        return solve_prepared_flow_packed(flow, conditioning, streaming=False)
+    else:
+        pass
+    if mel_mask is None:
+        mel_mask = flow_mel_mask(conditioning)
     else:
         pass
     return solve_flow_euler(
@@ -754,23 +776,22 @@ def generate_flow(
     )
 
 
-@torch.inference_mode()
-def generate_flow_packed(
+def solve_prepared_flow_packed(
     flow: FunCosyVoice3Flow,
-    packed: PackedFlowBatch,
+    conditioning: FlowConditioning,
     *,
     streaming: bool,
-    finalize: bool,
 ) -> torch.Tensor:
-    """Eager Flow call over the rows packed along the sequence: every per
-    token module pays for each row's own frames, attention still for the
-    widest row. Returns the padded (rows, channels, frames) layout the mel
-    split reads."""
-    conditioning = prepare_flow_conditioning(flow, packed, finalize=finalize)
+    """Solve a prepared Flow batch over rows packed along the sequence."""
+    packed_estimator = flow.packed_estimator
+    if packed_estimator is None:
+        raise RuntimeError("PackedDiT estimator is required for a packed Flow solve")
+    else:
+        pass
     token_condition = conditioning.token_condition
     rows = pack_rows(conditioning.mel_lengths, token_condition.device)
     generated = solve_flow_euler_packed(
-        flow.packed_estimator,
+        packed_estimator,
         gather_rows(conditioning.noisy_mel.transpose(1, 2), rows),
         conditioning.time_span,
         gather_rows(token_condition.transpose(1, 2), rows),
@@ -781,6 +802,22 @@ def generate_flow_packed(
         streaming=streaming,
     )
     return scatter_rows(generated, rows, token_condition.shape[2]).transpose(1, 2)
+
+
+@torch.inference_mode()
+def generate_flow_packed(
+    flow: FunCosyVoice3Flow,
+    packed: PackedFlowBatch,
+    *,
+    streaming: bool,
+    finalize: bool,
+) -> torch.Tensor:
+    """Eager Flow over packed valid frames, then scatter to padded mel output.
+
+    PackedDiT selects the row-attention implementation for the current device.
+    """
+    conditioning = prepare_flow_conditioning(flow, packed, finalize=finalize)
+    return solve_prepared_flow_packed(flow, conditioning, streaming=streaming)
 
 
 def split_generated_mels(
