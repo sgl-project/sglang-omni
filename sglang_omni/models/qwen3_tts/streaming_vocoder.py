@@ -23,6 +23,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     Qwen3TTSIncrementalCodecCudaGraphRunner,
 )
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -502,7 +503,7 @@ class Qwen3TTSInitialDecodeGraphs:
 class Qwen3TTSStreamingVocoderScheduler(
     StreamingVocoderBase[Qwen3TTSStreamState, None]
 ):
-    """Decode Qwen3-TTS codec frames on a priority CUDA stream."""
+    """Decode Qwen3-TTS codec frames on background accelerator workers."""
 
     def __init__(
         self,
@@ -2369,10 +2370,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         return (plan, False)
 
     def run_initial_worker(self) -> None:
-        if self.decode_stream is not None:
-            torch.cuda.set_stream(self.decode_stream)
-        else:
-            pass
+        # note (luojiaxuan): a decode worker lives on its own stream: planning,
+        # slot zeroing and launches all land there, and nothing it does queues
+        # behind the talker's work on the default stream.
+        self.activate_decode_worker(self.decode_stream)
         while True:
             batch = self.collect_async_batch(
                 self.initial_queue,
@@ -2717,10 +2718,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             if index < len(self.followup_decode_streams)
             else self.followup_decode_stream
         )
-        if self.worker_ctx.stream is not None:
-            torch.cuda.set_stream(self.worker_ctx.stream)
-        else:
-            pass
+        self.activate_decode_worker(self.worker_ctx.stream)
         while True:
             in_flight = bool(getattr(self.worker_ctx, "pending_incremental", None))
             if in_flight:
@@ -2750,6 +2748,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             self.run_followup_batch(batch)
+
+    def activate_decode_worker(self, stream: Any) -> None:
+        """Bind a background decode worker to the scheduler's device."""
+        if self.device.type == "npu":
+            current_platform.set_device(self.device)
+            return
+        if stream is not None:
+            torch.cuda.set_stream(stream)
 
     def collect_followup_batch(
         self, *, first_timeout: float | None = None
