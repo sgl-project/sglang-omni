@@ -495,8 +495,16 @@ class Qwen3OmniPreprocessor:
                 pass
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
-            raw_videos = inputs.get("videos") or inputs.get("video")
-            raw_audios = inputs.get("audio") or inputs.get("audios")
+            raw_videos = inputs.get("videos")
+            if raw_videos is None:
+                raw_videos = inputs.get("video")
+            else:
+                pass
+            raw_audios = inputs.get("audio")
+            if raw_audios is None:
+                raw_audios = inputs.get("audios")
+            else:
+                pass
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
             video_fps = inputs.get("video_fps", self.default_video_fps)
             video_max_frames = inputs.get(
@@ -548,7 +556,7 @@ class Qwen3OmniPreprocessor:
             video_cache_key = compute_video_cache_key(raw_videos)
 
             # Count explicit audio inputs (for placeholder insertion)
-            if raw_audios:
+            if raw_audios is not None:
                 num_explicit_audios = (
                     len(raw_audios) if isinstance(raw_audios, list) else 1
                 )
@@ -557,7 +565,9 @@ class Qwen3OmniPreprocessor:
 
             # Use async versions for concurrent loading
             # If we need audio from video, extract it during video loading to avoid duplicate downloads
-            extract_audio_from_video_flag = bool(use_audio_in_video and raw_videos)
+            extract_audio_from_video_flag = bool(
+                use_audio_in_video and raw_videos is not None
+            )
 
             # Worker requests run on separate event loops. Keep pooled HTTP
             # connections within this request and close them before its loop ends.

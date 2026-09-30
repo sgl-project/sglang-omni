@@ -11,10 +11,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import pack, repeat
+from torch.nn.attention.varlen import varlen_attn
+
+TIMESTEP_MAX_PERIOD = 10000
+MIN_PACKED_BATCH_SIZE = 3
 
 
 class MLP(torch.nn.Module):
-
     def __init__(
         self,
         in_features: int,
@@ -48,7 +51,6 @@ class MLP(torch.nn.Module):
 
 
 class Attention(torch.nn.Module):
-
     def __init__(
         self,
         dim: int,
@@ -102,13 +104,35 @@ class Attention(torch.nn.Module):
         x = self.proj_drop(x)
         return x
 
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        cumulative_sequence_lengths: torch.Tensor,
+        maximum_sequence_length: int,
+    ) -> torch.Tensor:
+        q = self.to_q(x).view(-1, self.num_heads, self.head_dim)
+        k = self.to_k(x).view(-1, self.num_heads, self.head_dim)
+        v = self.to_v(x).view(-1, self.num_heads, self.head_dim)
+        q = self.q_norm(q).to(v.dtype)
+        k = self.k_norm(k).to(v.dtype)
+        x = varlen_attn(
+            q,
+            k,
+            v,
+            cumulative_sequence_lengths,
+            cumulative_sequence_lengths,
+            maximum_sequence_length,
+            maximum_sequence_length,
+        )
+        x = self.proj(x.reshape(-1, self.inner_dim))
+        return self.proj_drop(x)
+
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale) + shift
 
 
 class TimestepEmbedder(nn.Module):
-
     def __init__(self, hidden_size: int, frequency_embedding_size: int = 256) -> None:
         super().__init__()
         self.mlp = nn.Sequential(
@@ -118,33 +142,34 @@ class TimestepEmbedder(nn.Module):
         )
         self.frequency_embedding_size = frequency_embedding_size
         self.scale = 1000
+        half = frequency_embedding_size // 2
+        # note (MayDomine): autocast timesteps can remain FP32 with FP16 weights.
+        self.frequencies = torch.exp(
+            -math.log(TIMESTEP_MAX_PERIOD) * torch.arange(half) / half
+        )
+        self.frequency_cache: torch.Tensor | None = None
 
-    @staticmethod
-    def timestep_embedding(
-        t: torch.Tensor, dim: int, max_period: int = 10000
-    ) -> torch.Tensor:
-        half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half) / half
-        ).to(t)
-        args = t[:, None] * freqs[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if dim % 2:
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        if (
+            self.frequency_cache is None
+            or self.frequency_cache.device != t.device
+            or self.frequency_cache.dtype != t.dtype
+        ):
+            self.frequency_cache = self.frequencies.to(t)
+        else:
+            pass
+        angles = (t * self.scale)[:, None] * self.frequency_cache[None]
+        embedding = torch.cat([torch.cos(angles), torch.sin(angles)], dim=-1)
+        if self.frequency_embedding_size % 2:
             embedding = torch.cat(
                 [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
             )
         else:
             pass
-        return embedding
-
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        t_freq = self.timestep_embedding(t * self.scale, self.frequency_embedding_size)
-        t_emb = self.mlp(t_freq)
-        return t_emb
+        return self.mlp(embedding)
 
 
 class Transpose(torch.nn.Module):
-
     def __init__(self, dim0: int, dim1: int) -> None:
         super().__init__()
         self.dim0 = dim0
@@ -156,7 +181,6 @@ class Transpose(torch.nn.Module):
 
 
 class CausalConv1d(torch.nn.Conv1d):
-
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int) -> None:
         super(CausalConv1d, self).__init__(in_channels, out_channels, kernel_size)
         self.causal_padding = (kernel_size - 1, 0)
@@ -168,7 +192,6 @@ class CausalConv1d(torch.nn.Conv1d):
 
 
 class CausalConvBlock(nn.Module):
-
     def __init__(
         self, in_channels: int, out_channels: int, kernel_size: int = 3
     ) -> None:
@@ -201,9 +224,40 @@ class CausalConvBlock(nn.Module):
             pass
         return x
 
+    def forward_packed(
+        self,
+        hidden_states: torch.Tensor,
+        real_frame_positions: torch.Tensor,
+        real_frame_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        def apply_causal_convolution(
+            frames: torch.Tensor, convolution: nn.Module
+        ) -> torch.Tensor:
+            channel_first = frames.transpose(0, 1).unsqueeze(0)
+            convolved = convolution(channel_first)
+            return convolved.squeeze(0).transpose(0, 1)
+
+        first_convolution = self.block[1]
+        layer_norm = self.block[3]
+        activation = self.block[4]
+        second_convolution = self.block[6]
+        channels = hidden_states.shape[1]
+        expanded_hidden_states = hidden_states.new_zeros(
+            real_frame_mask.shape[0], channels
+        )
+        expanded_hidden_states[real_frame_positions] = hidden_states
+        expanded_hidden_states = apply_causal_convolution(
+            expanded_hidden_states, first_convolution
+        )
+        normalized_hidden_states = activation(layer_norm(expanded_hidden_states))
+        isolated_hidden_states = normalized_hidden_states * real_frame_mask.unsqueeze(1)
+        convolved_hidden_states = apply_causal_convolution(
+            isolated_hidden_states, second_convolution
+        )
+        return convolved_hidden_states[real_frame_positions]
+
 
 class DiTBlock(nn.Module):
-
     def __init__(
         self, hidden_size: int, num_heads: int, head_dim: int, mlp_ratio: float = 4.0
     ) -> None:
@@ -234,7 +288,7 @@ class DiTBlock(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, c: torch.Tensor, attn_mask: torch.Tensor
+        self, x: torch.Tensor, timestep_embedding: torch.Tensor, attn_mask: torch.Tensor
     ) -> torch.Tensor:
         (
             shift_msa,
@@ -246,7 +300,7 @@ class DiTBlock(nn.Module):
             shift_conv,
             scale_conv,
             gate_conv,
-        ) = self.adaLN_modulation(c).chunk(9, dim=-1)
+        ) = self.adaLN_modulation(timestep_embedding).chunk(9, dim=-1)
         x = x + gate_msa * self.attn(
             modulate(self.norm1(x), shift_msa, scale_msa), attn_mask
         )
@@ -254,9 +308,42 @@ class DiTBlock(nn.Module):
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        sequence_ids: torch.Tensor,
+        cumulative_sequence_lengths: torch.Tensor,
+        maximum_sequence_length: int,
+        real_frame_positions: torch.Tensor,
+        real_frame_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        (
+            shift_msa,
+            scale_msa,
+            gate_msa,
+            shift_mlp,
+            scale_mlp,
+            gate_mlp,
+            shift_conv,
+            scale_conv,
+            gate_conv,
+        ) = self.adaLN_modulation(timestep_embedding)[sequence_ids].chunk(9, dim=-1)
+        x = x + gate_msa * self.attn.forward_packed(
+            modulate(self.norm1(x), shift_msa, scale_msa),
+            cumulative_sequence_lengths,
+            maximum_sequence_length,
+        )
+        x = x + gate_conv * self.conv.forward_packed(
+            modulate(self.norm3(x), shift_conv, scale_conv),
+            real_frame_positions,
+            real_frame_mask,
+        )
+        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        return x
+
 
 class FinalLayer(nn.Module):
-
     def __init__(self, hidden_size: int, out_channels: int) -> None:
         super().__init__()
         self.adaLN_modulation = nn.Sequential(
@@ -265,15 +352,28 @@ class FinalLayer(nn.Module):
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-06)
         self.linear = nn.Linear(hidden_size, out_channels, bias=True)
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
+    def forward(
+        self, x: torch.Tensor, timestep_embedding: torch.Tensor
+    ) -> torch.Tensor:
+        shift, scale = self.adaLN_modulation(timestep_embedding).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
 
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        sequence_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        shift, scale = self.adaLN_modulation(timestep_embedding)[sequence_ids].chunk(
+            2, dim=-1
+        )
+        x = modulate(self.norm_final(x), shift, scale)
+        return self.linear(x)
+
 
 class DiT(nn.Module):
-
     def __init__(
         self,
         in_channels: int,
@@ -283,10 +383,12 @@ class DiT(nn.Module):
         num_heads: int = 8,
         head_dim: int = 64,
         hidden_size: int = 256,
+        enable_variable_length: bool = False,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.enable_variable_length = enable_variable_length
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.in_proj = nn.Linear(in_channels, hidden_size)
         self.blocks = nn.ModuleList(
@@ -327,25 +429,80 @@ class DiT(nn.Module):
         mask: torch.Tensor,
         mu: torch.Tensor,
         t: torch.Tensor,
-        spks: torch.Tensor | None = None,
-        cond: torch.Tensor | None = None,
+        speaker_embeddings: torch.Tensor | None = None,
+        mel_conditioning: torch.Tensor | None = None,
     ) -> torch.Tensor:
         t = self.t_embedder(t).unsqueeze(1)
         x = pack([x, mu], "b * t")[0]
-        if spks is not None:
-            spks = repeat(spks, "b c -> b c t", t=x.shape[-1])
-            x = pack([x, spks], "b * t")[0]
+        if speaker_embeddings is not None:
+            speaker_embeddings = repeat(
+                speaker_embeddings, "b c -> b c t", t=x.shape[-1]
+            )
+            x = pack([x, speaker_embeddings], "b * t")[0]
         else:
             pass
-        if cond is not None:
-            x = pack([x, cond], "b * t")[0]
+        if mel_conditioning is not None:
+            x = pack([x, mel_conditioning], "b * t")[0]
         else:
             pass
         x = x.transpose(1, 2)
         attn_mask = mask.bool()
-        x = self.in_proj(x)
-        for block in self.blocks:
-            x = block(x, t, attn_mask)
-        x = self.final_layer(x, t)
-        x = x.transpose(1, 2)
+        if (
+            self.enable_variable_length
+            and x.shape[0] >= MIN_PACKED_BATCH_SIZE
+            and x.is_cuda
+        ):
+            sequence_lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
+            with torch.autocast(x.device.type, dtype=torch.bfloat16):
+                x = self.forward_packed(
+                    self.in_proj(x), t.to(torch.bfloat16), sequence_lengths
+                )
+        else:
+            x = self.in_proj(x)
+            for block in self.blocks:
+                x = block(x, t, attn_mask)
+            x = self.final_layer(x, t).transpose(1, 2)
         return x
+
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        sequence_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size, padded_length, _ = x.shape
+        frame_indices = torch.arange(padded_length, device=x.device)
+        valid_frames = frame_indices.unsqueeze(0) < sequence_lengths.unsqueeze(1)
+        x = x[valid_frames]
+        timestep_embedding = timestep_embedding.squeeze(1)
+        cumulative_sequence_lengths = torch.nn.functional.pad(
+            sequence_lengths.cumsum(0, dtype=torch.int32), (1, 0)
+        )
+        causal_padding_frames = self.blocks[0].conv.kernel_size - 1
+        sequence_ids = torch.repeat_interleave(
+            torch.arange(batch_size, device=x.device), sequence_lengths
+        )
+        real_frame_positions = (
+            torch.arange(x.shape[0], device=x.device)
+            + (sequence_ids + 1) * causal_padding_frames
+        )
+        real_frame_mask = torch.zeros(
+            x.shape[0] + batch_size * causal_padding_frames,
+            device=x.device,
+            dtype=torch.bool,
+        )
+        real_frame_mask[real_frame_positions] = True
+        for block in self.blocks:
+            x = block.forward_packed(
+                x,
+                timestep_embedding,
+                sequence_ids,
+                cumulative_sequence_lengths,
+                padded_length,
+                real_frame_positions,
+                real_frame_mask,
+            )
+        x = self.final_layer.forward_packed(x, timestep_embedding, sequence_ids)
+        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
+        dense[valid_frames] = x
+        return dense.transpose(1, 2)

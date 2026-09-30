@@ -17,6 +17,7 @@ from sglang_omni.models.fun_asr.encoder_service import (
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -157,16 +158,25 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 FunASREncoderCudaGraphRunner,
             )
 
-            model.encoder_cuda_graph_runner = FunASREncoderCudaGraphRunner(
-                model.audio_tower,
-                model.multi_modal_projector,
-                max_batch_size=self.pre_lm_max_batch_size,
-            )
-            logger.info(
-                "Fun-ASR encoder CUDA graphs enabled "
-                "(lazy capture per batch/length bucket, max_batch=%d)",
-                self.pre_lm_max_batch_size,
-            )
+            device = next(model.audio_tower.parameters()).device
+            graph_backend = current_platform.get_device_graph_backend(device)
+            if graph_backend is None:
+                logger.info(
+                    f"Fun-ASR encoder CUDA graphs are unavailable on {device}; "
+                    f"the encoder runs eager"
+                )
+            else:
+                model.encoder_cuda_graph_runner = FunASREncoderCudaGraphRunner(
+                    model.audio_tower,
+                    model.multi_modal_projector,
+                    graph_backend=graph_backend,
+                    max_batch_size=self.pre_lm_max_batch_size,
+                )
+                logger.info(
+                    f"Fun-ASR encoder CUDA graphs enabled (lazy capture per "
+                    f"batch/length bucket, max_batch="
+                    f"{self.pre_lm_max_batch_size})"
+                )
         elif self.enable_encoder_torch_compile:
             from sglang_omni.models.fun_asr.stages import compile_fun_asr_audio_encoder
 

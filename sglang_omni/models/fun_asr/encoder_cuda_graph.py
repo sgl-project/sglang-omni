@@ -27,6 +27,10 @@ import threading
 from typing import List, Optional, Tuple
 
 import torch
+from sglang.srt.utils.common import get_available_gpu_memory
+
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 from .sglang_model import sanm_mask_from_lengths
 
@@ -71,17 +75,20 @@ class FunASREncoderCudaGraphRunner:
         audio_tower,
         multi_modal_projector,
         *,
+        graph_backend: DeviceGraphBackend,
         max_batch_size: int = 8,
         min_free_gb: float = 3.0,
         warmup_iters: int = 3,
     ) -> None:
         self.audio_tower = audio_tower
         self.projector = multi_modal_projector
+        self.graph_backend = graph_backend
         reference = next(audio_tower.parameters())
         self.device = reference.device
         self.dtype = reference.dtype
+        self.device_module = torch.get_device_module(self.device)
         self.max_batch = max(int(max_batch_size), 1)
-        self.min_free_bytes = int(float(min_free_gb) * (1024**3))
+        self.min_free_gb = float(min_free_gb)
         self.warmup_iters = int(warmup_iters)
         # (batch_bucket, t_bucket) -> (graph, static_xs, static_ilens, static_out)
         self.graphs: dict[Tuple[int, int], tuple] = {}
@@ -91,16 +98,21 @@ class FunASREncoderCudaGraphRunner:
         # mutates the bucket's static buffers, and both the pre-LM worker and
         # the scheduler's inline prefill path can reach get_audio_feature.
         self.lock = threading.Lock()
-        self.done_event = torch.cuda.Event()
+        self.done_event = self.device_module.Event()
         self.event_recorded = False
 
     def forward(self, xs: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
         enc_out = self.audio_tower(xs, mask)
         return self.projector(enc_out, mask)
 
-    def enough_free_vram(self) -> tuple[bool, int]:
-        free, _ = torch.cuda.mem_get_info(self.device)
-        return free >= self.min_free_bytes, free
+    def enough_free_gb(self) -> tuple[bool, float]:
+        free_gb = get_available_gpu_memory(
+            self.device.type,
+            self.device.index or 0,
+            distributed=False,
+            empty_cache=False,
+        )
+        return free_gb >= self.min_free_gb, free_gb
 
     def capture(self, batch_bucket: int, t_bucket: int, feat_dim: int) -> tuple:
         static_xs = torch.zeros(
@@ -114,26 +126,32 @@ class FunASREncoderCudaGraphRunner:
             )
             return self.forward(static_xs, mask)
 
-        # note (wilsonzheng0327): warmup on a fresh stream so allocator state
-        # settles before capture.
-        stream = torch.cuda.Stream(device=self.device)
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(self.warmup_iters):
-                _masked_forward()
-        torch.cuda.current_stream().wait_stream(stream)
-        torch.cuda.synchronize()
+        with current_platform.graph_capture_attention():
+            # note (wilsonzheng0327): warmup on a fresh stream so allocator state
+            # settles before capture.
+            stream = self.device_module.Stream(device=self.device)
+            stream.wait_stream(self.device_module.current_stream())
+            with self.device_module.stream(stream):
+                for _ in range(self.warmup_iters):
+                    _masked_forward()
+            self.device_module.current_stream().wait_stream(stream)
+            self.device_module.synchronize()
 
-        if self.pool is None:
-            self.pool = torch.cuda.graph_pool_handle()
-        else:
-            pass
-        graph = torch.cuda.CUDAGraph()
-        # note (wilsonzheng0327): thread_local error mode -- the LM scheduler
-        # thread keeps launching kernels concurrently and must not poison this
-        # thread's capture.
-        with torch.cuda.graph(graph, pool=self.pool, capture_error_mode="thread_local"):
-            static_out = _masked_forward()
+            if self.pool is None:
+                # note (siju): one pool for every bucket. The replay lock keeps
+                # a capture or replay from overlapping another, and the output
+                # is cloned out before the lock is released.
+                self.pool = self.device_module.graph_pool_handle()
+            else:
+                pass
+            entry_stream = self.device_module.current_stream(self.device)
+            try:
+                with self.graph_backend.capture(
+                    pool=self.pool, thread_local_errors=True
+                ) as graph:
+                    static_out = _masked_forward()
+            finally:
+                self.device_module.set_stream(entry_stream)
         logger.info(
             "Captured Fun-ASR encoder CUDA graph batch=%d t=%d -> out %s "
             "(%d cached)",
@@ -168,33 +186,32 @@ class FunASREncoderCudaGraphRunner:
         with self.lock:
             entry = self.graphs.get(key)
             if entry is None:
-                enough, free = self.enough_free_vram()
-                if not enough:
-                    logger.warning(
-                        "Fun-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
-                        "headroom; running batch=%d t=%d eager",
-                        free / 1024**3,
-                        self.min_free_bytes / 1024**3,
-                        batch_bucket,
-                        t_bucket,
-                    )
-                    self.failed.add(key)
-                    return None
-                else:
-                    pass
-                try:
-                    with torch.cuda.device(self.device):
+                # note (siju): both the memory probe and the capture need this
+                # card current, and the pre-LM worker thread sits on device 0.
+                with self.device_module.device(self.device):
+                    enough, free_gb = self.enough_free_gb()
+                    if not enough:
+                        logger.warning(
+                            f"Fun-ASR encoder CUDA graph: free VRAM "
+                            f"{free_gb:.1f}GB < {self.min_free_gb:.1f}GB "
+                            f"headroom; running batch={batch_bucket} "
+                            f"t={t_bucket} eager"
+                        )
+                        self.failed.add(key)
+                        return None
+                    else:
+                        pass
+                    try:
                         entry = self.capture(batch_bucket, t_bucket, feat_dim)
-                except Exception as exc:
-                    logger.warning(
-                        "Fun-ASR encoder CUDA graph capture failed for "
-                        "batch=%d t=%d: %s; using eager for this bucket",
-                        batch_bucket,
-                        t_bucket,
-                        exc,
-                    )
-                    self.failed.add(key)
-                    return None
+                    except Exception as exc:
+                        logger.warning(
+                            f"Fun-ASR encoder CUDA graph capture failed for "
+                            f"batch={batch_bucket} t={t_bucket}: {exc}; using "
+                            f"eager for this bucket",
+                            exc_info=True,
+                        )
+                        self.failed.add(key)
+                        return None
                 self.graphs[key] = entry
             else:
                 pass
@@ -204,7 +221,7 @@ class FunASREncoderCudaGraphRunner:
                 return None
             else:
                 pass
-            stream = torch.cuda.current_stream(self.device)
+            stream = self.device_module.current_stream(self.device)
             # note (wilsonzheng0327): wait for previous caller's output copy
             # on some stream to finish before using shared resource
             if self.event_recorded:

@@ -396,6 +396,7 @@ def test_qwen3_tts_engine_attaches_the_vocoder_speech_tokenizer_before_the_pool(
     class FakeTalker:
         device = torch.device("cpu")
         speech_tokenizer = None
+        speaker_encoder_graph_runner = None
 
         def load_speech_tokenizer(self, tokenizer) -> None:
             self.speech_tokenizer = tokenizer
@@ -7006,6 +7007,8 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     events: list[str] = []
 
     class FakeModel:
+        speaker_encoder_graph_runner = None
+
         def load_speech_tokenizer(self, tokenizer) -> None:
             self.speech_tokenizer = tokenizer
 
@@ -7917,6 +7920,8 @@ def test_qwen3_tts_split_preprocessing_loads_the_frontend_on_the_placed_gpu(
     seen: dict[str, object] = {}
 
     class FakeFrontend:
+        speaker_encoder_graph_runner = None
+
         def load_speech_tokenizer(self, tokenizer) -> None:
             seen["tokenizer"] = tokenizer
 
