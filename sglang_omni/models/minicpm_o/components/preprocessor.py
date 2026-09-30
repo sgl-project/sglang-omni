@@ -124,7 +124,9 @@ class MiniCPMOPreprocessor:
         language = str(params.get("language") or "").lower()
         prompt = ASR_PROMPT_ZH if language.startswith("zh") else ASR_PROMPT_EN
         audio, _ = AudioMediaIO(target_sr=16000).load_bytes(inputs["audio_bytes"])
-        return [{"role": "user", "content": prompt}], [audio]
+        # note (Tianyao Wu): the recipe puts a blank line between prompt and audio.
+        message = {"role": "user", "content": f"{prompt}\n\n{AUDIO_PLACEHOLDER}"}
+        return [message], [audio]
 
     def should_use_tts_template(self, payload: StagePayload) -> bool:
         return self.speech_enabled and should_generate_audio_output(payload)
@@ -259,15 +261,22 @@ class MiniCPMOPreprocessor:
         num_images: int,
         num_audios: int,
     ) -> list[Mapping[str, object]]:
-        """Prepend media placeholders to the last user message."""
+        """Prepend missing media placeholders to the last user message."""
         result: list[Mapping[str, object]] = []
         messages = self.normalize_message_contents(messages)
         for i, msg in enumerate(messages):
             if i == len(messages) - 1 and msg.get("role", "user") == "user":
+                content = str(msg.get("content", ""))
+                missing_image_placeholder_count = num_images - content.count(
+                    IMAGE_PLACEHOLDER
+                )
+                missing_audio_placeholder_count = num_audios - content.count(
+                    AUDIO_PLACEHOLDER
+                )
                 parts = (
-                    [IMAGE_PLACEHOLDER] * num_images
-                    + [AUDIO_PLACEHOLDER] * num_audios
-                    + [str(msg.get("content", ""))]
+                    [IMAGE_PLACEHOLDER] * missing_image_placeholder_count
+                    + [AUDIO_PLACEHOLDER] * missing_audio_placeholder_count
+                    + [content]
                 )
                 result.append({**msg, "content": "\n".join(parts)})
             else:
