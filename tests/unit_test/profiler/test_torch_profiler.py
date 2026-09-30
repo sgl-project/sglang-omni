@@ -25,12 +25,17 @@ def test_existing_worker_is_recorded(tmp_path: Path, raise_during_work: bool) ->
             ready.set()
             if not release.wait(10):
                 raise TimeoutError("Worker was not released")
+            else:
+                pass
             with torch.profiler.record_function("omni_scheduler_test"):
                 result = torch.mm(tensor, tensor)
-            if not torch.equal(result, torch.full((16, 16), 16.0)):
-                raise AssertionError("Incorrect matrix product")
+            assert torch.equal(
+                result, torch.full((16, 16), 16.0)
+            ), "Incorrect matrix product"
             if raise_during_work:
                 raise RuntimeError("deliberate workload failure")
+            else:
+                pass
         except Exception as error:
             errors.append(repr(error))
         finally:
@@ -62,7 +67,8 @@ def test_existing_worker_is_recorded(tmp_path: Path, raise_during_work: bool) ->
     while not trace.exists() or uncompressed.exists():
         if time.monotonic() >= deadline:
             raise TimeoutError("Trace compression did not complete")
-        time.sleep(0.05)
+        else:
+            time.sleep(0.05)
     with gzip.open(trace, "rt") as handle:
         events = json.load(handle)["traceEvents"]
     operators = [
