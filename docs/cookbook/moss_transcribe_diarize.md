@@ -105,8 +105,6 @@ Install `sglang-omni` with [Installation](../get_started/installation.md) on CUD
 hf download OpenMOSS-Team/MOSS-Transcribe-Diarize
 ```
 
-Serve the model:
-
 MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
 default target is 4 requests with a 12 ms oldest-request deadline. While more
 request builds are pending, the scheduler waits for either limit; after build
@@ -114,6 +112,8 @@ work drains, it releases immediately only when decode is idle. During active
 decode, it continues coalescing until the target or deadline. Override the two
 limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
 set the request target to `0` to disable coalescing.
+
+Serve the model:
 
 #### CUDA GPU
 
