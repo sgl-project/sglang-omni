@@ -148,7 +148,9 @@ class MingImageEncoder(nn.Module):
         )
 
         try:
-            set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
+            set_global_server_args_for_scheduler(
+                ServerArgs(model_path="dummy", tp_size=tp_size)
+            )
         except Exception:
             pass
         if not parallel_state.model_parallel_is_initialized():

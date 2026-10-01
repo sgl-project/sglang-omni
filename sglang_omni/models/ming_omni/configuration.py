@@ -34,6 +34,7 @@ class BailingMoeV2Config(PretrainedConfig):
         topk_group=4,
         routed_scaling_factor=2.5,
         use_expert_bias=True,
+        router_type="topN",
         first_k_dense_replace=1,
         rope_scaling=None,
         tie_word_embeddings=False,
@@ -61,6 +62,7 @@ class BailingMoeV2Config(PretrainedConfig):
         self.topk_group = topk_group
         self.routed_scaling_factor = routed_scaling_factor
         self.use_expert_bias = use_expert_bias
+        self.router_type = router_type
         self.first_k_dense_replace = first_k_dense_replace
         if isinstance(rope_scaling, dict) and rope_scaling.get("factor") is None:
             self.rope_scaling = None

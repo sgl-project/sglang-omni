@@ -20,7 +20,12 @@ import math
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
-from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
+import torch.nn.functional as F
+from sglang.srt.layers.communicator import (
+    ScatterMode,
+    enable_moe_dense_fully_dp,
+    get_attn_tp_context,
+)
 from sglang.srt.runtime_context import get_parallel
 from torch import nn
 
@@ -302,7 +307,34 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         self.tp_size = get_tensor_model_parallel_world_size()
 
         # Gate: linear projection for router scores
+        self.multi_router = config.router_type == "MultiRouter"
+        if self.multi_router and get_parallel().attn_dp_size > 1:
+            raise NotImplementedError(
+                "Ming MultiRouter requires attention DP size 1; "
+                "multimodal routing across attention DP ranks is not supported"
+            )
+        else:
+            pass
         self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, bias=False)
+        if self.multi_router:
+            self.image_gate = ReplicatedLinear(
+                config.hidden_size, config.num_experts, bias=False
+            )
+            self.audio_gate = ReplicatedLinear(
+                config.hidden_size, config.num_experts, bias=False
+            )
+            if config.use_expert_bias:
+                self.image_expert_bias = nn.Parameter(
+                    torch.zeros(config.num_experts), requires_grad=False
+                )
+                self.audio_expert_bias = nn.Parameter(
+                    torch.zeros(config.num_experts), requires_grad=False
+                )
+            else:
+                self.image_expert_bias = None
+                self.audio_expert_bias = None
+        else:
+            pass
 
         # Expert bias for load balancing
         if config.use_expert_bias:
@@ -353,6 +385,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         forward_batch: Optional[ForwardBatch] = None,
         should_allreduce_fusion: bool = False,
         use_reduce_scatter: bool = False,
+        modality_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         del forward_batch
         num_tokens, hidden_dim = hidden_states.shape
@@ -362,13 +395,41 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         )
 
         # Router scores via sigmoid (not softmax like standard MoE)
-        router_logits, _ = self.gate(hidden_states)
-        router_logits = router_logits.float()
+        if self.multi_router:
+            router_logits = F.linear(hidden_states.float(), self.gate.weight.float())
+            routing_bias = self.expert_bias
+            if modality_ids is not None:
+                assert modality_ids.shape == (num_tokens,)
+                image_logits = F.linear(
+                    hidden_states.float(), self.image_gate.weight.float()
+                )
+                audio_logits = F.linear(
+                    hidden_states.float(), self.audio_gate.weight.float()
+                )
+                image_mask = (modality_ids == 1).unsqueeze(-1)
+                audio_mask = (modality_ids == 2).unsqueeze(-1)
+                router_logits = torch.where(image_mask, image_logits, router_logits)
+                router_logits = torch.where(audio_mask, audio_logits, router_logits)
+                if routing_bias is not None:
+                    routing_bias = torch.where(
+                        image_mask, self.image_expert_bias, routing_bias
+                    )
+                    routing_bias = torch.where(
+                        audio_mask, self.audio_expert_bias, routing_bias
+                    )
+                else:
+                    pass
+            else:
+                pass
+        else:
+            router_logits, _ = self.gate(hidden_states)
+            router_logits = router_logits.float()
+            routing_bias = self.expert_bias
         scores = torch.sigmoid(router_logits)
 
         # Add expert bias for load balancing
-        if self.expert_bias is not None:
-            scores_for_routing = scores + self.expert_bias
+        if routing_bias is not None:
+            scores_for_routing = scores + routing_bias
         else:
             scores_for_routing = scores
 
@@ -536,6 +597,7 @@ class BailingMoeV2DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
         residual: Optional[torch.Tensor] = None,
+        modality_ids: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         hidden_states, residual = (
             self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
@@ -566,11 +628,18 @@ class BailingMoeV2DecoderLayer(nn.Module):
             forward_batch
         )
 
+        if modality_ids is not None and not self.is_dense:
+            modality_ids = self.mlp_modality_ids(modality_ids, forward_batch)
+            assert modality_ids.shape[0] == hidden_states.shape[0]
+        else:
+            pass
+        routing_kwargs = {} if self.is_dense else {"modality_ids": modality_ids}
         hidden_states = self.mlp(
             hidden_states,
             forward_batch=forward_batch,
             should_allreduce_fusion=should_allreduce_fusion,
             use_reduce_scatter=use_reduce_scatter,
+            **routing_kwargs,
         )
 
         if should_allreduce_fusion:
@@ -583,6 +652,25 @@ class BailingMoeV2DecoderLayer(nn.Module):
             )
 
         return hidden_states, residual
+
+    def mlp_modality_ids(
+        self, modality_ids: torch.Tensor, forward_batch: ForwardBatch
+    ) -> torch.Tensor:
+        mode = self.layer_scatter_modes.mlp_mode
+        parallel = get_parallel()
+        if mode is ScatterMode.SCATTERED:
+            return modality_ids.tensor_split(parallel.attn_tp_size)[
+                parallel.attn_tp_rank
+            ].contiguous()
+        else:
+            pass
+        if get_attn_tp_context().input_scattered:
+            modality_ids = modality_ids.tensor_split(parallel.attn_tp_size)[
+                parallel.attn_tp_rank
+            ].contiguous()
+        else:
+            pass
+        return modality_ids
 
 
 # ============================================================================
@@ -618,6 +706,7 @@ class BailingMoeV2TextModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
+        modality_ids: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         if input_embeds is not None:
@@ -626,8 +715,14 @@ class BailingMoeV2TextModel(nn.Module):
             hidden_states = self.embed_tokens(input_ids)
 
         residual = None
+        if self.config.router_type != "MultiRouter":
+            modality_ids = None
+        else:
+            pass
         for layer in self.layers:
-            hidden_states, residual = layer(hidden_states, forward_batch, residual)
+            hidden_states, residual = layer(
+                hidden_states, forward_batch, residual, modality_ids
+            )
 
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
@@ -667,6 +762,10 @@ class BailingMoeV2TextModel(nn.Module):
                 name = name.replace(".mlp.gate.expert_bias", ".mlp.expert_bias")
             else:
                 pass
+            for modality in ("image", "audio"):
+                name = name.replace(
+                    f".mlp.{modality}_gate.expert_bias", f".mlp.{modality}_expert_bias"
+                )
             # word_embeddings -> embed_tokens
             if name == "word_embeddings.weight":
                 name = "embed_tokens.weight"

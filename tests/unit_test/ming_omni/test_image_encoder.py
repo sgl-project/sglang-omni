@@ -32,7 +32,11 @@ def test_tp_initialization_uses_platform_backend(monkeypatch) -> None:
         "initialize_model_parallel",
         lambda **kwargs: calls.setdefault("model_parallel", kwargs),
     )
-    monkeypatch.setattr(server_args, "ServerArgs", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        server_args,
+        "ServerArgs",
+        lambda **kwargs: calls.setdefault("server_args", kwargs),
+    )
     monkeypatch.setattr(
         server_args, "set_global_server_args_for_scheduler", lambda args: None
     )
@@ -45,3 +49,4 @@ def test_tp_initialization_uses_platform_backend(monkeypatch) -> None:
     assert distributed["world_size"] == 2
     assert distributed["rank"] == 1
     assert calls["model_parallel"] == {"tensor_model_parallel_size": 2}
+    assert calls["server_args"] == {"model_path": "dummy", "tp_size": 2}

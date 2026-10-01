@@ -24,6 +24,7 @@ class MingThinkerModelRunner(ModelRunner):
 
         hf_config = tp_worker.model_runner.model_config.hf_config
         llm_config = getattr(hf_config, "llm_config", hf_config)
+        self.multi_router = getattr(llm_config, "router_type", "topN") == "MultiRouter"
         self.image_token_id = self.token_id(
             hf_config,
             "image_token_id",
@@ -73,12 +74,64 @@ class MingThinkerModelRunner(ModelRunner):
         else:
             pass
 
+        modality_ids = self.prefill_modality_ids(forward_batch, schedule_batch)
         input_embeds = self.inject_multimodal_embeds(forward_batch, schedule_batch)
         if input_embeds is None:
             return None
         else:
             pass
-        return self.forward_with_omni_embeds(forward_batch, input_embeds)
+        return self.forward_with_omni_embeds(forward_batch, input_embeds, modality_ids)
+
+    def prefill_modality_ids(
+        self, forward_batch: Any, schedule_batch: Any
+    ) -> torch.Tensor:
+        if (
+            self.multi_router
+            and forward_batch.forward_mode.is_context_parallel_extend()
+            and forward_batch.attn_cp_metadata is not None
+            and any(
+                request.omni_model_inputs is not None
+                and any(
+                    request.omni_model_inputs.get(key) is not None
+                    for key in ("image_embeds", "video_embeds", "audio_embeds")
+                )
+                for request in schedule_batch.reqs
+            )
+        ):
+            raise NotImplementedError(
+                "Ming multimodal routing requires unsplit prefill token order; "
+                "context-parallel multimodal prefill is not supported"
+            )
+        else:
+            pass
+        modality_ids = torch.zeros_like(forward_batch.input_ids)
+        start = 0
+        for request, length in zip(
+            schedule_batch.reqs, forward_batch.extend_seq_lens_cpu
+        ):
+            model_inputs = request.omni_model_inputs
+            if model_inputs is not None:
+                pad_values = model_inputs.get("pad_values", {})
+                token_ids = forward_batch.input_ids[start : start + length]
+                for modality, token_id, route in (
+                    ("image", self.image_token_id, 1),
+                    ("video", self.video_token_id, 1),
+                    ("audio", self.audio_token_id, 2),
+                ):
+                    match_id = self.resolve_match_id(pad_values, modality, token_id)
+                    if (
+                        model_inputs.get(f"{modality}_embeds") is not None
+                        and match_id is not None
+                    ):
+                        modality_ids[start : start + length][
+                            token_ids == match_id
+                        ] = route
+                    else:
+                        pass
+            else:
+                pass
+            start += length
+        return modality_ids
 
     def inject_multimodal_embeds(
         self, forward_batch: Any, schedule_batch: Any
@@ -140,6 +193,33 @@ class MingThinkerModelRunner(ModelRunner):
                     else:
                         pass
                     continue
+                else:
+                    pass
+
+                if modality not in consumed:
+                    prefix = int(forward_batch.extend_prefix_lens_cpu[i])
+                    if prefix > 0:
+                        cached_rows = sum(
+                            token == match_id for token in req.origin_input_ids[:prefix]
+                        )
+                        if cached_rows > 0:
+                            placeholder_count = sum(
+                                token == match_id for token in req.origin_input_ids
+                            )
+                            if placeholder_count != total_rows:
+                                raise ValueError(
+                                    f"Cannot reconstruct {modality} multimodal cursor: "
+                                    f"{placeholder_count} prompt placeholders do not map "
+                                    f"one-to-one to {total_rows} embedding rows"
+                                )
+                            else:
+                                pass
+                            offset = cached_rows
+                            consumed[modality] = offset
+                        else:
+                            pass
+                    else:
+                        pass
                 else:
                     pass
 
@@ -260,7 +340,10 @@ class MingThinkerModelRunner(ModelRunner):
         )
 
     def forward_with_omni_embeds(
-        self, forward_batch: Any, input_embeds: torch.Tensor
+        self,
+        forward_batch: Any,
+        input_embeds: torch.Tensor,
+        modality_ids: torch.Tensor | None = None,
     ) -> Any:
         model_runner = self.tp_worker.model_runner
         outer = self.outer_model
@@ -279,6 +362,7 @@ class MingThinkerModelRunner(ModelRunner):
                 positions=positions,
                 forward_batch=forward_batch,
                 input_embeds=input_embeds,
+                modality_ids=modality_ids,
             )
 
             logits_output = outer.logits_processor(

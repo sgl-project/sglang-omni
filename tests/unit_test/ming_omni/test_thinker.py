@@ -334,10 +334,11 @@ def fake_runner(torch_module, runner_cls, **token_ids):
     return runner
 
 
-def fake_batch(torch_module, input_ids, req):
+def fake_batch(torch_module, input_ids, req, *, prefix_length=0):
     forward_batch = SimpleNamespace(
         input_ids=torch_module.tensor(input_ids, dtype=torch_module.long),
         extend_seq_lens_cpu=[len(input_ids)],
+        extend_prefix_lens_cpu=[prefix_length],
     )
     schedule_batch = SimpleNamespace(reqs=[req])
     return forward_batch, schedule_batch
@@ -474,3 +475,87 @@ def test_ming_thinker_forward_publishes_sglang_forward_context() -> None:
 
     assert seen == [attn_backend, attn_backend]
     assert result.logits_output == "logits"
+
+
+@pytest.mark.parametrize("prefix_length", [0, 1, 3, 5])
+@pytest.mark.parametrize("use_pad_value", [False, True])
+def test_ming_runner_prefix_cache_selects_matching_image_rows(
+    monkeypatch, prefix_length: int, use_pad_value: bool
+) -> None:
+    torch, runner_cls = load_runner_with_fake_sglang(monkeypatch)
+    runner = fake_runner(torch, runner_cls, image=3)
+    match_id = 100000003 if use_pad_value else 3
+    image_embeds = torch.tensor([[1.0, 11.0], [2.0, 12.0], [3.0, 13.0], [4.0, 14.0]])
+    origin_ids = [1, match_id, match_id, match_id, match_id, 2]
+    req = fake_req(
+        {
+            "image_embeds": image_embeds,
+            "pad_values": {"image": match_id} if use_pad_value else {},
+        }
+    )
+    req.origin_input_ids = origin_ids
+    remaining = origin_ids[prefix_length:]
+    forward_batch, schedule_batch = fake_batch(
+        torch, remaining, req, prefix_length=prefix_length
+    )
+
+    output = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
+
+    cached_image_rows = origin_ids[:prefix_length].count(match_id)
+    image_mask = forward_batch.input_ids == match_id
+    assert torch.equal(output[image_mask], image_embeds[cached_image_rows:])
+    assert torch.equal(output[-1], torch.tensor([2.0, 102.0]))
+
+
+def test_ming_runner_prefix_cache_tracks_image_and_audio_separately(
+    monkeypatch,
+) -> None:
+    torch, runner_cls = load_runner_with_fake_sglang(monkeypatch)
+    runner = fake_runner(torch, runner_cls, image=3, audio=5)
+    image_embeds = torch.tensor([[1.0, 11.0], [2.0, 12.0]])
+    audio_embeds = torch.tensor([[3.0, 13.0], [4.0, 14.0]])
+    req = fake_req({"image_embeds": image_embeds, "audio_embeds": audio_embeds})
+    req.origin_input_ids = [1, 3, 5, 3, 5, 2]
+    forward_batch, schedule_batch = fake_batch(torch, [3, 5, 2], req, prefix_length=3)
+
+    output = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
+
+    assert torch.equal(output[:2], torch.stack([image_embeds[1], audio_embeds[1]]))
+    assert torch.equal(output[-1], torch.tensor([2.0, 102.0]))
+
+
+@pytest.mark.parametrize("cached_rows", [0, 2])
+def test_ming_runner_prefix_cache_does_not_skip_again_on_next_chunk(
+    monkeypatch, cached_rows: int
+) -> None:
+    torch, runner_cls = load_runner_with_fake_sglang(monkeypatch)
+    runner = fake_runner(torch, runner_cls, image=3)
+    image_embeds = torch.tensor([[1.0, 11.0], [2.0, 12.0], [3.0, 13.0], [4.0, 14.0]])
+    req = fake_req({"image_embeds": image_embeds}, inflight_middle_chunks=1)
+    req.origin_input_ids = [1, 3, 3, 3, 3, 2]
+    prefix = 1 + cached_rows
+    forward_batch, schedule_batch = fake_batch(torch, [3], req, prefix_length=prefix)
+    first = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
+    req.inflight_middle_chunks = 0
+    forward_batch, schedule_batch = fake_batch(
+        torch, req.origin_input_ids[prefix + 1 :], req, prefix_length=prefix + 1
+    )
+    second = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
+
+    assert torch.equal(first[0], image_embeds[cached_rows])
+    assert torch.equal(second[:-1], image_embeds[cached_rows + 1 :])
+    assert req.omni_model_inputs is None
+
+
+def test_ming_runner_prefix_cache_rejects_ambiguous_embedding_rows(monkeypatch) -> None:
+    torch, runner_cls = load_runner_with_fake_sglang(monkeypatch)
+    runner = fake_runner(torch, runner_cls, image=3)
+    req = fake_req({"image_embeds": torch.tensor([[1.0, 11.0], [2.0, 12.0]])})
+    req.origin_input_ids = [1, 3, 3, 3, 2]
+    forward_batch, schedule_batch = fake_batch(torch, [3, 3, 2], req, prefix_length=2)
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot reconstruct image.*3 prompt placeholders.*2 embedding rows",
+    ):
+        runner.inject_multimodal_embeds(forward_batch, schedule_batch)
