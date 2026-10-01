@@ -238,3 +238,9 @@ async def test_closed_loop_runs_do_not_report_dispatch_lateness() -> None:
     results = await runner.run(["a", "b"], _send)
 
     assert all(r.dispatch_lateness_s is None for r in results)
+
+
+def test_run_config_preserves_positional_arrival_seed() -> None:
+    config = RunConfig(4, 2.0, 0, True, 60, 42)
+    assert config.arrival_seed == 42
+    assert config.trust_env is False

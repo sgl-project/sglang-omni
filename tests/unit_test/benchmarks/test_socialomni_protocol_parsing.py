@@ -181,8 +181,8 @@ def test_invalid_request_rate_is_rejected(rate):
 def test_service_timeout_is_independent_from_request_timeout(monkeypatch):
     observed = []
 
-    def wait(url, timeout):
-        observed.append((url, timeout))
+    def wait(url, timeout, *, trust_env):
+        observed.append((url, timeout, trust_env))
         raise RuntimeError("stop before evaluation")
 
     monkeypatch.setattr(entrypoint, "wait_for_service", wait)
@@ -211,7 +211,7 @@ def test_service_timeout_is_independent_from_request_timeout(monkeypatch):
     assert eval_config(timeout_s=2).server_timeout == 300
     with pytest.raises(RuntimeError, match="stop before evaluation"):
         entrypoint.main()
-    assert observed == [("http://localhost:8000", 600)]
+    assert observed == [("http://localhost:8000", 600, True)]
 
 
 def test_judge_config_has_only_fixed_public_fields(tmp_path: Path, monkeypatch) -> None:

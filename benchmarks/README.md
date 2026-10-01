@@ -419,13 +419,15 @@ remain unparseable. A malformed completion response is recorded as a request
 failure even when the server returns HTTP 200.
 
 Model requests use `--max-concurrency`; judge concurrency is configured per
-endpoint. Requests respect `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.
+endpoint. Requests respect `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` by default.
+Use `--no-trust-env` to disable environment proxy settings for model, judge,
+and health requests; `--trust-env` explicitly enables them.
 Use `--model-revision` to record the served weight revision in the result
 configuration and provenance. This is a user declaration, not a server-verified
 identity; `--model` remains the serving name. Prefix preparation failures stay
 in per-sample results but are excluded from model request speed statistics.
 `--launch-command` records the server command without executing it. Proxy
-handling is recorded as `trust_env: true`; proxy URLs and credentials are not
+handling is recorded as `trust_env`; proxy URLs and credentials are not
 copied into the result. Each judge result retains the full shared request
 record under `request`.
 For judges, `request` aggregates one scoring operation, while `attempts` retains

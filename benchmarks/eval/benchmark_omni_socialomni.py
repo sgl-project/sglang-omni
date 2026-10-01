@@ -66,6 +66,7 @@ class SocialOmniEvalConfig:
     launch_command: str | None = None
     server_timeout: int = 300
     request_rate: float = float("inf")
+    trust_env: bool = True
 
     def __post_init__(self) -> None:
         validate_endpoint_url(self.base_url)
@@ -142,7 +143,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             "judge_request_rate_scope": "logical_scores",
             "temperature": 0.0,
             "use_audio_in_video": True,
-            "trust_env": True,
+            "trust_env": config.trust_env,
         },
     )
     output: dict[str, Any] = {
@@ -184,7 +185,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                 timeout_s=config.timeout_s,
                 warmup=config.warmup,
                 disable_tqdm=config.disable_tqdm,
-                trust_env=True,
+                trust_env=config.trust_env,
             )
         )
         request_results = await runner.run(
@@ -227,6 +228,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             request_rate=config.request_rate,
             warmup=config.warmup,
             disable_tqdm=config.disable_tqdm,
+            trust_env=config.trust_env,
         )
         for result in model_requests:
             failure = _request_failure(result, "level2_model")
@@ -246,6 +248,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                 timeout_s=config.timeout_s,
                 request_rate=config.request_rate,
                 disable_tqdm=config.disable_tqdm,
+                trust_env=config.trust_env,
             )
             judge_wall_s = time.perf_counter() - judge_started
             judge_requests = [
@@ -366,6 +369,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--request-rate", type=float, default=float("inf"))
     parser.add_argument("--warmup", type=int, default=None)
     parser.add_argument("--disable-tqdm", action="store_true")
+    parser.add_argument(
+        "--trust-env",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use environment proxy settings for model, judge, and health requests.",
+    )
     parser.add_argument("--output-dir", default="benchmarks/results/socialomni")
     return parser
 
@@ -378,7 +387,9 @@ def main() -> None:
         if server_url.endswith(suffix):
             server_url = server_url[: -len(suffix)]
             break
-    wait_for_service(server_url, timeout=config.server_timeout)
+    wait_for_service(
+        server_url, timeout=config.server_timeout, trust_env=config.trust_env
+    )
     output = asyncio.run(run_socialomni(config))
     commit = output["provenance"]["repository"]["commit"] or "unknown"
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())

@@ -36,10 +36,10 @@ class RunConfig:
     warmup: int | None = None
     disable_tqdm: bool = False
     timeout_s: int = 300
-    trust_env: bool = False
     # note (luojiaxuan): seeds the Poisson inter-arrival draws so every run
     # offers the same arrival sequence; None draws a fresh sequence per run.
     arrival_seed: int | None = None
+    trust_env: bool = False
 
     @property
     def effective_warmup(self) -> int:

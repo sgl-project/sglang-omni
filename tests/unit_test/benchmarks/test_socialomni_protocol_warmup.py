@@ -182,8 +182,9 @@ async def test_valid_completion_content(content, expected) -> None:
 @pytest.mark.parametrize(
     "suffix", ["", "/", "/v1", "/v1/", "/v1/chat/completions", "/v1/chat/completions/"]
 )
+@pytest.mark.parametrize("trust_env", [False, True])
 def test_cli_checks_server_root_and_preserves_completion_url(
-    tmp_path, monkeypatch, capsys, suffix
+    tmp_path, monkeypatch, capsys, suffix, trust_env
 ) -> None:
     """Accepted API URLs must reach both health and completion routes through the CLI."""
     routes = []
@@ -210,6 +211,11 @@ def test_cli_checks_server_root_and_preserves_completion_url(
     )
     thread.start()
     monkeypatch.setenv("no_proxy", "127.0.0.1")
+    if not trust_env:
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+        monkeypatch.setenv("no_proxy", "")
+    else:
+        pass
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
         entrypoint,
@@ -226,6 +232,7 @@ def test_cli_checks_server_root_and_preserves_completion_url(
         "argv",
         [
             "socialomni",
+            "--trust-env" if trust_env else "--no-trust-env",
             "--dataset-root",
             "~/dataset",
             "--model",
@@ -270,7 +277,7 @@ def test_cli_checks_server_root_and_preserves_completion_url(
     assert saved["config"]["model_revision"] == "weights-commit"
     assert saved["config"]["launch_command"] == saved["provenance"]["launch_command"]
     assert saved["provenance"]["launch_command"].endswith("--model-path /models/qwen")
-    assert saved["provenance"]["declared_server_config"]["trust_env"] is True
+    assert saved["provenance"]["declared_server_config"]["trust_env"] is trust_env
     assert (
         saved["provenance"]["artifacts"]["declared_model_revision"] == "weights-commit"
     )

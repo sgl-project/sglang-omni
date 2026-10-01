@@ -44,6 +44,7 @@ async def run_level2_model(
     request_rate: float = float("inf"),
     warmup: int | None = None,
     disable_tqdm: bool = False,
+    trust_env: bool = True,
 ) -> tuple[list[dict[str, Any]], list[RequestResult], float]:
     """Prepare video prefixes, then run decisions and gold-positive responses."""
     records: list[dict[str, Any]] = []
@@ -114,7 +115,7 @@ async def run_level2_model(
                 timeout_s=timeout_s,
                 warmup=warmup,
                 disable_tqdm=disable_tqdm,
-                trust_env=True,
+                trust_env=trust_env,
             )
         )
         outcomes = await runner.run(cohort, send)
@@ -143,6 +144,7 @@ async def run_judges(
     timeout_s: int,
     request_rate: float = float("inf"),
     disable_tqdm: bool = False,
+    trust_env: bool = True,
 ) -> tuple[list[RequestResult], list[dict[str, str]]]:
     """Return logical scores and retain each physical request in the records."""
     by_id = {sample.sample_id: sample for sample in samples}
@@ -216,7 +218,7 @@ async def run_judges(
                 timeout_s=timeout_s,
                 warmup=0,
                 disable_tqdm=disable_tqdm,
-                trust_env=True,
+                trust_env=trust_env,
             )
         )
         return await runner.run(eligible, send)
