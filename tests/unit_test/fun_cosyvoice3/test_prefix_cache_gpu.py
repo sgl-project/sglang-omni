@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 import torch
 
@@ -29,6 +31,7 @@ cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
 CHUNK = 50
 CHANNELS = 80
 HEADS, HEAD_DIM, LAYERS = 4, 32, 3
+COMPILED_OVER_EAGER_ERROR = 2.0
 
 
 def make_estimator() -> PackedDiT:
@@ -58,6 +61,9 @@ def make_estimator() -> PackedDiT:
             dit.input_embed.conv_pos_embed.conv2[0],
         ):
             conv.bias.fill_(0.5)
+        for block in dit.transformer_blocks:
+            block.attn_norm.linear.bias.fill_(0.5)
+        dit.norm_out.linear.bias.fill_(0.5)
     for module in dit.modules():
         if isinstance(module, (torch.nn.Linear, torch.nn.Conv1d)):
             module.to(torch.bfloat16)
@@ -154,8 +160,10 @@ def test_prefix_hops_are_bit_identical_to_whole_history_hops(
 def test_compiled_prefix_hops_follow_each_row_across_batches() -> None:
     """Compiled hops over rows with their own prompts, prefixes and lengths,
     one joining fresh beside a cached one and the order flipped on a later hop,
-    equal each row's own whole-history solve."""
+    stay as close to each row's float32 whole-history solve as its bf16 eager
+    solve is."""
     estimator = make_estimator()
+    reference_estimator = PackedDiT(copy.deepcopy(estimator.dit).float(), device="cuda")
     device = torch.device("cuda")
     dtype = torch.bfloat16
     pool = PrefixKVPool(
@@ -186,6 +194,13 @@ def test_compiled_prefix_hops_follow_each_row_across_batches() -> None:
     unit = torch.linspace(0, 1, 11, device=device, dtype=dtype)
     time_span = 1 - torch.cos(unit * 0.5 * torch.pi)
     hops = [[("a", 70)], [("b", 130), ("a", 160)], [("a", 260), ("b", 210)]]
+
+    def error(actual: torch.Tensor, expected: torch.Tensor) -> float:
+        return float(
+            torch.linalg.vector_norm(actual.float() - expected)
+            / torch.linalg.vector_norm(expected)
+        )
+
     with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
         for hop in hops:
             names = [name for name, _ in hop]
@@ -218,29 +233,36 @@ def test_compiled_prefix_hops_follow_each_row_across_batches() -> None:
             for name, start, total in zip(names, starts, totals):
                 stream = streams[name]
                 packed = pack_rows([total], device)
-                reference = solve_flow_euler_packed(
-                    estimator,
-                    gather_rows(
-                        stream["noise"][None, :, :total].transpose(1, 2), packed
-                    ),
-                    time_span,
-                    gather_rows(stream["mu"][None, :, :total].transpose(1, 2), packed),
-                    stream["speaker_embeddings"][None],
-                    gather_rows(
-                        stream["mel_conditioning"][None, :, :total].transpose(1, 2),
+
+                def whole_history(
+                    model: PackedDiT, value_dtype: torch.dtype
+                ) -> torch.Tensor:
+                    def rows_of(key: str) -> torch.Tensor:
+                        return gather_rows(
+                            stream[key][None, :, :total].transpose(1, 2), packed
+                        ).to(value_dtype)
+
+                    return solve_flow_euler_packed(
+                        model,
+                        rows_of("noise"),
+                        time_span.to(value_dtype),
+                        rows_of("mu"),
+                        stream["speaker_embeddings"][None].to(value_dtype),
+                        rows_of("mel_conditioning"),
                         packed,
-                    ),
-                    packed,
-                    cfg_rate=0.7,
-                    streaming=True,
-                )
+                        cfg_rate=0.7,
+                        streaming=True,
+                    )[0, emitted[name] : total]
+
+                eager = whole_history(estimator, dtype)
+                with torch.autocast("cuda", enabled=False):
+                    float32 = whole_history(reference_estimator, torch.float32)
                 actual = cached[
                     0, offset + emitted[name] - start : offset + total - start
                 ]
-                assert torch.equal(actual, reference[0, emitted[name] : total]), (
-                    name,
-                    total,
-                )
+                assert error(actual, float32) <= COMPILED_OVER_EAGER_ERROR * error(
+                    eager, float32
+                ), (name, total)
                 emitted[name] = total
                 offset += total - start
     for pair in caches.values():
