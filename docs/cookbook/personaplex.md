@@ -22,7 +22,7 @@ Five stages run under `MultiProcessPipelineRunner` (preprocessing, Mimi encode, 
 
 - The recording is resampled to 24 kHz and **channel 0 is used**.
 - The reply is exactly as long as the input, offset by one frame: the model answers while it listens, so leave silence after the caller's last words if you want a full answer.
-- Prompt plus reply must fit the LM context, 8192 positions by default (about 10.8 minutes); a longer recording is rejected with the limit in the message and needs `--lm.engine.context_length`.
+- Prompt plus reply must fit the LM context, 8192 positions by default (about 10.8 minutes); a longer recording is rejected with the limit in the message and needs `--lm.engine.context_length`. Available KV cache can impose a shorter limit, as described for Intel GPU below.
 - The reply text is the model's inner monologue with the frame markers (`PAD`, `EPAD`, `BOS`, `EOS`) removed.
 
 ### CUDA GPU
@@ -49,6 +49,8 @@ python examples/run_personaplex.py \
   --out reply.wav \
   --lm.engine.mem_fraction_static 0.70
 ```
+
+At `mem_fraction_static=0.70`, the validated B60 setup allocated 4,437 KV tokens. At 12.5 frames per second, that allows less than about 5.9 minutes of input once prompt tokens are counted, even though the 8,192-position context permits more. Check the KV token capacity reported at startup. For longer recordings, shorten the input or increase `--lm.engine.mem_fraction_static` if device memory permits; increasing `--lm.engine.context_length` alone does not add KV capacity.
 
 ## Serving over HTTP
 
