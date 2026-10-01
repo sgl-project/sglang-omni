@@ -30,6 +30,10 @@ from benchmarks.duplex.serving_metrics import (
     distribution,
     session_metrics,
 )
+from benchmarks.duplex.serving_unit_metrics import (
+    aggregate_unit_sessions,
+    unit_session_metrics,
+)
 from tests.unit_test.benchmarks.test_duplex_client import DuplexPeer
 
 INPUT_DURATION_S = 0.32
@@ -231,7 +235,7 @@ def test_coordinator_keeps_failed_session(tmp_path: Path) -> None:
             port = server.sockets[0].getsockname()[1]
             result = await run_concurrency(
                 f"ws://127.0.0.1:{port}/v1/realtime",
-                b"\x00\x00" * (4 * PACKET_BYTES // 2),
+                [b"\x00\x00" * (4 * PACKET_BYTES // 2)],
                 concurrency=3,
                 profile=DEFAULT_PROFILE,
                 output_dir=tmp_path / "c3",
@@ -304,3 +308,102 @@ def test_serving_cli_sweep_against_fake_server(tmp_path: Path) -> None:
     summaries = json.loads((tmp_path / "results" / "summary.json").read_text())["runs"]
     assert [run["aggregate"]["attempted_sessions"] for run in summaries] == [1, 2]
     assert [run["aggregate"]["successful_sessions"] for run in summaries] == [1, 2]
+
+
+def unit_trace(
+    trace_path: Path, events: list[tuple[float, dict[str, JsonValue]]]
+) -> dict[str, JsonValue]:
+    """Record a 3 s MiniCPM-o session whose packets are sent on schedule."""
+    trace_path.parent.mkdir(parents=True)
+    packets = 38
+    receipts = [
+        {
+            "event_id": f"append-{index}",
+            "seq": index,
+            "scheduled_s": 10 + index * 0.08,
+            "start_s": 10 + index * 0.08,
+            "completed_s": 10 + index * 0.08,
+        }
+        for index in range(packets)
+    ]
+    trace_path.with_name(SEND_RECEIPTS_FILE).write_text(
+        json.dumps({"session_start_s": 10.0, "appends": receipts})
+    )
+    trace_path.write_text(
+        "".join(
+            json.dumps({"direction": "receive", "time_s": time_s, "event": event})
+            + "\n"
+            for time_s, event in events
+        )
+    )
+    return unit_session_metrics(
+        trace_path,
+        session_id="session-000",
+        input_duration_s=3.0,
+        profile="minicpmo-native-pr2377",
+        reserve_s=0.0,
+    )
+
+
+def unit_audio(seconds: float) -> dict[str, JsonValue]:
+    return {
+        "type": "response.output_audio.delta",
+        "response_id": "reply",
+        "delta": base64.b64encode(b"\x00\x00" * int(24000 * seconds)).decode(),
+    }
+
+
+def test_unit_metrics_separate_listening_from_late_speech(tmp_path: Path) -> None:
+    # note (Junnan Li): Units become ready when packets 12, 24 and 37 are sent.
+    ready = [10 + 12 * 0.08, 10 + 24 * 0.08, 10 + 37 * 0.08]
+    done = {"type": "sglang.unit.done"}
+    session = unit_trace(
+        tmp_path / "session" / "trace.jsonl",
+        [
+            (ready[0] + 0.05, done),
+            (ready[1] + 0.2, {"type": "response.created", "response": {"id": "reply"}}),
+            (ready[1] + 0.4, unit_audio(1.0)),
+            (ready[1] + 0.4, done),
+            (ready[2] + 1.5, unit_audio(0.5)),
+            (
+                ready[2] + 1.5,
+                {"type": "response.done", "response": {"status": "completed"}},
+            ),
+            (ready[2] + 1.5, done),
+            (ready[2] + 1.5, {"type": "sglang.input_audio.drained"}),
+            (ready[2] + 1.6, {"type": "session.closed"}),
+        ],
+    )
+    assert session["success"]
+    assert (session["completed_units"], session["speak_units"]) == (3, 2)
+    assert session["listen_unit_lag_s"]["max"] == pytest.approx(0.05)
+    assert session["speak_unit_lag_s"]["max"] == pytest.approx(1.5)
+    assert (session["missed_units"], session["unit_miss_rate"]) == (1, 1 / 3)
+    assert session["response_audio_lag_s"]["p50"] == pytest.approx(0.4)
+    # note (Junnan Li): The second chunk arrives 1.14 s after a 1 s chunk began playing.
+    assert session["underrun_count"] == 1
+    assert session["underrun_total_s"] == pytest.approx(
+        ready[2] + 1.5 - (ready[1] + 0.4) - 1.0
+    )
+    assert session["underrun_ratio"] == pytest.approx(session["underrun_total_s"] / 1.5)
+
+
+def test_silent_unit_session_succeeds_and_incomplete_one_fails(tmp_path: Path) -> None:
+    done = {"type": "sglang.unit.done"}
+    closing = [
+        (14.0, {"type": "sglang.input_audio.drained"}),
+        (14.1, {"type": "session.closed"}),
+    ]
+    silent = unit_trace(
+        tmp_path / "silent" / "trace.jsonl",
+        [(11.0, done), (12.0, done), (13.0, done), *closing],
+    )
+    assert silent["success"] and silent["speak_units"] == 0
+    assert silent["underrun_ratio"] is None and silent["missed_units"] == 0
+    stalled = unit_trace(tmp_path / "stalled" / "trace.jsonl", [(11.0, done), *closing])
+    assert not stalled["success"]
+    assert stalled["errors"] == ["completed 1/3 units"]
+    assert stalled["missed_units"] == 2
+    aggregate = aggregate_unit_sessions([silent, stalled])
+    assert aggregate["successful_sessions"] == 1
+    assert aggregate["unit_miss_rate"] == pytest.approx(2 / 6)

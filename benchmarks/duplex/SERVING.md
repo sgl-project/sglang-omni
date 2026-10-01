@@ -46,3 +46,44 @@ total underrun duration divided by the fixed input observation duration; the
 aggregate ratio includes all attempted sessions, including failures. This does
 not model network jitter, device buffering, or the server's internal stages.
 These observations alone do not establish a sustainable concurrency threshold.
+
+## MiniCPM-o
+
+MiniCPM-o works in one-second units and stays silent while it listens, so the
+continuous-output metrics above do not apply. With `--profile
+minicpmo-native-pr2377` the benchmark scores each unit instead:
+
+```bash
+python -m sglang_omni.cli serve \
+  --config examples/full_duplex/minicpmo-parity.yaml \
+  --model-path /path/to/MiniCPM-o-4_5 --enable-realtime --port 8000
+
+python -m benchmarks.duplex.serving \
+  --url ws://127.0.0.1:8000/v1/realtime \
+  --audio question-1.wav question-2.wav question-3.wav \
+  --profile minicpmo-native-pr2377 \
+  --concurrencies 1,2,4,8 --warmup-runs 1 --timeout-s 180
+```
+
+Set `max_sessions` in the config to at least the highest concurrency. The parity
+config samples greedily, so every run asks the server for the same work. Several
+recordings are handed to the sessions in turn; with a single recording every
+session speaks in the same second. Recordings need silence after the question,
+or the model has no room to answer. `--warmup-runs` sends single sessions before
+the first level, because the first reply after start-up is slower.
+
+| Column | Meaning |
+|---|---|
+| `units` / `speak` | Units the server finished, and those in which the model produced text or audio |
+| `miss` | Units finished more than one unit length after they could start; units never finished count as missed |
+| `lag` | `sglang.unit.done` receipt minus the send of the packet that completes the unit |
+| `speak p95` | The same lag over speaking units only |
+| `reply` | First audio of a reply minus the send that completed the unit in which the reply began |
+| `underrun` | Silence a player would insert inside replies, divided by the audio received |
+| `late sends` | Input packets sent more than 20 ms late; a high value means the load generator, not the server, fell behind |
+
+A miss rate near zero means the server keeps up with real time at that
+concurrency. Underrun is simulated per reply: playback starts
+`--startup-reserve-ms` after the reply's first audio, and silence between
+replies is not counted. A session that never speaks is a success; one that
+leaves units unfinished is not.

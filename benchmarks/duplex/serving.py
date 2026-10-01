@@ -19,6 +19,11 @@ from benchmarks.duplex.serving_metrics import (
     distribution,
     session_metrics,
 )
+from benchmarks.duplex.serving_unit_metrics import (
+    aggregate_unit_sessions,
+    failed_unit_session,
+    unit_session_metrics,
+)
 from benchmarks.duplex.v15_audio import normalize_audio
 
 START_LEAD_S = 0.2
@@ -27,7 +32,7 @@ DEFAULT_RESERVE_MS = 80.0
 
 async def run_concurrency(
     url: str,
-    pcm: bytes,
+    pcms: list[bytes],
     *,
     concurrency: int,
     profile: ProfileName,
@@ -37,8 +42,9 @@ async def run_concurrency(
 ) -> dict[str, JsonValue]:
     if concurrency < 1:
         raise ValueError("concurrency must be positive")
-    if not pcm or len(pcm) % 2:
-        raise ValueError("input must be nonempty PCM16")
+    if not pcms or any(not pcm or len(pcm) % 2 for pcm in pcms):
+        raise ValueError("inputs must be nonempty PCM16")
+    is_continuous = PROFILES[profile].continuous_output
     output_dir.mkdir(parents=True, exist_ok=False)
     loop = asyncio.get_running_loop()
     start_gate: asyncio.Future[float] = loop.create_future()
@@ -53,7 +59,7 @@ async def run_concurrency(
         task = asyncio.create_task(
             run_session(
                 url,
-                pcm,
+                pcms[index % len(pcms)],
                 scenario="continuous",
                 trace_path=trace_path,
                 timeout_s=timeout_s,
@@ -72,12 +78,12 @@ async def run_concurrency(
     start_s = time.perf_counter() + START_LEAD_S
     start_gate.set_result(start_s)
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    duration_s = len(pcm) / (2 * SAMPLE_RATE)
     sessions = []
     for index, (trace_path, result) in enumerate(zip(trace_paths, results)):
         session_id = f"session-{index:03d}"
+        duration_s = len(pcms[index % len(pcms)]) / (2 * SAMPLE_RATE)
         try:
-            session = session_metrics(
+            session = (session_metrics if is_continuous else unit_session_metrics)(
                 trace_path,
                 session_id=session_id,
                 input_duration_s=duration_s,
@@ -85,45 +91,53 @@ async def run_concurrency(
                 reserve_s=reserve_s,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            session = {
-                "session_id": session_id,
-                "input_duration_s": duration_s,
-                "trace_file": str(trace_path),
-                "success": False,
-                "errors": [f"unreadable session artifacts: {exc}"],
-                "ttfa_s": None,
-                "send_lateness_s": distribution([]),
-                "late_send_count": 0,
-                "late_send_rate": None,
-                "output_gap_s": distribution([]),
-                "output_gap_excess_s": distribution([]),
-                "output_drift_s": distribution([]),
-                "final_output_drift_s": None,
-                "send_lateness_values_s": [],
-                "output_gap_values_s": [],
-                "output_gap_excess_values_s": [],
-                "output_drift_values_s": [],
-                "output_samples": 0,
-                "output_duration_s": 0.0,
-                "output_coverage": 0.0,
-                "underrun_count": 1,
-                "underrun_total_s": duration_s,
-                "underrun_worst_s": duration_s,
-                "underrun_ratio": 1.0,
-            }
+            if not is_continuous:
+                session = failed_unit_session(
+                    session_id, trace_path, duration_s, profile
+                )
+                session["errors"].append(f"unreadable session artifacts: {exc}")
+            else:
+                session = {
+                    "session_id": session_id,
+                    "input_duration_s": duration_s,
+                    "trace_file": str(trace_path),
+                    "success": False,
+                    "errors": [f"unreadable session artifacts: {exc}"],
+                    "ttfa_s": None,
+                    "send_lateness_s": distribution([]),
+                    "late_send_count": 0,
+                    "late_send_rate": None,
+                    "output_gap_s": distribution([]),
+                    "output_gap_excess_s": distribution([]),
+                    "output_drift_s": distribution([]),
+                    "final_output_drift_s": None,
+                    "send_lateness_values_s": [],
+                    "output_gap_values_s": [],
+                    "output_gap_excess_values_s": [],
+                    "output_drift_values_s": [],
+                    "output_samples": 0,
+                    "output_duration_s": 0.0,
+                    "output_coverage": 0.0,
+                    "underrun_count": 1,
+                    "underrun_total_s": duration_s,
+                    "underrun_worst_s": duration_s,
+                    "underrun_ratio": 1.0,
+                }
         if isinstance(result, BaseException):
             session["success"] = False
             session["errors"].append(f"client task: {type(result).__name__}: {result}")
         sessions.append(session)
     summary: dict[str, JsonValue] = {
         "concurrency": concurrency,
-        "input_duration_s": duration_s,
+        "input_duration_s": max(len(pcm) for pcm in pcms) / (2 * SAMPLE_RATE),
         "common_start_s": start_s,
         "configured_sessions": sum(configured),
         "profile": profile,
         "playback_startup_reserve_s": reserve_s,
         "sessions": sessions,
-        "aggregate": aggregate_sessions(sessions),
+        "aggregate": (aggregate_sessions if is_continuous else aggregate_unit_sessions)(
+            sessions
+        ),
     }
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8"
@@ -137,6 +151,32 @@ def format_ms(value: float | None) -> str:
 
 def format_percent(value: float | None) -> str:
     return f"{value * 100:.1f}%" if value is not None else "-"
+
+
+def print_unit_summaries(summaries: list[dict[str, JsonValue]]) -> None:
+    print(
+        f"{'C':>3} {'sessions':>9} {'units':>6} {'speak':>6} {'miss':>7} "
+        f"{'lag p50':>8} {'lag p95':>8} {'lag p99':>8} {'speak p95':>10} "
+        f"{'reply p50':>10} {'reply p95':>10} {'underrun':>9} {'late sends':>11}"
+    )
+    for summary in summaries:
+        aggregate = summary["aggregate"]
+        sessions = (
+            f"{aggregate['successful_sessions']}/{aggregate['attempted_sessions']}"
+        )
+        print(
+            f"{summary['concurrency']:>3} {sessions:>9} "
+            f"{aggregate['completed_units']:>6} {aggregate['speak_units']:>6} "
+            f"{format_percent(aggregate['unit_miss_rate']):>7} "
+            f"{format_ms(aggregate['unit_lag_s']['p50']):>8} "
+            f"{format_ms(aggregate['unit_lag_s']['p95']):>8} "
+            f"{format_ms(aggregate['unit_lag_s']['p99']):>8} "
+            f"{format_ms(aggregate['speak_unit_lag_s']['p95']):>10} "
+            f"{format_ms(aggregate['response_audio_lag_s']['p50']):>10} "
+            f"{format_ms(aggregate['response_audio_lag_s']['p95']):>10} "
+            f"{format_percent(aggregate['underrun_ratio']):>9} "
+            f"{format_percent(aggregate['late_send_rate']):>11}"
+        )
 
 
 def print_summary(summary: dict[str, JsonValue]) -> None:
@@ -186,7 +226,13 @@ def print_summary(summary: dict[str, JsonValue]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
-    parser.add_argument("--audio", required=True, type=Path)
+    parser.add_argument(
+        "--audio",
+        required=True,
+        type=Path,
+        nargs="+",
+        help="input recordings; sessions take them in turn",
+    )
     parser.add_argument(
         "--profile", choices=["nemotron", *PROFILES], default="nemotron"
     )
@@ -196,6 +242,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--timeout-s", type=float, default=90.0)
     parser.add_argument("--startup-reserve-ms", type=float, default=DEFAULT_RESERVE_MS)
+    parser.add_argument(
+        "--warmup-runs",
+        type=int,
+        default=0,
+        help="single-session runs before the first level; kept under warmup-N",
+    )
     args = parser.parse_args()
     profile: ProfileName = (
         DEFAULT_PROFILE if args.profile == "nemotron" else args.profile
@@ -209,17 +261,29 @@ def main() -> None:
         parser.error("concurrency values must be positive")
     if args.timeout_s <= 0 or args.startup_reserve_ms < 0:
         parser.error("timeout must be positive and startup reserve nonnegative")
-    pcm, _ = normalize_audio(args.audio)
+    if args.warmup_runs < 0:
+        parser.error("warmup runs must be nonnegative")
+    pcms = [normalize_audio(path)[0] for path in args.audio]
     output_dir = args.output_dir or Path("serving-results") / datetime.now(
         timezone.utc
     ).strftime("%Y%m%dT%H%M%SZ")
     output_dir.mkdir(parents=True, exist_ok=False)
 
     async def run_all() -> list[dict[str, JsonValue]]:
+        for index in range(args.warmup_runs):
+            await run_concurrency(
+                args.url,
+                pcms[:1],
+                concurrency=1,
+                profile=profile,
+                output_dir=output_dir / f"warmup-{index}",
+                timeout_s=args.timeout_s,
+                reserve_s=args.startup_reserve_ms / 1000,
+            )
         return [
             await run_concurrency(
                 args.url,
-                pcm,
+                pcms,
                 concurrency=level,
                 profile=profile,
                 output_dir=output_dir / f"c{level}",
@@ -234,7 +298,9 @@ def main() -> None:
         json.dumps({"runs": summaries}, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
-    if len(summaries) == 1:
+    if not PROFILES[profile].continuous_output:
+        print_unit_summaries(summaries)
+    elif len(summaries) == 1:
         print_summary(summaries[0])
     else:
         print(
