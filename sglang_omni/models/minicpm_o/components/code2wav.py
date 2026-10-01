@@ -44,6 +44,7 @@ class MiniCPMOCode2Wav(nn.Module):
         enable_flow_variable_length: bool,
         reference_workers: int,
         prompt_cache_capacity: int,
+        enable_packed_dit_torch_compile: bool = True,
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
@@ -87,6 +88,8 @@ class MiniCPMOCode2Wav(nn.Module):
                 device=resolved_device,
                 dtype=torch_dtype,
                 n_timesteps=n_timesteps,
+                enable_flow_variable_length=enable_flow_variable_length,
+                enable_packed_dit_torch_compile=enable_packed_dit_torch_compile,
             )
         self.token2wav.flow.decoder.estimator.enable_variable_length = (
             enable_flow_variable_length

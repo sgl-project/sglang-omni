@@ -33,3 +33,17 @@ The reference conditions Token2wav's speaker embedding, prompt tokens, and mel
 features. Audio supplied in chat messages remains understanding input and is not
 automatically used as the speaker reference. Without an explicit reference,
 Token2wav uses the checkpoint's `assets/HT_ref_audio.wav` when available.
+
+## Packed DiT compilation
+
+Variable-length Code2Wav compiles packed DiT blocks by default on CUDA. To
+disable compilation:
+
+```text
+--code2wav.factory.enable_packed_dit_torch_compile false
+```
+
+This compiles `DiTBlock.forward_packed`; the dense DiT path stays eager. The
+packed layout remains dynamic, and Inductor's CUDA graphs are disabled. Two
+nonuniform packed batches materialize the compiled blocks before serving. A
+compilation or warmup failure aborts startup.

@@ -114,6 +114,8 @@ class Token2Wav(torch.nn.Module):
         device: torch.device,
         dtype: torch.dtype = torch.float32,
         n_timesteps: int = 10,
+        enable_flow_variable_length: bool = False,
+        enable_packed_dit_torch_compile: bool = True,
     ) -> None:
         super().__init__()
         if n_timesteps <= 0:
@@ -163,6 +165,15 @@ class Token2Wav(torch.nn.Module):
             strict=True,
         )
         self.flow.to(device).eval()
+        self.flow.decoder.estimator.enable_variable_length = enable_flow_variable_length
+        if (
+            enable_packed_dit_torch_compile
+            and enable_flow_variable_length
+            and device.type == "cuda"
+        ):
+            self.flow.decoder.estimator.enable_compiled_packed_blocks()
+        else:
+            pass
         self.hift = HiFTGenerator()
         weights = torch.load(
             model_path / "hift.pt", map_location="cpu", weights_only=True
@@ -172,6 +183,14 @@ class Token2Wav(torch.nn.Module):
             strict=True,
         )
         self.hift.to(device).eval()
+        if (
+            enable_packed_dit_torch_compile
+            and enable_flow_variable_length
+            and device.type == "cuda"
+        ):
+            self.flow.decoder.estimator.warmup_compiled_packed_blocks()
+        else:
+            pass
 
     @torch.inference_mode()
     def prepare_prompt(self, source: str | io.BytesIO) -> SpeakerPrompt:

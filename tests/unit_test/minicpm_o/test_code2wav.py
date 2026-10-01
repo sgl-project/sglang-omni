@@ -30,7 +30,10 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     MiniCPMOCode2Wav,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import SpeakerPrompt
-from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
+from sglang_omni.models.minicpm_o.config import (
+    MiniCPMOCode2WavFactoryArgs,
+    MiniCPMOSpeechPipelineConfig,
+)
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
     code2wav_reference_audio,
@@ -64,6 +67,7 @@ class Code2WavBuilder(Protocol):
         reference_workers: int = ...,
         prompt_cache_capacity: int = ...,
         enable_flow_variable_length: bool = ...,
+        enable_packed_dit_torch_compile: bool = ...,
     ) -> MiniCPMOCode2Wav: ...
 
 
@@ -161,6 +165,7 @@ def build_code2wav_model(
         reference_workers: int = 8,
         prompt_cache_capacity: int = 32,
         enable_flow_variable_length: bool = False,
+        enable_packed_dit_torch_compile: bool = True,
     ) -> MiniCPMOCode2Wav:
         model = MiniCPMOCode2Wav(
             str(tmp_path),
@@ -168,6 +173,7 @@ def build_code2wav_model(
             enable_flow_variable_length=enable_flow_variable_length,
             reference_workers=reference_workers,
             prompt_cache_capacity=prompt_cache_capacity,
+            enable_packed_dit_torch_compile=enable_packed_dit_torch_compile,
         )
         built_models.append(model)
         return model
@@ -406,6 +412,21 @@ def test_variable_length_option_reaches_dit(
     assert estimator.enable_variable_length is enable_flow_variable_length
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_compile_option_reaches_packed_dit(
+    build_code2wav_model: Code2WavBuilder,
+    enabled: bool,
+) -> None:
+    build_code2wav_model(
+        enable_flow_variable_length=True,
+        enable_packed_dit_torch_compile=enabled,
+    )
+    assert (
+        code2wav.Token2Wav.call_args.kwargs["enable_packed_dit_torch_compile"]
+        is enabled
+    )
+
+
 def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     factory = code2wav_stage_factory()
     assert factory.max_batch_size == 8
@@ -413,6 +434,13 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert factory.batch_wait_when_idle is False
     assert factory.dtype is None
     assert factory.enable_flow_variable_length is True
+    assert factory.enable_packed_dit_torch_compile is True
+    assert (
+        MiniCPMOCode2WavFactoryArgs.model_validate(
+            {"enable_packed_dit_torch_compile": "false"}
+        ).enable_packed_dit_torch_compile
+        is False
+    )
     assert factory.reference_workers == 8
     assert factory.prompt_cache_capacity == 32
 
