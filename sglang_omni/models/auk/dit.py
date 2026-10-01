@@ -687,9 +687,13 @@ class AuKDit(nn.Module):
                     self.text_uncond = c_uncond
                 else:
                     pass
-            x_uncond, a_mask_uncond, _ = self.embed_audio(
-                x, ref, drop_audio_cond=True, mask=mask, ref_mask=ref_mask
-            )
+            if ref is None or ref.shape[1] == 0:
+                # note (BBuf): CFG drops reference audio, so noisy audio stays identical.
+                x_uncond, a_mask_uncond = x_cond, a_mask_cond
+            else:
+                x_uncond, a_mask_uncond, _ = self.embed_audio(
+                    x, ref, drop_audio_cond=True, mask=mask, ref_mask=ref_mask
+                )
 
             x = torch.cat((x_cond, x_uncond), dim=0)
             c = torch.cat((c_cond, c_uncond), dim=0)

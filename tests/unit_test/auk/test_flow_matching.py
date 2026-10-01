@@ -4,7 +4,72 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.auk.dit import AuKDit
 from sglang_omni.models.auk.flow_matching import fuse_hidden_states
+
+
+@pytest.mark.parametrize("reference_frames", [None, 0, 4])
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("use_audio_mask", [False, True])
+def test_guidance_matches_separate_conditioned_and_unconditioned_predictions(
+    reference_frames: int | None, batch_size: int, use_audio_mask: bool
+) -> None:
+    torch.manual_seed(42)
+    model = AuKDit(
+        dim=32,
+        heads=2,
+        dim_head=16,
+        latent_dim=8,
+        text_hidden_dim=16,
+        num_layers=1,
+        num_single_layers=1,
+    ).eval()
+    for parameter in model.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    audio = torch.randn(batch_size, 19, 8)
+    text = torch.randn(batch_size, 7, 16)
+    time = torch.full((batch_size,), 0.5)
+    text_mask = torch.arange(7).expand(batch_size, -1) < 5
+    if use_audio_mask:
+        audio_mask = torch.arange(19).expand(batch_size, -1) < 15
+    else:
+        audio_mask = None
+    if reference_frames is None:
+        reference_audio = None
+        reference_mask = None
+    else:
+        reference_audio = torch.randn(batch_size, reference_frames, 8)
+        reference_mask = (
+            torch.arange(reference_frames).expand(batch_size, -1) < reference_frames - 1
+        )
+    with torch.inference_mode():
+        expected = torch.cat(
+            [
+                model(
+                    audio,
+                    text,
+                    time,
+                    mask=audio_mask,
+                    c_mask=text_mask,
+                    ref=reference_audio,
+                    ref_mask=reference_mask,
+                    drop_audio_cond=drop_conditioning,
+                    drop_text=drop_conditioning,
+                )
+                for drop_conditioning in (False, True)
+            ]
+        )
+        actual = model(
+            audio,
+            text,
+            time,
+            mask=audio_mask,
+            c_mask=text_mask,
+            ref=reference_audio,
+            ref_mask=reference_mask,
+            cfg_infer=True,
+        )
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_fusion_matches_upstream_layerwise_normalization():
