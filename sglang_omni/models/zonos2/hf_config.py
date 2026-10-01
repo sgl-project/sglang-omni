@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
 
 from transformers import PretrainedConfig
 
@@ -70,7 +69,7 @@ class Zonos2Config(PretrainedConfig):
         moe_start_from_layer: int = 3,
         moe_end_from_layer: int = 1,
         moe_balancing_strategy: str | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         # Native field names are kept verbatim for the weight loader.
         self.n_layers = n_layers

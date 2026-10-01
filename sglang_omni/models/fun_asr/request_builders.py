@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Mapping, Sized
 from dataclasses import dataclass
-from typing import Any, Callable
+from types import SimpleNamespace
+from typing import Callable, Literal, Protocol
 
 import torch
 from sglang.srt.managers.schedule_batch import (
@@ -16,7 +18,13 @@ from sglang.srt.managers.schedule_batch import (
     Req,
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
+from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.models.fun_asr.configuration_fun_asr import (
+    AUDIO_PLACEHOLDER_TOKEN as _AUDIO_PAD,
+)
+from sglang_omni.models.fun_asr.configuration_fun_asr import FunAsrNanoFeatureExtractor
+from sglang_omni.models.fun_asr.encoder_service import FunASRPreLMEncoderService
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
@@ -24,8 +32,8 @@ from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.token_text_streaming import (
     make_token_text_stream_output_builder,
 )
+from sglang_omni.scheduling.types import RequestOutput
 
-from .configuration_fun_asr import AUDIO_PLACEHOLDER_TOKEN as _AUDIO_PAD
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
 
 logger = logging.getLogger(__name__)
@@ -38,6 +46,17 @@ _MAX_AUDIO_DURATION_MESSAGE = (
 )
 _MAX_GENERATION_TOKENS_AT_MAX_DURATION = 200
 _MIN_GENERATION_TOKENS = 16
+
+
+class TokenizedPrompt(Protocol):
+    @property
+    def input_ids(self) -> Sized: ...
+
+
+class PromptTokenizer(Protocol):
+    def __call__(
+        self, text: str, /, *, add_special_tokens: Literal[False]
+    ) -> TokenizedPrompt: ...
 
 
 @dataclass
@@ -61,7 +80,7 @@ def default_token_budget(audio_duration_s: float, max_new_tokens: int) -> int:
 
 
 def request_token_budget(
-    params: dict[str, Any], audio_duration_s: float, max_new_tokens: int
+    params: Mapping[str, object], audio_duration_s: float, max_new_tokens: int
 ) -> int:
     explicit = params.get("max_new_tokens")
     if explicit is None:
@@ -83,7 +102,10 @@ def request_token_budget(
 
 
 def decode_token_ids(
-    tokenizer: Any, token_ids: list[int], *, skip_special_tokens: bool
+    tokenizer: PreTrainedTokenizerBase,
+    token_ids: list[int],
+    *,
+    skip_special_tokens: bool,
 ) -> str:
     try:
         return tokenizer.decode(
@@ -152,7 +174,7 @@ def prompt_template(prompt_text: str, num_audio_tokens: int) -> str:
 
 
 def fun_asr_prompt_overhead_tokens(
-    tokenizer: Any,
+    tokenizer: PromptTokenizer,
     *,
     language: str | None = None,
     itn: bool = True,
@@ -173,11 +195,11 @@ def fun_asr_prompt_overhead_tokens(
 
 def make_fun_asr_scheduler_adapters(
     *,
-    tokenizer: Any,
+    tokenizer: PreTrainedTokenizerBase,
     max_new_tokens: int,
-    feature_extractor: Any = None,
+    feature_extractor: FunAsrNanoFeatureExtractor | None = None,
     context_length: int | None = None,
-    audio_encoder_service: Any | None = None,
+    audio_encoder_service: FunASRPreLMEncoderService | None = None,
 ) -> tuple[
     Callable[[StagePayload], FunASRRequestData],
     Callable[[FunASRRequestData], StagePayload],
@@ -393,10 +415,12 @@ def make_fun_asr_scheduler_adapters(
 
 
 def make_fun_asr_stream_output_builder(
-    tokenizer: Any,
+    tokenizer: PreTrainedTokenizerBase,
     eos_token_id: int | None = None,
     min_emit_interval_s: float = 0.0,
-) -> Callable[[str, Any, Any], list[OutgoingMessage]]:
+) -> Callable[
+    [str, SGLangARRequestData, RequestOutput | SimpleNamespace], list[OutgoingMessage]
+]:
     tokenizer_eos = getattr(tokenizer, "eos_token_id", None)
     resolved_eos = (
         eos_token_id

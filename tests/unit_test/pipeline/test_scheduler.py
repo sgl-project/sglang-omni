@@ -229,6 +229,20 @@ def test_simple_scheduler_batch_and_error_contracts() -> None:
     )
 
 
+def test_simple_scheduler_arrival_hook_sees_only_new_requests() -> None:
+    arrived_payloads: list[str] = []
+    scheduler = SimpleScheduler(
+        lambda payload: payload, request_arrival_hook=arrived_payloads.append
+    )
+    scheduler.enqueue(IncomingMessage("req-1", "new_request", "payload"))
+    scheduler.enqueue(IncomingMessage("req-1", "stream_chunk", "chunk"))
+    assert arrived_payloads == ["payload"]
+    assert [scheduler.inbox.get_nowait().type for _ in range(2)] == [
+        "new_request",
+        "stream_chunk",
+    ]
+
+
 def test_threaded_simple_scheduler_runs_requests_concurrently() -> None:
     """Covers concurrent worker execution before result emission."""
     started: list[str] = []

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 
@@ -12,6 +12,36 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
 )
+
+if TYPE_CHECKING:
+    from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
+        IncrementalCodecGraphStats,
+    )
+else:
+    pass
+
+
+class DisabledCodecGraphStats(TypedDict):
+    enabled: bool
+
+
+class CodecCudaGraphStats(TypedDict):
+    cold: IncrementalCodecGraphStats | DisabledCodecGraphStats
+    window: IncrementalCodecGraphStats | DisabledCodecGraphStats
+    warm: list[IncrementalCodecGraphStats]
+
+
+class CodecStateStats(TypedDict, total=False):
+    """Arena/scheduler snapshot; a disabled decoder reports only enabled."""
+
+    slots: int
+    active_slots: int
+    bytes_per_slot: int
+    total_bytes: int
+    exhausted: int
+    enabled: bool
+    left_context_fallbacks: int
+    cuda_graphs: CodecCudaGraphStats
 
 
 class Qwen3TTSCodecStateArena:
@@ -273,7 +303,7 @@ class Qwen3TTSCodecStateArena:
             pass
         buffer.index_copy_(0, index, rows.contiguous())
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self) -> CodecStateStats:
         return {
             "slots": self._num_slots,  # noqa: leading-underscore
             "active_slots": self.active_slots(),

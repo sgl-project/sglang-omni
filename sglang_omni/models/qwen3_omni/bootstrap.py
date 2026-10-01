@@ -3,11 +3,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+else:
+    pass
 
 
 def create_thinker_scheduler(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int = 0,
     *,
     speech_enabled: bool = False,
@@ -20,7 +29,7 @@ def create_thinker_scheduler(
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
-):
+) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
@@ -111,7 +120,7 @@ def create_thinker_scheduler(
 
 
 def create_talker_scheduler(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int = 0,
     *,
     weight_prefix: str = "talker.",
@@ -128,7 +137,7 @@ def create_talker_scheduler(
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
-):
+) -> "QwenTalkerScheduler":
     """Create the Qwen talker scheduler."""
     del speech_enabled
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer

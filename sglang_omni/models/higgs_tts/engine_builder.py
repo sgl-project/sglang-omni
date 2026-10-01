@@ -5,26 +5,46 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
+from sglang.srt.server_args import ServerArgs
+
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.higgs_tts import request_builders
 from sglang_omni.models.higgs_tts import utils as higgs_utils
+from sglang_omni.models.higgs_tts.request_builders import HiggsSGLangRequestData
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_HIGGS_STREAM_STRIDE,
 )
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+
+    from sglang_omni.models.higgs_tts.model import HiggsTTSModel
+    from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
-class HiggsTtsEngineBuilder(TtsEngineBuilder):
+class HiggsTtsEngineBuilder(TtsEngineBuilder[HiggsSGLangRequestData]):
     model_name = "Higgs TTS"
     context_length = 4096
     supports_breakable_prefill_cuda_graph = True
@@ -64,13 +84,13 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
-        self.model: Any | None = None
+        self.model: HiggsTTSModel | None = None
 
     def generation_defaults(
         self,
         *,
         dtype: str,
-    ) -> dict[str, Any]:
+    ) -> GenerationDefaults:
         del dtype
         # note (luojiaxuan): Radix cache is namespaced per ref-audio via
         # Req.extra_key (set in build_sglang_higgs_request); shared -100
@@ -92,7 +112,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
             "dtype": "bfloat16",
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: Mapping[str, object]) -> None:
         # Note: (Jiaxin Deng) an explicit mem_fraction_static override (e.g.
         # --tts_engine.engine.mem_fraction_static) wins, but never silently.
         expected = self.total_gpu_memory_fraction
@@ -112,7 +132,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
             expected,
         )
 
-    def customize_server_args(self, server_args: Any) -> None:
+    def customize_server_args(self, server_args: ServerArgs) -> None:
         override_server_args(
             server_args,
             "sglang_omni.higgs_tts.disable_overlap_schedule",
@@ -122,27 +142,34 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: ServerArgs,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
         self.model = model_worker.model_runner.model
         higgs_utils.truncate_rope_to_bf16(self.model)
 
-    def get_model_buffer_bs(self, model: Any) -> int | None:
+    def get_model_buffer_bs(self, model: HiggsTTSModel) -> int | None:
         return model.sampler_pool_max_running_requests
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> HiggsTTSModelRunner:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.higgs_tts.model_runner"
         )
 
         return model_runner_mod.HiggsTTSModelRunner(model_worker, output_proc)
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[[StagePayload], HiggsSGLangRequestData],
+        Callable[[HiggsSGLangRequestData], StagePayload],
+    ]:
         del model
         return request_builders.make_higgs_scheduler_adapters(
             max_new_tokens_cap=self.max_new_tokens,
@@ -151,15 +178,15 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
             initial_chunk_frames=self.initial_chunk_frames,
         )
 
-    def make_abort_callback(self) -> Any | None:
+    def make_abort_callback(self) -> Callable[[str], None]:
         assert self.model is not None
         return self.model.reset_request
 
-    def make_request_finished_callback(self) -> Any | None:
+    def make_request_finished_callback(self) -> Callable[[str], None]:
         assert self.model is not None
         return self.model.reset_request
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[HiggsSGLangRequestData]:
         return {
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
@@ -167,5 +194,9 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
-    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+    def post_scheduler_setup(
+        self,
+        scheduler: OmniScheduler[HiggsSGLangRequestData],
+        model_runner: HiggsTTSModelRunner,
+    ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

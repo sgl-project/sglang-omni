@@ -7,16 +7,21 @@ import asyncio
 import base64
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Literal, TypedDict, TypeGuard
 
 import torch
 import xxhash
+from transformers import BatchFeature, PreTrainedTokenizerBase
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
 
-from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.payload_types import (
+    EncoderInputs,
+    Qwen3OmniPipelineState,
+)
 from sglang_omni.models.qwen3_omni.request_builders import build_lightweight_mm_inputs
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing import (
@@ -40,6 +45,32 @@ from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
+
+
+class VideoProcessorKwargs(TypedDict, total=False):
+    fps: float | list[float]
+    max_frames: int
+    min_pixels: int
+    max_pixels: int
+    total_pixels: int
+    use_audio_in_video: bool
+    seconds_per_chunk: float
+    position_id_per_seconds: float
+    device: str
+
+
+class MediaPlaceholderPart(TypedDict):
+    type: Literal["image", "video", "audio"]
+
+
+class TextContentPart(TypedDict):
+    type: Literal["text"]
+    text: object
+
+
+class ProcessorKwargs(TypedDict, total=False):
+    videos_kwargs: VideoProcessorKwargs
+
 
 _TRAIN_INPUT_TENSOR_NAMES = frozenset(
     {
@@ -116,7 +147,7 @@ def extra_special_tokens_compat(model_dir: str) -> dict[str, str]:
     }
 
 
-def contextualize_cache_key(base_key: str | None, **context: Any) -> str | None:
+def contextualize_cache_key(base_key: str | None, **context: object) -> str | None:
     if base_key is None:
         return None
     else:
@@ -177,7 +208,7 @@ def validate_prompt_seq_len(
         pass
 
 
-def is_pretokenized_prompt(inputs: Any) -> bool:
+def is_pretokenized_prompt(inputs: object) -> TypeGuard[list[int]]:
     """True when a rollout request carries pre-tokenized prompt ids.
 
     Miles RL rollout sends the exact prompt token ids it trains on, so those
@@ -204,7 +235,7 @@ class Qwen3OmniPreprocessor:
         video_min_pixels: int | None = None,
         video_max_pixels: int | None = None,
         video_total_pixels: int | None = None,
-    ):
+    ) -> None:
         self.model_path = model_path
         self.max_seq_len = max_seq_len
         self.default_video_fps = float(video_fps) if video_fps is not None else None
@@ -231,11 +262,13 @@ class Qwen3OmniPreprocessor:
             else {}
         )
         try:
-            self.processor = Qwen3OmniMoeProcessor.from_pretrained(
-                self.model_dir,
-                trust_remote_code=True,
-                local_files_only=True,
-                **compat_kwargs,
+            self.processor: Qwen3OmniMoeProcessor = (
+                Qwen3OmniMoeProcessor.from_pretrained(
+                    self.model_dir,
+                    trust_remote_code=True,
+                    local_files_only=True,
+                    **compat_kwargs,
+                )
             )
         except TypeError:
             if not compat_kwargs:
@@ -264,7 +297,7 @@ class Qwen3OmniPreprocessor:
                 local_files_only=False,
             )
             self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
-        self.tokenizer = self.processor.tokenizer
+        self.tokenizer: PreTrainedTokenizerBase = self.processor.tokenizer
         ensure_chat_template(
             self.tokenizer,
             model_path=self.model_dir,
@@ -279,26 +312,26 @@ class Qwen3OmniPreprocessor:
 
     def build_multimodal_messages(
         self,
-        messages: list[dict[str, Any]],
+        messages: Sequence[Mapping[str, object]],
         *,
         num_images: int,
         num_audios: int,
         num_videos: int,
-    ) -> list[dict[str, Any]]:
+    ) -> Sequence[Mapping[str, object]]:
         """Convert simple messages to HF's structured multimodal format."""
         if num_images == 0 and num_audios == 0 and num_videos == 0:
             return messages
         else:
             pass
 
-        result: list[dict[str, Any]] = []
+        result: list[Mapping[str, object]] = []
         for i, msg in enumerate(messages):
             role = msg.get("role", "user")
             content = msg.get("content", "")
 
             # Only inject placeholders into the last user message
             if i == len(messages) - 1 and role == "user":
-                content_parts: list[dict[str, Any]] = []
+                content_parts: list[MediaPlaceholderPart | TextContentPart] = []
                 # Placeholders come BEFORE text (Qwen3-Omni format)
                 for _ in range(num_images):
                     content_parts.append({"type": "image"})
@@ -336,8 +369,8 @@ class Qwen3OmniPreprocessor:
         input_ids: "torch.Tensor",
         attention_mask: "torch.Tensor",
         prompt_text: str,
-        full_mm_inputs: dict[str, Any],
-        encoder_inputs: dict[str, dict[str, Any]],
+        full_mm_inputs: Mapping[str, Mapping[str, torch.Tensor | bool | None]],
+        encoder_inputs: dict[str, EncoderInputs],
     ) -> StagePayload:
         """Assemble the thinker-ready pipeline state (single source of shape)."""
         state = Qwen3OmniPipelineState(
@@ -362,7 +395,7 @@ class Qwen3OmniPreprocessor:
         self,
         payload: StagePayload,
         token_ids: list[int],
-        bundle: dict[str, Any] | None = None,
+        bundle: Mapping[str, object] | None = None,
     ) -> StagePayload:
         """Use Miles' exact token ids and optional processor tensors."""
         flat_inputs: dict[str, torch.Tensor] = {}
@@ -409,23 +442,24 @@ class Qwen3OmniPreprocessor:
             request_id=payload.request_id,
         )
 
-        full_mm_inputs: dict[str, Any] = {
-            "image": build_image_mm_inputs(flat_inputs),
-            "audio": build_audio_mm_inputs(flat_inputs),
-            "video": build_video_mm_inputs(flat_inputs),
+        image_mm_inputs = build_image_mm_inputs(flat_inputs)
+        audio_mm_inputs = build_audio_mm_inputs(flat_inputs)
+        video_mm_inputs = build_video_mm_inputs(flat_inputs)
+        full_mm_inputs: dict[str, Mapping[str, torch.Tensor | bool | None]] = {
+            "image": image_mm_inputs,
+            "audio": audio_mm_inputs,
+            "video": video_mm_inputs,
         }
-        image_encoder_inputs = {
+        image_encoder_inputs: dict[str, torch.Tensor | bool | str | None] = {
             name: value
             for name, value in {
-                **full_mm_inputs["image"],
-                **full_mm_inputs["video"],
+                **image_mm_inputs,
+                **video_mm_inputs,
             }.items()
             if value is not None
         }
-        audio_encoder_inputs = {
-            name: value
-            for name, value in full_mm_inputs["audio"].items()
-            if value is not None
+        audio_encoder_inputs: dict[str, torch.Tensor | str | None] = {
+            name: value for name, value in audio_mm_inputs.items() if value is not None
         }
         has_image_payload = (
             image_encoder_inputs.get("pixel_values") is not None
@@ -441,8 +475,7 @@ class Qwen3OmniPreprocessor:
             pass
         if audio_encoder_inputs and not has_audio_payload:
             raise ValueError(
-                "multimodal_train_inputs provides audio metadata "
-                "without input_features"
+                "multimodal_train_inputs provides audio metadata without input_features"
             )
         else:
             pass
@@ -671,7 +704,7 @@ class Qwen3OmniPreprocessor:
             tokenize=False,
         )
 
-        videos_kwargs: dict[str, Any] = {}
+        videos_kwargs: VideoProcessorKwargs = {}
         if sampled_video_fps is not None:
             videos_kwargs["fps"] = (
                 sampled_video_fps[0]
@@ -717,13 +750,13 @@ class Qwen3OmniPreprocessor:
             videos_kwargs.setdefault("device", "cpu")
         else:
             pass
-        processor_kwargs: dict[str, Any] = {}
+        processor_kwargs: ProcessorKwargs = {}
         if videos_kwargs:
             processor_kwargs["videos_kwargs"] = videos_kwargs
         else:
             pass
 
-        hf_inputs = self.processor(
+        hf_inputs: BatchFeature = self.processor(
             text=prompt_text,
             images=images or None,
             videos=videos or None,
@@ -749,21 +782,24 @@ class Qwen3OmniPreprocessor:
             request_id=payload.request_id,
         )
 
-        full_mm_inputs: dict[str, Any] = {
-            "image": build_image_mm_inputs(hf_inputs),
-            "audio": build_audio_mm_inputs(hf_inputs),
-            "video": build_video_mm_inputs(hf_inputs),
+        image_mm_inputs = build_image_mm_inputs(hf_inputs)
+        audio_mm_inputs = build_audio_mm_inputs(hf_inputs)
+        video_mm_inputs = build_video_mm_inputs(hf_inputs)
+        full_mm_inputs: dict[str, Mapping[str, torch.Tensor | bool | None]] = {
+            "image": image_mm_inputs,
+            "audio": audio_mm_inputs,
+            "video": video_mm_inputs,
         }
         if use_audio_in_video is not None:
-            full_mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
+            video_mm_inputs["use_audio_in_video"] = bool(use_audio_in_video)
         else:
             pass
 
         # Build encoder_inputs with cache_key for efficient caching.
         # Include preprocessing parameters that materially change encoder outputs.
-        image_encoder_inputs = {
-            **full_mm_inputs["image"],
-            **full_mm_inputs["video"],
+        image_encoder_inputs: dict[str, torch.Tensor | bool | str | None] = {
+            **image_mm_inputs,
+            **video_mm_inputs,
         }
         effective_video_fps: tuple[float, ...] | None = None
         if sampled_video_fps is not None:
@@ -790,7 +826,7 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
-        audio_encoder_inputs = {**full_mm_inputs["audio"]}
+        audio_encoder_inputs: dict[str, torch.Tensor | str | None] = {**audio_mm_inputs}
         contextualized_audio_cache_key = contextualize_cache_key(
             audio_cache_key,
             target_sr=audio_target_sr,
@@ -811,7 +847,7 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
-        encoder_inputs: dict[str, dict[str, Any]] = {}
+        encoder_inputs: dict[str, EncoderInputs] = {}
         image_encoder_inputs = {
             k: v for k, v in image_encoder_inputs.items() if v is not None
         }

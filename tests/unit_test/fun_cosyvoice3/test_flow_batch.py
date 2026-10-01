@@ -54,6 +54,9 @@ class RecordingPackedEstimator:
     ) -> SimpleNamespace:
         return SimpleNamespace(rows=rows, streaming=streaming, dtype=dtype)
 
+    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
+        return rows.positions, rows.positions
+
     def forward(
         self,
         x: torch.Tensor,
@@ -63,6 +66,7 @@ class RecordingPackedEstimator:
         t: torch.Tensor,
         rows: PackedRows,
         attention: SimpleNamespace,
+        rope: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
         self.calls.append(
             {
@@ -73,15 +77,6 @@ class RecordingPackedEstimator:
         )
         positions = rows.positions.to(x.dtype).view(1, -1, 1)
         return 0.1 * x + mu + spks + cond + 0.01 * positions
-
-    def forward_for_mode(
-        self,
-        streaming: bool,
-        *,
-        attention: SimpleNamespace,
-    ):
-        assert streaming == attention.streaming
-        return self.forward
 
 
 def make_packed(flow: FakeFlow) -> FunCosyVoice3Flow:

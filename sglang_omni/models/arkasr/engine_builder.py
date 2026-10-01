@@ -4,24 +4,44 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
-from transformers import AutoConfig, AutoTokenizer, WhisperFeatureExtractor
+from sglang.srt.server_args import ServerArgs
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    PreTrainedTokenizerBase,
+    WhisperFeatureExtractor,
+)
 
 from sglang_omni.models.arkasr import request_builders
 from sglang_omni.models.arkasr.encoder_service import (
     ArkasrPreLMEncoderService,
     build_cache_namespace,
 )
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.models.arkasr.request_builders import ArkASRRequestData
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.engine_factory import (
+    AsrEngineBuilder,
+    GenerationDefaults,
+    SchedulerExtras,
+)
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.scheduling.types import DeferredAdmission
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
-class ArkasrEngineBuilder(AsrEngineBuilder):
+class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
     model_name = "ARK-ASR"
     model_arch_override = "ArkasrForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True
@@ -96,13 +116,13 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         self.pre_lm_max_pending = pre_lm_max_pending
         self.enable_encoder_cuda_graph = enable_encoder_cuda_graph
         self.stream_emit_interval_s = stream_emit_interval_s
-        self.tokenizer: Any = None
-        self.feature_extractor: Any = None
+        self.tokenizer: PreTrainedTokenizerBase | None = None
+        self.feature_extractor: WhisperFeatureExtractor | None = None
         self.merge_factor = 4
         self.audio_token_id = 151663
         self.context_length = 0
         self.model_path: str | None = None
-        self.audio_encoder_service: Any = None
+        self.audio_encoder_service: ArkasrPreLMEncoderService | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
@@ -116,8 +136,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         encoder_token_count = self.feature_extractor.nb_max_frames // 2
         self.context_length = encoder_token_count + self.max_new_tokens + 8
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        defaults: dict[str, Any] = {
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -141,8 +161,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
 
     def setup_model_resources(
         self,
-        model: Any,
-        server_args: Any,
+        model: ArkasrForConditionalGeneration,
+        server_args: ServerArgs,
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
@@ -189,7 +209,12 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         else:
             pass
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[
+            [StagePayload], ArkASRRequestData | DeferredAdmission[ArkASRRequestData]
+        ],
+        Callable[[ArkASRRequestData], StagePayload],
+    ]:
         del model
         return request_builders.make_arkasr_scheduler_adapters(
             tokenizer=self.tokenizer,
@@ -200,7 +225,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             audio_encoder_service=self.audio_encoder_service,
         )
 
-    def extra_scheduler_callbacks(self) -> dict[str, Any]:
+    def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
         if self.audio_encoder_service is None:
             return {}
         else:
@@ -214,7 +239,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         else:
             pass
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[ArkASRRequestData]:
         return {
             "stream_output_builder": request_builders.make_arkasr_stream_output_builder(
                 tokenizer=self.tokenizer,

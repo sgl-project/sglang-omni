@@ -10,9 +10,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+    Qwen3OmniMoeCode2WavConfig,
+)
 
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
+from sglang_omni.models.qwen3_omni.components.code2wav import Qwen3OmniCode2Wav
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavRunResult,
     GraphKey,
@@ -22,6 +26,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.utils import snake_beta
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_payload
 
 DEFAULT_GRAPH_KEYS = tuple(
@@ -880,7 +885,7 @@ def feed(
     *,
     stream: bool,
 ) -> None:
-    meta = {"stream": stream}
+    meta: dict[str, object] = {"stream": stream}
     for i, code in enumerate(codes):
         scheduler.handle_stream_chunk(
             request_id,
@@ -1048,3 +1053,75 @@ def test_qwen_code2wav_emits_full_chunk_despite_model_output_deficit() -> None:
     assert second_audio.shape == (4,)
 
     assert first_audio.shape[0] + second_audio.shape[0] == 4 * 2 - 1
+
+
+def make_tiny_code2wav(device: str, dtype: torch.dtype) -> Qwen3OmniCode2Wav:
+    config = Qwen3OmniMoeCode2WavConfig(
+        codebook_size=16,
+        hidden_size=32,
+        intermediate_size=64,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        num_hidden_layers=1,
+        num_quantizers=2,
+        upsample_rates=[2, 3],
+        upsampling_ratios=[2],
+        decoder_dim=32,
+    )
+    torch.manual_seed(0)
+    model = Qwen3OmniCode2Wav(config).eval()
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.normal_(0.0, 0.05)
+    return model.to(device=device, dtype=dtype)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize(
+    ("batch_size", "frames"),
+    [(1, 7), (3, 10)],
+)
+def test_channels_last_code2wav_matches_the_hf_forward(
+    monkeypatch: pytest.MonkeyPatch, batch_size: int, frames: int
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    model = make_tiny_code2wav("cuda", torch.float32)
+    codes = torch.randint(0, 16, (batch_size, 2, frames), device="cuda")
+
+    with torch.inference_mode():
+        expected = model(codes)
+        model.use_channels_last()
+        actual = model(codes)
+
+    assert actual.shape == expected.shape
+    assert actual.is_contiguous()
+    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-6)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_channels_last_code2wav_runs_every_snake_on_the_fused_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = make_tiny_code2wav("cuda", torch.bfloat16)
+    model.use_channels_last()
+    replaced = snake_beta.fuse_vocoder_decoder(model.decoder)
+    assert replaced > 0
+    launches: list[tuple[int, ...]] = []
+    original_launch = snake_beta.launch
+
+    def counted_launch(
+        x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor, eps: float
+    ) -> torch.Tensor:
+        launches.append(x.stride())
+        return original_launch(x, alpha, beta, eps)
+
+    monkeypatch.setattr(snake_beta, "launch", counted_launch)
+    codes = torch.randint(0, 16, (2, 2, 9), device="cuda")
+
+    with torch.inference_mode():
+        model(codes)
+
+    assert len(launches) == replaced
+    assert all(stride[1] == 1 for stride in launches)

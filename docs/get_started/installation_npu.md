@@ -28,26 +28,29 @@ Use an ARM64 Linux host with Docker and Ascend A3 devices.
 
 **1. Pull the image**
 
-Pull the image matching your hardware from
-[Docker Hub](https://hub.docker.com/r/lmsysorg/sglang-omni/tags):
+Pull the image matching your hardware from Huawei Cloud SWR:
 
 - **Release:** use `v<version>-cann9.0.0-a3` for deployments, replacing
-  `v<version>` with a published version tag from Docker Hub.
+  `v<version>` with a published version tag.
 - **Development:** use `main-cann9.0.0-a3` for the latest published development
   build. Scheduled or manual publications update this rolling tag.
 
 ```bash
 # Release (replace v<version> with a published version):
-# IMAGE=lmsysorg/sglang-omni:v<version>-cann9.0.0-a3
+# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.0.0-a3
 
 # Development (A3):
-IMAGE=lmsysorg/sglang-omni:main-cann9.0.0-a3
+IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.0.0-a3
 
 docker pull "$IMAGE"
 ```
 
 For reproducible deployments, set `IMAGE` to
-`lmsysorg/sglang-omni@sha256:<digest>`.
+`swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni@sha256:<digest>`.
+
+If authentication is required, run
+`docker login swr.cn-southwest-2.myhuaweicloud.com` with credentials supplied
+by the registry administrator before pulling.
 
 **2. Start the container**
 
@@ -92,16 +95,16 @@ Use `v<version>-cann9.0.0-910b` for a release, or
 
 ```bash
 # Release (replace v<version> with a published version):
-# IMAGE=lmsysorg/sglang-omni:v<version>-cann9.0.0-910b
+# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.0.0-910b
 
 # Development (A2 / 910B):
-IMAGE=lmsysorg/sglang-omni:main-cann9.0.0-910b
+IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.0.0-910b
 
 docker pull "$IMAGE"
 ```
 
 For reproducible deployments, set `IMAGE` to
-`lmsysorg/sglang-omni@sha256:<digest>`.
+`swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni@sha256:<digest>`.
 
 **2. Start the container**
 

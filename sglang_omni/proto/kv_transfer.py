@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 import msgspec
 
@@ -55,9 +55,9 @@ class KVTransferPrepareMessage:
     target_pool_id: str
     source_page_indices: tuple[int, ...]
     source_layout: KVPoolLayout
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         value = msgspec.to_builtins(self)
         # Metadata is intentionally opaque. In particular, continuation bytes
         # must not be converted to a JSON-style list of integers.
@@ -65,7 +65,7 @@ class KVTransferPrepareMessage:
         return {"type": "kv_transfer_prepare", **value}
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "KVTransferPrepareMessage":
+    def from_dict(cls, value: Mapping[str, object]) -> "KVTransferPrepareMessage":
         return msgspec.convert(value, type=cls, strict=True)
 
 
@@ -80,12 +80,12 @@ class KVTransferReadyMessage:
     success: bool
     destination_pool_id: str | None = None
     destination_page_indices: tuple[int, ...] = ()
-    destination_ref: dict[str, Any] | None = None
+    destination_ref: dict[str, object] | None = None
     error: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {"type": "kv_transfer_ready", **msgspec.to_builtins(self)}
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "KVTransferReadyMessage":
+    def from_dict(cls, value: Mapping[str, object]) -> "KVTransferReadyMessage":
         return msgspec.convert(value, type=cls, strict=True)

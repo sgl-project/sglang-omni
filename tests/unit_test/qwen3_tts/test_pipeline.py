@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import sys
 import threading
 import time
@@ -21,7 +22,6 @@ from sglang.srt.runtime_context import get_context
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
-from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts import streaming_vocoder as qwen3_streaming_vocoder
@@ -58,6 +58,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,
     get_speaker_artifact_cache,
@@ -644,6 +645,11 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
         type(builder).supports_breakable_prefill_cuda_graph
         is CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
+    assert CAPABILITIES.supports_full_prefill_cuda_graph is True
+    assert (
+        type(builder).supports_full_prefill_cuda_graph
+        is CAPABILITIES.supports_full_prefill_cuda_graph
+    )
     assert defaults["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
     assert defaults["cuda_graph_bs_prefill"] == list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
     # A 1-token prefill is the only shape the shared ladder sends back to eager,
@@ -655,6 +661,32 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
         next(b for b in ladder if b >= tokens) <= 2 * tokens for tokens in (1, 2, 3, 4)
     )
     assert defaults["disable_cuda_graph"] is False
+
+
+def qwen3_tts_checkpoint(tmp_path: Path, model_type: str | None) -> str:
+    """A checkpoint dir carrying only the config the builder reads."""
+    directory = tmp_path / (model_type or "unmarked")
+    directory.mkdir(parents=True, exist_ok=True)
+    config = {} if model_type is None else {"tts_model_type": model_type}
+    (directory / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    return str(directory)
+
+
+def test_qwen3_tts_full_prefill_is_scoped_to_custom_voice(tmp_path: Path) -> None:
+    """Only CustomVoice was measured on the full backend, read from the config."""
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+
+    def backend(model_type: str | None) -> str:
+        builder = Qwen3TtsEngineBuilder()
+        builder.checkpoint_dir = qwen3_tts_checkpoint(tmp_path, model_type)
+        return builder.generation_defaults(dtype="bfloat16")[
+            "cuda_graph_backend_prefill"
+        ]
+
+    assert backend("custom_voice") is CudaGraphBackend.FULL
+    for model_type in ("base", "voice_design", None):
+        assert backend(model_type) is CudaGraphBackend.BREAKABLE, model_type
 
 
 def test_qwen3_tts_before_prefill_mirrors_positions_into_mrope() -> None:
@@ -1853,7 +1885,7 @@ def test_qwen3_tts_stream_codec_output_factory_default_disables_streaming() -> N
     )
 
 
-def bootstrap_eligible_payload(**overrides: Any):
+def bootstrap_eligible_payload(**overrides: dict[str, object]):
     tts_params = {
         "task_type": "CustomVoice",
         "voice": "Ryan",
@@ -1888,7 +1920,7 @@ def test_qwen3_tts_bootstrap_silence_eligible_on_allowlisted_custom_voice() -> N
     ],
 )
 def test_qwen3_tts_bootstrap_silence_ineligible_variants(
-    tts_params: dict[str, Any],
+    tts_params: dict[str, object],
 ) -> None:
     state = build_qwen3_tts_state(bootstrap_eligible_payload(tts_params=tts_params))
 
@@ -1904,7 +1936,7 @@ def test_qwen3_tts_bootstrap_silence_ineligible_variants(
     ],
 )
 def test_qwen3_tts_bootstrap_silence_ignores_materialized_sampling(
-    tts_params: dict[str, Any],
+    tts_params: dict[str, object],
 ) -> None:
     """The serving layer materializes a sampling value on every request.
 
@@ -3339,7 +3371,7 @@ def qwen3_tts_stream_item(
     chunk_id: int,
     ref_code_len: int | None = None,
 ) -> StreamItem:
-    metadata = {
+    metadata: dict[str, object] = {
         "modality": "audio_codes",
         "stream": True,
         "num_quantizers": int(codes.shape[-1]),
@@ -6965,6 +6997,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
     from transformers.utils import generic
 
+    from sglang_omni.models.qwen3_tts import engine_builder
     from sglang_omni.models.qwen3_tts import model_runner as model_runner_mod
     from sglang_omni.models.qwen3_tts import request_builders as request_builders_mod
     from sglang_omni.models.qwen3_tts import stages
@@ -7061,11 +7094,16 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     monkeypatch.setattr(
         engine_factory, "_resolve_checkpoint", lambda model_path: model_path
     )
+    monkeypatch.setattr(
+        engine_builder,
+        "load_qwen3_tts_checkpoint_config",
+        lambda model_path: {"tts_model_type": "base"},
+    )
 
     validation_state: dict[str, object] = {}
 
     def record_generation_batch_validation(
-        *, model_name, server_args, model_buffer_bs=None
+        *, model_name, server_args, model_buffer_bs=None, allowed_prefill_backends=()
     ):
         decode_config = server_args.cuda_graph_config.decode
         validation_state.update(
@@ -7076,12 +7114,14 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
                 "cuda_graph_bs": list(decode_config.bs),
                 "torch_compile_max_bs": server_args.torch_compile_max_bs,
                 "enable_torch_compile": server_args.enable_torch_compile,
+                "allowed_prefill_backends": tuple(allowed_prefill_backends),
             }
         )
         return validate_generation_batch_policy_impl(
             model_name=model_name,
             server_args=server_args,
             model_buffer_bs=model_buffer_bs,
+            allowed_prefill_backends=allowed_prefill_backends,
         )
 
     monkeypatch.setattr(
@@ -7223,6 +7263,8 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         "cuda_graph_bs": expected_cuda_graph_bs,
         "torch_compile_max_bs": 64,
         "enable_torch_compile": False,
+        # note (luojiaxuan): the builder widens the policy from the capability.
+        "allowed_prefill_backends": ("breakable", "full"),
     }
 
     def target():

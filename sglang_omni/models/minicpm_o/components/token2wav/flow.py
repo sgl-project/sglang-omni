@@ -21,6 +21,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
@@ -48,28 +49,40 @@ class CausalConditionalCFM(torch.nn.Module):
         t_span: torch.Tensor,
         mu: torch.Tensor,
         mask: torch.Tensor,
-        spks: torch.Tensor,
-        cond: torch.Tensor,
+        speaker_embeddings: torch.Tensor,
+        mel_conditioning: torch.Tensor,
     ) -> torch.Tensor:
         batch_size = x.size(0)
         t = t_span[0].expand(batch_size)
         dt = t_span[1] - t_span[0]
         assert self.inference_cfg_rate > 0, "inference_cfg_rate better > 0"
-        mask_in = torch.cat([mask, mask], dim=0)
-        mu_in = torch.cat([mu, torch.zeros_like(mu)], dim=0)
-        spks_in = torch.cat([spks, torch.zeros_like(spks)], dim=0)
-        cond_in = torch.cat([cond, torch.zeros_like(cond)], dim=0)
+        paired_mask = torch.cat([mask, mask], dim=0)
+        paired_mu = torch.cat([mu, torch.zeros_like(mu)], dim=0)
+        paired_speaker_embeddings = torch.cat(
+            [speaker_embeddings, torch.zeros_like(speaker_embeddings)], dim=0
+        )
+        paired_mel_conditioning = torch.cat(
+            [mel_conditioning, torch.zeros_like(mel_conditioning)], dim=0
+        )
         for step in range(1, len(t_span)):
-            x_in = torch.cat([x, x], dim=0)
-            t_in = torch.cat([t, t], dim=0)
-            dphi_dt = self.estimator.forward(
-                x_in, mask_in, mu_in, t_in, spks_in, cond_in
+            paired_sample = torch.cat([x, x], dim=0)
+            paired_timesteps = torch.cat([t, t], dim=0)
+            conditional_derivative = self.estimator.forward(
+                paired_sample,
+                paired_mask,
+                paired_mu,
+                paired_timesteps,
+                paired_speaker_embeddings,
+                paired_mel_conditioning,
             )
-            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
-            dphi_dt = (
-                1.0 + self.inference_cfg_rate
-            ) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt
-            x = x + dt * dphi_dt
+            conditional_derivative, unconditional_derivative = torch.split(
+                conditional_derivative, [x.size(0), x.size(0)], dim=0
+            )
+            guided_derivative = (
+                (1.0 + self.inference_cfg_rate) * conditional_derivative
+                - self.inference_cfg_rate * unconditional_derivative
+            )
+            x = x + dt * guided_derivative
             t = t + dt
             if step < len(t_span) - 1:
                 dt = t_span[step + 1] - t_span[step]
@@ -82,8 +95,8 @@ class CausalConditionalCFM(torch.nn.Module):
         self,
         mu: torch.Tensor,
         mask: torch.Tensor,
-        spks: torch.Tensor,
-        cond: torch.Tensor,
+        speaker_embeddings: torch.Tensor,
+        mel_conditioning: torch.Tensor,
         n_timesteps: int = 10,
         temperature: float = 1.0,
     ) -> torch.Tensor:
@@ -103,7 +116,9 @@ class CausalConditionalCFM(torch.nn.Module):
         )
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-        return self.solve_euler(z, t_span, mu, mask, spks, cond)
+        return self.solve_euler(
+            z, t_span, mu, mask, speaker_embeddings, mel_conditioning
+        )
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):
@@ -130,7 +145,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         self.pre_lookahead_len = int(encoder.pre_lookahead_layer.pre_lookahead_len)
         self.up_rate = int(encoder.up_layer.stride)
         self.input_embedding = nn.Embedding(vocab_size, input_size)
-        self.spk_embed_affine_layer = torch.nn.Linear(spk_embed_dim, output_size)
+        self.speaker_embedding_projection = torch.nn.Linear(spk_embed_dim, output_size)
         self.encoder = encoder
         self.encoder_proj = torch.nn.Linear(self.encoder.output_dim, output_size)
         self.decoder = decoder
@@ -138,39 +153,73 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
     @torch.inference_mode()
     def inference(
         self,
-        token: torch.Tensor,
-        token_len: torch.Tensor,
-        prompt_token: torch.Tensor,
-        prompt_token_len: torch.Tensor,
-        prompt_feat: torch.Tensor,
-        embedding: torch.Tensor,
+        speech_tokens: torch.Tensor,
+        token_lengths: torch.Tensor,
+        prompt_tokens: torch.Tensor,
+        prompt_token_lengths: torch.Tensor,
+        prompt_mel: torch.Tensor,
+        speaker_embeddings: torch.Tensor,
         n_timesteps: int = 10,
     ) -> torch.Tensor:
-        assert token.shape[0] == prompt_token.shape[0], (
-            f"flow batch size mismatch: token={token.shape[0]} "
-            f"prompt_token={prompt_token.shape[0]}"
+        assert speech_tokens.shape[0] == prompt_tokens.shape[0], (
+            f"flow batch size mismatch: speech_tokens={speech_tokens.shape[0]} "
+            f"prompt_tokens={prompt_tokens.shape[0]}"
         )
-        embedding = F.normalize(embedding, dim=1)
-        embedding = self.spk_embed_affine_layer(embedding)
-        token_len = prompt_token_len + token_len
-        token = torch.concat([prompt_token, token], dim=1)
-        token_mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
-        token = self.input_embedding(torch.clamp(token, min=0)) * token_mask
-        h, _ = self.encoder.forward(token, token_len)
-        frame_mask = (~make_pad_mask(token_len * self.up_rate, h.shape[1])).to(h)
-        h = self.encoder_proj(h) * frame_mask.unsqueeze(-1)
-        mel_len1 = prompt_feat.shape[1]
-        mel_len2 = h.shape[1] - prompt_feat.shape[1]
-        conds = torch.zeros_like(h)
-        conds[:, :mel_len1] = prompt_feat
-        conds = conds.transpose(1, 2).contiguous()
-        feat = self.decoder.forward(
-            mu=h.transpose(1, 2).contiguous(),
+        speaker_embeddings = F.normalize(speaker_embeddings, dim=1)
+        speaker_embeddings = self.speaker_embedding_projection(speaker_embeddings)
+        prompt_row_lengths = prompt_token_lengths.tolist()
+        generated_row_lengths = token_lengths.tolist()
+        combined_tokens = pad_sequence(
+            [
+                torch.cat(
+                    [prompt_tokens[i, :prompt_length], speech_tokens[i, :token_length]]
+                )
+                for i, (prompt_length, token_length) in enumerate(
+                    zip(prompt_row_lengths, generated_row_lengths, strict=True)
+                )
+            ],
+            batch_first=True,
+        )
+        combined_token_lengths = prompt_token_lengths + token_lengths
+        token_mask = (
+            (~make_pad_mask(combined_token_lengths))
+            .unsqueeze(-1)
+            .to(speaker_embeddings)
+        )
+        embedded_tokens = (
+            self.input_embedding(torch.clamp(combined_tokens, min=0)) * token_mask
+        )
+        hidden_states, _ = self.encoder.forward(embedded_tokens, combined_token_lengths)
+        frame_mask = (
+            ~make_pad_mask(
+                combined_token_lengths * self.up_rate, hidden_states.shape[1]
+            )
+        ).to(hidden_states)
+        hidden_states = self.encoder_proj(hidden_states) * frame_mask.unsqueeze(-1)
+        mel_conditioning = torch.zeros_like(hidden_states)
+        for i, prompt_length in enumerate(prompt_row_lengths):
+            prompt_frames = prompt_length * self.up_rate
+            mel_conditioning[i, :prompt_frames] = prompt_mel[i, :prompt_frames]
+        mel_conditioning = mel_conditioning.transpose(1, 2).contiguous()
+        predicted_mel = self.decoder.forward(
+            mu=hidden_states.transpose(1, 2).contiguous(),
             mask=frame_mask.unsqueeze(1),
-            spks=embedding,
-            cond=conds,
+            speaker_embeddings=speaker_embeddings,
+            mel_conditioning=mel_conditioning,
             n_timesteps=n_timesteps,
         )
-        feat = feat[:, :, mel_len1:]
-        assert feat.shape[2] == mel_len2
-        return feat
+        generated = [
+            predicted_mel[
+                i,
+                :,
+                prompt_length
+                * self.up_rate : (prompt_length + token_length)
+                * self.up_rate,
+            ]
+            for i, (prompt_length, token_length) in enumerate(
+                zip(prompt_row_lengths, generated_row_lengths, strict=True)
+            )
+        ]
+        return pad_sequence(
+            [row.transpose(0, 1) for row in generated], batch_first=True
+        ).transpose(1, 2)

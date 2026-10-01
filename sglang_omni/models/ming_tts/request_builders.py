@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from collections.abc import Mapping
+from typing import SupportsFloat, SupportsIndex, SupportsInt
+
+from typing_extensions import Buffer
 
 from sglang_omni.models.ming_tts.payload_types import (
     MING_TTS_DEFAULT_MAX_DECODE_STEPS,
@@ -44,7 +47,7 @@ def preprocess_ming_tts_payload(
     context_length: int,
     max_decode_steps_cap: int | None = None,
 ) -> StagePayload:
-    def optional_text(value: Any) -> str | None:
+    def optional_text(value: object) -> str | None:
         if value is None:
             return None
         else:
@@ -52,7 +55,7 @@ def preprocess_ming_tts_payload(
         text_value = str(value).strip()
         return text_value or None
 
-    def has_non_empty_value(source: dict[str, Any], field: str) -> bool:
+    def has_non_empty_value(source: Mapping[str, object], field: str) -> bool:
         if field not in source:
             return False
         else:
@@ -72,7 +75,7 @@ def preprocess_ming_tts_payload(
             pass
         return True
 
-    def explicit_generation_fields(tts_source: dict[str, Any]) -> set[str]:
+    def explicit_generation_fields(tts_source: Mapping[str, object]) -> set[str]:
         raw = tts_source.get("explicit_generation_params")
         if isinstance(raw, (list, tuple, set)):
             return {str(field) for field in raw}
@@ -80,7 +83,9 @@ def preprocess_ming_tts_payload(
             pass
         return set()
 
-    def first_present(*sources: dict[str, Any], names: tuple[str, ...]) -> Any | None:
+    def first_present(
+        *sources: Mapping[str, object], names: tuple[str, ...]
+    ) -> object | None:
         for source in sources:
             for name in names:
                 if source.get(name) is not None:
@@ -89,7 +94,11 @@ def preprocess_ming_tts_payload(
                     pass
         return None
 
-    def resolve_int(name: str, value: Any, default: int | None = None) -> int:
+    def resolve_int(
+        name: str,
+        value: str | Buffer | SupportsInt | SupportsIndex | None,
+        default: int | None = None,
+    ) -> int:
         if value is None:
             if default is None:
                 raise ValueError(f"Ming-Omni-TTS {name} must be an integer")
@@ -111,7 +120,11 @@ def preprocess_ming_tts_payload(
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Ming-Omni-TTS {name} must be an integer") from exc
 
-    def resolve_float(name: str, value: Any, default: float) -> float:
+    def resolve_float(
+        name: str,
+        value: str | Buffer | SupportsFloat | SupportsIndex | None,
+        default: float,
+    ) -> float:
         if value is None:
             return float(default)
         else:

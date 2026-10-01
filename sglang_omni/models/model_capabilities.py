@@ -32,6 +32,9 @@ class ModelCapabilities:
       breakable prefill CUDA graph contract through upstream-compatible inputs
       or model-specific adaptation; enabling it per deployment stays with the
       engine builder policy.
+    - supports_full_prefill_cuda_graph: the architecture also replays its
+      prefill as one full CUDA graph per token bucket, attention included, on
+      the same input-embeds transport the breakable contract uses.
     """
 
     supports_reference_audio: bool
@@ -40,6 +43,7 @@ class ModelCapabilities:
     supports_cuda_graph: bool
     supports_torch_compile: bool
     supports_breakable_prefill_cuda_graph: bool
+    supports_full_prefill_cuda_graph: bool
 
 
 def get_model_capabilities(architecture: str) -> ModelCapabilities | None:

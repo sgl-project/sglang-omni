@@ -18,7 +18,6 @@ Nothing here decides anything; precedence lives in
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from sglang_omni.config.patch import (
     ConfigPatch,
@@ -50,14 +49,14 @@ class ProvenanceEntry:
         return self.patch.path.raw
 
     @property
-    def value(self) -> Any:
+    def value(self) -> object:
         return self.patch.value
 
     @property
     def source(self) -> ConfigSource:
         return self.patch.source
 
-    def render(self, resolved: Any = _UNSET) -> str:
+    def render(self, resolved: object = _UNSET) -> str:
         marker = "[winner]" if self.winning else "[superseded]"
         line = f"{self.value!r}  <- {self.source.describe()}  {marker}"
         if self.winning and resolved is not _UNSET and resolved != self.value:
@@ -74,10 +73,10 @@ class ProvenanceMap:
     """Contribution history per canonical path."""
 
     entries: dict[str, list[ProvenanceEntry]] = field(default_factory=dict)
-    baseline: dict[str, Any] = field(default_factory=dict)
+    baseline: dict[str, object] = field(default_factory=dict)
     """Pre-patch value per path, recorded only for paths a patch touched."""
 
-    resolved: dict[str, Any] = field(default_factory=dict)
+    resolved: dict[str, object] = field(default_factory=dict)
     """Post-validation value per touched path, read back off the built config."""
 
     # ------------------------------------------------------------------
@@ -89,10 +88,10 @@ class ProvenanceMap:
             ProvenanceEntry(patch, winning)
         )
 
-    def record_baseline(self, path: str, value: Any) -> None:
+    def record_baseline(self, path: str, value: object) -> None:
         self.baseline.setdefault(path, value)
 
-    def record_resolved(self, path: str, value: Any) -> None:
+    def record_resolved(self, path: str, value: object) -> None:
         self.resolved[path] = value
 
     @classmethod
@@ -121,7 +120,7 @@ class ProvenanceMap:
     def touched(self, path: str) -> bool:
         return path in self.entries
 
-    def resolved_value(self, path: str, default: Any = None) -> Any:
+    def resolved_value(self, path: str, default: object = None) -> object:
         """The value the built config holds at a touched path."""
         return self.resolved.get(path, default)
 

@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from transformers import PretrainedConfig
 
 from sglang_omni.models.ming_tts.audio_config import resolve_ming_tts_audio_vae_config
 from sglang_omni.models.ming_tts.config import (
@@ -26,8 +29,12 @@ from sglang_omni.models.ming_tts.hf_config import (
     register_ming_tts_hf_config,
 )
 from sglang_omni.models.ming_tts.request_builders import preprocess_ming_tts_payload
+from sglang_omni.models.ming_tts.streaming_vocoder import (
+    MingTTSStreamingVocoderScheduler,
+)
 from sglang_omni.models.ming_tts.tokenizer import load_ming_tts_tokenizer
 from sglang_omni.models.ming_tts.weight_loading import load_ming_tts_audio_vae_weights
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 from sglang_omni.utils.gpu_memory import (
@@ -45,6 +52,8 @@ if TYPE_CHECKING:
         AudioVAE,
     )
     from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
+    from sglang_omni.models.ming_tts.engine_io import MingTTSSGLangRequestData
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 else:
     pass
 
@@ -110,7 +119,7 @@ def create_preprocessing_executor(
     context_length: int | None = None,
     max_decode_steps_cap: int | None = None,
     max_concurrency: int = 1,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     checkpoint_dir = _resolve_checkpoint(model_path)
     config = load_ming_tts_config(checkpoint_dir)
     context_length = int(context_length or resolve_context_length(config))
@@ -137,12 +146,12 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     context_length: int | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-) -> Any:
+) -> OmniScheduler[MingTTSSGLangRequestData]:
     from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
 
     user_overrides = dict(server_args_overrides or {})
@@ -170,7 +179,9 @@ def create_sglang_tts_engine_executor(
     )
 
 
-def create_tts_engine_executor(*args, **kwargs) -> Any:
+def create_tts_engine_executor(
+    *args, **kwargs
+) -> OmniScheduler[MingTTSSGLangRequestData]:
     return create_sglang_tts_engine_executor(*args, **kwargs)
 
 
@@ -185,7 +196,7 @@ def create_reference_encode_executor(
     ref_audio_cache: bool = True,
     ref_audio_cache_max_items: int = 256,
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.models.ming_tts.reference_encode import (
         MingSpeakerEmbeddingExtractor,
         MingTTSReferenceEncoder,
@@ -246,7 +257,7 @@ def create_audio_decode_executor(
     max_batch_wait_ms: int = MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS,
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
-) -> Any:
+) -> MingTTSStreamingVocoderScheduler:
     validate_ming_tts_audio_decode_cadence_config(
         initial_chunk_patches=initial_chunk_patches,
         steady_chunk_patches=steady_chunk_patches,
@@ -489,14 +500,14 @@ def create_audio_decode_executor(
     return scheduler
 
 
-def load_ming_tts_config(model_path: str) -> Any:
+def load_ming_tts_config(model_path: str) -> PretrainedConfig:
     register_ming_tts_hf_config()
     from transformers import AutoConfig
 
     return AutoConfig.from_pretrained(model_path, trust_remote_code=False)
 
 
-def resolve_context_length(config: Any) -> int:
+def resolve_context_length(config: PretrainedConfig) -> int:
     llm_config = config.llm_config
     value = getattr(llm_config, "max_position_embeddings", None)
     if value is None:

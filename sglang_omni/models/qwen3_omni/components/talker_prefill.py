@@ -8,19 +8,28 @@ This module mirrors HF's talker prefill layout, then keeps HF's
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 from safetensors import safe_open
 
 from sglang_omni.models.qwen3_omni.components.talker_input import build_prefill_input
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
-from sglang_omni.models.qwen3_omni.pending_text_queue import (
+from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
 )
-from sglang_omni.models.weight_loader import resolve_model_path
+
+if TYPE_CHECKING:
+    from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+else:
+    pass
 
 _THINKER_EMBED_CANDIDATE_KEYS = (
     "thinker.model.embed_tokens.weight",
@@ -29,7 +38,7 @@ _THINKER_EMBED_CANDIDATE_KEYS = (
 
 
 _EMBED_SOURCE_CACHE: dict[str, tuple[Path, str]] = {}
-_EMBED_HANDLE_CACHE: dict[str, Any] = {}
+_EMBED_HANDLE_CACHE: dict[str, safe_open] = {}
 
 
 def resolve_embed_source(model_path: str) -> tuple[Path, str]:
@@ -82,7 +91,7 @@ def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Te
     return torch.stack(rows, dim=0)
 
 
-def coerce_feature_tensor(value: Any) -> torch.Tensor | None:
+def coerce_feature_tensor(value: object) -> torch.Tensor | None:
     if value is None:
         return None
     else:
@@ -116,7 +125,7 @@ def merge_prompt_modality(
     prompt_hidden: torch.Tensor,
     *,
     token_id: int | None,
-    features: Any,
+    features: object,
 ) -> None:
     if token_id is None:
         return
@@ -141,7 +150,18 @@ def merge_prompt_modality(
     prompt_hidden[mask] = 0.0
 
 
-def resolve_speaker_id(params: dict[str, Any], speaker_map: dict[str, int]) -> int:
+class TalkerPromptPrefill(TypedDict):
+    input_embeds: torch.Tensor
+    input_ids: torch.Tensor
+    pending_text_queue: PendingTextTensorQueue
+    tts_pad_embed: torch.Tensor
+    tts_eos_embed: torch.Tensor
+    prompt_model_inputs: dict[str, object]
+
+
+def resolve_speaker_id(
+    params: Mapping[str, object], speaker_map: dict[str, int]
+) -> int:
     speaker_name = str(params.get("speaker", "Ethan")).lower()
     if speaker_name in speaker_map:
         return speaker_map[speaker_name]
@@ -158,7 +178,7 @@ class TalkerPrefillBuilder:
     def __init__(
         self,
         *,
-        model: Any,
+        model: "Qwen3OmniTalker",
         model_path: str,
         audio_token_id: int | None,
         image_token_id: int | None,
@@ -217,11 +237,11 @@ class TalkerPrefillBuilder:
 
     def build_prompt_prefill(
         self,
-        payload,
-        thinker_chunks: list[Any],
+        payload: StagePayload,
+        thinker_chunks: list[StreamItem],
         *,
         thinker_done: bool,
-    ) -> dict[str, Any]:
+    ) -> TalkerPromptPrefill:
         if not thinker_chunks:
             raise ValueError("prompt prefill requires thinker chunks")
         else:
@@ -280,7 +300,9 @@ class TalkerPrefillBuilder:
             "prompt_model_inputs": prompt_model_inputs,
         }
 
-    def append_text_chunk(self, req_data: Any, chunk: Any) -> None:
+    def append_text_chunk(
+        self, req_data: "SGLangARRequestData", chunk: StreamItem
+    ) -> None:
         if req_data.thinker_chunks_done:
             return
         else:
@@ -301,7 +323,7 @@ class TalkerPrefillBuilder:
             pass
         pending_text_queue.append(self.project_assistant_chunk(chunk))
 
-    def mark_thinker_done(self, req_data: Any) -> None:
+    def mark_thinker_done(self, req_data: "SGLangARRequestData") -> None:
         if req_data.thinker_chunks_done:
             return
         else:
@@ -319,14 +341,14 @@ class TalkerPrefillBuilder:
         else:
             pass
 
-    def extract_chunk_token_ids(self, thinker_chunks: list[Any]) -> torch.Tensor:
+    def extract_chunk_token_ids(self, thinker_chunks: list[StreamItem]) -> torch.Tensor:
         token_ids = []
         for chunk in thinker_chunks:
             metadata = chunk.metadata or {}
             token_ids.append(int(metadata["token_id"]))
         return torch.tensor(token_ids, dtype=torch.long)
 
-    def project_assistant_chunk(self, chunk: Any) -> torch.Tensor:
+    def project_assistant_chunk(self, chunk: StreamItem) -> torch.Tensor:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
         if token_id is not None:
@@ -381,7 +403,7 @@ class TalkerPrefillBuilder:
 
     def reconstruct_prompt_states(
         self, state: Qwen3OmniPipelineState
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, object]]:
         prompt = state.prompt or {}
         prompt_input_ids = prompt["input_ids"]
         if prompt_input_ids.dim() == 2:
@@ -446,7 +468,7 @@ class TalkerPrefillBuilder:
         gathered = unique_rows.index_select(0, inverse.to(device=unique_rows.device))
         return gathered.view(token_ids.shape[0], unique_rows.shape[-1])
 
-    def prompt_model_inputs(self, state: Qwen3OmniPipelineState) -> dict[str, Any]:
+    def prompt_model_inputs(self, state: Qwen3OmniPipelineState) -> dict[str, object]:
         thinker_inputs = state.thinker_inputs or {}
         model_inputs = thinker_inputs.get("model_inputs")
         if isinstance(model_inputs, dict):

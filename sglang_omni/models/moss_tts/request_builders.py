@@ -9,13 +9,21 @@ import os
 import re
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
+from transformers import PretrainedConfig
 
+from sglang_omni.models.moss_tts.hf_loading import (
+    MossAudioReference,
+    MossDelayReferences,
+    MossRequestProcessor,
+    MossUserMessage,
+)
 from sglang_omni.models.moss_tts.payload_types import (
     AUDIO_REPETITION_PENALTY,
     AUDIO_SAMPLING,
@@ -28,8 +36,20 @@ from sglang_omni.sampling.seed import derive_sampling_seed, new_random_sampling_
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.prepared_request_queue import PreparedRequestQueue
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
-from sglang_omni.scheduling.types import ARRequestData
+from sglang_omni.scheduling.types import ARRequestData, RequestOutput
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
+
+if TYPE_CHECKING:
+    from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
+    from sglang_omni.models.moss_tts.stages import (
+        BatchedReferenceEncoder,
+        MossTTSReferenceEncoder,
+    )
+
+    ReferenceEncoder = BatchedReferenceEncoder | MossTTSReferenceEncoder
+else:
+    pass
+
 
 MOSS_TTS_DEFAULT_MAX_NEW_TOKENS = 4096
 _MOSS_TTS_PREPARED_MARKER = "_moss_tts_prepared_request"
@@ -75,14 +95,14 @@ class MossTTSSGLangRequestData(ARRequestData):
     """Scheduler-owned request state for MOSS-TTS Delay."""
 
     enforce_request_limits: bool = True
-    req: Any = None
+    req: Req | None = None
     synced: bool = False
     generation_steps: int = 0
     suppress_tokens: list[int] | None = None
     input_embeds_are_projected: bool = False
-    stage_payload: Any = None
+    stage_payload: StagePayload | None = None
     state: MossTTSState = field(default_factory=MossTTSState)
-    model_config: Any = None
+    model_config: PretrainedConfig | None = None
     prompt_rows: torch.Tensor | None = None
     assistant_prefix_rows: torch.Tensor | None = None
     output_rows: list[torch.Tensor] = field(default_factory=list)
@@ -91,7 +111,9 @@ class MossTTSSGLangRequestData(ARRequestData):
     stream_prefix_scanned: bool = False
     stream_output_row_count: int = 0
     stream_row_count: int = 0
-    pending_feedback_queue: Any = field(default_factory=collections.deque)
+    pending_feedback_queue: collections.deque[torch.Tensor] | list[torch.Tensor] = (
+        field(default_factory=collections.deque)
+    )
     text_temperature: float = TEXT_SAMPLING.temperature
     text_top_p: float = TEXT_SAMPLING.top_p
     text_top_k: int = TEXT_SAMPLING.top_k
@@ -116,13 +138,13 @@ class MossTTSPreparedRequest:
     input_ids_list: list[int]
     input_ids: torch.Tensor
     prompt_rows: torch.Tensor
-    gen_kwargs: dict[str, Any]
+    gen_kwargs: Mapping[str, int | float]
 
 
 @dataclass
 class MossTTSPreprocessingContext:
-    processor: Any
-    reference_encoder: Any = None
+    processor: MossRequestProcessor[MossDelayReferences]
+    reference_encoder: ReferenceEncoder | None = None
 
 
 _QUEUE: PreparedRequestQueue[MossTTSPreprocessingContext, MossTTSPreparedRequest] = (
@@ -146,7 +168,9 @@ def close_moss_tts_preprocessing_context(
 
 
 def set_moss_tts_preprocessing_context(
-    *, processor: Any, reference_encoder: Any = None
+    *,
+    processor: MossRequestProcessor[MossDelayReferences],
+    reference_encoder: ReferenceEncoder | None = None,
 ) -> None:
     """Register the upstream MOSS processor used by preprocessing."""
 
@@ -205,7 +229,7 @@ def pop_prepared_moss_tts_request(
     return prepared
 
 
-def normalize_moss_tts_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
+def normalize_moss_tts_inputs(inputs: object) -> tuple[str, list[dict[str, object]]]:
     if isinstance(inputs, str):
         return inputs, []
     else:
@@ -225,9 +249,9 @@ def normalize_moss_tts_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
 
 
 def resolve_moss_reference(
-    references: list[dict[str, Any]],
-    tts_params: dict[str, Any],
-) -> tuple[Any | None, str | None]:
+    references: list[dict[str, object]],
+    tts_params: Mapping[str, object],
+) -> tuple[object, str | None]:
     reference = references[0] if references else {}
     ref_audio = (
         reference.get("audio_path")
@@ -240,7 +264,7 @@ def resolve_moss_reference(
     return ref_audio, str(ref_text) if ref_text is not None else None
 
 
-def resolve_optional_text(value: Any) -> str | None:
+def resolve_optional_text(value: object) -> str | None:
     if value is None:
         return None
     else:
@@ -251,8 +275,8 @@ def resolve_optional_text(value: Any) -> str | None:
 
 def resolve_token_count(
     text: str,
-    params: dict[str, Any],
-    tts_params: dict[str, Any],
+    params: Mapping[str, object],
+    tts_params: Mapping[str, object],
 ) -> tuple[str, int | None]:
     """Resolve the duration token count and return ``(clean_text, count)``.
 
@@ -331,10 +355,10 @@ def build_moss_tts_state(payload: StagePayload) -> MossTTSState:
 
 
 def build_generation_kwargs(
-    params: dict[str, Any],
+    params: Mapping[str, object],
     *,
-    tts_params: dict[str, Any],
-) -> dict[str, Any]:
+    tts_params: Mapping[str, object],
+) -> dict[str, int | float]:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
         explicit_fields = {str(field) for field in explicit_generation_params}
@@ -351,7 +375,7 @@ def build_generation_kwargs(
     else:
         max_new_tokens = int(raw_max_new_tokens)
 
-    generation_kwargs: dict[str, Any] = {
+    generation_kwargs: dict[str, object] = {
         "max_new_tokens": max_new_tokens,
         # note (chenyang): the checkpoint's own generate() defaults; greedy
         # (temperature=0) collapses the codec LM into copying the reference
@@ -422,7 +446,7 @@ def build_generation_kwargs(
     return generation_kwargs
 
 
-def validate_moss_tts_generation_kwargs(kwargs: dict[str, Any]) -> None:
+def validate_moss_tts_generation_kwargs(kwargs: Mapping[str, object]) -> None:
     """Validate public sampling fields (MOSS uses a custom sampler that bypasses
     SGLang's SamplingParams.verify), raising ValueError on out-of-range values."""
     if int(kwargs["max_new_tokens"]) <= 0:
@@ -480,10 +504,10 @@ def build_row_cache_key_ids(rows: torch.Tensor) -> list[int]:
 
 
 def reference_for_processor(
-    processor: Any,
-    ref_audio: Any | None,
-    reference_encoder: Any = None,
-) -> list[Any] | None:
+    processor: object,
+    ref_audio: MossAudioReference | None,
+    reference_encoder: ReferenceEncoder | None = None,
+) -> list[str | torch.Tensor] | None:
     if ref_audio is None:
         return None
     else:
@@ -504,10 +528,10 @@ def reference_for_processor(
 
 
 def build_processor_message(
-    processor: Any,
+    processor: MossRequestProcessor[MossDelayReferences],
     state: MossTTSState,
-    reference_encoder: Any = None,
-) -> dict[str, Any]:
+    reference_encoder: ReferenceEncoder | None = None,
+) -> MossUserMessage:
     reference = reference_for_processor(
         processor,
         state.ref_audio,
@@ -525,8 +549,8 @@ def build_processor_message(
 def prepare_moss_tts_request(
     payload: StagePayload,
     *,
-    processor: Any,
-    reference_encoder: Any = None,
+    processor: MossRequestProcessor[MossDelayReferences],
+    reference_encoder: ReferenceEncoder | None = None,
 ) -> MossTTSPreparedRequest:
     state = build_moss_tts_state(payload)
     message = build_processor_message(processor, state, reference_encoder)
@@ -596,7 +620,7 @@ def last_equal(rows: torch.Tensor, value: int) -> int:
 
 
 def resolve_audio_payload_bounds(
-    rows: torch.Tensor, cfg: Any
+    rows: torch.Tensor, cfg: PretrainedConfig
 ) -> tuple[int, int] | None:
     text = rows[:, 0].to(dtype=torch.long)
     bos_pos = (text == int(cfg.audio_start_token_id)).nonzero(as_tuple=False)
@@ -644,9 +668,9 @@ def moss_stream_metadata(
     data: MossTTSSGLangRequestData,
     *,
     n_vq: int,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     config = data.model_config
-    metadata: dict[str, Any] = {
+    metadata: dict[str, object] = {
         "modality": "audio_codes",
         "stream": True,
         "n_vq": int(n_vq),
@@ -670,7 +694,7 @@ def moss_stream_metadata(
 
 def collect_moss_stream_rows(
     data: MossTTSSGLangRequestData,
-    req_output: Any,
+    req_output: RequestOutput | None,
 ) -> list[torch.Tensor]:
     config = data.model_config
     rows: list[torch.Tensor] = []
@@ -743,13 +767,17 @@ def collect_moss_stream_rows(
     return rows
 
 
-def make_moss_tts_stream_output_builder():
+def make_moss_tts_stream_output_builder() -> (
+    Callable[
+        [str, MossTTSSGLangRequestData, RequestOutput | None], list[OutgoingMessage]
+    ]
+):
     """Build incremental delayed-code chunks for streaming requests."""
 
     def stream_output_builder(
         request_id: str,
         data: MossTTSSGLangRequestData,
-        req_output: Any,
+        req_output: RequestOutput | None,
     ) -> list[OutgoingMessage]:
         params = getattr(getattr(data.stage_payload, "request", None), "params", None)
         if not isinstance(params, dict) or not bool(params.get("stream", False)):
@@ -794,7 +822,7 @@ def make_moss_tts_stream_output_builder():
 def initialize_generation_state(
     data: MossTTSSGLangRequestData,
     *,
-    model: Any,
+    model: MossTTSDelaySGLangModel | None,
 ) -> None:
     prompt_rows = data.prompt_rows
     if prompt_rows is None or prompt_rows.numel() == 0:
@@ -820,7 +848,7 @@ def initialize_generation_state(
 def build_sglang_moss_tts_request(
     payload: StagePayload,
     *,
-    model: Any,
+    model: MossTTSDelaySGLangModel,
 ) -> MossTTSSGLangRequestData:
     prepared = pop_prepared_moss_tts_request(payload)
     if prepared is None:
@@ -945,7 +973,10 @@ def apply_sglang_moss_tts_result(
     )
 
 
-def make_moss_tts_scheduler_adapters(*, model: Any):
+def make_moss_tts_scheduler_adapters(*, model: MossTTSDelaySGLangModel | None) -> tuple[
+    Callable[[StagePayload], MossTTSSGLangRequestData],
+    Callable[[MossTTSSGLangRequestData], StagePayload],
+]:
     """Build StagePayload <-> SGLang request adapters for MOSS-TTS."""
 
     def request_builder(payload: StagePayload) -> MossTTSSGLangRequestData:

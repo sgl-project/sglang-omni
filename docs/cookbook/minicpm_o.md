@@ -33,8 +33,3 @@ The reference conditions Token2wav's speaker embedding, prompt tokens, and mel
 features. Audio supplied in chat messages remains understanding input and is not
 automatically used as the speaker reference. Without an explicit reference,
 Token2wav uses the checkpoint's `assets/HT_ref_audio.wav` when available.
-
-The vocoder caches only the most recently used reference by audio content. A
-different reference, including switching back to the default, rebuilds the
-conditioning. Invalid references fail instead of silently using the default.
-Audio output remains non-streaming.

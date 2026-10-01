@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -395,7 +395,9 @@ def batched_causal_update_mask(
     return (past | tail.unsqueeze(0)).unsqueeze(1)
 
 
-def rotary_cos_sin(rotary: Any, starts: torch.Tensor, length: int):
+def rotary_cos_sin(
+    rotary: Callable[[torch.Tensor], torch.Tensor], starts: torch.Tensor, length: int
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-slot-start form of
     ``dots_tts.modules.backbone.inference_utils.build_rotary_cos_sin``."""
     offsets = torch.arange(length, device=starts.device, dtype=torch.float32)
@@ -456,7 +458,7 @@ class DotsTtsAcousticTail:
         self.free_slots = list(reversed(range(spec.num_slots)))
         self.meanflow_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
         self.encoder_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
-        self.graph_pool: Any | None = None
+        self.graph_pool: tuple[int, int] | None = None
         self.capture_stream: torch.cuda.Stream | None = None
         self.graph_replays: Counter[str] = Counter()
         self.graph_misses: Counter[str] = Counter()

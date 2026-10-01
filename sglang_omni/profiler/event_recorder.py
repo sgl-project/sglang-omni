@@ -16,8 +16,9 @@ import os
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -35,13 +36,13 @@ _active_stage_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-def set_active_stage(stage: str | None) -> contextvars.Token:
+def set_active_stage(stage: str | None) -> contextvars.Token[str | None]:
     """Bind ``stage`` for this thread / task. Returns a Token for reset."""
     _thread_active_stage.stage = stage
     return _active_stage_cv.set(stage)
 
 
-def reset_active_stage(token: contextvars.Token | None) -> None:
+def reset_active_stage(token: contextvars.Token[str | None] | None) -> None:
     """Undo :func:`set_active_stage`. ``token=None`` clears the binding."""
     if token is not None:
         _active_stage_cv.reset(token)
@@ -70,9 +71,9 @@ class RequestEvent:
     timestamp_ns: int
     run_id: str | None = None
     pid: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
@@ -85,7 +86,7 @@ class RequestEventRecorder:
         self.stage: str | None = None
         self.stages: set[str] = set()
         self.path: Path | None = None
-        self.fp: Any = None
+        self.fp: TextIOWrapper | None = None
         self.pid: int = os.getpid()
         self.dropped: int = 0
 
@@ -191,7 +192,7 @@ class RequestEventRecorder:
         request_id: str,
         stage: str | None,
         event_name: str,
-        metadata: Mapping[str, Any] | None = None,
+        metadata: Mapping[str, object] | None = None,
         timestamp_ns: int | None = None,
     ) -> None:
         """Append one event. No-op when inactive; errors are swallowed."""
@@ -237,7 +238,7 @@ class RequestEventRecorder:
                     pass
 
 
-def json_default(obj: Any) -> Any:
+def json_default(obj: object) -> object:
     """Safe fallback for ``json.dumps``: summarise tensors, never materialise.
 
     Tensors / arrays return ``{__tensor_summary__, type, shape, dtype,
@@ -257,7 +258,7 @@ def json_default(obj: Any) -> Any:
             # and fall through to the summary serializer below.
             pass
         try:
-            shape_list: Any = [int(d) for d in shape]
+            shape_list: list[int] | str = [int(d) for d in shape]
         except Exception:
             shape_list = repr(shape)
         device = getattr(obj, "device", None)
@@ -286,7 +287,7 @@ def emit(
     request_id: str,
     stage: str | None,
     event_name: str,
-    metadata: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, object] | None = None,
     timestamp_ns: int | None = None,
 ) -> None:
     """Module-level shortcut for ``get_recorder().emit(...)``."""

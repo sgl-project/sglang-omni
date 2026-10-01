@@ -15,6 +15,7 @@ dependencies = [
     "pyzmq>=25.0.0",          # ZMQ messaging for control plane
     "msgpack>=1.0.0",         # Message serialization
     "msgspec",                # msgspec.Struct support
+    "typing-extensions>=4.13",
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
@@ -157,6 +158,7 @@ markers = [
 [tool.ruff.lint]
 exclude = ["tests/**"]
 select = [
+    "ANN401",
     "B006",     # Mutable argument defaults
     "B009",     # Constant-name getattr without a default
     "B010",     # Constant-name setattr
@@ -169,6 +171,9 @@ select = [
     "RUF008",   # Mutable dataclass defaults
     "SIM115",   # Context managers for files (not sockets/CUDA streams)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"!{sglang_omni,sglang_omni_router/python}/**" = ["ANN401"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any
+from types import ModuleType
 
 from transformers import AutoConfig, GenerationConfig
 
@@ -27,16 +27,18 @@ def missing_additional_chat_templates_compat() -> Iterator[None]:
     import transformers.utils.hub as hub_utils
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    patched: list[tuple[Any, Any]] = []
+    patched: list[tuple[ModuleType, Callable[..., list[str]]]] = []
 
-    def patch_list_repo_templates(module: Any) -> None:
+    def patch_list_repo_templates(
+        module: ModuleType,
+    ) -> None:
         original = getattr(module, "list_repo_templates", None)
         if original is None:
             return
         else:
             pass
 
-        def wrapped(*args: Any, **kwargs: Any) -> Any:
+        def wrapped(*args: object, **kwargs: object) -> list[str]:
             try:
                 return original(*args, **kwargs)
             except RepositoryNotFoundError as exc:
@@ -103,7 +105,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
         MossTranscribeDiarizeEngineBuilder,

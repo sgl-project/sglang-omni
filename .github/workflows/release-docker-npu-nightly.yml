@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build:
-    if: github.event_name != 'schedule' || vars.NPU_DOCKER_PUBLISH_ENABLED == 'true'
+    if: github.event_name != 'schedule' || github.repository == 'sgl-project/sglang-omni'
     uses: ./.github/workflows/release-docker-npu.yml
     with:
       image_tag: main

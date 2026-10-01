@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 import numpy as np
@@ -186,7 +185,7 @@ def reference_path_cache_key(
     return f"file:{digest}"
 
 
-def hash_media_item(item: Any) -> str | None:
+def hash_media_item(item: object) -> str | None:
     """Generate hash for a single media item (unified logic for image/audio/video).
 
     Supported types:
@@ -249,7 +248,7 @@ def hash_media_item(item: Any) -> str | None:
     return None
 
 
-def compute_media_cache_key(items: Any, *, prefix: str) -> str | None:
+def compute_media_cache_key(items: object, *, prefix: str) -> str | None:
     """Compute cache key for media items (image/audio/video).
 
     Args:

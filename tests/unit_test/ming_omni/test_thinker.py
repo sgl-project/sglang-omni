@@ -154,6 +154,9 @@ def load_preprocessor_with_fake_deps(monkeypatch, *, config=None, tokenizer=None
     io_module = ModuleType("sglang_omni.models.ming_omni.io")
     io_module.MingOmniPipelineState = object
     io_module.PromptInputs = dict
+    io_module.__dict__.update(
+        AudioEncoderInputs=dict, ImageEncoderInputs=dict, SkippedEncoderInputs=dict
+    )
     monkeypatch.setitem(sys.modules, "sglang_omni.models.ming_omni.io", io_module)
 
     next_stage_module = ModuleType("sglang_omni.models.ming_omni.pipeline.next_stage")

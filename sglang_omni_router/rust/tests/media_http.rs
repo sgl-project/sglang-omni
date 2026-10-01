@@ -407,6 +407,17 @@ fn qwen_task_config(address: SocketAddr, custom: &Worker, base: &Worker) -> Stri
     output
 }
 
+fn speech_stream_mode_config(address: SocketAddr, workers: &[(&Worker, &str, &str)]) -> String {
+    let mut output = config_header(address, &[MediaRoute::Speech]);
+    for (index, (worker, response_formats, stream_modes)) in workers.iter().enumerate() {
+        output.push_str(&format!(
+            "\n[[workers]]\nworker_id = \"speech-{index}\"\nbase_url = \"http://{}\"\ntrust_domain = \"local\"\ndefault_model_id = \"tts\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = {response_formats}\nstream_modes = {stream_modes}\ntasks = [\"text_to_speech\", \"voice_clone\", \"voice_design\"]\nreference_forms = [\"none\", \"direct\", \"list\", \"vq_codes\"]\nvoice_name_policy = \"preset\"\n",
+            worker.address
+        ));
+    }
+    output
+}
+
 #[test]
 fn every_media_subset_is_ready_and_registers_only_enabled_routes() {
     let _guard = socket_guard();
@@ -678,6 +689,65 @@ fn qwen_task_types_select_the_matching_worker_profile() {
     assert!(response.starts_with(b"HTTP/1.1 200"));
     assert_eq!(base.captures().len(), 1);
     assert_eq!(custom.captures().len(), 1);
+}
+
+#[test]
+fn sse_stream_format_selects_only_a_streaming_capable_worker() {
+    let _guard = socket_guard();
+    let sse = br#"{"model":"tts","input":"hello","response_format":"pcm","stream_format":"sse"}"#;
+    let non_streaming = Worker::start();
+    let streaming = Worker::start();
+    let router = RouterProcess::start_with(&[&non_streaming, &streaming], |address| {
+        speech_stream_mode_config(
+            address,
+            &[
+                (&non_streaming, "[\"pcm\"]", "[\"non_streaming\"]"),
+                (
+                    &streaming,
+                    "[\"pcm\"]",
+                    "[\"non_streaming\", \"streaming\"]",
+                ),
+            ],
+        )
+    });
+    for _ in 0..2 {
+        let response = request(
+            router.address,
+            "POST",
+            MediaRoute::Speech.path(),
+            Some("application/json"),
+            sse,
+        )
+        .expect("SSE speech response");
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+    }
+    assert!(non_streaming.captures().is_empty());
+    assert_eq!(streaming.captures().len(), 2);
+
+    drop(router);
+    let pcm = Worker::start();
+    let wav = Worker::start();
+    // The wav worker keeps the pool heterogeneous; homogeneous pools skip classification.
+    let router = RouterProcess::start_with(&[&pcm, &wav], |address| {
+        speech_stream_mode_config(
+            address,
+            &[
+                (&pcm, "[\"pcm\"]", "[\"non_streaming\"]"),
+                (&wav, "[\"wav\"]", "[\"non_streaming\"]"),
+            ],
+        )
+    });
+    let response = request(
+        router.address,
+        "POST",
+        MediaRoute::Speech.path(),
+        Some("application/json"),
+        sse,
+    )
+    .expect("SSE speech response without a streaming worker");
+    assert!(response.starts_with(b"HTTP/1.1 422"));
+    assert!(pcm.captures().is_empty());
+    assert!(wav.captures().is_empty());
 }
 
 fn roundtrip(

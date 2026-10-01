@@ -436,7 +436,18 @@ def test_batch_speech_rejects_non_positive_item_duration_fields(
     assert client_impl.requests == []
 
 
-def test_batch_speech_rejects_streaming_items() -> None:
+@pytest.mark.parametrize("response_format", ["wav", "pcm"])
+@pytest.mark.parametrize(
+    ("stream_fields", "error_param"),
+    [
+        ({"stream": True}, "stream"),
+        ({"stream_format": "sse"}, "stream_format"),
+        ({"stream": False, "stream_format": "sse"}, "stream_format"),
+    ],
+)
+def test_batch_speech_rejects_streaming_items(
+    response_format: str, stream_fields: dict[str, str | bool], error_param: str
+) -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
@@ -445,15 +456,42 @@ def test_batch_speech_rejects_streaming_items() -> None:
         json={
             "model": "tts",
             "voice": "default",
-            "items": [{"input": "one", "stream": True}],
+            "response_format": response_format,
+            "items": [
+                {"input": "one", **stream_fields},
+                {"input": "two"},
+            ],
         },
     )
 
     assert response.status_code == 200
-    item = response.json()["results"][0]
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (1, 1)
+    item = body["results"][0]
     assert item["status"] == "error"
-    assert item["error"]["param"] == "items.0.stream"
-    assert client_impl.requests == []
+    assert item["error"]["param"] == f"items.0.{error_param}"
+    assert item["error"]["message"] == (
+        "stream is not supported for batch speech requests"
+    )
+    assert body["results"][1]["status"] == "success"
+    assert [request.prompt for request in client_impl.requests] == ["two"]
+    assert client_impl.requests[0].stream is False
+
+
+@pytest.mark.parametrize("stream_format", ["audio", "unknown"])
+def test_batch_speech_ignores_non_sse_item_stream_format(stream_format: str) -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={"items": [{"input": "one", "stream_format": stream_format}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["succeeded"] == 1
+    assert [request.prompt for request in client_impl.requests] == ["one"]
+    assert client_impl.requests[0].stream is False
 
 
 def test_batch_speech_accepts_item_model_override() -> None:

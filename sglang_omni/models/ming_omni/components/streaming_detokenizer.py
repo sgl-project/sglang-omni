@@ -16,6 +16,7 @@ Incremental decode runs on the held ``pending_tokens`` buffer only, which is
 equality-safe for suffix-additive tokenizers (byte-level BPE, as Ming uses)
 but would drop inter-word spaces with a sentencepiece/metaspace tokenizer.
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,14 +24,22 @@ import queue as _queue_mod
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
-from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+from transformers import PreTrainedTokenizerBase
+from typing_extensions import NotRequired, TypedDict
+
+from sglang_omni.models.ming_omni.io import (
+    MingOmniEvent,
+    MingOmniEventType,
+    MingOmniPipelineState,
+)
 from sglang_omni.models.ming_omni.pipeline.merge import decode_events
 from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
 from sglang_omni.models.ming_omni.pipeline.state_io import load_state
 from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
@@ -68,11 +77,11 @@ class MingStreamingDetokenizeScheduler:
 
     def __init__(
         self,
-        tokenizer: Any,
+        tokenizer: PreTrainedTokenizerBase,
         eos_token_id: int | None,
         *,
         stage_name: str = "decode",
-    ):
+    ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.tokenizer = tokenizer
@@ -156,7 +165,7 @@ class MingStreamingDetokenizeScheduler:
         else:
             pass
 
-    def on_stream_chunk(self, request_id: str, item: Any) -> None:
+    def on_stream_chunk(self, request_id: str, item: StreamItem) -> None:
         # item is the StreamItem the runtime wraps around the thinker's
         # torch.tensor([token_id], dtype=torch.long)
         data = item.data
@@ -273,7 +282,7 @@ class MingStreamingDetokenizeScheduler:
 
     def build_result(
         self, payload: StagePayload, *, is_streaming: bool = False
-    ) -> dict[str, Any]:
+    ) -> MingDecodeResult:
         state = load_state(payload)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
@@ -297,7 +306,7 @@ class MingStreamingDetokenizeScheduler:
             )
         )
 
-        result: dict[str, Any] = {"events": [event_to_dict(e) for e in events]}
+        result: MingDecodeResult = {"events": [event_to_dict(e) for e in events]}
         final_event = next(
             (
                 e
@@ -336,7 +345,26 @@ class MingStreamingDetokenizeScheduler:
         return result
 
 
-def event_to_dict(event: Any) -> dict[str, Any]:
+class MingOmniEventDict(TypedDict):
+    type: MingOmniEventType
+    modality: str
+    payload: dict[str, str | list[str]]
+    is_final: bool
+
+
+MingDecodeResult = TypedDict(
+    "MingDecodeResult",
+    {
+        "events": list[MingOmniEventDict],
+        "text": NotRequired[str | list[str]],
+        "modality": NotRequired[str],
+        "usage": NotRequired[dict[str, int]],
+        "finish_reason": NotRequired[object],
+    },
+)
+
+
+def event_to_dict(event: MingOmniEvent) -> MingOmniEventDict:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -373,9 +401,9 @@ def text_output_requested(request: OmniRequest) -> bool:
 
 
 def attach_decode_final_metadata(
-    result: dict[str, Any],
+    result: MingDecodeResult | dict[str, object],
     state: MingOmniPipelineState,
-    thinker_out: dict[str, Any],
+    thinker_out: Mapping[str, object],
 ) -> None:
     finish_reason = thinker_out.get("finish_reason")
     if finish_reason is not None:

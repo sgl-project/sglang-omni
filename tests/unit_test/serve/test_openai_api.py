@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -13,7 +15,7 @@ from fastapi.testclient import TestClient
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
     EXPLICIT_GENERATION_PARAMS_KEY,
@@ -237,6 +239,47 @@ class PrefetchedBlockingStreamingSpeechClient:
             finish_reason=None,
         )
         await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class TwoChunkStreamingSpeechClient:
+    def __init__(
+        self, *, fail_after_first_chunk: bool = False, usage_first: bool = False
+    ) -> None:
+        self.fail_after_first_chunk = fail_after_first_chunk
+        self.usage_first = usage_first
+        self.aborted: list[str] = []
+
+    async def generate(
+        self, request: GenerateRequest, request_id: str | None = None
+    ) -> AsyncIterator[GenerateChunk]:
+        usage = UsageInfo(prompt_tokens=3, completion_tokens=2, total_tokens=5)
+        if self.usage_first:
+            yield GenerateChunk(
+                request_id=request_id or "speech-1", modality="audio", usage=usage
+            )
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            audio_data=[0.0, 0.1],
+            sample_rate=24000,
+        )
+        if self.fail_after_first_chunk:
+            raise RuntimeError("vocoder failed")
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            audio_data=[-0.1, 0.0],
+            sample_rate=24000,
+        )
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            finish_reason="stop",
+            usage=None if self.usage_first else usage,
+        )
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
@@ -722,6 +765,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.headers["content-type"] == "audio/wav"
     assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
+    assert isinstance(speech_client.speech_requests[0].metadata["tts_params"], dict)
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
 
 
@@ -762,6 +806,7 @@ def test_speech_endpoint_accepts_seedtts_reference_payload_without_voice(
         else speech_client.speech_requests[0]
     )
     assert request.model == "seedtts"
+    assert isinstance(request.metadata["tts_params"], dict)
     assert request.metadata["tts_params"]["voice"] == "default"
 
 
@@ -786,6 +831,7 @@ def test_speech_endpoint_accepts_sdk_shaped_binary_request() -> None:
         response.headers["content-disposition"] == 'attachment; filename="speech.wav"'
     )
     assert speech_client.speech_requests[0].model == "tts-1"
+    assert isinstance(speech_client.speech_requests[0].metadata["tts_params"], dict)
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "alloy"
 
 
@@ -1309,6 +1355,7 @@ def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
             gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
             request_id="req-1",
             speed=1.0,
+            stream_format="audio",
         )
         body = response.body_iterator
         assert await anext(body) == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
@@ -1329,12 +1376,90 @@ def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None
                 gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
                 request_id="req-1",
                 speed=1.0,
+                stream_format="audio",
             )
         )
         await client.started.wait()
         request.disconnected.set()
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(drive())
+
+
+@pytest.mark.parametrize("usage_first", [False, True])
+def test_speech_sse_stream_sends_deltas_then_done_with_usage(
+    usage_first: bool,
+) -> None:
+    client = TestClient(
+        create_app(
+            TwoChunkStreamingSpeechClient(usage_first=usage_first), model_name="tts"
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "response_format": "pcm", "stream_format": "sse"},
+    )
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.iter_lines()
+        if line
+    ]
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-sample-rate"] == "24000"
+    assert [event["type"] for event in events] == [
+        "speech.audio.delta",
+        "speech.audio.delta",
+        "speech.audio.done",
+    ]
+    assert base64.b64decode(events[0]["audio"]) == encode_pcm([0.0, 0.1], 24000)
+    assert base64.b64decode(events[1]["audio"]) == encode_pcm([-0.1, 0.0], 24000)
+    assert events[2]["usage"] == {
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "total_tokens": 5,
+    }
+
+
+def test_speech_sse_stream_failure_ends_with_error_event() -> None:
+    speech_client = TwoChunkStreamingSpeechClient(fail_after_first_chunk=True)
+    client = TestClient(create_app(speech_client, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "response_format": "pcm", "stream_format": "sse"},
+    )
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.iter_lines()
+        if line
+    ]
+    assert response.status_code == 200
+    assert [event["type"] for event in events] == ["speech.audio.delta", "error"]
+    assert events[1]["error"]["type"] == "server_error"
+    assert "vocoder failed" in events[1]["error"]["message"]
+    assert len(speech_client.aborted) == 1
+
+
+def test_sse_speech_response_close_aborts_inner_speech_stream() -> None:
+    async def drive() -> None:
+        client = PrefetchedBlockingStreamingSpeechClient()
+        response = await speech_audio_response(
+            request=ConnectedRequest(),
+            client=client,
+            gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
+            request_id="req-1",
+            speed=1.0,
+            stream_format="sse",
+        )
+        body = response.body_iterator
+        assert (await anext(body)).startswith("data: ")
+        await body.aclose()
         assert client.aborted == ["req-1"]
 
     asyncio.run(drive())
@@ -1458,6 +1583,7 @@ def test_speech_request_records_explicit_generation_params() -> None:
     assert gen_req.sampling.temperature == 0.8
     assert gen_req.sampling.top_k == 30
     assert gen_req.sampling.seed == 123
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["explicit_generation_params"] == [
         "seed",
         "temperature",
@@ -1479,6 +1605,7 @@ def test_speech_request_passes_streaming_control_fields() -> None:
     )
     tts_params = gen_req.metadata["tts_params"]
 
+    assert isinstance(tts_params, dict)
     assert tts_params["initial_codec_chunk_frames"] == 8
     assert tts_params["x_vector_only_mode"] is True
     assert tts_params["response_format"] == "pcm"
@@ -1777,6 +1904,8 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     seen_ids = {request_id for request_id, _ in transcription_client.requests}
     assert {int(rid.rsplit("-chunk-", 1)[-1]) for rid in seen_ids} == set(range(count))
     for _, request in transcription_client.requests:
+        assert isinstance(request.prompt, dict)
+        assert isinstance(request.prompt["audio_bytes"], bytes)
         assert request.prompt["audio_bytes"][:4] == b"RIFF"
         assert request.prompt["content_type"] == "audio/wav"
     # Chunk texts are assembled in span order regardless of completion order.
@@ -3395,6 +3524,7 @@ def test_speech_request_passes_moss_token_count() -> None:
         req
     )
 
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["token_count"] == 180
 
 
