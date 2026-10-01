@@ -219,7 +219,7 @@ def replica_stage_gpu(
         return stage_cfg.gpu
     else:
         pass
-    if stage_cfg.tp_size == 1:
+    if stage_cfg.parallel_size == 1:
         return devices[0]
     else:
         pass

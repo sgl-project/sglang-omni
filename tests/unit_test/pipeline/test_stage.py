@@ -6,6 +6,7 @@ import asyncio
 import logging
 import pickle
 import threading
+from typing import Literal
 
 import pytest
 import torch
@@ -20,6 +21,11 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
 from sglang_omni.proto import DataReadyMessage, SubmitMessage
+from sglang_omni.proto.session import (
+    SESSION_METADATA_KEY,
+    SessionIdentity,
+    SessionOperation,
+)
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -487,17 +493,17 @@ def test_stage_relay_read_failure_completes_with_error() -> None:
 def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
     async def run() -> None:
         control_plane = RecordingStageControlPlane()
+        routes = iter(["decode", "talker"])
         stage_obj = make_stage(
             control_plane=control_plane,
             endpoints={"decode": "inproc://decode", "talker": "inproc://talker"},
-            get_next=lambda request_id, output: output.request.metadata["next"],
+            get_next=lambda request_id, output: next(routes),
             stream_targets=["talker", "decode"],
             get_stream_done_targets=lambda request_id, output: output.request.metadata[
                 "stream_targets"
             ],
         )
         payload = make_stage_payload(request_id="req-1")
-        payload.request.metadata["next"] = "decode"
         payload.request.metadata["stream_targets"] = ["decode"]
         stage_obj.active_requests.add("req-1")
 
@@ -511,6 +517,46 @@ def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
         assert routed_target == "decode"
         assert isinstance(routed_msg, DataReadyMessage)
         assert not routed_msg.is_done
+        assert list(routes) == ["talker"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("operation", ["open", "append", "close"])
+def test_stage_calls_router_only_for_session_append(
+    operation: Literal["open", "append", "close"],
+) -> None:
+    async def run() -> None:
+        control_plane = RecordingStageControlPlane()
+        routed_requests: list[str] = []
+        stage = make_stage(
+            control_plane=control_plane,
+            endpoints={"decode": "inproc://decode"},
+            get_next=lambda request_id, output: routed_requests.append(request_id)
+            or "decode",
+        )
+        payload = make_stage_payload(request_id="req-session")
+        payload.request.metadata[SESSION_METADATA_KEY] = SessionOperation(
+            operation=operation,
+            session_identity=SessionIdentity(id="session"),
+            stages=("stage", "decode"),
+        ).to_dict()
+        stage.active_requests.add(payload.request_id)
+
+        await stage.route_result(payload.request_id, payload)
+
+        if operation == "append":
+            assert routed_requests == [payload.request_id]
+            assert control_plane.completions == []
+            assert [target for target, _, _ in control_plane.sent_to_stage] == [
+                "decode"
+            ]
+        else:
+            assert routed_requests == []
+            assert control_plane.sent_to_stage == []
+            assert len(control_plane.completions) == 1
+            assert control_plane.completions[0].success
+            assert control_plane.completions[0].result == payload.data
 
     asyncio.run(run())
 
@@ -1416,6 +1462,43 @@ def test_stage_local_object_requires_registered_target() -> None:
             )
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("replicated", [False, True])
+def test_stage_self_route_preserves_reentered_request_state(replicated: bool) -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        scheduler = FakeScheduler()
+        name = "thinker@r1" if replicated else "thinker"
+        stage = make_stage(
+            name=name,
+            get_next=lambda request_id, output: "thinker",
+            endpoints={name: "inproc://thinker"},
+            scheduler=scheduler,
+            same_process_targets={name},
+            local_dispatcher=dispatcher,
+            replica_topology=(
+                {"thinker": ["thinker@r0", "thinker@r1"]} if replicated else None
+            ),
+        )
+        dispatcher.register(stage)
+        stage.active_requests.add("req-reentry")
+        if replicated:
+            stage.record_replica_bindings("req-reentry", {"thinker": 1})
+
+        await stage.route_result(
+            "req-reentry",
+            make_stage_payload(request_id="req-reentry", data={"phase": 2}),
+        )
+
+        queued = scheduler.inbox.get_nowait()
+        assert queued.request_id == "req-reentry"
+        assert queued.data.data == {"phase": 2}
+        assert "req-reentry" in stage.active_requests
+        if replicated:
+            assert stage.replica_bindings["req-reentry"] == {"thinker": 1}
+
+    asyncio.run(_run())
 
 
 def test_local_dispatch_propagates_replica_bindings_to_receiver() -> None:

@@ -14,7 +14,7 @@ one OS process, and which OS processes a TP stage spans.
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sglang_omni.config.placement import StagePlacementPlan, resolve_stage_gpu_ids
 from sglang_omni.config.schema import (
@@ -38,6 +38,11 @@ class LogicalProcess:
     # Note (kaige): one inner tuple per replica, each holding tp_size device
     # ids. None when the process declares no replica_devices.
     replica_devices: tuple[tuple[int, ...], ...] | None
+    sp_size: int = 1
+
+    @property
+    def parallel_size(self) -> int:
+        return max(self.tp_size, self.sp_size)
 
     @property
     def is_replicated(self) -> bool:
@@ -98,6 +103,14 @@ class ProcessTopologyPlan:
     groups: tuple[ProcessGroupPlacement, ...]
     stage_to_process: dict[str, str]
     tp_stage_to_processes: dict[str, tuple[str, ...]]
+    sp_stage_to_processes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def rank_processes(self, stage_name: str) -> tuple[str, ...]:
+        if stage_name in self.sp_stage_to_processes:
+            return self.sp_stage_to_processes[stage_name]
+        else:
+            pass
+        return self.tp_stage_to_processes[stage_name]
 
 
 def compile_logical_processes(
@@ -154,16 +167,19 @@ def build_logical_process(
     # Note (kaige): a TP stage owns its process outright, so the max is that
     # stage's tp_size; a shared process only ever holds non-TP stages.
     tp_size = max(stage.tp_size for stage in stages)
+    sp_size = max(stage.sp_size for stage in stages)
     return LogicalProcess(
         name=name,
         stage_names=tuple(stage.name for stage in stages),
         tp_size=tp_size,
+        sp_size=sp_size,
         num_replicas=policy.num_replicas,
         replica_devices=resolve_replica_devices(
             name,
             stages,
             policy,
-            tp_size=tp_size,
+            parallel_size=max(tp_size, sp_size),
+            parallel_kind="sp" if sp_size > 1 else "tp",
         ),
     )
 
@@ -173,7 +189,8 @@ def resolve_replica_devices(
     stages: list[StageConfig],
     policy: ProcessConfig,
     *,
-    tp_size: int,
+    parallel_size: int,
+    parallel_kind: str,
 ) -> tuple[tuple[int, ...], ...] | None:
     device_ids = policy.replica_devices
     has_gpu_stage = any(stage.gpu is not None for stage in stages)
@@ -183,7 +200,7 @@ def resolve_replica_devices(
             raise ValueError(
                 f"Process {process_name!r}: num_replicas={policy.num_replicas} "
                 "on a process with GPU stage(s) requires replica_devices with "
-                f"{policy.num_replicas * tp_size} device id(s)"
+                f"{policy.num_replicas * parallel_size} device id(s)"
             )
         else:
             pass
@@ -199,17 +216,17 @@ def resolve_replica_devices(
     else:
         pass
 
-    expected = policy.num_replicas * tp_size
+    expected = policy.num_replicas * parallel_size
     if len(device_ids) != expected:
         raise ValueError(
             f"Process {process_name!r}: replica_devices has {len(device_ids)} "
             f"id(s); expected {expected} (num_replicas={policy.num_replicas} x "
-            f"tp_size={tp_size})"
+            f"{parallel_kind}_size={parallel_size})"
         )
     else:
         pass
     replica_devices = tuple(
-        tuple(device_ids[index * tp_size : (index + 1) * tp_size])
+        tuple(device_ids[index * parallel_size : (index + 1) * parallel_size])
         for index in range(policy.num_replicas)
     )
     for replica_id, devices in enumerate(replica_devices):
@@ -285,6 +302,7 @@ def build_process_topology_plan(
             for stage_name in group.stage_names
         },
         tp_stage_to_processes=tp_stage_to_processes,
+        sp_stage_to_processes=build_tp_process_names(stages_cfg, kind="sp"),
     )
     validate_process_name_uniqueness(plan)
     validate_gpu_process_colocation(
@@ -300,7 +318,7 @@ def build_process_groups(
     stages: list[StageConfig],
     gpu_placement: StagePlacementPlan,
 ) -> list[ProcessGroupPlacement]:
-    non_tp_stages = [stage for stage in stages if stage.tp_size == 1]
+    non_tp_stages = [stage for stage in stages if stage.parallel_size == 1]
 
     components: OrderedDict[str, list[StageConfig]] = OrderedDict()
     for stage in non_tp_stages:
@@ -316,26 +334,31 @@ def build_process_groups(
     ]
 
 
-def build_tp_process_names(stages: list[StageConfig]) -> dict[str, tuple[str, ...]]:
+def build_tp_process_names(
+    stages: list[StageConfig], *, kind: str = "tp"
+) -> dict[str, tuple[str, ...]]:
     return {
         stage.name: tuple(
-            tp_process_name(stage, tp_rank) for tp_rank in range(stage.tp_size)
+            tp_process_name(stage, rank) for rank in range(stage.parallel_size)
         )
         for stage in stages
-        if stage.tp_size > 1
+        if stage.parallel_size > 1 and stage.parallel_kind == kind
     }
 
 
 def tp_process_name(stage: StageConfig, tp_rank: int) -> str:
     process_base = stage.process or stage.name
-    return f"{process_base}_tp{tp_rank}"
+    return f"{process_base}_{stage.parallel_kind}{tp_rank}"
 
 
 def validate_process_name_uniqueness(plan: ProcessTopologyPlan) -> None:
     non_tp_processes = set(plan.stage_to_process.values())
     tp_processes = [
         process_name
-        for process_names in plan.tp_stage_to_processes.values()
+        for process_names in (
+            *plan.tp_stage_to_processes.values(),
+            *plan.sp_stage_to_processes.values(),
+        )
         for process_name in process_names
     ]
     duplicate_tp_processes = sorted(
@@ -476,7 +499,7 @@ def validate_gpu_process_colocation(
                 record(gpu_id, group.name, stage)
 
     for stage in stages:
-        if stage.tp_size <= 1:
+        if stage.parallel_size <= 1:
             continue
         else:
             pass
@@ -485,7 +508,7 @@ def validate_gpu_process_colocation(
                 continue
             else:
                 pass
-            record(gpu_id, topology_plan.tp_stage_to_processes[stage.name][rank], stage)
+            record(gpu_id, topology_plan.rank_processes(stage.name)[rank], stage)
 
     require = config.placement.require_memory_fraction_for_colocation
     limit = config.placement.max_total_gpu_memory_fraction_per_gpu
