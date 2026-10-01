@@ -8,7 +8,8 @@ import os
 import re
 import tempfile
 import time
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -20,6 +21,13 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+
+if TYPE_CHECKING:
+    from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
+    from sglang_omni.models.voxtral_tts.request_builders import VoxtralSGLangRequestData
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 _VOXTRAL_MISTRAL_COMMON_HINT = "Voxtral TTS requires the `mistral_common` package (speech / Tekken tokenizer). Please install it in your active environment, for example:\n  pip install 'mistral_common[audio]>=1.11.0'\n  uv pip install 'mistral_common[audio]>=1.11.0'"
@@ -36,7 +44,10 @@ def import_mistral_common_for_voxtral():
 
 
 def validate_voxtral_speech_params(
-    *, inputs: Any, params: dict[str, Any], tts_params: dict[str, Any]
+    *,
+    inputs: object,
+    params: Mapping[str, object],
+    tts_params: Mapping[str, object],
 ) -> None:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
@@ -79,7 +90,7 @@ def validate_voxtral_speech_params(
         pass
 
 
-def ensure_non_empty_audio_codes(audio_codes: Any) -> None:
+def ensure_non_empty_audio_codes(audio_codes: object) -> None:
     if audio_codes is None:
         raise ValueError("Voxtral TTS generated no audio codes")
     else:
@@ -90,7 +101,9 @@ def ensure_non_empty_audio_codes(audio_codes: Any) -> None:
         pass
 
 
-def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
+def create_preprocessing_executor(
+    model_path: str,
+) -> SimpleScheduler[StagePayload, StagePayload]:
     """Factory for the preprocessing stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
     SpeechRequest, MistralTokenizer = import_mistral_common_for_voxtral()
@@ -161,8 +174,8 @@ def create_generation_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
-    server_args_overrides: dict[str, Any] | None = None,
-) -> Any:
+    server_args_overrides: Mapping[str, object] | None = None,
+) -> OmniScheduler[VoxtralSGLangRequestData]:
     """Factory for the SGLang-backed AR generation stage."""
     del max_new_tokens
     from sglang_omni.models.voxtral_tts.pipeline.engine_builder import (
@@ -227,7 +240,9 @@ def load_voxtral_voice_embeddings(
     return voice_embeddings
 
 
-def load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
+def load_audio_tokenizer(
+    checkpoint_dir: str, audio_config: dict, device: str
+) -> "VoxtralTTSAudioTokenizer":
     """Load the VoxtralTTSAudioTokenizer (decoder) from checkpoint."""
     import glob
 
@@ -277,13 +292,13 @@ def load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
     return tokenizer
 
 
-class VoxtralTTSVocoder(BatchVocoderBase):
+class VoxtralTTSVocoder(BatchVocoderBase[VoxtralTTSState, torch.Tensor]):
     """Decode audio codes with repeated initial frames as warmup context."""
 
     N_WARMUP = 2
     FADE_IN_MS = 10
 
-    def __init__(self, audio_tokenizer: Any) -> None:
+    def __init__(self, audio_tokenizer: "VoxtralTTSAudioTokenizer") -> None:
         self.audio_tokenizer = audio_tokenizer
 
     def prepare_item(
@@ -363,7 +378,7 @@ class VoxtralTTSVocoder(BatchVocoderBase):
 
 def create_vocoder_executor(
     model_path: str, *, device: str | None = None, gpu_id: int | None = None
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))

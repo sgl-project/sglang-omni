@@ -9,6 +9,9 @@ from types import MethodType
 import torch
 import torch.nn as nn
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
+from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+    Qwen3OmniMoeThinkerConfig,
+)
 
 from sglang_omni.models.qwen3_omni.components.audio_layer_graph import (
     AudioLayerGraphRunner,
@@ -26,7 +29,7 @@ AUDIO_TOWER_CLASS = hf_modeling.Qwen3OmniMoeAudioEncoder
 def build_audio_tower(
     model_path: str,
     *,
-    thinker_cfg: object,
+    thinker_cfg: Qwen3OmniMoeThinkerConfig,
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:

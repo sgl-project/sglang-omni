@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -18,6 +17,7 @@ import torch.nn.functional as F
 from sglang_omni.models.ming_omni.components.common import load_ming_config
 from sglang_omni.models.ming_omni.components.projectors import VisionProjector
 from sglang_omni.models.ming_omni.components.vision_encoder import MingOmniVisionEncoder
+from sglang_omni.models.ming_omni.hf_config import VisionConfig
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.platforms import current_platform
 
@@ -95,7 +95,9 @@ class MingImageEncoder(nn.Module):
         self.eval()
 
     @staticmethod
-    def vision_dict(vision_cfg: Any) -> dict:
+    def vision_dict(
+        vision_cfg: VisionConfig,
+    ) -> dict:
         """Convert VisionConfig dataclass to plain dict for PretrainedConfig."""
         if hasattr(vision_cfg, "__dataclass_fields__"):
             from dataclasses import asdict
@@ -211,7 +213,7 @@ class MingImageEncoder(nn.Module):
         image_grid_thw: torch.Tensor | None = None,
         pixel_values_videos: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> dict[str, torch.Tensor]:
         """Encode images and/or videos and return embeddings.
 

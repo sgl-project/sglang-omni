@@ -15,12 +15,16 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Literal, Mapping
 
 import torch
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
+    PrefixCacheRow,
+    compile_forward_prefix,
+)
 from sglang_omni.models.fun_cosyvoice3.stages import (
     CosyVoice3Vocoder,
     FlowBatchInput,
@@ -50,6 +54,13 @@ SAMPLE_RATE = 24000
 NextDecode = Literal["causal_window", "leftover", "fallback", "wait"]
 
 
+def causal_hop_frames(item: FlowBatchInput) -> int:
+    """Mel frames a causal hop over item solves, prompt included."""
+    return (
+        int(item.prompt_token.shape[1]) + int(item.token.shape[1]) - PRE_LOOKAHEAD_LEN
+    ) * TOKEN_MEL_RATIO
+
+
 @dataclass
 class CosyVoice3StreamState:
     tokens: list[int] = field(default_factory=list)
@@ -60,6 +71,7 @@ class CosyVoice3StreamState:
     embedding: torch.Tensor | None = None
     hift_mel: torch.Tensor | None = None
     speech_offset: int = 0
+    flow_cache: tuple[PrefixCacheRow, PrefixCacheRow] | None = None
     leftover: torch.Tensor | None = None
     done: bool = False
     ready_since: float | None = None
@@ -92,7 +104,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
         sample_rate: int = SAMPLE_RATE,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         token_hop_len: int = TOKEN_HOP_LEN,
         token_max_hop_len: int = TOKEN_MAX_HOP_LEN,
@@ -152,6 +164,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.vocoder.hift_step(
                 [HiftStepRow(history=mel, emitted_samples=0, is_final=False)]
             )
+            self.warmup_prefix_hops(item)
             hop_s = time.monotonic() - started
             mel = self.vocoder.leftover_batch([item])[0]
             self.vocoder.hift_step(
@@ -175,6 +188,11 @@ class FunCosyVoice3StreamingVocoderScheduler(
             return
         else:
             pass
+        prefix_pool = self.vocoder.flow.prefix_pool
+        if prefix_pool is not None:
+            prefix_pool.forward = compile_forward_prefix()
+        else:
+            pass
         hop_tokens = self.token_hop_len + PRE_LOOKAHEAD_LEN
         first = [self.make_warmup_flow_input(hop_tokens)]
         # note(ratish): a second row count and length,
@@ -188,11 +206,38 @@ class FunCosyVoice3StreamingVocoderScheduler(
             for items in (first, second):
                 self.vocoder.hop_batch(items)
                 self.vocoder.leftover_batch(items)
+            if prefix_pool is not None:
+                self.warmup_prefix_hops(first[0])
+            else:
+                pass
         logger.info(
             f"Fun-CosyVoice3 PackedDiT compile warmup, hop and final, with "
             f"torch_num_threads={torch.get_num_threads()} "
             f"({time.monotonic() - started:.1f} s)"
         )
+
+    def warmup_prefix_hops(self, item: FlowBatchInput) -> None:
+        """A first hop and a follow-up hop through the prefix cache, so both
+        an empty and a filled prefix are materialized before serving."""
+        cache = self.vocoder.prefix_cache_rows(causal_hop_frames(item))
+        if cache is None:
+            return
+        else:
+            pass
+        try:
+            self.vocoder.hop_batch_prefix([item], [cache])
+            longer = FlowBatchInput(
+                token=torch.cat((item.token, item.token), dim=1),
+                prompt_token=item.prompt_token,
+                prompt_feat=item.prompt_feat,
+                embedding=item.embedding,
+            )
+            if self.vocoder.grow_prefix_cache(cache, causal_hop_frames(longer)):
+                self.vocoder.hop_batch_prefix([longer], [cache])
+            else:
+                pass
+        finally:
+            self.vocoder.release_prefix_cache(cache)
 
     def make_warmup_flow_input(self, token_count: int) -> FlowBatchInput:
         flow = self.vocoder.flow
@@ -209,7 +254,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         self,
         request_id: str,
         state: CosyVoice3StreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -230,7 +275,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
                     embedding=pipeline_state.flow_embedding,
                 )
         else:
-            metadata: Mapping[str, Any] = source
+            metadata: Mapping[str, object] = source
             if any(
                 key in metadata
                 for key in (
@@ -254,9 +299,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
         request_id: str,
         state: CosyVoice3StreamState,
         *,
-        prompt_token: Any,
-        prompt_feat: Any,
-        embedding: Any,
+        prompt_token: object,
+        prompt_feat: object,
+        embedding: object,
     ) -> None:
         token = as_flow_prompt_token(prompt_token)
         feat = as_flow_prompt_feat(prompt_feat)
@@ -435,7 +480,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 for _, state in participants
             ]
             logger.info(f"Fun-CosyVoice3 causal Flow batch size={len(items)}")
-            mels = self.vocoder.hop_batch(items)
+            mels = self.hop_batch_with_prefix(participants, items)
             decoded: dict[str, torch.Tensor] = {}
             for (request_id, state), (delta, offset) in zip(
                 participants,
@@ -464,6 +509,58 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 else:
                     state.ready_since = None
             return decoded
+
+    def hop_batch_with_prefix(
+        self,
+        participants: list[tuple[str, CosyVoice3StreamState]],
+        items: list[FlowBatchInput],
+    ) -> list[torch.Tensor]:
+        """Flow for the step: rows with room in the prefix pool run over their
+        new frames against their cached prefix, the rest over their whole
+        history as one plain call."""
+        if self.vocoder.flow.prefix_pool is None:
+            return self.vocoder.hop_batch(items)
+        else:
+            pass
+        cached: list[int] = []
+        caches: list[tuple[PrefixCacheRow, PrefixCacheRow]] = []
+        plain: list[int] = []
+        for index, ((_, state), item) in enumerate(
+            zip(participants, items, strict=True)
+        ):
+            total_frames = causal_hop_frames(item)
+            cache = state.flow_cache
+            if cache is None:
+                cache = self.vocoder.prefix_cache_rows(total_frames)
+            elif not self.vocoder.grow_prefix_cache(cache, total_frames):
+                # Note (Jiaxin Deng): a row the pool cannot hold runs over its
+                # whole history this hop and may re-enter the pool on a later one.
+                self.vocoder.release_prefix_cache(cache)
+                cache = None
+            else:
+                pass
+            state.flow_cache = cache
+            if cache is None:
+                plain.append(index)
+            else:
+                cached.append(index)
+                caches.append(cache)
+        mels: list[torch.Tensor | None] = [None] * len(items)
+        if cached:
+            outputs = self.vocoder.hop_batch_prefix(
+                [items[index] for index in cached], caches
+            )
+            for index, mel in zip(cached, outputs, strict=True):
+                mels[index] = mel
+        else:
+            pass
+        if plain:
+            outputs = self.vocoder.hop_batch([items[index] for index in plain])
+            for index, mel in zip(plain, outputs, strict=True):
+                mels[index] = mel
+        else:
+            pass
+        return [mel for mel in mels if mel is not None]
 
     def hift_step(
         self,
@@ -539,8 +636,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
         request_id: str,
         payload: StagePayload,
         state: CosyVoice3StreamState,
-    ) -> dict[str, Any]:
-        final_data: dict[str, Any] = {
+    ) -> dict[str, str | int | dict[str, int | float]]:
+        final_data: dict[str, str | int | dict[str, int | float]] = {
             "modality": "audio",
             "sample_rate": self.sample_rate,
         }
@@ -552,7 +649,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             final_data["usage"] = usage
             return final_data
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         return audio_waveform_payload(
             waveform,
             sample_rate=self.sample_rate,
@@ -565,6 +664,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
     ) -> None:
         state.tokens.clear()
         state.hift_mel = None
+        self.vocoder.release_prefix_cache(state.flow_cache)
+        state.flow_cache = None
         state.prompt_token = None
         state.prompt_feat = None
         state.embedding = None

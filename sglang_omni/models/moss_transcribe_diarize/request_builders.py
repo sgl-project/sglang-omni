@@ -8,7 +8,8 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from types import SimpleNamespace
+from typing import Callable, overload
 
 import numpy as np
 import torch
@@ -19,7 +20,11 @@ from sglang.srt.managers.schedule_batch import (
     Req,
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
+from transformers import PreTrainedTokenizerBase, ProcessorMixin
 
+from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
+    BatchedAudioEncoderService,
+)
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
@@ -27,6 +32,7 @@ from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.token_text_streaming import (
     make_token_text_stream_output_builder,
 )
+from sglang_omni.scheduling.types import RequestOutput
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +82,7 @@ class MossTranscribeDiarizeRequestData(SGLangARRequestData):
     enforce_request_limits: bool = True
 
 
-def only_audio(value: Any) -> Any:
+def only_audio(value: object) -> object:
     if isinstance(value, (list, tuple)):
         if len(value) != 1:
             raise ValueError(
@@ -91,7 +97,7 @@ def only_audio(value: Any) -> Any:
     return value
 
 
-def audio_source_from_payload(payload: StagePayload) -> Any:
+def audio_source_from_payload(payload: StagePayload) -> object:
     """Extended source resolver: MOSS accepts more sources than the shared
     default (``audio_data``, single-item ``audios`` lists, metadata fallbacks,
     and ``{"data"|"path"|"url": ...}`` dict entries)."""
@@ -139,7 +145,7 @@ def has_metadata_audio_source(payload: StagePayload) -> bool:
     )
 
 
-def unwrap_source_dict(source: Any) -> Any:
+def unwrap_source_dict(source: object) -> object:
     if isinstance(source, dict):
         if source.get("data") is not None:
             return source["data"]
@@ -158,7 +164,7 @@ def unwrap_source_dict(source: Any) -> Any:
     return source
 
 
-def explicit_generation_fields(metadata: dict[str, Any]) -> set[str]:
+def explicit_generation_fields(metadata: dict[str, object]) -> set[str]:
     """Sampling fields the caller set explicitly (see EXPLICIT_GENERATION_PARAMS_KEY).
 
     Anything not listed here resolves to the model's own default, so a client
@@ -173,13 +179,33 @@ def explicit_generation_fields(metadata: dict[str, Any]) -> set[str]:
     return set()
 
 
+@overload
 def sampling_param(
-    params: dict[str, Any],
+    params: dict[str, object],
     explicit_fields: set[str],
     field: str,
-    default: Any,
-    cast: Callable[[Any], Any],
-) -> Any:
+    default: int,
+    cast: type[int],
+) -> int: ...
+
+
+@overload
+def sampling_param(
+    params: dict[str, object],
+    explicit_fields: set[str],
+    field: str,
+    default: float,
+    cast: type[float],
+) -> float: ...
+
+
+def sampling_param(
+    params: dict[str, object],
+    explicit_fields: set[str],
+    field: str,
+    default: int | float,
+    cast: type[int] | type[float],
+) -> int | float:
     if field not in explicit_fields:
         return default
     else:
@@ -189,7 +215,9 @@ def sampling_param(
 
 
 def decode_token_ids(
-    tokenizer: Any, token_ids: list[int], skip_special_tokens: bool
+    tokenizer: PreTrainedTokenizerBase,
+    token_ids: list[int],
+    skip_special_tokens: bool,
 ) -> str:
     try:
         return tokenizer.decode(
@@ -205,7 +233,7 @@ def postprocess_moss_transcribe_diarize_text(text: str) -> str:
     return _SPECIAL_TOKEN_RE.sub("", text).strip()
 
 
-def render_prompt(processor: Any, input_text: str) -> str:
+def render_prompt(processor: ProcessorMixin, input_text: str) -> str:
     messages = [
         {
             "role": "user",
@@ -224,7 +252,7 @@ def render_prompt(processor: Any, input_text: str) -> str:
 
 def prompt_from_payload(
     payload: StagePayload,
-    processor: Any,
+    processor: ProcessorMixin,
     *,
     default_prompt: str | None = None,
 ) -> str:
@@ -240,7 +268,7 @@ def prompt_from_payload(
     else:
         pass
 
-    input_text: Any = params.get("prompt")
+    input_text: object = params.get("prompt")
     if isinstance(inputs, dict):
         input_text = inputs.get("prompt", inputs.get("text", input_text))
     elif isinstance(inputs, str) and has_metadata_audio_source(payload):
@@ -296,7 +324,7 @@ def contiguous_offsets(input_ids: list[int], token_id: int) -> list[tuple[int, i
 
 def prompt_token_parts(
     prompt: str,
-    tokenizer: Any,
+    tokenizer: PreTrainedTokenizerBase,
     audio_token: str,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     audio_token_count = prompt.count(audio_token)
@@ -315,7 +343,7 @@ def prompt_token_parts(
 
 
 def audio_feature_lengths_from_waveform(
-    processor: Any,
+    processor: ProcessorMixin,
     num_samples: int,
 ) -> torch.Tensor:
     """Derive the processor's per-chunk token lengths without extracting mel."""
@@ -340,7 +368,7 @@ def audio_feature_lengths_from_waveform(
 
 
 def extract_audio_features(
-    processor: Any,
+    processor: ProcessorMixin,
     audio: np.ndarray,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
     feature_extractor = processor.feature_extractor
@@ -374,15 +402,15 @@ def extract_audio_features(
 
 
 def make_moss_transcribe_diarize_scheduler_adapters(
-    processor: Any,
-    tokenizer: Any,
+    processor: ProcessorMixin,
+    tokenizer: PreTrainedTokenizerBase,
     max_new_tokens: int,
     context_length: int,
     duration_scaled_default: bool = True,
-    audio_encoder_service: Any | None = None,
+    audio_encoder_service: BatchedAudioEncoderService | None = None,
 ) -> tuple[
     Callable[[StagePayload], MossTranscribeDiarizeRequestData],
-    Callable[[Any], StagePayload],
+    Callable[[MossTranscribeDiarizeRequestData], StagePayload],
 ]:
     audio_token_id = int(
         getattr(processor, "audio_token_id", None)
@@ -650,10 +678,12 @@ def make_moss_transcribe_diarize_scheduler_adapters(
 
 
 def make_moss_transcribe_diarize_stream_output_builder(
-    tokenizer: Any,
+    tokenizer: PreTrainedTokenizerBase,
     eos_token_id: int | None = None,
     min_emit_interval_s: float = 0.0,
-) -> Callable[[str, Any, Any], list[OutgoingMessage]]:
+) -> Callable[
+    [str, SGLangARRequestData, RequestOutput | SimpleNamespace], list[OutgoingMessage]
+]:
     tokenizer_eos = tokenizer.eos_token_id
     resolved_eos = (
         eos_token_id

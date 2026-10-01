@@ -22,6 +22,7 @@ from sglang_omni.models.fun_cosyvoice3.config import (
 from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
+    CosyVoice3StreamState,
     FunCosyVoice3StreamingVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -129,6 +130,7 @@ def packed_compile_scheduler(
         token_mel_ratio=2,
         spk_embed_affine_layer=SimpleNamespace(in_features=192),
         packed_estimator=packed_estimator,
+        prefix_pool=None,
     )
     vocoder = SimpleNamespace(
         flow=flow,
@@ -880,6 +882,7 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     # about the default value.
     scheduler = stages.create_vocoder_executor(
         "model",
+        flow_prefix_cache_gb=0.0,
         device="cpu",
         flow_batch_admission_frames=2000,
         enable_dit_torch_compile=False,
@@ -912,7 +915,7 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         ),
     )
     scheduler = stages.create_vocoder_executor(
-        "model", device="cpu", enable_dit_torch_compile=False
+        "model", device="cpu", enable_dit_torch_compile=False, flow_prefix_cache_gb=0.0
     )
 
     assert scheduler.max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
@@ -953,6 +956,7 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
 
     scheduler = stages.create_vocoder_executor(
         "model",
+        flow_prefix_cache_gb=0.0,
         device="cpu",
         enable_dit_torch_compile=False,
         dtype="float16",
@@ -1001,6 +1005,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
 
     stages.create_vocoder_executor(
         "model",
+        flow_prefix_cache_gb=0.0,
         device="cpu",
         max_batch_size=4,
         enable_dit_torch_compile=False,
@@ -1036,7 +1041,9 @@ def create_scheduler_recording_native_compile(
         compiled.append(flow)
 
     monkeypatch.setattr(stages, "compile_dit_backbone", fake_compile)
-    scheduler = stages.create_vocoder_executor("model", device="cpu", **kwargs)
+    scheduler = stages.create_vocoder_executor(
+        "model", device="cpu", flow_prefix_cache_gb=0.0, **kwargs
+    )
     return compiled, scheduler
 
 
@@ -1142,6 +1149,7 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
 
     _scheduler = stages.create_vocoder_executor(
         "model",
+        flow_prefix_cache_gb=0.0,
         device="cuda",
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_cuda_graph=True,
@@ -1173,6 +1181,7 @@ def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
     with pytest.raises(ValueError, match="enable only one"):
         stages.create_vocoder_executor(
             "model",
+            flow_prefix_cache_gb=0.0,
             enable_dit_torch_compile=True,
             enable_flow_estimator_trt=True,
         )
@@ -1309,6 +1318,7 @@ def test_create_vocoder_executor_rejects_non_positive_admission_budget(
     with pytest.raises(ValueError, match="flow_batch_admission_frames"):
         stages.create_vocoder_executor(
             "model",
+            flow_prefix_cache_gb=0.0,
             device="cpu",
             flow_batch_admission_frames=0,
             enable_dit_torch_compile=False,
@@ -1334,6 +1344,7 @@ def test_pipeline_config_sets_flow_batch_admission_by_default() -> None:
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
+        "flow_prefix_cache_gb": 24.0,
     }
 
 
@@ -1520,3 +1531,74 @@ def test_hift_step_final_is_bit_identical_beside_finals_of_other_widths(
     ):
         assert emitted_after == reference_after
         assert torch.equal(delta, reference)
+
+
+def prefix_pool_scheduler(
+    room: list[bool],
+) -> tuple[FunCosyVoice3StreamingVocoderScheduler, list[tuple[str, int]]]:
+    """A scheduler whose pool admits one row per True in room, in order; cached
+    rows return their index in the cached call, plain rows -1."""
+    released: list[tuple[str, int]] = []
+    admissions = iter(room)
+
+    def prefix_cache_rows(frames: int) -> tuple[str, int] | None:
+        return ("pair", frames) if next(admissions) else None
+
+    def grow_prefix_cache(pair: tuple[str, int], frames: int) -> bool:
+        return next(admissions)
+
+    def hop_batch_prefix(
+        items: list[stages.FlowBatchInput], caches: list[tuple[str, int]]
+    ) -> list[torch.Tensor]:
+        return [torch.full((1, 1, 1), float(i)) for i, _ in enumerate(items)]
+
+    def hop_batch(items: list[stages.FlowBatchInput]) -> list[torch.Tensor]:
+        return [torch.full((1, 1, 1), -1.0) for _ in items]
+
+    vocoder = SimpleNamespace(
+        flow=SimpleNamespace(prefix_pool=object()),
+        prefix_cache_rows=prefix_cache_rows,
+        grow_prefix_cache=grow_prefix_cache,
+        release_prefix_cache=released.append,
+        hop_batch_prefix=hop_batch_prefix,
+        hop_batch=hop_batch,
+    )
+    return FunCosyVoice3StreamingVocoderScheduler(vocoder), released
+
+
+def prefix_hop_item(tokens: int) -> stages.FlowBatchInput:
+    return stages.FlowBatchInput(
+        token=torch.zeros(1, tokens, dtype=torch.int32),
+        prompt_token=torch.zeros(1, 4, dtype=torch.int32),
+        prompt_feat=torch.zeros(1, 8, 80),
+        embedding=torch.zeros(1, 192),
+    )
+
+
+def test_hop_batch_with_prefix_keeps_row_order_across_cached_and_plain_rows() -> None:
+    scheduler, _ = prefix_pool_scheduler(room=[False, True])
+    states = [CosyVoice3StreamState(), CosyVoice3StreamState()]
+    participants = [("a", states[0]), ("b", states[1])]
+    items = [prefix_hop_item(8), prefix_hop_item(8)]
+
+    mels = scheduler.hop_batch_with_prefix(participants, items)
+
+    assert [mel.item() for mel in mels] == [-1.0, 0.0]
+    assert states[0].flow_cache is None
+    assert states[1].flow_cache == ("pair", 18)
+
+
+def test_hop_batch_with_prefix_drops_a_row_the_pool_cannot_grow_and_readmits_it() -> (
+    None
+):
+    scheduler, released = prefix_pool_scheduler(room=[True, False, True])
+    state = CosyVoice3StreamState()
+    participants = [("a", state)]
+
+    scheduler.hop_batch_with_prefix(participants, [prefix_hop_item(8)])
+    scheduler.hop_batch_with_prefix(participants, [prefix_hop_item(16)])
+    assert released == [("pair", 18)]
+    assert state.flow_cache is None
+
+    scheduler.hop_batch_with_prefix(participants, [prefix_hop_item(24)])
+    assert state.flow_cache == ("pair", 50)

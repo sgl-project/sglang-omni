@@ -12,9 +12,17 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import MultimodalInputs, ScheduleBatch
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+    from sglang.srt.model_executor.model_runner import ModelRunner
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +30,12 @@ logger = logging.getLogger(__name__)
 # degenerate (text-equivalent) mrope: identical rows, delta == 0.
 DEGENERATE_MROPE_FLAG = "_asr_degenerate_mrope"
 
-_orig_compute_mrope_positions: Any = None
+_orig_compute_mrope_positions: (
+    Callable[[ForwardBatch, ModelRunner, ScheduleBatch], None] | None
+) = None
 
 
-def all_degenerate(multimodal_inputs: list[Any]) -> bool:
+def all_degenerate(multimodal_inputs: list[MultimodalInputs | None]) -> bool:
     for mm_input in multimodal_inputs:
         if mm_input is not None and not getattr(mm_input, DEGENERATE_MROPE_FLAG, False):
             return False
@@ -34,7 +44,9 @@ def all_degenerate(multimodal_inputs: list[Any]) -> bool:
     return True
 
 
-def fast_compute_mrope_positions(self: Any, model_runner: Any, batch: Any) -> None:
+def fast_compute_mrope_positions(
+    self: ForwardBatch, model_runner: ModelRunner, batch: ScheduleBatch
+) -> None:
     """Drop-in replacement for ForwardBatch._compute_mrope_positions.
 
     For a batch with multimodal inputs, upstream still walks the requests on

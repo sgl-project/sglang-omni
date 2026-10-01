@@ -42,6 +42,37 @@ def test_encoder_microbatch_limit_must_be_positive() -> None:
         BatchedAudioEncoderService(object(), max_batch_size=0)
 
 
+def test_encoder_service_uses_model_device_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parameter = torch.nn.Parameter(torch.zeros(1))
+    model = SimpleNamespace(
+        whisper_encoder=SimpleNamespace(parameters=lambda: iter([parameter])),
+        vq_adaptor=SimpleNamespace(parameters=lambda: iter([parameter])),
+        config=SimpleNamespace(text_config=SimpleNamespace(hidden_size=1)),
+    )
+    stream = SimpleNamespace()
+    stream_devices: list[torch.device] = []
+
+    def create_stream(device: torch.device) -> SimpleNamespace:
+        stream_devices.append(device)
+        return stream
+
+    device_module = SimpleNamespace(Stream=create_stream)
+    monkeypatch.setattr(
+        encoder_service.torch,
+        "get_device_module",
+        lambda device: device_module,
+    )
+    monkeypatch.setattr(threading.Thread, "start", lambda thread: None)
+
+    service = BatchedAudioEncoderService(model)
+
+    assert service.device_module is device_module
+    assert service.stream is stream
+    assert stream_devices == [parameter.device]
+
+
 class FailingStream:
     def synchronize(self) -> None:
         raise torch.OutOfMemoryError("test encoder OOM")
@@ -55,18 +86,14 @@ class StopWorker(BaseException):
     pass
 
 
-def test_encode_batch_commits_item_state_only_after_stream_success(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_encode_batch_commits_item_state_only_after_stream_success() -> None:
     service = object.__new__(BatchedAudioEncoderService)
     service.stream = FailingStream()
+    service.device_module = SimpleNamespace(
+        stream=lambda stream: contextlib.nullcontext()
+    )
     service.model = SimpleNamespace(
         get_audio_feature_uncached=lambda items, forward_batch: torch.ones(2, 3)
-    )
-    monkeypatch.setattr(
-        encoder_service.torch.cuda,
-        "stream",
-        lambda stream: contextlib.nullcontext(),
     )
     features = [torch.ones(1), torch.ones(1)]
     items = [
@@ -123,7 +150,7 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
         items[0].feature = None
         return [items[0].precomputed_embeddings]
 
-    def cuda_device(device: str) -> contextlib.AbstractContextManager:
+    def device_context(device: str) -> contextlib.AbstractContextManager:
         selected_devices.append(device)
         return contextlib.nullcontext()
 
@@ -135,9 +162,11 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
     service.stream = SimpleNamespace(
         synchronize=lambda: cleanup_steps.append("synchronize")
     )
+    service.device_module = SimpleNamespace(
+        device=device_context,
+        empty_cache=empty_cache,
+    )
     monkeypatch.setattr(service, "execute_batch", execute_batch)
-    monkeypatch.setattr(encoder_service.torch.cuda, "device", cuda_device)
-    monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", empty_cache)
 
     def run_worker() -> None:
         try:
@@ -200,7 +229,7 @@ def test_batched_oom_falls_back_to_per_item_encoding(
             raise RuntimeError("allocator remained poisoned after OOM")
         return [object()]
 
-    def cuda_device(device: str) -> contextlib.AbstractContextManager:
+    def device_context(device: str) -> contextlib.AbstractContextManager:
         selected_devices.append(device)
         return contextlib.nullcontext()
 
@@ -209,9 +238,11 @@ def test_batched_oom_falls_back_to_per_item_encoding(
         cleanup_steps.append("empty_cache")
         poisoned = False
 
+    service.device_module = SimpleNamespace(
+        device=device_context,
+        empty_cache=empty_cache,
+    )
     monkeypatch.setattr(service, "execute_batch", execute_batch)
-    monkeypatch.setattr(encoder_service.torch.cuda, "device", cuda_device)
-    monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", empty_cache)
     entries = [QueueEntry(item, concurrent.futures.Future()) for item in items]
     batches = iter([(entries, False), ([], True)])
     service.next_batch = lambda: next(batches)

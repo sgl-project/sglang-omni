@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
 import torch
+from typing_extensions import NotRequired, Unpack
+
+if TYPE_CHECKING:
+    from transformers import PretrainedConfig
+else:
+    pass
 
 
 def linear_mrope_positions(
@@ -30,8 +37,8 @@ def linear_mrope_positions(
 
 def talker_can_use_linear_mrope(
     input_ids: torch.Tensor,
-    model_inputs: dict[str, Any],
-    thinker_config: Any,
+    model_inputs: Mapping[str, object],
+    thinker_config: "PretrainedConfig",
 ) -> bool:
     """True when linear arange+delta0 matches full mm MRoPE."""
     # Note (guozhihao): talker uses MRotaryEmbedding; decode is
@@ -124,6 +131,14 @@ def merge_audio_in_video(video_pos: np.ndarray, audio_pos: np.ndarray) -> np.nda
     return np.concatenate([video_pos, audio_pos], axis=1)[:, order]
 
 
+class RopeIndexKwargs(TypedDict):
+    audio_token_id: int
+    audio_start_token_id: int
+    position_id_per_seconds: int
+    use_audio_in_video: NotRequired[object]
+    audio_seqlens: NotRequired[object]
+
+
 def get_rope_index_qwen3_omni_vectorized(
     spatial_merge_size: int,
     image_token_id: int,
@@ -134,7 +149,7 @@ def get_rope_index_qwen3_omni_vectorized(
     image_grid_thw: torch.LongTensor | None = None,
     video_grid_thw: torch.LongTensor | None = None,
     second_per_grid_ts: torch.Tensor | None = None,
-    **kwargs: Any,
+    **kwargs: Unpack[RopeIndexKwargs],
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Drop-in for get_rope_index_qwen3_omni with vectorized blocks."""
     del tokens_per_second

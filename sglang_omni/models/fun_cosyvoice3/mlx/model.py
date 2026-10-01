@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
+import torch
 from mlx_lm.models.qwen2 import ModelArgs, Qwen2Model
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ _MLX_QUANTIZATION_PRESETS: dict[str, tuple[int, int]] = {
 }
 
 
-def qwen2_args(config: dict[str, Any]) -> ModelArgs:
+def qwen2_args(config: Mapping[str, object]) -> ModelArgs:
     """Build the fixed 0.5B Qwen2 shape used by Fun-CosyVoice3."""
     # Note (yexiaodong): The converted artifact has Flow/HiFT config at its
     # root, so validate the nested Qwen2 architecture before loading weights.
@@ -144,7 +145,7 @@ def find_weight(weights: dict[str, mx.array], *names: str) -> mx.array:
 
 def load_converted_backbone(
     args: ModelArgs,
-    config: dict[str, Any],
+    config: dict[str, object],
     weights: dict[str, mx.array],
 ) -> Qwen2Model:
     backbone = Qwen2Model(args)
@@ -157,7 +158,7 @@ def load_converted_backbone(
         else:
             pass
 
-        def quantize_layers(path: str, module: Any) -> bool:
+        def quantize_layers(path: str, module: nn.Module) -> bool:
             return (
                 isinstance(module, nn.Linear)
                 and "layers" in path
@@ -201,7 +202,7 @@ def quantize_loaded_backbone(
             f"{sorted(_MLX_QUANTIZATION_PRESETS)}, got {quantization!r}"
         ) from exc
 
-    def quantize_layers(path: str, module: Any) -> bool:
+    def quantize_layers(path: str, module: nn.Module) -> bool:
         return (
             isinstance(module, nn.Linear)
             and "layers" in path
@@ -216,17 +217,18 @@ def quantize_loaded_backbone(
     )
 
 
-def to_mlx_float(tensor: Any, dtype: mx.Dtype) -> mx.array:
+def to_mlx_float(tensor: torch.Tensor, dtype: mx.Dtype) -> mx.array:
     import numpy as np
 
     # Note (yexiaodong): NumPy has no bfloat16 representation for this export.
     import torch
 
+    value = tensor
     if isinstance(tensor, torch.Tensor):
-        tensor = tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
+        value = tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
     else:
         pass
-    return mx.array(np.asarray(tensor, dtype=np.float32)).astype(dtype)
+    return mx.array(np.asarray(value, dtype=np.float32)).astype(dtype)
 
 
 def load_raw_backbone(

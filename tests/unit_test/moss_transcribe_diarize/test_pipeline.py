@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -281,6 +282,40 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
     Model.compile_encoder(model, [1, 2], input_feature_len=6)
 
     assert model.compiled_chunk_buckets == frozenset({1})
+
+
+def test_init_encoder_graphs_uses_platform_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from sglang_omni.models.moss_transcribe_diarize import sglang_model
+
+    backend = object()
+    get_graph_backend = Mock(return_value=backend)
+    graph_runner = Mock()
+
+    monkeypatch.setattr(
+        sglang_model.current_platform,
+        "get_device_graph_backend",
+        get_graph_backend,
+    )
+    monkeypatch.setattr(sglang_model, "WhisperEncoderCudaGraphRunner", graph_runner)
+
+    encoder = torch.nn.Linear(4, 4)
+    model = SimpleNamespace(
+        whisper_encoder=encoder,
+        encoder_graph_runner=None,
+        config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=80)),
+    )
+
+    sglang_model.MossTranscribeDiarizeForConditionalGeneration.init_encoder_graphs(
+        model, [2, 1], input_feature_len=3000
+    )
+
+    get_graph_backend.assert_called_once_with(next(encoder.parameters()).device)
+    assert graph_runner.call_args.kwargs["graph_backend"] is backend
+    graph_runner.return_value.capture.assert_called_once_with([2, 1])
 
 
 def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):

@@ -28,10 +28,6 @@ from sglang_omni.models.qwen3_omni.config import (
     ENABLE_TALKER_START_TOPOLOGY,
     TALKER_START_MIN_CHUNKS,
 )
-from sglang_omni.models.qwen3_omni.pending_text_queue import (
-    PendingTextTensorQueue,
-    coerce_pending_text_queue,
-)
 from sglang_omni.models.qwen3_omni.request_builders import build_sglang_talker_request
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import (
@@ -42,6 +38,10 @@ from sglang_omni.models.qwen3_omni.talker_scheduler import (
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.pending_text_queue import (
+    PendingTextTensorQueue,
+    coerce_pending_text_queue,
+)
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from tests.unit_test.fixtures.qwen_fakes import FakeQwenTokenizer
 from tests.unit_test.fixtures.qwen_predictor import (

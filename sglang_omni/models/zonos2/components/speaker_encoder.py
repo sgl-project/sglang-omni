@@ -15,7 +15,6 @@ import wave
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -47,7 +46,7 @@ class Qwen3SpeakerEmbedding(nn.Module):
     F_MIN = 0.0
     F_MAX = 12_000.0
 
-    def __init__(self, device: str, compile_forward: bool = False):
+    def __init__(self, device: str, compile_forward: bool = False) -> None:
         super().__init__()
         self.device = device
         self.compile_forward = compile_forward
@@ -303,7 +302,11 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
             pass
         return self.embedder
 
-    def encode(self, ref_audio: Any, sample_rate: int | None = None) -> torch.Tensor:
+    def encode(
+        self,
+        ref_audio: object,
+        sample_rate: int | None = None,
+    ) -> torch.Tensor:
         """Encode reference audio into a raw ``[2048]`` CPU float32 embedding.
 
         ``ref_audio`` may be a file path, raw audio bytes, or a
@@ -313,7 +316,9 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         return embedding
 
     def encode_with_fingerprint(
-        self, ref_audio: Any, sample_rate: int | None = None
+        self,
+        ref_audio: object,
+        sample_rate: int | None = None,
     ) -> tuple[torch.Tensor, str]:
         """Return an embedding and the fingerprint of the same normalized input."""
         item = self.normalize_input((ref_audio, sample_rate))
@@ -321,7 +326,7 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
 
     # ---- ReferenceEncodeHook ----
 
-    def normalize_input(self, raw_input: Any) -> Zonos2RefInput:
+    def normalize_input(self, raw_input: object) -> Zonos2RefInput:
         if isinstance(raw_input, Zonos2RefInput):
             return raw_input
         else:
@@ -374,7 +379,7 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         return self.select_embedding(output)
 
     @staticmethod
-    def to_bytes(ref_audio: Any) -> bytes:
+    def to_bytes(ref_audio: object) -> bytes:
         """Raw bytes of a path/bytes input, for content hashing."""
         if isinstance(ref_audio, (bytes, bytearray, memoryview)):
             return bytes(ref_audio)
@@ -396,7 +401,9 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         return "wav:" + h.hexdigest()
 
     @staticmethod
-    def select_embedding(output: Any) -> torch.Tensor:
+    def select_embedding(
+        output: torch.Tensor | tuple[torch.Tensor, ...],
+    ) -> torch.Tensor:
         """Reduce the model output to a ``[2048]`` CPU float32 vector.
 
         Squeeze the batch dim and pick the candidate with 2048 elements.

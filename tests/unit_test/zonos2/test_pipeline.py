@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import binascii
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from sglang_omni.client import Client
 from sglang_omni.config import resolve_stage_factory_args
 from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2 import engine_builder as eb
+from sglang_omni.models.zonos2 import stages
 from sglang_omni.models.zonos2.components import text_frontend
 from sglang_omni.models.zonos2.config import (
     Zonos2MultiGPUPipelineConfig,
@@ -18,6 +20,7 @@ from sglang_omni.models.zonos2.engine_builder import (
     ZONOS2_DEFAULT_MEM_FRACTION_STATIC,
     Zonos2EngineBuilder,
 )
+from sglang_omni.models.zonos2.payload_types import Zonos2State
 from sglang_omni.models.zonos2.request_builders import (
     build_zonos2_state,
     build_zonos2_stream_metadata,
@@ -331,3 +334,52 @@ def test_zonos2_factories_reject_unknown_config_options() -> None:
             {"max_new_tokens": 100},
             stage_name="tts_engine",
         )
+
+
+TENSOR_REFERENCE = torch.zeros(4)
+
+
+@pytest.mark.parametrize(
+    ("ref_audio", "expected"),
+    [
+        ("voice.wav", "voice.wav"),
+        (b"RIFF", b"RIFF"),
+        (TENSOR_REFERENCE, TENSOR_REFERENCE),
+        ("data:audio/wav;base64,UklGRg==", b"RIFF"),
+        ("data:audio/wav;base64,UklGR", binascii.Error),
+    ],
+)
+def test_zonos2_speaker_stage_decodes_only_data_uri_references(
+    monkeypatch: pytest.MonkeyPatch, ref_audio: object, expected: object
+) -> None:
+    received: list[object] = []
+
+    class Encoder:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def encode_with_fingerprint(self, ref: object) -> tuple[torch.Tensor, str]:
+            received.append(ref)
+            return torch.ones(2), "fingerprint"
+
+    monkeypatch.setattr(
+        "sglang_omni.models.zonos2.components.speaker_encoder.SpeakerEncoder",
+        Encoder,
+    )
+    speaker = stages.create_speaker_encode_executor("model", device="cpu").fn
+    payload = StagePayload(
+        "r",
+        request=OmniRequest(inputs={}, params={}),
+        data=Zonos2State(ref_audio=ref_audio).to_dict(),
+    )
+
+    if expected is binascii.Error:
+        with pytest.raises(binascii.Error):
+            speaker(payload)
+        assert received == []
+    elif isinstance(ref_audio, str) and ref_audio.startswith("data:"):
+        speaker(payload)
+        assert received == [expected]
+    else:
+        speaker(payload)
+        assert len(received) == 1 and received[0] is ref_audio

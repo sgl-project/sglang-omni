@@ -3,13 +3,22 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
+import numpy as np
+import numpy.typing as npt
 import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoTokenizer
 
-from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.payload_types import (
+    AudioEncoderInputs,
+    ImageEncoderInputs,
+    MiniCPMOPipelineState,
+    ModalityInputs,
+    StreamState,
+)
 from sglang_omni.models.minicpm_o.routing import should_generate_audio_output
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import (
@@ -42,7 +51,7 @@ ASR_PROMPT_EN = (
 )
 
 
-def first_batch_item(value: Any) -> Any:
+def first_batch_item(value: object) -> object:
     """Unwrap the batch dimension of a processor output (batch size is 1)."""
     if isinstance(value, list):
         return value[0] if value else None
@@ -55,7 +64,7 @@ def first_batch_item(value: Any) -> Any:
     return value
 
 
-def video_to_images(video: Any) -> list[Image.Image]:
+def video_to_images(video: object) -> list[Image.Image]:
     """Convert one decoded video (T, C, H, W) tensor to RGB frames."""
     if isinstance(video, list) and all(
         isinstance(frame, Image.Image) for frame in video
@@ -108,8 +117,8 @@ class MiniCPMOPreprocessor:
         self.speech_enabled = speech_enabled
 
     def speech_to_text_inputs(
-        self, payload: StagePayload, inputs: dict[str, Any]
-    ) -> tuple[list[dict[str, Any]], list[Any]]:
+        self, payload: StagePayload, inputs: Mapping[str, object]
+    ) -> tuple[list[dict[str, str]], list[npt.NDArray[np.float32]]]:
         """Turn a transcription upload into a chat turn plus audio list."""
         params = payload.request.params or {}
         language = str(params.get("language") or "").lower()
@@ -136,7 +145,7 @@ class MiniCPMOPreprocessor:
         raw_audios = None
         raw_videos = None
         use_audio_in_video = False
-        video_params: dict[str, Any] = {}
+        video_params: dict[str, object] = {}
         if isinstance(inputs, dict) and inputs.get("audio_bytes") is not None:
             messages, raw_audios = self.speech_to_text_inputs(payload, inputs)
         elif isinstance(inputs, dict):
@@ -188,20 +197,21 @@ class MiniCPMOPreprocessor:
             input_ids = encoded["input_ids"][0].to(dtype=torch.long)
         attention_mask = torch.ones_like(input_ids)
 
+        stream_state: StreamState = {"token_ids": [], "text": ""}
         state = MiniCPMOPipelineState(
             prompt={
                 "prompt_text": prompt_text,
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
             },
-            stream_state={"token_ids": [], "text": ""},
+            stream_state=stream_state,
         )
         payload.data = state.to_dict()
         payload.request.inputs = None
         return payload
 
     def render_chat_template(
-        self, messages: Any, *, use_tts_template: bool = False
+        self, messages: object, *, use_tts_template: bool = False
     ) -> str:
         if isinstance(messages, str):
             return messages
@@ -217,7 +227,7 @@ class MiniCPMOPreprocessor:
         )
 
     @staticmethod
-    def normalize_message_contents(messages: Any) -> Any:
+    def normalize_message_contents(messages: object) -> object:
         """Convert OpenAI text-part content to the string form expected by MiniCPM."""
         if not isinstance(messages, list):
             return messages
@@ -244,13 +254,13 @@ class MiniCPMOPreprocessor:
 
     def messages_with_media_placeholders(
         self,
-        messages: list[dict[str, Any]],
+        messages: Sequence[Mapping[str, object]],
         *,
         num_images: int,
         num_audios: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Mapping[str, object]]:
         """Prepend media placeholders to the last user message."""
-        result: list[dict[str, Any]] = []
+        result: list[Mapping[str, object]] = []
         messages = self.normalize_message_contents(messages)
         for i, msg in enumerate(messages):
             if i == len(messages) - 1 and msg.get("role", "user") == "user":
@@ -267,13 +277,13 @@ class MiniCPMOPreprocessor:
     async def preprocess_multimodal(
         self,
         payload: StagePayload,
-        messages: Any,
+        messages: object,
         *,
-        raw_images: Any,
-        raw_audios: Any,
-        raw_videos: Any,
+        raw_images: object,
+        raw_audios: object,
+        raw_videos: object,
         use_audio_in_video: bool,
-        video_params: dict[str, Any],
+        video_params: Mapping[str, object],
     ) -> StagePayload:
         video_kwargs = {
             key.removeprefix("video_"): value for key, value in video_params.items()
@@ -333,8 +343,8 @@ class MiniCPMOPreprocessor:
         input_ids = processed["input_ids"][0].to(dtype=torch.long)
         attention_mask = torch.ones_like(input_ids)
 
-        mm_inputs: dict[str, Any] = {}
-        encoder_inputs: dict[str, dict[str, Any]] = {}
+        mm_inputs: dict[str, ModalityInputs] = {}
+        encoder_inputs: dict[str, ImageEncoderInputs | AudioEncoderInputs] = {}
         if images:
             image_bound = first_batch_item(processed["image_bound"])
             # note (MayDomine): slice order must match the placeholder bound order.
@@ -366,6 +376,7 @@ class MiniCPMOPreprocessor:
         else:
             pass
 
+        stream_state: StreamState = {"token_ids": [], "text": ""}
         state = MiniCPMOPipelineState(
             prompt={
                 "prompt_text": prompt_text,
@@ -374,7 +385,7 @@ class MiniCPMOPreprocessor:
             },
             mm_inputs=mm_inputs,
             encoder_inputs=encoder_inputs,
-            stream_state={"token_ids": [], "text": ""},
+            stream_state=stream_state,
         )
         payload.data = state.to_dict()
         payload.request.inputs = None

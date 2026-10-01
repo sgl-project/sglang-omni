@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from torch import nn
 
-if TYPE_CHECKING:
-    from sglang_omni.platforms.interface import JointRopeInplaceKernel
-else:
-    pass
+from sglang_omni.platforms.interface import JointRopeInplaceKernel
 
 
 class NormLayerFactory(Protocol):

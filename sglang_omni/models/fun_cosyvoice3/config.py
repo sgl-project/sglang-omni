@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -168,6 +168,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 token_hop_len=25,
                 token_max_hop_len=100,
                 disable_hop_growth=False,
+                flow_prefix_cache_gb=24.0,
             ),
             gpu=0,
             terminal=True,
@@ -188,7 +189,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         ),
     ]
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         # TODO (chenyang): Indeed, TRT and Torch compile conflicts are pretty
         # common in this repo, so we should make this into config level, not in each model.
         super().model_post_init(__context)
@@ -212,7 +213,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
         )
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool | str]:
         if stage_name != "vocoder":
             return {}
         else:
@@ -220,7 +221,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         vocoder_factory = self.stage_named("vocoder").factory
         # note(ratish): the resolver reads a stage literal back as an explicit choice;
         # a set enable_dit_torch_compile overrides this default.
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, bool | str] = {
             "enable_dit_torch_compile": not bool(
                 vocoder_factory.model_extra.get("enable_flow_estimator_trt")
             )

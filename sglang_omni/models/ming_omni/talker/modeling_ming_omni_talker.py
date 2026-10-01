@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from queue import Queue
 from threading import Lock
-from typing import Any, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -61,6 +61,11 @@ try:
 except ImportError:
     onnxruntime = None  # type: ignore[assignment]
     _HAS_ONNX = False
+
+if TYPE_CHECKING:
+    from talker_tn.talker_tn import TalkerTN
+else:
+    pass
 
 
 class IdentityNormalizer:
@@ -203,8 +208,14 @@ class CFMGraphExecutor:
         return gen_lat, inputs_embeds, stop_out
 
     def initialize_graph(
-        self, input_tensor, his_lat, randn_tensor, timesteps, sde_args, sde_rnd
-    ):
+        self,
+        input_tensor: torch.Tensor,
+        his_lat: torch.Tensor,
+        randn_tensor: torch.Tensor,
+        timesteps: torch.Tensor,
+        sde_args: tuple[float, float, float],
+        sde_rnd: torch.Tensor,
+    ) -> None:
         self.last_hidden_state_placeholder = input_tensor.clone()
         self.his_lat_placeholder = his_lat.clone()
         self.randn_like_placeholder = randn_tensor.clone()
@@ -369,16 +380,16 @@ class MingOmniTalker(nn.Module):
 
         # --- External dependencies (set via setters) ---
         self.tokenizer = None
-        self.normalizer: Any = IdentityNormalizer()
+        self.normalizer: IdentityNormalizer | TalkerTN = IdentityNormalizer()
         self.spkemb_extractor = None
         self.voice_json_dict: dict = {}
 
         # --- Internal state ---
         self.lock = threading.Lock()
-        self.tts_speech_token_dict: dict = {}
-        self.llm_end_dict: dict = {}
+        self.tts_speech_token_dict: dict[str, list[tuple[torch.Tensor, bool]]] = {}
+        self.llm_end_dict: dict[str, bool] = {}
         self.vae_cache: dict = {}
-        self.sil_holder_cache: dict = {}
+        self.sil_holder_cache: dict[str, dict[str, list[torch.Tensor]] | None] = {}
 
         self.initialized = None
         self.initial_lock = threading.Lock()

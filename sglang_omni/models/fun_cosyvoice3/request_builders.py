@@ -7,13 +7,15 @@ import hashlib
 import json
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Literal, TypedDict
 from urllib.parse import unquote, urlparse
 
 import numpy as np
 import torch
+from numpy.typing import NDArray
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
@@ -34,7 +36,14 @@ from sglang_omni.utils.audio import decode_audio_data_uri as _decode_audio_data_
 from sglang_omni.utils.audio import load_audio as _shared_load_audio
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
-from .sglang_model import CONTROL_TOKEN_IDS, EOS_ID, SOS_ID, TASK_ID, TOTAL_VOCAB_SIZE
+from .sglang_model import (
+    CONTROL_TOKEN_IDS,
+    EOS_ID,
+    SOS_ID,
+    TASK_ID,
+    TOTAL_VOCAB_SIZE,
+    FunCosyVoice3SGLangModel,
+)
 from .utils import (
     CosyVoice3Tokenizer,
     SpeakerEncoder,
@@ -42,6 +51,13 @@ from .utils import (
     build_llm_prompt_embeddings,
     extract_prompt_speech_feat,
 )
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.model_runner_stub import (
+        _DummyModel as MlxStubModel,
+    )
+else:
+    pass
 
 _SAMPLE_RATE = 24000
 _PROMPT_AUDIO_SR = 16000
@@ -98,7 +114,7 @@ class CosyVoice3NullTokenizer:
 _COSYVOICE3_NULL_TOKENIZER = CosyVoice3NullTokenizer()
 
 
-def cosyvoice3_model_revision(model: Any) -> str:
+def cosyvoice3_model_revision(model: FunCosyVoice3SGLangModel | None) -> str:
     """Return a stable-enough checkpoint identity for the process-local cache."""
     config = getattr(model, "config", None)
     for candidate in (
@@ -115,7 +131,7 @@ def cosyvoice3_model_revision(model: Any) -> str:
     return f"{type(model).__module__}.{type(model).__qualname__}"
 
 
-def cosyvoice3_reference_input_key(source: Any) -> str | None:
+def cosyvoice3_reference_input_key(source: object) -> str | None:
     """Build a cache key without allowing mutable URLs to alias audio bytes."""
     if isinstance(source, Path):
         source = str(source)
@@ -184,7 +200,7 @@ def cosyvoice3_reference_input_key(source: Any) -> str | None:
     return None
 
 
-def clone_reference_tensor(value: Any) -> torch.Tensor:
+def clone_reference_tensor(value: object) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         value = torch.as_tensor(value)
     else:
@@ -199,7 +215,7 @@ class CosyVoice3SGLangRequestData(SGLangARRequestData):
     output_codes: list[torch.Tensor] = None
     prompt_input_embeds: torch.Tensor | None = None
     engine_start_s: float = 0.0
-    stream_metadata: dict[str, Any] | None = None
+    stream_metadata: Mapping[str, object] | None = None
     stream_code_buffer: list[torch.Tensor] = field(default_factory=list)
     stream_code_seen: int = 0
     stream_code_next_flush: int = 0
@@ -209,7 +225,7 @@ class CosyVoice3SGLangRequestData(SGLangARRequestData):
     flow_prompt_speech_feat: torch.Tensor | None = None
     flow_embedding: torch.Tensor | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.output_codes is None:
             self.output_codes = []
         else:
@@ -228,7 +244,7 @@ class CosyVoice3PreparedRequest:
     flow_prompt_speech_token: torch.Tensor
     flow_prompt_speech_feat: torch.Tensor
     flow_embedding: torch.Tensor
-    gen_kwargs: dict[str, Any]
+    gen_kwargs: Mapping[str, object]
     # Target text token count, captured before the reference prompt (ref_text
     # / instructions / cross-lingual prefix) is concatenated. CosyVoice3's
     # upstream generation-length contract is defined in terms of this count,
@@ -244,7 +260,7 @@ class CosyVoice3PreparedRequest:
 class CosyVoice3ReferenceInput:
     """Reference audio passed to the content-addressed encoder cache."""
 
-    ref_audio: Any
+    ref_audio: object
 
 
 @dataclass
@@ -257,19 +273,31 @@ class CosyVoice3ReferenceArtifact:
     flow_embedding: torch.Tensor
 
 
+class CosyVoice3StoredReference(TypedDict):
+    artifact_type: Literal["fun_cosyvoice3_reference_conditioning"]
+    llm_prompt_speech_token: torch.Tensor
+    flow_prompt_speech_token: torch.Tensor
+    flow_prompt_speech_feat: torch.Tensor
+    flow_embedding: torch.Tensor
+
+
 class CosyVoice3ReferenceEncodeHook(
     KeyedReferenceEncodeHook[
         CosyVoice3ReferenceInput,
         CosyVoice3ReferenceArtifact,
-        dict[str, Any],
+        CosyVoice3StoredReference,
     ]
 ):
-
     model_id = "fun_cosyvoice3"
     encoder_id = "speech_tokenizer_v3+campplus+matcha_mel"
     artifact_kind = "reference_conditioning"
 
-    def __init__(self, *, model: Any, model_revision: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: FunCosyVoice3SGLangModel | None,
+        model_revision: str | None = None,
+    ) -> None:
         self.speech_tokenizer = None
         self.speaker_encoder = None
         self.model_revision = model_revision or cosyvoice3_model_revision(model)
@@ -304,7 +332,7 @@ class CosyVoice3ReferenceEncodeHook(
         self.speech_tokenizer = speech_tokenizer
         self.speaker_encoder = speaker_encoder
 
-    def normalize_input(self, raw_input: Any) -> CosyVoice3ReferenceInput:
+    def normalize_input(self, raw_input: object) -> CosyVoice3ReferenceInput:
         if isinstance(raw_input, CosyVoice3ReferenceInput):
             return raw_input
         else:
@@ -343,7 +371,9 @@ class CosyVoice3ReferenceEncodeHook(
             flow_embedding=speaker_embedding,
         )
 
-    def store_artifact(self, artifact: CosyVoice3ReferenceArtifact) -> dict[str, Any]:
+    def store_artifact(
+        self, artifact: CosyVoice3ReferenceArtifact
+    ) -> CosyVoice3StoredReference:
         return {
             "artifact_type": "fun_cosyvoice3_reference_conditioning",
             "llm_prompt_speech_token": clone_reference_tensor(
@@ -358,7 +388,9 @@ class CosyVoice3ReferenceEncodeHook(
             "flow_embedding": clone_reference_tensor(artifact.flow_embedding),
         }
 
-    def load_artifact(self, stored: dict[str, Any]) -> CosyVoice3ReferenceArtifact:
+    def load_artifact(
+        self, stored: Mapping[str, object]
+    ) -> CosyVoice3ReferenceArtifact:
         if stored.get("artifact_type") != "fun_cosyvoice3_reference_conditioning":
             raise RuntimeError("CosyVoice3 reference cache entry is invalid")
         else:
@@ -380,12 +412,16 @@ class CosyVoice3ReferenceEncodeHook(
 
 @dataclass
 class CosyVoice3PreprocessingContext:
-    model: Any | None
+    model: FunCosyVoice3SGLangModel | None
     use_mlx: bool
     tokenizer: CosyVoice3Tokenizer
     speech_tokenizer: SpeechTokenizerV3
     speaker_encoder: SpeakerEncoder
-    reference_service: ReferenceEncodeService
+    reference_service: ReferenceEncodeService[
+        CosyVoice3ReferenceInput,
+        CosyVoice3ReferenceArtifact,
+        CosyVoice3StoredReference,
+    ]
 
 
 _PREPROCESSING_CONTEXT: CosyVoice3PreprocessingContext | None = None
@@ -396,7 +432,7 @@ _PREPROCESSING_FINALIZE_LOCK = threading.Lock()
 
 def set_cosyvoice3_preprocessing_context(
     *,
-    model: Any | None,
+    model: FunCosyVoice3SGLangModel | None,
     tokenizer: CosyVoice3Tokenizer,
     speech_tokenizer: SpeechTokenizerV3,
     speaker_encoder: SpeakerEncoder,
@@ -473,7 +509,7 @@ def pop_prepared_cosyvoice3_request(
     return prepared
 
 
-def load_prompt_audio(source: Any) -> np.ndarray:
+def load_prompt_audio(source: object) -> NDArray[np.float32]:
     return _shared_load_audio(
         source,
         source_name="Fun-CosyVoice3",
@@ -481,7 +517,7 @@ def load_prompt_audio(source: Any) -> np.ndarray:
     )
 
 
-def load_prompt_audio_24k(source: Any) -> np.ndarray:
+def load_prompt_audio_24k(source: object) -> NDArray[np.float32]:
     """Load the same reference audio at the Flow mel sample rate."""
     return _shared_load_audio(
         source,
@@ -547,8 +583,8 @@ def build_cosyvoice3_state(payload: StagePayload) -> FunCosyVoice3State:
 
 
 def normalize_cosyvoice3_inputs(
-    inputs: Any,
-) -> tuple[str, list[dict[str, Any]], Any | None, str | None]:
+    inputs: object,
+) -> tuple[str, list[dict[str, object]], object, str | None]:
     """Normalize flat and structured speech-reference request shapes."""
     if isinstance(inputs, str):
         return inputs, [], None, None
@@ -581,7 +617,7 @@ def normalize_cosyvoice3_inputs(
     )
 
 
-def normalize_language(language: Any) -> str:
+def normalize_language(language: object) -> str:
     if language is None or language == "":
         return "auto"
     else:
@@ -589,7 +625,7 @@ def normalize_language(language: Any) -> str:
     return str(language)
 
 
-def normalize_cosyvoice3_seed(seed: Any) -> int:
+def normalize_cosyvoice3_seed(seed: object) -> int:
     """Convert a public seed to SGLang's positive int32 seed domain."""
     if isinstance(seed, bool):
         raise ValueError("Fun-CosyVoice3 seed must be an integer")
@@ -606,7 +642,7 @@ def normalize_cosyvoice3_seed(seed: Any) -> int:
     return normalized & _COSYVOICE3_SAMPLING_SEED_MASK
 
 
-def resolve_optional_text(value: Any) -> str | None:
+def resolve_optional_text(value: object) -> str | None:
     if value is None:
         return None
     else:
@@ -667,10 +703,10 @@ def align_flow_prompt(
 
 
 def build_generation_kwargs(
-    params: dict[str, Any],
+    params: Mapping[str, object],
     *,
-    tts_params: dict[str, Any],
-) -> dict[str, Any]:
+    tts_params: Mapping[str, object],
+) -> dict[str, object]:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
         explicit_fields = {str(field) for field in explicit_generation_params}
@@ -699,7 +735,7 @@ def build_generation_kwargs(
     # tokens are honored) from the target text length; build_sglang_
     # cosyvoice3_request only falls back to _DEFAULT_MAX_NEW_TOKENS when
     # neither the caller nor the contract provides a bound.
-    generation_kwargs: dict[str, Any] = {}
+    generation_kwargs: dict[str, object] = {}
     max_new_tokens = params.get("max_new_tokens")
     if max_new_tokens is not None:
         generation_kwargs["max_new_tokens"] = int(max_new_tokens)
@@ -728,7 +764,7 @@ def build_embedding_cache_key_ids(input_embeds: torch.Tensor) -> list[int]:
 
 def prepare_cosyvoice3_request(
     *,
-    model: Any,
+    model: FunCosyVoice3SGLangModel | None,
     tokenizer: CosyVoice3Tokenizer,
     state: FunCosyVoice3State,
     reference_artifact: CosyVoice3ReferenceArtifact | None,
@@ -871,7 +907,7 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
 def build_sglang_cosyvoice3_request(
     payload: StagePayload,
     *,
-    model: Any,
+    model: torch.nn.Module | MlxStubModel | None,
 ) -> CosyVoice3SGLangRequestData:
     prepared = pop_prepared_cosyvoice3_request(payload)
     if prepared is None:
@@ -1022,7 +1058,12 @@ def accept_cosyvoice3_stream_token(
     return True
 
 
-def make_cosyvoice3_scheduler_adapters(*, model: Any):
+def make_cosyvoice3_scheduler_adapters(
+    *, model: torch.nn.Module | MlxStubModel
+) -> tuple[
+    Callable[[StagePayload], CosyVoice3SGLangRequestData],
+    Callable[[CosyVoice3SGLangRequestData], StagePayload],
+]:
     def request_builder(payload: StagePayload) -> CosyVoice3SGLangRequestData:
         return build_sglang_cosyvoice3_request(payload, model=model)
 

@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 import xxhash
@@ -31,7 +31,7 @@ else:
     pass
 
 
-def resolve_sampling_seed(params: dict[str, Any]) -> int | None:
+def resolve_sampling_seed(params: Mapping[str, object]) -> int | None:
     for key in ("seed", "sampling_seed"):
         value = params.get(key)
         if value is not None:
@@ -45,9 +45,9 @@ def resolve_sampling_seed(params: dict[str, Any]) -> int | None:
 class EncoderRequestData:
     """Prepared inputs for one encoder stage forward."""
 
-    model_inputs: dict[str, Any]
+    model_inputs: dict[str, object]
     cache_key: str | None = None
-    skip_result: dict[str, Any] | None = None
+    skip_result: dict[str, torch.Tensor] | None = None
 
 
 def build_encoder_request(
@@ -71,8 +71,8 @@ def build_encoder_request(
 def apply_mm_pad_values(
     input_ids: torch.Tensor,
     *,
-    mm_inputs: dict[str, Any],
-    model_inputs: dict[str, Any],
+    mm_inputs: Mapping[str, object],
+    model_inputs: dict[str, object],
     vocab_size: int,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
     """Replace shared placeholder ids with cache-key-derived modality ids."""
@@ -118,7 +118,7 @@ def apply_mm_pad_values(
 def build_sglang_thinker_request(
     state: MiniCPMOPipelineState,
     *,
-    params: dict[str, Any],
+    params: Mapping[str, object],
     tokenizer: PreTrainedTokenizerBase,
     vocab_size: int,
     request_id: str | None = None,

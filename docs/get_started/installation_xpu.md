@@ -13,7 +13,7 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
 Core deps and the required XPU SGLang build cover the supported models (Qwen3-ASR / TTS / Omni /
-MiniMax Music 3, Fun-ASR-Nano, MiniCPM-o, and
+MiniMax Music 3, Fun-ASR-Nano, MOSS-Transcribe-Diarize, MiniCPM-o, and
 [PersonaPlex](../cookbook/personaplex.md), validated on a 24 GB Arc Pro B60) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
@@ -249,7 +249,9 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Qwen3-TTS, ZONOS2, Qwen3-Omni, MiniMax Music 3 and
-> MiniCPM-o all serve end-to-end on Intel XPU** (ASR, Fun-ASR, TTS and MiniCPM-o single-card;
+> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o and PersonaPlex all serve end-to-end on Intel XPU**
+> (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS and MiniCPM-o single-card;
+> PersonaPlex validated on one 24 GB Arc Pro B60;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 needs two cards; Qwen3-Omni thinker
 > across 8 cards with tensor parallelism).

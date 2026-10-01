@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.scheduling.types import (
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
 
 if TYPE_CHECKING:
     import torch
@@ -18,11 +25,6 @@ if TYPE_CHECKING:
         SGLangOutputProcessor,
     )
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-    from sglang_omni.scheduling.types import (
-        RequestOutput,
-        SchedulerOutput,
-        SchedulerRequest,
-    )
 else:
     pass
 
@@ -74,7 +76,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
     def post_process_outputs(
         self,
-        result: Any,
+        result: GenerationBatchResult,
         scheduler_output: SchedulerOutput,
         outputs: dict[str, RequestOutput],
     ) -> None:

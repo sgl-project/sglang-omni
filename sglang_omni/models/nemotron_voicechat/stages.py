@@ -84,7 +84,7 @@ def create_perception_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     enable_cuda_graph: bool = True,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     device = resolve_concrete_device(device, gpu_id)
     module = AudioPerception(perception_config(model_path))
     load_module(

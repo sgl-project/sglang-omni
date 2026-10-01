@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass
@@ -31,7 +31,7 @@ class AudioEncoderConfig:
     downsample_hidden_size: int = 480
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> AudioEncoderConfig:
+    def from_dict(cls, params: Mapping[str, object]) -> AudioEncoderConfig:
         return cls(
             **{
                 k: v
@@ -60,12 +60,12 @@ class TextConfig:
     use_cache: bool = True
     tie_word_embeddings: bool = True
     rope_theta: float = 1000000.0
-    rope_scaling: dict[str, Any] | None = None
+    rope_scaling: dict[str, object] | None = None
     attention_bias: bool = False
     attention_dropout: float = 0.0
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> TextConfig:
+    def from_dict(cls, params: Mapping[str, object]) -> TextConfig:
         return cls(
             **{
                 k: v
@@ -79,8 +79,8 @@ class TextConfig:
 class ModelConfig:
     """Configuration for Qwen3-ASR model."""
 
-    audio_config: AudioEncoderConfig | dict[str, Any] | None = None
-    text_config: TextConfig | dict[str, Any] | None = None
+    audio_config: AudioEncoderConfig | dict[str, object] | None = None
+    text_config: TextConfig | dict[str, object] | None = None
     model_type: str = "qwen3_asr"
     model_repo: str | None = None
     audio_token_id: int = 151676
@@ -104,7 +104,7 @@ class ModelConfig:
             pass
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> ModelConfig:
+    def from_dict(cls, params: dict[str, object]) -> ModelConfig:
         params = params.copy()
 
         if "thinker_config" in params:

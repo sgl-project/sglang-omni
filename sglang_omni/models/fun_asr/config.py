@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from sglang_omni.config import EngineStageConfig, PipelineConfig, StageConfig
 
@@ -33,7 +33,7 @@ class FunASRPipelineConfig(PipelineConfig):
         )
     ]
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
         if stage_name == "asr":
             return {"enable_encoder_cuda_graph": True}
         else:

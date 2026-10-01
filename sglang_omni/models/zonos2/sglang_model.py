@@ -10,19 +10,21 @@ backbone hidden states and exposes the head via :meth:`compute_logits`.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.runtime_context import get_schedule
+from transformers import PretrainedConfig
 
 from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 from sglang_omni.models.zonos2.hf_config import Zonos2Config
 from sglang_omni.models.zonos2.radix_hash import poly_row_hash
 from sglang_omni.models.zonos2.sampler import sample_tts
-from sglang_omni.platforms.device_graph import DeviceGraphBackend
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     RadixAttention,
@@ -144,8 +146,11 @@ class Zonos2SonicRouter(nn.Module):
 
 class Zonos2MoEBlock(nn.Module):
     def __init__(
-        self, cfg: Zonos2Config, layer_id: int, quant_config: Optional[Any] = None
-    ):
+        self,
+        cfg: Zonos2Config,
+        layer_id: int,
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__()
         self.router = Zonos2SonicRouter(cfg, layer_id)
         self.experts = get_moe_impl_class(None)(
@@ -167,8 +172,11 @@ class Zonos2MoEBlock(nn.Module):
 
 class Zonos2DecoderLayer(nn.Module):
     def __init__(
-        self, cfg: Zonos2Config, layer_id: int, quant_config: Optional[Any] = None
-    ):
+        self,
+        cfg: Zonos2Config,
+        layer_id: int,
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__()
         self.eps = cfg.norm_eps
         self.attention = Zonos2Attention(cfg, layer_id)
@@ -209,8 +217,8 @@ class Zonos2SGLangModel(nn.Module):
 
     def __init__(
         self,
-        config: Any,
-        quant_config: Optional[Any] = None,
+        config: PretrainedConfig,
+        quant_config: QuantizationConfig | None = None,
         prefix: str = "",
     ) -> None:
         super().__init__()
@@ -268,7 +276,7 @@ class Zonos2SGLangModel(nn.Module):
         # one replay per decode bucket, cutting host dispatch in the host-bound
         # decode loop. Built by capture_tail_graphs; empty -> eager runner path.
         self.tail_buckets: list[int] = []
-        self.tail_graphs: dict[int, Any] = {}
+        self.tail_graphs: dict[int, ReplayableGraph] = {}
         self.tail_params: Optional[TTSSamplingParams] = None
         self.tail_top_k_max: int = 0
         self.tail_any_top_p: bool = False
@@ -313,7 +321,7 @@ class Zonos2SGLangModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> LogitsProcessorOutput:
         # Prefill: the runner stages the summed (speaker-injected) embedding on
         # forward_batch. Decode: input_ids are row indices into the fixed feedback

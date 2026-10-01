@@ -73,7 +73,9 @@ def make_payload(
     state: AudarTTSState | None = None,
     request_id: str = "request",
 ) -> StagePayload:
-    metadata = {"tts_params": tts_params} if tts_params is not None else {}
+    metadata: dict[str, object] = (
+        {"tts_params": tts_params} if tts_params is not None else {}
+    )
     return StagePayload(
         request_id=request_id,
         request=OmniRequest(inputs=inputs, params=params or {}, metadata=metadata),
@@ -316,6 +318,7 @@ def test_openai_speech_request_lowers_to_audar_state() -> None:
         validate=False,
         reference_descriptors=prepared.reference_descriptors,
     )
+    assert isinstance(generation_request.metadata["tts_params"], dict)
     assert generation_request.metadata["tts_params"]["explicit_generation_params"] == [
         "max_new_tokens",
         "seed",
@@ -434,7 +437,7 @@ def test_reference_encoder_builds_prompt_and_caches(
     codec = FakeCodec()
     monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
     scheduler = stages.create_reference_encoder_executor(gpu_id=None)
-    reference_audio = {"bytes": five_second_wav()}
+    reference_audio: dict[str, object] = {"bytes": five_second_wav()}
 
     def encode(request_id: str) -> AudarTTSState:
         payload = make_payload(
@@ -486,7 +489,7 @@ def test_reference_encoder_singleflights_same_reference(
     monkeypatch.setattr(codec, "encode_code", encode_code)
     monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
     scheduler = stages.create_reference_encoder_executor(gpu_id=None, max_concurrency=2)
-    reference_audio = {"bytes": five_second_wav()}
+    reference_audio: dict[str, object] = {"bytes": five_second_wav()}
 
     def encode(request_id: str) -> AudarTTSState:
         payload = make_payload(

@@ -10,15 +10,30 @@ import threading
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal, TypedDict
 
 import torch
 
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
-from sglang_omni.models.qwen3_tts.incremental_codec import Qwen3TTSIncrementalDecoder
+from sglang_omni.models.qwen3_tts.incremental_codec import (
+    Qwen3TTSIncrementalCodecState,
+    Qwen3TTSIncrementalDecoder,
+)
 from sglang_omni.utils.gpu_memory import format_bytes_gib
 
 logger = logging.getLogger(__name__)
+
+
+class IncrementalCodecGraphStats(TypedDict):
+    configured: bool
+    enabled: bool
+    disable_reason: str | None
+    binding: dict[str, str | int]
+    graph_contract: dict[str, list[int]]
+    build: dict[str, bool | list[dict[str, int]]]
+    memory: dict[str, int | dict[str, int]]
+    retained_capture_resource_sets: int
+    runtime: dict[str, int | dict[str, int]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,9 +56,14 @@ class CapturedIncrementalCodecGraph:
 class CaptureResourceSet:
     """Strong references retained when capture completion cannot be proven."""
 
-    pool: Any | None
+    pool: tuple[int, int] | None
     stream: torch.cuda.Stream | None
-    keepalives: list[Any] = field(default_factory=list)
+    keepalives: list[
+        torch.Tensor
+        | torch.cuda.CUDAGraph
+        | Qwen3TTSIncrementalCodecState
+        | dict[IncrementalCodecGraphKey, CapturedIncrementalCodecGraph]
+    ] = field(default_factory=list)
 
 
 class CaptureFailure(RuntimeError):
@@ -134,9 +154,11 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self.owner_pid = os.getpid()
         self.graphs: dict[IncrementalCodecGraphKey, CapturedIncrementalCodecGraph] = {}
         self.capture_complete = False
-        self.pool: Any | None = None
+        self.pool: tuple[int, int] | None = None
         self.capture_stream: torch.cuda.Stream | None = None
-        self.memory_stats: dict[str, Any] = {"min_free_bytes": self.min_free_bytes}
+        self.memory_stats: dict[str, int | dict[str, int]] = {
+            "min_free_bytes": self.min_free_bytes
+        }
         self.retained_capture_resources: list[CaptureResourceSet] = []
         self.replays = 0
         self.replay_failures = 0
@@ -156,7 +178,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             for batch_size in self.batch_sizes
         ]
         temporary: dict[IncrementalCodecGraphKey, CapturedIncrementalCodecGraph] = {}
-        pool: Any | None = None
+        pool: tuple[int, int] | None = None
         capture_stream: torch.cuda.Stream | None = None
         try:
             with torch.cuda.device(self.device):
@@ -244,7 +266,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self,
         key: IncrementalCodecGraphKey,
         *,
-        pool: Any,
+        pool: tuple[int, int],
         capture_stream: torch.cuda.Stream,
     ) -> CapturedIncrementalCodecGraph:
         static_codes = torch.zeros(
@@ -341,7 +363,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         return True
 
     @staticmethod
-    def reset_graph(graph: Any, *, context: str) -> None:
+    def reset_graph(graph: torch.cuda.CUDAGraph, *, context: str) -> None:
         try:
             graph.reset()
         except Exception:
@@ -355,7 +377,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self,
         temporary: dict[IncrementalCodecGraphKey, CapturedIncrementalCodecGraph],
         *,
-        pool: Any | None,
+        pool: tuple[int, int] | None,
         capture_stream: torch.cuda.Stream | None,
         reason: str,
     ) -> None:
@@ -564,7 +586,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self.capture_stream = None
         self.tear_down_graphs(graphs, context="runtime disable")
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self) -> IncrementalCodecGraphStats:
         with self.graphs_lock:
             captured_keys = sorted(
                 self.graphs, key=lambda key: (key.fresh_frames, key.batch_bucket)

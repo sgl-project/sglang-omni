@@ -3,15 +3,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
-from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniEvent
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+else:
+    pass
+
+from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniEvent, ThinkerOutput
 
 
 def decode_events(
     *,
-    thinker_out: dict[str, Any],
-    tokenizer: Any,
+    thinker_out: ThinkerOutput,
+    tokenizer: "PreTrainedTokenizerBase",
 ) -> list[LLaDA2UniEvent]:
     """Convert thinker output tokens to a text_final event."""
     # TODO: add streaming support

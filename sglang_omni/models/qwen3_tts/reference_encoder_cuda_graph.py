@@ -6,9 +6,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 import torch
+from transformers import MimiModel
 from transformers.models.mimi.modeling_mimi import MimiConv1d
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,15 @@ logger = logging.getLogger(__name__)
 # 32 MiB, so keys below 32 frames save nothing measurable; the step keeps the padding
 # under half a clip, and clips past 256 frames run eager.
 DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES = (32, 48, 64, 96, 128, 192, 256)
+
+
+class ReferenceEncoderGraphStats(TypedDict):
+    enabled: bool
+    disable_reason: str | None
+    bucket_frames: list[int]
+    captured: list[int]
+    replays: int
+    misses: int
 
 
 def move_conv_padding_to_host(encoder: torch.nn.Module) -> int:
@@ -53,7 +63,7 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
 
     def __init__(
         self,
-        encoder: Any,
+        encoder: MimiModel,
         *,
         hop: int,
         num_quantizers: int,
@@ -69,7 +79,7 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
         self.device = param.device
         self.dtype = param.dtype
         self.graphs: dict[int, CapturedEncoderGraph] = {}
-        self.pool: Any | None = None
+        self.pool: tuple[int, int] | None = None
         self.disable_reason: str | None = None
         self.replays = 0
         self.misses = 0
@@ -97,7 +107,9 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
             list(self.bucket_frames),
         )
 
-    def capture_bucket(self, frames: int, pool: Any) -> CapturedEncoderGraph:
+    def capture_bucket(
+        self, frames: int, pool: tuple[int, int]
+    ) -> CapturedEncoderGraph:
         static_input = torch.zeros(
             (1, 1, frames * self.hop), device=self.device, dtype=self.dtype
         )
@@ -147,7 +159,7 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
         # note(ratish): the graph rewrites its output on the next replay.
         return captured.static_codes[0, :, :frames].transpose(0, 1).clone()
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self) -> ReferenceEncoderGraphStats:
         return {
             "enabled": bool(self.graphs),
             "disable_reason": self.disable_reason,

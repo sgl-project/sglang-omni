@@ -276,7 +276,7 @@ def make_payload(codes: torch.Tensor, eos_frame: int, rid="req") -> StagePayload
     )
 
 
-def make_meta():
+def make_meta() -> dict[str, object]:
     return {"stream": True, "modality": "audio_codes", "n_codebooks": N_CODEBOOKS}
 
 

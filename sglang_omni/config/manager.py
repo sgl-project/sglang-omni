@@ -1,6 +1,5 @@
 import os
 from collections.abc import Iterable, Mapping
-from typing import Any
 
 from transformers import AutoConfig
 
@@ -119,7 +118,7 @@ class ConfigManager:
 
     def merge_config(
         self,
-        extra_args: Mapping[str, Any] | Iterable[tuple[str, Any]],
+        extra_args: Mapping[str, object] | Iterable[tuple[str, object]],
         *,
         extra_patches: ConfigPatchSet | None = None,
     ) -> PipelineConfig:

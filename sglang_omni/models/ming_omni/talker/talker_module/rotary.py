@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 import torch
+from typing_extensions import Self
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
-if TYPE_CHECKING:
-    from sglang_omni.platforms.interface import JointRopeInplaceKernel
-else:
-    pass
+from sglang_omni.platforms.interface import JointRopeInplaceKernel
+
+
+class TensorTransform(Protocol):
+    def __call__(self, tensor: torch.Tensor, /) -> torch.Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,9 @@ class CachedRotaryEmbedding(RotaryEmbedding):
             persistent=False,
         )
 
-    def _apply(self, fn, recurse: bool = True):  # noqa: leading-underscore
+    def _apply(  # noqa: leading-underscore
+        self, fn: TensorTransform, recurse: bool = True
+    ) -> Self:
         result = super()._apply(fn, recurse)
         # note (yzxiao): The CUDA kernel requires the cache produced from the
         # canonical FP32 frequencies even when the surrounding model is BF16.
