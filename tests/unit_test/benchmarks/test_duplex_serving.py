@@ -191,7 +191,7 @@ def test_scheduled_deadlines_do_not_follow_late_sends() -> None:
     assert scheduled_send_s(10, 3) == pytest.approx(10.24)
 
 
-def test_late_start_does_not_burst_input(tmp_path: Path) -> None:
+def test_late_start_returns_to_the_schedule(tmp_path: Path) -> None:
     async def run() -> list[dict[str, JsonValue]]:
         peer = DuplexPeer()
         async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
@@ -201,7 +201,7 @@ def test_late_start_does_not_burst_input(tmp_path: Path) -> None:
             trace_path = tmp_path / "trace.jsonl"
             await run_session(
                 f"ws://127.0.0.1:{port}/v1/realtime",
-                b"\x00\x00" * (3 * PACKET_BYTES // 2),
+                b"\x00\x00" * (8 * PACKET_BYTES // 2),
                 scenario="continuous",
                 trace_path=trace_path,
                 start_gate=gate,
@@ -211,15 +211,13 @@ def test_late_start_does_not_burst_input(tmp_path: Path) -> None:
             ]
 
     appends = asyncio.run(run())
-    assert len(appends) == 3
+    assert len(appends) == 8
     assert appends[0]["start_s"] - appends[0]["scheduled_s"] >= 0.25
     assert [r["scheduled_s"] - appends[0]["scheduled_s"] for r in appends] == (
-        pytest.approx([0, 0.08, 0.16])
+        pytest.approx([index * PACKET_MS / 1000 for index in range(8)])
     )
-    assert all(
-        current["start_s"] - previous["start_s"] >= PACKET_MS / 1000 - 0.005
-        for previous, current in zip(appends, appends[1:])
-    )
+    # note (Junnan Li): Packets due before the late start go out at once; later ones are on time.
+    assert appends[-1]["start_s"] - appends[-1]["scheduled_s"] < 0.05
 
 
 def test_coordinator_keeps_failed_session(tmp_path: Path) -> None:
@@ -407,3 +405,40 @@ def test_silent_unit_session_succeeds_and_incomplete_one_fails(tmp_path: Path) -
     aggregate = aggregate_unit_sessions([silent, stalled])
     assert aggregate["successful_sessions"] == 1
     assert aggregate["unit_miss_rate"] == pytest.approx(2 / 6)
+
+
+def test_lockstep_sends_each_unit_when_the_previous_one_is_done(tmp_path: Path) -> None:
+    async def run() -> tuple[float, list[dict[str, JsonValue]]]:
+        peer = DuplexPeer()
+        async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            trace_path = tmp_path / "trace.jsonl"
+            started_s = time.perf_counter()
+            await run_session(
+                f"ws://127.0.0.1:{port}/v1/realtime",
+                b"\x00\x00" * (25 * PACKET_BYTES // 2),
+                scenario="continuous",
+                trace_path=trace_path,
+                pacing="lockstep",
+            )
+            elapsed_s = time.perf_counter() - started_s
+            return elapsed_s, [
+                json.loads(line) for line in trace_path.read_text().splitlines()
+            ]
+
+    elapsed_s, records = asyncio.run(run())
+    order = [
+        record["event"]["type"]
+        for record in records
+        if record["event"].get("type")
+        in ("input_audio_buffer.append", "sglang.unit.done")
+    ]
+    # note (Junnan Li): 25 packets are 2 s of input, and each waits for the unit before it.
+    assert elapsed_s < 1.0
+    assert order[:4] == [
+        "input_audio_buffer.append",
+        "sglang.unit.done",
+        "input_audio_buffer.append",
+        "sglang.unit.done",
+    ]
+    assert order.count("input_audio_buffer.append") == 25

@@ -11,7 +11,8 @@ python -m benchmarks.duplex.serving \
 The input is normalized to mono 16 kHz PCM16 using the existing duplex audio
 loader. Each concurrency level starts only after its sessions finish negotiation.
 All configured sessions use one monotonic start deadline and fixed 80 ms input
-deadlines. A late sender keeps at least 80 ms between later append starts. Each
+deadlines. A late sender sends its overdue packets at once and returns to the
+schedule, so one delay does not push back the rest of the input. Each
 session has its own JSONL wire trace and input-send-receipts.json; the latter
 records scheduled, send-start, and send-completion times. Failed attempts retain
 their own traces and count toward the requested concurrency.
@@ -25,8 +26,7 @@ denominator.
 
 Late-send rate is the fraction of sent input frames starting more than 20 ms
 after their deadline. The threshold is a load-generator diagnostic, not a
-server SLO. Strict 80 ms minimum spacing means small client scheduling delays
-can accumulate into send lateness over a long run.
+server SLO.
 
 For consecutive output packets, gap excess is the positive part of the receive
 gap minus the preceding packet's decoded PCM duration. Output drift at packet
@@ -87,3 +87,10 @@ concurrency. Underrun is simulated per reply: playback starts
 `--startup-reserve-ms` after the reply's first audio, and silence between
 replies is not counted. A session that never speaks is a success; one that
 leaves units unfinished is not.
+
+`--pacing lockstep` answers a different question: how fast the server can go.
+Each session sends a unit as soon as its previous unit is done, so nothing can
+fall behind and the miss, reply and underrun columns do not apply. The table
+then shows the time per unit and the units finished per second, per session and
+in total. A session keeps up with real time when it finishes at least one unit
+per second. Lockstep is only available for profiles scored per unit.

@@ -144,6 +144,11 @@ def unit_session_metrics(
         underrun_total_s += total_s
         underrun_worst_s = max(underrun_worst_s, worst_s)
     output_duration_s = output_samples / output_sample_rate
+    units_per_s = (
+        len(unit_done_s) / (unit_done_s[-1] - appends[0]["start_s"])
+        if unit_done_s and appends
+        else None
+    )
     lateness = [max(0.0, r["start_s"] - r["scheduled_s"]) for r in appends]
     late_send_count = sum(value > LATE_SEND_THRESHOLD_S for value in lateness)
     return {
@@ -158,6 +163,7 @@ def unit_session_metrics(
         "speak_units": len(speak_lag),
         "missed_units": missed_units,
         "unit_miss_rate": missed_units / expected_units,
+        "units_per_s": units_per_s,
         "unit_lag_s": distribution(unit_lag),
         "listen_unit_lag_s": distribution(listen_lag),
         "speak_unit_lag_s": distribution(speak_lag),
@@ -200,6 +206,7 @@ def failed_unit_session(
         "speak_units": 0,
         "missed_units": expected_units,
         "unit_miss_rate": 1.0,
+        "units_per_s": None,
         "unit_lag_s": distribution([]),
         "listen_unit_lag_s": distribution([]),
         "speak_unit_lag_s": distribution([]),
@@ -243,6 +250,10 @@ def aggregate_unit_sessions(
         "speak_units": sum(s["speak_units"] for s in sessions),
         "missed_units": missed_units,
         "unit_miss_rate": missed_units / expected_units,
+        "session_units_per_s": distribution(
+            [s["units_per_s"] for s in sessions if s["units_per_s"] is not None]
+        ),
+        "total_units_per_s": sum(s["units_per_s"] or 0.0 for s in sessions),
         "unit_lag_s": pooled("unit_lag_values_s"),
         "listen_unit_lag_s": pooled("listen_unit_lag_values_s"),
         "speak_unit_lag_s": pooled("speak_unit_lag_values_s"),

@@ -9,6 +9,7 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from pydantic import JsonValue
 
@@ -39,6 +40,7 @@ async def run_concurrency(
     output_dir: Path,
     timeout_s: float,
     reserve_s: float,
+    pacing: Literal["realtime", "lockstep"] = "realtime",
 ) -> dict[str, JsonValue]:
     if concurrency < 1:
         raise ValueError("concurrency must be positive")
@@ -66,6 +68,7 @@ async def run_concurrency(
                 profile=profile,
                 start_gate=start_gate,
                 ready=ready[index],
+                pacing=pacing,
             )
         )
         task.add_done_callback(
@@ -133,6 +136,7 @@ async def run_concurrency(
         "common_start_s": start_s,
         "configured_sessions": sum(configured),
         "profile": profile,
+        "pacing": pacing,
         "playback_startup_reserve_s": reserve_s,
         "sessions": sessions,
         "aggregate": (aggregate_sessions if is_continuous else aggregate_unit_sessions)(
@@ -151,6 +155,30 @@ def format_ms(value: float | None) -> str:
 
 def format_percent(value: float | None) -> str:
     return f"{value * 100:.1f}%" if value is not None else "-"
+
+
+def print_lockstep_summaries(summaries: list[dict[str, JsonValue]]) -> None:
+    print(
+        f"{'C':>3} {'sessions':>9} {'units':>6} {'speak':>6} "
+        f"{'unit p50':>9} {'unit p95':>9} {'unit p99':>9} {'speak p95':>10} "
+        f"{'units/s each':>13} {'units/s total':>14}"
+    )
+    for summary in summaries:
+        aggregate = summary["aggregate"]
+        sessions = (
+            f"{aggregate['successful_sessions']}/{aggregate['attempted_sessions']}"
+        )
+        each = aggregate["session_units_per_s"]["p50"]
+        print(
+            f"{summary['concurrency']:>3} {sessions:>9} "
+            f"{aggregate['completed_units']:>6} {aggregate['speak_units']:>6} "
+            f"{format_ms(aggregate['unit_lag_s']['p50']):>9} "
+            f"{format_ms(aggregate['unit_lag_s']['p95']):>9} "
+            f"{format_ms(aggregate['unit_lag_s']['p99']):>9} "
+            f"{format_ms(aggregate['speak_unit_lag_s']['p95']):>10} "
+            f"{(f'{each:.2f}' if each is not None else '-'):>13} "
+            f"{aggregate['total_units_per_s']:>14.2f}"
+        )
 
 
 def print_unit_summaries(summaries: list[dict[str, JsonValue]]) -> None:
@@ -243,6 +271,12 @@ def main() -> None:
     parser.add_argument("--timeout-s", type=float, default=90.0)
     parser.add_argument("--startup-reserve-ms", type=float, default=DEFAULT_RESERVE_MS)
     parser.add_argument(
+        "--pacing",
+        choices=["realtime", "lockstep"],
+        default="realtime",
+        help="lockstep sends each unit when the previous one is done",
+    )
+    parser.add_argument(
         "--warmup-runs",
         type=int,
         default=0,
@@ -263,6 +297,8 @@ def main() -> None:
         parser.error("timeout must be positive and startup reserve nonnegative")
     if args.warmup_runs < 0:
         parser.error("warmup runs must be nonnegative")
+    if args.pacing == "lockstep" and PROFILES[profile].continuous_output:
+        parser.error("lockstep pacing needs a profile scored per unit")
     pcms = [normalize_audio(path)[0] for path in args.audio]
     output_dir = args.output_dir or Path("serving-results") / datetime.now(
         timezone.utc
@@ -289,6 +325,7 @@ def main() -> None:
                 output_dir=output_dir / f"c{level}",
                 timeout_s=args.timeout_s,
                 reserve_s=args.startup_reserve_ms / 1000,
+                pacing=args.pacing,
             )
             for level in levels
         ]
@@ -298,7 +335,9 @@ def main() -> None:
         json.dumps({"runs": summaries}, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
-    if not PROFILES[profile].continuous_output:
+    if args.pacing == "lockstep":
+        print_lockstep_summaries(summaries)
+    elif not PROFILES[profile].continuous_output:
         print_unit_summaries(summaries)
     elif len(summaries) == 1:
         print_summary(summaries[0])

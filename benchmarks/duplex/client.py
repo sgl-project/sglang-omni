@@ -67,8 +67,13 @@ async def run_session(
     profile: ProfileName = DEFAULT_PROFILE,
     start_gate: asyncio.Future[float] | None = None,
     ready: asyncio.Future[bool] | None = None,
+    pacing: Literal["realtime", "lockstep"] = "realtime",
 ) -> None:
-    """Save observations and failures; classification belongs to offline replay."""
+    """Save observations and failures; classification belongs to offline replay.
+
+    Lockstep sends each native unit as soon as the previous one is done, to
+    measure how fast the server can go rather than whether it keeps up.
+    """
     if scenario != "continuous":
         raise ValueError(f"unsupported scenario: {scenario}")
     else:
@@ -135,6 +140,7 @@ async def run_session(
                 seen: dict[str, asyncio.Event] = {}
                 aborted = asyncio.Event()
                 fatal = False
+                units_done = 0
 
                 async def send(
                     event_type: Literal[
@@ -198,7 +204,7 @@ async def run_session(
                     return receipt.is_set()
 
                 async def receive() -> None:
-                    nonlocal fatal
+                    nonlocal fatal, units_done
                     async for frame in websocket:
                         try:
                             event = json.loads(frame)
@@ -219,7 +225,10 @@ async def run_session(
                                 f"{type(exc).__name__}: {exc}"
                             ) from exc
                         seen.setdefault(event_type, asyncio.Event()).set()
-                        if event_type == "error":
+                        if event_type == "sglang.unit.done":
+                            seen.setdefault(f"unit:{units_done}", asyncio.Event()).set()
+                            units_done += 1
+                        elif event_type == "error":
                             # note (wenyao): Close waits for adapter teardown.
                             extension = event.get("sglang")
                             fatal = fatal or bool(
@@ -258,22 +267,24 @@ async def run_session(
                             if start_gate is not None
                             else time.perf_counter()
                         )
-                        previous_send_start_s: float | None = None
+                        await asyncio.sleep(
+                            max(0.0, session_start_s - time.perf_counter())
+                        )
+                        unit_bytes = (
+                            PROFILES[profile].native_unit_ms * SAMPLE_RATE // 1000 * 2
+                        )
+                        unit_index = 0
                         for sequence, byte_offset in enumerate(
                             range(0, len(pcm), PACKET_BYTES)
                         ):
-                            deadline_s = scheduled_send_s(session_start_s, sequence)
-                            earliest_s = max(
-                                deadline_s,
-                                (
-                                    previous_send_start_s + PACKET_MS / 1000
-                                    if previous_send_start_s is not None
-                                    else deadline_s
-                                ),
-                            )
-                            await asyncio.sleep(
-                                max(0.0, earliest_s - time.perf_counter())
-                            )
+                            if pacing == "lockstep":
+                                deadline_s = time.perf_counter()
+                            else:
+                                # note (Junnan Li): Each packet follows the common schedule, so one late send does not delay the rest.
+                                deadline_s = scheduled_send_s(session_start_s, sequence)
+                                await asyncio.sleep(
+                                    max(0.0, deadline_s - time.perf_counter())
+                                )
                             if aborted.is_set():
                                 streamed = False
                                 break
@@ -290,25 +301,42 @@ async def run_session(
                                 },
                                 scheduled_s=deadline_s,
                             )
-                            previous_send_start_s = receipts[-1]["start_s"]
+                            if (
+                                pacing == "lockstep"
+                                and byte_offset + PACKET_BYTES
+                                >= (unit_index + 1) * unit_bytes
+                            ):
+                                if await settle(f"unit:{unit_index}"):
+                                    unit_index += 1
+                                else:
+                                    streamed = False
+                                    break
+                            else:
+                                pass
                     else:
                         pass
                     if streamed:
-                        await asyncio.sleep(
-                            max(
-                                0.0,
+                        if pacing == "realtime":
+                            await asyncio.sleep(
                                 max(
-                                    session_start_s + len(pcm) / (2 * SAMPLE_RATE),
-                                    receipts[-1]["start_s"]
-                                    + min(
-                                        PACKET_MS / 1000,
-                                        (len(pcm) - receipts[-1]["seq"] * PACKET_BYTES)
-                                        / (2 * SAMPLE_RATE),
-                                    ),
+                                    0.0,
+                                    max(
+                                        session_start_s + len(pcm) / (2 * SAMPLE_RATE),
+                                        receipts[-1]["start_s"]
+                                        + min(
+                                            PACKET_MS / 1000,
+                                            (
+                                                len(pcm)
+                                                - receipts[-1]["seq"] * PACKET_BYTES
+                                            )
+                                            / (2 * SAMPLE_RATE),
+                                        ),
+                                    )
+                                    - time.perf_counter(),
                                 )
-                                - time.perf_counter(),
                             )
-                        )
+                        else:
+                            pass
                         if not aborted.is_set():
                             await send("sglang.input_audio.end")
                             await settle("sglang.input_audio.drained")
