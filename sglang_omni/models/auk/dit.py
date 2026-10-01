@@ -412,7 +412,7 @@ class DiTBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         mask: torch.Tensor | None = None,
         rope=None,
         bias: torch.Tensor | None = None,
@@ -465,7 +465,7 @@ class MMDiTBlock(nn.Module):
         self,
         x: torch.Tensor,
         c: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         mask: torch.Tensor | None = None,
         rope=None,
         c_rope=None,
