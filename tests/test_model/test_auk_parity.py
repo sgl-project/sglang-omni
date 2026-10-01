@@ -62,6 +62,7 @@ def models():
         gpu_id=0,
         text_encoder_path=qwen,
         weight_dtype="float32",
+        text_cuda_graph_capture_lengths=[],
     )
     engine = create_auk_engine_executor(
         checkpoint,

@@ -272,6 +272,7 @@ def create_conditioning_executor(
     model_path: str,
     *,
     weight_dtype: str,
+    text_cuda_graph_capture_lengths: Sequence[int],
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
@@ -288,6 +289,9 @@ def create_conditioning_executor(
         device=device,
         dtype=torch.bfloat16,
         weight_dtype=encoder_dtype,
+    )
+    encoder.capture_text_graphs(
+        text_cuda_graph_capture_lengths, compute_dtype=compute_dtype
     )
     vae = load_vae(checkpoint, str(device))
     fusion = load_fusion(checkpoint, str(device))

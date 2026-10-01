@@ -36,6 +36,7 @@ class AuKPipelineConfig(PipelineConfig):
                 dtype="bfloat16",
                 text_encoder_path=C.DEFAULT_TEXT_ENCODER,
                 weight_dtype="float32",
+                text_cuda_graph_capture_lengths=[],
                 max_batch_size=8,
                 max_batch_wait_ms=10,
             ),

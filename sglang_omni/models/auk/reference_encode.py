@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import logging
-from typing import TypedDict
+from collections.abc import Sequence
+from typing import NamedTuple, TypedDict
 
 import torch
 
 from sglang_omni.models.auk.constants import NO_PROMPT_AUDIO_MARKER
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +21,14 @@ logger = logging.getLogger(__name__)
 class ChatMessage(TypedDict):
     role: str
     content: list[dict[str, str | None]]
+
+
+class CapturedConditioning(NamedTuple):
+    graph: ReplayableGraph
+    token_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    position_ids: torch.Tensor
+    hidden_states: torch.Tensor
 
 
 def build_messages(instruction: str, has_reference_audio: bool) -> list[ChatMessage]:
@@ -64,6 +75,9 @@ class AuKConditionEncoder:
         self.model_path = model_path
         self.device = torch.device(device)
         self.dtype = dtype
+        self.text_graphs: dict[tuple[int, torch.dtype | None], CapturedConditioning] = (
+            {}
+        )
 
         logger.info(
             "AuK: loading Qwen2.5-Omni Thinker from %s; "
@@ -81,6 +95,68 @@ class AuKConditionEncoder:
     @property
     def num_hidden_layers(self) -> int:
         return int(self.model.config.text_config.num_hidden_layers)
+
+    @torch.inference_mode()
+    def capture_text_graphs(
+        self, token_lengths: Sequence[int], *, compute_dtype: torch.dtype
+    ) -> None:
+        """Capture exact single-request text lengths before serving starts."""
+        if any(length < 1 for length in token_lengths):
+            raise ValueError("AuK conditioning graph token lengths must be positive")
+        else:
+            pass
+        backend = current_platform.get_device_graph_backend(self.device)
+        if not token_lengths or backend is None:
+            return
+        else:
+            pass
+        module = torch.get_device_module(self.device)
+        stream = module.Stream(device=self.device)
+        stream.wait_stream(module.current_stream(self.device))
+        pool = module.graph_pool_handle()
+        for token_length in sorted(set(token_lengths)):
+            token_ids = torch.zeros(
+                (1, token_length), device=self.device, dtype=torch.long
+            )
+            attention_mask = torch.ones_like(token_ids)
+            position_ids = (
+                torch.arange(token_length, device=self.device)[None, None, :]
+                .expand(3, 1, -1)
+                .contiguous()
+            )
+
+            def encode_text() -> torch.Tensor:
+                outputs = self.model(
+                    input_ids=token_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    output_hidden_states=True,
+                    use_cache=False,
+                )
+                return torch.stack(outputs.hidden_states, dim=1)
+
+            stream.wait_stream(module.current_stream(self.device))
+            with (
+                module.stream(stream),
+                torch.autocast(
+                    self.device.type,
+                    dtype=compute_dtype,
+                    enabled=compute_dtype != torch.float32,
+                    cache_enabled=False,
+                ),
+            ):
+                for _ in range(3):
+                    encode_text()
+                stream.synchronize()
+                with backend.capture(pool=pool, stream=stream) as graph:
+                    hidden_states = encode_text()
+            autocast_dtype = compute_dtype if compute_dtype != torch.float32 else None
+            self.text_graphs[token_length, autocast_dtype] = CapturedConditioning(
+                graph, token_ids, attention_mask, position_ids, hidden_states
+            )
+        module.current_stream(self.device).wait_stream(stream)
+        module.synchronize(self.device)
+        logger.info(f"AuK conditioning: captured {len(self.text_graphs)} text lengths")
 
     @torch.no_grad()
     def encode(self, messages, audio):
@@ -100,7 +176,25 @@ class AuKConditionEncoder:
             pass
         inputs = self.processor(**kwargs)
         inputs = {k: v.to(self.device) for k, v in inputs.items() if torch.is_tensor(v)}
-        outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
-        hidden = torch.stack(outputs.hidden_states, dim=1)
+        autocast_dtype = (
+            torch.get_autocast_dtype(self.device.type)
+            if torch.is_autocast_enabled(self.device.type)
+            else None
+        )
+        captured = (
+            self.text_graphs.get((inputs["input_ids"].shape[1], autocast_dtype))
+            if len(messages) == 1
+            and not references
+            and inputs.keys() == {"input_ids", "attention_mask"}
+            else None
+        )
+        if captured is None:
+            outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
+            hidden = torch.stack(outputs.hidden_states, dim=1)
+        else:
+            captured.token_ids.copy_(inputs["input_ids"])
+            captured.attention_mask.copy_(inputs["attention_mask"])
+            captured.graph.replay()
+            hidden = captured.hidden_states
         masks = inputs["attention_mask"].bool()
         return [(item[:, mask], mask[mask]) for item, mask in zip(hidden, masks)]

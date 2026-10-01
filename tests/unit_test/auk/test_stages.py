@@ -6,10 +6,15 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 import torch
+from transformers import Qwen2_5OmniTextConfig
+from transformers.models.qwen2_5_omni.modeling_qwen2_5_omni import (
+    Qwen2_5OmniThinkerTextModel,
+)
 
 from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.payload_types import AuKState
+from sglang_omni.models.auk.reference_encode import AuKConditionEncoder, build_messages
 from sglang_omni.models.auk.stages import (
     condition_batch,
     create_auk_engine_executor,
@@ -20,6 +25,110 @@ from sglang_omni.models.auk.stages import (
 from sglang_omni.models.auk.vae import BigVGANFlowVAE
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
+
+
+@pytest.mark.parametrize("token_lengths", [[0], [-1, 32]])
+def test_conditioning_graph_refuses_nonpositive_lengths(
+    token_lengths: list[int],
+) -> None:
+    encoder = AuKConditionEncoder.__new__(AuKConditionEncoder)
+    with pytest.raises(ValueError, match="must be positive"):
+        encoder.capture_text_graphs(token_lengths, compute_dtype=torch.bfloat16)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+@torch.inference_mode()
+def test_conditioning_graph_preserves_changed_requests_and_fallbacks(
+    weight_dtype: torch.dtype,
+) -> None:
+    torch.manual_seed(21)
+    configuration = Qwen2_5OmniTextConfig(
+        vocab_size=128,
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        rope_parameters={
+            "rope_type": "default",
+            "rope_theta": 1000000.0,
+            "mrope_section": [4, 6, 6],
+        },
+    )
+    encoder = AuKConditionEncoder.__new__(AuKConditionEncoder)
+    encoder.device = torch.device("cuda", torch.cuda.current_device())
+    encoder.model = (
+        Qwen2_5OmniThinkerTextModel(configuration)
+        .to(device=encoder.device, dtype=weight_dtype)
+        .eval()
+        .requires_grad_(False)
+    )
+    encoder.processor = Mock()
+    encoder.processor.apply_chat_template.return_value = ["unused"]
+    encoder.text_graphs = {}
+    encoder.capture_text_graphs([31, 32], compute_dtype=torch.bfloat16)
+    previous_hidden = previous_snapshot = None
+    for batch_size, token_length in [(1, 31), (1, 32), (1, 31), (1, 33), (2, 32)]:
+        token_ids = torch.randint(
+            1,
+            configuration.vocab_size,
+            (batch_size, token_length),
+            device=encoder.device,
+        )
+        attention_mask = torch.ones_like(token_ids)
+        if batch_size > 1:
+            attention_mask[-1, -3:] = 0
+        else:
+            pass
+        encoder.processor.return_value = {
+            "input_ids": token_ids,
+            "attention_mask": attention_mask,
+        }
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            expected = torch.stack(
+                encoder.model(
+                    input_ids=token_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                    use_cache=False,
+                ).hidden_states,
+                dim=1,
+            )
+            actual = encoder.encode_batch(
+                [build_messages("Read this text.", False)] * batch_size,
+                [None] * batch_size,
+            )
+        for index, (hidden, mask) in enumerate(actual):
+            valid_tokens = attention_mask[index].bool()
+            torch.testing.assert_close(
+                hidden, expected[index, :, valid_tokens], rtol=0, atol=0
+            )
+            assert mask.all()
+        if previous_hidden is not None:
+            torch.testing.assert_close(
+                previous_hidden, previous_snapshot, rtol=0, atol=0
+            )
+        else:
+            pass
+        previous_hidden = actual[0][0]
+        previous_snapshot = previous_hidden.clone()
+    with torch.autocast("cuda", enabled=False):
+        expected = torch.stack(
+            encoder.model(
+                input_ids=token_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                use_cache=False,
+            ).hidden_states,
+            dim=1,
+        )
+        actual = encoder.encode_batch(
+            [build_messages("Read this text.", False)] * batch_size,
+            [None] * batch_size,
+        )
+    torch.testing.assert_close(actual[0][0], expected[0], rtol=0, atol=0)
 
 
 def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
