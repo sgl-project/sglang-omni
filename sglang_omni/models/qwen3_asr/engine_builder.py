@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -285,6 +286,23 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         cfg = resolved_view(server_args)
+        if (
+            current_platform.is_npu()
+            and self.enable_pre_lm_encoder
+            and (self.enable_encoder_cuda_graph or not cfg.disable_cuda_graph)
+            and (
+                os.environ.get("PER_STREAM_QUEUE") != "1"
+                or os.environ.get("TASK_QUEUE_ENABLE", "1") not in {"1", "2"}
+                or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
+            )
+        ):
+            raise ValueError(
+                "Qwen3-ASR NPU pre-LM graphs require PER_STREAM_QUEUE=1, "
+                "TASK_QUEUE_ENABLE unset, 1 or 2, and ASCEND_LAUNCH_BLOCKING unset or 0 "
+                "before starting the server"
+            )
+        else:
+            pass
         if use_mlx() and cfg.mlx_enable_sampling:
             raise ValueError(
                 "Qwen3-ASR MLX currently requires mlx_enable_sampling=False"

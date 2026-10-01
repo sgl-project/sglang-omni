@@ -139,3 +139,9 @@ def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) ->
             raise ValueError("capture body failed")
 
     assert exited == [True]
+
+
+def test_only_npu_backend_supports_graph_task_updates() -> None:
+    assert NpuDeviceGraphBackend.supports_graph_task_update
+    assert not CudaDeviceGraphBackend.supports_graph_task_update
+    assert not XpuDeviceGraphBackend.supports_graph_task_update
