@@ -22,9 +22,174 @@ from sglang_omni.models.auk.stages import (
     sample_batch,
     warmup_flow,
 )
-from sglang_omni.models.auk.vae import BigVGANFlowVAE
+from sglang_omni.models.auk.vae import AuKVAEConfig, BigVGANFlowVAE, UpSample1d
+from sglang_omni.models.auk.vae_decode import AuKVaeDecoder
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
+
+
+def reference_upsample(layer: UpSample1d, samples: torch.Tensor) -> torch.Tensor:
+    padded_samples = torch.nn.functional.pad(
+        samples, (layer.pad, layer.pad), mode="replicate"
+    )
+    output_samples = layer.ratio * torch.nn.functional.conv_transpose1d(
+        padded_samples,
+        layer.filter.expand(samples.shape[1], -1, -1),
+        stride=layer.stride,
+        groups=samples.shape[1],
+    )
+    if layer.causal:
+        return output_samples[..., : -(layer.kernel_size - layer.stride)]
+    else:
+        return output_samples[..., layer.pad_left : -layer.pad_right]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Upsampling kernel requires CUDA"
+)
+@pytest.mark.parametrize(
+    "shape",
+    [(1, 3, 1), (2, 7, 17), (1, 3, 127), (1, 3, 129), (1, 768, 750), (1, 24, 288000)],
+)
+@torch.inference_mode()
+def test_vae_upsampling_preserves_boundaries_strides_and_graph_replay(
+    shape: tuple[int, int, int],
+) -> None:
+    if torch.cuda.get_device_capability()[0] != 10:
+        pytest.skip("FP32 upsampling fast path is enabled on SM100 family")
+    else:
+        pass
+    torch.manual_seed(21)
+    layer = UpSample1d().cuda().eval()
+    batch_count, channel_count, sample_count = shape
+    samples = torch.randn(batch_count, channel_count, sample_count * 2, device="cuda")[
+        ..., ::2
+    ]
+    for _ in range(3):
+        layer(samples)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = layer(samples)
+    for _ in range(3):
+        samples.normal_()
+        expected = reference_upsample(layer, samples)
+        graph.replay()
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize(
+    "ratio,kernel_size,causal,dtype",
+    [
+        (3, 18, False, torch.float32),
+        (2, 10, False, torch.float32),
+        (2, 12, True, torch.float32),
+        (2, 12, False, torch.float64),
+        (2, 12, False, torch.float16),
+        (2, 12, False, torch.bfloat16),
+    ],
+)
+@torch.inference_mode()
+def test_vae_upsampling_retains_other_parameter_and_dtype_paths(
+    device_name: str, ratio: int, kernel_size: int, causal: bool, dtype: torch.dtype
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    layer = (
+        UpSample1d(ratio, kernel_size, causal)
+        .to(device=device_name, dtype=dtype)
+        .eval()
+    )
+    samples = torch.randn(2, 3, 17, device=device_name, dtype=dtype)
+    torch.testing.assert_close(
+        layer(samples), reference_upsample(layer, samples), rtol=0, atol=0
+    )
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize("training", [False, True])
+def test_vae_upsampling_retains_input_and_filter_gradients(
+    device_name: str, training: bool
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    layer = UpSample1d().to(device_name).train(training)
+    layer.filter.requires_grad_(True)
+    samples = torch.randn(2, 3, 17, device=device_name, requires_grad=True)
+    actual = layer(samples)
+    expected = reference_upsample(layer, samples)
+    actual_gradients = torch.autograd.grad(actual.sum(), (samples, layer.filter))
+    expected_gradients = torch.autograd.grad(expected.sum(), (samples, layer.filter))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
+        torch.testing.assert_close(actual_gradient, expected_gradient, rtol=0, atol=0)
+
+
+def tiny_vae(device: torch.device) -> BigVGANFlowVAE:
+    configuration = AuKVAEConfig(
+        upsample_rates=[2, 2],
+        upsample_kernel_sizes=[4, 4],
+        upsample_initial_channel=32,
+        resblock_kernel_sizes=[3],
+        resblock_dilation_sizes=[[1, 3, 5]],
+        downsample_rates=[2, 2],
+        downsample_channels=[2, 4, 8],
+        latent_dim=4,
+        flow_hidden_channels=8,
+    )
+    return BigVGANFlowVAE(configuration).to(device).eval().requires_grad_(False)
+
+
+@pytest.mark.parametrize("shape", [[0, 16], [1, -1], [16]])
+def test_vae_graph_refuses_invalid_shapes(shape: list[int]) -> None:
+    device = torch.device("cpu")
+    with pytest.raises(ValueError, match="positive batch and frame counts"):
+        AuKVaeDecoder(
+            tiny_vae(device), device, capture_shapes=[shape], compile_forward=False
+        )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")
+@pytest.mark.parametrize("compile_forward", [False, True])
+@torch.inference_mode()
+def test_vae_decode_replays_changed_latents_without_padding(
+    compile_forward: bool,
+) -> None:
+    torch.manual_seed(21)
+    device = torch.device("cuda", torch.cuda.current_device())
+    vae = tiny_vae(device)
+    latents = torch.randn(1, 16, 4, device=device)
+    expected_before_removal = vae.inference_from_latents(
+        vae.denormalize(latents).permute(0, 2, 1)
+    )
+    vae.remove_weight_norm()
+    torch.testing.assert_close(
+        vae.inference_from_latents(vae.denormalize(latents).permute(0, 2, 1)),
+        expected_before_removal,
+        rtol=0,
+        atol=0,
+    )
+    decoder = AuKVaeDecoder(
+        vae,
+        device,
+        capture_shapes=[[1, 16], [2, 16], [1, 17]],
+        compile_forward=compile_forward,
+    )
+    for batch_size, frames in [(1, 16), (1, 17), (1, 16), (1, 18), (2, 16), (3, 16)]:
+        latents = torch.randn(batch_size, frames, 4, device=device)
+        expected = vae.inference_from_latents(vae.denormalize(latents).permute(0, 2, 1))
+        actual = decoder.decode(latents)
+        assert actual.shape == (batch_size, 1, frames * 4)
+        if compile_forward and (batch_size, frames) in [(1, 16), (2, 16), (1, 17)]:
+            torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+        else:
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("token_lengths", [[0], [-1, 32]])

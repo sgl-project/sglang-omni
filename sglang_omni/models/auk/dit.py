@@ -70,6 +70,58 @@ class ConvPositionEmbedding(nn.Module):
         self.layer_need_mask_idx = [
             i for i, layer in enumerate(self.conv1d) if isinstance(layer, nn.Conv1d)
         ]
+        self.use_grouped_matmul: bool = False
+
+    def enable_grouped_matmul(self) -> None:
+        """Compile the short BF16 grouped convolutions on Blackwell."""
+        convolution = self.conv1d[0]
+        if (
+            convolution.weight.device.type == "cuda"
+            and convolution.weight.dtype == torch.bfloat16
+            and convolution.in_channels == convolution.out_channels == 1536
+            and convolution.groups == 16
+            and convolution.kernel_size == (31,)
+            and torch.cuda.get_device_capability(convolution.weight.device)[0] == 10
+        ):
+            self.grouped_convolution = torch.compile(
+                self.grouped_convolution,
+                fullgraph=True,
+                dynamic=True,
+                options={"triton.cudagraphs": False},
+            )
+            self.use_grouped_matmul = True
+        else:
+            pass
+
+    def grouped_convolution(
+        self, value: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+    ) -> torch.Tensor:
+        batch_size, channels, frames = value.shape
+        channels_per_group = weight.shape[1]
+        groups = channels // channels_per_group
+        taps = weight.shape[2]
+        padding = taps // 2
+        windows = F.pad(value, (padding, padding)).unfold(2, taps, 1)
+        patches = (
+            windows.reshape(batch_size, groups, channels_per_group, frames, taps)
+            .permute(0, 1, 3, 2, 4)
+            .reshape(batch_size * groups, frames, channels_per_group * taps)
+        )
+        packed_weight = (
+            weight.reshape(groups, channels_per_group, channels_per_group * taps)
+            .unsqueeze(0)
+            .expand(batch_size, -1, -1, -1)
+            .reshape(batch_size * groups, channels_per_group, channels_per_group * taps)
+            .transpose(1, 2)
+        )
+        # note (BBuf): cuDNN rounds the convolution to BF16 before the bias add.
+        product = torch.bmm(patches, packed_weight)
+        output = (
+            product.reshape(batch_size, groups, frames, channels_per_group)
+            .permute(0, 1, 3, 2)
+            .reshape(batch_size, channels, frames)
+        )
+        return output + bias[None, :, None]
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None
@@ -85,7 +137,18 @@ class ConvPositionEmbedding(nn.Module):
         else:
             pass
         for i, block in enumerate(self.conv1d):
-            x = block(x)
+            if (
+                self.use_grouped_matmul
+                and not self.training
+                and x.is_cuda
+                and x.dtype == torch.bfloat16
+                and x.shape[0] <= 2
+                and x.shape[2] <= 768
+                and isinstance(block, nn.Conv1d)
+            ):
+                x = self.grouped_convolution(x, block.weight, block.bias)
+            else:
+                x = block(x)
             if mask is not None and i in self.layer_need_mask_idx:
                 x = x.masked_fill(~mask, 0.0)
             else:
@@ -566,6 +629,7 @@ class AuKDit(nn.Module):
             compiled = torch.compile(type(blocks[0]).forward, dynamic=True)
             for block in blocks:
                 block.forward = MethodType(compiled, block)
+        self.audio_embed.conv_pos_embed.enable_grouped_matmul()
 
     @property
     def dtype(self) -> torch.dtype:

@@ -4,8 +4,68 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.dit import AuKDit, ConvPositionEmbedding
 from sglang_omni.models.auk.flow_matching import fuse_hidden_states
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@torch.inference_mode()
+def test_grouped_position_convolution_matches_cudnn_and_mask_boundaries() -> None:
+    if torch.cuda.get_device_capability()[0] != 10:
+        pytest.skip("The grouped matmul path requires Blackwell")
+    else:
+        pass
+    torch.manual_seed(21)
+    reference = (
+        ConvPositionEmbedding(1536)
+        .to(device="cuda", dtype=torch.bfloat16)
+        .eval()
+        .requires_grad_(False)
+    )
+    candidate = (
+        ConvPositionEmbedding(1536)
+        .to(device="cuda", dtype=torch.bfloat16)
+        .eval()
+        .requires_grad_(False)
+    )
+    candidate.load_state_dict(reference.state_dict())
+    candidate.enable_grouped_matmul()
+    for batch_size, frames in [
+        (1, 160),
+        (1, 320),
+        (1, 640),
+        (2, 193),
+        (3, 160),
+        (1, 769),
+    ]:
+        value = torch.randn(
+            batch_size, frames, 1536, device="cuda", dtype=torch.bfloat16
+        )
+        mask = (
+            torch.arange(frames, device="cuda")[None, :].expand(batch_size, -1)
+            < frames - 10
+        )
+        for _ in range(3):
+            candidate(value, mask)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            actual = candidate(value, mask)
+        for shift in [0.125, -0.25, 0.5]:
+            value.add_(shift)
+            expected = reference(value, mask)
+            graph.replay()
+            torch.testing.assert_close(actual, expected, rtol=0.02, atol=0.02)
+            relative_rms = (
+                (actual.float() - expected.float()).square().mean()
+                / expected.float().square().mean()
+            ).sqrt()
+            assert relative_rms < 0.002
+            assert not actual[~mask].any()
+            if batch_size > 2 or frames > 768:
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            else:
+                pass
 
 
 @pytest.mark.parametrize("reference_frames", [None, 0, 4])

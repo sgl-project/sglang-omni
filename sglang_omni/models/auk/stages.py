@@ -37,6 +37,7 @@ from sglang_omni.models.auk.step_cuda_graph import (
     build_step_graph_runner,
 )
 from sglang_omni.models.auk.vae import AuKVAEConfig, BigVGANFlowVAE
+from sglang_omni.models.auk.vae_decode import AuKVaeDecoder
 from sglang_omni.models.auk.weight_loader import (
     load_dit_weights,
     load_vae_weights,
@@ -81,7 +82,9 @@ def load_vae(checkpoint: str, device: str):
     config = make_runtime_config(checkpoint)
     vae = BigVGANFlowVAE(AuKVAEConfig.from_dict(config.vae_init_kwargs))
     load_vae_weights(vae, checkpoint)
-    return vae.to(device=device).eval().requires_grad_(False)
+    vae = vae.to(device=device).eval().requires_grad_(False)
+    vae.remove_weight_norm()
+    return vae
 
 
 # Order matches the ``fuse_hidden_states`` signature.
@@ -418,7 +421,7 @@ def create_auk_engine_executor(
     )
 
 
-def decode_batch(payloads, vae, device):
+def decode_batch(payloads, vae, device, decoder: AuKVaeDecoder | None = None):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
     groups = defaultdict(list)
@@ -427,9 +430,12 @@ def decode_batch(payloads, vae, device):
     results = [None] * len(states)
     for indices in groups.values():
         latents = torch.stack([states[i].latent for i in indices]).to(device)
-        waveforms = vae.inference_from_latents(
-            vae.denormalize(latents).permute(0, 2, 1)
-        )
+        if decoder is None:
+            waveforms = vae.inference_from_latents(
+                vae.denormalize(latents).permute(0, 2, 1)
+            )
+        else:
+            waveforms = decoder.decode(latents)
         if not torch.isfinite(waveforms).all():
             raise RuntimeError("AuK generated audio contains NaN/Inf")
         else:
@@ -456,6 +462,8 @@ def decode_batch(payloads, vae, device):
 def create_decode_executor(
     model_path: str,
     *,
+    vae_cuda_graph_capture_shapes: Sequence[Sequence[int]],
+    enable_vae_torch_compile: bool,
     device: str | None = None,
     gpu_id: int | None = None,
     max_batch_size: int = 4,
@@ -464,8 +472,14 @@ def create_decode_executor(
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     vae = load_vae(checkpoint, str(device))
+    decoder = AuKVaeDecoder(
+        vae,
+        device,
+        capture_shapes=vae_cuda_graph_capture_shapes,
+        compile_forward=enable_vae_torch_compile,
+    )
     return scheduler(
-        lambda payloads: decode_batch(payloads, vae, device),
+        lambda payloads: decode_batch(payloads, vae, device, decoder),
         device,
         max_batch_size,
         max_batch_wait_ms,

@@ -68,7 +68,12 @@ class AuKPipelineConfig(PipelineConfig):
             name=DECODE_STAGE,
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_decode_executor",
-            factory=FactoryArgs(device=current_platform.device_type, max_batch_size=4),
+            factory=FactoryArgs(
+                device=current_platform.device_type,
+                max_batch_size=4,
+                vae_cuda_graph_capture_shapes=[],
+                enable_vae_torch_compile=False,
+            ),
             gpu=0,
             terminal=True,
         ),

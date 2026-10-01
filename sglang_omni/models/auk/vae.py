@@ -14,7 +14,14 @@ import torch
 from torch import nn
 from torch.nn.utils import remove_weight_norm, weight_norm
 
+if torch.version.cuda is None:
+    upsample_f32 = None
+else:
+    from sglang_omni.models.auk.vae_upsample import upsample_f32
+
 LRELU_SLOPE = 0.1
+MAX_CUDA_GRID_AXIS = 65535
+MAX_UPSAMPLE_OFFSET = 2**31 - 1
 
 
 # vendored: alias-free-torch (anti-aliased periodic activations)
@@ -124,7 +131,35 @@ class UpSample1d(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        _, channels, _ = x.shape
+        batch_count, channels, input_length = x.shape
+        if (
+            upsample_f32 is not None
+            and not self.training
+            and not (
+                torch.is_grad_enabled()
+                and (x.requires_grad or self.filter.requires_grad)
+            )
+            and not self.causal
+            and self.ratio == 2
+            and self.kernel_size == 12
+            and x.is_cuda
+            and x.dtype == self.filter.dtype == torch.float32
+            and self.filter.device == x.device
+            and self.filter.is_contiguous()
+            and self.filter.numel() == 12
+            and 0 < batch_count <= MAX_CUDA_GRID_AXIS
+            and 0 < channels <= MAX_CUDA_GRID_AXIS
+            and input_length > 0
+            and x.numel() * 2 <= MAX_UPSAMPLE_OFFSET
+            and sum(
+                (length - 1) * stride for length, stride in zip(x.shape, x.stride())
+            )
+            <= MAX_UPSAMPLE_OFFSET
+            and torch.cuda.get_device_capability(x.device)[0] == 10
+        ):
+            return upsample_f32(x, self.filter)
+        else:
+            pass
         x = torch.nn.functional.pad(x, (self.pad, self.pad), mode="replicate")
         x = self.ratio * torch.nn.functional.conv_transpose1d(
             x, self.filter.expand(channels, -1, -1), stride=self.stride, groups=channels
