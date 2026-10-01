@@ -1,0 +1,357 @@
+diff --git a/python/sglang/srt/hardware_backend/npu/attention/ascend_torch_native_backend.py b/python/sglang/srt/hardware_backend/npu/attention/ascend_torch_native_backend.py
+index 787cf7fe86..b78e1f881e 100644
+--- a/python/sglang/srt/hardware_backend/npu/attention/ascend_torch_native_backend.py
++++ b/python/sglang/srt/hardware_backend/npu/attention/ascend_torch_native_backend.py
+@@ -6,6 +6,8 @@ from typing import Optional
+ import torch
+ from torch.nn.functional import scaled_dot_product_attention
+
++from sglang.srt.model_executor.runner_utils.capture_mode import get_is_capture_mode
++
+
+ class AscendTorchNativeAttnBackend:
+     def __init__(self):
+@@ -251,6 +253,49 @@ class AscendTorchNativeAttnBackend:
+             output: [num_tokens, num_heads, head_size]
+         """
+
++        # Only graph capture needs fixed KV shapes; eager keeps per-request spans.
++        if (
++            get_is_capture_mode()
++            and encoder_lens is not None
++            and logit_cap == 0
++            and not causal
++            and full_to_swa_mapping is None
++        ):
++            columns = torch.arange(req_to_token.shape[1], device=query.device)
++            if is_cross_attention:
++                starts = torch.zeros_like(seq_lens)
++                ends = encoder_lens
++            else:
++                starts = encoder_lens
++                ends = starts + seq_lens
++            valid = (columns[None, :] >= starts[:, None]) & (
++                columns[None, :] < ends[:, None]
++            )
++            token_ids = req_to_token[req_pool_indices.long()].long()
++            token_ids = torch.where(valid, token_ids, 0)
++            keys = (
++                k_cache[token_ids]
++                .masked_fill(~valid[:, :, None, None], 0)
++                .permute(0, 2, 1, 3)
++                .to(query.dtype)
++            )
++            values = (
++                v_cache[token_ids]
++                .masked_fill(~valid[:, :, None, None], 0)
++                .permute(0, 2, 1, 3)
++                .to(query.dtype)
++            )
++            result = scaled_dot_product_attention(
++                query.unsqueeze(2),
++                keys,
++                values,
++                attn_mask=valid[:, None, None, :],
++                scale=scaling,
++                enable_gqa=enable_gqa,
++            ).squeeze(2)
++            output.copy_(result)
++            return output
++
+         # [num_tokens, num_heads, head_size] -> [num_heads, num_tokens, head_size]
+         query = query.movedim(0, query.dim() - 2)
+
+diff --git a/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py b/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py
+index 105034c03c..30bccd6aea 100644
+--- a/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py
++++ b/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py
+@@ -123,6 +123,14 @@ class NPUCudaGraphBackend(BaseCudaGraphBackend):
+         ):
+             out = forward_fn()
+
++        # Updates must not wait for the ordinary launch queue to drain:
++        # a queued synchronizing op can itself be waiting for this graph's
++        # update event. Keep updates off that queue while preserving the
++        # graph's existing event ordering.
++        graph.graph_dispatch_mode.update_stream = torch.npu.SyncLaunchStream(
++            device=self._device_id
++        )
++
+         self._graphs[shape_key] = graph
+         self._outputs[shape_key] = out
+
+diff --git a/test/registered/ops/test_npu_graph_update.py b/test/registered/ops/test_npu_graph_update.py
+new file mode 100644
+index 0000000000..f38c3883c2
+--- /dev/null
++++ b/test/registered/ops/test_npu_graph_update.py
+@@ -0,0 +1,129 @@
++"""Regression for concurrent dynamic NPU graph updates and synchronizing ops."""
++
++import subprocess
++import sys
++import threading
++import time
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++
++from sglang.srt.utils.common import is_npu
++from sglang.test.ci.ci_register import register_npu_ci
++
++register_npu_ci(est_time=30, suite="base-b-test-1-npu-a3")
++
++
++def exercise_graph_update():
++    import torch
++    import torch_npu
++    import torch_npu.npu.graphs as graph_api
++
++    from sglang.srt.hardware_backend.npu.graph_runner.npu_cudagraph_backend import (
++        NPUCudaGraphBackend,
++    )
++
++    torch.npu.set_device(0)
++    torch.manual_seed(1234)
++    q = torch.randn(1, 4, 1, 64, device="npu", dtype=torch.float16)
++    k = torch.randn(1, 4, 128, 64, device="npu", dtype=torch.float16)
++    v = torch.randn_like(k)
++
++    def attention(length):
++        return torch_npu.npu_fused_infer_attention_score(
++            q,
++            k,
++            v,
++            num_heads=4,
++            num_key_value_heads=4,
++            input_layout="BNSD",
++            scale=0.125,
++            actual_seq_lengths_kv=[length],
++        )[0]
++
++    runner = SimpleNamespace(
++        device_module=torch.npu,
++        model_runner=SimpleNamespace(tp_group=SimpleNamespace(barrier=lambda: None)),
++    )
++    backend = NPUCudaGraphBackend(runner)
++    backend.capture_one("test", lambda: attention(128))
++    graph = backend._graphs["test"]
++    original_end = graph_api.graph_task_update_end
++    original_replay = graph.replay
++    for length in (64, 96, 128):
++        reached = threading.Event()
++        release = threading.Event()
++        submitted = threading.Event()
++        errors = []
++        outputs = []
++
++        def delayed_end(stream):
++            reached.set()
++            if not release.wait(10):
++                raise TimeoutError("Test did not release the graph update")
++            original_end(stream)
++
++        def replay():
++            original_replay()
++            submitted.set()
++
++        def run_graph():
++            try:
++                torch.npu.set_device(0)
++                outputs.append(
++                    backend.replay_with_input_update(
++                        "test", [length], attr_name="actual_seq_lengths_kv"
++                    )
++                )
++            except BaseException as exc:
++                errors.append(exc)
++
++        def synchronizing_op():
++            try:
++                torch.npu.set_device(0)
++                # Nonzero synchronizes inside the launch-queue consumer.
++                indices = q.nonzero()
++                assert indices.shape[0] == q.numel()
++            except BaseException as exc:
++                errors.append(exc)
++
++        graph_api.graph_task_update_end = delayed_end
++        graph.replay = replay
++        replay_thread = threading.Thread(target=run_graph, daemon=True)
++        replay_thread.start()
++        assert reached.wait(10), "Graph update did not start"
++        assert submitted.wait(10), "Graph replay was not submitted"
++        copy_thread = threading.Thread(target=synchronizing_op, daemon=True)
++        copy_thread.start()
++        time.sleep(0.1)
++        release.set()
++        replay_thread.join(10)
++        copy_thread.join(10)
++        assert not replay_thread.is_alive() and not copy_thread.is_alive()
++        assert not errors, errors
++        graph_api.graph_task_update_end = original_end
++        graph.replay = original_replay
++        torch.npu.synchronize()
++        torch.testing.assert_close(outputs[0], attention(length), rtol=1e-3, atol=1e-3)
++    backend.cleanup()
++
++
++@unittest.skipUnless(is_npu(), "requires Ascend NPU")
++class TestNPUGraphUpdate(unittest.TestCase):
++    def test_synchronizing_op_does_not_deadlock_update(self):
++        # A deadlocked native thread can hold the GIL; isolate it so the test
++        # times out and fails instead of hanging the complete CI worker.
++        result = subprocess.run(
++            [sys.executable, str(Path(__file__).resolve()), "--exercise"],
++            capture_output=True,
++            text=True,
++            timeout=90,
++        )
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
++
++if __name__ == "__main__":
++    if "--exercise" in sys.argv:
++        exercise_graph_update()
++    else:
++        unittest.main()
+diff --git a/test/registered/unit/npu/attention/test_npu_ascend_torch_native_backend.py b/test/registered/unit/npu/attention/test_npu_ascend_torch_native_backend.py
+index 98c1eb5a6f..0ade2e6e22 100644
+--- a/test/registered/unit/npu/attention/test_npu_ascend_torch_native_backend.py
++++ b/test/registered/unit/npu/attention/test_npu_ascend_torch_native_backend.py
+@@ -4,6 +4,7 @@ Unit tests for sglang.srt.hardware_backend.npu.attention.ascend_torch_native_bac
+
+ import math
+ import unittest
++from unittest.mock import patch
+
+ import torch
+ from torch.nn.functional import scaled_dot_product_attention
+@@ -11,6 +12,7 @@ from torch.nn.functional import scaled_dot_product_attention
+ from sglang.srt.hardware_backend.npu.attention.ascend_torch_native_backend import (
+     AscendTorchNativeAttnBackend,
+ )
++from sglang.srt.model_executor.runner_utils.capture_mode import model_capture_mode
+ from sglang.test.ci.ci_register import register_npu_ci
+
+ register_npu_ci(est_time=4, suite="stage-a-unit-test-npu")
+@@ -827,5 +829,119 @@ class TestRunSdpaForwardDecode(unittest.TestCase):
+         self.assertEqual(result.dtype, torch.float32)
+
+
++class TestEncoderDecoderGraphReplay(unittest.TestCase):
++    def test_eager_uses_only_each_requests_valid_span(self):
++        backend = AscendTorchNativeAttnBackend()
++        query = torch.randn(2, 2, 8)
++        keys = torch.randn(16, 2, 8)
++        values = torch.randn_like(keys)
++        table = torch.arange(16).reshape(2, 8)
++        requests = torch.tensor([0, 1], dtype=torch.int32)
++        lengths = torch.tensor([2, 3], dtype=torch.int32)
++        encoder_lengths = torch.tensor([3, 4], dtype=torch.int32)
++        for cross in (False, True):
++            with self.subTest(cross=cross), patch(
++                "sglang.srt.hardware_backend.npu.attention."
++                "ascend_torch_native_backend.scaled_dot_product_attention",
++                wraps=scaled_dot_product_attention,
++            ) as sdpa:
++                backend.run_sdpa_forward_decode(
++                    query,
++                    torch.empty_like(query),
++                    keys,
++                    values,
++                    table,
++                    requests,
++                    lengths,
++                    encoder_lens=encoder_lengths,
++                    is_cross_attention=cross,
++                )
++                # Eager must not materialize the whole request table for every layer.
++                self.assertEqual(
++                    [call.args[1].shape[-2] for call in sdpa.call_args_list],
++                    [3, 4] if cross else [2, 3],
++                )
++
++    @unittest.skipUnless(
++        hasattr(torch, "npu") and torch.npu.is_available(), "requires Ascend NPU"
++    )
++    def test_replay_updates_requests_lengths_and_padding(self):
++        for cross in (False, True):
++            for query_heads in (2, 4):
++                for batch_size in (1, 3):
++                    with self.subTest(cross=cross, heads=query_heads, batch=batch_size):
++                        self._check_replay(cross, query_heads, batch_size)
++
++    def _check_replay(self, cross, query_heads, batch_size):
++        torch.manual_seed(42)
++        device = "npu:0"
++        query = torch.randn(
++            batch_size, query_heads, 64, device=device, dtype=torch.float16
++        )
++        keys = torch.randn(128, 2, 64, device=device, dtype=torch.float16)
++        values = torch.randn_like(keys)
++        table = torch.randperm(128, device=device).reshape(4, 32).int()
++        # Padding must never be used as a cache index, even when it is invalid.
++        table[:, 24:] = -99999
++        requests = torch.arange(batch_size, device=device, dtype=torch.int64)
++        lengths = torch.full((batch_size,), 3, device=device, dtype=torch.int32)
++        encoder_lengths = torch.full((batch_size,), 7, device=device, dtype=torch.int32)
++        backend = AscendTorchNativeAttnBackend()
++        output = torch.empty_like(query)
++
++        def forward():
++            return backend.run_sdpa_forward_decode(
++                query,
++                output,
++                keys,
++                values,
++                table,
++                requests,
++                lengths,
++                encoder_lens=encoder_lengths,
++                is_cross_attention=cross,
++                scaling=64**-0.5,
++                enable_gqa=query_heads != 2,
++            )
++
++        with model_capture_mode():
++            for _ in range(3):
++                forward()
++            torch.npu.synchronize()
++            graph = torch.npu.NPUGraph()
++            with torch.npu.graph(graph):
++                forward()
++
++        for step in range(3):
++            requests.copy_((torch.arange(batch_size, device=device) + step) % 4)
++            lengths.fill_(3 + step)
++            encoder_lengths.fill_(7 + step)
++            if batch_size == 3:
++                lengths[-1] = 0
++                encoder_lengths[-1] = 0
++            query.add_(0.05)
++            graph.replay()
++            # Independent per-request SDPA reference uses only the valid span.
++            expected = torch.empty_like(query)
++            for row in range(batch_size):
++                encoder_length = int(encoder_lengths[row].item())
++                start = 0 if cross else encoder_length
++                end = encoder_length if cross else start + int(lengths[row].item())
++                indices = table[int(requests[row].item()), start:end].long()
++                expected[row] = (
++                    scaled_dot_product_attention(
++                        query[row].unsqueeze(0).unsqueeze(2),
++                        keys[indices].permute(1, 0, 2).unsqueeze(0),
++                        values[indices].permute(1, 0, 2).unsqueeze(0),
++                        scale=64**-0.5,
++                        enable_gqa=query_heads != 2,
++                    )
++                    .squeeze(0)
++                    .squeeze(1)
++                )
++            torch.testing.assert_close(output, expected, atol=0.002, rtol=0.002)
++            self.assertTrue(torch.isfinite(output).all().item())
++
++
+ if __name__ == "__main__":
+     unittest.main()

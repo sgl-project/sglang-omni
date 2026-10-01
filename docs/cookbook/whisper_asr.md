@@ -10,9 +10,58 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download openai/whisper-large-v3
 ```
 
+## Ascend NPU
+
+Single-card inference was tested on Ascend910_9362 with PyTorch/torch_npu 2.10,
+CANN 9.0, and SGLang 0.5.19. Reuse a compatible Ascend environment; the generic
+CUDA installation instructions do not prepare that environment.
+
+This PR includes the [Whisper runtime backport](../../patches/sglang/ascend-whisper-runtime-0.5.19.patch).
+It repairs encoder-decoder attention during NPU graph capture and graph-update
+ordering, with regression tests for both. The patch is based on SGLang commit
+`0bcd822377da7b5718e674eaf9c870d349424dd1`; its four resulting files match the
+corresponding files at the tested dependency commit
+[`346e253559576af4a57c0edbd23add919c404f45`](https://github.com/celestial-micha/sglang/commit/346e253559576af4a57c0edbd23add919c404f45).
+
+Run these commands from the root of this PR's checkout, in the compatible
+Ascend environment:
+
+```bash
+OMNI_NPU_ROOT="$(pwd)"
+git clone --branch release/v0.5.19 --single-branch \
+  https://github.com/sgl-project/sglang.git sglang-npu-runtime
+git -C sglang-npu-runtime checkout --detach 0bcd822377da7b5718e674eaf9c870d349424dd1
+git -C sglang-npu-runtime apply --check \
+  "$OMNI_NPU_ROOT/patches/sglang/ascend-whisper-runtime-0.5.19.patch"
+git -C sglang-npu-runtime apply \
+  "$OMNI_NPU_ROOT/patches/sglang/ascend-whisper-runtime-0.5.19.patch"
+export PYTHONPATH="$OMNI_NPU_ROOT:$OMNI_NPU_ROOT/sglang-npu-runtime/python:${PYTHONPATH:-}"
+python -c 'import sglang, sglang_omni; print(sglang.__file__); print(sglang_omni.__file__)'
+```
+
+The printed paths must point into these two source checkouts. Keep the existing
+CANN entries in `PYTHONPATH` and use the same shell for tests and service startup.
+The patch is version-specific; do not apply it over another SGLang revision or
+apply it twice. `git apply --check` must succeed before applying it.
+
+```bash
+python -m pytest -q -rs tests/unit_test/whisper_asr \
+  sglang-npu-runtime/test/registered/unit/npu/attention/test_npu_ascend_torch_native_backend.py \
+  sglang-npu-runtime/test/registered/ops/test_npu_graph_update.py
+python -m sglang_omni.cli serve \
+  --model-path openai/whisper-large-v3 --port 8000
+```
+
+NPU decode graphs remain enabled. When the user does not set the memory fraction,
+Whisper uses `mem_fraction_static=0.50` on NPU and retains `0.85` on other platforms.
+Explicit values remain configurable; the tested 64 GB setup does not establish
+an optimal budget for every device or workload. Plain, unpatched SGLang 0.5.19
+cannot reproduce this decode graph path. The backport is included for review and
+reproduction; it is not a claim that upstream SGLang has released these fixes.
+
 ## Server Configuration
 
-Whisper ASR runs a single ASR stage on one GPU.
+Whisper ASR runs a single ASR stage on one GPU or on one Ascend NPU with the setup above.
 
 ```bash
 sgl-omni serve \
