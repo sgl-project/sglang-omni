@@ -661,7 +661,7 @@ class Qwen3OmniPreprocessor:
             ]
             tasks = [asyncio.create_task(loader) for loader in loaders]
 
-            async def cleanup():
+            async def cleanup() -> None:
                 for task in tasks:
                     if not task.done():
                         task.cancel()

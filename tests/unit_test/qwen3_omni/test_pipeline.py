@@ -2197,11 +2197,8 @@ def test_preprocessing_repeated_cancellation_drains_and_closes(
     decoded_audio_preprocessor, monkeypatch
 ):
     from sglang_omni.models.qwen3_omni.components import preprocessor as mod
-    from sglang_omni.preprocessing.resource_connector import (
-        MultiModalResourceConnector,
-        run_media_io,
-    )
-    from sglang_omni.preprocessing.video import ensure_video_list_async
+    from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+    from sglang_omni.preprocessing.video import VideoMediaIO, ensure_video_list_async
 
     pre, _, _ = decoded_audio_preprocessor
     monkeypatch.setattr(mod, "ensure_video_list_async", ensure_video_list_async)
@@ -2215,13 +2212,15 @@ def test_preprocessing_repeated_cancellation_drains_and_closes(
         closed = asyncio.Event()
         loop = asyncio.get_running_loop()
 
-        def decode():
+        def decode(self, data: bytes, media_type: str | None) -> None:
             loop.call_soon_threadsafe(started.set)
             release_decoder.wait(timeout=10)
             decoder_finished.set()
 
-        async def fetch_video(connector, url, **kwargs):
-            return await run_media_io(decode)
+        async def load_http_bytes(
+            self, url: str, *, timeout: float, max_bytes: int | None
+        ) -> tuple[bytes, str]:
+            return b"video", "video/mp4"
 
         async def close(connection):
             assert decoder_finished.is_set()
@@ -2230,8 +2229,9 @@ def test_preprocessing_repeated_cancellation_drains_and_closes(
             closed.set()
 
         monkeypatch.setattr(
-            MultiModalResourceConnector, "fetch_video_async", fetch_video
+            MultiModalResourceConnector, "load_http_bytes_async", load_http_bytes
         )
+        monkeypatch.setattr(VideoMediaIO, "load_http_bytes", decode)
         monkeypatch.setattr(mod.ResourceHTTPConnection, "close", close)
         task = asyncio.create_task(
             pre(

@@ -302,7 +302,11 @@ async def ensure_audio_list_async(
                 task.cancel()
             else:
                 pass
-        await await_media_cleanup(asyncio.gather(*coroutines, return_exceptions=True))
+
+        async def cleanup_loaders() -> None:
+            await asyncio.gather(*coroutines, return_exceptions=True)
+
+        await await_media_cleanup(cleanup_loaders())
 
     return normalized
 

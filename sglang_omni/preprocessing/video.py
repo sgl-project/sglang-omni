@@ -24,7 +24,7 @@ from sglang_omni.preprocessing.resource_connector import MultiModalResourceConne
 
 from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
-from .resource_connector import await_media_cleanup, run_media_io
+from .resource_connector import await_media_cleanup, global_thread_pool
 
 logger = logging.getLogger(__name__)
 
@@ -217,29 +217,42 @@ async def ensure_video_list_async(
                 audio_target_sr=audio_target_sr,
             )
             video_path = Path(video_item)
+            loop = asyncio.get_running_loop()
             if not extract_audio:
-                return await run_media_io(media_io.load_file, video_path)
-            else:
-                tasks = [
-                    asyncio.create_task(run_media_io(media_io.load_path, video_path)),
-                    asyncio.create_task(
-                        run_media_io(
-                            extract_audio_from_path, video_path, audio_target_sr
-                        )
-                    ),
-                ]
+                video_future = loop.run_in_executor(
+                    global_thread_pool, media_io.load_file, video_path
+                )
+
+                async def cleanup_video_decoder() -> None:
+                    await asyncio.gather(video_future, return_exceptions=True)
+
                 try:
-                    (frames, sample_fps), audio = await asyncio.gather(*tasks)
+                    return await asyncio.shield(video_future)
+                finally:
+                    await await_media_cleanup(cleanup_video_decoder())
+            else:
+                frames_future = loop.run_in_executor(
+                    global_thread_pool, media_io.load_path, video_path
+                )
+                audio_future = loop.run_in_executor(
+                    global_thread_pool,
+                    extract_audio_from_path,
+                    video_path,
+                    audio_target_sr,
+                )
+
+                async def cleanup_video_audio_decoders() -> None:
+                    await asyncio.gather(
+                        frames_future, audio_future, return_exceptions=True
+                    )
+
+                try:
+                    (frames, sample_fps), audio = await asyncio.gather(
+                        asyncio.shield(frames_future), asyncio.shield(audio_future)
+                    )
                     return frames, sample_fps, audio
                 finally:
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                        else:
-                            pass
-                    await await_media_cleanup(
-                        asyncio.gather(*tasks, return_exceptions=True)
-                    )
+                    await await_media_cleanup(cleanup_video_audio_decoders())
 
     # Collect coroutines for URL and local file items
     coroutines: list[
@@ -311,7 +324,11 @@ async def ensure_video_list_async(
                 task.cancel()
             else:
                 pass
-        await await_media_cleanup(asyncio.gather(*coroutines, return_exceptions=True))
+
+        async def cleanup_loaders() -> None:
+            await asyncio.gather(*coroutines, return_exceptions=True)
+
+        await await_media_cleanup(cleanup_loaders())
 
     if all_paths:
         return (
@@ -345,7 +362,7 @@ def extract_audio_from_path(
                 layout=audio_stream.layout.name,
                 rate=sample_rate,
             )
-            chunks: list[np.ndarray] = []
+            chunks: list[npt.NDArray[np.float32]] = []
             for frame in container.decode(audio_stream):
                 for resampled in resampler.resample(frame):
                     chunks.append(resampled.to_ndarray())
@@ -381,10 +398,17 @@ def is_invalid_video(path: Path, error: Exception) -> bool:
         return False
     else:
         pass
-    # Some readers swallow PyAV errors or report only missing frame metadata.
+    # note (Teery): Some readers hide PyAV errors behind missing frame metadata.
     try:
         with av.open(str(path)) as container:
-            stream = next((s for s in container.streams if s.type == "video"), None)
+            stream = next(
+                (
+                    video_stream
+                    for video_stream in container.streams
+                    if video_stream.type == "video"
+                ),
+                None,
+            )
             if stream is None:
                 return True
             else:
@@ -397,7 +421,7 @@ def is_invalid_video(path: Path, error: Exception) -> bool:
                     return False
                 else:
                     pass
-            # An inconclusive probe must not reclassify a backend failure.
+            # note (Teery): An inconclusive probe must preserve the backend failure.
             return packet_count < 32
     except (av.error.InvalidDataError, av.error.EOFError):
         return True

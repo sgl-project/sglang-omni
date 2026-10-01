@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from sglang_omni.preprocessing import audio, image, video
-from sglang_omni.preprocessing.resource_connector import run_media_io
+from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
@@ -252,24 +252,32 @@ async def test_media_loads_cancel_and_await_siblings(cancel, kind):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("through_video_loader", [False, "video", "image", "audio"])
-async def test_cancelled_decoder_is_drained_before_returning(through_video_loader):
+async def test_cancelled_decoder_is_drained_before_returning(
+    through_video_loader, monkeypatch
+):
     """A cancelled awaiter must not leave its decoder thread using request resources."""
     started = asyncio.Event()
     released = threading.Event()
     finished = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def decode():
+    def decode(self, data: bytes, media_type: str | None) -> None:
         loop.call_soon_threadsafe(started.set)
         released.wait(timeout=5)
         finished.set()
 
-    class Connector:
-        async def fetch_video_async(self, url, **kwargs):
-            return await run_media_io(decode)
+    async def load_http_bytes(
+        self, url: str, *, timeout: float, max_bytes: int | None
+    ) -> tuple[bytes, str]:
+        return b"media", "application/octet-stream"
 
-    Connector.fetch_image_async = Connector.fetch_video_async
-    Connector.fetch_audio_async = Connector.fetch_video_async
+    monkeypatch.setattr(
+        MultiModalResourceConnector, "load_http_bytes_async", load_http_bytes
+    )
+    monkeypatch.setattr(video.VideoMediaIO, "load_http_bytes", decode)
+    monkeypatch.setattr(image.ImageMediaIO, "load_http_bytes", decode)
+    monkeypatch.setattr(audio.AudioMediaIO, "load_http_bytes", decode)
+    connector = MultiModalResourceConnector()
     loaders = {
         "video": video.ensure_video_list_async,
         "image": image.ensure_image_list_async,
@@ -280,10 +288,12 @@ async def test_cancelled_decoder_is_drained_before_returning(through_video_loade
     )
     task = asyncio.create_task(
         loaders[through_video_loader](
-            ["https://example/video.mp4"], **{connector_arg: Connector()}
+            ["https://example/video.mp4"], **{connector_arg: connector}
         )
         if through_video_loader
-        else run_media_io(decode)
+        else connector.load_resource_async(
+            "https://example/video.mp4", video.VideoMediaIO()
+        )
     )
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
