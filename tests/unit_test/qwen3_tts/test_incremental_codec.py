@@ -10,10 +10,15 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from sglang_omni.models.qwen3_tts import incremental_codec as incremental_codec_module
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
 from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
+    channels_last_causal_conv1d,
+    channels_last_causal_transconv1d,
+    channels_last_conv_weight,
+    channels_last_transconv_weight,
     incremental_causal_conv1d,
     incremental_causal_transconv1d,
     incremental_transformer,
@@ -316,6 +321,59 @@ def test_incremental_causal_transconv_matches_whole(
 
     torch.testing.assert_close(torch.cat(actual, dim=-1), expected)
     assert state.transconv_overlaps["transconv"].shape[-1] == module.right_pad
+
+
+@pytest.mark.parametrize("dilation", [1, 3])
+@pytest.mark.parametrize("partitions", [[9], [1] * 9, [1, 8], [8, 1], [3, 2, 4]])
+def test_channels_last_causal_conv_matches_whole(
+    partitions: list[int], dilation: int
+) -> None:
+    torch.manual_seed(1)
+    module = CausalConv(2, 3, 7, dilation=dilation)
+    weight = channels_last_conv_weight(module)
+    inputs = torch.randn(1, sum(partitions), 2)
+    expected = module(inputs.transpose(1, 2)).transpose(1, 2)
+    state = Qwen3TTSIncrementalCodecState()
+    actual = []
+    offset = 0
+    for length in partitions:
+        actual.append(
+            channels_last_causal_conv1d(
+                module, weight, inputs[:, offset : offset + length], state, "conv"
+            )
+        )
+        offset += length
+
+    torch.testing.assert_close(torch.cat(actual, dim=1), expected)
+    assert state.conv_histories["conv"].shape == (1, 2, module.padding)
+
+
+@pytest.mark.parametrize("partitions", [[9], [1] * 9, [1, 8], [8, 1], [3, 2, 4]])
+def test_channels_last_causal_transconv_matches_whole(
+    partitions: list[int],
+) -> None:
+    torch.manual_seed(2)
+    module = CausalTransConv(2, 3, 8, 4)
+    weight = channels_last_transconv_weight(module)
+    inputs = torch.randn(1, sum(partitions), 2)
+    expected = module(inputs.transpose(1, 2)).transpose(1, 2)
+    state = Qwen3TTSIncrementalCodecState()
+    actual = []
+    offset = 0
+    for length in partitions:
+        actual.append(
+            channels_last_causal_transconv1d(
+                module,
+                weight,
+                inputs[:, offset : offset + length],
+                state,
+                "transconv",
+            )
+        )
+        offset += length
+
+    torch.testing.assert_close(torch.cat(actual, dim=1), expected)
+    assert state.transconv_overlaps["transconv"].shape == (1, 3, module.right_pad)
 
 
 @pytest.mark.parametrize("partitions", [[11], [1] * 11, [1, 10], [10, 1], [3, 2, 6]])
@@ -893,7 +951,69 @@ def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
+def test_cuda_decoder_runs_channels_last_and_leaves_the_shared_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    torch.manual_seed(31)
+    decoder = Decoder().cuda().eval()
+    convs = [
+        module
+        for module in decoder.modules()
+        if isinstance(module, (nn.Conv1d, nn.ConvTranspose1d))
+    ]
+    layouts = [(conv.weight.data_ptr(), conv.weight.stride()) for conv in convs]
+    codes = torch.randint(0, 16, (2, 4, 9), device="cuda")
+    with torch.inference_mode():
+        expected = decoder(codes)
+        incremental = Qwen3TTSIncrementalDecoder(decoder)
+        state = Qwen3TTSIncrementalCodecState()
+        actual = torch.cat(
+            [
+                incremental.decode(part, state)
+                for part in codes.split((4, 1, 4), dim=-1)
+            ],
+            dim=-1,
+        )
+
+    assert incremental.channels_last_weights is not None
+    assert [(conv.weight.data_ptr(), conv.weight.stride()) for conv in convs] == layouts
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_decoder_keeps_the_channels_first_path_off_the_cuda_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        incremental_codec_module.current_platform, "is_cuda", lambda: False
+    )
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    torch.manual_seed(32)
+    decoder = Decoder().cuda().eval()
+    codes = torch.randint(0, 16, (2, 4, 9), device="cuda")
+    with torch.inference_mode():
+        expected = decoder(codes)
+        incremental = Qwen3TTSIncrementalDecoder(decoder)
+        state = Qwen3TTSIncrementalCodecState()
+        actual = torch.cat(
+            [
+                incremental.decode(part, state)
+                for part in codes.split((4, 1, 4), dim=-1)
+            ],
+            dim=-1,
+        )
+
+    assert incremental.channels_last_weights is None
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_windowed_replays_match_one_eager_decode_and_its_arena_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A bootstrap split across captured windows, with one window replayed twice, leaves
     the waveform and every arena row where a single eager decode of the width would."""
     from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
@@ -906,6 +1026,7 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
     )
 
     torch.manual_seed(23)
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
     device = torch.device("cuda", torch.cuda.current_device())
     decoder = Decoder().to(device).eval()
     incremental = Qwen3TTSIncrementalDecoder(decoder)
