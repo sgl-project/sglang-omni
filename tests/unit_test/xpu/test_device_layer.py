@@ -95,6 +95,66 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
     assert free_gb == (total_bytes - allocated_bytes) / (1 << 30)
 
 
+def test_the_xpu_platform_implements_the_device_operations_it_advertises():
+    """Every device operation omni calls through current_platform must reach
+    torch.xpu. The base DeviceMixin answers them with a silent no-op or
+    NotImplementedError, so inheriting any of them means stage memory reclaim,
+    KV budget sizing and seeding quietly stop working on XPU.
+    """
+    from sglang.srt.platforms.device_mixin import DeviceMixin
+
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    for name in (
+        "empty_cache",
+        "synchronize",
+        "get_available_memory",
+        "get_device_total_memory",
+        "get_current_memory_usage",
+        "get_device_name",
+        "is_pin_memory_available",
+        "seed_everything",
+    ):
+        assert getattr(XPUOmniPlatform, name) is not getattr(
+            DeviceMixin, name
+        ), f"XPUOmniPlatform inherits the unimplemented {name}"
+
+
+def test_free_device_memory_is_reported_in_gib_from_the_platform_query(
+    monkeypatch,
+) -> None:
+    """Stage startup logs and the colocated KV budget read this number, so it
+    must come from the live platform rather than a CUDA-only query.
+    """
+    from sglang_omni.utils.misc import avail_gpu_mem
+
+    total_bytes = 24 << 30
+    free_bytes = 20 << 30
+    monkeypatch.setattr(
+        type(current_platform),
+        "get_available_memory",
+        lambda self, device_id=0: (free_bytes, total_bytes),
+    )
+
+    assert avail_gpu_mem(0) == free_bytes / (1024**3)
+
+
+def test_an_unimplemented_query_reports_no_free_memory_instead_of_raising(
+    monkeypatch,
+) -> None:
+    """Startup logging must not be the thing that fails a stage launch."""
+    from sglang_omni.utils.misc import avail_gpu_mem
+
+    def raise_not_implemented(self, device_id: int = 0) -> tuple[int, int]:
+        raise NotImplementedError
+
+    monkeypatch.setattr(
+        type(current_platform), "get_available_memory", raise_not_implemented
+    )
+
+    assert avail_gpu_mem(0) is None
+
+
 def test_an_explicit_device_is_validated_on_the_concrete_path_too():
     """An explicit device must fail at this boundary, not deep inside the engine."""
     import pytest

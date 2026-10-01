@@ -13,6 +13,7 @@ import logging
 import pytest
 
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_scheduler
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.stage_kv_budget import (
     consume_stage_kv_cache_bytes,
     peek_stage_kv_cache_bytes,
@@ -109,21 +110,34 @@ def test_construct_scheduler_without_budget_opens_no_scope() -> None:
     assert scheduler.consumed_kv_cache_bytes is None
 
 
-def test_total_reserve_cap_accumulates_across_colocated_stages(monkeypatch):
+def install_fake_device_module(monkeypatch, calls: list[tuple[float, int]]) -> None:
+    """Route the reserve cap at a fake device module of the live device type."""
     import sys
     from types import SimpleNamespace
 
-    import sglang_omni.pipeline.stage_workers as stage_workers
-
-    calls: list[tuple[float, int]] = []
-    fake_cuda = SimpleNamespace(
-        is_available=lambda: True,
+    device_module = SimpleNamespace(
         get_device_properties=lambda device: SimpleNamespace(total_memory=100),
         set_per_process_memory_fraction=lambda fraction, device: calls.append(
             (round(fraction, 4), device)
         ),
     )
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=fake_cuda))
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(get_device_module=lambda device_type: device_module),
+    )
+
+
+def test_total_reserve_cap_accumulates_across_colocated_stages(monkeypatch):
+    import sglang_omni.pipeline.stage_workers as stage_workers
+
+    if current_platform.is_cpu():
+        pytest.skip("the allocator cap needs an accelerator platform")
+    else:
+        pass
+
+    calls: list[tuple[float, int]] = []
+    install_fake_device_module(monkeypatch, calls)
     monkeypatch.setattr(stage_workers, "_process_reserve_bytes", {})
 
     first = StageLaunchConfig(stage_name="a", total_reserve_bytes=30)
@@ -135,20 +149,10 @@ def test_total_reserve_cap_accumulates_across_colocated_stages(monkeypatch):
 
 
 def test_total_reserve_cap_respects_opt_out_and_absence(monkeypatch):
-    import sys
-    from types import SimpleNamespace
-
     import sglang_omni.pipeline.stage_workers as stage_workers
 
     calls: list[tuple[float, int]] = []
-    fake_cuda = SimpleNamespace(
-        is_available=lambda: True,
-        get_device_properties=lambda device: SimpleNamespace(total_memory=100),
-        set_per_process_memory_fraction=lambda fraction, device: calls.append(
-            (fraction, device)
-        ),
-    )
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=fake_cuda))
+    install_fake_device_module(monkeypatch, calls)
     monkeypatch.setattr(stage_workers, "_process_reserve_bytes", {})
 
     opted_out = StageLaunchConfig(
