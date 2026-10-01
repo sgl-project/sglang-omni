@@ -17,8 +17,8 @@ def is_channels_last_conv_device(device: torch.device) -> bool:
 def channels_last_weight(
     conv: torch.nn.Conv1d | torch.nn.ConvTranspose1d,
 ) -> torch.Tensor:
-    """A copy of the conv's weight with channels-last strides, the layout the
-    channels-last convs hand to cuDNN without reformatting it."""
+    """The conv's weight with channels-last strides, the layout the channels-last
+    convs hand to cuDNN without reformatting it; the module's weight is left as is."""
     return conv.weight.data.transpose(1, 2).contiguous().transpose(1, 2)
 
 
@@ -28,8 +28,9 @@ def channels_last_conv1d(
     weight: torch.Tensor,
     length: int,
 ) -> torch.Tensor:
-    """The conv of a (B, L, C) activation that carries its left context and, for a
-    dilated conv, a length divisible by the dilation; returns (B, length, C_out)."""
+    """The stride-one conv of a (B, L, C) activation that carries its left context
+    and, for a dilated conv, a length divisible by the dilation; returns
+    (B, length, C_out)."""
     dilation = conv.dilation[0]
     if dilation == 1:
         output = F.conv2d(

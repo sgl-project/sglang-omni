@@ -269,7 +269,9 @@ def channels_last_causal_conv1d(
     else:
         pass
     state.conv_histories[key] = (
-        combined[:, combined.shape[1] - history_size :].transpose(1, 2).contiguous()
+        combined[:, combined.shape[1] - history_size :]
+        .transpose(1, 2)
+        .clone(memory_format=torch.contiguous_format)
     )
     return output.contiguous()
 
@@ -308,7 +310,9 @@ def channels_last_causal_transconv1d(
         )
     else:
         pass
-    state.transconv_overlaps[key] = tail.transpose(1, 2).contiguous()
+    state.transconv_overlaps[key] = tail.transpose(1, 2).clone(
+        memory_format=torch.contiguous_format
+    )
     if conv.bias is not None:
         emitted = emitted + conv.bias
     else:
@@ -664,8 +668,8 @@ class Qwen3TTSIncrementalDecoder:
                 )
         self.decoder = decoder
         self.total_upsample = int(decoder.total_upsample)
-        # note (ratish): on CUDA the convs run channels last on their own weight
-        # copies; the shared modules keep their layout for the whole-utterance decode.
+        # note (ratish): on CUDA the convs run channels last on weights kept here in
+        # that layout; the shared modules keep theirs for the whole-utterance decode.
         if is_channels_last_conv_device(decoder.pre_conv.conv.weight.device):
             self.channels_last_weights: dict[str, torch.Tensor] | None = {
                 "pre_conv": channels_last_weight(decoder.pre_conv.conv),

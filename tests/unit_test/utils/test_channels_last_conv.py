@@ -6,6 +6,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.channels_last_conv import (
     channels_last_conv1d,
     channels_last_conv_transpose1d,
@@ -14,7 +15,9 @@ from sglang_omni.utils.channels_last_conv import (
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
+)
 @pytest.mark.parametrize("length", [1, 5, 16])
 @pytest.mark.parametrize("dilation,groups", [(1, 1), (3, 1), (9, 1), (1, 2), (3, 2)])
 def test_channels_last_conv1d_matches_the_causal_conv1d(
@@ -40,7 +43,9 @@ def test_channels_last_conv1d_matches_the_causal_conv1d(
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
+)
 @pytest.mark.parametrize("has_bias", [True, False])
 @pytest.mark.parametrize("stride,padding,output_padding", [(2, 0, 0), (4, 1, 1)])
 def test_channels_last_conv_transpose1d_matches_the_conv_transpose1d(
@@ -74,14 +79,18 @@ def test_channels_last_conv_transpose1d_matches_the_conv_transpose1d(
 
 
 @pytest.mark.parametrize(
-    "conv", [torch.nn.Conv1d(4, 6, 7), torch.nn.ConvTranspose1d(4, 6, 8, stride=2)]
+    "conv",
+    [
+        torch.nn.Conv1d(4, 6, 7),
+        torch.nn.Conv1d(4, 6, 1),
+        torch.nn.ConvTranspose1d(4, 6, 8, stride=2),
+    ],
 )
-def test_channels_last_weight_is_a_channels_last_copy(
+def test_channels_last_weight_has_channels_last_strides_and_leaves_the_module(
     conv: torch.nn.Conv1d | torch.nn.ConvTranspose1d,
 ) -> None:
     weight = channels_last_weight(conv)
 
     assert torch.equal(weight, conv.weight)
     assert weight.transpose(1, 2).is_contiguous()
-    assert weight.data_ptr() != conv.weight.data_ptr()
     assert conv.weight.is_contiguous()

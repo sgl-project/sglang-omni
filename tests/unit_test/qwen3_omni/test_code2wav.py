@@ -25,6 +25,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.utils import snake_beta
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_payload
@@ -1077,7 +1078,9 @@ def make_tiny_code2wav(device: str, dtype: torch.dtype) -> Qwen3OmniCode2Wav:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
+)
 @pytest.mark.parametrize(
     ("batch_size", "frames"),
     [(1, 7), (3, 10)],
@@ -1096,7 +1099,7 @@ def test_channels_last_code2wav_matches_the_hf_forward(
 
     assert actual.shape == expected.shape
     assert actual.is_contiguous()
-    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-6)
+    torch.testing.assert_close(actual, expected)
 
 
 @pytest.mark.accelerator

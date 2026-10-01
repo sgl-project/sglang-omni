@@ -20,6 +20,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     incremental_causal_transconv1d,
     incremental_transformer,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils import channels_last_conv, snake_beta
 from sglang_omni.utils.channels_last_conv import channels_last_weight
 
@@ -321,13 +322,13 @@ def test_incremental_causal_transconv_matches_whole(
     assert state.transconv_overlaps["transconv"].shape[-1] == module.right_pad
 
 
-@pytest.mark.parametrize("dilation", [1, 3])
+@pytest.mark.parametrize(("kernel_size", "dilation"), [(7, 1), (7, 3), (1, 1)])
 @pytest.mark.parametrize("partitions", [[9], [1] * 9, [1, 8], [8, 1], [3, 2, 4]])
 def test_channels_last_causal_conv_matches_whole(
-    partitions: list[int], dilation: int
+    partitions: list[int], kernel_size: int, dilation: int
 ) -> None:
     torch.manual_seed(1)
-    module = CausalConv(2, 3, 7, dilation=dilation)
+    module = CausalConv(2, 3, kernel_size, dilation=dilation)
     weight = channels_last_weight(module.conv)
     inputs = torch.randn(1, sum(partitions), 2)
     expected = module(inputs.transpose(1, 2)).transpose(1, 2)
@@ -343,15 +344,18 @@ def test_channels_last_causal_conv_matches_whole(
         offset += length
 
     torch.testing.assert_close(torch.cat(actual, dim=1), expected)
-    assert state.conv_histories["conv"].shape == (1, 2, module.padding)
+    history = state.conv_histories["conv"]
+    assert history.shape == (1, 2, module.padding)
+    assert history.untyped_storage().nbytes() == history.nbytes
 
 
+@pytest.mark.parametrize(("kernel_size", "stride"), [(8, 4), (4, 4)])
 @pytest.mark.parametrize("partitions", [[9], [1] * 9, [1, 8], [8, 1], [3, 2, 4]])
 def test_channels_last_causal_transconv_matches_whole(
-    partitions: list[int],
+    partitions: list[int], kernel_size: int, stride: int
 ) -> None:
     torch.manual_seed(2)
-    module = CausalTransConv(2, 3, 8, 4)
+    module = CausalTransConv(2, 3, kernel_size, stride)
     weight = channels_last_weight(module.conv)
     inputs = torch.randn(1, sum(partitions), 2)
     expected = module(inputs.transpose(1, 2)).transpose(1, 2)
@@ -371,7 +375,9 @@ def test_channels_last_causal_transconv_matches_whole(
         offset += length
 
     torch.testing.assert_close(torch.cat(actual, dim=1), expected)
-    assert state.transconv_overlaps["transconv"].shape == (1, 3, module.right_pad)
+    overlap = state.transconv_overlaps["transconv"]
+    assert overlap.shape == (1, 3, module.right_pad)
+    assert overlap.untyped_storage().nbytes() == overlap.nbytes
 
 
 @pytest.mark.parametrize("partitions", [[11], [1] * 11, [1, 10], [10, 1], [3, 2, 6]])
@@ -948,7 +954,9 @@ def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
+)
 def test_cuda_decoder_runs_channels_last_and_leaves_the_shared_weights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1085,12 +1093,12 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state(
     torch.cuda.synchronize(device)
 
     assert runner.stats()["runtime"]["replays"] == 4
-    torch.testing.assert_close(waveform, eager_waveform[:, 0], rtol=2e-4, atol=2e-5)
+    torch.testing.assert_close(waveform, eager_waveform[:, 0])
     samples = decoder.total_upsample
     for plan, delta, row in zip(plans, deltas, eager_waveform[:, 0]):
         start = plan.reference_trim_frames * samples
         end = start + plan.generated_frames * samples
-        torch.testing.assert_close(delta, row[start:end], rtol=2e-4, atol=2e-5)
+        torch.testing.assert_close(delta, row[start:end])
         assert (
             delta.untyped_storage().data_ptr() == waveform.untyped_storage().data_ptr()
         )
@@ -1106,9 +1114,7 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state(
     ):
         assert graph_mapping.keys() == eager_mapping.keys()
         for key in graph_mapping:
-            torch.testing.assert_close(
-                graph_mapping[key], eager_mapping[key], rtol=2e-4, atol=2e-5
-            )
+            torch.testing.assert_close(graph_mapping[key], eager_mapping[key])
     assert arena.gather([bystander]).frame_positions.tolist() == [0]
 
 
