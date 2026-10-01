@@ -926,8 +926,14 @@ that happened to contain an older version of the test.
   channel, `audios` input, role prompt, voice resolution, `stage_params`),
   voice-archive unpacking (read-only fallback, no partial folder), and
   request lowering (decode budget, reference sampling defaults over client
-  filler values, seeds, stream chunks, context limit, input validation). CPU
-  only, no weights; runner and request tests need SGLang but start no engine.
+  filler values, seeds, stream chunks, context limit, input validation), and
+  realtime calls (a call stepped unit by unit through the LM session adapter
+  matches one offline request row for row, frame for frame and text id for
+  text id, however the audio is cut into units; per-call Mimi encode and
+  decode state; the prompt handed on once; the realtime route, engine and
+  request slots; the `/v1/realtime` events, and a call over the WebSocket
+  against a scripted pipeline). CPU only, no weights; runner and request
+  tests need SGLang but start no engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.

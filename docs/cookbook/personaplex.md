@@ -2,7 +2,7 @@
 
 [nvidia/personaplex-7b-v1](https://huggingface.co/nvidia/personaplex-7b-v1) is a 7B full-duplex speech-to-speech model built on [Moshi](https://arxiv.org/abs/2410.00037): every 80 ms it reads one text token and 16 [Mimi](https://huggingface.co/kyutai/mimi) codes (8 for what it says, 8 for what it hears) and writes the next frame. A voice prompt and a `<system>` role prompt set the persona, and the model decides for itself when to speak; there is no VAD.
 
-SGLang-Omni serves it as an **offline** pipeline: one recording of the caller's side in, the agent's reply as text and 24 kHz audio of the same length out. Live duplex sessions over `/v1/realtime` are tracked in [#1909](https://github.com/sgl-project/sglang-omni/issues/1909).
+SGLang-Omni serves it two ways: an **offline** pipeline (one recording of the caller's side in, the agent's reply as text and 24 kHz audio of the same length out) and a **realtime** variant that holds live full-duplex calls over `/v1/realtime` ([#1909](https://github.com/sgl-project/sglang-omni/issues/1909)).
 
 ## Prerequisites
 
@@ -52,6 +52,26 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 }'
 ```
 
+## Full-duplex calls over `/v1/realtime`
+
+The realtime variant holds a live call: the client streams the caller's microphone, and the server streams the agent's voice back continuously while the model decides for itself when to speak, listen or interrupt.
+
+```bash
+python -m sglang_omni.cli serve --config examples/configs/personaplex_realtime.yaml --enable-realtime --port 8000
+```
+
+Each 80 ms unit of caller audio (24 kHz mono PCM16, 3840 bytes) goes through preprocessing, Mimi encode, the LM and Mimi decode as one step. The LM keeps one SGLang streaming session per call: the first unit prefills the voice and role prompt, and every later unit extends the retained KV cache by exactly one position, so a call produces the frames the offline pipeline produces for the same audio and options.
+
+Connect to `ws://localhost:8000/v1/realtime`, wait for `session.created`, then send `session.update`. `instructions` sets the role prompt; the call uses the default voice (`NATF2`). The server grants `native_unit_ms: 80`, one output modality (`audio`, the default, with the spoken words as `response.output_audio_transcript.delta`; or `text`), and pads a trailing partial unit. Stream audio with `input_audio_buffer.append`, `sglang.seq` counting up from 0, and end the input with `sglang.input_audio.end`.
+
+```json
+{"event_id": "e0", "type": "session.update", "session": {"instructions": "You are a patient support agent."}}
+{"event_id": "e1", "type": "input_audio_buffer.append", "audio": "<base64 PCM16>", "sglang": {"seq": 0}}
+{"event_id": "e9", "type": "sglang.input_audio.end"}
+```
+
+The whole call is one response: `response.created` arrives with the first unit's output, each unit brings 80 ms of agent audio (160 ms for the first, which also carries the prompt's last frame), and `response.done` follows the end of the caller's input. The transcript is the model's inner monologue, streamed word piece by word piece. The realtime variant serves only `/v1/realtime`; use the default pipeline for `/generate` and chat completions.
+
 ## Request parameters
 
 | Parameter | Effect |
@@ -86,12 +106,15 @@ The fixed caller-frame budget still determines the number of generated frames.
 ## Known limitations
 
 - Offline, one request at a time (`max_running_requests=1`).
+- Realtime, one call at a time; another connection is refused (HTTP 503) until it ends. The session bridge admits a call's first unit only while a request slot stays free for calls already holding KV, so the realtime LM runs with two slots, and `--lm.engine.max_running_requests` must not go below 2 there.
+- A realtime unit's output is released once the whole route has finished it, so each frame has to clear Mimi encode, the LM and its depformer, and Mimi decode within 80 ms, or the call falls behind.
+- A realtime call is bounded by the LM context like an offline request (about 10.8 minutes at 8192 positions); the unit that would pass it ends the call.
 - CUDA graphs are off; a 7B decode step plus 8 depformer steps runs close to the 80 ms frame budget rather than well inside it.
 - The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
 
 ## Tests
 
-`tests/unit_test/personaplex/` runs on CPU without weights: the delayed timeline, chunked Mimi against whole-sequence Mimi, the depformer, checkpoint weight routing, the model-runner hooks, the streaming codec stage, the checkpoint shim, preprocessing and voice unpacking, and request lowering.
+`tests/unit_test/personaplex/` runs on CPU without weights: the delayed timeline, chunked Mimi against whole-sequence Mimi, the depformer, checkpoint weight routing, the model-runner hooks, the streaming codec stage, the checkpoint shim, preprocessing and voice unpacking, and request lowering. For realtime calls, `test_lm_session.py` steps a call unit by unit through the LM session adapter and the model runner, for several ways of cutting the same audio into units, and checks every forward's input rows, the output frames and the text against one offline request; `test_session_hooks.py` covers the per-call codec stages and `test_realtime.py` runs a call over the `/v1/realtime` WebSocket against a scripted pipeline.
 
 ```bash
 pytest tests/unit_test/personaplex/ -q

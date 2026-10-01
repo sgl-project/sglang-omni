@@ -14,12 +14,13 @@ import torch
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME
+from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME, TEXT_CARD
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
     PERSONAPLEX_ARCH,
     build_backbone_config,
 )
+from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.models.personaplex.model_runner import PersonaPlexModelRunner
 from sglang_omni.models.personaplex.request_builders import (
     apply_lm_result,
@@ -139,3 +140,21 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder):
         self,
     ) -> dict[str, LMStreamOutputBuilder]:
         return {"stream_output_builder": lm_stream_output_builder}
+
+
+class PersonaPlexRealtimeEngineBuilder(PersonaPlexEngineBuilder):
+    """The LM of full-duplex calls: one SGLang streaming session per call."""
+
+    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
+        return {
+            **super().generation_defaults(dtype=dtype),
+            "enable_streaming_session": True,
+        }
+
+    def extra_scheduler_kwargs(self) -> dict[str, PersonaPlexSessionAdapter]:
+        # Note (wilsonzheng0327): The shim config's vocabulary is TEXT_CARD.
+        return {
+            "session_adapter": PersonaPlexSessionAdapter(
+                vocab_size=TEXT_CARD, context_length=self.context_length
+            )
+        }

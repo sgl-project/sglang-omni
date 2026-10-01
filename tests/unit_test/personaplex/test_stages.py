@@ -9,6 +9,7 @@ import torch
 
 from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
+from sglang_omni.models.personaplex.config import REALTIME_MAX_CALLS
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -18,6 +19,9 @@ from sglang_omni.models.personaplex.prompts import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
+from sglang_omni.scheduling.sglang_backend.ar_session import (
+    REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
+)
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 CALLER_SAMPLES = 2000
@@ -139,6 +143,38 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
 
     stages.create_lm_executor("m", context_length=4096)
     assert built["context_length"] == 4096 and built["overrides"] is None
+
+
+def test_realtime_engine_keeps_a_request_slot_beyond_its_calls(monkeypatch):
+    built = {}
+
+    class Builder:
+        def __init__(self, *, max_running_requests, context_length):
+            built["max_running_requests"] = max_running_requests
+
+        def build(self, model_path, **kwargs):
+            pass
+
+    monkeypatch.setattr(stages, "PersonaPlexRealtimeEngineBuilder", Builder)
+    stages.create_realtime_lm_executor("m")
+    assert built["max_running_requests"] == (
+        REALTIME_MAX_CALLS + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+    )
+
+
+def test_realtime_session_stages_hold_one_call_and_run_codecs_serially(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (Mock(), "cpu"))
+    prompt = stages.create_realtime_preprocessing_executor(str(tmp_path))
+    codecs = [
+        stages.create_realtime_mimi_encode_executor(str(tmp_path)),
+        stages.create_realtime_code2wav_executor(str(tmp_path)),
+    ]
+    for scheduler in [prompt, *codecs]:
+        assert scheduler.max_open_sessions == REALTIME_MAX_CALLS
+    assert all(scheduler.max_concurrency == 1 for scheduler in codecs)
 
 
 def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):

@@ -7,11 +7,14 @@ from pathlib import Path
 
 import pytest
 
+from sglang_omni.models.personaplex.architecture import TEXT_CARD
 from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexEngineBuilder,
+    PersonaPlexRealtimeEngineBuilder,
     shim_checkpoint_dir,
 )
 from sglang_omni.models.personaplex.hf_config import DEFAULT_CONTEXT_LENGTH
+from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 
 
 def write_checkpoint(root):
@@ -69,3 +72,16 @@ def test_generation_defaults_keep_the_runner_assumptions():
     assert defaults["disable_overlap_schedule"] is True
     assert defaults["disable_cuda_graph"] is True
     assert defaults["sampling_backend"] == "pytorch"
+
+
+def test_realtime_engine_serves_calls_through_streaming_sessions():
+    builder = PersonaPlexRealtimeEngineBuilder(
+        max_running_requests=2, context_length=4096
+    )
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    assert defaults["enable_streaming_session"] is True
+    assert defaults["max_running_requests"] == 2
+    assert defaults["disable_radix_cache"] is True
+    adapter = builder.extra_scheduler_kwargs()["session_adapter"]
+    assert isinstance(adapter, PersonaPlexSessionAdapter)
+    assert (adapter.vocab_size, adapter.context_length) == (TEXT_CARD, 4096)

@@ -15,6 +15,7 @@ class PersonaPlexState(DeclarativeStateBase):
     waveform: torch.Tensor | None = wire(None, codec="typed_tensor")
     num_samples: int = wire(0, codec="int")
     text_prompt_ids: list[int] = wire(default_factory=list, codec="list")
+    carries_prompt: bool = wire(False, codec="bool")
     voice_waveform: torch.Tensor | None = wire(None, codec="typed_tensor")
     voice_embeddings: torch.Tensor | None = wire(None, codec="typed_tensor")
     voice_tail_codes: torch.Tensor | None = wire(None, codec="typed_tensor")

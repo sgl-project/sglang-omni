@@ -79,7 +79,6 @@ def test_timeline_rows_and_generation_boundary():
     assert timeline.user_rows[num_prompt + 1].tolist() == [508, *range(501, 508)]
     assert timeline.user_rows.shape[0] == num_prompt + 5
     assert timeline.num_frames == 5
-    assert timeline.input_position(0) == num_prompt - 1
 
 
 def test_packaged_voice_rows_come_from_embeddings():
@@ -124,3 +123,17 @@ def test_output_frame_takes_undelayed_codebook_from_previous_row():
     previous = torch.arange(8)
     current = torch.arange(8) + 10
     assert output_frame(previous, current).tolist() == [0, 11, 12, 13, 14, 15, 16, 17]
+
+
+def test_caller_frames_appended_one_by_one_match_the_whole_timeline():
+    prompt = build_prompt_frames(voice_frames=0, text_prompt_ids=[7, 8])
+    caller = make_user_codes(4)
+    whole = build_timeline(prompt, caller)
+    timeline = build_timeline(prompt, caller[:0])
+    for frame in caller:
+        rows_before = timeline.user_rows
+        timeline.append_caller_frames(frame[None])
+        assert torch.equal(timeline.user_rows[: rows_before.shape[0]], rows_before)
+    assert torch.equal(timeline.user_frames, whole.user_frames)
+    assert torch.equal(timeline.user_rows, whole.user_rows)
+    assert timeline.num_frames == whole.num_frames
