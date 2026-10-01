@@ -5,7 +5,17 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Protocol, TypedDict
+
+from typing_extensions import Unpack
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.vendor.sglang.core import ServerArgs
+else:
+    pass
 
 from sglang_omni.utils.gpu_compat import (
     get_visible_gpu_sm_version,
@@ -20,6 +30,18 @@ class SGLangServerArgsForDiagnostics(Protocol):
     prefill_attention_backend: str | None
     decode_attention_backend: str | None
     sampling_backend: str | None
+
+
+class InfrastructureOptions(TypedDict, total=False):
+    tp_rank: int
+    nccl_port: int | None
+    model_arch_override: str | None
+    weight_prefix: str | None
+    total_gpu_memory_fraction: float | None
+    enable_prefill_input_embeds: bool
+    before_memory_pool: Callable[["ModelWorker | MlxTpModelWorker"], None] | None
+    mlx_model_path: str | None
+    mlx_model_revision: str | None
 
 
 def describe_sglang_runtime_configuration(
@@ -44,7 +66,9 @@ def describe_sglang_runtime_configuration(
     )
 
 
-def init_sglang_cuda_graphs(model_worker: Any) -> None:
+def init_sglang_cuda_graphs(
+    model_worker: "ModelWorker | MlxTpModelWorker",
+) -> None:
     """Initialize SGLang graphs with Omni's prefill-embedding capture view."""
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
@@ -75,7 +99,7 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
 
 
 def create_sglang_infrastructure(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int,
     *,
     tp_rank: int = 0,
@@ -85,7 +109,9 @@ def create_sglang_infrastructure(
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
-    before_memory_pool: Callable[[Any], None] | None = None,
+    before_memory_pool: (
+        Callable[["ModelWorker | MlxTpModelWorker"], None] | None
+    ) = None,
     mlx_model_path: str | None = None,
     mlx_model_revision: str | None = None,
 ):
@@ -206,9 +232,9 @@ def create_sglang_infrastructure(
 # decoder/vocoder setup, and other host-side staging should stay outside CUDA
 # graph coverage because graph replay will not amortize it.
 def create_sglang_infrastructure_defer_cuda_graph(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int,
-    **kwargs: Any,
+    **kwargs: Unpack[InfrastructureOptions],
 ):
     """Build shared SGLang infrastructure while deferring CUDA graph capture.
 

@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from itertools import count
-from typing import Any, Callable
+from typing import Callable
 from uuid import uuid4
 
 import msgspec
@@ -41,7 +42,7 @@ from sglang_omni.proto import (
     KVTransferReadyMessage,
     StagePayload,
 )
-from sglang_omni.relay.base import Relay
+from sglang_omni.relay.base import Relay, RelayOperation
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class InboundKVTransfer:
 
 
 class PendingTransfer(msgspec.Struct):
-    ops: list[Any]
+    ops: list[RelayOperation]
     ack: asyncio.Future[None]
     task: asyncio.Task[bool] | None = None
     lease: KVPageLease | None = None
@@ -75,7 +76,7 @@ class PendingTransfer(msgspec.Struct):
 
 class PayloadSendJob(msgspec.Struct, frozen=True):
     relay: Relay
-    control_plane: Any
+    control_plane: stage_io.StageMessageSender
     request_id: str
     payload: StagePayload
     transport: TransportKind
@@ -89,14 +90,14 @@ class PayloadSendJob(msgspec.Struct, frozen=True):
 
 class StreamSendJob(msgspec.Struct, frozen=True):
     relay: Relay
-    control_plane: Any
+    control_plane: stage_io.StageMessageSender
     request_id: str
     data: torch.Tensor
     target_stage: str
     target_endpoint: str
     from_stage: str
     chunk_id: int
-    metadata: dict[str, Any] | None
+    metadata: dict[str, object] | None
     transport: TransportKind
     ready: asyncio.Future[DataRef]
     enqueued_ns: int
@@ -130,7 +131,7 @@ class CommEngine:
         )
         self.send_queue_size = queue_size
         self.send_queues: dict[str, asyncio.Queue[PayloadSendJob | StreamSendJob]] = {}
-        self.send_workers: dict[str, asyncio.Task] = {}
+        self.send_workers: dict[str, asyncio.Task[None]] = {}
         self.pending: dict[str, PendingTransfer] = {}
         self.stream_send_sequence = count()
         # Failed pending KV transfers stay pinned until this dying process exits.
@@ -143,7 +144,7 @@ class CommEngine:
         self.aborted_kv_requests: set[str] = set()
         self.rank_recv_socket: PullSocket | None = None
         self.rank_send_sockets: dict[str, PushSocket] = {}
-        self.rank_control_task: asyncio.Task | None = None
+        self.rank_control_task: asyncio.Task[None] | None = None
         self.rank_receive_tasks: set[asyncio.Task[None]] = set()
         self.task_done_callback = task_done_callback
         self.closed = False
@@ -192,7 +193,7 @@ class CommEngine:
         transport: TransportKind,
         from_stage: str,
         to_stage: str,
-    ) -> tuple[DataRef, Any]:
+    ) -> tuple[DataRef, RelayOperation]:
         return await stage_io.write_payload(
             relay,
             request_id,
@@ -206,7 +207,7 @@ class CommEngine:
         self,
         *,
         relay: Relay,
-        control_plane: Any,
+        control_plane: stage_io.StageMessageSender,
         request_id: str,
         payload: StagePayload,
         transport: TransportKind,
@@ -311,14 +312,14 @@ class CommEngine:
         self,
         *,
         relay: Relay,
-        control_plane: Any,
+        control_plane: stage_io.StageMessageSender,
         request_id: str,
         data: torch.Tensor,
         target_stage: str,
         target_endpoint: str,
         from_stage: str,
         chunk_id: int,
-        metadata: dict[str, Any] | None,
+        metadata: dict[str, object] | None,
         transport: TransportKind,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
@@ -361,7 +362,7 @@ class CommEngine:
         *,
         relay: Relay,
         data_ref: DataRef,
-    ) -> tuple[torch.Tensor, dict[str, Any] | None]:
+    ) -> tuple[torch.Tensor, dict[str, object] | None]:
         read_start = _comm_now_ns()
         data, metadata = await stage_io.read_stream_chunk(
             relay, data_ref, self.local_payload_device
@@ -389,7 +390,7 @@ class CommEngine:
         source_page_indices: tuple[int, ...],
         target_pool_id: str,
         to_stage: str,
-        metadata: dict[str, Any] | None = None,
+        metadata: Mapping[str, object] | None = None,
         transfer_id: str | None = None,
         lease: KVPageLease | None = None,
     ) -> DataRef:
@@ -1108,16 +1109,16 @@ class CommEngine:
     async def publish_data_ready(
         self,
         *,
-        control_plane: Any,
+        control_plane: stage_io.StageMessageSender,
         request_id: str,
         from_stage: str,
         to_stage: str,
         target_endpoint: str,
         data_ref: DataRef,
-        ops: list[Any],
+        ops: list[RelayOperation],
         chunk_id: int | None = None,
         replica_bindings: dict[str, int] | None = None,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task[bool]:
         """Publish a relay object and arm its existing ACK lifecycle."""
 
         object_id = data_ref.object_id
@@ -1136,7 +1137,7 @@ class CommEngine:
     async def publish_registered_data_ready(
         self,
         *,
-        control_plane: Any,
+        control_plane: stage_io.StageMessageSender,
         request_id: str,
         from_stage: str,
         to_stage: str,
@@ -1144,7 +1145,7 @@ class CommEngine:
         data_ref: DataRef,
         chunk_id: int | None = None,
         replica_bindings: dict[str, int] | None = None,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task[bool]:
         object_id = data_ref.object_id
         try:
             await control_plane.send_to_stage(
@@ -1167,7 +1168,7 @@ class CommEngine:
     def register_pending(
         self,
         object_id: str,
-        ops: list[Any],
+        ops: list[RelayOperation],
         *,
         lease: KVPageLease | None = None,
         retain_pending_on_failure: bool = False,

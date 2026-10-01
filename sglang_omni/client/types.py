@@ -3,9 +3,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TypedDict
+
+
+class TokenUsageDict(TypedDict):
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+
+
+class UsageInfoDict(TokenUsageDict, total=False):
+    engine_time_s: float
 
 
 @dataclass
@@ -13,9 +24,9 @@ class Message:
     """Chat-style message."""
 
     role: str
-    content: Any
+    content: object
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {"role": self.role, "content": self.content}
 
 
@@ -29,7 +40,7 @@ class UsageInfo:
     engine_time_s: float | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "UsageInfo | None":
+    def from_dict(cls, data: Mapping[str, object] | None) -> "UsageInfo | None":
         if not data:
             return None
         else:
@@ -41,8 +52,8 @@ class UsageInfo:
             engine_time_s=data.get("engine_time_s"),
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
+    def to_dict(self) -> UsageInfoDict:
+        d: UsageInfoDict = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
@@ -68,7 +79,7 @@ class SamplingParams:
     seed: int | None = None
     max_new_tokens: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -88,24 +99,24 @@ class GenerateRequest:
 
     model: str | None = None
 
-    prompt: str | dict[str, Any] | None = None
+    prompt: str | dict[str, object] | None = None
     prompt_token_ids: list[int] | None = None
     messages: list[Message] | None = None
 
     sampling: SamplingParams = field(default_factory=SamplingParams)
     stage_sampling: dict[str, SamplingParams] | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
-    extra_params: dict[str, Any] = field(default_factory=dict)
+    stage_params: dict[str, dict[str, object]] | None = None
+    extra_params: dict[str, object] = field(default_factory=dict)
     stream: bool = True
     max_tokens: int | None = None
 
     # Multi-modal support
     output_modalities: list[str] | None = None
-    multimodal_train_inputs: dict[str, Any] | None = None
+    multimodal_train_inputs: dict[str, object] | None = None
 
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "model": self.model,
             "prompt": self.prompt,
@@ -136,8 +147,8 @@ class GenerateChunk:
     token_ids: list[int] = field(default_factory=list)
     text: str = ""
     logprobs: list[float] | None = None
-    output_token_logprobs: list[Any] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    output_token_logprobs: list[list[float | int]] | None = None
+    omni_rollout: dict[str, object] | None = None
     finish_reason: str | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
@@ -145,10 +156,10 @@ class GenerateChunk:
     stage_name: str | None = None
     modality: str = "text"
     language: str | None = None
-    audio_data: Any = None
+    audio_data: object = None
     sample_rate: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "request_id": self.request_id,
             "index": self.index,
@@ -208,8 +219,8 @@ class CompletionResult:
     audio: CompletionAudio | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
-    output_token_logprobs: list[Any] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    output_token_logprobs: list[list[float | int]] | None = None
+    omni_rollout: dict[str, object] | None = None
     weight_version: str | None = None
     language: str | None = None
 

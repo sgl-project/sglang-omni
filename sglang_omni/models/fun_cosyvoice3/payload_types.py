@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+
+if TYPE_CHECKING:
+    import torch
+    from numpy.typing import ArrayLike
+else:
+    pass
 
 
 @dataclass
@@ -18,14 +25,18 @@ class FunCosyVoice3State(DeclarativeStateBase):
     text: str = wire("", codec="str")
     language: str = wire("auto", codec="str_or")
     instructions: str | None = None
-    ref_audio: Any | None = None
+    ref_audio: object = None
     ref_text: str | None = None
     stream: bool = wire(False, codec="bool")
     speed: float = wire(1.0, codec="float")
     seed: int | None = None
-    generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
-    flow_embedding: Any | None = wire(None, codec="tensor_list")
-    flow_prompt_speech_token: Any | None = wire(None, codec="tensor_list")
-    flow_prompt_speech_feat: Any | None = wire(None, codec="tensor_list")
-    audio_codes: Any | None = wire(None, codec="tensor_list")
-    audio_samples: Any | None = wire(None, codec="tensor_list")
+    generation_kwargs: Mapping[str, object] = wire(default_factory=dict, codec="dict")
+    flow_embedding: ArrayLike | torch.Tensor | None = wire(None, codec="tensor_list")
+    flow_prompt_speech_token: ArrayLike | torch.Tensor | None = wire(
+        None, codec="tensor_list"
+    )
+    flow_prompt_speech_feat: ArrayLike | torch.Tensor | None = wire(
+        None, codec="tensor_list"
+    )
+    audio_codes: ArrayLike | torch.Tensor | None = wire(None, codec="tensor_list")
+    audio_samples: object = wire(None, codec="tensor_list")

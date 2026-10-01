@@ -11,6 +11,7 @@ import torch
 
 import sglang_omni.platforms as platforms_mod
 import sglang_omni.utils.device as device_mod
+from sglang_omni.models.higgs_tts import config as higgs_config
 from sglang_omni.models.higgs_tts import npu_fallback
 from sglang_omni.models.higgs_tts import sampler as higgs_sampler
 from sglang_omni.models.higgs_tts import stages as higgs_stages
@@ -25,7 +26,7 @@ class FakePlatform:
     def is_npu(self) -> bool:
         return self.npu
 
-    def enable_code2wav_graph(self) -> bool:
+    def enable_codec_decode_graph(self) -> bool:
         return not self.npu
 
 
@@ -108,17 +109,25 @@ def test_stage_devices_resolve_from_platform_type() -> None:
             assert stage.factory.device == current_platform.device_type
 
 
-def test_vocoder_decode_graph_domain_follows_platform_capability() -> None:
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [(True, tuple(range(1, 151))), (False, ())],
+)
+def test_vocoder_decode_graph_domain_follows_platform_capability(
+    monkeypatch, enabled, expected
+) -> None:
     from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 
     config = HiggsTtsPipelineConfig(model_path="unused")
+
+    monkeypatch.setattr(
+        higgs_config,
+        "current_platform",
+        SimpleNamespace(enable_codec_decode_graph=lambda: enabled),
+    )
     vocoder_kwargs = config.stage_factory_kwargs("vocoder")
 
-    counts = vocoder_kwargs["decode_cuda_graph_frame_counts"]
-    if current_platform.enable_code2wav_graph():
-        assert counts == tuple(range(1, 151))
-    else:
-        assert counts == ()
+    assert vocoder_kwargs["decode_cuda_graph_frame_counts"] == expected
 
 
 class FakeTokenizer:

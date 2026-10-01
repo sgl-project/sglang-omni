@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from collections.abc import Mapping
 
 import torch
 
@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AR_CONCURRENCY = int(os.environ.get("MINIMAX_MUSIC3_AR_CONCURRENCY", "16"))
 
 
-def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
+def create_preprocessing_executor(
+    model_path: str,
+) -> SimpleScheduler[StagePayload, StagePayload]:
     del model_path
 
     def _preprocess(payload: StagePayload) -> StagePayload:
@@ -42,7 +44,7 @@ def create_ar_executor(
     gpu_id: int | None = None,
     device: str | None = None,
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     if not (
         current_platform.is_cuda()

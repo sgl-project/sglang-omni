@@ -4,14 +4,41 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+from typing_extensions import NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    import torch
+else:
+    pass
 
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
 
 logger = logging.getLogger(__name__)
 
 
-def event_to_dict(event) -> dict[str, Any]:
+class LLaDA2UniEventDict(TypedDict):
+    type: str
+    modality: str
+    payload: dict[str, str | list[str]]
+    is_final: bool
+
+
+LLaDA2UniDecodeResult = TypedDict(
+    "LLaDA2UniDecodeResult",
+    {
+        "events": list[LLaDA2UniEventDict],
+        "text": NotRequired[str | list[str]],
+        "modality": NotRequired[str],
+        "usage": NotRequired[dict[str, int]],
+        "finish_reason": NotRequired[object],
+    },
+)
+
+
+def event_to_dict(event) -> LLaDA2UniEventDict:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -40,7 +67,7 @@ def create_image_encoder_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype: Any = None,
+    dtype: "str | torch.dtype | None" = None,
 ):
     import torch
 
@@ -90,7 +117,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
     from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
@@ -103,7 +130,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     resolved_gpu_id = concrete_device.index or 0
 
-    overrides: dict[str, Any] = {
+    overrides: dict[str, object] = {
         "attention_backend": "flashinfer",
         "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
@@ -160,7 +187,7 @@ def create_decode_executor(model_path: str):
         )
         event_dicts = [event_to_dict(event) for event in events]
 
-        result: dict[str, Any] = {"events": event_dicts}
+        result: LLaDA2UniDecodeResult = {"events": event_dicts}
         if events:
             result.update(events[0].payload)
             result.setdefault("modality", events[0].modality)

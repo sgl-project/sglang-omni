@@ -29,11 +29,13 @@ from sglang_omni.models.personaplex.request_builders import (
 from sglang_omni.models.personaplex.sglang_model import PersonaPlexForCausalLM
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-from sglang_omni.scheduling.types import RequestOutput
 
 
 class LMRequestBuilder(Protocol):
@@ -42,12 +44,6 @@ class LMRequestBuilder(Protocol):
 
 class LMResultBuilder(Protocol):
     def __call__(self, data: SGLangARRequestData) -> StagePayload: ...
-
-
-class LMStreamOutputBuilder(Protocol):
-    def __call__(
-        self, request_id: str, data: SGLangARRequestData, req_output: RequestOutput
-    ) -> list[OutgoingMessage]: ...
 
 
 def shim_checkpoint_dir(source: Path, *, context_length: int) -> Path:
@@ -71,7 +67,7 @@ def shim_checkpoint_dir(source: Path, *, context_length: int) -> Path:
     return shim
 
 
-class PersonaPlexEngineBuilder(TtsEngineBuilder):
+class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     model_name = "personaplex"
     context_length = DEFAULT_CONTEXT_LENGTH
     supports_context_length_override = True
@@ -90,7 +86,7 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder):
         source = Path(resolve_model_path(model_path))
         return str(shim_checkpoint_dir(source, context_length=self.context_length))
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "disable_cuda_graph": True,
             "disable_overlap_schedule": True,
@@ -135,7 +131,5 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder):
 
         return build, apply_lm_result
 
-    def extra_scheduler_kwargs(
-        self,
-    ) -> dict[str, LMStreamOutputBuilder]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[SGLangARRequestData]:
         return {"stream_output_builder": lm_stream_output_builder}

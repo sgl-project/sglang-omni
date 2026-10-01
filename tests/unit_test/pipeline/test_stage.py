@@ -990,7 +990,7 @@ def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> N
         dispatcher.register_many([sender, receiver])
 
         chunk = torch.arange(4)
-        metadata = {"modality": "audio"}
+        metadata: dict[str, object] = {"modality": "audio"}
 
         await sender.send_stream_to_target(
             "req-stream-local",

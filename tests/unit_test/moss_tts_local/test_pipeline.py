@@ -1529,7 +1529,7 @@ def test_batched_reference_encoder_mixes_path_and_waveform_jobs():
     assert calls[0] == [2, 5]
 
 
-# _MossLocalReferenceEncoder
+# MossLocalReferenceEncoder
 
 
 def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
@@ -1598,7 +1598,7 @@ def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
     )
     assert encode_count == 1
 
-    # ON-miss: first call to _MossLocalReferenceEncoder (cache empty)
+    # ON-miss: first call to MossLocalReferenceEncoder (cache empty)
     cached_enc = MossLocalReferenceEncoder(
         fake_batched, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
@@ -1676,8 +1676,8 @@ def test_cached_reference_encoder_duration_gate(tmp_path, monkeypatch):
         FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
 
-    # _BatchedReferenceEncoder.encode checks duration before enqueuing;
-    # _MossLocalReferenceEncoder calls through so the duration check still fires.
+    # BatchedReferenceEncoder.encode checks duration before enqueuing;
+    # MossLocalReferenceEncoder calls through so the duration check still fires.
     with pytest.raises(ValueError, match="100"):
         enc.encode(str(ref))
 

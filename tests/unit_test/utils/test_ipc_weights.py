@@ -49,8 +49,8 @@ class IdentitySerializer:
         return key
 
     @classmethod
-    def deserialize(cls, data: bytes):
-        return cls.store[data]
+    def deserialize(cls, data: bytes | bytearray):
+        return cls.store[bytes(data)]
 
 
 class TinyModel(nn.Module):
@@ -451,7 +451,7 @@ def test_check_leader_alive_rejects_recycled_pid():
         ipc_weights.check_leader_alive(
             {"pid": os.getpid(), "leader_start_time": "0"}, "before attach"
         )
-    ok = {
+    ok: ipc_weights.WeightShareMetadata = {
         "pid": os.getpid(),
         "leader_start_time": ipc_weights.proc_start_time(os.getpid()),
     }

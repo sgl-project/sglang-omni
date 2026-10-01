@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -135,7 +136,10 @@ def test_normalize_context_length_preserves_integral_values(value: int) -> None:
 
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
 
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
@@ -272,7 +276,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             self,
             *,
             dtype: str,
-        ) -> dict[str, Any]:
+        ) -> GenerationDefaults:
             events.append("generation_defaults")
             assert dtype == "bfloat16"
             return {
@@ -442,7 +446,10 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 def build_minimal_tts_builder_harness(monkeypatch):
     """Fakes for exercising ``build()`` without CUDA graphs or a real engine."""
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
     from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 
     monkeypatch.setattr(
@@ -514,7 +521,7 @@ def build_minimal_tts_builder_harness(monkeypatch):
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             return {
                 "max_running_requests": 4,
                 "dtype": dtype,
@@ -573,7 +580,10 @@ def test_without_byte_budget_builder_default_mem_fraction_is_kept(
 
 def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, engine_factory, sglang_backend
-    from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        AsrEngineBuilder,
+        GenerationDefaults,
+    )
 
     events: list[str] = []
 
@@ -638,7 +648,7 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
         model_name = "Test ASR"
         context_length = 256
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             events.append("generation_defaults")
             return {"max_running_requests": 4, "dtype": dtype}
 
@@ -747,7 +757,7 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
             self,
             *,
             dtype: str,
-        ) -> dict[str, Any]:
+        ) -> dict[str, object]:
             del dtype
             return {}
 
@@ -773,7 +783,7 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
         def make_abort_callback(self) -> Any | None:
             return abort_callback
 
-        def extra_scheduler_callbacks(self) -> dict[str, Any]:
+        def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
             return {"shutdown_callback": shutdown_callback}
 
         def extra_scheduler_kwargs(self) -> dict[str, Any]:

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.main import IncEx
+from typing_extensions import Unpack
 
 if TYPE_CHECKING:
     from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
@@ -168,7 +171,7 @@ class EngineArgs(BaseModel):
     def parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
         return parse_memory_bytes("engine.kv_cache_bytes", value)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.quantization is not None and (not self.quantization.strip()):
             raise ValueError("engine.quantization must not be empty")
         else:
@@ -186,7 +189,7 @@ class EngineArgs(BaseModel):
         else:
             pass
 
-    def overrides(self) -> dict[str, Any]:
+    def overrides(self) -> dict[str, object]:
         """Return the keys set on this block, declared and free-form alike.
 
         A declared key left at ``None`` means "not set" and is omitted, so
@@ -234,7 +237,7 @@ class FactoryArgs(BaseModel):
     enable_partial_start: bool | None = None
     partial_start_min_chunks: int | None = Field(default=None, ge=1)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.prefill_coalesce_requests == 1:
             logger.warning(
                 "prefill_coalesce_requests=1 disables coalescing: the admission gate only engages at >= 2 (a batch of one has nothing to coalesce with). Use 0 to disable explicitly, or >= 2 to enable."
@@ -264,7 +267,7 @@ class ProcessConfig(BaseModel):
 
     @field_validator("replica_devices", mode="before")
     @classmethod
-    def parse_replica_devices(cls, value: Any) -> Any:
+    def parse_replica_devices(cls, value: object) -> object:
         if value is None:
             return None
         else:
@@ -306,7 +309,7 @@ class ProcessConfig(BaseModel):
             pass
         return value
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.num_replicas < 1:
             raise ValueError("processes.num_replicas must be >= 1")
         else:
@@ -377,7 +380,7 @@ class StageConfig(BaseModel):
     project_payload: dict[str, str] = Field(default_factory=dict)
     comm: CommConfig | None = None
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
                 f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
@@ -496,7 +499,7 @@ class AudioChunkingConfig(BaseModel):
     max_concurrent_chunks: int = Field(default=8, ge=1)
     max_concurrent_long_audio_requests: int | None = Field(default=None, ge=1)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if (
             self.max_total_audio_s is not None
             and self.max_total_audio_s < self.max_audio_clip_s
@@ -548,6 +551,27 @@ class CustomVoiceConfig:
     task_type: str
 
 
+class SerializationFallback(Protocol):
+    def __call__(self, value: object, /) -> object: ...
+
+
+class ModelDumpOptions(TypedDict, total=False):
+    mode: Literal["json", "python"] | str
+    include: IncEx | None
+    exclude: IncEx | None
+    context: object
+    by_alias: bool | None
+    exclude_unset: bool
+    exclude_defaults: bool
+    exclude_none: bool
+    exclude_computed_fields: bool
+    round_trip: bool
+    warnings: bool | Literal["none", "warn", "error"]
+    fallback: SerializationFallback | None
+    serialize_as_any: bool
+    polymorphic_serialization: bool | None
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
@@ -588,7 +612,7 @@ class PipelineConfig(BaseModel):
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
 
-    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+    def model_dump(self, **kwargs: Unpack[ModelDumpOptions]) -> dict[str, object]:
         """Dump with each stage serialized by its runtime class.
 
         Pydantic serializes a ``list[StageConfig]`` field by the declared
@@ -604,13 +628,13 @@ class PipelineConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def materialize_stage_types(cls, data: Any) -> Any:
+    def materialize_stage_types(cls, data: object) -> object:
         """Validate stage documents against their declared per-stage types."""
         if not isinstance(data, dict) or not isinstance(data.get("stages"), list):
             return data
         else:
             pass
-        stages: list[Any] = []
+        stages: list[object] = []
         for stage in data["stages"]:
             stage_cls = (
                 cls.stage_config_types.get(stage.get("name"))
@@ -622,9 +646,10 @@ class PipelineConfig(BaseModel):
             )
         return {**data, "stages": stages}
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         self.validate_general()
         self.validate_processes()
+
         native = type(self).max_native_clip_s
         if native is not None and self.audio_chunking.max_audio_clip_s > native:
             raise ValueError(
@@ -737,7 +762,7 @@ class PipelineConfig(BaseModel):
                 pass
         raise KeyError(stage_name)
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
         """Constructor kwargs the pipeline author passes to this stage's factory.
 
         This is a code-level hook, not a configuration surface: values
@@ -764,7 +789,7 @@ class PipelineConfig(BaseModel):
         return dict(self.env_defaults)
 
     @classmethod
-    def generation_admission_defaults(cls) -> dict[str, Any]:
+    def generation_admission_defaults(cls) -> dict[str, int]:
         """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""
         return {}
 
@@ -968,5 +993,5 @@ class PipelineConfig(BaseModel):
             pass
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> PipelineConfig:
+    def from_dict(data: dict[str, object]) -> PipelineConfig:
         return PipelineConfig(**data)

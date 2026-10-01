@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Callable, TypedDict
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -29,6 +29,14 @@ from sglang_omni.scheduling.streaming_vocoder import (
 )
 
 
+class HiggsSamplingOptions(TypedDict, total=False):
+    max_new_tokens: int
+    temperature: float
+    top_p: float
+    top_k: int
+    sampling_seed: int
+
+
 @dataclass
 class HiggsSGLangRequestData(SGLangARRequestData):
     """Per-request state for the Higgs TTS scheduler."""
@@ -43,7 +51,7 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     return_omni_rollout: bool = False
     generation_done: bool = False
     engine_start_s: float = 0.0
-    stream_metadata: dict[str, Any] | None = None
+    stream_metadata: dict[str, str | int | bool] | None = None
     stream_code_buffer: list[torch.Tensor] = field(default_factory=list)
     stream_code_first_flush_done: bool = False
     stream_code_seen_rows: int = 0
@@ -86,7 +94,7 @@ def build_sglang_higgs_request(
     input_ids_list = list(state.prompt_token_ids)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
 
-    sp_kwargs: dict[str, Any] = {
+    sp_kwargs: HiggsSamplingOptions = {
         "max_new_tokens": int(state.max_new_tokens),
         "temperature": float(state.temperature),
     }
@@ -145,7 +153,7 @@ def build_higgs_stream_metadata(
     stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     initial_chunk_frames: int = DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
-) -> dict[str, Any] | None:
+) -> dict[str, str | int | bool] | None:
     params = payload.request.params
     if not isinstance(params, dict):
         raise TypeError(
@@ -167,7 +175,7 @@ def build_higgs_stream_metadata(
         )
     else:
         pass
-    metadata: dict[str, Any] = {
+    metadata: dict[str, str | int | bool] = {
         "modality": "audio_codes",
         "stream": True,
         "num_codebooks": num_codebooks,

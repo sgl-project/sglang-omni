@@ -6,7 +6,6 @@ from __future__ import annotations
 import pickle
 import random
 import re
-from typing import List, Optional
 
 import numpy as np
 import torch
@@ -61,12 +60,12 @@ def avail_gpu_mem(gpu_id: int) -> float | None:
 
 
 def broadcast_pyobj(
-    data: List[Any],
+    data: list[object],
     rank: int,
-    dist_group: Optional[torch.distributed.ProcessGroup] = None,
+    dist_group: torch.distributed.ProcessGroup | None = None,
     src: int = 0,
     force_cpu_device: bool = True,
-):
+) -> list[object]:
     """Broadcast inputs from rank=0 to all other ranks with torch.dist backend."""
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not force_cpu_device else "cpu"

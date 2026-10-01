@@ -8,13 +8,18 @@ import pytest
 import torch
 
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.config.runtime import (
+    apply_typed_stage_kwargs,
+    resolve_stage_factory_kwargs,
+    resolve_stage_typed_kwargs,
+)
 from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import (
     FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
     FunCosyVoice3PipelineConfig,
 )
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.stages import create_vocoder_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
@@ -107,7 +112,6 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "flow_merge_pad_budget_percent": 25.0,
         "flow_cuda_graph_capture_shapes": FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
         "enable_flow_cuda_graph": True,
-        "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
@@ -144,7 +148,6 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         "flow_merge_pad_budget_percent": 3,
         "flow_cuda_graph_capture_shapes": [[1, 496], [5, 544], [7, 576]],
         "enable_flow_cuda_graph": True,
-        "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
@@ -159,6 +162,44 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         [5, 544],
         [7, 576],
     ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_compile"),
+    [
+        ({}, True),
+        ({"vocoder.factory.enable_flow_estimator_trt": True}, False),
+        ({"vocoder.factory.enable_dit_torch_compile": False}, False),
+    ],
+)
+def test_fun_cosyvoice3_dit_compile_default_yields_to_tensorrt(
+    overrides: dict[str, bool], expected_compile: bool
+) -> None:
+    merged = ConfigManager(
+        FunCosyVoice3PipelineConfig(model_path="model")
+    ).merge_config(overrides)
+    vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
+
+    kwargs = apply_typed_stage_kwargs(
+        create_vocoder_executor,
+        resolve_stage_factory_kwargs(vocoder, merged),
+        resolve_stage_typed_kwargs(vocoder),
+        stage_name="vocoder",
+    )
+
+    assert kwargs["enable_dit_torch_compile"] is expected_compile
+
+
+def test_fun_cosyvoice3_rejects_explicit_tensorrt_and_dit_compile() -> None:
+    manager = ConfigManager(FunCosyVoice3PipelineConfig(model_path="model"))
+
+    with pytest.raises(ValueError, match="enable only one"):
+        manager.merge_config(
+            {
+                "vocoder.factory.enable_flow_estimator_trt": True,
+                "vocoder.factory.enable_dit_torch_compile": True,
+            }
+        )
 
 
 def test_fun_cosyvoice3_state_round_trip_preserves_wire_contract() -> None:

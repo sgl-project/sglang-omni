@@ -5,15 +5,64 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from torch import Tensor
+from typing_extensions import Unpack
+
+from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
 from sglang_omni.scheduling.generation_batch_policy import build_default_cuda_graph_bs
+from sglang_omni.scheduling.types import DeferredAdmission
+
+if TYPE_CHECKING:
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+    from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
+    from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+    from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.models.minimax_music3.model_runner import MiniMaxMusic3ModelRunner
+    from sglang_omni.models.minimax_music3.scheduler import MiniMaxMusic3Scheduler
+    from sglang_omni.models.minimax_music3.sglang_request_builder import (
+        MiniMaxMusic3SGLangRequestData,
+    )
+    from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
 _AUDIO_WEIGHT_PREFIXES = ("model.audio_decoder.", "model.audio_extra_embedding.")
+
+
+class MiniMaxMusic3SchedulerArguments(TypedDict):
+    model_worker: ModelWorker | MlxTpModelWorker
+    tree_cache: BasePrefixCache
+    req_to_token_pool: ReqToTokenPool
+    token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator
+    server_args: ServerArgs
+    model_config: ModelConfig
+    model_runner: ModelRunner[MiniMaxMusic3SGLangRequestData]
+    request_builder: (
+        Callable[
+            [StagePayload],
+            MiniMaxMusic3SGLangRequestData
+            | DeferredAdmission[MiniMaxMusic3SGLangRequestData],
+        ]
+        | None
+    )
+    result_adapter: Callable[[MiniMaxMusic3SGLangRequestData], StagePayload] | None
 
 
 def rvq_graph_buckets(max_running_requests: int) -> list[int]:
@@ -26,7 +75,7 @@ def rvq_graph_buckets(max_running_requests: int) -> list[int]:
     return buckets
 
 
-class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
+class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestData"]):
     model_name = "minimax_music3"
     context_length = 10240
     model_arch_override = "Qwen3ForCausalLM"
@@ -37,7 +86,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
             raise ValueError("MiniMax Music 3 max_running_requests must be positive")
         else:
             pass
-        self.model_runner: Any | None = None
+        self.model_runner: MiniMaxMusic3ModelRunner | None = None
         self.checkpoint_root: str | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
@@ -51,7 +100,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         self.normalize_backbone_config(Path(checkpoint_dir) / "config.json")
         self.filter_audio_weights()
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -64,7 +113,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
             "trust_remote_code": False,
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if int(overrides.get("tp_size", 1)) != 1:
             raise ValueError("MiniMax Music 3 does not support TP")
         else:
@@ -91,11 +140,11 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: ServerArgs,
     ) -> None:
         del checkpoint_dir, device, gpu_id
         from sglang.srt.runtime_context import get_exec, get_schedule
@@ -122,7 +171,11 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         model.eval()
 
     def setup_model_resources(
-        self, model: Any, server_args: Any, *, generation_cuda_graph_enabled: bool
+        self,
+        model: Qwen3ForCausalLM,
+        server_args: ServerArgs,
+        *,
+        generation_cuda_graph_enabled: bool,
     ) -> None:
         del generation_cuda_graph_enabled
         from .sglang_model import enable_rvq_depth_cuda_graph
@@ -130,7 +183,9 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         del server_args
         enable_rvq_depth_cuda_graph(model, rvq_graph_buckets(self.max_running_requests))
 
-    def make_scheduler(self, **kwargs: Any) -> Any:
+    def make_scheduler(
+        self, **kwargs: Unpack[MiniMaxMusic3SchedulerArguments]
+    ) -> MiniMaxMusic3Scheduler:
         from .scheduler import MiniMaxMusic3Scheduler
 
         return MiniMaxMusic3Scheduler(
@@ -141,13 +196,20 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
             **self.extra_scheduler_kwargs(),
         )
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> MiniMaxMusic3ModelRunner:
         from .model_runner import MiniMaxMusic3ModelRunner
 
         self.model_runner = MiniMaxMusic3ModelRunner(model_worker, output_proc)
         return self.model_runner
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[[StagePayload], MiniMaxMusic3SGLangRequestData],
+        Callable[[MiniMaxMusic3SGLangRequestData], StagePayload],
+    ]:
         del model
         from transformers import AutoTokenizer
 
@@ -165,16 +227,16 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         )
         validate_tokenizer_ids(tokenizer)
 
-        def build_request(payload: Any) -> Any:
+        def build_request(payload: StagePayload) -> MiniMaxMusic3SGLangRequestData:
             return build_sglang_minimax_request(payload, tokenizer)
 
         return build_request, apply_minimax_result
 
-    def make_abort_callback(self) -> Any | None:
+    def make_abort_callback(self) -> Callable[[str], None]:
         assert self.model_runner is not None
         return self.model_runner.reset_request
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[MiniMaxMusic3SGLangRequestData]:
         from .sglang_request_builder import build_stream_output
 
         return {
@@ -214,7 +276,9 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
             pass
         load_weights = Qwen3ForCausalLM.load_weights
 
-        def filtered_load_weights(self, weights):
+        def filtered_load_weights(
+            self: Qwen3ForCausalLM, weights: Iterable[tuple[str, Tensor]]
+        ) -> None:
             return load_weights(
                 self,
                 (

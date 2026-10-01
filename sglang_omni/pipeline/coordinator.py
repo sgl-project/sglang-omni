@@ -6,7 +6,7 @@ import logging
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, AsyncIterator
+from typing import AsyncIterator, TypedDict
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.config.topology import LogicalProcessPlan
@@ -35,8 +35,18 @@ from sglang_omni.proto import (
     SubmitMessage,
     is_update_action,
 )
+from sglang_omni.proto.admin import AdminResponse
 
 logger = logging.getLogger(__name__)
+
+
+class CoordinatorHealth(TypedDict):
+    running: bool
+    stages: list[str]
+    entry_stage: str
+    total_requests: int
+    pending_completions: int
+    request_states: dict[str, int]
 
 
 @dataclass
@@ -44,7 +54,7 @@ class AdminPendingOperation:
     expected_stages: set[str]
     action: str
     results: dict[str, AdminResult] = field(default_factory=dict)
-    future: asyncio.Future | None = None
+    future: asyncio.Future[dict[str, AdminResult]] | None = None
 
 
 class Coordinator(CoordinatorSessions):
@@ -71,7 +81,7 @@ class Coordinator(CoordinatorSessions):
         logical_process_plan: LogicalProcessPlan | None = None,
         binding_policy: BindingPolicy | None = None,
         max_in_flight: int | None = None,
-    ):
+    ) -> None:
         """Initialize coordinator.
 
         Args:
@@ -93,7 +103,7 @@ class Coordinator(CoordinatorSessions):
             set(terminal_stages) if terminal_stages else set()
         )
         self.terminal_stages_resolver = terminal_stages_resolver
-        self.partial_results: dict[str, dict[str, Any]] = {}
+        self.partial_results: dict[str, dict[str, object]] = {}
         self.replica_topology = replica_topology or ReplicaTopology()
         self.logical_process_plan = logical_process_plan or LogicalProcessPlan(
             processes=(), stage_to_process={}
@@ -201,11 +211,11 @@ class Coordinator(CoordinatorSessions):
     async def admin(
         self,
         action: str,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         """Run an administrative operation against one or more stages."""
         if not self.running:
             raise RuntimeError("Coordinator is not running")
@@ -260,7 +270,7 @@ class Coordinator(CoordinatorSessions):
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 30.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.admin(
             "model_info",
             stages=stages,
@@ -269,11 +279,11 @@ class Coordinator(CoordinatorSessions):
 
     async def pause_generation(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.admin(
             "pause_generation",
             payload,
@@ -283,11 +293,11 @@ class Coordinator(CoordinatorSessions):
 
     async def continue_generation(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.admin(
             "continue_generation",
             payload,
@@ -297,11 +307,11 @@ class Coordinator(CoordinatorSessions):
 
     async def update_weights_from_disk(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 120.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.admin(
             "update_weights_from_disk",
             payload,
@@ -311,11 +321,11 @@ class Coordinator(CoordinatorSessions):
 
     async def init_weights_update_group(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.admin(
             "init_weights_update_group",
             payload,
@@ -325,11 +335,11 @@ class Coordinator(CoordinatorSessions):
 
     async def destroy_weights_update_group(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.admin(
             "destroy_weights_update_group",
             payload,
@@ -339,11 +349,11 @@ class Coordinator(CoordinatorSessions):
 
     async def update_weights_from_distributed(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.admin(
             "update_weights_from_distributed",
             payload,
@@ -353,11 +363,11 @@ class Coordinator(CoordinatorSessions):
 
     async def weights_checker(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: Sequence[str] | None = None,
         timeout_s: float = 120.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.admin(
             "weights_checker",
             payload,
@@ -365,7 +375,7 @@ class Coordinator(CoordinatorSessions):
             timeout_s=timeout_s,
         )
 
-    async def submit(self, request_id: str, request: OmniRequest | Any) -> Any:
+    async def submit(self, request_id: str, request: object) -> object:
         """Submit a request to the pipeline and wait for completion."""
         self.reject_session_metadata(request)
         await self.submit_request(request_id, request)
@@ -378,7 +388,7 @@ class Coordinator(CoordinatorSessions):
             self.completion_futures.pop(request_id, None)
 
     async def stream(
-        self, request_id: str, request: OmniRequest | Any
+        self, request_id: str, request: object
     ) -> AsyncIterator[CompleteMessage | StreamMessage]:
         """Submit a request and yield stream events until completion."""
         queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
@@ -433,7 +443,7 @@ class Coordinator(CoordinatorSessions):
     async def submit_request(
         self,
         request_id: str,
-        request: OmniRequest | Any,
+        request: object,
         *,
         stream_queue: asyncio.Queue[CompleteMessage | StreamMessage] | None = None,
         target_stage: str | None = None,
@@ -918,7 +928,7 @@ class Coordinator(CoordinatorSessions):
         op_id: str,
         action: str,
         results: list[AdminResult],
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         updated_results = [
             item
             for item in results
@@ -998,7 +1008,7 @@ class Coordinator(CoordinatorSessions):
             pass
         return info.terminal_stages
 
-    def health(self) -> dict[str, Any]:
+    def health(self) -> CoordinatorHealth:
         """Return health status."""
         state_counts = {}
         for info in self.requests.values():

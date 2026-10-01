@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Mapping
 from contextlib import aclosing
 from dataclasses import replace
-from typing import Any, AsyncIterator, Callable
+from typing import AsyncIterator, Callable, TypedDict
 
 import numpy as np
 
@@ -30,8 +31,9 @@ from sglang_omni.client.types import (
     SpeechResult,
     UsageInfo,
 )
-from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
+from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.proto.request import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
 from sglang_omni.proto.session import (
     OutputChunk,
@@ -41,13 +43,20 @@ from sglang_omni.proto.session import (
 )
 
 
+class EncodeAudioOptions(TypedDict, total=False):
+    response_format: str
+    sample_rate: int
+    speed: float
+    allow_format_fallback: bool
+
+
 class Client:
     """Internal client used by API adapters."""
 
     def __init__(
         self,
         coordinator: Coordinator,
-        result_builder: Callable[[str, Any], GenerateChunk] | None = None,
+        result_builder: Callable[[str, object], GenerateChunk] | None = None,
         stream_builder: Callable[[str, StreamMessage], GenerateChunk] | None = None,
     ) -> None:
         self.coordinator = coordinator
@@ -126,13 +135,13 @@ class Client:
             ClientError: If the pipeline produces no response at all.
         """
         text_parts: list[str] = []
-        audio_chunks: list[Any] = []
+        audio_chunks: list[object] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
-        logprobs_parts: list[Any] = []
+        logprobs_parts: list[list[float | int]] = []
         saw_output_token_logprobs = False
-        omni_rollout: dict[str, Any] | None = None
+        omni_rollout: dict[str, object] | None = None
         weight_version: str | None = None
         language: str | None = None
 
@@ -283,7 +292,7 @@ class Client:
         Raises:
             ClientError: If the pipeline produces no audio output.
         """
-        audio_chunks: list[Any] = []
+        audio_chunks: list[object] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         extra_params = dict(request.extra_params)
@@ -313,7 +322,7 @@ class Client:
             axis = -1 if arrays[0].ndim > 1 else 0
             audio_data = np.concatenate(arrays, axis=axis)
 
-        encode_kwargs: dict[str, Any] = {
+        encode_kwargs: EncodeAudioOptions = {
             "response_format": response_format,
             "speed": speed,
             "allow_format_fallback": allow_format_fallback,
@@ -366,17 +375,17 @@ class Client:
             pass
         return info.state
 
-    def health(self) -> dict[str, Any]:
+    def health(self) -> CoordinatorHealth:
         return self.coordinator.health()
 
     async def admin(
         self,
         action: str,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.admin(
             action,
             payload,
@@ -389,7 +398,7 @@ class Client:
         *,
         stages: list[str] | None = None,
         timeout_s: float = 30.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.model_info(
             stages=stages,
             timeout_s=timeout_s,
@@ -397,11 +406,11 @@ class Client:
 
     async def pause_generation(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.pause_generation(
             payload,
             stages=stages,
@@ -410,11 +419,11 @@ class Client:
 
     async def continue_generation(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.continue_generation(
             payload,
             stages=stages,
@@ -423,11 +432,11 @@ class Client:
 
     async def update_weights_from_disk(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: list[str] | None = None,
         timeout_s: float = 120.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.update_weights_from_disk(
             payload,
             stages=stages,
@@ -436,11 +445,11 @@ class Client:
 
     async def init_weights_update_group(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.init_weights_update_group(
             payload,
             stages=stages,
@@ -449,11 +458,11 @@ class Client:
 
     async def destroy_weights_update_group(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.destroy_weights_update_group(
             payload,
             stages=stages,
@@ -462,11 +471,11 @@ class Client:
 
     async def update_weights_from_distributed(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.update_weights_from_distributed(
             payload,
             stages=stages,
@@ -475,11 +484,11 @@ class Client:
 
     async def weights_checker(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: list[str] | None = None,
         timeout_s: float = 120.0,
-    ) -> dict[str, Any]:
+    ) -> AdminResponse:
         return await self.coordinator.weights_checker(
             payload,
             stages=stages,
@@ -491,7 +500,7 @@ class Client:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+    def set_audio_data(chunk: GenerateChunk, data: Mapping[str, object]) -> None:
         audio_data = data.get("audio_data") or data.get("audio")
         if audio_data is None and data.get("audio_waveform") is not None:
             raw = data.get("audio_waveform")
@@ -521,7 +530,7 @@ class Client:
             pass
 
     @staticmethod
-    def build_usage_info(data: dict[str, Any]) -> UsageInfo | None:
+    def build_usage_info(data: Mapping[str, object]) -> UsageInfo | None:
         usage = dict(data.get("usage") or {})
         if "prompt_tokens" not in usage and data.get("prompt_tokens") is not None:
             usage["prompt_tokens"] = data.get("prompt_tokens")
@@ -575,7 +584,7 @@ class Client:
         return OmniRequest(inputs=inputs, params=params, metadata=metadata)
 
     @staticmethod
-    def default_result_builder(request_id: str, result: Any) -> GenerateChunk:
+    def default_result_builder(request_id: str, result: object) -> GenerateChunk:
         chunk = GenerateChunk(request_id=request_id, finish_reason="stop")
         if isinstance(result, GenerateChunk):
             result.request_id = request_id
@@ -795,7 +804,7 @@ class Client:
         return chunk
 
 
-def extract_inputs(request: GenerateRequest) -> Any:
+def extract_inputs(request: GenerateRequest) -> object:
     choices = [
         request.prompt is not None,
         request.prompt_token_ids is not None,
@@ -842,7 +851,7 @@ def extract_inputs(request: GenerateRequest) -> Any:
     # If we have any media, return a dict with messages and media
     # Otherwise, return just the messages list (for backward compatibility)
     if audios or images or videos:
-        result = {"messages": messages}
+        result: dict[str, object] = {"messages": messages}
         if images:
             result["images"] = images
         else:
@@ -874,7 +883,7 @@ def extract_inputs(request: GenerateRequest) -> Any:
     return messages
 
 
-def build_params(request: GenerateRequest) -> dict[str, Any]:
+def build_params(request: GenerateRequest) -> dict[str, object]:
     params = request.sampling.to_dict()
     max_new_tokens = request.sampling.max_new_tokens
     if request.max_tokens is not None:

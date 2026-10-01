@@ -6,7 +6,7 @@ from __future__ import annotations
 import base64
 import binascii
 import math
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -23,9 +23,9 @@ class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
 
     role: str
-    content: Any = None
+    content: object = None
     name: str | None = None
-    tool_calls: list[dict[str, Any]] | None = None
+    tool_calls: list[dict[str, object]] | None = None
     tool_call_id: str | None = None
 
 
@@ -64,7 +64,7 @@ class ChatCompletionRequest(BaseModel):
     modalities: list[str] | None = None  # e.g. ["text", "audio"]
 
     # Audio output configuration
-    audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
+    audio: dict[str, object] | None = None  # {"voice": "...", "format": "wav"}
 
     # Audio input (sglang-omni extension)
     # Can be a list of audio file paths (local paths or URLs)
@@ -85,8 +85,8 @@ class ChatCompletionRequest(BaseModel):
     use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
-    stage_sampling: dict[str, dict[str, Any]] | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_sampling: dict[str, dict[str, object]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
     # Talker-specific overrides for Qwen3-Omni speech output
     talker_temperature: float | None = None
@@ -108,7 +108,7 @@ class ChatCompletionChoice(BaseModel):
     """A single choice in a chat completion response."""
 
     index: int = 0
-    message: dict[str, Any]
+    message: dict[str, object]
     finish_reason: str | None = "stop"
 
 
@@ -171,7 +171,7 @@ class RolloutMessage(BaseModel):
     """Chat message for ``POST /generate`` (role and content required)."""
 
     role: str = Field(min_length=1)
-    content: str | list[Any]
+    content: str | list[object]
 
 
 _SERIALIZED_DTYPE_ITEMSIZE = {
@@ -245,12 +245,12 @@ class RolloutGenerateRequest(BaseModel):
     )
     stream: bool = False
     stage_sampling: dict[str, RolloutSamplingParams] | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
     output_modalities: list[str] | None = None
 
     multimodal_train_inputs: SerializedMultimodalInputs | None = None
 
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
 
     return_logprob: bool = True
     return_omni_rollout: bool = False
@@ -282,9 +282,9 @@ class GenerateMetaInfo(BaseModel):
     completion_tokens: int = 0
     cached_tokens: int = 0
     weight_version: str | None = None
-    request_metadata: dict[str, Any] | None = None
-    output_token_logprobs: list[Any] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    request_metadata: dict[str, object] | None = None
+    output_token_logprobs: list[object] | None = None
+    omni_rollout: dict[str, object] | None = None
 
 
 class GenerateResponse(BaseModel):
@@ -348,6 +348,7 @@ class CreateSpeechRequest(BaseModel):
     response_format: str = "wav"
     speed: float = 1.0
     stream: bool = False
+    stream_format: Literal["audio", "sse"] = "audio"
 
     # Advanced TTS extensions
     task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"
@@ -374,7 +375,7 @@ class CreateSpeechRequest(BaseModel):
     seed: int | None = None
 
     # Per-stage overrides (sglang-omni specific)
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
 
 class SpeechBatchItem(BaseModel):
@@ -382,34 +383,34 @@ class SpeechBatchItem(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
-    model: Any = None
-    input: Any = None
-    voice: Any = Field(
+    model: object = None
+    input: object = None
+    voice: object = Field(
         default=None,
         validation_alias=AliasChoices("voice", "speaker"),
     )
-    response_format: Any = None
-    speed: Any = None
-    stream: Any = None
-    task_type: Any = None
-    language: Any = None
-    instructions: Any = None
-    ref_audio: Any = None
-    ref_text: Any = None
-    references: Any = None
-    x_vector_only_mode: Any = None
-    stream_codec_output: Any = None
-    suppress_bootstrap_silence: Any = None
-    token_count: Any = None
-    duration_tokens: Any = None
-    max_new_tokens: Any = None
-    initial_codec_chunk_frames: Any = None
-    temperature: Any = None
-    top_p: Any = None
-    top_k: Any = None
-    repetition_penalty: Any = None
-    seed: Any = None
-    stage_params: Any = None
+    response_format: object = None
+    speed: object = None
+    stream: object = None
+    task_type: object = None
+    language: object = None
+    instructions: object = None
+    ref_audio: object = None
+    ref_text: object = None
+    references: object = None
+    x_vector_only_mode: object = None
+    stream_codec_output: object = None
+    suppress_bootstrap_silence: object = None
+    token_count: object = None
+    duration_tokens: object = None
+    max_new_tokens: object = None
+    initial_codec_chunk_frames: object = None
+    temperature: object = None
+    top_p: object = None
+    top_k: object = None
+    repetition_penalty: object = None
+    seed: object = None
+    stage_params: object = None
 
 
 class CreateSpeechBatchRequest(BaseModel):
@@ -444,7 +445,7 @@ class CreateSpeechBatchRequest(BaseModel):
     top_k: int | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
 
 class SpeechBatchResult(BaseModel):
@@ -456,7 +457,7 @@ class SpeechBatchResult(BaseModel):
     format: str | None = None
     media_type: str | None = None
     finish_reason: str | None = None
-    error: dict[str, Any] | None = None
+    error: dict[str, object] | None = None
 
 
 class SpeechBatchResponse(BaseModel):
@@ -501,7 +502,7 @@ class SpeechStreamSessionConfig(BaseModel):
     top_k: int | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
 
 class UploadedVoiceMetadata(BaseModel):
@@ -631,11 +632,11 @@ class UpdateWeightFromDiskRequest(AdminRequestBase):
     recapture_cuda_graph: bool = False
     token_step: int = 0
     flush_cache: bool = True
-    manifest: dict[str, Any] | None = None
+    manifest: dict[str, object] | None = None
 
 
 class UpdateWeightsFromTensorRequest(AdminRequestBase):
-    serialized_named_tensors: list[Any] | None = None
+    serialized_named_tensors: list[object] | None = None
     load_format: str | None = None
     flush_cache: bool = True
     abort_all_requests: bool = False

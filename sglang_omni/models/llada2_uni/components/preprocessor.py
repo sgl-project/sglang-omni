@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
 import torch
 from PIL import Image
@@ -19,7 +19,11 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
-from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+from sglang_omni.models.llada2_uni.payload_types import (
+    ImageEncoderInputs,
+    LLaDA2UniPipelineState,
+    SkippedEncoderInputs,
+)
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
@@ -221,7 +225,7 @@ class LLaDA2Preprocessor:
 
         images = await ensure_image_list_async(raw_images) if raw_images else []
 
-        encoder_inputs: dict[str, dict[str, Any]] = {}
+        encoder_inputs: dict[str, ImageEncoderInputs | SkippedEncoderInputs] = {}
         image_token_counts: list[int] = []
         image_parts_by_msg: dict[int, list[str]] = {}
 
@@ -230,7 +234,7 @@ class LLaDA2Preprocessor:
             img_result = self.image_processor(images=cropped, return_tensors="pt")
             pixel_values = img_result["pixel_values"]
             image_grid_thw = img_result["image_grid_thw"]
-            image_enc_inputs: dict[str, Any] = {
+            image_enc_inputs: ImageEncoderInputs = {
                 "pixel_values": pixel_values,
                 "image_grid_thw": image_grid_thw,
             }
@@ -301,10 +305,10 @@ class LLaDA2Preprocessor:
 
     @staticmethod
     def extract_raw_images(
-        messages: list[dict[str, Any]],
-    ) -> tuple[list[Any], list[tuple[int, int]]]:
+        messages: Sequence[Mapping[str, object]],
+    ) -> tuple[list[object], list[tuple[int, int]]]:
         """Return (images, image_counts_per_msg) with per-message image counts."""
-        raw_images: list[Any] = []
+        raw_images: list[object] = []
         image_counts_per_msg: list[tuple[int, int]] = []
         for msg_idx, msg in enumerate(messages):
             msg_count = 0
@@ -344,7 +348,7 @@ class LLaDA2Preprocessor:
         return raw_images, image_counts_per_msg
 
     @staticmethod
-    def validate_messages(messages: list[dict[str, Any]]) -> None:
+    def validate_messages(messages: object) -> None:
         if not isinstance(messages, list):
             raise ValueError("Preprocessing expects a list of chat messages")
         else:
@@ -357,7 +361,7 @@ class LLaDA2Preprocessor:
 
     def build_prompt(
         self,
-        messages: list[dict[str, Any]],
+        messages: Sequence[Mapping[str, object]],
         image_parts_by_msg: dict[int, list[str]] | None = None,
     ) -> str:
         """Build LLaDA2-Uni chat format prompt.

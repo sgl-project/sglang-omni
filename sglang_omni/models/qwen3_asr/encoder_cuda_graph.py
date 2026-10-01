@@ -12,15 +12,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.attention.vision import VisionAttentionMetadata
 
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
 if TYPE_CHECKING:
-    from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 else:
     pass
 
@@ -60,7 +61,7 @@ def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
 
 @dataclass
 class CapturedGraph:
-    graph: Any  # the accelerator's graph type, named per backend
+    graph: ReplayableGraph  # the accelerator's graph type, named per backend
     hidden_states: torch.Tensor  # [bucket, hidden] static input
     cu_seqlens: torch.Tensor  # [max_windows + 1] static window boundaries
     attention_metadata: VisionAttentionMetadata | None
@@ -79,7 +80,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
 
     def __init__(
         self,
-        audio_tower: Any,
+        audio_tower: Qwen3OmniMoeAudioEncoder,
         *,
         buckets: tuple[int, ...],
         max_batch_size: int,
@@ -313,9 +314,10 @@ def get_feat_extract_output_lengths_int(frames: int) -> int:
 
 
 def eager_preamble(
-    tower: Any, input_features: torch.Tensor, feature_lens: torch.Tensor
+    tower: Qwen3OmniMoeAudioEncoder,
+    input_features: torch.Tensor,
+    feature_lens: torch.Tensor,
 ) -> torch.Tensor:
-
     import torch.nn.functional as F
 
     chunk_width = tower.n_window * 2

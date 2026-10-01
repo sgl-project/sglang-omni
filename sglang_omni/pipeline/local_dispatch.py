@@ -3,7 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:
+    from sglang_omni.pipeline.stage import Stage
+    from sglang_omni.proto.request import StagePayload
+else:
+    pass
 
 
 class LocalStageDispatcher:
@@ -15,16 +21,16 @@ class LocalStageDispatcher:
     """
 
     def __init__(self) -> None:
-        self.stages: dict[str, Any] = {}
+        self.stages: dict[str, Stage] = {}
 
-    def register(self, stage: Any) -> None:
+    def register(self, stage: Stage) -> None:
         self.stages[stage.name] = stage
 
-    def register_many(self, stages: Iterable[Any]) -> None:
+    def register_many(self, stages: Iterable[Stage]) -> None:
         for stage in stages:
             self.register(stage)
 
-    def get_stage(self, from_stage: str, to_stage: str) -> Any:
+    def get_stage(self, from_stage: str, to_stage: str) -> Stage:
         target = self.stages.get(to_stage)
         if target is None:
             raise RuntimeError(
@@ -41,7 +47,7 @@ class LocalStageDispatcher:
         from_stage: str,
         to_stage: str,
         request_id: str,
-        payload: Any,
+        payload: "StagePayload",
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
         target = self.get_stage(from_stage, to_stage)
@@ -56,8 +62,8 @@ class LocalStageDispatcher:
         to_stage: str,
         request_id: str,
         chunk_id: int,
-        data: Any,
-        metadata: dict[str, Any] | None = None,
+        data: object,
+        metadata: dict[str, object] | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
         target = self.get_stage(from_stage, to_stage)

@@ -9,8 +9,9 @@ import os
 import queue
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import torch
 from transformers import AutoConfig, AutoTokenizer
@@ -24,11 +25,15 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
 )
 from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
 from sglang_omni.models.moss_tts.hf_loading import (
+    MossDelayReferences,
+    MossLoadedProcessor,
+    MossProcessorConfigSource,
     load_moss_processor_class,
     moss_transformers_processor_compat,
 )
 from sglang_omni.models.moss_tts.payload_types import moss_tts_special_token_defaults
 from sglang_omni.models.moss_tts.request_builders import (
+    MossTTSSGLangRequestData,
     cleanup_prepared_moss_tts_request,
     preprocess_moss_tts_payload,
     set_moss_tts_preprocessing_context,
@@ -36,12 +41,18 @@ from sglang_omni.models.moss_tts.request_builders import (
 from sglang_omni.models.moss_tts.streaming_vocoder import MossStreamingVocoderScheduler
 from sglang_omni.models.moss_tts.vocoder import MossTTSVocoder
 from sglang_omni.preprocessing.cache_key import hash_bytes
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.reference_encoder import (
     ReferenceEncodeService,
     TensorReferenceEncodeHook,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio import audio_fingerprint, load_audio
+
+if TYPE_CHECKING:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +88,9 @@ def resolve_compute_dtype(
     )
 
 
-def normalize_moss_processor_config(processor: Any) -> None:
+def normalize_moss_processor_config(
+    processor: MossProcessorConfigSource | None,
+) -> None:
     model_config = getattr(processor, "model_config", None)
     if model_config is None:
         return
@@ -92,7 +105,7 @@ def normalize_moss_processor_config(processor: Any) -> None:
 
 
 def audio_tokenizer_model_path_from_processor_dict(
-    processor_dict: dict[str, Any],
+    processor_dict: Mapping[str, object],
 ) -> str | None:
     model_path = processor_dict.get("audio_tokenizer_name_or_path")
     audio_tokenizer_dict = processor_dict.get("audio_tokenizer")
@@ -107,7 +120,7 @@ def audio_tokenizer_model_path_from_processor_dict(
 
 def load_moss_processor(
     model_path: str,
-) -> Any:
+) -> MossLoadedProcessor[MossDelayReferences]:
     logger.info(f"Loading MOSS-TTS processor from {model_path} without codec")
     try:
         with moss_transformers_processor_compat():
@@ -144,7 +157,7 @@ def load_moss_processor(
 
 
 def resolve_audio_tokenizer_model_path(
-    processor: Any,
+    processor: MossProcessorConfigSource,
     codec_model_path: str | None,
 ) -> str:
     return str(
@@ -193,7 +206,9 @@ class BatchedReferenceEncoder:
             self.queue.put(_MOSS_TTS_REFERENCE_ENCODE_STOP)
         self.thread.join(timeout=5.0)
 
-    def load(self, source: str | os.PathLike[str]) -> LoadedReferenceWaveform:
+    def load(
+        self, source: str | bytes | os.PathLike[str] | os.PathLike[bytes]
+    ) -> LoadedReferenceWaveform:
         with self.lifecycle_lock:
             if self.closed:
                 raise RuntimeError("MOSS-TTS reference encoder is closed")
@@ -330,7 +345,7 @@ class BatchedReferenceEncoder:
 
 def load_reference_waveform(
     audio_encoder: MossAudioEncoder,
-    source: str | os.PathLike[str],
+    source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
 ) -> LoadedReferenceWaveform:
     """Load once through the shared resolver and key the exact codec input."""
 
@@ -355,7 +370,12 @@ def load_reference_waveform(
     )
 
 
-class MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[LoadedReferenceWaveform]):
+class MossTTSReferenceEncodeHook(
+    TensorReferenceEncodeHook[
+        LoadedReferenceWaveform,
+        LoadedReferenceWaveform | str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ]
+):
     model_id = "moss_tts_delay"
     encoder_id = "moss_audio_encoder"
     artifact_kind = "moss_tts_reference_codes"
@@ -384,7 +404,16 @@ class MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[LoadedReferenceWavefo
         )
         self.encoder_config_hash = hash_bytes(config.encode("utf-8"))
 
-    def normalize_input(self, raw_input: Any) -> LoadedReferenceWaveform:
+    def normalize_input(
+        self,
+        raw_input: (
+            LoadedReferenceWaveform
+            | str
+            | bytes
+            | os.PathLike[str]
+            | os.PathLike[bytes]
+        ),
+    ) -> LoadedReferenceWaveform:
         if isinstance(raw_input, LoadedReferenceWaveform):
             return raw_input
         else:
@@ -459,7 +488,7 @@ def create_preprocessing_executor(
     ref_audio_cache: bool = True,
     ref_audio_cache_max_items: int = 8192,
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     for name, value in (
         ("ref_audio_cache_max_items", ref_audio_cache_max_items),
         ("ref_audio_cache_max_bytes", ref_audio_cache_max_bytes),
@@ -495,7 +524,8 @@ def create_preprocessing_executor(
         compute_dtype=resolved_compute_dtype,
         attention_backend=attention_backend,
     )
-    reference_encoder: Any = BatchedReferenceEncoder(
+    reference_encoder: BatchedReferenceEncoder | MossTTSReferenceEncoder
+    reference_encoder = BatchedReferenceEncoder(
         audio_encoder,
         n_vq=int(processor.model_config.n_vq),
         max_batch_size=encode_batch_size,
@@ -532,8 +562,8 @@ def create_sglang_tts_engine_executor(
     dtype: str = "bfloat16",
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
-) -> Any:
+    server_args_overrides: Mapping[str, object] | None = None,
+) -> OmniScheduler[MossTTSSGLangRequestData]:
     overrides = dict(server_args_overrides or {})
     # Note (Jiaxin Deng): a declared stage fraction only reserves the card on paper, so
     # the AR engine has to be told about it or it profiles against the whole GPU and the

@@ -8,7 +8,7 @@ import math
 import re
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -26,12 +26,21 @@ from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggrega
 from sglang_omni.models.ming_omni.talker.talker_module.execution import (
     TalkerExecutionConfig,
 )
+from sglang_omni.models.ming_omni.talker.talker_module.packed_qkv import (
+    PACKED_QKV_SHARD_IDS,
+    PackedQKVLinear,
+    load_packed_qkv_shard,
+)
 from sglang_omni.models.ming_tts.flow_matching import (
     FlowLoss,
     build_cfm_sde_random,
     build_cfm_timesteps,
 )
-from sglang_omni.models.ming_tts.hf_config import MING_TTS_TAIL_ATTN_BACKEND
+from sglang_omni.models.ming_tts.hf_config import (
+    MING_TTS_TAIL_ATTN_BACKEND,
+    BailingMMTTSConfig,
+    BailingMoeTTSConfig,
+)
 from sglang_omni.models.ming_tts.weight_loading import (
     MING_TTS_LM_HEAD_SKIP_REASON,
     MING_TTS_ROTARY_BUFFER_SKIP_REASON,
@@ -96,7 +105,7 @@ class MingTTSTailOutputs:
 
 
 class MingTTSTailGraph:
-    def __init__(self, model: Any, batch_size: int) -> None:
+    def __init__(self, model: MingTTSSGLangModel, batch_size: int) -> None:
         self.model = model
         self.batch_size = int(batch_size)
         self.graph: torch.cuda.CUDAGraph | None = None
@@ -194,7 +203,7 @@ class MingTTSTailGraph:
 
 
 class MingTTSTailGraphCache:
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: MingTTSSGLangModel) -> None:
         self.model = model
         self.graphs: dict[int, MingTTSTailGraph] = {}
         self.buckets: tuple[int, ...] = ()
@@ -231,7 +240,7 @@ class MingBailingMoeAttention(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -385,7 +394,7 @@ class MingBailingMoeMLP(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
         reduce_results: bool = True,
@@ -429,7 +438,7 @@ class MingBailingMoeMLP(nn.Module):
 class MingBailingMoeGate(nn.Module):
     """Replicated BailingMoe router weight with official softmax top-k semantics."""
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: BailingMoeTTSConfig) -> None:
         super().__init__()
         self.weight = nn.Parameter(
             torch.empty(int(config.num_experts), int(config.hidden_size))
@@ -446,7 +455,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -533,7 +542,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
 class MingBailingMoeDecoderLayer(nn.Module):
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -586,7 +595,7 @@ class MingBailingMoeDecoderLayer(nn.Module):
         )
 
     @staticmethod
-    def _is_layer_sparse(config: Any, layer_id: int) -> bool:
+    def _is_layer_sparse(config: BailingMoeTTSConfig, layer_id: int) -> bool:
         return getattr(config, "num_experts", None) is not None and layer_id >= int(
             getattr(config, "first_k_dense_replace", 0) or 0
         )
@@ -644,7 +653,7 @@ class MingBailingMoeTextModel(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ) -> None:
@@ -675,7 +684,7 @@ class MingBailingMoeTextModel(nn.Module):
         self.norm = RMSNorm(self.hidden_size, eps=float(config.rms_norm_eps))
 
     @staticmethod
-    def check_supported_bailing_moe_config(config: Any) -> None:
+    def check_supported_bailing_moe_config(config: BailingMoeTTSConfig | None) -> None:
         hidden_act = getattr(config, "hidden_act", "silu")
         if hidden_act != "silu":
             raise ValueError(
@@ -794,7 +803,7 @@ class MingTTSSGLangModel(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMMTTSConfig | BailingMoeTTSConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ) -> None:
@@ -884,14 +893,15 @@ class MingTTSSGLangModel(nn.Module):
         ditar_config = dict(self.config.ditar_config)
         # note (yzxiao): Preserve Ming's cast-before-weight-multiply RMSNorm semantics.
         norm_layer = partial(RMSNorm, cast_x_before_out_mul=True)
-        # Note(yzxiao): Runtime policy overrides any checkpoint-provided
-        # execution config. Other shared-component callers keep native.
+        qkv_layer = PackedQKVLinear
+        # note (yzxiao): Runtime policy overrides checkpoint execution settings.
         aggregator_config["execution_config"] = TalkerExecutionConfig(
             attn_backend=tail_attn_backend,
             rope_kernel=rope_kernel,
             rope_seq_len=1 + self.patch_size,
             rope_max_batch_size=aggregator_batch_capacity,
             norm_layer=norm_layer,
+            qkv_layer=qkv_layer,
         )
         ditar_config["execution_config"] = TalkerExecutionConfig(
             attn_backend=tail_attn_backend,
@@ -899,6 +909,7 @@ class MingTTSSGLangModel(nn.Module):
             rope_seq_len=1 + self.history_patch_size + self.patch_size,
             rope_max_batch_size=2 * tail_batch_capacity,
             norm_layer=norm_layer,
+            qkv_layer=qkv_layer,
         )
 
         self.linear_proj_audio = Aggregator(
@@ -1049,7 +1060,7 @@ class MingTTSSGLangModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
-        pp_proxy_tensors: Any = None,
+        pp_proxy_tensors: object = None,
     ) -> LogitsProcessorOutput:
         del pp_proxy_tensors
 
@@ -1195,7 +1206,9 @@ class MingTTSSGLangModel(nn.Module):
             return mapped_name, f"{shard_id}:{expert_id}"
 
         for name in params_dict:
-            if name.endswith("gate_up_proj.weight"):
+            if name.endswith(("to_qkv.weight", "to_qkv.bias")):
+                report.add_required_shards(name, PACKED_QKV_SHARD_IDS)
+            elif name.endswith("gate_up_proj.weight"):
                 report.add_required_shards(name, ("0", "1"))
             elif name.endswith("experts.w13_weight"):
                 shards = []
@@ -1250,6 +1263,16 @@ class MingTTSSGLangModel(nn.Module):
             else:
                 pass
 
+            packed = load_packed_qkv_shard(name, loaded_weight, params_dict)
+            if packed is not None:
+                target_param, shard_id = packed
+                loaded_param_names.add(target_param)
+                report.add_loaded(owner, original_name, target_param=target_param)
+                report.add_loaded_shard(target_param, shard_id)
+                continue
+            else:
+                pass
+
             packed = load_fused_expert_weight(name, loaded_weight)
             if packed is not None:
                 target_param, shard_id = packed
@@ -1275,6 +1298,11 @@ class MingTTSSGLangModel(nn.Module):
                 load_param(param, loaded_weight)
                 loaded_param_names.add(name)
                 report.add_loaded(owner, original_name, target_param=name)
+                if ".to_qkv." in name:
+                    for shard_id in PACKED_QKV_SHARD_IDS:
+                        report.add_loaded_shard(name, shard_id)
+                else:
+                    pass
             else:
                 report.leftovers.append(original_name)
 

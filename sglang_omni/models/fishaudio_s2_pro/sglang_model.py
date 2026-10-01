@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.sampler import multinomial_with_seed
 from torch import Tensor, nn
+from transformers import PretrainedConfig
 
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
@@ -25,6 +27,14 @@ from sglang_omni.vendor.sglang.layers import (
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.audio_decoder import (
+        FishQwen3AudioDecoder,
+    )
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -177,8 +187,8 @@ class S2ProSGLangTextModel(nn.Module):
 
     def __init__(
         self,
-        config: Any = None,
-        quant_config: Any = None,
+        config: PretrainedConfig | None = None,
+        quant_config: QuantizationConfig | None = None,
         vocab_size: int = 155776,
         hidden_size: int = 2560,
         intermediate_size: int = 9728,
@@ -249,7 +259,7 @@ class S2ProSGLangTextModel(nn.Module):
 
     def setup_vq_decode(
         self,
-        audio_decoder: nn.Module,
+        audio_decoder: "FishQwen3AudioDecoder",
         *,
         num_codebooks: int,
         codebook_size: int,

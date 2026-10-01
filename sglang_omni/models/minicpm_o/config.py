@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -116,8 +116,11 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         factory_path=f"{PKG}.stages.create_code2wav_executor",
         factory=FactoryArgs(
             max_batch_size=8,
-            max_batch_wait_ms=0.0,
+            max_batch_wait_ms=0,
             batch_wait_when_idle=False,
+            enable_flow_variable_length=True,
+            reference_workers=8,
+            prompt_cache_capacity=32,
         ),
         # Note (Chenyang): As a general comment and my usual understanding
         # of SGLang Omni, SGLang Omni has a poor runtime which leads to a
@@ -186,7 +189,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
     terminal_stages_fn: str | None = f"{PKG}.routing.resolve_terminal_stages"
     stages: list[StageConfig] = Field(default_factory=speech_stages)
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
         if stage_name in (THINKER_STAGE, "preprocessing"):
             return {"speech_enabled": True}
         else:
