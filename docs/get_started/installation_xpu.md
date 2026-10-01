@@ -252,6 +252,5 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
 > Qwen3-Omni, MiniMax Music 3, MiniCPM-o and PersonaPlex all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS and MiniCPM-o single-card;
-> PersonaPlex validated on one 24 GB Arc Pro B60;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 needs two cards; Qwen3-Omni thinker
 > across 8 cards with tensor parallelism).
