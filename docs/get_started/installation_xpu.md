@@ -14,7 +14,7 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 
 Core deps and the required XPU SGLang build cover the supported models (Qwen3-ASR / TTS / Omni /
 MiniMax Music 3, Fun-ASR-Nano, MOSS-Transcribe-Diarize, MiniCPM-o, and
-[PersonaPlex](../cookbook/personaplex.md), validated on a 24 GB Arc Pro B60) plus the API server;
+PersonaPlex) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
