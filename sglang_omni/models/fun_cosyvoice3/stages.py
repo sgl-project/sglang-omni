@@ -52,6 +52,13 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     solve_flow_euler_packed,
 )
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
+    PrefixCacheRow,
+    PrefixKVPool,
+    grow_rows,
+    release_rows,
+    solve_flow_euler_prefix,
+)
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
     cleanup_prepared_cosyvoice3_request,
@@ -95,6 +102,8 @@ COSYVOICE_INSTALL_HINT = (
 CAUSAL_CONV_CACHE_PATCHED = False
 
 FLOW_CUDA_GRAPH_FRAME_BUCKET = 16
+# note(ratish): the Flow's Euler steps per solve, CosyVoice's n_timesteps.
+FLOW_EULER_STEPS = 10
 # Note (chenyang):
 # Mel-frame step size for buffered flow CUDA Graph keys. Capture shapes
 # must use a T that is a multiple of this step size. For example, 489
@@ -450,7 +459,9 @@ class FlowCudaGraphRunner:
             .expand(batch_size, -1, -1)
             .clone()
         )
-        time_span = torch.linspace(0, 1, 11, device=model_device, dtype=parameter_dtype)
+        time_span = torch.linspace(
+            0, 1, FLOW_EULER_STEPS + 1, device=model_device, dtype=parameter_dtype
+        )
         if decoder.t_scheduler == "cosine":
             time_span = 1 - torch.cos(time_span * 0.5 * torch.pi)
         else:
@@ -700,7 +711,11 @@ def prepare_flow_conditioning(
         .clone()
     )
     unit_span = torch.linspace(
-        0, 1, 11, device=token_condition.device, dtype=token_condition.dtype
+        0,
+        1,
+        FLOW_EULER_STEPS + 1,
+        device=token_condition.device,
+        dtype=token_condition.dtype,
     )
     if decoder.t_scheduler == "cosine":
         time_span = 1 - torch.cos(unit_span * 0.5 * torch.pi)
@@ -854,6 +869,7 @@ class FunCosyVoice3Flow:
         # note(ratish): the eager DiT over packed rows; None with the TensorRT
         # estimator, whose fixed (2, 80, T) profile keeps the padded layout.
         self.packed_estimator = packed_estimator
+        self.prefix_pool: PrefixKVPool | None = None
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.flow, name)
@@ -923,6 +939,73 @@ class FunCosyVoice3Flow:
             generated,
             token_lengths=packed.combined_token_lengths,
             target_token_lengths=packed.target_token_lengths,
+        )
+
+    @torch.inference_mode()
+    def inference_causal_prefix(
+        self,
+        inputs: Sequence[FlowBatchInput],
+        caches: Sequence[tuple[PrefixCacheRow, PrefixCacheRow]],
+    ) -> list[torch.Tensor]:
+        """Causal hops over the frames each row adds past its cached prefix;
+        the returned mels are zero over the prefix."""
+        assert self.packed_estimator is not None and self.prefix_pool is not None
+        packed = pack_flow_inputs(self.flow, inputs)
+        conditioning = prepare_flow_conditioning(self, packed, finalize=False)
+        token_condition = conditioning.token_condition
+        device = token_condition.device
+        total_frames = list(conditioning.mel_lengths)
+        prefix_frames = [pair[0].committed_frames for pair in caches]
+        new_frames = [
+            total - start
+            for total, start in zip(total_frames, prefix_frames, strict=True)
+        ]
+        if min(new_frames) <= 0:
+            raise RuntimeError("Fun-CosyVoice3 prefix hop adds no frames")
+        else:
+            pass
+        new_frame_index = torch.cat(
+            [
+                torch.arange(start, total, device=device)
+                + row * token_condition.shape[2]
+                for row, (start, total) in enumerate(
+                    zip(prefix_frames, total_frames, strict=True)
+                )
+            ]
+        )
+
+        def take_new_frames(padded: torch.Tensor) -> torch.Tensor:
+            flat = padded.transpose(1, 2).reshape(-1, padded.shape[1])
+            return flat[new_frame_index].unsqueeze(0)
+
+        generated = solve_flow_euler_prefix(
+            self.packed_estimator,
+            self.prefix_pool,
+            take_new_frames(conditioning.noisy_mel),
+            conditioning.time_span,
+            take_new_frames(token_condition),
+            conditioning.speaker_embedding,
+            take_new_frames(conditioning.prompt_mel),
+            new_frames,
+            list(caches),
+            cfg_rate=self.flow.decoder.inference_cfg_rate,
+        )
+        padded = generated.new_zeros(
+            len(inputs), token_condition.shape[2], generated.shape[2]
+        )
+        padded.view(-1, generated.shape[2])[new_frame_index] = generated[0]
+        generated = padded.transpose(1, 2)
+        lookahead = self.flow.pre_lookahead_len
+        return split_generated_mels(
+            self.flow,
+            packed,
+            generated,
+            token_lengths=tuple(
+                max(length - lookahead, 0) for length in packed.combined_token_lengths
+            ),
+            target_token_lengths=tuple(
+                max(length - lookahead, 0) for length in packed.target_token_lengths
+            ),
         )
 
     @torch.inference_mode()
@@ -1360,6 +1443,45 @@ def compile_dit_backbone(
     )
 
 
+def build_prefix_pool(
+    flow: FunCosyVoice3Flow,
+    device: torch.device,
+    dtype: torch.dtype,
+    budget_gb: float,
+) -> PrefixKVPool:
+    estimator = flow.decoder.estimator
+    attention = estimator.transformer_blocks[0].attn
+    layer_num = len(estimator.transformer_blocks)
+    head_num = int(attention.heads)
+    head_dim = int(attention.inner_dim) // head_num
+    bytes_per_frame = PrefixKVPool.bytes_per_frame(
+        layer_num=layer_num,
+        euler_steps=FLOW_EULER_STEPS,
+        head_num=head_num,
+        head_dim=head_dim,
+        dtype=dtype,
+    )
+    # Note (Jiaxin Deng): built before the AR engine sizes its KV pool from free
+    # memory, so a quarter of the device is the ceiling.
+    device_bytes = torch.cuda.get_device_properties(device).total_memory
+    budget_bytes = min(float(budget_gb) * 2**30, 0.25 * device_bytes)
+    pool = PrefixKVPool(
+        layer_num=layer_num,
+        euler_steps=FLOW_EULER_STEPS,
+        head_num=head_num,
+        head_dim=head_dim,
+        capacity_frames=int(budget_bytes // bytes_per_frame),
+        device=device,
+        dtype=dtype,
+    )
+    logger.info(
+        f"Fun-CosyVoice3 Flow prefix cache: {pool.free_frames} frames "
+        f"({pool.free_frames * bytes_per_frame / 2**30:.1f} GB, "
+        f"{bytes_per_frame} bytes per frame)"
+    )
+    return pool
+
+
 def create_preprocessing_executor(
     model_path: str,
     max_concurrency: int = 8,
@@ -1766,6 +1888,50 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
             enabled=self.autocast_dtype is not None,
         ):
             return self.flow.inference_causal(items)
+
+    def hop_batch_prefix(
+        self,
+        items: Sequence[FlowBatchInput],
+        caches: Sequence[tuple[PrefixCacheRow, PrefixCacheRow]],
+    ) -> list[torch.Tensor]:
+        """hop_batch over the frames past each row's cached prefix."""
+        with torch.autocast(
+            device_type=current_platform.device_type,
+            dtype=self.autocast_dtype,
+            enabled=self.autocast_dtype is not None,
+        ):
+            return self.flow.inference_causal_prefix(items, caches)
+
+    def prefix_cache_rows(
+        self, total_frames: int
+    ) -> tuple[PrefixCacheRow, PrefixCacheRow] | None:
+        """A fresh cached twin pair with room for total_frames, or None without
+        room."""
+        pool = self.flow.prefix_pool
+        if pool is None:
+            return None
+        else:
+            pair = (PrefixCacheRow(), PrefixCacheRow())
+            if grow_rows(pool, list(pair), [total_frames, total_frames]):
+                return pair
+            else:
+                return None
+
+    def grow_prefix_cache(
+        self, pair: tuple[PrefixCacheRow, PrefixCacheRow], total_frames: int
+    ) -> bool:
+        pool = self.flow.prefix_pool
+        assert pool is not None
+        return grow_rows(pool, list(pair), [total_frames, total_frames])
+
+    def release_prefix_cache(
+        self, pair: tuple[PrefixCacheRow, PrefixCacheRow] | None
+    ) -> None:
+        pool = self.flow.prefix_pool
+        if pool is not None and pair is not None:
+            release_rows(pool, list(pair))
+        else:
+            pass
 
     def leftover_batch(self, items: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         """Non-streaming Flow over each row's whole token history for the
@@ -2379,6 +2545,7 @@ def create_vocoder_executor(
     token_hop_len: int = TOKEN_HOP_LEN,
     token_max_hop_len: int = TOKEN_MAX_HOP_LEN,
     disable_hop_growth: bool = False,
+    flow_prefix_cache_gb: float,
     mlx_model_path: str | None = None,
     mlx_model_revision: str | None = None,
 ) -> FunCosyVoice3StreamingVocoderScheduler | FunCosyVoice3MlxStreamingVocoderScheduler:
@@ -2388,6 +2555,10 @@ def create_vocoder_executor(
 
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
+    else:
+        pass
+    if flow_prefix_cache_gb < 0:
+        raise ValueError("flow_prefix_cache_gb must be >= 0")
     else:
         pass
 
@@ -2479,6 +2650,19 @@ def create_vocoder_executor(
 
     if enable_dit_torch_compile:
         compile_dit_backbone(flow, autocast_dtype=autocast_dtype)
+    else:
+        pass
+
+    if (
+        flow_prefix_cache_gb > 0
+        and device_obj.type == "cuda"
+        and flow.packed_estimator is not None
+        and flow.packed_estimator.is_ragged
+        and autocast_dtype in (torch.float16, torch.bfloat16)
+    ):
+        flow.prefix_pool = build_prefix_pool(
+            flow, device_obj, autocast_dtype, flow_prefix_cache_gb
+        )
     else:
         pass
 
