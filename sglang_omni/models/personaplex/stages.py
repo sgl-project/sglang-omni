@@ -131,17 +131,27 @@ def create_preprocessing_executor(
 
 
 def load_codec(
-    model_path: str, *, device: str | None, gpu_id: int | None
+    model_path: str,
+    *,
+    device: str | None,
+    gpu_id: int | None,
+    has_encoder: bool,
+    has_decoder: bool,
 ) -> tuple[MimiCodec, torch.device]:
     device = resolve_concrete_device(device, gpu_id)
     weights = resolve_mimi_weights(resolve_model_path(model_path), MIMI_WEIGHTS_GLOB)
-    return load_mimi_codec(weights, device=device), device
+    codec = load_mimi_codec(
+        weights, device=device, has_encoder=has_encoder, has_decoder=has_decoder
+    )
+    return codec, device
 
 
 def create_mimi_encode_executor(
     model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
+    codec, device = load_codec(
+        model_path, device=device, gpu_id=gpu_id, has_encoder=True, has_decoder=False
+    )
 
     def encode_waveform(waveform: torch.Tensor) -> torch.Tensor:
         codes = codec.encode(
@@ -208,7 +218,9 @@ def create_decode_executor(
 def create_code2wav_executor(
     model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
 ) -> PersonaPlexCode2WavScheduler:
-    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
+    codec, device = load_codec(
+        model_path, device=device, gpu_id=gpu_id, has_encoder=False, has_decoder=True
+    )
 
     @torch.inference_mode()
     def decode(payload: StagePayload) -> StagePayload:

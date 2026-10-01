@@ -2,16 +2,22 @@
 """Chunked Mimi must land on the samples a whole-sequence pass produces."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import torch
+from safetensors.torch import save_file
 
 from sglang_omni.models.personaplex.architecture import MIMI
 from sglang_omni.models.personaplex.components.causal_conv import (
     CausalConv1d,
     CausalConvTranspose1d,
 )
-from sglang_omni.models.personaplex.components.mimi import MimiCodec, rename_mimi_key
+from sglang_omni.models.personaplex.components.mimi import (
+    MimiCodec,
+    load_mimi_codec,
+    rename_mimi_key,
+)
 from sglang_omni.models.personaplex.components.mimi_transformer import (
     AttentionState,
     MimiAttention,
@@ -94,6 +100,29 @@ def test_checkpoint_names_map_onto_the_module_tree():
         rename_mimi_key("quantizer.rvq_rest.vq.layers.7._codebook.embedding_sum")
         is None
     )
+
+
+def test_each_stage_loads_only_the_half_it_runs(
+    random_codec: MimiCodec, tmp_path: Path
+) -> None:
+    weights_path = tmp_path / "tokenizer-random.safetensors"
+    save_file(random_codec.state_dict(), str(weights_path))
+    encoder_only = load_mimi_codec(weights_path, device="cpu", has_decoder=False)
+    decoder_only = load_mimi_codec(weights_path, device="cpu", has_encoder=False)
+
+    def parameter_count(codec: MimiCodec) -> int:
+        return sum(parameter.numel() for parameter in codec.parameters())
+
+    full_count = parameter_count(random_codec)
+    assert parameter_count(encoder_only) < full_count
+    assert parameter_count(decoder_only) < full_count
+    assert decoder_only.device == torch.device("cpu")
+
+    torch.manual_seed(1)
+    waveform = torch.randn(1, 1, random_codec.samples_per_frame * 4)
+    codes = random_codec.encode(waveform)
+    assert torch.equal(encoder_only.encode(waveform), codes)
+    assert torch.equal(decoder_only.decode(codes), random_codec.decode(codes))
 
 
 SMALL = replace(MIMI, context=6, num_layers=2, dim=16, num_heads=2, ffn_dim=8)

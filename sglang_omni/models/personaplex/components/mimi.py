@@ -15,7 +15,7 @@ from pathlib import Path
 
 import torch
 from einops import rearrange
-from safetensors.torch import load_file
+from safetensors import safe_open
 from torch import nn
 from torch.nn import functional
 
@@ -193,10 +193,23 @@ class ResidualVQ(nn.Module):
 class ResidualVectorQuantizer(nn.Module):
     """Projection in, residual codebooks, projection out."""
 
-    def __init__(self, spec: MimiSpec, num_codebooks: int) -> None:
+    def __init__(
+        self,
+        spec: MimiSpec,
+        num_codebooks: int,
+        *,
+        has_encoder: bool,
+        has_decoder: bool,
+    ) -> None:
         super().__init__()
-        self.input_proj = nn.Conv1d(spec.dim, spec.codebook_dim, 1, bias=False)
-        self.output_proj = nn.Conv1d(spec.codebook_dim, spec.dim, 1, bias=False)
+        if has_encoder:
+            self.input_proj = nn.Conv1d(spec.dim, spec.codebook_dim, 1, bias=False)
+        else:
+            pass
+        if has_decoder:
+            self.output_proj = nn.Conv1d(spec.codebook_dim, spec.dim, 1, bias=False)
+        else:
+            pass
         self.vq = ResidualVQ(spec.codebook_dim, spec.codebook_size, num_codebooks)
 
     def encode(self, x_BCT: torch.Tensor) -> torch.Tensor:
@@ -219,12 +232,20 @@ class ResidualVectorQuantizer(nn.Module):
 
 
 class SplitResidualVectorQuantizer(nn.Module):
-    def __init__(self, spec: MimiSpec) -> None:
+    def __init__(self, spec: MimiSpec, *, has_encoder: bool, has_decoder: bool) -> None:
         super().__init__()
         self.num_semantic = spec.num_semantic_codebooks
-        self.rvq_first = ResidualVectorQuantizer(spec, spec.num_semantic_codebooks)
+        self.rvq_first = ResidualVectorQuantizer(
+            spec,
+            spec.num_semantic_codebooks,
+            has_encoder=has_encoder,
+            has_decoder=has_decoder,
+        )
         self.rvq_rest = ResidualVectorQuantizer(
-            spec, spec.num_codebooks - spec.num_semantic_codebooks
+            spec,
+            spec.num_codebooks - spec.num_semantic_codebooks,
+            has_encoder=has_encoder,
+            has_decoder=has_decoder,
         )
 
     def encode(self, x_BCT: torch.Tensor) -> torch.Tensor:
@@ -258,30 +279,44 @@ class MimiDecodeState:
 
 
 class MimiCodec(nn.Module):
-    def __init__(self, spec: MimiSpec = MIMI) -> None:
+    def __init__(
+        self,
+        spec: MimiSpec = MIMI,
+        *,
+        has_encoder: bool = True,
+        has_decoder: bool = True,
+    ) -> None:
         super().__init__()
         self.spec = spec
-        self.encoder = SEANetEncoder(spec)
-        self.encoder_transformer = MimiTransformer(spec)
-        self.downsample = CausalConv1d(
-            spec.dim,
-            spec.dim,
-            2 * spec.frame_ratio,
-            stride=spec.frame_ratio,
-            bias=False,
-            pad_mode="replicate",
+        if has_encoder:
+            self.encoder = SEANetEncoder(spec)
+            self.encoder_transformer = MimiTransformer(spec)
+            self.downsample = CausalConv1d(
+                spec.dim,
+                spec.dim,
+                2 * spec.frame_ratio,
+                stride=spec.frame_ratio,
+                bias=False,
+                pad_mode="replicate",
+            )
+        else:
+            pass
+        self.quantizer = SplitResidualVectorQuantizer(
+            spec, has_encoder=has_encoder, has_decoder=has_decoder
         )
-        self.quantizer = SplitResidualVectorQuantizer(spec)
-        self.upsample = CausalConvTranspose1d(
-            spec.dim,
-            spec.dim,
-            2 * spec.frame_ratio,
-            stride=spec.frame_ratio,
-            groups=spec.dim,
-            bias=False,
-        )
-        self.decoder_transformer = MimiTransformer(spec)
-        self.decoder = SEANetDecoder(spec)
+        if has_decoder:
+            self.upsample = CausalConvTranspose1d(
+                spec.dim,
+                spec.dim,
+                2 * spec.frame_ratio,
+                stride=spec.frame_ratio,
+                groups=spec.dim,
+                bias=False,
+            )
+            self.decoder_transformer = MimiTransformer(spec)
+            self.decoder = SEANetDecoder(spec)
+        else:
+            pass
 
     @property
     def samples_per_frame(self) -> int:
@@ -289,7 +324,7 @@ class MimiCodec(nn.Module):
 
     @property
     def device(self) -> torch.device:
-        return self.downsample.conv.weight.device
+        return next(self.parameters()).device
 
     @torch.inference_mode()
     def encode(self, wav_B1T: torch.Tensor) -> torch.Tensor:
@@ -388,17 +423,23 @@ def resolve_mimi_weights(model_dir: str | Path, glob: str) -> Path:
 
 
 def load_mimi_codec(
-    weights_path: str | Path, *, device: torch.device | str
+    weights_path: str | Path,
+    *,
+    device: torch.device | str,
+    has_encoder: bool = True,
+    has_decoder: bool = True,
 ) -> MimiCodec:
-    """Build a Mimi codec in float32 and load the checkpoint's weight file."""
-    state = {}
-    for name, tensor in load_file(str(weights_path)).items():
-        renamed = rename_mimi_key(name)
-        if renamed is not None:
-            state[renamed] = tensor
-        else:
-            pass
-    codec = MimiCodec()
+    """Build a Mimi codec in float32 and read only the tensors it holds."""
+    codec = MimiCodec(has_encoder=has_encoder, has_decoder=has_decoder)
+    held_names = set(codec.state_dict())
+    state: dict[str, torch.Tensor] = {}
+    with safe_open(str(weights_path), framework="pt") as weights_file:
+        for name in weights_file.keys():
+            renamed = rename_mimi_key(name)
+            if renamed in held_names:
+                state[renamed] = weights_file.get_tensor(name)
+            else:
+                pass
     codec.load_state_dict(state, strict=True)
     return codec.to(device=device).eval()
 
