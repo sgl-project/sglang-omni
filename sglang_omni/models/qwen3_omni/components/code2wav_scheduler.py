@@ -27,7 +27,6 @@ from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavRunResult,
     GraphKey,
 )
-from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
@@ -38,6 +37,7 @@ from sglang_omni.scheduling.streaming_vocoder import (
     vocoder_decode_stream_priority,
 )
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.channels_last_conv import is_channels_last_conv_device
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot
 from sglang_omni.utils.snake_beta import fuse_vocoder_decoder
 
@@ -170,7 +170,7 @@ def load_code2wav_model(
         device=device,
         strict=False,
     )
-    if current_platform.is_cuda() and torch.device(device).type == "cuda":
+    if is_channels_last_conv_device(torch.device(device)):
         model.use_channels_last()
     else:
         pass

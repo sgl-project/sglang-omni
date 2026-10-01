@@ -18,6 +18,11 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     SnakeBeta,
 )
 
+from sglang_omni.utils.channels_last_conv import (
+    channels_last_conv1d,
+    channels_last_conv_transpose1d,
+    channels_last_weight,
+)
 from sglang_omni.utils.snake_beta import FusedSnakeBeta
 
 
@@ -27,33 +32,9 @@ def causal_conv(
     """Causal conv of a (B, L, C) activation, returned as (B, L, C_out)."""
     conv = module.conv
     assert conv.stride == (1,), "code2wav causal convs are stride 1"
-    batch_size, length, channels = hidden_states.shape
-    dilation = conv.dilation[0]
-    if dilation == 1:
-        padded = F.pad(hidden_states, (0, 0, module.padding, 0))
-        output = F.conv2d(
-            padded.transpose(1, 2).unsqueeze(2),
-            conv.weight.unsqueeze(2),
-            conv.bias,
-            groups=conv.groups,
-        )
-        return output.squeeze(2).transpose(1, 2)
-    else:
-        # note (ratish): cuDNN has no fast channels-last engine for some dilated
-        # shapes; viewed as (B, C, L / d, d) the conv is undilated along L / d, one
-        # phase per column, without copying the phases apart.
-        padded = F.pad(hidden_states, (0, 0, module.padding, (-length) % dilation))
-        output = F.conv2d(
-            padded.view(batch_size, -1, dilation, channels).permute(0, 3, 1, 2),
-            conv.weight.unsqueeze(3),
-            conv.bias,
-            groups=conv.groups,
-        )
-        return (
-            output.permute(0, 2, 3, 1)
-            .reshape(batch_size, -1, output.shape[1])[:, :length]
-            .contiguous()
-        )
+    length = hidden_states.shape[1]
+    padded = F.pad(hidden_states, (0, 0, module.padding, (-length) % conv.dilation[0]))
+    return channels_last_conv1d(padded, conv, conv.weight, length)
 
 
 def causal_transconv(
@@ -61,20 +42,7 @@ def causal_transconv(
 ) -> torch.Tensor:
     """Causal transposed conv of a (B, L, C) activation, returned as (B, L_out, C_out)."""
     conv = module.conv
-    output = (
-        F.conv_transpose2d(
-            hidden_states.transpose(1, 2).unsqueeze(2),
-            conv.weight.unsqueeze(2),
-            conv.bias,
-            stride=(1, conv.stride[0]),
-            padding=(0, conv.padding[0]),
-            output_padding=(0, conv.output_padding[0]),
-            groups=conv.groups,
-            dilation=(1, conv.dilation[0]),
-        )
-        .squeeze(2)
-        .transpose(1, 2)
-    )
+    output = channels_last_conv_transpose1d(hidden_states, conv, conv.weight, conv.bias)
     return output[:, module.left_pad : output.shape[1] - module.right_pad].contiguous()
 
 
@@ -123,9 +91,7 @@ class Qwen3OmniCode2Wav(Qwen3OmniMoeCode2Wav):
         """Store every conv weight channels last and run the channels-last forward."""
         for module in self.modules():
             if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d)):
-                module.weight.data = (
-                    module.weight.data.transpose(1, 2).contiguous().transpose(1, 2)
-                )
+                module.weight.data = channels_last_weight(module)
             else:
                 pass
         self.is_channels_last = True

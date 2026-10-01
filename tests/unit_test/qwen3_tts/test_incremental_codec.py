@@ -10,20 +10,18 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from sglang_omni.models.qwen3_tts import incremental_codec as incremental_codec_module
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
 from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
     channels_last_causal_conv1d,
     channels_last_causal_transconv1d,
-    channels_last_conv_weight,
-    channels_last_transconv_weight,
     incremental_causal_conv1d,
     incremental_causal_transconv1d,
     incremental_transformer,
 )
-from sglang_omni.utils import snake_beta
+from sglang_omni.utils import channels_last_conv, snake_beta
+from sglang_omni.utils.channels_last_conv import channels_last_weight
 
 
 def random_partitions(total: int, seed: int) -> list[int]:
@@ -330,7 +328,7 @@ def test_channels_last_causal_conv_matches_whole(
 ) -> None:
     torch.manual_seed(1)
     module = CausalConv(2, 3, 7, dilation=dilation)
-    weight = channels_last_conv_weight(module)
+    weight = channels_last_weight(module.conv)
     inputs = torch.randn(1, sum(partitions), 2)
     expected = module(inputs.transpose(1, 2)).transpose(1, 2)
     state = Qwen3TTSIncrementalCodecState()
@@ -354,7 +352,7 @@ def test_channels_last_causal_transconv_matches_whole(
 ) -> None:
     torch.manual_seed(2)
     module = CausalTransConv(2, 3, 8, 4)
-    weight = channels_last_transconv_weight(module)
+    weight = channels_last_weight(module.conv)
     inputs = torch.randn(1, sum(partitions), 2)
     expected = module(inputs.transpose(1, 2)).transpose(1, 2)
     state = Qwen3TTSIncrementalCodecState()
@@ -986,9 +984,7 @@ def test_cuda_decoder_runs_channels_last_and_leaves_the_shared_weights(
 def test_decoder_keeps_the_channels_first_path_off_the_cuda_platform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        incremental_codec_module.current_platform, "is_cuda", lambda: False
-    )
+    monkeypatch.setattr(channels_last_conv.current_platform, "is_cuda", lambda: False)
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
     torch.manual_seed(32)
     decoder = Decoder().cuda().eval()

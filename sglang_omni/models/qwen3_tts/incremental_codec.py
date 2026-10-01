@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING
 import torch
 import torch.nn.functional as F
 
-from sglang_omni.platforms import current_platform
+from sglang_omni.utils.channels_last_conv import (
+    channels_last_conv1d,
+    channels_last_conv_transpose1d,
+    channels_last_weight,
+    is_channels_last_conv_device,
+)
 
 if TYPE_CHECKING:
     from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
@@ -226,25 +231,6 @@ def incremental_causal_transconv1d(
     return emitted.contiguous()
 
 
-def channels_last_conv_weight(
-    module: "Qwen3TTSTokenizerV2CausalConvNet",
-) -> torch.Tensor:
-    """The conv's weight as the 4D channels-last tensor channels_last_causal_conv1d
-    passes to cuDNN: (C_out, C_in, 1, K), or (C_out, C_in, K, 1) for a dilated conv."""
-    weight = module.conv.weight
-    if int(module.conv.dilation[0]) == 1:
-        weight = weight.unsqueeze(2)
-    else:
-        weight = weight.unsqueeze(3)
-    return weight.contiguous(memory_format=torch.channels_last)
-
-
-def channels_last_transconv_weight(
-    module: "Qwen3TTSTokenizerV2CausalTransConvNet",
-) -> torch.Tensor:
-    return module.conv.weight.unsqueeze(2).contiguous(memory_format=torch.channels_last)
-
-
 def channels_last_causal_conv1d(
     module: "Qwen3TTSTokenizerV2CausalConvNet",
     weight: torch.Tensor,
@@ -272,29 +258,10 @@ def channels_last_causal_conv1d(
         combined = hidden_states
     dilation = int(conv.dilation[0])
     if dilation == 1:
-        output = (
-            F.conv2d(
-                combined.transpose(1, 2).unsqueeze(2),
-                weight,
-                conv.bias,
-                groups=conv.groups,
-            )
-            .squeeze(2)
-            .transpose(1, 2)
-        )
+        padded = combined
     else:
-        # note (ratish): cuDNN has no fast channels-last engine for some dilated
-        # shapes; viewed as (B, C, L / d, d) the conv is undilated along L / d, one
-        # phase per column, without copying the phases apart.
         padded = F.pad(combined, (0, 0, 0, (-combined.shape[1]) % dilation))
-        output = F.conv2d(
-            padded.view(batch_size, -1, dilation, channels).permute(0, 3, 1, 2),
-            weight,
-            conv.bias,
-            groups=conv.groups,
-        )
-        output = output.permute(0, 2, 3, 1).reshape(batch_size, -1, output.shape[1])
-        output = output[:, :length]
+    output = channels_last_conv1d(padded, conv, weight, length)
     if output.shape[1] != length:
         raise RuntimeError(
             f"incremental causal Conv1d changed temporal length for {key}"
@@ -319,20 +286,7 @@ def channels_last_causal_transconv1d(
     conv = module.conv
     stride = int(conv.stride[0])
     right_pad = int(module.right_pad)
-    output = (
-        F.conv_transpose2d(
-            hidden_states.transpose(1, 2).unsqueeze(2),
-            weight,
-            bias=None,
-            stride=(1, stride),
-            padding=(0, int(conv.padding[0])),
-            output_padding=(0, int(conv.output_padding[0])),
-            groups=conv.groups,
-            dilation=(1, int(conv.dilation[0])),
-        )
-        .squeeze(2)
-        .transpose(1, 2)
-    )
+    output = channels_last_conv_transpose1d(hidden_states, conv, weight, None)
     overlap = state.transconv_overlaps.get(key)
     if overlap is not None:
         if overlap.shape[:-1] != (output.shape[0], output.shape[2]):
@@ -712,27 +666,27 @@ class Qwen3TTSIncrementalDecoder:
         self.total_upsample = int(decoder.total_upsample)
         # note (ratish): on CUDA the convs run channels last on their own weight
         # copies; the shared modules keep their layout for the whole-utterance decode.
-        if current_platform.is_cuda() and decoder.pre_conv.conv.weight.is_cuda:
+        if is_channels_last_conv_device(decoder.pre_conv.conv.weight.device):
             self.channels_last_weights: dict[str, torch.Tensor] | None = {
-                "pre_conv": channels_last_conv_weight(decoder.pre_conv),
-                "decoder.0": channels_last_conv_weight(decoder.decoder[0]),
-                "decoder.final": channels_last_conv_weight(decoder.decoder[-1]),
+                "pre_conv": channels_last_weight(decoder.pre_conv.conv),
+                "decoder.0": channels_last_weight(decoder.decoder[0].conv),
+                "decoder.final": channels_last_weight(decoder.decoder[-1].conv),
             }
             for stage_index, blocks in enumerate(decoder.upsample):
                 self.channels_last_weights[f"upsample.{stage_index}.transconv"] = (
-                    channels_last_transconv_weight(blocks[0])
+                    channels_last_weight(blocks[0].conv)
                 )
             for block_index, block in enumerate(decoder.decoder[1:-2], start=1):
                 self.channels_last_weights[f"decoder.{block_index}.transconv"] = (
-                    channels_last_transconv_weight(block.block[1])
+                    channels_last_weight(block.block[1].conv)
                 )
                 for residual_index, residual in enumerate(block.block[2:]):
                     key = f"decoder.{block_index}.residual.{residual_index}"
-                    self.channels_last_weights[f"{key}.conv1"] = (
-                        channels_last_conv_weight(residual.conv1)
+                    self.channels_last_weights[f"{key}.conv1"] = channels_last_weight(
+                        residual.conv1.conv
                     )
-                    self.channels_last_weights[f"{key}.conv2"] = (
-                        channels_last_conv_weight(residual.conv2)
+                    self.channels_last_weights[f"{key}.conv2"] = channels_last_weight(
+                        residual.conv2.conv
                     )
         else:
             self.channels_last_weights = None
