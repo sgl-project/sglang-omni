@@ -87,35 +87,28 @@ def merge_image_tokens_for_thinker(state: LLaDA2UniPipelineState) -> None:
     for token_ids in image_token_ids_list:
         all_vq_tokens.extend(tid + IMAGE_TOKEN_OFFSET for tid in token_ids)
 
-    if not all_vq_tokens:
-        return
-    else:
-        pass
-
-    new_ids = []
-    vq_idx = 0
-    for tid in input_ids:
-        if tid == DUMMY_IMAGE_TOKEN_ID:
-            if vq_idx >= len(all_vq_tokens):
-                raise ValueError(
-                    f"More placeholders than VQ tokens ({len(all_vq_tokens)})"
-                )
-            else:
-                pass
-            new_ids.append(all_vq_tokens[vq_idx])
-            vq_idx += 1
-        else:
-            new_ids.append(tid)
-
-    if vq_idx != len(all_vq_tokens):
-        raise ValueError(
-            f"VQ token count mismatch: {len(all_vq_tokens)} VQ tokens "
-            f"but only {vq_idx} placeholders"
+    new_ids = replace_dummy_tokens(input_ids, all_vq_tokens)
+    uncond_ids = state.stream_state.get("uncond_input_ids")
+    if uncond_ids is not None:
+        state.stream_state["uncond_input_ids"] = replace_dummy_tokens(
+            uncond_ids, all_vq_tokens
         )
     else:
         pass
-
     prompt["input_ids"] = torch.tensor([new_ids], dtype=torch.long)
+
+
+def replace_dummy_tokens(input_ids: list[int], vq_tokens: list[int]) -> list[int]:
+    count = input_ids.count(DUMMY_IMAGE_TOKEN_ID)
+    if count != len(vq_tokens):
+        raise ValueError(
+            f"VQ token count mismatch: {len(vq_tokens)} VQ tokens "
+            f"but {count} placeholders"
+        )
+    else:
+        pass
+    tokens = iter(vq_tokens)
+    return [next(tokens) if tid == DUMMY_IMAGE_TOKEN_ID else tid for tid in input_ids]
 
 
 def build_dllm_thinker_request(
@@ -144,9 +137,25 @@ def build_dllm_thinker_request(
         pass
 
     input_ids_array = array("q", input_ids.to(dtype=torch.long).flatten().tolist())
+    ss = state.stream_state
+    max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
+    if state.task_kind in ("t2i", "edit"):
+        image_info = ss.get("image_info", [])
+        if not image_info:
+            raise ValueError("Image generation is missing its output grid")
+        else:
+            pass
+        grid_h, grid_w = int(image_info[0]["grid_h"]), int(image_info[0]["grid_w"])
+        if grid_h <= 0 or grid_w <= 0:
+            raise ValueError("Image generation grid dimensions must be positive")
+        else:
+            pass
+        max_new_tokens = grid_h * grid_w
+    else:
+        pass
 
     sampling_params = SamplingParams(
-        max_new_tokens=params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS),
+        max_new_tokens=max_new_tokens,
         temperature=params.get("temperature", 0.0),
         top_p=params.get("top_p", 1.0),
         top_k=params.get("top_k", -1),
@@ -176,6 +185,48 @@ def build_dllm_thinker_request(
 
     req.omni_model_inputs = None
     req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._task_kind = state.task_kind  # noqa: leading-underscore  # DLLM protocol
+    if ss.get("dllm_steps") is not None:
+        req._dllm_steps = int(
+            ss["dllm_steps"]
+        )  # noqa: leading-underscore  # DLLM protocol
+    else:
+        pass
+
+    uncond_ids = ss.get("uncond_input_ids")
+    if uncond_ids is not None:
+        ig = state.request_metadata.get("image_generation", {})
+        req._cfg_scale = float(  # noqa: leading-underscore  # DLLM protocol
+            ss.get("cfg_scale", ig.get("cfg_text_scale", ig.get("cfg_scale", 1.0)))
+        )
+        req._cfg_rescale = float(
+            ss.get("cfg_rescale", ig.get("cfg_rescale", 0.7))
+        )  # noqa: leading-underscore  # DLLM protocol
+        for branch in ("uncond", "uncond_img"):
+            branch_ids = ss.get(f"{branch}_input_ids")
+            if branch_ids is None:
+                continue
+            else:
+                pass
+            if len(branch_ids) != len(input_ids_array):
+                raise ValueError("CFG branches must have equal physical lengths")
+            else:
+                pass
+            pad_len = int(ss.get(f"{branch}_left_pad_len", 0))
+            if not 0 <= pad_len <= len(branch_ids):
+                raise ValueError(f"Invalid CFG {branch} left-pad length: {pad_len}")
+            else:
+                pass
+            setattr(req, f"_{branch}_input_ids", list(branch_ids))
+            setattr(req, f"_{branch}_left_pad_len", pad_len)
+        if ss.get("uncond_img_input_ids") is not None:
+            req._cfg_image_scale = float(  # noqa: leading-underscore  # DLLM protocol
+                ss.get("cfg_image_scale", ig.get("cfg_image_scale", 0.0))
+            )
+        else:
+            pass
+    else:
+        pass
 
     data = SGLangDLLMRequestData(
         output_ids=req.output_ids,
@@ -193,7 +244,7 @@ def apply_dllm_thinker_result(
 ) -> ThinkerOutput:
     """Apply DLLM thinker result to pipeline state."""
     thinker_out: ThinkerOutput = {
-        "output_ids": output_ids,
+        "output_ids": list(output_ids),
         "is_final": True,
     }
     if finish_reason is not None:

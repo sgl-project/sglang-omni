@@ -1494,6 +1494,7 @@ class Stage:
         next_stages = (
             self.get_next(request_id, result) if session_operation is None else actual
         )
+        routes_to_self = False
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1515,6 +1516,16 @@ class Stage:
                 next_stages = [next_stages]
             else:
                 pass
+            routes_to_self = any(
+                self.resolve_target_instance(request_id, target) == self.name
+                for target in next_stages
+            )
+            if routes_to_self:
+                # A local dispatch can register the next pass synchronously.
+                # Keep its replica assignment but retire the completed pass first.
+                self.clear_request_state(request_id, keep_replica_bindings=True)
+            else:
+                pass
             is_single_target = len(next_stages) == 1
             _emit_event(
                 request_id=request_id,
@@ -1532,7 +1543,10 @@ class Stage:
                     stream_targets_for_request=stream_targets_for_request,
                 )
 
-        self.clear_request_state(request_id)
+        if not routes_to_self:
+            self.clear_request_state(request_id)
+        else:
+            pass
 
     async def send_to_stage(
         self,
@@ -2100,7 +2114,9 @@ class Stage:
         )
         self.clear_request_state(request_id)
 
-    def clear_request_state(self, request_id: str) -> None:
+    def clear_request_state(
+        self, request_id: str, *, keep_replica_bindings: bool = False
+    ) -> None:
         self.active_requests.discard(request_id)
         self.input_handler.cancel(request_id)
         if self.stream_queue is not None:
@@ -2113,7 +2129,10 @@ class Stage:
         self.first_stream_chunk_seen.discard(request_id)
         self.local_stream_targets.pop(request_id, None)
         self.nonlocal_stream_targets.pop(request_id, None)
-        self.replica_bindings.pop(request_id, None)
+        if not keep_replica_bindings:
+            self.replica_bindings.pop(request_id, None)
+        else:
+            pass
 
     async def handle_scheduler_crash(self, exc: BaseException) -> None:
         if self.scheduler_crash_error is not None:
