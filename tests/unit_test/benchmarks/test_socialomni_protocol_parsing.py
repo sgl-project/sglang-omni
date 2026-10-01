@@ -211,7 +211,7 @@ def test_service_timeout_is_independent_from_request_timeout(monkeypatch):
     assert eval_config(timeout_s=2).server_timeout == 300
     with pytest.raises(RuntimeError, match="stop before evaluation"):
         entrypoint.main()
-    assert observed == [("http://localhost:8000", 600, True)]
+    assert observed == [("http://localhost:8000", 600, False)]
 
 
 def test_judge_config_has_only_fixed_public_fields(tmp_path: Path, monkeypatch) -> None:

@@ -66,7 +66,7 @@ class SocialOmniEvalConfig:
     launch_command: str | None = None
     server_timeout: int = 300
     request_rate: float = float("inf")
-    trust_env: bool = True
+    trust_env: bool = False
 
     def __post_init__(self) -> None:
         validate_endpoint_url(self.base_url)
@@ -372,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--trust-env",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Use environment proxy settings for model, judge, and health requests.",
     )
     parser.add_argument("--output-dir", default="benchmarks/results/socialomni")

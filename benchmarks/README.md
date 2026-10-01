@@ -419,9 +419,9 @@ remain unparseable. A malformed completion response is recorded as a request
 failure even when the server returns HTTP 200.
 
 Model requests use `--max-concurrency`; judge concurrency is configured per
-endpoint. Requests respect `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` by default.
-Use `--no-trust-env` to disable environment proxy settings for model, judge,
-and health requests; `--trust-env` explicitly enables them.
+endpoint. Environment proxies are disabled by default. Use `--trust-env` to
+respect `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` for model, judge, and health
+requests; `--no-trust-env` explicitly disables them.
 Use `--model-revision` to record the served weight revision in the result
 configuration and provenance. This is a user declaration, not a server-verified
 identity; `--model` remains the serving name. Prefix preparation failures stay

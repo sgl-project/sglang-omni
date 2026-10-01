@@ -182,9 +182,12 @@ async def test_valid_completion_content(content, expected) -> None:
 @pytest.mark.parametrize(
     "suffix", ["", "/", "/v1", "/v1/", "/v1/chat/completions", "/v1/chat/completions/"]
 )
-@pytest.mark.parametrize("trust_env", [False, True])
+@pytest.mark.parametrize(
+    ("proxy_options", "trust_env"),
+    [([], False), (["--no-trust-env"], False), (["--trust-env"], True)],
+)
 def test_cli_checks_server_root_and_preserves_completion_url(
-    tmp_path, monkeypatch, capsys, suffix, trust_env
+    tmp_path, monkeypatch, capsys, suffix, proxy_options, trust_env
 ) -> None:
     """Accepted API URLs must reach both health and completion routes through the CLI."""
     routes = []
@@ -232,7 +235,7 @@ def test_cli_checks_server_root_and_preserves_completion_url(
         "argv",
         [
             "socialomni",
-            "--trust-env" if trust_env else "--no-trust-env",
+            *proxy_options,
             "--dataset-root",
             "~/dataset",
             "--model",
