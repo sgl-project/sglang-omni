@@ -15,13 +15,14 @@ from torch import nn
 from torch.nn.utils import remove_weight_norm, weight_norm
 
 if torch.version.cuda is None:
+    downsample_f32 = None
     upsample_f32 = None
 else:
-    from sglang_omni.models.auk.vae_upsample import upsample_f32
+    from sglang_omni.models.auk.vae_resample import downsample_f32, upsample_f32
 
 LRELU_SLOPE = 0.1
 MAX_CUDA_GRID_AXIS = 65535
-MAX_UPSAMPLE_OFFSET = 2**31 - 1
+MAX_RESAMPLE_OFFSET = 2**31 - 1
 
 
 # vendored: alias-free-torch (anti-aliased periodic activations)
@@ -90,7 +91,39 @@ class LowPassFilter1d(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        _, channels, _ = x.shape
+        batch_count, channels, input_length = x.shape
+        if (
+            downsample_f32 is not None
+            and not self.training
+            and not (
+                torch.is_grad_enabled()
+                and (x.requires_grad or self.filter.requires_grad)
+            )
+            and self.stride == 2
+            and self.kernel_size == 12
+            and self.padding
+            and self.padding_mode == "replicate"
+            and self.pad_left == 11
+            and self.pad_right == 0
+            and x.is_cuda
+            and x.dtype == self.filter.dtype == torch.float32
+            and self.filter.device == x.device
+            and self.filter.is_contiguous()
+            and self.filter.numel() == 12
+            and 0 < batch_count <= MAX_CUDA_GRID_AXIS
+            and 0 < channels <= MAX_CUDA_GRID_AXIS
+            and input_length > 0
+            and batch_count * channels * ((input_length + 1) // 2)
+            <= MAX_RESAMPLE_OFFSET
+            and sum(
+                (length - 1) * stride for length, stride in zip(x.shape, x.stride())
+            )
+            <= MAX_RESAMPLE_OFFSET
+            and torch.cuda.get_device_capability(x.device)[0] == 10
+        ):
+            return downsample_f32(x, self.filter)
+        else:
+            pass
         if self.padding:
             x = torch.nn.functional.pad(
                 x, (self.pad_left, self.pad_right), mode=self.padding_mode
@@ -150,11 +183,11 @@ class UpSample1d(nn.Module):
             and 0 < batch_count <= MAX_CUDA_GRID_AXIS
             and 0 < channels <= MAX_CUDA_GRID_AXIS
             and input_length > 0
-            and x.numel() * 2 <= MAX_UPSAMPLE_OFFSET
+            and x.numel() * 2 <= MAX_RESAMPLE_OFFSET
             and sum(
                 (length - 1) * stride for length, stride in zip(x.shape, x.stride())
             )
-            <= MAX_UPSAMPLE_OFFSET
+            <= MAX_RESAMPLE_OFFSET
             and torch.cuda.get_device_capability(x.device)[0] == 10
         ):
             return upsample_f32(x, self.filter)

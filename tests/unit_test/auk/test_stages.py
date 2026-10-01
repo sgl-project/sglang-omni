@@ -22,7 +22,12 @@ from sglang_omni.models.auk.stages import (
     sample_batch,
     warmup_flow,
 )
-from sglang_omni.models.auk.vae import AuKVAEConfig, BigVGANFlowVAE, UpSample1d
+from sglang_omni.models.auk.vae import (
+    AuKVAEConfig,
+    BigVGANFlowVAE,
+    LowPassFilter1d,
+    UpSample1d,
+)
 from sglang_omni.models.auk.vae_decode import AuKVaeDecoder
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
@@ -123,6 +128,119 @@ def test_vae_upsampling_retains_input_and_filter_gradients(
     samples = torch.randn(2, 3, 17, device=device_name, requires_grad=True)
     actual = layer(samples)
     expected = reference_upsample(layer, samples)
+    actual_gradients = torch.autograd.grad(actual.sum(), (samples, layer.filter))
+    expected_gradients = torch.autograd.grad(expected.sum(), (samples, layer.filter))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
+        torch.testing.assert_close(actual_gradient, expected_gradient, rtol=0, atol=0)
+
+
+def reference_downsample(layer: LowPassFilter1d, samples: torch.Tensor) -> torch.Tensor:
+    if layer.padding:
+        samples = torch.nn.functional.pad(
+            samples, (layer.pad_left, layer.pad_right), mode=layer.padding_mode
+        )
+    else:
+        pass
+    return torch.nn.functional.conv1d(
+        samples,
+        layer.filter.expand(samples.shape[1], -1, -1),
+        stride=layer.stride,
+        groups=samples.shape[1],
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Downsampling kernel requires CUDA"
+)
+@pytest.mark.parametrize(
+    "shape",
+    [(1, 3, 1), (2, 7, 17), (1, 3, 255), (1, 3, 257), (1, 768, 1500), (1, 24, 576000)],
+)
+@torch.inference_mode()
+def test_vae_downsampling_preserves_boundaries_strides_and_graph_replay(
+    shape: tuple[int, int, int],
+) -> None:
+    if torch.cuda.get_device_capability()[0] != 10:
+        pytest.skip("FP32 downsampling fast path is enabled on SM100 family")
+    else:
+        pass
+    torch.manual_seed(21)
+    layer = LowPassFilter1d(0.25, 0.3, stride=2, causal=True).cuda().eval()
+    batch_count, channel_count, sample_count = shape
+    samples = torch.randn(batch_count, channel_count, sample_count * 2, device="cuda")[
+        ..., ::2
+    ]
+    for _ in range(3):
+        layer(samples)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = layer(samples)
+    for _ in range(3):
+        samples.normal_()
+        expected = reference_downsample(layer, samples)
+        graph.replay()
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize(
+    "stride,kernel_size,causal,padding,padding_mode,dtype",
+    [
+        (3, 18, True, True, "replicate", torch.float32),
+        (2, 10, True, True, "replicate", torch.float32),
+        (2, 12, False, True, "replicate", torch.float32),
+        (2, 12, True, False, "replicate", torch.float32),
+        (2, 12, True, True, "constant", torch.float32),
+        (2, 12, True, True, "replicate", torch.float64),
+        (2, 12, True, True, "replicate", torch.float16),
+        (2, 12, True, True, "replicate", torch.bfloat16),
+    ],
+)
+@torch.inference_mode()
+def test_vae_downsampling_retains_other_parameter_and_dtype_paths(
+    device_name: str,
+    stride: int,
+    kernel_size: int,
+    causal: bool,
+    padding: bool,
+    padding_mode: str,
+    dtype: torch.dtype,
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    layer = (
+        LowPassFilter1d(0.25, 0.3, stride, padding, padding_mode, kernel_size, causal)
+        .to(device=device_name, dtype=dtype)
+        .eval()
+    )
+    samples = torch.randn(2, 3, 33, device=device_name, dtype=dtype)
+    torch.testing.assert_close(
+        layer(samples), reference_downsample(layer, samples), rtol=0, atol=0
+    )
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize("training", [False, True])
+def test_vae_downsampling_retains_input_and_filter_gradients(
+    device_name: str, training: bool
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    layer = (
+        LowPassFilter1d(0.25, 0.3, stride=2, causal=True)
+        .to(device_name)
+        .train(training)
+    )
+    layer.filter.requires_grad_(True)
+    samples = torch.randn(2, 3, 17, device=device_name, requires_grad=True)
+    actual = layer(samples)
+    expected = reference_downsample(layer, samples)
     actual_gradients = torch.autograd.grad(actual.sum(), (samples, layer.filter))
     expected_gradients = torch.autograd.grad(expected.sum(), (samples, layer.filter))
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
