@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -230,9 +231,34 @@ async def test_level2_status_requires_full_three_judge_run(monkeypatch) -> None:
         return records, [], 1.0
 
     async def fake_judges(_samples, current, _judges, **_kwargs):
+        requests = []
         for record in current:
             record["gold_judge_scores"] = {judge.name: 75 for judge in judges}
-        return [], []
+            for judge in judges:
+                score_id = f"{record['sample_id']}:judge:{judge.name}"
+                request = RequestResult(
+                    request_id=score_id,
+                    is_success=True,
+                    latency_s=3.0,
+                    waited_for_slot=True,
+                    dispatch_lateness_s=0.25,
+                )
+                requests.append(request)
+                record["judge_results"][judge.name] = {
+                    "request": asdict(request),
+                    "attempts": [
+                        asdict(
+                            RequestResult(
+                                request_id=f"{score_id}:attempt:{attempt}",
+                                is_success=True,
+                                latency_s=1.0,
+                                completion_tokens=2,
+                            )
+                        )
+                        for attempt in (1, 2)
+                    ],
+                }
+        return requests, []
 
     monkeypatch.setattr(entrypoint, "run_level2_model", fake_model)
     monkeypatch.setattr(entrypoint, "run_judges", fake_judges)
@@ -242,6 +268,18 @@ async def test_level2_status_requires_full_three_judge_run(monkeypatch) -> None:
     )
 
     assert result["summary"]["status"] == "complete"
+    speed = result["summary"]["level2"]["speed"]
+    score_count = len(samples) * len(judges)
+    assert speed["judge_scores"]["total_requests"] == score_count
+    assert speed["judge_scores"]["client_slot_waits"] == score_count
+    assert speed["judge_scores"]["dispatch_lateness_p50_s"] == 0.25
+    assert speed["judge_scores"]["dispatch_lateness_max_s"] == 0.25
+    assert speed["judge_scores"]["latency_mean_s"] == 3.0
+    assert speed["judges"]["total_requests"] == 2 * score_count
+    assert speed["judges"]["output_tokens_total"] == 4 * score_count
+    assert speed["judges"]["latency_mean_s"] == 1.0
+    assert speed["judges"]["client_slot_waits"] == 0
+    assert "dispatch_lateness_max_s" not in speed["judges"]
 
 
 def test_paper_core_judge_completeness_is_independent() -> None:

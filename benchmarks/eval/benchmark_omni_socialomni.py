@@ -237,6 +237,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
 
         output["config"]["judges"] = [public_judge_record(judge) for judge in judges]
         judge_requests = []
+        judge_attempts = []
         judge_failures: list[dict[str, str]] = []
         judge_wall_s = 0.0
         if judges:
@@ -251,7 +252,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                 trust_env=config.trust_env,
             )
             judge_wall_s = time.perf_counter() - judge_started
-            judge_requests = [
+            judge_attempts = [
                 RequestResult(**attempt)
                 for record in records
                 for judge_result in record["judge_results"].values()
@@ -308,6 +309,9 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                     wall_clock_s=model_wall_s,
                 ),
                 "judges": compute_speed_metrics(
+                    judge_attempts, wall_clock_s=judge_wall_s
+                ),
+                "judge_scores": compute_speed_metrics(
                     judge_requests, wall_clock_s=judge_wall_s
                 ),
             },
