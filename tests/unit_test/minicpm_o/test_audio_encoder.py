@@ -12,10 +12,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+)
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
     MiniCPMWhisperEncoder,
@@ -25,6 +29,10 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import (
     fuse_qkv,
     min_mel_frames,
 )
+from sglang_omni.models.minicpm_o.config import audio_encoder_stage
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -235,3 +243,131 @@ def test_minimum_length_audio_still_encodes() -> None:
         out = encoder(audio_features=mel, audio_feature_lens=lens)
 
     assert out["audio_embeds"].shape[0] == 1
+
+
+def audio_payload(
+    request_id: str,
+    audio_features: torch.Tensor,
+    audio_feature_lens: torch.Tensor,
+    *,
+    cache_key: str | None,
+) -> StagePayload:
+    state = MiniCPMOPipelineState(
+        encoder_inputs={
+            "audio_encoder": {
+                "audio_features": audio_features,
+                "audio_feature_lens": audio_feature_lens,
+                "cache_key": cache_key,
+            }
+        }
+    )
+    return StagePayload(
+        request_id=request_id,
+        request=OmniRequest(inputs={}),
+        data=state.to_dict(),
+    )
+
+
+@pytest.mark.parametrize("short_width,request_count", [(139, 1), (139, 2), (140, 2)])
+def test_cross_request_batch_matches_serial_outputs(
+    short_width: int, request_count: int
+) -> None:
+    encoder = tiny_audio_encoder()
+    short_features = torch.randn(1, 80, short_width)
+    long_features = torch.randn(3, 80, 301)
+    short_lengths = torch.tensor([short_width])
+    long_lengths = torch.tensor([301, 201, 1])
+    expected = [
+        encoder(audio_features=features, audio_feature_lens=lengths)["audio_embeds"]
+        for features, lengths in (
+            (short_features, short_lengths),
+            (long_features, long_lengths),
+        )
+    ]
+    payloads = [
+        audio_payload("short", short_features, short_lengths, cache_key="short"),
+        audio_payload("long", long_features, long_lengths, cache_key="long"),
+    ]
+
+    actual = batch_audio_encoder_payloads(
+        payloads[:request_count],
+        encoder=encoder,
+        cache=StageOutputCache(cache_device="cpu"),
+    )
+
+    assert [payload.request_id for payload in actual] == ["short", "long"][
+        :request_count
+    ]
+    for actual_payload, expected_embeddings in zip(
+        actual, expected[:request_count], strict=True
+    ):
+        actual_embeds = actual_payload.data["encoder_outs"]["audio_encoder"][
+            "audio_embeds"
+        ]
+        torch.testing.assert_close(
+            actual_embeds, expected_embeddings, rtol=1e-4, atol=1e-4
+        )
+
+
+def test_cross_request_batching_is_enabled_by_default() -> None:
+    stage = audio_encoder_stage(gpu=0, process="pipeline")
+    assert stage.factory.max_batch_size == 8
+    assert stage.factory.max_batch_wait_ms == 0
+
+
+def test_cross_request_batch_reuses_cache_and_preserves_request_order() -> None:
+    encoder = tiny_audio_encoder()
+    cache = StageOutputCache(max_size=1, cache_device="cpu")
+    features = torch.randn(1, 80, 137)
+    lengths = torch.tensor([137])
+    expected = encoder(audio_features=features, audio_feature_lens=lengths)
+    other_features = -features
+    other_expected = encoder(audio_features=other_features, audio_feature_lens=lengths)
+    cache.put("cached", expected)
+    payloads = [
+        audio_payload("leader", features, lengths, cache_key="shared"),
+        audio_payload("cached", features, lengths, cache_key="cached"),
+        StagePayload(request_id="skipped", request=OmniRequest(inputs={}), data={}),
+        audio_payload("uncached-1", features, lengths, cache_key=None),
+        audio_payload("evicts-leader", features, lengths, cache_key="last"),
+        audio_payload("follower", features, lengths, cache_key="shared"),
+        audio_payload("uncached-2", other_features, lengths, cache_key=None),
+    ]
+
+    with patch.object(encoder, "forward", wraps=encoder.forward) as forward:
+        outputs = batch_audio_encoder_payloads(payloads, encoder=encoder, cache=cache)
+        assert forward.call_count == 1
+        assert forward.call_args.kwargs["audio_features"].shape[0] == 4
+
+    assert [payload.request_id for payload in outputs] == [
+        "leader",
+        "cached",
+        "skipped",
+        "uncached-1",
+        "evicts-leader",
+        "follower",
+        "uncached-2",
+    ]
+    for payload in outputs:
+        result = payload.data["encoder_outs"]["audio_encoder"]
+        if payload.request_id == "skipped":
+            assert result == {}
+        else:
+            expected_output = (
+                other_expected if payload.request_id == "uncached-2" else expected
+            )
+            torch.testing.assert_close(
+                result["audio_embeds"], expected_output["audio_embeds"]
+            )
+
+    with patch.object(encoder, "forward", wraps=encoder.forward) as forward:
+        cached = batch_audio_encoder_payloads(
+            [audio_payload("cached-again", features, lengths, cache_key="last")],
+            encoder=encoder,
+            cache=cache,
+        )
+        forward.assert_not_called()
+    torch.testing.assert_close(
+        cached[0].data["encoder_outs"]["audio_encoder"]["audio_embeds"],
+        expected["audio_embeds"],
+    )
