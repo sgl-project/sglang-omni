@@ -116,6 +116,7 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
+        "flow_prefix_cache_gb": 24.0,
     }
 
     build_compiled_process_topology(config)
@@ -152,6 +153,7 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
+        "flow_prefix_cache_gb": 24.0,
     }
     args = resolve_stage_typed_kwargs(vocoder)
     assert args["flow_batch_admission_frames"] == 4000

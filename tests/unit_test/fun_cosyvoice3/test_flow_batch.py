@@ -48,6 +48,7 @@ class RecordingEstimator(torch.nn.Module):
 class RecordingPackedEstimator:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.is_ragged = False
 
     def row_attention(
         self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
