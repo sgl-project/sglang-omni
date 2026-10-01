@@ -271,6 +271,7 @@ def condition_batch(payloads, encoder, vae, fusion, device, dtype):
 def create_conditioning_executor(
     model_path: str,
     *,
+    weight_dtype: str,
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
@@ -279,10 +280,14 @@ def create_conditioning_executor(
     max_batch_wait_ms: int = 10,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
+    encoder_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     encoder = AuKConditionEncoder(
-        text_encoder_path, device=device, dtype=torch.bfloat16
+        text_encoder_path,
+        device=device,
+        dtype=torch.bfloat16,
+        weight_dtype=encoder_dtype,
     )
     vae = load_vae(checkpoint, str(device))
     fusion = load_fusion(checkpoint, str(device))

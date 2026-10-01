@@ -43,6 +43,7 @@ class AuKConditionEncoder:
         self,
         model_path: str,
         *,
+        weight_dtype: torch.dtype,
         device: str | torch.device = "cpu",
         dtype: torch.dtype = torch.bfloat16,
     ):
@@ -75,7 +76,7 @@ class AuKConditionEncoder:
         model.lm_head = torch.nn.Identity()
         model.requires_grad_(False)
         model.eval()
-        self.model = model.to(device=self.device, dtype=torch.float32)
+        self.model = model.to(device=self.device, dtype=weight_dtype)
 
     @property
     def num_hidden_layers(self) -> int:

@@ -57,7 +57,11 @@ def models():
         qwen_path=qwen,
     )
     conditioning = create_conditioning_executor(
-        checkpoint, device="cuda", gpu_id=0, text_encoder_path=qwen
+        checkpoint,
+        device="cuda",
+        gpu_id=0,
+        text_encoder_path=qwen,
+        weight_dtype="float32",
     )
     engine = create_auk_engine_executor(
         checkpoint,
