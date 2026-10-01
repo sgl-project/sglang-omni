@@ -22,7 +22,7 @@ from scipy.spatial.distance import jensenshannon
 
 from benchmarks.duplex.v10_dataset import Task
 
-SCORING_VERSION = "fdb-v10-synthetic-v2"
+SCORING_VERSION = "fdb-v10-synthetic-v3"
 # note (Jeffro): Upstream takeover rule; output this short counts as a backchannel, not a turn.
 TAKEOVER_MAX_DURATION_S = 1.0
 TAKEOVER_MAX_WORDS = 3
@@ -43,7 +43,8 @@ SCORING_CONFIG = {
     "that tail is outside the benchmark",
     "pause_handling": "the user pauses mid-sentence; a takeover anywhere in the input "
     "window means the model wrongly treated the pause as the end of the turn; "
-    "lower takeover rate is better",
+    "lower takeover rate is better; words outside Silero VAD speech in the output "
+    "are dropped first, because Whisper invents words on silent output",
     "turn_taking": "the user finishes; words starting at or after the annotated turn "
     "end count, a takeover is the wanted response, and latency is the first such "
     "word minus the turn end; if Silero VAD shows the model already speaking at the "
@@ -210,11 +211,22 @@ def takes_turn(chunks: list[dict[str, JsonValue]]) -> bool:
 
 
 def score_pause_handling(
-    *, sample_id: str, chunks: list[dict[str, JsonValue]], input_duration_s: float
+    *,
+    sample_id: str,
+    chunks: list[dict[str, JsonValue]],
+    input_duration_s: float,
+    output_segments: list[list[float]],
 ) -> dict[str, JsonValue]:
     """Any turn taken anywhere inside the input window is a failure to hold back."""
+    # note (Junnan Li): Whisper returns words such as "Thank you." for silent output.
     window_chunks = [
-        chunk for chunk in chunks if chunk["timestamp"][0] < input_duration_s
+        chunk
+        for chunk in chunks
+        if chunk["timestamp"][0] < input_duration_s
+        and any(
+            chunk["timestamp"][0] < end_s and chunk["timestamp"][1] > start_s
+            for start_s, end_s in output_segments
+        )
     ]
     return {
         "version": SCORING_VERSION,

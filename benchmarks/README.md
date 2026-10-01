@@ -664,9 +664,17 @@ endpoint, one `continuous` session per sample (no clean variant):
 | `synthetic_user_interruption` | user interruption | `interrupt.json` (span plus `context`/`interrupt` text) |
 | `icc_backchannel` | backchannel | none |
 
-It reuses the v1.5 runner, pacing gate, output reconstruction and Whisper
-`transcribe` step, so recording, qualification and the selected-denominator
-rules above apply unchanged. The dataset is acquired separately.
+It reuses the v1.5 runner, pacing gate, output reconstruction and `transcribe`
+step, so recording, qualification and the selected-denominator rules above
+apply unchanged. The dataset is acquired separately.
+
+`transcribe` defaults to the upstream benchmark's ASR, Parakeet
+(`nvidia/parakeet-tdt-0.6b-v2`, a local `.nemo` checkpoint, `nemo_toolkit`
+installed; a separate scoring environment is fine). Like upstream `asr.py`, it
+transcribes a user-interruption sample from the interruption end. `--asr
+whisper` with a Whisper `.pt` checkpoint remains as a diagnostic: Whisper
+returns words such as "Thank you." for silent output and stretches the first
+word back into silence, which inflates pause-handling takeover.
 
 ```bash
 python -m benchmarks.eval.benchmark_duplex_v10 record \
@@ -680,7 +688,7 @@ python -m benchmarks.eval.benchmark_duplex_v10 record \
 
 python -m benchmarks.eval.benchmark_duplex_v10 transcribe \
     --run results/fdb10-run --output results/fdb10-asr \
-    --model-path /models/whisper/large-v3.pt --device cuda
+    --model-path /models/parakeet-tdt-0.6b-v2.nemo --device cuda
 
 python -m benchmarks.eval.benchmark_duplex_v10 score \
     --run results/fdb10-run --output results/fdb10-score \
@@ -688,12 +696,12 @@ python -m benchmarks.eval.benchmark_duplex_v10 score \
     [--backchannel-reference icc_gt_distribution.json]
 ```
 
-`score` (`fdb-v10-synthetic-v2`) reports per-task takeover rate and latency
-from the Whisper word timestamps. A takeover is output lasting at least 1 s or
+`score` (`fdb-v10-synthetic-v3`) reports per-task takeover rate and latency
+from the ASR word timestamps. A takeover is output lasting at least 1 s or
 more than 3 words, as upstream. Every task only counts words starting inside
 the input duration, matching upstream's equal-length `output.wav`.
 
-- Pause handling: any takeover inside the input is a failure.
+- Pause handling: any takeover inside the input is a failure. Words outside Silero VAD speech in the output are dropped first, because Whisper invents words such as "Thank you." on silent output.
 - Turn taking and user interruption only count words starting after the user
   turn or interruption ends; latency is the first such word's start minus that
   end, reported only for takeovers. Silero VAD on the output gates both: a

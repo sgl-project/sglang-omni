@@ -21,6 +21,7 @@ from benchmarks.duplex.v10_dataset import (
     discover_samples,
     inventory,
 )
+from benchmarks.duplex.v15_transcribe import normalize_words, parakeet_words
 from benchmarks.eval.benchmark_duplex_v10 import main
 from tests.unit_test.benchmarks.test_duplex_v15_cli import (
     FakeWhisper,
@@ -181,11 +182,54 @@ def test_pause_handling_only_counts_words_inside_the_input() -> None:
         sample_id="p/1",
         chunks=[word_chunk(0.1, 0.2), word_chunk(2.0, 2.1), word_chunk(2.2, 3.5)],
         input_duration_s=1.0,
+        output_segments=[[0.0, 3.5]],
     )
 
     assert record["num_words"] == 1
     assert record["takeover"] is False
     assert record["window_s"] == [0.0, 1.0]
+
+
+def test_pause_handling_ignores_words_transcribed_from_silence() -> None:
+    # note (Junnan Li): Whisper returns "Thank you." with a word stretched over silent output.
+    invented = [word_chunk(0.0, 0.18), word_chunk(0.18, 11.5)]
+    silent = v10_scoring.score_pause_handling(
+        sample_id="p/1", chunks=invented, input_duration_s=11.52, output_segments=[]
+    )
+    spoken = v10_scoring.score_pause_handling(
+        sample_id="p/2",
+        chunks=invented,
+        input_duration_s=11.52,
+        output_segments=[[0.1, 2.0]],
+    )
+
+    assert (silent["num_words"], silent["takeover"]) == (0, False)
+    assert (spoken["num_words"], spoken["takeover"]) == (2, True)
+
+
+def test_parakeet_words_follow_the_upstream_interruption_crop() -> None:
+    transcribed_frames = []
+
+    def transcribe(paths: list[str], timestamps: bool) -> list[types.SimpleNamespace]:
+        transcribed_frames.append(soundfile.info(paths[0]).frames)
+        return [
+            types.SimpleNamespace(
+                timestamp={"word": [{"word": "hi", "start": 0.1, "end": 0.3}]}
+            )
+        ]
+
+    model = types.SimpleNamespace(transcribe=transcribe)
+    audio = np.zeros(2 * 24000, dtype=np.float32)
+    whole = parakeet_words(model, audio, 24000, 0.0)
+    cropped = parakeet_words(model, audio, 24000, 1.5)
+    past_the_end = parakeet_words(model, audio, 24000, 2.0)
+
+    assert transcribed_frames == [48000, 12000]
+    assert whole["words"][0]["start"] == 0.1
+    assert normalize_words(cropped["words"], 2.0, 0.08) == [
+        {"text": "hi", "timestamp": [pytest.approx(1.6), pytest.approx(1.8)]}
+    ]
+    assert past_the_end["words"] == []
 
 
 def test_response_latency_gates_and_window() -> None:
@@ -355,7 +399,7 @@ def test_record_transcribe_and_score_every_task(
     )
     code, counts = run_cli(
         ["transcribe", "--run", str(run), "--output", str(tmp_path / "asr")]
-        + ["--model-path", str(model_path), "--device", "cpu"]
+        + ["--asr", "whisper", "--model-path", str(model_path), "--device", "cpu"]
     )
     assert code == 0 and counts == {"not_qualified:invalid": 1, "transcribed": 4}
 

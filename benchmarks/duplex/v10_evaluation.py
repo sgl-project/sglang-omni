@@ -124,11 +124,14 @@ def score_run(
             )
             score_record["output_vad"] = output_vad
         elif task == "pause_handling":
+            output_vad = speech_segments(output_wav)
             score_record = v10_scoring.score_pause_handling(
                 sample_id=sample["id"],
                 chunks=chunks,
                 input_duration_s=variant_state["input"]["duration_s"],
+                output_segments=output_vad["segments"],
             )
+            score_record["output_vad"] = output_vad
         elif task == "turn_taking":
             output_vad = speech_segments(output_wav)
             score_record = v10_scoring.score_turn_taking(

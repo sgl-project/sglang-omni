@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     transcribe_parser = commands.add_parser(
         "transcribe", help="Word-timestamped Whisper ASR of generated output audio"
     )
-    add_transcribe_arguments(transcribe_parser, timeline_help)
+    add_transcribe_arguments(transcribe_parser, timeline_help, "whisper")
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
