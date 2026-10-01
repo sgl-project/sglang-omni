@@ -180,8 +180,16 @@ class AdaLayerNorm(nn.Module):
         self.linear = nn.Linear(dim, dim * 6)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor | None = None):
-        emb = self.linear(self.silu(emb))
+    def forward(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor | None = None,
+        modulation: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if modulation is None:
+            emb = self.linear(self.silu(emb))
+        else:
+            emb = modulation
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(
             emb, 6, dim=1
         )
@@ -199,8 +207,16 @@ class AdaLayerNormFinal(nn.Module):
         self.linear = nn.Linear(dim, dim * 2)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
-        emb = self.linear(self.silu(emb))
+    def forward(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor | None,
+        modulation: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if modulation is None:
+            emb = self.linear(self.silu(emb))
+        else:
+            emb = modulation
         scale, shift = torch.chunk(emb, 2, dim=1)
         return self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
 
@@ -400,8 +416,11 @@ class DiTBlock(nn.Module):
         mask: torch.Tensor | None = None,
         rope=None,
         bias: torch.Tensor | None = None,
+        modulation: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
+            x, emb=t, modulation=modulation
+        )
         x = x + gate_msa.unsqueeze(1) * self.attn(
             x=norm, mask=mask, rope=rope, bias=bias
         )
@@ -452,12 +471,17 @@ class MMDiTBlock(nn.Module):
         c_rope=None,
         c_mask: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
-    ):
+        modulation: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if modulation is None:
+            context_modulation = audio_modulation = None
+        else:
+            context_modulation, audio_modulation = modulation.unbind(0)
         norm_c, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.attn_norm_c(
-            c, emb=t
+            c, emb=t, modulation=context_modulation
         )
         norm_x, x_gate_msa, x_shift_mlp, x_scale_mlp, x_gate_mlp = self.attn_norm_x(
-            x, emb=t
+            x, emb=t, modulation=audio_modulation
         )
         x_attn, c_attn = self.attn(
             x=norm_x,
@@ -717,13 +741,17 @@ class AuKDit(nn.Module):
         ref_mask: torch.Tensor | None = None,
         audio_positions: torch.Tensor | None = None,
         joint_positions: torch.Tensor | None = None,
+        time_modulations: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch = x.shape[0]
         if time.ndim == 0:
             time = time.repeat(batch)
         else:
             pass
-        t = self.time_embed(time)
+        if time_modulations is None:
+            t = self.time_embed(time)
+        else:
+            t = None
 
         if c_mask is None:
             c_mask = text.abs().sum(-1) > 0
@@ -761,7 +789,10 @@ class AuKDit(nn.Module):
 
             x = torch.cat((x_cond, x_uncond), dim=0)
             c = torch.cat((c_cond, c_uncond), dim=0)
-            t = torch.cat((t, t), dim=0)
+            if t is not None:
+                t = torch.cat((t, t), dim=0)
+            else:
+                pass
             audio_mask = (
                 torch.cat((a_mask_cond, a_mask_uncond), dim=0)
                 if a_mask_cond is not None and a_mask_uncond is not None
@@ -797,7 +828,12 @@ class AuKDit(nn.Module):
         else:
             pass
 
-        for block in self.transformer_blocks:
+        for index, block in enumerate(self.transformer_blocks):
+            modulation = (
+                None
+                if time_modulations is None
+                else time_modulations[2 * index : 2 * index + 2]
+            )
             c, x = block(
                 x,
                 c,
@@ -807,12 +843,30 @@ class AuKDit(nn.Module):
                 c_rope=rope_text,
                 c_mask=c_mask,
                 bias=joint_bias,
+                modulation=modulation,
             )
 
         x = torch.cat([c, x], dim=1)
         rope = self.build_rope(text_len + seq_len, joint_positions)
-        for block in self.single_transformer_blocks:
-            x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
+        for index, block in enumerate(self.single_transformer_blocks):
+            modulation = (
+                None
+                if time_modulations is None
+                else time_modulations[2 * len(self.transformer_blocks) + index]
+            )
+            x = block(
+                x,
+                t,
+                mask=single_mask,
+                rope=rope,
+                bias=single_bias,
+                modulation=modulation,
+            )
 
         x = x[:, text_len + prompt_len :]
-        return self.proj_out(self.norm_out(x, t))
+        modulation = (
+            None
+            if time_modulations is None
+            else time_modulations[-1, :, : self.norm_out.linear.out_features]
+        )
+        return self.proj_out(self.norm_out(x, t, modulation=modulation))

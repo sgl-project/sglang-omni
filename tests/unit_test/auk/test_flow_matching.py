@@ -5,7 +5,13 @@ import torch
 import torch.nn.functional as F
 
 from sglang_omni.models.auk.dit import AuKDit, ConvPositionEmbedding
-from sglang_omni.models.auk.flow_matching import fuse_hidden_states
+from sglang_omni.models.auk.flow_matching import (
+    AuKFlowMatching,
+    AuKSampleItem,
+    AuKTimeModulationCache,
+    fuse_hidden_states,
+)
+from sglang_omni.models.auk.step_cuda_graph import build_step_graph_runner
 
 
 @pytest.mark.accelerator
@@ -351,3 +357,133 @@ def test_a_batch_the_runner_declines_is_not_padded(monkeypatch):
     declining.batch = 2
     flow.sample_batch(items, steps=2, cfg_strength=2.0, step_graph=declining)
     assert set(widths) == {19}
+
+
+@pytest.mark.parametrize("cfg_strength", [0.0, 2.0])
+@pytest.mark.parametrize("batch_size", [1, 2, 3])
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+def test_time_modulation_cache_preserves_sampling_and_fallbacks(
+    cfg_strength: float, batch_size: int, device_name: str
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    else:
+        pass
+    torch.manual_seed(47)
+    dtype = torch.bfloat16 if device_name == "cuda" else torch.float32
+    flow = (
+        AuKFlowMatching(
+            AuKDit(
+                dim=32,
+                heads=2,
+                dim_head=16,
+                latent_dim=8,
+                text_hidden_dim=16,
+                num_layers=1,
+                num_single_layers=1,
+            ),
+            num_llm_layers=2,
+        )
+        .to(device=device_name, dtype=dtype)
+        .eval()
+    )
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    sampling = dict(
+        steps=3, cfg_strength=cfg_strength, sway_sampling_coef=-1.0, t_grid=None
+    )
+    cache = AuKTimeModulationCache(flow.transformer, **sampling, batch_sizes=(1, 2))
+    items = [
+        AuKSampleItem(
+            torch.randn(5 + index, 16, device=device_name),
+            torch.ones(5 + index, device=device_name, dtype=torch.bool),
+            19 - index,
+            torch.randn(4, 8, device=device_name),
+            seed=index,
+            ref_length=3,
+        )
+        for index in range(batch_size)
+    ]
+    with torch.inference_mode():
+        for override in [
+            {},
+            {"steps": 2},
+            {"sway_sampling_coef": 0.0},
+            {"cfg_strength": 0.0 if cfg_strength else 2.0},
+            {"t_grid": (0.0, 0.3, 0.8, 1.0)},
+        ]:
+            recipe = {**sampling, **override}
+            expected = flow.sample_batch(items, **recipe)
+            actual = flow.sample_batch(items, **recipe, time_modulation_cache=cache)
+            for observed, reference in zip(actual, expected):
+                torch.testing.assert_close(observed, reference, rtol=0, atol=0)
+        flow.transformer.norm_out.linear.bias.add_(0.2)
+        expected = flow.sample_batch(items, **sampling)
+        actual = flow.sample_batch(items, **sampling, time_modulation_cache=cache)
+        for observed, reference in zip(actual, expected):
+            torch.testing.assert_close(observed, reference, rtol=0, atol=0)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_time_modulation_graph_replays_changed_inputs_and_declines_a_different_grid() -> (
+    None
+):
+    torch.manual_seed(53)
+    device = torch.device("cuda")
+    flow = (
+        AuKFlowMatching(
+            AuKDit(
+                dim=32,
+                heads=2,
+                dim_head=16,
+                latent_dim=8,
+                text_hidden_dim=16,
+                num_layers=1,
+                num_single_layers=1,
+            ),
+            num_llm_layers=2,
+        )
+        .to(device=device, dtype=torch.bfloat16)
+        .eval()
+    )
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    sampling = dict(steps=4, cfg_strength=2.0, sway_sampling_coef=-1.0, t_grid=None)
+    cache = AuKTimeModulationCache(flow.transformer, **sampling, batch_sizes=(1,))
+    runner = build_step_graph_runner(device, [(1, 19, 4, 7)])
+    assert runner is not None
+    items = [
+        AuKSampleItem(
+            torch.randn(7, 16, device=device),
+            torch.ones(7, device=device, dtype=torch.bool),
+            19,
+            torch.randn(4, 8, device=device),
+            seed=9,
+            ref_length=3,
+        )
+    ]
+    with torch.inference_mode():
+        runner.capture_declared(
+            lambda shape: flow.sample_batch(
+                items,
+                **sampling,
+                step_graph=runner,
+                time_modulation_cache=cache,
+            )
+        )
+        assert len(runner.ready) == 1
+        for seed in [17, 3, 29]:
+            items[0].seed = seed
+            items[0].conditioning.add_(0.1)
+            expected = flow.sample_batch(items, **sampling, step_graph=runner)
+            actual = flow.sample_batch(
+                items, **sampling, step_graph=runner, time_modulation_cache=cache
+            )
+            torch.testing.assert_close(actual[0], expected[0], rtol=0, atol=0)
+        changed = {**sampling, "sway_sampling_coef": 0.0}
+        expected = flow.sample_batch(items, **changed, step_graph=runner)
+        actual = flow.sample_batch(
+            items, **changed, step_graph=runner, time_modulation_cache=cache
+        )
+        torch.testing.assert_close(actual[0], expected[0], rtol=0, atol=0)

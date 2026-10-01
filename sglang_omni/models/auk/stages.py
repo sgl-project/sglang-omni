@@ -21,6 +21,7 @@ from sglang_omni.models.auk.dit import AuKDit, AuKDitConfig
 from sglang_omni.models.auk.flow_matching import (
     AuKFlowMatching,
     AuKSampleItem,
+    AuKTimeModulationCache,
     fuse_hidden_states,
     request_generator,
 )
@@ -156,7 +157,9 @@ def warmup_flow(
     flow: AuKFlowMatching,
     device: torch.device,
     dtype: torch.dtype,
-    sampling: Mapping[str, int | float | tuple[float, ...] | None],
+    sampling: Mapping[
+        str, int | float | tuple[float, ...] | AuKTimeModulationCache | None
+    ],
     step_graph: AuKStepCudaGraphRunner | None = None,
 ) -> None:
     """Pay the block compile, and every declared graph capture, at startup.
@@ -167,7 +170,11 @@ def warmup_flow(
     started = time.perf_counter()
     # note(Dayuxiaoshui): the released time grid overrides steps where a
     # checkpoint declares one, and only the shapes matter here, so it goes.
-    one_step = {**sampling, "steps": 1, "t_grid": None}
+    if sampling.get("time_modulation_cache") is None:
+        one_step = {**sampling, "steps": 1, "t_grid": None}
+    else:
+        # note (BBuf): graph capture must select the same fixed-grid table as requests.
+        one_step = dict(sampling)
     # note(Dayuxiaoshui): under inference_mode like the request path, so
     # dynamo compiles once.
     with torch.inference_mode(), autocast(device, dtype):
@@ -353,6 +360,7 @@ def create_auk_engine_executor(
     weight_dtype: str = "float32",
     enable_dit_torch_compile: bool = False,
     enable_dit_cuda_graph: bool = False,
+    enable_dit_time_modulation_cache: bool = False,
     dit_cuda_graph_capture_shapes: Sequence[Sequence[int]] | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     """Build the DiT sampling stage.
@@ -396,6 +404,20 @@ def create_auk_engine_executor(
         else:
             pass
         step_graph = build_step_graph_runner(device, dit_cuda_graph_capture_shapes)
+    else:
+        pass
+    if enable_dit_time_modulation_cache:
+        if backbone_dtype != torch.bfloat16:
+            raise ValueError(
+                "AuK modulation precompute requires bfloat16 backbone weights"
+            )
+        else:
+            pass
+        sampling["time_modulation_cache"] = AuKTimeModulationCache(
+            flow.transformer,
+            **sampling,
+            batch_sizes=tuple(range(1, min(max_batch_size, 2) + 1)),
+        )
     else:
         pass
     if enable_dit_torch_compile or step_graph is not None:

@@ -22,7 +22,8 @@ else:
 
 LRELU_SLOPE = 0.1
 MAX_CUDA_GRID_AXIS = 65535
-MAX_RESAMPLE_OFFSET = 2**31 - 1
+# note (BBuf): leave room for masked block lanes and stride-two filter offsets.
+MAX_RESAMPLE_OFFSET = 2**31 - 1024
 
 
 # vendored: alias-free-torch (anti-aliased periodic activations)
