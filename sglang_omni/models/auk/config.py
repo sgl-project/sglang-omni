@@ -57,7 +57,9 @@ class AuKPipelineConfig(PipelineConfig):
                 max_batch_wait_ms=10,
                 weight_dtype="bfloat16",
                 enable_dit_torch_compile=True,
-                enable_dit_cuda_graph=True,
+                # XPU's fused SDPA cannot be captured, and a step graph on its
+                # math attention measures slower than compiled eager.
+                enable_dit_cuda_graph=current_platform.device_type != "xpu",
             ),
             gpu=0,
             next=DECODE_STAGE,

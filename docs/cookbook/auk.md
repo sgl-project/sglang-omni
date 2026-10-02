@@ -88,7 +88,7 @@ Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.
 
 The DiT stores its weights in BF16 and runs without autocast by default (`--auk_engine.factory.weight_dtype bfloat16`), which removes the per-step FP32-to-BF16 weight casts. Set `--auk_engine.factory.weight_dtype float32` to keep FP32 weights with BF16 autocast instead; that is the upstream-exact recipe the parity test compares against, at roughly 1.3x the sampling time. The ODE state is integrated in FP32 in both modes.
 
-Two further sampling-speed options are on by default. `--auk_engine.factory.enable_dit_torch_compile` compiles each transformer block once for all blocks of its kind, folding the modulation, gating, and normalization chain into the matmul stream. `--auk_engine.factory.enable_dit_cuda_graph` captures one whole Euler step as a CUDA graph and replays it for every NFE step: only the noised latent and the timestep change between steps, so one capture serves a whole trajectory, and every later request whose shape it covers. Set either to `false` to fall back. The graph removes op-issue time and nothing else, so what it is worth depends on whether issuing a step costs more than running it; benchmark it on your own card before assuming it does.
+Two further sampling-speed options are on by default on CUDA; see [Intel XPU](#intel-xpu) for its defaults. `--auk_engine.factory.enable_dit_torch_compile` compiles each transformer block once for all blocks of its kind, folding the modulation, gating, and normalization chain into the matmul stream. `--auk_engine.factory.enable_dit_cuda_graph` captures one whole Euler step as a CUDA graph and replays it for every NFE step: only the noised latent and the timestep change between steps, so one capture serves a whole trajectory, and every later request whose shape it covers. Set either to `false` to fall back. The graph removes op-issue time and nothing else, so what it is worth depends on whether issuing a step costs more than running it; benchmark it on your own card before assuming it does.
 
 Graph capture requires padding, so a batch pads up to a declared capture shape -- a `(batch, frames, reference frames, text tokens)` tuple -- and only to one that covers it on every axis. The default list is the cross product of five frame rungs (192 to 768 frames, roughly 4s to 15s of audio), two conditioning profiles (an instruction alone, and a cloned voice carrying its reference's own tokens), and batch sizes 1 and 2; set your own with `--auk_engine.factory.dit_cuda_graph_capture_shapes`. A batch no declared shape covers -- a long reference, a wide batch -- runs the step eagerly and unpadded, since padding only pays for itself when it buys a replay.
 
@@ -113,6 +113,37 @@ leaves the conditioner, VAE, and sampling recipe unchanged. Non-CUDA devices
 and AuK-Flash use the native path. The first request may include Triton JIT
 compilation; the 32-step AuK checkpoint has been validated on H100 with FP32
 weights under BF16 autocast and with native BF16 weights.
+
+## Intel XPU
+
+AuK and AuK-Flash serve on one Intel XPU card with the PyTorch XPU install from [Installation on Intel XPU](../get_started/installation_xpu.md); as that guide says, do not source a oneAPI environment for serving (in an A/B run it changed no output and made eager sampling 20-30% slower). Pin the server to a card with `ZE_AFFINITY_MASK`. All four stages share that card and the FP32 Qwen encoder alone takes about 15 GB, so run one AuK server per 24 GB card. The DiT Q/K fusion kernel and the overlapping stage streams are CUDA only; XPU runs the native path on the default queue.
+
+```bash
+ZE_AFFINITY_MASK=0 python -m sglang_omni.cli serve --model-path tencent/AuK --port 8000
+```
+
+On XPU, `enable_dit_torch_compile` stays on and `enable_dit_cuda_graph` defaults to `false`. XPU's fused SDPA cannot be recorded, so a capture pins attention to the flash and math kernels, and the mask a padded batch carries selects math. The replayed step measures slower than a compiled eager one (table below). To use the step graph anyway, turn compilation off with it:
+
+```bash
+ZE_AFFINITY_MASK=0 python -m sglang_omni.cli serve --model-path tencent/AuK --port 8000 \
+  --auk_engine.factory.enable_dit_cuda_graph true \
+  --auk_engine.factory.enable_dit_torch_compile false
+```
+
+The graph with compilation left on is refused at startup: the compiled blocks keep the attention they were traced with, which an XPU graph cannot record. Each capture needs 4 GB of free device memory, so on a 24 GB card only the batch-1 shapes of the default list capture (7 of 20 for AuK, 10 of 20 for AuK-Flash, holding 1.6-1.8 GB) and the rest run eager; the startup log reports the count.
+
+Measured on one Arc Pro B60 (24 GB) with torch 2.13.0+xpu, after warmup. DiT is the sampling stage alone; request is the end-to-end HTTP time.
+
+| Checkpoint | DiT mode | Startup | 3 s speech: DiT / request / RTF | Voice clone: DiT / request | Free after startup |
+|---|---|---|---|---|---|
+| AuK | compiled (default) | 60 s | 0.85 s / 1.13 s / 0.38 | 1.18 s / 1.59 s | 2.2 GB |
+| AuK | step graph | 45 s | 1.90 s / 2.19 s / 0.73 | 5.50 s / 5.90 s | 0.6 GB |
+| AuK-Flash | compiled (default) | 65 s | 0.12 s / 0.43 s / 0.14 | 0.12 s / 0.68 s | 2.3 GB |
+| AuK-Flash | step graph | 65 s | 0.15 s / 0.47 s / 0.16 | 0.36 s / 0.92 s | 2.0 GB |
+
+Some requests pay a one-time cost. oneDNN builds the VAE's convolution kernels for each exact output length, so the first request at a new duration spends 3-4 s more in decoding. The startup warmup compiles the DiT blocks at small shapes, so the first voice clone recompiled them once (6-7 s), and so did the first batch wider than two (10-25 s).
+
+Speech generation is bit-reproducible for a fixed seed on XPU. Voice cloning and editing are close but not bit-exact. Their prompts carry the reference audio's tokens, and above 128 rows oneDNN's BF16 matmul for the Qwen encoder's MLP down projection does not reduce in a fixed order. Two identical requests then differ at BF16 rounding level, with a waveform correlation of 0.995 or higher. `torch.use_deterministic_algorithms(True)` removes the drift, but it nearly doubles that matmul and applies to the whole process.
 
 ## SeedTTS Evaluation
 
