@@ -2896,8 +2896,9 @@ def test_transcription_endpoint_returns_text_json() -> None:
         ),
     ],
 )
+@pytest.mark.parametrize("stream", [False, True])
 def test_chat_endpoint_classifies_embedded_audio_errors(
-    error: str, expected_status: int
+    error: str, expected_status: int, stream: bool
 ) -> None:
     client = TestClient(create_app(fault_client("qwen3-omni", error=error)))
     response = client.post(
@@ -2906,10 +2907,29 @@ def test_chat_endpoint_classifies_embedded_audio_errors(
             "model": "qwen3-omni",
             "messages": [{"role": "user", "content": "Describe the video."}],
             "use_audio_in_video": True,
+            "stream": stream,
         },
     )
-    assert response.status_code == expected_status
-    assert error in response.text
+    if stream:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        events = [
+            line.removeprefix("data: ")
+            for line in response.iter_lines()
+            if line.startswith("data: ")
+        ]
+        assert events[-1] == "[DONE]"
+        assert events.count("[DONE]") == 1
+        assert json.loads(events[-2])["error"] == {
+            "message": error,
+            "type": (
+                "invalid_request_error" if expected_status == 400 else "server_error"
+            ),
+            "code": expected_status,
+        }
+    else:
+        assert response.status_code == expected_status
+        assert error in response.text
 
 
 def test_transcription_endpoint_maps_disallowed_special_token_to_400() -> None:
