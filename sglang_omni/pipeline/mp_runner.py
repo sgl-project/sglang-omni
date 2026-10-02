@@ -27,7 +27,11 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    PipelineConfig,
+    StageConfig,
+    parse_replica_instance_name,
+)
 from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
 from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
 from sglang_omni.pipeline import Coordinator
@@ -44,6 +48,7 @@ from sglang_omni.pipeline.stage_workers import (
     StageWorkerProcessSpec,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
+from sglang_omni.utils.cpu import effective_cpu_count
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
@@ -170,6 +175,7 @@ def build_stage_groups(
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
+        logical_stage_name, _ = parse_replica_instance_name(stage_cfg.name)
         tp_size = stage_cfg.tp_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
@@ -194,7 +200,7 @@ def build_stage_groups(
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
-            env_defaults={**config.resolved_env_defaults(), **stage_cfg.env},
+            env_defaults=config.resolved_stage_env_defaults(logical_stage_name),
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -273,6 +279,42 @@ def build_stage_groups(
     attach_process_memory_fraction_defaults(groups)
 
     return groups
+
+
+def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
+    """Set equal-share thread-pool fallbacks for final OS worker processes.
+
+    Environment and model policies can override these defaults; their sum
+    does not bound the pipeline's concurrent CPU usage.
+    """
+    process_specs = [spec for group in groups for spec in group.process_specs]
+    if not process_specs:
+        return {}
+    else:
+        pass
+
+    cpu_budget = effective_cpu_count()
+    process_count = len(process_specs)
+    threads_per_process = max(1, cpu_budget // process_count)
+    plan = {}
+    for spec in process_specs:
+        spec.cpu_threads = threads_per_process
+        plan[spec.process_name] = threads_per_process
+
+    allocations = {
+        spec.process_name: {
+            "fallback_threads": spec.cpu_threads,
+            "stages": [stage.stage_name for stage in spec.stage_specs],
+        }
+        for spec in process_specs
+    }
+    logger.info(
+        f"CPU thread fallback plan: budget={cpu_budget} processes={process_count} "
+        f"fallback_threads_per_process={threads_per_process} "
+        f"fallback_overcommitted={str(process_count > cpu_budget).lower()} "
+        f"allocations={allocations}"
+    )
+    return plan
 
 
 def attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
@@ -631,6 +673,7 @@ class MultiProcessPipelineRunner:
                 process_plan=prep.process_plan,
                 replica_topology=prep.replica_topology,
             )
+            apply_cpu_thread_plan(groups)
 
             # Note (Jiaxin Deng): roles are assigned before the coordinator
             # binds and before any child is spawned, so an unshareable topology

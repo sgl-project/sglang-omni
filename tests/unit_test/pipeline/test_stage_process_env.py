@@ -52,6 +52,57 @@ def worker_spec(*stage_specs: StageLaunchConfig) -> StageWorkerProcessSpec:
     )
 
 
+@pytest.mark.parametrize("parent_threads", [None, "4"])
+def test_spawn_env_applies_cpu_plan_and_respects_parent(
+    monkeypatch: pytest.MonkeyPatch, parent_threads: str | None
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.delenv("SGLANG_OMNI_OMP_FROM_CPU_PLAN", raising=False)
+    if parent_threads is not None:
+        monkeypatch.setenv("OMP_NUM_THREADS", parent_threads)
+    else:
+        pass
+    spec = worker_spec(StageLaunchConfig(stage_name="preprocess"))
+    spec.cpu_threads = 9
+
+    with patched_spawn_env(spec):
+        assert os.environ["OMP_NUM_THREADS"] == (parent_threads or "9")
+        assert os.environ.get("SGLANG_OMNI_OMP_FROM_CPU_PLAN") == (
+            "1" if parent_threads is None else None
+        )
+
+    assert os.environ.get("OMP_NUM_THREADS") == parent_threads
+    assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+
+@pytest.mark.parametrize(
+    "env_defaults,extra_env,expected_threads",
+    [
+        ({"OMP_NUM_THREADS": "1"}, {}, "1"),
+        ({"OMP_NUM_THREADS": "1"}, {"OMP_NUM_THREADS": "2"}, "2"),
+    ],
+)
+def test_spawn_env_cpu_plan_preserves_configured_omp(
+    monkeypatch: pytest.MonkeyPatch,
+    env_defaults: dict[str, str],
+    extra_env: dict[str, str],
+    expected_threads: str,
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.delenv("SGLANG_OMNI_OMP_FROM_CPU_PLAN", raising=False)
+    spec = worker_spec(
+        StageLaunchConfig(stage_name="preprocess", env_defaults=env_defaults)
+    )
+    spec.cpu_threads = 37
+
+    with patched_spawn_env(spec, extra_env=extra_env):
+        assert os.environ["OMP_NUM_THREADS"] == expected_threads
+        assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+    assert "OMP_NUM_THREADS" not in os.environ
+    assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+
 def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
     env = cuda_platform.get_stage_process_env(
         tp_spec(gpu_id=1), {"CUDA_VISIBLE_DEVICES": "3,4"}
