@@ -246,39 +246,31 @@ class MiniCPMOImageEncoder(nn.Module):
 
         chunk = self.vision_batch_size
         if batch_size > chunk:
-            hs = []
-            for start in range(0, batch_size, chunk):
-                end = start + chunk
-                hs.append(
-                    self.run_vpm(
-                        all_pixel_values[start:end],
-                        patch_attn_mask[start:end],
-                        tgt_sizes[start:end],
-                        patch_counts_cpu[start:end],
-                    )
-                )
-            vision_embedding = torch.vstack(hs)
-        else:
-            vision_embedding = self.run_vpm(
-                all_pixel_values, patch_attn_mask, tgt_sizes, patch_counts_cpu
-            )
-
-        # note (MayDomine): chunk the resampler too to bound video attention memory.
-        if batch_size > chunk:
+            # note (ischencheng): retain only resampled chunks to bound VPM memory.
             resampled = []
             for start in range(0, batch_size, chunk):
                 end = start + chunk
                 chunk_tgt_sizes = tgt_sizes[start:end]
                 chunk_patch_counts = patch_counts_cpu[start:end]
                 chunk_max_patches = int(chunk_patch_counts.max())
+                vision_embedding = self.run_vpm(
+                    all_pixel_values[start:end],
+                    patch_attn_mask[start:end],
+                    chunk_tgt_sizes,
+                    chunk_patch_counts,
+                )
                 resampled.append(
                     self.resampler(
-                        vision_embedding[start:end, :chunk_max_patches],
+                        vision_embedding[:, :chunk_max_patches],
                         chunk_tgt_sizes,
                     )
                 )
+                del vision_embedding
             vision_embedding = torch.cat(resampled, dim=0)
         else:
+            vision_embedding = self.run_vpm(
+                all_pixel_values, patch_attn_mask, tgt_sizes, patch_counts_cpu
+            )
             vision_embedding = self.resampler(vision_embedding, tgt_sizes)
 
         return {"image_embeds": vision_embedding.flatten(0, 1)}
