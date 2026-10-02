@@ -64,6 +64,8 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
         fake_processor  # noqa: leading-underscore  # production name
     )
     preprocessor.speech_enabled = False
+    preprocessor.video_resize_executor = None
+    preprocessor.video_resize_workers = 1
     preprocessor.tokenizer = SimpleNamespace()
     monkeypatch.setattr(
         preprocessor,
@@ -125,6 +127,8 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
         "total_pixels": 8192,
         "extract_audio": bool(use_audio_in_video),
         "audio_target_sr": 16000,
+        "resize_executor": None,
+        "resize_workers": 1,
     }
     assert len(fake_processor.images[0]) == 2
     assert fake_processor.options == {"max_slice_nums": 1, "use_image_id": False}
@@ -162,6 +166,8 @@ def test_minicpm_video_options_preserve_other_media(
         fake_processor  # noqa: leading-underscore  # production name
     )
     preprocessor.speech_enabled = False
+    preprocessor.video_resize_executor = None
+    preprocessor.video_resize_workers = 1
     monkeypatch.setattr(
         preprocessor, "render_chat_template", lambda messages, **_: str(messages)
     )

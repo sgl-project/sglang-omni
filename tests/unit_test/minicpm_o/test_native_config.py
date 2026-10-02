@@ -11,8 +11,13 @@ import pytest
 from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.minicpm_o import stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
+from sglang_omni.models.minicpm_o.config import (
+    MiniCPMOPipelineConfig,
+    preprocessing_stage,
+)
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 
 
@@ -115,3 +120,20 @@ def test_engine_factory_resolves_native_config_before_server_args(
     overrides = {} if trust_override is None else {"trust_remote_code": trust_override}
     with pytest.raises(ConfigLoaded):
         factory(str(snapshot), server_args_overrides=overrides)
+
+
+def test_preprocessing_concurrency_is_enabled_by_default() -> None:
+    stage = preprocessing_stage(process="pipeline")
+    assert stage.factory.max_concurrency == 4
+    assert stage.factory.video_resize_workers == 8
+
+
+def test_preprocessing_video_resize_settings_are_cli_overridable() -> None:
+    config = MiniCPMOPipelineConfig(model_path="unused")
+    merged = ConfigManager(config).merge_config(
+        [
+            ("preprocessing.factory.video_resize_workers", "0"),
+        ]
+    )
+    factory = merged.stage_named("preprocessing").factory
+    assert factory.video_resize_workers == 0

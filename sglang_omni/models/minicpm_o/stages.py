@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 from collections.abc import Mapping
+from concurrent.futures import Executor, ThreadPoolExecutor
 
 import torch
 import torch.nn as nn
@@ -25,6 +27,7 @@ from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.profiler.event_recorder import emit as emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
@@ -38,6 +41,7 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.streaming_detokenizer import StreamingDetokenizeScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.misc import avail_gpu_mem
@@ -49,10 +53,53 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     speech_enabled: bool = False,
-) -> SimpleScheduler[StagePayload, StagePayload]:
-    preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
+    max_concurrency: int,
+    video_resize_workers: int = 8,
+) -> (
+    SimpleScheduler[StagePayload, StagePayload]
+    | ThreadedSimpleScheduler[StagePayload, StagePayload]
+):
+    video_resize_executor: Executor | None = None
+    if video_resize_workers > 1:
+        video_resize_executor = ThreadPoolExecutor(
+            max_workers=video_resize_workers,
+            thread_name_prefix="minicpmo-video-resize",
+        )
+        atexit.register(video_resize_executor.shutdown)
+        logger.info(
+            f"MiniCPM-o parallel video resize enabled: workers={video_resize_workers} "
+            f"torch_intra_op_threads={torch.get_num_threads()}"
+        )
+    else:
+        pass
+    preprocessor = MiniCPMOPreprocessor(
+        model_path,
+        speech_enabled=speech_enabled,
+        video_resize_executor=video_resize_executor,
+        video_resize_workers=video_resize_workers,
+    )
 
-    return SimpleScheduler[StagePayload, StagePayload](preprocessor)
+    async def preprocess_with_events(payload: StagePayload) -> StagePayload:
+        emit_event(
+            request_id=payload.request_id,
+            stage="preprocessing",
+            event_name="preprocess_start",
+        )
+        try:
+            return await preprocessor(payload)
+        finally:
+            emit_event(
+                request_id=payload.request_id,
+                stage="preprocessing",
+                event_name="preprocess_end",
+            )
+
+    if max_concurrency == 1:
+        return SimpleScheduler[StagePayload, StagePayload](preprocess_with_events)
+    else:
+        return ThreadedSimpleScheduler[StagePayload, StagePayload](
+            preprocess_with_events, max_concurrency=max_concurrency
+        )
 
 
 ENCODER_CACHE_MAX_ENTRIES = 64
