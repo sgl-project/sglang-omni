@@ -98,6 +98,20 @@ Padded rows are computed and discarded, not blended in: the attention bias sends
 
 Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
 
+## Fixed-grid timestep modulation
+
+With BF16 backbone weights, `--auk_engine.factory.enable_dit_time_modulation_cache true`
+precomputes the timestep-only normalization projections at startup. Each projection
+uses the same batch shape and rounding as ordinary sampling. The cache holds batch
+sizes 1 and 2 (limited by `max_batch_size`); larger batches run the original projections.
+The standard 32-step model uses about 138 MiB for both tables.
+
+This option defaults to false. It requires finite, strictly increasing sampling
+timesteps. A different sampling grid, guidance mode, training mode, autocast context,
+or changed projection weights falls back to ordinary sampling. CUDA Graph capture
+includes the selected table in its key, so a graph for one table cannot serve a
+different recipe. Rebuild the stage after replacing model weights to precompute again.
+
 ## DiT Q/K fusion
 
 On CUDA, the DiT uses a Triton kernel that fuses per-head RMSNorm with
