@@ -41,6 +41,7 @@ async def run_concurrency(
     timeout_s: float,
     reserve_s: float,
     pacing: Literal["realtime", "lockstep"] = "realtime",
+    stagger: bool = False,
 ) -> dict[str, JsonValue]:
     if concurrency < 1:
         raise ValueError("concurrency must be positive")
@@ -69,6 +70,12 @@ async def run_concurrency(
                 start_gate=start_gate,
                 ready=ready[index],
                 pacing=pacing,
+                # note (Junnan Li): Spread starts over one native unit so unit boundaries do not coincide.
+                start_offset_s=(
+                    index / concurrency * PROFILES[profile].native_unit_ms / 1000
+                    if stagger
+                    else 0.0
+                ),
             )
         )
         task.add_done_callback(
@@ -277,6 +284,11 @@ def main() -> None:
         help="lockstep sends each unit when the previous one is done",
     )
     parser.add_argument(
+        "--stagger",
+        action="store_true",
+        help="spread session starts evenly over one native unit",
+    )
+    parser.add_argument(
         "--warmup-runs",
         type=int,
         default=0,
@@ -326,6 +338,7 @@ def main() -> None:
                 timeout_s=args.timeout_s,
                 reserve_s=args.startup_reserve_ms / 1000,
                 pacing=args.pacing,
+                stagger=args.stagger,
             )
             for level in levels
         ]

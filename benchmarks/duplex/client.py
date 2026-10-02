@@ -68,6 +68,7 @@ async def run_session(
     start_gate: asyncio.Future[float] | None = None,
     ready: asyncio.Future[bool] | None = None,
     pacing: Literal["realtime", "lockstep"] = "realtime",
+    start_offset_s: float = 0.0,
 ) -> None:
     """Save observations and failures; classification belongs to offline replay.
 
@@ -266,7 +267,7 @@ async def run_session(
                             await start_gate
                             if start_gate is not None
                             else time.perf_counter()
-                        )
+                        ) + start_offset_s
                         await asyncio.sleep(
                             max(0.0, session_start_s - time.perf_counter())
                         )
