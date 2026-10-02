@@ -492,9 +492,8 @@ def create_sglang_latent_engine_executor(
 ) -> OmniScheduler[DotsTTSSGLangRequestData]:
     from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
 
-    concrete_device = resolve_concrete_device(device, gpu_id)
-    if concrete_device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
+    if not (torch.xpu.is_available() or torch.cuda.is_available()):
+        raise RuntimeError("dots.tts requires XPU or CUDA")
     else:
         pass
     return DotsTTSEngineBuilder(
