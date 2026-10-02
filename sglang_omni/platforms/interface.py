@@ -149,6 +149,9 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform support torchaudio.functional.resample"""
         return True
 
+    def supports_graph_captured_fft(self) -> bool:
+        return True
+
     def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
         """Empty leaves dispatch alone."""
         return ()
