@@ -1056,24 +1056,32 @@ def test_qwen_code2wav_emits_full_chunk_despite_model_output_deficit() -> None:
     assert first_audio.shape[0] + second_audio.shape[0] == 4 * 2 - 1
 
 
-def make_tiny_code2wav(device: str, dtype: torch.dtype) -> Qwen3OmniCode2Wav:
+def make_tiny_code2wav(
+    device: str, dtype: torch.dtype, seed: int = 0
+) -> Qwen3OmniCode2Wav:
     config = Qwen3OmniMoeCode2WavConfig(
         codebook_size=16,
-        hidden_size=32,
-        intermediate_size=64,
+        hidden_size=128,
+        intermediate_size=256,
         num_attention_heads=2,
         num_key_value_heads=2,
-        num_hidden_layers=1,
+        num_hidden_layers=2,
         num_quantizers=2,
         upsample_rates=[2, 3],
         upsampling_ratios=[2],
         decoder_dim=32,
+        sliding_window=4,
     )
-    torch.manual_seed(0)
+    torch.manual_seed(seed)
     model = Qwen3OmniCode2Wav(config).eval()
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.normal_(0.0, 0.05)
+        for parameter in model.pre_transformer.parameters():
+            if parameter.dim() == 1:
+                parameter.uniform_(0.5, 1.5)
+            else:
+                parameter.normal_(0.0, parameter.shape[1] ** -0.5)
     return model.to(device=device, dtype=dtype)
 
 
@@ -1128,3 +1136,38 @@ def test_channels_last_code2wav_runs_every_snake_on_the_fused_kernel(
 
     assert len(launches) == replaced
     assert all(stride[1] == 1 for stride in launches)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not current_platform.is_cuda(),
+    reason="requires NVIDIA CUDA",
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("frames", [3, 9])
+def test_fused_code2wav_transformer_error_to_fp32_is_below_the_hf_error(
+    dtype: torch.dtype, frames: int
+) -> None:
+    hf_error = 0.0
+    fused_error = 0.0
+    for seed in range(8):
+        model = make_tiny_code2wav("cuda", torch.float32, seed)
+        hidden_states = torch.randn(2, frames, 128, device="cuda")
+        with torch.inference_mode():
+            reference = model.pre_transformer(
+                inputs_embeds=hidden_states
+            ).last_hidden_state
+            model.to(dtype)
+            expected = model.pre_transformer(
+                inputs_embeds=hidden_states.to(dtype)
+            ).last_hidden_state
+            model.use_fused_transformer(
+                current_platform.get_joint_rope_inplace_kernel()
+            )
+            actual = model.pre_transformer(
+                inputs_embeds=hidden_states.to(dtype)
+            ).last_hidden_state
+        hf_error += float((expected.float() - reference).norm() / reference.norm())
+        fused_error += float((actual.float() - reference).norm() / reference.norm())
+
+    assert fused_error <= 0.95 * hf_error
