@@ -92,7 +92,7 @@ dependencies = [
     "imageio-ffmpeg==0.5.1", # Pinned with the sglang diffusion extra
 
     # --- dots.tts ---
-    "dots.tts==0.2.1",       # Same pin as pyproject.toml / ROCm / MUSA
+    "dots.tts==0.2.1",
 ]
 
 [project.optional-dependencies]
