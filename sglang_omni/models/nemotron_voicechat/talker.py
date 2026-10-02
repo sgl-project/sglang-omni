@@ -249,7 +249,7 @@ class NemotronVoiceChatTalker(nn.Module):
         hidden_size = talker_config["hidden_size"]
         max_batch = get_schedule().max_running_requests
         embed_dtype = torch.get_default_dtype()
-        device = "cuda"
+        device = self.llm.get_input_embeddings().weight.device
         self.fusion_buffer = torch.zeros(
             max_batch, hidden_size, dtype=embed_dtype, device=device
         )
