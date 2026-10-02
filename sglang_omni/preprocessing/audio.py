@@ -269,29 +269,29 @@ async def ensure_audio_list_async(
     normalized: list[object] = []
 
     try:
-        # First pass: identify URL items and create coroutines
+        # note (Teery): First pass: identify URL items and create coroutines
         for idx, item in enumerate(items):
             if isinstance(item, (str, Path)):
                 if is_url(item):
-                    # Create coroutine for async URL fetching
+                    # note (Teery): Create coroutine for async URL fetching
                     coro = resource_connector.fetch_audio_async(
                         str(item), target_sr=target_sr
                     )
                     task = asyncio.create_task(coro)
                     coroutines.append(task)
                     url_indices.append(idx)
-                    normalized.append(None)  # Placeholder
+                    normalized.append(None)  # note (Teery): Placeholder
                 else:
-                    # Local path - can be loaded synchronously
+                    # note (Teery): Local path - can be loaded synchronously
                     normalized.append(load_audio_path(item, target_sr=target_sr))
             else:
-                # Already processed (numpy array, etc.)
+                # note (Teery): Already processed (numpy array, etc.)
                 normalized.append(item)
 
-        # Wait for all URL fetches to complete
+        # note (Teery): Wait for all URL fetches to complete
         if coroutines:
             results = await asyncio.gather(*coroutines)
-            # Fill in the results at the correct indices (extract audio array, ignore sample rate)
+            # note (Teery): Fill in the results at the correct indices (extract audio array, ignore sample rate)
             for url_idx, (audio, _) in zip(url_indices, results):
                 normalized[url_idx] = audio
         else:

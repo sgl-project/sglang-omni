@@ -261,35 +261,39 @@ async def ensure_video_list_async(
     url_indices: list[int] = []
 
     try:
-        # First pass: identify items that need loading
+        # note (Teery): First pass: identify items that need loading
         for idx, video_item in enumerate(items):
             if isinstance(video_item, (str, Path)):
                 if is_url(video_item):
-                    # Create coroutine for async URL fetching with optional audio extraction
+                    # note (Teery): Create coroutine for async URL fetching with optional audio extraction
                     coro = _load_video_with_audio(video_item, is_url=True)
                     task = asyncio.create_task(coro)
                     coroutines.append(task)
                     url_indices.append(idx)
-                    normalized.append(None)  # Placeholder for video
-                    sample_fps_list.append(0.0)  # Placeholder for fps
+                    normalized.append(None)  # note (Teery): Placeholder for video
+                    sample_fps_list.append(0.0)  # note (Teery): Placeholder for fps
                     if extract_audio:
-                        extracted_audios.append(None)  # Placeholder for audio
+                        extracted_audios.append(
+                            None
+                        )  # note (Teery): Placeholder for audio
                     else:
                         pass
                 elif Path(video_item).exists():
-                    # Load from local path with optional audio extraction
+                    # note (Teery): Load from local path with optional audio extraction
                     coro = _load_video_with_audio(video_item, is_url=False)
                     task = asyncio.create_task(coro)
                     coroutines.append(task)
                     url_indices.append(idx)
-                    normalized.append(None)  # Placeholder for video
-                    sample_fps_list.append(0.0)  # Placeholder for fps
+                    normalized.append(None)  # note (Teery): Placeholder for video
+                    sample_fps_list.append(0.0)  # note (Teery): Placeholder for fps
                     if extract_audio:
-                        extracted_audios.append(None)  # Placeholder for audio
+                        extracted_audios.append(
+                            None
+                        )  # note (Teery): Placeholder for audio
                     else:
                         pass
                 else:
-                    # Path doesn't exist, treat as already processed
+                    # note (Teery): Path doesn't exist, treat as already processed
                     normalized.append(video_item)
                     all_paths = False
                     if extract_audio:
@@ -297,7 +301,7 @@ async def ensure_video_list_async(
                     else:
                         pass
             else:
-                # Already processed (torch Tensor, etc.)
+                # note (Teery): Already processed (torch Tensor, etc.)
                 normalized.append(video_item)
                 all_paths = False
                 if extract_audio:
@@ -305,10 +309,10 @@ async def ensure_video_list_async(
                 else:
                     pass
 
-        # Wait for all loads to complete
+        # note (Teery): Wait for all loads to complete
         if coroutines:
             results = await asyncio.gather(*coroutines)
-            # Fill in the results at the correct indices
+            # note (Teery): Fill in the results at the correct indices
             for url_idx, (video, sample_fps, audio) in zip(url_indices, results):
                 normalized[url_idx] = video
                 sample_fps_list[url_idx] = sample_fps

@@ -140,7 +140,7 @@ def merge_extracted_video_audio(
     explicit = (
         explicit_audios if isinstance(explicit_audios, list) else [explicit_audios]
     )
-    # Match the video-before-audio placeholder order in _build_multimodal_messages.
+    # note (Teery): Match the video-before-audio placeholder order in _build_multimodal_messages.
     return [*extracted_audios, *explicit], True
 
 
@@ -738,7 +738,7 @@ class Qwen3OmniPreprocessor:
 
         videos_kwargs: VideoProcessorKwargs = {}
         if sampled_video_fps:
-            # The HF processor uses one scalar FPS for video token timestamps.
+            # note (Teery): The HF processor uses one scalar FPS for video token timestamps.
             if any(fps != sampled_video_fps[0] for fps in sampled_video_fps):
                 raise ValueError(
                     "Qwen3-Omni requires all videos in a request to have the same sampled FPS"

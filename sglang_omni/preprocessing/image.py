@@ -107,28 +107,28 @@ async def ensure_image_list_async(
     normalized: list[object] = []
 
     try:
-        # First pass: identify URL items and create coroutines
+        # note (Teery): First pass: identify URL items and create coroutines
         for idx, item in enumerate(items):
             if isinstance(item, (str, Path)):
                 if is_url(item):
-                    # Create coroutine for async URL fetching
+                    # note (Teery): Create coroutine for async URL fetching
                     coro = media_connector.fetch_image_async(
                         str(item), image_mode=image_mode
                     )
                     task = asyncio.create_task(coro)
                     coroutines.append(task)
                     url_indices.append(idx)
-                    normalized.append(None)  # Placeholder
+                    normalized.append(None)  # note (Teery): Placeholder
                 else:
                     normalized.append(load_image_path(item))
             else:
-                # Already processed (PIL Image, etc.)
+                # note (Teery): Already processed (PIL Image, etc.)
                 normalized.append(item)
 
-        # Wait for all URL fetches to complete
+        # note (Teery): Wait for all URL fetches to complete
         if coroutines:
             results = await asyncio.gather(*coroutines)
-            # Fill in the results at the correct indices
+            # note (Teery): Fill in the results at the correct indices
             for url_idx, result in zip(url_indices, results):
                 normalized[url_idx] = result
         else:
