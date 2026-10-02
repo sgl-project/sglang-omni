@@ -17,6 +17,8 @@ from sglang_omni.config import (
 
 PKG = "sglang_omni.models.minicpm_o"
 THINKER_STAGE = "thinker"
+# PyTorch gives a smaller value higher priority, so this runs ahead of the default stream.
+CODE2WAV_DECODE_STREAM_PRIORITY = -1
 
 
 def preprocessing_stage(*, process: str) -> StageConfig:
@@ -115,19 +117,23 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         process=process,
         factory_path=f"{PKG}.stages.create_code2wav_executor",
         factory=FactoryArgs(
-            max_batch_size=8,
-            max_batch_wait_ms=0,
+            max_batch_size=16,
+            # Prefetched references make batches form quickly; the window keeps
+            # them full so flow does not steal GPU time from the talker.
+            max_batch_wait_ms=100.0,
             batch_wait_when_idle=False,
             enable_flow_variable_length=True,
             reference_workers=8,
             prompt_cache_capacity=32,
+            decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,
+            enable_flow_block_compile=True,
         ),
         # Note (Chenyang): As a general comment and my usual understanding
         # of SGLang Omni, SGLang Omni has a poor runtime which leads to a
         # underutilized GPU/SMs. To address this, we recommend users to set
         # batchs for your compute but never wait for grouping the batchs.
         # As SGLang Omni Runtime moves better, we shall probably wait several
-        # ms for grouping the batchs, but right now, set it to 0.0.
+        # ms for grouping the batchs; code2wav already does, see the factory.
         gpu=gpu,
         terminal=True,
     )
@@ -154,8 +160,8 @@ def speech_stages() -> list[StageConfig]:
         decode_stage(process="pipeline"),
         # note (MayDomine): each engine requires a separate process-global TP group.
         talker_stage(gpu=0, process="talker"),
-        # note (MayDomine): vocoding must not block the thinker's event loop.
-        code2wav_stage(gpu=0, process="code2wav"),
+        # note (zhaochenyang20): sharing a CUDA context lets the stage streams overlap.
+        code2wav_stage(gpu=0, process="talker"),
     ]
 
 

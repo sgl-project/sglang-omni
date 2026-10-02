@@ -44,6 +44,8 @@ class MiniCPMOCode2Wav(nn.Module):
         enable_flow_variable_length: bool,
         reference_workers: int,
         prompt_cache_capacity: int,
+        decode_stream_priority: int,
+        enable_flow_block_compile: bool,
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
@@ -91,6 +93,23 @@ class MiniCPMOCode2Wav(nn.Module):
         self.token2wav.flow.decoder.estimator.enable_variable_length = (
             enable_flow_variable_length
         )
+        if enable_flow_block_compile and self.token2wav.device.type == "cuda":
+            for flow_block in self.token2wav.flow.decoder.estimator.blocks:
+                flow_block.forward_packed = torch.compile(
+                    flow_block.forward_packed,
+                    dynamic=True,
+                    fullgraph=True,
+                    options={"emulate_precision_casts": True},
+                )
+        else:
+            pass
+        with self.device_context:
+            device_module = torch.get_device_module(self.token2wav.device)
+            self.decode_stream: torch.Stream = device_module.Stream(
+                priority=decode_stream_priority,
+            )
+            # note (zhaochenyang20): weights are published on the load stream.
+            self.decode_stream.wait_stream(device_module.current_stream())
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
@@ -151,7 +170,14 @@ class MiniCPMOCode2Wav(nn.Module):
     ) -> Future[SpeakerPrompt]:
         """Start preparing one reference; the caller holds reference_lock."""
         source = io.BytesIO(reference) if isinstance(reference, bytes) else reference
-        future = self.reference_executor.submit(self.token2wav.prepare_prompt, source)
+
+        def prepare_reference() -> SpeakerPrompt:
+            device_module = torch.get_device_module(self.token2wav.device)
+            # note (zhaochenyang20): cached prompts must share the decoder's stream.
+            with device_module.stream(self.decode_stream):
+                return self.token2wav.prepare_prompt(source)
+
+        future = self.reference_executor.submit(prepare_reference)
         self.pending_references[reference_key] = future
         future.add_done_callback(
             lambda completed: self.store_reference(reference_key, completed)
@@ -274,16 +300,26 @@ class MiniCPMOCode2Wav(nn.Module):
         else:
             pass
 
-        device = self.token2wav.device
+        speaker_prompts = self.prepare_references(references)
+        device_module = torch.get_device_module(self.token2wav.device)
+        with device_module.stream(self.decode_stream):
+            return self.decode_waveforms(token_sequences, speaker_prompts)
+
+    def decode_waveforms(
+        self,
+        token_sequences: Sequence[Sequence[int]],
+        speaker_prompts: Sequence[SpeakerPrompt],
+    ) -> list[np.ndarray]:
+        """Run flow and HiFT. The caller selects the decode stream."""
+        token2wav_device = self.token2wav.device
         token_lengths = [len(tokens) for tokens in token_sequences]
         speech_tokens = pad_sequence(
             [torch.tensor(tokens, dtype=torch.int32) for tokens in token_sequences],
             batch_first=True,
-        ).to(device)
+        ).to(token2wav_device)
         speech_token_lengths = torch.tensor(
-            token_lengths, dtype=torch.int32, device=device
+            token_lengths, dtype=torch.int32, device=token2wav_device
         )
-        speaker_prompts = self.prepare_references(references)
         with torch.amp.autocast(
             self.token2wav.device.type,
             dtype=self.token2wav.dtype,
@@ -305,16 +341,20 @@ class MiniCPMOCode2Wav(nn.Module):
                 self.token2wav.n_timesteps,
             )
 
-        up_rate = self.token2wav.flow.up_rate
+        mel_upsample_rate = self.token2wav.flow.up_rate
         rows_by_token_length: defaultdict[int, list[int]] = defaultdict(list)
         for row, token_length in enumerate(token_lengths):
             rows_by_token_length[token_length].append(row)
         waveforms_by_row: dict[int, torch.Tensor] = {}
         # note (MayDomine): padding changes HiFT's noncausal convolution boundaries.
-        for token_length, rows in rows_by_token_length.items():
-            speech_mel = mel[rows, :, : token_length * up_rate].float().contiguous()
+        for token_length, row_indices in rows_by_token_length.items():
+            speech_mel = (
+                mel[row_indices, :, : token_length * mel_upsample_rate]
+                .float()
+                .contiguous()
+            )
             group_waveforms, _ = self.token2wav.hift(speech_feat=speech_mel)
-            for group_row, row in enumerate(rows):
+            for group_row, row in enumerate(row_indices):
                 waveforms_by_row[row] = group_waveforms[group_row].reshape(-1)[
                     : token_length * SAMPLES_PER_CODEC_TOKEN
                 ]

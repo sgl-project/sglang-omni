@@ -13,7 +13,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -28,6 +28,9 @@ from sglang_omni.models.minicpm_o.components import code2wav
 from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
+    SourceModuleHnNSF2,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import SpeakerPrompt
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
@@ -55,6 +58,18 @@ CONDITIONING_TENSOR_COUNT = 3
 DEFAULT_REFERENCE_AUDIO = b"default"
 THREAD_WAIT_SECONDS = 5
 BLOCKED_CALL_PROBE_SECONDS = 0.1
+SOURCE_MODULE_SAMPLE_RATE = 24000
+SOURCE_MODULE_UPSAMPLE_SCALE = 4
+SOURCE_MODULE_FREQUENCY_HERTZ = 120.0
+SOURCE_MODULE_FRAME_COUNT = 400
+SOURCE_MODULE_BATCH_SIZE = 2
+SOURCE_MODULE_NOISE_SEED = 7
+MILLISECONDS_PER_SECOND = 1000
+PACKED_FLOW_COMPILE: dict[str, bool | dict[str, bool]] = {
+    "dynamic": True,
+    "fullgraph": True,
+    "options": {"emulate_precision_casts": True},
+}
 
 
 class Code2WavBuilder(Protocol):
@@ -64,6 +79,7 @@ class Code2WavBuilder(Protocol):
         reference_workers: int = ...,
         prompt_cache_capacity: int = ...,
         enable_flow_variable_length: bool = ...,
+        enable_flow_block_compile: bool | None = ...,
     ) -> MiniCPMOCode2Wav: ...
 
 
@@ -107,6 +123,52 @@ def fake_flow_inference(
     frame_values = speech_tokens + REFERENCE_ID_SCALE * reference_ids
     frames = frame_values.float().repeat_interleave(FAKE_UP_RATE, dim=1)
     return frames.unsqueeze(1).expand(-1, FAKE_MEL_BINS, -1)
+
+
+class OfflineCudaStream:
+    """CUDA stream stand-in. The default unit-test job has no GPU."""
+
+    def __init__(
+        self, *, priority: int, device: torch.device | int | None = None
+    ) -> None:
+        self.priority = priority
+        self.device = device
+        self.earlier_stream: OfflineCudaStream | None = None
+
+    def wait_stream(self, earlier_stream: OfflineCudaStream) -> None:
+        self.earlier_stream = earlier_stream
+
+
+def current_offline_cuda_stream(
+    device: torch.device | int | None = None,
+) -> OfflineCudaStream:
+    return OfflineCudaStream(priority=0, device=device)
+
+
+def install_offline_cuda_streams(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "Stream", OfflineCudaStream)
+    monkeypatch.setattr(torch.cuda, "current_stream", current_offline_cuda_stream)
+
+
+def capture_flow_compile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, bool | dict[str, bool]]]:
+    compiled_options: list[dict[str, bool | dict[str, bool]]] = []
+
+    def record_compile(
+        forward_packed: MagicMock,
+        *,
+        dynamic: bool,
+        fullgraph: bool,
+        options: dict[str, bool],
+    ) -> MagicMock:
+        compiled_options.append(
+            {"dynamic": dynamic, "fullgraph": fullgraph, "options": options}
+        )
+        return forward_packed
+
+    monkeypatch.setattr(torch, "compile", record_compile)
+    return compiled_options
 
 
 def fake_hift(speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
@@ -161,13 +223,22 @@ def build_code2wav_model(
         reference_workers: int = 8,
         prompt_cache_capacity: int = 32,
         enable_flow_variable_length: bool = False,
+        enable_flow_block_compile: bool | None = None,
     ) -> MiniCPMOCode2Wav:
+        if enable_flow_block_compile is None:
+            enable_flow_block_compile = (
+                code2wav_stage_factory().enable_flow_block_compile
+            )
+        else:
+            pass
         model = MiniCPMOCode2Wav(
             str(tmp_path),
             prompt_wav=str(default_reference_path),
             enable_flow_variable_length=enable_flow_variable_length,
             reference_workers=reference_workers,
             prompt_cache_capacity=prompt_cache_capacity,
+            decode_stream_priority=code2wav_stage_factory().decode_stream_priority,
+            enable_flow_block_compile=enable_flow_block_compile,
         )
         built_models.append(model)
         return model
@@ -250,9 +321,14 @@ def build_code2wav_stage(
         "unused",
         device=None,
         gpu_id=0,
+        max_batch_size=factory.max_batch_size,
+        max_batch_wait_ms=factory.max_batch_wait_ms,
+        batch_wait_when_idle=factory.batch_wait_when_idle,
         enable_flow_variable_length=factory.enable_flow_variable_length,
         reference_workers=factory.reference_workers,
         prompt_cache_capacity=factory.prompt_cache_capacity,
+        decode_stream_priority=factory.decode_stream_priority,
+        enable_flow_block_compile=factory.enable_flow_block_compile,
     )
 
 
@@ -266,6 +342,8 @@ def load_checkpoint_model(
         enable_flow_variable_length=enable_flow_variable_length,
         reference_workers=factory.reference_workers,
         prompt_cache_capacity=factory.prompt_cache_capacity,
+        decode_stream_priority=factory.decode_stream_priority,
+        enable_flow_block_compile=factory.enable_flow_block_compile,
     )
 
 
@@ -275,10 +353,47 @@ def relative_rms_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
     )
 
 
+def test_source_module_noise_leaves_the_global_generator_unchanged() -> None:
+    """HiFT's source module draws both sine noise and residual noise."""
+    source_module = SourceModuleHnNSF2(
+        sampling_rate=SOURCE_MODULE_SAMPLE_RATE,
+        upsample_scale=SOURCE_MODULE_UPSAMPLE_SCALE,
+    )
+    fundamental_frequency = torch.full(
+        (SOURCE_MODULE_BATCH_SIZE, SOURCE_MODULE_FRAME_COUNT, 1),
+        SOURCE_MODULE_FREQUENCY_HERTZ,
+    )
+    noise_generator = torch.Generator().manual_seed(SOURCE_MODULE_NOISE_SEED)
+    global_generator_state = torch.get_rng_state()
+    seeded_excitation, seeded_residual_noise, _ = source_module(
+        fundamental_frequency, noise_generator
+    )
+    repeated_excitation, repeated_residual_noise, _ = source_module(
+        fundamental_frequency,
+        torch.Generator().manual_seed(SOURCE_MODULE_NOISE_SEED),
+    )
+    continued_excitation, continued_residual_noise, _ = source_module(
+        fundamental_frequency, noise_generator
+    )
+    assert torch.equal(global_generator_state, torch.get_rng_state())
+    assert torch.equal(seeded_excitation, repeated_excitation)
+    assert torch.equal(seeded_residual_noise, repeated_residual_noise)
+    assert not torch.equal(seeded_excitation, continued_excitation)
+    assert not torch.equal(seeded_residual_noise, continued_residual_noise)
+
+
 @pytest.mark.accelerator
 def test_native_vocoder_with_checkpoint() -> None:
     model = load_checkpoint_model(require_checkpoint_dir())
+    device_module = torch.get_device_module(model.token2wav.device)
+    assert (
+        model.decode_stream.priority == code2wav_stage_factory().decode_stream_priority
+    )
+    device_generator_state = device_module.get_rng_state(model.token2wav.device)
     output = model(codec_tokens=torch.tensor(CHECKPOINT_CODEC_TOKENS))
+    assert torch.equal(
+        device_generator_state, device_module.get_rng_state(model.token2wav.device)
+    )
     waveform = output["waveform"]
     assert output["sample_rate"] == 24000
     assert waveform.dtype == np.float32
@@ -406,15 +521,23 @@ def test_variable_length_option_reaches_dit(
     assert estimator.enable_variable_length is enable_flow_variable_length
 
 
-def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
-    factory = code2wav_stage_factory()
-    assert factory.max_batch_size == 8
-    assert factory.max_batch_wait_ms == 0.0
+def test_speech_pipeline_colocates_batched_code2wav_with_talker_by_default() -> None:
+    config = MiniCPMOSpeechPipelineConfig(model_path="unused")
+    stages_by_name = {stage.name: stage for stage in config.stages}
+    code2wav = stages_by_name["code2wav"]
+    talker = stages_by_name["talker"]
+    assert code2wav.process == talker.process
+    assert code2wav.gpu == talker.gpu
+    factory = code2wav.factory
+    assert factory.max_batch_size == 16
+    assert factory.max_batch_wait_ms == 100.0
     assert factory.batch_wait_when_idle is False
     assert factory.dtype is None
     assert factory.enable_flow_variable_length is True
     assert factory.reference_workers == 8
     assert factory.prompt_cache_capacity == 32
+    assert factory.decode_stream_priority == -1
+    assert factory.enable_flow_block_compile is True
 
 
 @pytest.mark.parametrize(
@@ -438,6 +561,108 @@ def test_vocode_runs_mixed_references_in_one_flow_call(
 ) -> None:
     build_code2wav_model().vocode([[1, 2], [3], [4, 5, 6]], [b"a", b"spk-b", b"c"])
     assert fake_token2wav.flow.inference.call_count == 1
+
+
+def test_vocode_prepares_and_decodes_on_its_private_stream(
+    build_code2wav_model: Code2WavBuilder, fake_token2wav: MagicMock
+) -> None:
+    """Reference preparation and decoding leave the caller's stream unchanged."""
+    flow_streams: list[torch.Stream] = []
+    hift_streams: list[torch.Stream] = []
+    reference_preparation_streams: list[torch.Stream] = []
+
+    def record_reference_preparation_stream(source: str | io.BytesIO) -> SpeakerPrompt:
+        reference_preparation_streams.append(torch.cpu.current_stream())
+        return fake_prepare_prompt(source)
+
+    def record_flow_stream(
+        speech_tokens: torch.Tensor,
+        speech_token_lengths: torch.Tensor,
+        prompt_tokens: torch.Tensor,
+        prompt_token_lengths: torch.Tensor,
+        prompt_mels: torch.Tensor,
+        speaker_embeddings: torch.Tensor,
+        n_timesteps: int,
+    ) -> torch.Tensor:
+        flow_streams.append(torch.cpu.current_stream())
+        return fake_flow_inference(
+            speech_tokens,
+            speech_token_lengths,
+            prompt_tokens,
+            prompt_token_lengths,
+            prompt_mels,
+            speaker_embeddings,
+            n_timesteps,
+        )
+
+    def record_hift_stream(speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
+        hift_streams.append(torch.cpu.current_stream())
+        return fake_hift(speech_feat)
+
+    fake_token2wav.flow.inference.side_effect = record_flow_stream
+    fake_token2wav.hift.side_effect = record_hift_stream
+    fake_token2wav.prepare_prompt.side_effect = record_reference_preparation_stream
+    references = [b"a", b"b"]
+    # note (zhaochenyang20): CPU current-stream state is process-global, so one worker.
+    model = build_code2wav_model(reference_workers=1)
+    caller_stream = torch.cpu.current_stream()
+    model.vocode([[1, 2], [3]], references)
+    assert reference_preparation_streams == [model.decode_stream] * len(references)
+    assert flow_streams
+    assert hift_streams
+    assert all(stream == model.decode_stream for stream in flow_streams)
+    assert all(stream == model.decode_stream for stream in hift_streams)
+    assert model.decode_stream != caller_stream
+    assert torch.cpu.current_stream() == caller_stream
+
+
+def test_code2wav_executor_uses_the_stage_batch_window(
+    build_code2wav_model: Code2WavBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = code2wav_stage_factory()
+    scheduler = build_code2wav_stage(build_code2wav_model(), monkeypatch)
+    assert scheduler.max_batch_size == factory.max_batch_size
+    assert scheduler.max_batch_wait_s == (
+        float(factory.max_batch_wait_ms) / MILLISECONDS_PER_SECOND
+    )
+    assert scheduler.batch_wait_when_idle is factory.batch_wait_when_idle
+
+
+def test_cuda_flow_blocks_compile_with_packed_precision(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow_blocks = [MagicMock(), MagicMock()]
+    fake_token2wav.device = torch.device("cuda")
+    fake_token2wav.flow.decoder.estimator.blocks = flow_blocks
+    install_offline_cuda_streams(monkeypatch)
+    compiled_options = capture_flow_compile(monkeypatch)
+    build_code2wav_model()
+    assert compiled_options == [PACKED_FLOW_COMPILE, PACKED_FLOW_COMPILE]
+
+
+@pytest.mark.parametrize(
+    ("device_type", "enable_flow_block_compile"),
+    [("cpu", True), ("cuda", False)],
+    ids=["cpu_vocoder", "compilation_disabled"],
+)
+def test_flow_blocks_stay_eager_without_cuda_compilation(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    device_type: Literal["cpu", "cuda"],
+    enable_flow_block_compile: bool,
+) -> None:
+    fake_token2wav.device = torch.device(device_type)
+    fake_token2wav.flow.decoder.estimator.blocks = [MagicMock()]
+    if device_type == "cuda":
+        install_offline_cuda_streams(monkeypatch)
+    else:
+        pass
+    compiled_options = capture_flow_compile(monkeypatch)
+    build_code2wav_model(enable_flow_block_compile=enable_flow_block_compile)
+    assert compiled_options == []
 
 
 def test_vocode_mixed_lengths_preserve_hift_boundaries(
