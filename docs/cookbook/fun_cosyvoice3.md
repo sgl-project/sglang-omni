@@ -296,6 +296,7 @@ Enable the flag:
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --vocoder.factory.enable_dit_torch_compile false \
   --vocoder.factory.enable_flow_estimator_trt true \
   --port 8000
 ```
