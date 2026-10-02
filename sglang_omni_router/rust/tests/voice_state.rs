@@ -343,6 +343,16 @@ fn exact_owner_voice_crud_preserves_contract_and_upload_ordering() {
     .expect("delete voice response");
     assert!(delete.starts_with(b"HTTP/1.1 200"));
     assert_eq!(response_header(&delete, "x-request-id"), Some("delete-id"));
+    for response in [&list, &upload, &delete] {
+        assert_eq!(
+            response_header(response, "x-sglang-omni-worker"),
+            Some("owner")
+        );
+        assert_eq!(
+            response_header(response, "x-sglang-omni-route-attempt"),
+            Some("1")
+        );
+    }
 
     let before_method_rejections = owner.captures().len();
     let head = request(
@@ -391,6 +401,10 @@ fn exact_owner_voice_crud_preserves_contract_and_upload_ordering() {
         b"",
     )
     .expect("oversized voice response");
+    for response in [&head, &unsupported, &chat, &oversized] {
+        assert!(response_header(response, "x-sglang-omni-worker").is_none());
+        assert!(response_header(response, "x-sglang-omni-route-attempt").is_none());
+    }
     assert!(oversized.starts_with(b"HTTP/1.1 413"));
     assert_eq!(owner.captures().len(), before_rejections);
 

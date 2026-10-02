@@ -117,6 +117,10 @@ impl RequestLease {
         &self.load.registration.target
     }
 
+    pub(crate) fn worker_id(&self) -> &str {
+        self.load.registration.worker_id.as_str()
+    }
+
     pub(crate) fn request_immediate_probe(&self) {
         self.load.registration.immediate_probe.notify_one();
     }

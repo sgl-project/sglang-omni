@@ -639,6 +639,8 @@ fn relays_all_media_routes_with_exact_bytes_headers_and_large_direct_uploads() {
         large_batch.len(),
     )
     .expect("oversized batch response");
+    assert!(header(&response, "x-sglang-omni-worker").is_none());
+    assert!(header(&response, "x-sglang-omni-route-attempt").is_none());
     assert!(response.starts_with(b"HTTP/1.1 413"));
     assert_eq!(worker.captures().len(), prior);
 
@@ -778,6 +780,8 @@ fn roundtrip_with_extra_headers(
         body,
     )
     .expect("media roundtrip response");
+    assert_eq!(header(&response, "x-sglang-omni-worker"), Some("worker-0"));
+    assert_eq!(header(&response, "x-sglang-omni-route-attempt"), Some("1"));
     let captures = worker.captures();
     let capture = captures
         .get(prior)
@@ -853,6 +857,8 @@ fn speech_batch_above_every_worker_limit_is_not_capacity_pressure() {
         body.as_bytes(),
     )
     .expect("oversized batch response");
+    assert!(header(&response, "x-sglang-omni-worker").is_none());
+    assert!(header(&response, "x-sglang-omni-route-attempt").is_none());
     assert!(response.starts_with(b"HTTP/1.1 422"));
     assert!(worker.captures().is_empty());
 }
