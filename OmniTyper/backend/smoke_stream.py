@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Verify real MLX hypotheses arrive while PCM is still being sent, without an LLM."""
 
+import argparse
 import base64
 import json
 import subprocess
@@ -16,14 +17,22 @@ BACKEND_DIRECTORY = str(Path(__file__).resolve().parent)
 if BACKEND_DIRECTORY not in sys.path:
     sys.path.insert(0, BACKEND_DIRECTORY)
 
-from server import NativeASRServer
+from server import DEFAULT_MODEL, MODELSCOPE_MODEL, NativeASRServer
 from websockets.sync.client import connect
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--source", choices=["huggingface", "modelscope"], default="huggingface"
+    )
+    args = parser.parse_args()
     server = NativeASRServer()
     try:
-        server.start(lambda message: print(message, flush=True))
+        server.start(
+            lambda message: print(message, flush=True),
+            MODELSCOPE_MODEL if args.source == "modelscope" else DEFAULT_MODEL,
+        )
         with tempfile.TemporaryDirectory(prefix="omnityper-stream-") as directory:
             source = Path(directory) / "speech.aiff"
             audio = Path(directory) / "speech.wav"

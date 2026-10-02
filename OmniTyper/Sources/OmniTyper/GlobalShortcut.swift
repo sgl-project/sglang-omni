@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import CoreGraphics
+import Carbon
+import Combine
 import Foundation
 
 @MainActor
-final class GlobalShortcut {
+final class GlobalShortcut: ObservableObject {
+    @Published private(set) var errorCode: String?
+    private var conflictCode: String?
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var monitorTask: Task<Void, Never>?
@@ -17,6 +21,37 @@ final class GlobalShortcut {
     private var onCancel: (() -> Void)?
     private let modifierMask: UInt64 = CGEventFlags.maskCommand.rawValue | CGEventFlags.maskAlternate.rawValue
         | CGEventFlags.maskControl.rawValue | CGEventFlags.maskShift.rawValue | CGEventFlags.maskSecondaryFn.rawValue
+
+    static func validate(keyCode: UInt16, modifiers: UInt64) throws {
+        let flags = CGEventFlags(rawValue: modifiers)
+        var carbon: UInt32 = 0
+        if flags.contains(.maskCommand) { carbon |= UInt32(cmdKey) }
+        if flags.contains(.maskAlternate) { carbon |= UInt32(optionKey) }
+        if flags.contains(.maskControl) { carbon |= UInt32(controlKey) }
+        if flags.contains(.maskShift) { carbon |= UInt32(shiftKey) }
+        if ShortcutCapture.modifierFlag(for: keyCode) != nil { return }
+        guard carbon != 0 || ShortcutCapture.functionKeys.contains(keyCode) else {
+            throw Failure("shortcut.needsModifier")
+        }
+        var symbolic: Unmanaged<CFArray>?
+        guard CopySymbolicHotKeys(&symbolic) == noErr,
+              let shortcuts = symbolic?.takeRetainedValue() as? [[String: Any]] else {
+            throw Failure("shortcut.checkFailed")
+        }
+        if shortcuts.contains(where: {
+            ($0[kHISymbolicHotKeyEnabled] as? Bool) == true
+                && ($0[kHISymbolicHotKeyCode] as? UInt16) == keyCode
+                && ($0[kHISymbolicHotKeyModifiers] as? UInt32) == carbon
+        }) { throw Failure("shortcut.systemConflict") }
+        // ponytail: Carbon detects registered hotkeys; other event taps and app menu shortcuts remain invisible.
+        var probe: EventHotKeyRef?
+        let result = RegisterEventHotKey(UInt32(keyCode), carbon,
+                                        EventHotKeyID(signature: 0x4F4D5459, id: 1), GetApplicationEventTarget(),
+                                        OptionBits(kEventHotKeyExclusive), &probe)
+        defer { if let probe { UnregisterEventHotKey(probe) } }
+        guard result != eventHotKeyExistsErr else { throw Failure("shortcut.appConflict") }
+        guard result == noErr else { throw Failure("shortcut.checkFailed") }
+    }
 
     private var triggerModifier: UInt64 {
         switch keyCode {
@@ -56,6 +91,9 @@ final class GlobalShortcut {
         self.onStop = onStop
         self.onCancel = onCancel
         guard !unchanged else { return }
+        conflictCode = nil
+        do { try Self.validate(keyCode: keyCode, modifiers: modifiers) }
+        catch { conflictCode = (error as? Failure)?.code ?? "shortcut.checkFailed" }
         installTap()
         monitorTask = Task { [weak self] in
             var ticks = 0
@@ -107,7 +145,11 @@ final class GlobalShortcut {
             let owner = Unmanaged<GlobalShortcut>.fromOpaque(context).takeUnretainedValue()
             let consumed = MainActor.assumeIsolated { owner.receive(type, event: event) }
             return consumed ? nil : Unmanaged.passUnretained(event)
-        }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
+        }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
+            if errorCode != "shortcut.listenFailed" { errorCode = "shortcut.listenFailed" }
+            return
+        }
+        if errorCode != conflictCode { errorCode = conflictCode }
         self.tap = tap
         source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)

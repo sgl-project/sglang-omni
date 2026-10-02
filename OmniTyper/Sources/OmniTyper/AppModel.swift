@@ -10,7 +10,9 @@ final class AppModel: ObservableObject {
     let store: AppStore
     let recorder = AudioRecorder()
     let worker = WorkerClient()
-    private let shortcut = GlobalShortcut()
+    let shortcut = GlobalShortcut()
+    private var capturingShortcut = false
+    private var isShutDown = false
     @Published var phase: Phase = .idle
     @Published var mode: VoiceMode = .dictate
     @Published var resultText = ""
@@ -97,14 +99,29 @@ final class AppModel: ObservableObject {
     }
 
     private func configureShortcut(_ preferences: Preferences) {
+        guard !capturingShortcut, !isShutDown else { return }
         shortcut.start(keyCode: preferences.shortcutKeyCode, modifiers: preferences.shortcutModifiers,
                        hold: preferences.holdToTalk,
-                       onStart: { [weak self] in self?.toggle() },
+                       onStart: { [weak self] in
+                           guard let self, !self.capturingShortcut, !self.isShutDown else { return }
+                           self.toggle()
+                       },
                        onStop: { [weak self] in
                            if self?.phase == .recording { self?.finish() }
                            else if self?.phase == .starting { self?.cancel() }
                        },
                        onCancel: { [weak self] in if self?.isBusy == true { self?.cancel() } })
+    }
+
+    func beginShortcutCapture() {
+        capturingShortcut = true
+        shortcut.stop()
+    }
+
+    func endShortcutCapture() {
+        guard capturingShortcut else { return }
+        capturingShortcut = false
+        configureShortcut(store.preferences)
     }
 
     func refreshPermissions() {
@@ -403,6 +420,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        isShutDown = true
         preferencesSubscription?.cancel(); preferencesSubscription = nil
         cancel(); shortcut.stop(); timer?.invalidate()
         textAPIKey = ""; sessionAPIKey = ""
