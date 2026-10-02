@@ -20,6 +20,7 @@ from sglang_omni.mps.manager import (
     MpsError,
     MpsLease,
     MpsManager,
+    MpsRetryableControlError,
 )
 from sglang_omni.mps.state import MpsGpuPaths
 
@@ -74,7 +75,7 @@ class FakeControlClient:
 
     def snapshot(self, pipe_dir):
         if self.snapshot_error is not None:
-            raise MpsControlError(self.snapshot_error)
+            raise MpsRetryableControlError(self.snapshot_error)
         if str(pipe_dir) not in self.daemons:
             raise MpsControlError("control socket unavailable")
         return set(self.snapshots.get(str(pipe_dir), set()))
@@ -151,7 +152,6 @@ def short_root():
 def make_manager(root, client, gpu_uuid=GPU_UUID):
     return MpsManager(
         paths=MpsGpuPaths(state_root=root, gpu_uuid=gpu_uuid),
-        gpu_uuid=gpu_uuid,
         client=client,
         poll_interval=0.0,
         start_timeout=0.02,
@@ -367,7 +367,7 @@ def test_startup_rollback_never_signals_an_unverified_pid(short_root):
     def lose_identity(pipe_dir):
         del pipe_dir
         client.identity_error = "native identity changed"
-        raise MpsControlError("control unavailable")
+        raise MpsRetryableControlError("control unavailable")
 
     client.snapshot = lose_identity
 
@@ -692,13 +692,16 @@ def test_dirty_owner_blocks_join_without_interrupting_clean_coowner(
     assert not (manager_b.paths.owners_dir / "1002").exists()
 
 
-def test_last_owner_preserves_unknown_clients_instead_of_quitting(short_root):
+@pytest.mark.parametrize("token", [None, "foreign-owner"])
+def test_last_owner_preserves_remaining_clients_instead_of_quitting(short_root, token):
     client = FakeControlClient()
     manager = make_manager(short_root, client)
     lease = manager.acquire({"worker": "owner-worker"})
     client.set_clients(manager.paths.pipe_dir, {7000: [909]})
+    if token is not None:
+        client.client_tokens[909] = token
 
-    with pytest.raises(MpsDirtyStateError, match="unattributable"):
+    with pytest.raises(MpsDirtyStateError, match="clients .* remain"):
         manager.release(lease)
 
     assert lease.owner_fd == -1

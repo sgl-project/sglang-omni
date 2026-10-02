@@ -770,6 +770,49 @@ async def test_multi_gpu_pre_spawn_rollback_leaves_shared_owner_clean(short_root
 
 
 @pytest.mark.asyncio
+async def test_failed_start_rollback_still_releases_the_other_gpus(
+    short_root, monkeypatch
+):
+    client = FakeControlClient()
+    runtime = create(
+        short_root,
+        mode="on",
+        procs=[proc("a", 0), proc("b", 1), proc("c", 2)],
+        client=client,
+    )
+    clean = manager_on(runtime, 0)
+    failed_rollback = manager_on(runtime, 1)
+    rejected = manager_on(runtime, 2)
+    rejected.paths.pipe_dir.mkdir(parents=True)
+    rejected.paths.log_dir.mkdir()
+    rejected.paths.owners_dir.mkdir()
+    (rejected.paths.owners_dir / "777").write_text("retained\n")
+    quit_daemon = client.quit_daemon
+    quit_attempts = []
+
+    def fail_one_quit(pipe_dir):
+        quit_attempts.append(pipe_dir)
+        if pipe_dir == failed_rollback.paths.pipe_dir:
+            raise MpsControlError("rollback quit failed")
+        quit_daemon(pipe_dir)
+
+    monkeypatch.setattr(client, "quit_daemon", fail_one_quit)
+
+    with pytest.raises(MpsError, match="dirty state") as exc_info:
+        await runtime.start()
+
+    assert isinstance(exc_info.value.__cause__, MpsDirtyStateError)
+    assert "rollback quit failed" in str(exc_info.value.__cause__)
+    assert not runtime.has_leases
+    assert quit_attempts == [failed_rollback.paths.pipe_dir, clean.paths.pipe_dir]
+    assert not clean.paths.state_dir.exists()
+    assert owner_marker(failed_rollback).read_text() == "retained\n"
+    assert not client.owner_lease_held(owner_marker(failed_rollback))
+    assert failed_rollback.paths.state_dir.exists()
+    assert (rejected.paths.owners_dir / "777").read_text() == "retained\n"
+
+
+@pytest.mark.asyncio
 async def test_multi_gpu_close_persists_dirty_gpu_and_releases_clean_gpu(short_root):
     client = FakeControlClient()
     runtime = create(

@@ -339,7 +339,6 @@ class MpsPipelineRuntime:
                     state_root=root,
                     gpu_uuid=gpu_uuid,
                 ),
-                gpu_uuid=gpu_uuid,
                 client=client,
             )
             for gpu_uuid in physical_plans
@@ -385,15 +384,13 @@ class MpsPipelineRuntime:
         except Exception as startup_error:
             rollback_errors: list[tuple[str, MpsError]] = []
             for gpu_uuid in reversed(acquired):
-                error = self.release_one(
-                    gpu_uuid,
-                    suppress_errors=True,
-                    clients_could_have_attached=False,
-                )
-                if error is not None:
+                try:
+                    self.release_one(gpu_uuid, clients_could_have_attached=False)
+                except MpsError as error:
                     rollback_errors.append((gpu_uuid, error))
-                else:
-                    pass
+                    logger.error(
+                        "MPS rollback incomplete on GPU %s: %s", gpu_uuid, error
+                    )
             if rollback_errors:
                 details = "; ".join(
                     f"physical GPU {gpu_uuid}: {error}"
@@ -515,15 +512,13 @@ class MpsPipelineRuntime:
                 process_start_attempts is None
                 or not process_start_attempts.isdisjoint(self.names_on(gpu_uuid))
             )
-            error = self.release_one(
-                gpu_uuid,
-                suppress_errors=False,
-                clients_could_have_attached=clients_could_have_attached,
-            )
-            if error is not None:
+            try:
+                self.release_one(
+                    gpu_uuid,
+                    clients_could_have_attached=clients_could_have_attached,
+                )
+            except MpsError as error:
                 errors.append((gpu_uuid, error))
-            else:
-                pass
         if errors:
             details = "; ".join(
                 f"physical GPU {gpu_uuid}: {error}" for gpu_uuid, error in errors
@@ -569,22 +564,14 @@ class MpsPipelineRuntime:
         self,
         gpu_uuid: str,
         *,
-        suppress_errors: bool,
         clients_could_have_attached: bool = True,
-    ) -> MpsError | None:
+    ) -> None:
         lease = self.leases[gpu_uuid]
-        error: MpsError | None = None
         try:
             self.managers[gpu_uuid].release(
                 lease,
                 clients_could_have_attached=clients_could_have_attached,
             )
-        except MpsError as exc:
-            error = exc
-            if suppress_errors:
-                logger.error("MPS rollback incomplete on GPU %s: %s", gpu_uuid, exc)
-            else:
-                pass
         finally:
             # A released owner fd means the token no longer carries cleanup
             # authority, even when later daemon cleanup failed.
@@ -592,7 +579,6 @@ class MpsPipelineRuntime:
                 self.leases.pop(gpu_uuid)
             else:
                 pass
-        return error
 
 
 def create_for_pipeline(

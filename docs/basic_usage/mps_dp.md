@@ -86,6 +86,23 @@ file remains in the state root after GPU state cleanup. Each serve also keeps
 its own owner lease lock for its lifetime, and the runtime serializes its local
 MPS operations with an `asyncio.Lock`.
 
+Startup readiness, attachment verification, client retirement, release drain,
+and daemon-exit confirmation use bounded polling. Each read operation retries
+native query timeouts, temporary I/O errors (`EINTR`, `EAGAIN`, `ETIMEDOUT`), and
+permission errors identified at the I/O boundary, preserving the original native
+exception as the cause. Retries stop at the phase deadline and report the last
+control error. An unreadable client environment is never treated as a detached
+or unattributable client. Permanent I/O errors, nonzero command exits, malformed
+PID, token or protocol data, a dead or mismatched daemon, and an invalid owner
+lease fail immediately. Verification, retirement and drain release the GPU transaction
+between attempts while keeping the owner lease; initial daemon creation and
+final quit confirmation retain their transaction until the state transition is
+complete. Start, terminate and quit commands are never replayed by this policy.
+Each phase keeps one deadline, including both
+temporary read failures and clients that have not yet attached or drained. The
+deadline bounds retry scheduling; individual native commands and lock acquisition
+retain their existing blocking behavior. The watchdog remains a single query.
+
 If a managed worker does not exit before the shutdown timeout, the runtime
 terminates that directly owned child process and reaps it before the launcher
 exits, even when that directly owned worker is also an MPS client. It sends no
@@ -104,7 +121,8 @@ node crash), even an idle daemon or one dead co-owner makes the next start
 preserve the state and fail with owner/client details and safe cleanup guidance.
 An unlocked or retained owner blocks every later start until an operator has
 inspected and cleaned the state. Existing healthy co-owners keep serving, but
-new owners cannot join and no process retries cleanup automatically. Clean up
+new owners cannot join and no process retries cleanup of retained dirty state
+automatically. Clean up
 and start again. When the last owner shuts down cleanly, its GPU state directory
 is removed and only the reusable transaction lock file remains in the state root.
 

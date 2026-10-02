@@ -13,6 +13,7 @@ from sglang_omni.mps.manager import (
     MpsClientRef,
     MpsControlError,
     MpsDaemonNotStartedError,
+    MpsRetryableControlError,
 )
 
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
@@ -28,7 +29,10 @@ def stat_says_alive(stat_text: str) -> bool:
 
 def parse_pid_list(output: str, command: str) -> list[int]:
     tokens = output.split()
-    if any(not token.isdigit() or int(token) <= 0 for token in tokens):
+    if any(
+        not token.isascii() or not token.isdigit() or int(token) <= 0
+        for token in tokens
+    ):
         raise MpsControlError(
             f"unexpected output from {_CONTROL_BINARY} {command!r}: {output!r}"
         )
@@ -55,7 +59,17 @@ class SubprocessMpsControlClient:
                 timeout=_QUERY_TIMEOUT_SECONDS,
                 env=self.control_env(pipe_dir),
             )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (
+            subprocess.TimeoutExpired,
+            InterruptedError,
+            BlockingIOError,
+            TimeoutError,
+            PermissionError,
+        ) as exc:
+            raise MpsRetryableControlError(
+                f"{_CONTROL_BINARY} {command!r} failed: {exc}"
+            ) from exc
+        except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
             raise MpsControlError(
                 f"{_CONTROL_BINARY} {command!r} failed: {exc}"
             ) from exc
@@ -95,11 +109,20 @@ class SubprocessMpsControlClient:
         pid_file = pipe_dir / f"{_CONTROL_BINARY}.pid"
         try:
             raw_pid = pid_file.read_text().strip()
-        except OSError as exc:
+        except (
+            InterruptedError,
+            BlockingIOError,
+            TimeoutError,
+            PermissionError,
+        ) as exc:
+            raise MpsRetryableControlError(
+                f"cannot read native PID file {pid_file}: {exc}"
+            ) from exc
+        except (OSError, UnicodeError) as exc:
             raise MpsControlError(
                 f"cannot read native PID file {pid_file}: {exc}"
             ) from exc
-        if not raw_pid.isdigit() or int(raw_pid) <= 0:
+        if not raw_pid.isascii() or not raw_pid.isdigit() or int(raw_pid) <= 0:
             raise MpsControlError(
                 f"native PID file {pid_file} is malformed: {raw_pid!r}"
             )
@@ -115,6 +138,15 @@ class SubprocessMpsControlClient:
         try:
             cmdline = proc.joinpath("cmdline").read_bytes().split(b"\0", 1)[0]
             environ = proc.joinpath("environ").read_bytes().split(b"\0")
+        except (
+            InterruptedError,
+            BlockingIOError,
+            TimeoutError,
+            PermissionError,
+        ) as exc:
+            raise MpsRetryableControlError(
+                f"cannot inspect daemon pid {pid}: {exc}"
+            ) from exc
         except OSError as exc:
             raise MpsControlError(f"cannot inspect daemon pid {pid}: {exc}") from exc
         if Path(os.fsdecode(cmdline)).name != _CONTROL_BINARY:
@@ -170,14 +202,34 @@ class SubprocessMpsControlClient:
             return stat_says_alive(Path(f"/proc/{pid}/stat").read_text())
         except FileNotFoundError:
             return False
-        except (OSError, IndexError) as exc:
+        except (
+            InterruptedError,
+            BlockingIOError,
+            TimeoutError,
+            PermissionError,
+        ) as exc:
+            raise MpsRetryableControlError(
+                f"cannot inspect daemon pid {pid}: {exc}"
+            ) from exc
+        except (OSError, IndexError, UnicodeError) as exc:
             raise MpsControlError(f"cannot inspect daemon pid {pid}: {exc}") from exc
 
     def client_token(self, pid: int) -> str | None:
+        """Read the client's current ownership token from its environment."""
+
         try:
             entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
         except FileNotFoundError:
             return None
+        except (
+            InterruptedError,
+            BlockingIOError,
+            TimeoutError,
+            PermissionError,
+        ) as exc:
+            raise MpsRetryableControlError(
+                f"cannot inspect client pid {pid}: {exc}"
+            ) from exc
         except OSError as exc:
             raise MpsControlError(f"cannot inspect client pid {pid}: {exc}") from exc
         prefix = f"{MPS_CLIENT_TOKEN_ENV}=".encode()
