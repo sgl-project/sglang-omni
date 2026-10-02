@@ -631,10 +631,13 @@ class ArkasrPreLMEncoderService(
         else:
             pass
         try:
-            with torch.cuda.device(self.device):
-                torch.cuda.empty_cache()
+            device_module = torch.get_device_module(self.device)
+            with device_module.device(self.device):
+                device_module.empty_cache()
         except Exception:
-            logger.warning("ARK-ASR CUDA cache cleanup failed after OOM", exc_info=True)
+            logger.warning(
+                "ARK-ASR device cache cleanup failed after OOM", exc_info=True
+            )
 
     def on_batch_start(
         self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
