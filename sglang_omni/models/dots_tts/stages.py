@@ -460,7 +460,10 @@ def create_reference_encode_executor(
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    if device != "cpu" and not (torch.xpu.is_available() or torch.cuda.is_available()):
+    if (
+        (device is None or device.strip().lower() != "cpu")
+        and not (torch.xpu.is_available() or torch.cuda.is_available())
+    ):
         raise RuntimeError("dots.tts requires XPU or CUDA")
     else:
         pass
