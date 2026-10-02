@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import TYPE_CHECKING
 
-from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
-from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-from sglang.srt.mem_cache.chunk_cache import ChunkCache
-from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
-from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.runtime_context import get_memory, get_schedule, get_serving
-from sglang.srt.session.streaming_session import StreamingSession
 
-from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
-    EvictHeapRadixCache,
-)
+if TYPE_CHECKING:
+    from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+    from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
+    from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+else:
+    pass
 
 
 def create_tree_cache(
@@ -46,16 +44,26 @@ def create_tree_cache(
     params = CacheInitParams(**cache_init_arguments)
 
     if get_memory().disable_radix_cache:
-        cache: BasePrefixCache = ChunkCache(params)
+        from sglang.srt.mem_cache.chunk_cache import ChunkCache
+
+        cache: "BasePrefixCache" = ChunkCache(params)
     elif params.eviction_policy.lower() == "lru":
+        from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
+            EvictHeapRadixCache,
+        )
+
         cache = EvictHeapRadixCache(params)
     else:
+        from sglang.srt.mem_cache.radix_cache import RadixCache
+
         cache = RadixCache(params)
 
     if (
         get_serving().enable_streaming_session
         and not cache.supports_streaming_session()
     ):
+        from sglang.srt.session.streaming_session import StreamingSession
+
         return StreamingSession(cache)
     else:
         return cache
