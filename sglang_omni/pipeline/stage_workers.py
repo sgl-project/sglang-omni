@@ -189,6 +189,8 @@ def patched_spawn_env(
     extra_env: Mapping[str, str] | None = None,
 ) -> Generator[None, None, None]:
     env_default_updates: dict[str, str] = {}
+    # note (wenyao): pipeline-level defaults repeat on every stage of the process; notify once
+    shadowed_env_names_logged: set[str] = set()
     for stage_spec in spec.stage_specs:
         for key, value in stage_spec.env_defaults.items():
             existing = env_default_updates.get(key)
@@ -201,6 +203,13 @@ def patched_spawn_env(
                 pass
             if key not in os.environ:
                 env_default_updates[key] = value
+            elif os.environ[key] != value and key not in shadowed_env_names_logged:
+                shadowed_env_names_logged.add(key)
+                logger.info(
+                    f"Process {spec.process_name!r}: shell {key}={os.environ[key]!r} "
+                    f"takes precedence over stage default {value!r} "
+                    f"({stage_spec.stage_name!r})"
+                )
             else:
                 pass
 

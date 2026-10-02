@@ -164,7 +164,27 @@ class EngineArgs(BaseModel):
         default=None,
         description="Authoritative KV pool size in bytes, per rank; accepts an int or an exact binary-size string such as 2GiB. Consumed by the omni KV configurator, never forwarded to SGLang ServerArgs.",
     )
-    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset({"kv_cache_bytes"})
+    admission_new_tokens_estimate: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "New tokens the SGLang prefill admitter charges per running request, "
+            "min(max_new_tokens, this). Becomes the stage process's "
+            "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION environment default, read once at "
+            "import, so stages sharing a process must agree; never forwarded to "
+            "ServerArgs."
+        ),
+    )
+
+    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"kv_cache_bytes", "admission_new_tokens_estimate"}
+    )
+    ADMISSION_NEW_TOKENS_ESTIMATE_ENV: ClassVar[str] = (
+        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION"
+    )
+    DERIVED_ENV_SOURCES: ClassVar[dict[str, str]] = {
+        ADMISSION_NEW_TOKENS_ESTIMATE_ENV: "admission_new_tokens_estimate"
+    }
 
     @field_validator("kv_cache_bytes", mode="before")
     @classmethod
@@ -202,6 +222,18 @@ class EngineArgs(BaseModel):
             for key, value in self.model_dump().items()
             if (value is not None or key in extra) and key not in self.NON_SERVER_KEYS
         }
+
+    def derived_env_defaults(self) -> dict[str, str]:
+        """Environment entries derived from typed keys that SGLang reads only as
+        import-time environment globals, applied in the stage's process."""
+        if self.admission_new_tokens_estimate is None:
+            return {}
+        else:
+            return {
+                self.ADMISSION_NEW_TOKENS_ESTIMATE_ENV: str(
+                    self.admission_new_tokens_estimate
+                )
+            }
 
 
 class FactoryArgs(BaseModel):
@@ -416,6 +448,25 @@ class StageConfig(BaseModel):
             )
         else:
             pass
+        if self.engine is not None:
+            for (
+                env_name,
+                derived_env_value,
+            ) in self.engine.derived_env_defaults().items():
+                written_env_value = self.env.get(env_name)
+                if written_env_value is not None and (
+                    written_env_value != derived_env_value
+                ):
+                    engine_key = EngineArgs.DERIVED_ENV_SOURCES[env_name]
+                    raise ValueError(
+                        f"Stage {self.name!r}: env.{env_name}={written_env_value!r} "
+                        f"disagrees with engine.{engine_key} ({derived_env_value!r}); "
+                        "set exactly one of the two"
+                    )
+                else:
+                    pass
+        else:
+            pass
         if (
             self.total_reserve_bytes is not None
             and self.gpu_memory_fraction is not None
@@ -462,6 +513,13 @@ class StageConfig(BaseModel):
             raise ValueError(f"Stage {self.name!r}: GPU ids must be unique")
         else:
             pass
+
+    def resolved_env_defaults(self) -> dict[str, str]:
+        """Worker-process environment defaults: entries derived from typed engine
+        keys with the written env mapping laid over them (validation refused any
+        disagreeing written entry, so the overlay only adds keys)."""
+        derived = self.engine.derived_env_defaults() if self.engine is not None else {}
+        return {**derived, **self.env}
 
 
 class EngineStageConfig(StageConfig):
@@ -984,6 +1042,23 @@ class PipelineConfig(BaseModel):
                 )
             else:
                 pass
+            # note (wenyao): SGLang reads a derived env once per process; sharers must agree
+            derived_env_owners: dict[str, tuple[str, str]] = {}
+            engine_stages = [stage for stage in stages if stage.engine is not None]
+            for stage in engine_stages:
+                for (
+                    env_name,
+                    derived_env_value,
+                ) in stage.engine.derived_env_defaults().items():
+                    owner = derived_env_owners.get(env_name)
+                    if owner is not None and owner[1] != derived_env_value:
+                        raise ValueError(
+                            f"Process {process_name!r}: stages {owner[0]!r} and "
+                            f"{stage.name!r} derive different {env_name} values "
+                            f"({owner[1]!r} vs {derived_env_value!r})"
+                        )
+                    else:
+                        derived_env_owners[env_name] = (stage.name, derived_env_value)
         unknown = sorted(set(self.processes) - set(members))
         if unknown:
             raise ValueError(

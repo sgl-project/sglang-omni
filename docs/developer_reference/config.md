@@ -70,7 +70,7 @@ Stage settings are grouped by the module that consumes them:
 | Group | Consumer | Examples |
 | --- | --- | --- |
 | stage top level | parent process: placement, process planning, wiring | `gpu`, `tp_size`, `process`, `gpu_memory_fraction` |
-| `engine.*` | SGLang `ServerArgs` (only on `EngineStageConfig` stages) | `mem_fraction_static`, `max_running_requests`, `disable_cuda_graph` |
+| `engine.*` | SGLang `ServerArgs` (only on `EngineStageConfig` stages); `kv_cache_bytes` and `admission_new_tokens_estimate` never reach it (KV configurator, stage `env`) | `mem_fraction_static`, `max_running_requests`, `disable_cuda_graph` |
 | `factory.*` | the stage factory's signature | `dtype`, `max_seq_len`, `max_concurrency`, `enable_async_decode` |
 
 Each group declares its commonly tuned fields, which validate eagerly. **Any
@@ -172,7 +172,7 @@ overrode. Both run the same merge as `serve`.
 | `tp_size` | `int` | `1` | Number of tensor-parallel ranks. Must match `len(gpu)` when `gpu` is a list. |
 | `gpu_memory_fraction` | `float` or `None` | `None` | Per-stage-rank budget as a fraction of total physical GPU memory. Required per stage when multiple processes share one GPU. |
 | `process` | `str` or `None` | `None` | OS process group identifier. Non-TP stages with the same `process` value share a single OS process; every non-TP stage must declare one explicitly. For TP stages, `process` is optional and acts as a prefix for the derived rank-process names (`{process}_tp{rank}`); if unset, the stage name is used as the prefix. |
-| `env` | `dict[str, str]` | `{}` | Per-stage env defaults applied in this stage's worker process at spawn; never overrides `os.environ`. |
+| `env` | `dict[str, str]` | `{}` | Per-stage env defaults applied in this stage's worker process at spawn; never overrides `os.environ` (a shell value that takes precedence is logged once per process). Typed `engine` keys that SGLang reads only from the environment (`admission_new_tokens_estimate` → `SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION`) are derived into the same mapping; a written entry that disagrees, or two engine stages in one `process` deriving different values, is a config error. |
 | `wait_for` | `list[str]` or `None` | `None` | Upstream stages required before this stage can execute a request. |
 | `wait_for_fn` | `str` or `None` | `None` | Dotted function path for request-aware fan-in source selection. |
 | `merge_fn` | `str` or `None` | `None` | Dotted import path to the fan-in merge function. Required when `wait_for` is set. |
@@ -239,8 +239,13 @@ stage.engine.*  ->  server_args_overrides      # config channel: one dict to SGL
 ```
 
 Per key, the config channel wins over the author channel;
-`server_args_overrides` merges per key the same way. A configured key the
-factory does not accept raises at construction. Standard kwargs
+`server_args_overrides` merges per key the same way. Two typed `engine`
+keys never enter `server_args_overrides`: `kv_cache_bytes` feeds the omni
+KV configurator, and `admission_new_tokens_estimate` becomes the stage's
+`SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION` environment default, overriding a
+pipeline-level `env_defaults` entry like any written stage `env` entry
+(see `env`). A configured key the factory does not accept raises at
+construction. Standard kwargs
 (`model_path`, `gpu_id`, `total_gpu_memory_fraction`) are injected only when
 the factory signature declares them; `gpu_id` is owned by placement and is
 rejected from the author channel.

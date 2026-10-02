@@ -41,6 +41,7 @@ from sglang.srt.managers.schedule_batch import (
     ScheduleBatch,
     retract_all,
 )
+from sglang.srt.managers.schedule_policy import CLIP_MAX_NEW_TOKENS, SchedulePolicy
 from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
@@ -544,8 +545,6 @@ class OmniScheduler(Generic[RequestDataT]):
         self.processed_tokens_counter = 0
 
         # Schedule policy
-        from sglang.srt.managers.schedule_policy import SchedulePolicy
-
         self.schedule_policy = server_args.schedule_policy
         self.policy = SchedulePolicy(
             self.schedule_policy,
@@ -554,6 +553,15 @@ class OmniScheduler(Generic[RequestDataT]):
             server_args.enable_priority_scheduling,
             server_args.schedule_low_priority_values_first,
         )
+        # note (wenyao): admission charges min(max_new_tokens, clip) per running row.
+        if self.tp_rank == 0:
+            logger.info(
+                f"Admission budget: max_running_requests={self.max_running_requests} "
+                f"max_total_num_tokens={self.max_total_num_tokens} "
+                f"new_token_estimate_clip={CLIP_MAX_NEW_TOKENS}"
+            )
+        else:
+            pass
         self.enable_priority_scheduling = server_args.enable_priority_scheduling
         self.try_preemption = server_args.enable_priority_scheduling
         self.priority_scheduling_preemption_threshold = (

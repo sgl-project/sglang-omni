@@ -7,7 +7,12 @@ from typing import Any
 
 import pytest
 
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
+from sglang_omni.config.schema import (
+    EndpointsConfig,
+    EngineArgs,
+    EngineStageConfig,
+    PipelineConfig,
+)
 from sglang_omni.pipeline.mp_runner import (
     build_stage_groups,
     resolve_same_process_targets,
@@ -416,6 +421,41 @@ def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:
 
     assert specs["mm_aggregate"].disable_direct_cuda_ipc_payload is True
     assert specs["thinker"].disable_direct_cuda_ipc_payload is False
+
+
+def test_runner_specs_carry_the_derived_engine_env_default() -> None:
+    """A typed admission estimate reaches the launch spec as that stage's env default."""
+    config = PipelineConfig(
+        model_path="model",
+        env_defaults={"SGLANG_TEST_STAGE_ENV": "1"},
+        stages=[
+            stage("mm_aggregate", next="talker"),
+            EngineStageConfig(
+                name="talker",
+                factory_path=fake_factory_path("make_scheduler"),
+                process="pipeline",
+                gpu=0,
+                engine=EngineArgs(admission_new_tokens_estimate=256),
+                terminal=True,
+            ),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    groups = build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=prep.stages_cfg,
+        endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
+        process_plan=prep.process_plan,
+    )
+    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
+
+    assert specs["talker"].env_defaults == {
+        "SGLANG_TEST_STAGE_ENV": "1",
+        EngineArgs.ADMISSION_NEW_TOKENS_ESTIMATE_ENV: "256",
+    }
+    assert specs["mm_aggregate"].env_defaults == {"SGLANG_TEST_STAGE_ENV": "1"}
 
 
 def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
