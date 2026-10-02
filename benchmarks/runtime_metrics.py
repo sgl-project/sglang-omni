@@ -309,6 +309,8 @@ def collect_benchmark_provenance(
         torch_cuda = None
         cudnn_version = None
 
+    torch_xpu, xpu_devices = _xpu_provenance()
+
     return {
         "schema_version": 1,
         "repository": {
@@ -332,6 +334,9 @@ def collect_benchmark_provenance(
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "torch_cuda_build": torch_cuda,
             "cudnn_version": cudnn_version,
+            "ze_affinity_mask": os.environ.get("ZE_AFFINITY_MASK"),
+            "torch_xpu_build": torch_xpu,
+            "xpu_devices": xpu_devices,
         },
         "packages": {
             name: _package_version(name)
@@ -436,6 +441,34 @@ def _best_effort(callback):
         return callback()
     except Exception:
         return None
+
+
+def _xpu_provenance() -> tuple[str | None, list[dict[str, Any]] | None]:
+    """Return the torch XPU build and per-card driver metadata, or None.
+
+    The Level Zero driver version belongs in provenance because a stale driver
+    changes results on the same wheel, and nvidia-smi has no counterpart here.
+    """
+    try:
+        import torch
+
+        if not (hasattr(torch, "xpu") and torch.xpu.is_available()):
+            return None, None
+        devices = []
+        for index in range(torch.xpu.device_count()):
+            properties = torch.xpu.get_device_properties(index)
+            devices.append(
+                {
+                    "index": index,
+                    "name": properties.name,
+                    "driver_version": properties.driver_version,
+                    "total_memory_bytes": int(properties.total_memory),
+                    "has_xmx": bool(properties.has_subgroup_matrix_multiply_accumulate),
+                }
+            )
+        return str(getattr(torch.version, "xpu", None)), devices
+    except Exception:
+        return None, None
 
 
 def _command(*args: str) -> str | None:
