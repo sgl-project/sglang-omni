@@ -168,7 +168,7 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
     assert rendered[-1] == num_samples - 1
 
 
-def test_mimi_encode_fills_caller_and_voice_codes(monkeypatch):
+def test_mimi_encode_replaces_caller_and_voice_waveforms_with_codes(monkeypatch):
     class _Codec:
         def encode(self, waveform_B1T):
             frames = waveform_B1T.shape[-1] // SAMPLES_PER_FRAME
@@ -192,6 +192,7 @@ def test_mimi_encode_fills_caller_and_voice_codes(monkeypatch):
     )
     assert state.user_codes.shape == (2, 8) and torch.all(state.user_codes == 1)
     assert state.voice_codes.shape == (3, 8) and torch.all(state.voice_codes == 2)
+    assert state.waveform is None and state.voice_waveform is None
 
     no_voice = run(PersonaPlexState(waveform=torch.ones(SAMPLES_PER_FRAME)))
     assert no_voice.user_codes.shape == (1, 8) and no_voice.voice_codes is None
