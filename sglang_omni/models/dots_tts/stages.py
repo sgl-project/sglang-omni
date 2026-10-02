@@ -27,6 +27,7 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.utils.device import resolve_concrete_device
 
 if TYPE_CHECKING:
     from dots_tts.models.dots_tts.config import ModelConfig
@@ -459,8 +460,6 @@ def create_reference_encode_executor(
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    from sglang_omni.utils.device import resolve_concrete_device
-
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
@@ -493,7 +492,8 @@ def create_sglang_latent_engine_executor(
 ) -> OmniScheduler[DotsTTSSGLangRequestData]:
     from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
 
-    if not torch.cuda.is_available():
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    if concrete_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
     else:
         pass
@@ -521,15 +521,12 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
 ) -> DotsTTSStreamingVocoder:
-    from sglang_omni.utils.device import resolve_concrete_device
-
-    if not torch.cuda.is_available():
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    if concrete_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
     else:
         pass
-    codec = load_dots_audio_codec(
-        model_path, device=str(resolve_concrete_device(device, gpu_id))
-    )
+    codec = load_dots_audio_codec(model_path, device=str(concrete_device))
     vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,

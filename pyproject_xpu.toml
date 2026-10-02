@@ -90,6 +90,9 @@ dependencies = [
     "addict==2.4.0",         # sglang.multimodal_gen server_args; MiniMax DIT import
     "imageio==2.36.0",       # sglang.multimodal_gen vision utils; MiniMax DIT import
     "imageio-ffmpeg==0.5.1", # Pinned with the sglang diffusion extra
+
+    # --- dots.tts ---
+    "dots.tts==0.2.1",       # Same pin as pyproject.toml / ROCm / MUSA
 ]
 
 [project.optional-dependencies]
