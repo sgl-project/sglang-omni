@@ -26,15 +26,15 @@ MPS_SLACK_LOWER = 1.25
 
 MPS_CONCURRENCY = 16
 
-MPS_HIGGS_THROUGHPUT_QPS_REF: float | None = 15.194
-MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 119.5
-MPS_HIGGS_LATENCY_MEAN_S_REF: float | None = 1.046
-MPS_HIGGS_RTF_MEAN_REF: float | None = 0.2502
+MPS_HIGGS_THROUGHPUT_QPS_REF: float | None = 15.426
+MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 122.6
+MPS_HIGGS_LATENCY_MEAN_S_REF: float | None = 1.031
+MPS_HIGGS_RTF_MEAN_REF: float | None = 0.2428
 
-MPS_MOSS_THROUGHPUT_QPS_REF: float | None = 16.242
-MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 69.7
-MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 0.98
-MPS_MOSS_RTF_MEAN_REF: float | None = 0.226
+MPS_MOSS_THROUGHPUT_QPS_REF: float | None = 18.293
+MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 73.8
+MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 0.869
+MPS_MOSS_RTF_MEAN_REF: float | None = 0.1999
 
 # Speaker similarity gets its own MPS baseline. The canonical reference is
 # calibrated under ordinary DP2, and under a shared card the observed spread

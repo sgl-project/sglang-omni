@@ -77,28 +77,28 @@ THRESHOLD_SLACK_LOWER = 1.25
 
 
 # Higgs thresholds.
-HIGGS_VC_WER_MAX_CORPUS = 0.0105
+HIGGS_VC_WER_MAX_CORPUS = 0.0098
 HIGGS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_WER_MAX_CORPUS)
 HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0104
 HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_STREAM_WER_MAX_CORPUS)
-HIGGS_VC_SIMILARITY_MEAN_MIN = 65.95185356140136
+HIGGS_VC_SIMILARITY_MEAN_MIN = 66.2759
 HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1628
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
 HIGGS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 19.992,
-        "output_tok_per_req_s": 160.7,
-        "latency_mean_s": 0.796,
-        "rtf_mean": 0.1894,
+        "throughput_qps": 20.903,
+        "output_tok_per_req_s": 168.7,
+        "latency_mean_s": 0.76,
+        "rtf_mean": 0.1841,
     }
 }
 
 HIGGS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 20.016,
-        "latency_mean_s": 0.796,
-        "rtf_mean": 0.1872,
+        "throughput_qps": 21.069,
+        "latency_mean_s": 0.754,
+        "rtf_mean": 0.1798,
     }
 }
 
@@ -111,28 +111,28 @@ HIGGS_VC_STREAM_THRESHOLDS = apply_slack(
 
 
 # MOSS Local thresholds.
-MOSS_VC_WER_MAX_CORPUS = 0.0272
+MOSS_VC_WER_MAX_CORPUS = 0.0232
 MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
-MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0265
+MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0228
 MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
 MOSS_VC_SIMILARITY_MEAN_MIN = 64.33411296844483
-MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9521
+MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9565
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
 MOSS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 20.463,
-        "output_tok_per_req_s": 90.3,
-        "latency_mean_s": 0.777,
-        "rtf_mean": 0.1795,
+        "throughput_qps": 22.909,
+        "output_tok_per_req_s": 96.9,
+        "latency_mean_s": 0.695,
+        "rtf_mean": 0.1603,
     }
 }
 
 MOSS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 16.778,
-        "latency_mean_s": 0.949,
-        "rtf_mean": 0.2176,
+        "throughput_qps": 21.524,
+        "latency_mean_s": 0.739,
+        "rtf_mean": 0.1694,
     }
 }
 
@@ -158,24 +158,24 @@ QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0109
 QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
     QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS
 )
-QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.13817592620849
-QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.193
+QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.672
+QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.1952
 QWEN3_TTS_VC_UTMOS_MEAN_MIN = apply_mos_slack(QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE)
 
 QWEN3_TTS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 21.083,
-        "output_tok_per_req_s": 88.4,
-        "latency_mean_s": 0.755,
-        "rtf_mean": 0.1859,
+        "throughput_qps": 27.864,
+        "output_tok_per_req_s": 122.7,
+        "latency_mean_s": 0.569,
+        "rtf_mean": 0.1364,
     }
 }
 
 QWEN3_TTS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 19.526,
-        "latency_mean_s": 0.815,
-        "rtf_mean": 0.1992,
+        "throughput_qps": 25.39,
+        "latency_mean_s": 0.627,
+        "rtf_mean": 0.1529,
     }
 }
 
@@ -184,16 +184,16 @@ QWEN3_TTS_VC_STREAM_P95 = {
 # next to, not worst-of-N observations from the CI host.
 QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE = {
     16: {
-        "throughput_qps": 14.788,
-        "latency_mean_s": 1.075,
-        "rtf_mean": 0.2335,
+        "throughput_qps": 30.569,
+        "latency_mean_s": 0.52,
+        "rtf_mean": 0.1117,
     }
 }
 QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE = {
     16: {
-        "throughput_qps": 10.098,
-        "latency_mean_s": 1.573,
-        "rtf_mean": 0.3380,
+        "throughput_qps": 26.695,
+        "latency_mean_s": 0.595,
+        "rtf_mean": 0.1233,
     }
 }
 QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_THRESHOLDS = apply_slack(
