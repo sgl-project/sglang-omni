@@ -232,6 +232,18 @@ warmup and every measured repeat, and records talker sampling knobs.
 `--seed` so rollouts differ but stay reproducible. The realtime ASR client
 base64-encodes packets before the first-send timestamp.
 
+MMSU's `mmsu_results.json` keeps run inputs in `config`: the effective request
+`timeout_s`, warmup, generation prompt and parameters, non-streaming mode, audio
+saving, and ASR/WER settings. `config.dataset` records the loaded repository and
+split, normalized filters, selection rule, and actual ordered sample IDs/count,
+including failed requests. The default source is `ddwang2000/MMSU`, split `train`;
+`--repo-id` identifies a different backing set. Programmatic `samples=` runs are
+marked `provided_samples` with their supplied order; repository, split, and
+filters are null because that path bypasses dataset selection. `max_samples`
+remains the requested limit, while `dataset.sample_count` is the evaluated count.
+These fields describe client inputs; model revisions and server configuration
+still require the optional fingerprint or separately recorded launch details.
+
 `benchmark_omni_seedtts.py` documents local vs CI GPU usage in its module
 docstring (sequential phases on CI to reduce OOM risk).
 
