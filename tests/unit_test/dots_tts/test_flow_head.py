@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 import torch
@@ -115,12 +117,38 @@ def test_append_hidden_uses_bias_for_null_projection(tmp_path) -> None:
     )
 
 
-def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("device_type", "dtype"),
+    [
+        pytest.param("cpu", torch.float32, id="cpu-float32"),
+        pytest.param(
+            "cuda",
+            torch.bfloat16,
+            id="cuda-bfloat16",
+            marks=pytest.mark.accelerator,
+        ),
+        pytest.param(
+            "xpu",
+            torch.bfloat16,
+            id="xpu-bfloat16",
+            marks=pytest.mark.accelerator,
+        ),
+    ],
+)
+def test_single_stream_seed_survives_rematerialization(
+    tmp_path: Path,
+    device_type: Literal["cpu", "cuda", "xpu"],
+    dtype: torch.dtype,
+) -> None:
+    if device_type != "cpu" and not torch.get_device_module(device_type).is_available():
+        pytest.skip(f"{device_type} is not available")
+    else:
+        pass
     torch.manual_seed(1618)
-    flow = flow_head(tmp_path)
-    prefill_hidden = torch.randn(1, 1, LLM_HIDDEN)
-    next_hidden = torch.randn(1, LLM_HIDDEN)
-    schedule = torch.tensor([[0, 1]])
+    flow = flow_head(tmp_path).to(device=device_type, dtype=dtype)
+    prefill_hidden = torch.randn(1, 1, LLM_HIDDEN, device=device_type, dtype=dtype)
+    next_hidden = torch.randn(1, LLM_HIDDEN, device=device_type, dtype=dtype)
+    schedule = torch.tensor([[0, 1]], device=device_type)
 
     uninterrupted, _ = flow.new_request(
         max_audio_patch_count=6,
@@ -140,7 +168,7 @@ def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
         flow.initialize_history(
             state,
             hidden_states=prefill_hidden,
-            prompt_span_positions=torch.empty(0, dtype=torch.long),
+            prompt_span_positions=torch.empty(0, device=device_type, dtype=torch.long),
             audio_span_token_ids={1},
             generation_schedule=schedule,
             prefill_end=1,
@@ -180,7 +208,7 @@ def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
     flow.initialize_history(
         rematerialized,
         hidden_states=torch.cat([prefill_hidden, next_hidden.unsqueeze(1)], dim=1),
-        prompt_span_positions=torch.empty(0, dtype=torch.long),
+        prompt_span_positions=torch.empty(0, device=device_type, dtype=torch.long),
         audio_span_token_ids={1},
         generation_schedule=schedule,
         prefill_end=1,
