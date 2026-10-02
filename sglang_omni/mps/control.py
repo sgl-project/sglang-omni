@@ -23,7 +23,7 @@ def stat_says_alive(stat_text: str) -> bool:
     """Parse ``/proc/<pid>/stat``; the state field follows the last ``)``."""
 
     fields = stat_text.rsplit(")", 1)[1].split()
-    return bool(fields) and fields[0] != "Z"
+    return fields[0] != "Z"
 
 
 def parse_pid_list(output: str, command: str) -> list[int]:
@@ -38,6 +38,8 @@ def parse_pid_list(output: str, command: str) -> list[int]:
 
 
 class SubprocessMpsControlClient:
+    """Native I/O; commands require the caller's per-GPU manager transaction."""
+
     def control_env(self, pipe_dir: Path) -> dict[str, str]:
         env = os.environ.copy()
         env["CUDA_MPS_PIPE_DIRECTORY"] = str(pipe_dir)
@@ -145,6 +147,11 @@ class SubprocessMpsControlClient:
                 clients.add(MpsClientRef(server_pid, client_pid))
         return clients
 
+    def get_server_status(self, pipe_dir: Path, server_pid: int) -> str:
+        """Query the native status of a previously verified MPS server."""
+
+        return self.query(pipe_dir, f"get_server_status {server_pid}").strip()
+
     def terminate_client(self, pipe_dir: Path, client: MpsClientRef) -> None:
         command = f"terminate_client {client.server_pid} {client.client_pid}"
         output = self.query(pipe_dir, command).strip()
@@ -159,12 +166,6 @@ class SubprocessMpsControlClient:
         self.query(pipe_dir, "quit")
 
     def daemon_process_alive(self, pid: int) -> bool:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError as exc:
-            raise MpsControlError(f"cannot probe daemon pid {pid}: {exc}") from exc
         try:
             return stat_says_alive(Path(f"/proc/{pid}/stat").read_text())
         except FileNotFoundError:
@@ -205,7 +206,6 @@ class SubprocessMpsControlClient:
                     fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     return True
-                fcntl.flock(probe, fcntl.LOCK_UN)
                 return False
         except OSError as exc:
             raise MpsControlError(

@@ -35,6 +35,9 @@ class FakeControlClient:
         self.held_owner_pids: set[int] = set()
         self.client_tokens: dict[int, str] = {}
         self.snapshots: dict[str, set[MpsClientRef]] = {}
+        self.server_statuses: dict[tuple[str, int], str] = {}
+        self.status_queries: list[tuple[Path, int]] = []
+        self.status_error: str | None = None
         self.start_fails = False
         self.snapshot_error: str | None = None
         self.identity_error: str | None = None
@@ -82,6 +85,14 @@ class FakeControlClient:
             for server_pid, client_pids in clients.items()
             for client_pid in client_pids
         }
+        for server_pid in clients:
+            self.server_statuses.setdefault((str(pipe_dir), server_pid), "ACTIVE")
+
+    def get_server_status(self, pipe_dir: Path, server_pid: int) -> str:
+        self.status_queries.append((pipe_dir, server_pid))
+        if self.status_error is not None:
+            raise MpsControlError(self.status_error)
+        return self.server_statuses.get((str(pipe_dir), server_pid), "Server not found")
 
     def terminate_client(self, pipe_dir, client):
         if self.terminate_error is not None:
@@ -378,6 +389,25 @@ def test_verify_returns_current_exact_client_refs(short_root):
     attached = manager.verify(lease)
 
     assert attached == {MpsClientRef(7000, 101), MpsClientRef(7000, 102)}
+    assert manager.probe(lease) is None
+    assert client.status_queries == [(manager.paths.pipe_dir, 7000)]
+
+
+def test_verify_rejects_managed_clients_on_different_servers(short_root):
+    client = FakeControlClient()
+    manager = make_manager(short_root, client)
+    lease = manager.acquire({"a": "owner-a", "b": "owner-b"})
+    client.set_clients(manager.paths.pipe_dir, {7000: [101], 8000: [102]})
+    client.client_tokens.update({101: "owner-a", 102: "owner-b"})
+
+    try:
+        with pytest.raises(MpsError, match="must share one server"):
+            manager.verify(lease)
+        assert manager.probe(lease) == "MPS server attachment is not verified"
+        assert not client.status_queries
+    finally:
+        client.set_clients(manager.paths.pipe_dir, {})
+        manager.release(lease)
 
 
 def test_verify_matches_inherited_process_token_on_cuda_client(short_root):
@@ -410,39 +440,70 @@ def test_verify_does_not_accumulate_clients_across_snapshots(short_root, monkeyp
     assert lease.owner_fd >= 0
 
 
-def test_probe_allows_a_verified_client_to_exit(short_root):
+def test_probe_allows_a_verified_client_to_exit(short_root, monkeypatch):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
     assert manager.probe(lease) is None
 
     client.set_clients(manager.paths.pipe_dir, {})
-    assert manager.probe(lease) is None
+    with monkeypatch.context() as patch:
+        patch.setattr(client, "snapshot", lambda _: pytest.fail("unexpected snapshot"))
+        patch.setattr(
+            client,
+            "read_daemon_identity",
+            lambda _: pytest.fail("unexpected PID query"),
+        )
+        patch.setattr(
+            client, "client_token", lambda _: pytest.fail("unexpected token query")
+        )
+        assert manager.probe(lease) is None
+    assert client.status_queries == [(manager.paths.pipe_dir, 7000)] * 2
+    manager.release(lease)
 
 
-def test_probe_distinguishes_identity_and_snapshot_failures(short_root):
+def test_probe_requires_startup_verification(short_root):
+    client = FakeControlClient()
+    manager = make_manager(short_root, client)
+    lease = manager.acquire({"worker": "owner-worker"})
+
+    assert manager.probe(lease) == "MPS server attachment is not verified"
+    assert not client.status_queries
+    manager.release(lease)
+
+
+@pytest.mark.parametrize("status", ["INITIALIZING", "FAULT", "", "Server not found"])
+def test_probe_rejects_every_nonactive_server_status(short_root, status):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
+    client.server_statuses[(str(manager.paths.pipe_dir), 7000)] = status
 
-    client.identity_error = "native PID unavailable"
-    assert manager.probe(lease) == (
-        "daemon identity query failed: native PID unavailable"
-    )
+    assert manager.probe(lease) == f"server 7000 is not ACTIVE: {status!r}"
+    client.set_clients(manager.paths.pipe_dir, {})
+    manager.release(lease)
 
-    client.identity_error = None
-    replacement_pid = lease.daemon_pid + 1
-    client.daemons[str(manager.paths.pipe_dir)] = replacement_pid
-    client.alive_pids.add(replacement_pid)
-    daemon_pid_file(manager.paths).write_text(str(replacement_pid))
-    assert manager.probe(lease) == (
-        f"daemon identity changed from {lease.daemon_pid} to {replacement_pid}"
-    )
 
-    client.daemons[str(manager.paths.pipe_dir)] = lease.daemon_pid
-    daemon_pid_file(manager.paths).write_text(str(lease.daemon_pid))
-    client.snapshot_error = "control socket unavailable"
+def test_probe_reports_server_status_query_failure(short_root):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    client.status_error = "control query timed out"
+
     assert manager.probe(lease) == (
-        "client snapshot query failed: control socket unavailable"
+        "server 7000 status query failed: control query timed out"
     )
+    client.set_clients(manager.paths.pipe_dir, {})
+    manager.release(lease)
+
+
+def test_probe_does_not_adopt_a_replacement_server(short_root):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    client.set_clients(manager.paths.pipe_dir, {8000: [101]})
+    client.server_statuses.pop((str(manager.paths.pipe_dir), 7000))
+
+    assert manager.probe(lease) == "server 7000 is not ACTIVE: 'Server not found'"
+    assert client.status_queries == [(manager.paths.pipe_dir, 7000)]
+    client.set_clients(manager.paths.pipe_dir, {})
+    manager.release(lease)
 
 
 def test_dead_root_with_live_descendant_persists_dirty_and_reports_cleanup(
@@ -793,7 +854,6 @@ def test_daemon_liveness_rejects_zombie_proc_entries(monkeypatch):
         Path("/proc/7/stat"): "7 (weird) name) Z 1 0",
     }
     monkeypatch.setattr(Path, "read_text", lambda path: stats[path])
-    monkeypatch.setattr(control.os, "kill", lambda _pid, _signal: None)
     client = control.SubprocessMpsControlClient()
 
     assert not client.daemon_process_alive(430465)

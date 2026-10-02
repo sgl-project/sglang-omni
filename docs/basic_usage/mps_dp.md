@@ -70,10 +70,21 @@ byte-derived pool.
 
 The runtime owns the full lifecycle. Every managed process is verified against
 the daemon's client list before serving starts, because a process that misses
-the pipe directory silently falls back to time slicing. A watchdog fails the
-pipeline if daemon identity or control access is lost mid-serving. Shutdown
-re-evaluates the current client list, drains this serve's clients, and quits the
-daemon only when no other serve still owns it.
+the pipe directory silently falls back to time slicing. The watchdog queries
+only the startup-verified server PID with `get_server_status`, failing the
+pipeline on query errors or any status other than `ACTIVE`. It does not adopt
+a replacement server. Shutdown re-evaluates the current client list, drains
+this serve's clients, and quits the daemon only when no other serve still owns it.
+
+The manager uses one per-GPU filesystem `flock` for shared state changes and
+native control transactions across serve processes. A complete server/client
+snapshot and a worker's client termination each run in one transaction. Draining
+clients releases the transaction lock between polls while keeping the owner
+lease held. Final release rechecks daemon identity, clients, and owners under
+the same lock before deciding whether to leave or quit the daemon. The lock
+file remains in the state root after GPU state cleanup. Each serve also keeps
+its own owner lease lock for its lifetime, and the runtime serializes its local
+MPS operations with an `asyncio.Lock`.
 
 If a managed worker does not exit before the shutdown timeout, the runtime
 terminates that directly owned child process and reaps it before the launcher
@@ -94,7 +105,8 @@ preserve the state and fail with owner/client details and safe cleanup guidance.
 An unlocked or retained owner blocks every later start until an operator has
 inspected and cleaned the state. Existing healthy co-owners keep serving, but
 new owners cannot join and no process retries cleanup automatically. Clean up
-and start again. A normal shutdown leaves nothing behind.
+and start again. When the last owner shuts down cleanly, its GPU state directory
+is removed and only the reusable transaction lock file remains in the state root.
 
 Operator notes: state lives under `/tmp/sglang-omni-mps-<user>/<gpu-uuid>/`
 (`SGLANG_OMNI_MPS_STATE_ROOT` overrides it). Serves that are meant to share

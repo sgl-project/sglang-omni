@@ -17,7 +17,10 @@ from sglang_omni.mps.manager import (
 )
 
 
-def test_snapshot_parses_driver_output_and_retains_server_client_pairs(monkeypatch):
+def test_snapshot_parses_driver_output_and_retains_server_client_pairs(
+    monkeypatch, tmp_path
+):
+    pipe_dir = tmp_path / "gpu" / "pipe"
     responses = {
         "get_server_list\n": "7000  8000\n",
         "get_client_list 7000\n": "101\n102\n",
@@ -34,7 +37,7 @@ def test_snapshot_parses_driver_output_and_retains_server_client_pairs(monkeypat
 
     monkeypatch.setattr(control.subprocess, "run", run)
 
-    assert control.SubprocessMpsControlClient().snapshot(Path("/mps/pipe")) == {
+    assert control.SubprocessMpsControlClient().snapshot(pipe_dir) == {
         MpsClientRef(7000, 101),
         MpsClientRef(7000, 102),
         MpsClientRef(8000, 909),
@@ -42,11 +45,38 @@ def test_snapshot_parses_driver_output_and_retains_server_client_pairs(monkeypat
 
     responses["get_client_list 7000\n"] = "101\nserver=202\n"
     with pytest.raises(MpsControlError, match="unexpected output"):
-        control.SubprocessMpsControlClient().snapshot(Path("/mps/pipe"))
+        control.SubprocessMpsControlClient().snapshot(pipe_dir)
 
 
-def test_control_query_rejects_nonzero_exit_and_timeout(monkeypatch):
+@pytest.mark.parametrize(
+    "status", ["ACTIVE", "INITIALIZING", "FAULT", "", "Server not found"]
+)
+def test_get_server_status_queries_exact_pid_and_strips_output(
+    monkeypatch, tmp_path, status
+):
+    pipe_dir = tmp_path / "gpu" / "pipe"
+
+    def run(args, **kwargs):
+        assert args == ["nvidia-cuda-mps-control"]
+        assert kwargs["input"] == "get_server_status 7000\n"
+        assert kwargs["env"]["CUDA_MPS_PIPE_DIRECTORY"] == str(pipe_dir)
+        assert kwargs["timeout"] == 10
+        return subprocess.CompletedProcess(
+            args, returncode=0, stdout=f"  {status}\n", stderr=""
+        )
+
+    monkeypatch.setattr(control.subprocess, "run", run)
+    assert (
+        control.SubprocessMpsControlClient().get_server_status(pipe_dir, 7000) == status
+    )
+
+
+@pytest.mark.parametrize("operation", ["snapshot", "get_server_status"])
+def test_control_query_rejects_nonzero_exit_and_timeout(
+    monkeypatch, tmp_path, operation
+):
     client = control.SubprocessMpsControlClient()
+    pipe_dir = tmp_path / "gpu" / "pipe"
 
     def nonzero(args, **kwargs):
         del kwargs
@@ -59,7 +89,10 @@ def test_control_query_rejects_nonzero_exit_and_timeout(monkeypatch):
 
     monkeypatch.setattr(control.subprocess, "run", nonzero)
     with pytest.raises(MpsControlError, match="control failed"):
-        client.snapshot(Path("/mps/pipe"))
+        if operation == "snapshot":
+            client.snapshot(pipe_dir)
+        else:
+            client.get_server_status(pipe_dir, 7000)
 
     def timeout(args, **kwargs):
         del kwargs
@@ -67,7 +100,10 @@ def test_control_query_rejects_nonzero_exit_and_timeout(monkeypatch):
 
     monkeypatch.setattr(control.subprocess, "run", timeout)
     with pytest.raises(MpsControlError, match="timed out"):
-        client.snapshot(Path("/mps/pipe"))
+        if operation == "snapshot":
+            client.snapshot(pipe_dir)
+        else:
+            client.get_server_status(pipe_dir, 7000)
 
 
 def test_daemon_preexec_failure_is_distinct_from_ambiguous_start(monkeypatch):
@@ -119,6 +155,28 @@ def test_owner_liveness_comes_from_the_kernel_held_lease(tmp_path):
         fcntl.flock(owner, fcntl.LOCK_UN)
 
     assert not client.owner_lease_held(lease_file)
+
+
+@pytest.mark.parametrize(
+    "failure", [FileNotFoundError(), PermissionError("unreadable"), "123 (mps)"]
+)
+def test_daemon_liveness_distinguishes_missing_stat_from_unreadable_or_malformed(
+    monkeypatch, failure
+):
+    def read_stat(path):
+        assert path == Path("/proc/123/stat")
+        if isinstance(failure, OSError):
+            raise failure
+        else:
+            return failure
+
+    monkeypatch.setattr(Path, "read_text", read_stat)
+    client = control.SubprocessMpsControlClient()
+    if isinstance(failure, FileNotFoundError):
+        assert not client.daemon_process_alive(123)
+    else:
+        with pytest.raises(MpsControlError, match="cannot inspect daemon pid"):
+            client.daemon_process_alive(123)
 
 
 def test_client_token_is_read_from_the_current_client_environment(monkeypatch):

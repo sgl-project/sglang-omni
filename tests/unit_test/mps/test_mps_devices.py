@@ -8,6 +8,8 @@ import uuid
 from enum import IntEnum
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from sglang_omni.mps.devices import NvmlDeviceInfo
 
 GPU_A = "GPU-aaaaaaaa-bbbb-cccc-dddd-000000000001"
@@ -117,3 +119,29 @@ def test_nvml_failure_preserves_driver_resolved_uuid(monkeypatch):
     assert inspected[0].unsupported_reason is None
     assert inspected[1].gpu_uuid == GPU_B
     assert "NVML query failed" in inspected[1].unsupported_reason
+
+
+def test_cuda_binding_contract_error_propagates(monkeypatch):
+    driver = FakeDriver({0: GPU_A})
+    monkeypatch.setattr(
+        driver, "cuDeviceGetUuid", lambda device: (CudaStatus.SUCCESS, object())
+    )
+    install_cuda_driver(monkeypatch, driver)
+
+    with pytest.raises(AttributeError, match="bytes"):
+        NvmlDeviceInfo().inspect([0])
+
+
+def test_malformed_driver_uuid_is_reported_without_nvml_fallback(monkeypatch):
+    driver = FakeDriver({0: GPU_A})
+    monkeypatch.setattr(
+        driver,
+        "cuDeviceGetUuid",
+        lambda device: (CudaStatus.SUCCESS, SimpleNamespace(bytes=b"short")),
+    )
+    install_cuda_driver(monkeypatch, driver)
+
+    device = NvmlDeviceInfo().inspect([0])[0]
+
+    assert device.gpu_uuid is None
+    assert "16-char" in device.unsupported_reason

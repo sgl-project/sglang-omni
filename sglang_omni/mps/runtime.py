@@ -95,20 +95,11 @@ def resolve_physical_plans(
             }
         )
     )
-    try:
-        devices = device_info.inspect(gpu_ids)
-    except Exception as exc:
-        devices = {}
-        resolution_errors = [f"CUDA device inspection failed: {exc}"]
-    else:
-        resolution_errors = []
+    devices = device_info.inspect(gpu_ids)
+    resolution_errors: list[str] = []
     for gpu_id in gpu_ids:
-        device = devices.get(gpu_id)
-        if device is None:
-            resolution_errors.append(
-                f"CUDA ordinal {gpu_id}: device inspection returned no result"
-            )
-        elif device.gpu_uuid is None:
+        device = devices[gpu_id]
+        if device.gpu_uuid is None:
             resolution_errors.append(
                 f"CUDA ordinal {gpu_id}: "
                 f"{device.unsupported_reason or 'physical GPU UUID is unavailable'}"
@@ -169,11 +160,7 @@ def resolve_physical_plans(
     for fact in potential_clients:
         placement_uuids = {uuid_for[gpu_id] for gpu_id in fact.placement_gpu_ids}
         (placement_uuid,) = placement_uuids
-        names = clients_by_uuid.setdefault(placement_uuid, [])
-        if fact.process_name not in names:
-            names.append(fact.process_name)
-        else:
-            pass
+        clients_by_uuid.setdefault(placement_uuid, []).append(fact.process_name)
         logical_ids_by_uuid.setdefault(placement_uuid, set()).update(
             fact.placement_gpu_ids
         )
@@ -199,20 +186,15 @@ def resolve_physical_plans(
             )
         else:
             pass
-    unsupported_candidates = {
-        gpu_uuid: reasons
-        for gpu_uuid, reasons in unsupported_by_uuid.items()
-        if gpu_uuid in clients_by_uuid
-    }
-    if mode == "on" and unsupported_candidates:
+    if mode == "on" and unsupported_by_uuid:
         detail = "; ".join(
             f"{gpu_uuid}: {'; '.join(reasons)}"
-            for gpu_uuid, reasons in sorted(unsupported_candidates.items())
+            for gpu_uuid, reasons in sorted(unsupported_by_uuid.items())
         )
         raise MpsError(f"mps=on but a physical GPU does not support MPS: {detail}")
     else:
         pass
-    for gpu_uuid, reasons in unsupported_candidates.items():
+    for gpu_uuid, reasons in unsupported_by_uuid.items():
         block({gpu_uuid}, "; ".join(reasons))
 
     physical_plans: dict[str, PhysicalMpsPlan] = {}
@@ -270,7 +252,7 @@ def reject_process_env_overrides(process_specs) -> None:
     conflicts: list[str] = []
     for process_spec in process_specs:
         for stage_spec in process_spec.stage_specs:
-            env_defaults = getattr(stage_spec, "env_defaults", {})
+            env_defaults = stage_spec.env_defaults
             for name in _UNSUPPORTED_PROCESS_ENV:
                 if name in env_defaults:
                     conflicts.append(
@@ -376,7 +358,7 @@ class MpsPipelineRuntime:
                     )
                 except asyncio.CancelledError:
                     raise
-                except BaseException as rollback_error:
+                except Exception as rollback_error:
                     raise cancellation from rollback_error
                 raise
 
@@ -400,7 +382,7 @@ class MpsPipelineRuntime:
                     list(self.plans[gpu_uuid].logical_gpu_ids),
                     manager.paths.pipe_dir,
                 )
-        except BaseException as startup_error:
+        except Exception as startup_error:
             rollback_errors: list[tuple[str, MpsError]] = []
             for gpu_uuid in reversed(acquired):
                 error = self.release_one(
@@ -566,19 +548,13 @@ class MpsPipelineRuntime:
                 await asyncio.shield(task)
             except asyncio.CancelledError as exc:
                 cancelled = cancelled or exc
-                if task.done():
-                    break
-                else:
-                    pass
-            except BaseException:
+            except Exception:
                 break
 
         try:
             result = task.result()
-        except BaseException as operation_error:
-            if cancelled is not None and not isinstance(
-                operation_error, asyncio.CancelledError
-            ):
+        except Exception as operation_error:
+            if cancelled is not None:
                 raise cancelled from operation_error
             else:
                 pass
@@ -613,7 +589,7 @@ class MpsPipelineRuntime:
             # A released owner fd means the token no longer carries cleanup
             # authority, even when later daemon cleanup failed.
             if lease.owner_fd < 0:
-                self.leases.pop(gpu_uuid, None)
+                self.leases.pop(gpu_uuid)
             else:
                 pass
         return error
