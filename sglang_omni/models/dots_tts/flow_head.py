@@ -26,6 +26,23 @@ else:
     pass
 
 
+def keep_rotary_fp32_under_xpu_autocast(module: nn.Module) -> None:
+    """Apply upstream's CUDA-only RoPE autocast guard to XPU as well."""
+    # note (anupa): RotaryEmbedding.forward is decorated
+    # autocast(enabled=False, device_type="cuda"), so XPU autocast would run its
+    # position einsum in bf16 and drift up to ~14 rad by position 4000.
+    import_dots_tts()
+    from dots_tts.modules.backbone.layers import RotaryEmbedding
+
+    for child in module.modules():
+        if isinstance(child, RotaryEmbedding):
+            child.forward = torch.autocast(device_type="xpu", enabled=False)(
+                child.forward
+            )
+        else:
+            pass
+
+
 @dataclass
 class DotsFlowState:
     fm_sequence: torch.Tensor
@@ -157,6 +174,10 @@ class DotsTTSFlowHead(nn.Module):
                 DiTSolver,
             )
 
+            if next(self.parameters()).device.type == "xpu":
+                keep_rotary_fp32_under_xpu_autocast(self)
+            else:
+                pass
             self.dit_solver = DiTSolver(
                 DiTInferenceContext.from_core(self),
                 optimize=self.optimize,
@@ -587,7 +608,7 @@ class DotsTTSFlowHead(nn.Module):
             torch.autocast(
                 device_type=device_type,
                 dtype=dtype,
-                enabled=device_type == "cuda"
+                enabled=device_type in {"cuda", "xpu"}
                 and dtype in {torch.float16, torch.bfloat16},
             ),
         ):
@@ -817,6 +838,22 @@ class DotsTTSFlowHead(nn.Module):
         else:
             pass
         device = state.fm_sequence.device
+        if device.type == "xpu":
+            # note (anupa): new_request seeds an XPU Philox generator, whose
+            # 16-byte state the CPU branch below rejects; replay it on the
+            # XPU default generator, as the CUDA branch does for CUDA.
+            xpu_device = (
+                device.index if device.index is not None else torch.xpu.current_device()
+            )
+            with torch.random.fork_rng(devices=[xpu_device], device_type="xpu"):
+                torch.xpu.set_rng_state(state.rng_state, xpu_device)
+                try:
+                    yield
+                finally:
+                    state.rng_state = torch.xpu.get_rng_state(xpu_device)
+            return
+        else:
+            pass
         cuda_device = None
         if device.type == "cuda":
             cuda_device = (

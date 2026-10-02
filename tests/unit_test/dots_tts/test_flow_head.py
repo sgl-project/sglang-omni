@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -644,3 +645,78 @@ def test_batched_replay_feedback_does_not_count_a_tail_step(tmp_path) -> None:
     assert flow.tail.tail_steps == 1
     assert flow.tail.graph_misses["meanflow"] == 1
     assert flow.tail.graph_misses["semantic_encoder"] == 2
+
+
+def test_xpu_rotary_guard_turns_xpu_autocast_off_inside_rope_only(
+    tmp_path, monkeypatch
+) -> None:
+    from sglang_omni.models.dots_tts.compat import import_dots_tts
+    from sglang_omni.models.dots_tts.flow_head import (
+        keep_rotary_fp32_under_xpu_autocast,
+    )
+
+    import_dots_tts()
+    from dots_tts.modules.backbone.layers import RotaryEmbedding
+
+    autocast_seen = []
+    forward = RotaryEmbedding.forward
+
+    def recording_forward(self, t):
+        autocast_seen.append(torch.is_autocast_enabled("xpu"))
+        return forward(self, t)
+
+    monkeypatch.setattr(RotaryEmbedding, "forward", recording_forward)
+    flow = flow_head(tmp_path)
+    rotaries = [m for m in flow.modules() if isinstance(m, RotaryEmbedding)]
+    assert rotaries
+    positions = torch.arange(5, dtype=torch.float32)
+
+    # note (anupa): CPU and CUDA solvers keep upstream's own guard untouched.
+    flow.solver()
+    assert all("forward" not in vars(rotary) for rotary in rotaries)
+    expected = rotaries[0](positions)
+    with torch.autocast(device_type="xpu", dtype=torch.bfloat16):
+        rotaries[0](positions)
+    assert autocast_seen == [False, True]
+
+    autocast_seen.clear()
+    keep_rotary_fp32_under_xpu_autocast(flow)
+    with torch.autocast(device_type="xpu", dtype=torch.bfloat16):
+        actual = rotaries[0](positions)
+        assert torch.is_autocast_enabled("xpu")
+    assert autocast_seen == [False]
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
+    assert all("forward" in vars(rotary) for rotary in rotaries)
+
+
+def test_request_rng_replays_an_xpu_seed_on_the_xpu_generator(monkeypatch) -> None:
+    events = []
+    seeded = torch.arange(16, dtype=torch.uint8)
+    advanced = torch.full((16,), 7, dtype=torch.uint8)
+
+    def fork_rng(devices, device_type=None):
+        events.append(("fork", devices, device_type))
+        return nullcontext()
+
+    def cpu_untouched(*_args: object) -> None:
+        raise AssertionError("an XPU seed must not reach the CPU generator")
+
+    monkeypatch.setattr(torch.random, "fork_rng", fork_rng)
+    monkeypatch.setattr(torch, "set_rng_state", cpu_untouched)
+    monkeypatch.setattr(torch, "get_rng_state", cpu_untouched)
+    monkeypatch.setattr(
+        torch.xpu,
+        "set_rng_state",
+        lambda state, device: events.append(("set", state.tolist(), device)),
+    )
+    monkeypatch.setattr(torch.xpu, "get_rng_state", lambda device: advanced.clone())
+    state = SimpleNamespace(
+        rng_state=seeded,
+        fm_sequence=SimpleNamespace(device=torch.device("xpu:1")),
+    )
+
+    with DotsTTSFlowHead.request_rng(SimpleNamespace(), state):
+        events.append(("sample",))
+
+    assert events == [("fork", [1], "xpu"), ("set", seeded.tolist(), 1), ("sample",)]
+    assert torch.equal(state.rng_state, advanced)
