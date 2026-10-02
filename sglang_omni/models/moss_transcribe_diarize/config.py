@@ -12,10 +12,14 @@ from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
+    RealtimeTranscriptionConfig,
     StageConfig,
 )
 from sglang_omni.models.moss_transcribe_diarize import (  # noqa: F401
     hf_config as _hf_config,
+)
+from sglang_omni.models.moss_transcribe_diarize.streaming import (
+    MossTranscribeDiarizeStreamingStrategy,
 )
 from sglang_omni.utils.cpu import bounded_intraop_threads
 
@@ -42,6 +46,11 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTranscribeDiarizeForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
+    realtime_transcription: ClassVar[RealtimeTranscriptionConfig] = (
+        RealtimeTranscriptionConfig(
+            strategy_cls=MossTranscribeDiarizeStreamingStrategy,
+        )
+    )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "asr": MossTDStageConfig,
