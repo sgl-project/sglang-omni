@@ -330,11 +330,11 @@ def test_validate_weight_share_architecture_allows_and_rejects():
         "Qwen3ASRForConditionalGeneration": frozenset(),
         "WhisperForConditionalGeneration": frozenset(),
         "FunAsrNanoForConditionalGeneration": frozenset(),
+        "S2ProSGLangTextModel": frozenset(),
     }
     expected_audit_only = {
         "MingTTSSGLangModel": frozenset({"decode_input_embedding.weight"}),
         "VoxtralSGLangTTSModel": frozenset(),
-        "S2ProSGLangTextModel": frozenset(),
         "LLaDA2MoeModelLM": frozenset(),
         "Qwen3TTSTalker": frozenset({"model.decode_feedback_embedding.weight"}),
         "Qwen3OmniThinkerForCausalLM": frozenset(),
