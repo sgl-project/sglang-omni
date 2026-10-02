@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
+from sglang_omni.utils.device import resolve_concrete_device
 
 LLM_HIDDEN = 48
 FM_HIDDEN = 32
@@ -144,11 +145,12 @@ def test_single_stream_seed_survives_rematerialization(
         pytest.skip(f"{device_type} is not available")
     else:
         pass
+    concrete_device = resolve_concrete_device(device_type)
     torch.manual_seed(1618)
-    flow = flow_head(tmp_path).to(device=device_type, dtype=dtype)
-    prefill_hidden = torch.randn(1, 1, LLM_HIDDEN, device=device_type, dtype=dtype)
-    next_hidden = torch.randn(1, LLM_HIDDEN, device=device_type, dtype=dtype)
-    schedule = torch.tensor([[0, 1]], device=device_type)
+    flow = flow_head(tmp_path).to(device=concrete_device, dtype=dtype)
+    prefill_hidden = torch.randn(1, 1, LLM_HIDDEN, device=concrete_device, dtype=dtype)
+    next_hidden = torch.randn(1, LLM_HIDDEN, device=concrete_device, dtype=dtype)
+    schedule = torch.tensor([[0, 1]], device=concrete_device)
 
     uninterrupted, _ = flow.new_request(
         max_audio_patch_count=6,
@@ -168,7 +170,9 @@ def test_single_stream_seed_survives_rematerialization(
         flow.initialize_history(
             state,
             hidden_states=prefill_hidden,
-            prompt_span_positions=torch.empty(0, device=device_type, dtype=torch.long),
+            prompt_span_positions=torch.empty(
+                0, device=concrete_device, dtype=torch.long
+            ),
             audio_span_token_ids={1},
             generation_schedule=schedule,
             prefill_end=1,
@@ -208,7 +212,7 @@ def test_single_stream_seed_survives_rematerialization(
     flow.initialize_history(
         rematerialized,
         hidden_states=torch.cat([prefill_hidden, next_hidden.unsqueeze(1)], dim=1),
-        prompt_span_positions=torch.empty(0, device=device_type, dtype=torch.long),
+        prompt_span_positions=torch.empty(0, device=concrete_device, dtype=torch.long),
         audio_span_token_ids={1},
         generation_schedule=schedule,
         prefill_end=1,
