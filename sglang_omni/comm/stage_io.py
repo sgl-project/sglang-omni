@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 import pickle
 from dataclasses import fields, is_dataclass
 from multiprocessing.reduction import ForkingPickler
@@ -652,10 +653,13 @@ async def read_tensor(
         raise ValueError("raw tensor data_ref is missing offset")
     else:
         pass
-    transfer_buf = await read_transfer_buffer(relay, data_ref.object_id, data_ref)
+    transfer_buffer = await read_transfer_buffer(relay, data_ref.object_id, data_ref)
+    dtype = torch_dtype(data_ref.dtype)
+    element_count = math.prod(data_ref.shape)
+    end_offset_bytes = data_ref.offset + element_count * dtype.itemsize
     return (
-        transfer_buf[data_ref.offset :]
-        .view(torch_dtype(data_ref.dtype))
+        transfer_buffer[data_ref.offset : end_offset_bytes]
+        .view(dtype)
         .reshape(data_ref.shape)
     )
 

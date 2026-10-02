@@ -5,6 +5,7 @@ from __future__ import annotations
 import struct
 import sys
 import types
+from queue import Queue
 
 import numpy as np
 import pytest
@@ -24,6 +25,9 @@ from sglang_omni.models.moss_tts_local.local_transformer import (
     MossTTSLocalTransformer,
     rotate_half_interleaved,
 )
+from sglang_omni.models.moss_tts_local.mlx.scheduler_runner import (
+    MossTTSLocalMlxSchedulerModelRunner,
+)
 from sglang_omni.models.moss_tts_local.payload_types import (
     MossTTSLocalState,
     moss_tts_local_special_token_defaults,
@@ -39,10 +43,49 @@ from sglang_omni.models.moss_tts_local.request_builders import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import (
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 N_VQ = 12
+
+
+def test_mlx_scheduler_discards_finished_rows_and_streams_active_request() -> None:
+    runner = object.__new__(MossTTSLocalMlxSchedulerModelRunner)
+    completed_rows = {"finished": [[60, 7, 8]], "active": [[60, 3, 4]]}
+    runner.tp_worker = types.SimpleNamespace(
+        _mlx_runner=types.SimpleNamespace(
+            model=types.SimpleNamespace(
+                config=types.SimpleNamespace(audio_end_token_id=61)
+            ),
+            pop_completed_rows=lambda request_id: completed_rows.pop(request_id),
+        )
+    )
+    runner.resolve_skip_rids = {"finished"}
+    runner.outbox = Queue()
+    requests = [
+        SchedulerRequest(
+            request_id=request_id,
+            data=MossTTSLocalSGLangRequestData(stream_metadata={"stream": True}),
+        )
+        for request_id in ("finished", "active")
+    ]
+    runner.post_process_outputs(
+        None,
+        SchedulerOutput(requests=requests, batch_data=None),
+        {"active": RequestOutput(request_id="active", data=60)},
+    )
+
+    assert requests[0].data.output_rows == []
+    assert requests[1].data.output_rows[0].tolist() == [60, 3, 4]
+    message = runner.outbox.get_nowait()
+    assert message.request_id == "active"
+    assert message.data.tolist() == [60, 3, 4]
+    assert runner.outbox.empty()
 
 
 @pytest.mark.parametrize(
@@ -584,13 +627,18 @@ def install_fake_moss_ar_factory(
     pytest.importorskip("PIL")
 
     from sglang_omni.models.moss_tts import hf_loading
-    from sglang_omni.models.moss_tts_local import request_builders, stages
+    from sglang_omni.models.moss_tts_local import (
+        engine_builder,
+        request_builders,
+        stages,
+    )
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
     from sglang_omni.scheduling import engine_factory, omni_scheduler, sglang_backend
     from sglang_omni.utils import gpu_memory as gpu_memory_utils
 
     infrastructure_calls = []
     process_memory_queries = []
+    monkeypatch.setattr(engine_builder.current_platform, "is_mps", lambda: False)
 
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         server_args = types.SimpleNamespace(
@@ -747,6 +795,53 @@ def test_moss_tts_local_generation_defaults_defer_torch_compile_to_builder() -> 
     assert "enable_torch_compile" not in builder.generation_defaults(dtype="bfloat16")
 
 
+@pytest.mark.parametrize("use_mlx", [False, True])
+def test_moss_local_engine_skips_redundant_worker_processor(
+    monkeypatch: pytest.MonkeyPatch,
+    use_mlx: bool,
+) -> None:
+    from sglang_omni.models.moss_tts_local import engine_builder
+
+    monkeypatch.setattr(engine_builder, "use_mlx", lambda: use_mlx)
+    if use_mlx:
+        monkeypatch.setattr(engine_builder.current_platform, "is_mps", lambda: True)
+    else:
+        pass
+
+    builder = engine_builder.MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+    )
+    builder.context_length = 32768
+
+    assert builder.generation_defaults(dtype="bfloat16")["skip_tokenizer_init"]
+
+
+def test_moss_local_torch_mps_disables_cuda_scheduler_features(monkeypatch) -> None:
+    from sglang_omni.models.moss_tts_local import engine_builder
+
+    monkeypatch.setattr(engine_builder, "use_mlx", lambda: False)
+    monkeypatch.setattr(engine_builder.current_platform, "is_mps", lambda: True)
+    builder = engine_builder.MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+    )
+    builder.device = "mps"
+    builder.context_length = 32768
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults["max_running_requests"] == 1
+    assert defaults["disable_cuda_graph"] is True
+    assert defaults["disable_radix_cache"] is True
+    assert defaults["chunked_prefill_size"] == -1
+    assert defaults["attention_backend"] == "torch_native"
+
+
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -844,6 +939,28 @@ def test_moss_local_engine_honors_context_length_override(monkeypatch):
     )
 
     assert infrastructure_calls[0]["context_length"] == 4096
+
+
+def test_moss_local_ar_factory_defers_device_to_platform(monkeypatch):
+    from sglang_omni.models.moss_tts_local import engine_builder, stages
+
+    captured = {}
+
+    class FakeBuilder:
+        def __init__(self, **kwargs):
+            captured["builder_kwargs"] = kwargs
+
+        def build(self, model_path, **kwargs):
+            captured["model_path"] = model_path
+            captured["build_kwargs"] = kwargs
+            return object()
+
+    monkeypatch.setattr(engine_builder, "MossTtsLocalEngineBuilder", FakeBuilder)
+
+    stages.create_sglang_tts_engine_executor("model")
+
+    assert captured["model_path"] == "model"
+    assert captured["build_kwargs"]["device"] is None
 
 
 def test_colocated_moss_ar_factory_threads_effective_budget(monkeypatch):
@@ -957,6 +1074,33 @@ def test_colocated_moss_ar_abort_callback_requires_model(monkeypatch):
 
     assert cleanup_calls == ["req-1"]
     assert reset_calls == ["req-1"]
+
+
+def test_moss_ar_adapters_use_the_model_captured_during_setup(monkeypatch):
+    from sglang_omni.models.moss_tts_local import request_builders
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+    )
+    native_model = object()
+    builder.model = native_model
+    captured = []
+    monkeypatch.setattr(
+        request_builders,
+        "make_moss_tts_local_scheduler_adapters",
+        lambda *, model: captured.append(model) or (object(), object()),
+    )
+
+    adapters = builder.make_adapters(object())
+
+    assert len(adapters) == 2
+    assert captured == [native_model]
 
 
 def test_colocated_moss_ar_factory_accepts_explicit_effective_budget():
@@ -1916,6 +2060,31 @@ def test_branchless_sampler_matches_eager_sampler():
         positions=positions,
     )
     torch.testing.assert_close(eager, branchless)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires Apple MPS")
+def test_moss_seeded_sampler_runs_from_mps_without_inductor() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+
+    logits = torch.tensor([[3.0, 2.0, 1.0, 0.0]], device="mps")
+    kwargs = {
+        "temperature": torch.tensor([1.7], device="mps"),
+        "top_p": torch.tensor([0.8], device="mps"),
+        "top_k": torch.tensor([3], dtype=torch.long, device="mps"),
+        "seeds": torch.tensor([17], dtype=torch.long, device="mps"),
+        "positions": torch.tensor([29], dtype=torch.long, device="mps"),
+    }
+
+    first = MossTTSModelRunner.sample_tokens(logits, **kwargs)
+    second = MossTTSModelRunner.sample_tokens(logits, **kwargs)
+    frame_sample = sample_seeded_branchless(logits, **kwargs)
+
+    assert first.device.type == "mps"
+    assert torch.equal(first, second)
+    assert frame_sample.shape == (1,)
+    assert torch.equal(first, frame_sample)
 
 
 # Stereo audio payload + encoding

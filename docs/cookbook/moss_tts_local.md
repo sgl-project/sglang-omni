@@ -40,6 +40,35 @@ sgl-omni serve \
 
 A matching config file is available at `examples/configs/moss_tts_local.yaml`.
 
+### Apple Silicon (MLX and Torch MPS)
+
+On macOS arm64, follow the [Apple Silicon installation
+instructions](../get_started/installation.md#-option-b-macos-apple-silicon-installer),
+then launch the same endpoint. Torch MPS is selected by default:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 \
+  --port 8000
+```
+
+Set `SGLANG_USE_MLX=1` to use the native MLX autoregressive model instead:
+
+```bash
+export SGLANG_USE_MLX=1
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 \
+  --port 8000
+```
+
+The reference encoder and streaming vocoder run through Torch MPS with either
+autoregressive backend. Both Apple Silicon paths support one active generation
+request and disable CUDA graphs, radix caching, and chunked prefill. MLX
+requires `audio_repetition_penalty=1` (the default). Torch MPS performs the
+small seeded token draw on the CPU because SGLang's compiled sampler requires
+CUDA; model and codec computation remains on MPS. Both streamed and
+non-streamed speech requests use the existing API.
+
 Speech input admission follows the text backbone's context metadata rather than
 the generic 4,096-character precheck. Requests that exceed the effective model
 context are rejected with an OpenAI-compatible HTTP 400 error.
