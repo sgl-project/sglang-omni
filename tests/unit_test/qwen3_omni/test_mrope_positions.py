@@ -363,7 +363,6 @@ def test_talker_mm_prompt_not_equivalent_to_linear() -> None:
     """Mm talker prompts diverge from arange+delta0 (prefill + decode)."""
     from sglang_omni.models.qwen3_omni.mrope_positions import (
         get_rope_index_qwen3_omni_vectorized,
-        linear_mrope_positions,
         talker_can_use_linear_mrope,
     )
 
@@ -391,7 +390,8 @@ def test_talker_mm_prompt_not_equivalent_to_linear() -> None:
         use_audio_in_video=False,
         audio_seqlens=None,
     )
-    lin_pos, lin_delta = linear_mrope_positions(len(tokens), dtype=torch.float)
+    lin_pos = torch.arange(len(tokens), dtype=torch.float).unsqueeze(0).expand(3, -1)
+    lin_delta = torch.zeros((1, 1), dtype=torch.float)
 
     mm_pos_2d = mm_pos.squeeze(1).float()
     assert not torch.equal(mm_pos_2d, lin_pos.float())
@@ -411,7 +411,6 @@ def test_talker_text_only_can_use_linear_and_matches_full_path() -> None:
     """No grids → linear short-circuit matches full path."""
     from sglang_omni.models.qwen3_omni.mrope_positions import (
         get_rope_index_qwen3_omni_vectorized,
-        linear_mrope_positions,
         talker_can_use_linear_mrope,
     )
 
@@ -437,17 +436,15 @@ def test_talker_text_only_can_use_linear_and_matches_full_path() -> None:
         use_audio_in_video=False,
         audio_seqlens=None,
     )
-    lin_pos, lin_delta = linear_mrope_positions(len(tokens))
-    assert torch.equal(full_pos.squeeze(1).long(), lin_pos)
+    text_only_positions = torch.arange(len(tokens)).unsqueeze(0).expand(3, -1)
+    assert torch.equal(full_pos.squeeze(1).long(), text_only_positions)
     assert int(full_delta.reshape(-1)[0].item()) == 0
-    assert torch.equal(lin_delta.view(-1), torch.zeros(1, dtype=torch.long))
 
 
 def test_talker_grids_without_mm_markers_can_use_linear() -> None:
     """Grids without vision/audio markers → multimodal_nums=0 → linear."""
     from sglang_omni.models.qwen3_omni.mrope_positions import (
         get_rope_index_qwen3_omni_vectorized,
-        linear_mrope_positions,
         talker_can_use_linear_mrope,
     )
 
@@ -473,8 +470,8 @@ def test_talker_grids_without_mm_markers_can_use_linear() -> None:
         use_audio_in_video=False,
         audio_seqlens=None,
     )
-    lin_pos, _ = linear_mrope_positions(len(tokens), dtype=full_pos.dtype)
-    assert torch.equal(full_pos.squeeze(1).float(), lin_pos.float())
+    text_only_positions = torch.arange(len(tokens)).unsqueeze(0).expand(3, -1)
+    assert torch.equal(full_pos.squeeze(1).float(), text_only_positions.float())
     assert float(full_delta.reshape(-1)[0].item()) == 0.0
 
 
@@ -546,10 +543,10 @@ def test_build_talker_request_keeps_mm_mrope_for_image_prompt(monkeypatch) -> No
     )
 
 
-def test_build_talker_request_uses_linear_mrope_without_mm_markers(
+def test_build_talker_request_attaches_no_mrope_without_mm_markers(
     monkeypatch,
 ) -> None:
-    """Grids but no mm markers → builder installs linear positions directly."""
+    """Grids but no mm markers → no multimodal inputs, SGLang's text-only positions."""
     from unittest.mock import MagicMock
 
     from sglang_omni.models.qwen3_omni import request_builders as rb
@@ -562,6 +559,7 @@ def test_build_talker_request_uses_linear_mrope_without_mm_markers(
 
     fake_req = MagicMock()
     fake_req.output_ids = []
+    fake_req.multimodal_inputs = None
     fake_sampling = MagicMock()
     monkeypatch.setattr(
         "sglang.srt.managers.schedule_batch.Req",
@@ -589,10 +587,4 @@ def test_build_talker_request_uses_linear_mrope_without_mm_markers(
         thinker_config=cfg,
         talker_model_inputs=model_inputs,
     )
-    mm = data.req.multimodal_inputs
-    assert mm is not None
-    assert torch.equal(
-        mm.mrope_positions,
-        torch.arange(len(tokens), dtype=torch.long).unsqueeze(0).expand(3, -1),
-    )
-    assert torch.equal(mm.mrope_position_delta, torch.zeros((1, 1), dtype=torch.long))
+    assert data.req.multimodal_inputs is None

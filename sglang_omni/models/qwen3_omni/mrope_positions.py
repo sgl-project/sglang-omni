@@ -16,25 +16,6 @@ else:
     pass
 
 
-def linear_mrope_positions(
-    seq_len: int,
-    *,
-    device: torch.device | None = None,
-    dtype: torch.dtype = torch.long,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """arange broadcast to [3, seq] with delta 0."""
-    # Note (guozhihao): clone so MultimodalInputs owns a contiguous buffer
-    # (expand returns a view).
-    positions = (
-        torch.arange(seq_len, device=device, dtype=dtype)
-        .unsqueeze(0)
-        .expand(3, -1)
-        .clone()
-    )
-    delta = torch.zeros((1, 1), device=device, dtype=dtype)
-    return positions, delta
-
-
 def talker_can_use_linear_mrope(
     input_ids: torch.Tensor,
     model_inputs: Mapping[str, object],
