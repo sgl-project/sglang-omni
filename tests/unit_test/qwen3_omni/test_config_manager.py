@@ -117,6 +117,29 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
 
 
+def test_config_manager_rejects_trailing_key_without_value() -> None:
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+
+    with pytest.raises(ValueError, match="Missing value"):
+        manager.parse_extra_args(
+            [
+                "--thinker.gpu_memory_fraction",
+                "0.35",
+                "--thinker.engine.mem-fraction-static",
+            ]
+        )
+
+
+def test_config_manager_rejects_bare_flag_before_another_flag() -> None:
+    """A flag followed by another flag is a missing value, not a pair."""
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+
+    with pytest.raises(ValueError, match="Missing value"):
+        manager.parse_extra_args(["--thinker.gpu_memory_fraction", "--thinker.tp_size"])
+
+    assert manager.parse_extra_args(["--thinker.tp_size", "2"]) == [
+        ("thinker.tp_size", "2")
+    ]
 def test_qwen_preprocessing_model_video_fps_resolves_to_factory_arg() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
     merged = ConfigManager(config).merge_config(
