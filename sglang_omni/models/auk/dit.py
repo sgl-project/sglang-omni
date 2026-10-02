@@ -15,6 +15,8 @@ import torch.nn.functional as F
 from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
+from sglang_omni.models.auk.modulation import gated_residual, scale_shift
+
 
 class Rope(NamedTuple):
     """Rotary tables for one axis of the sequence.
@@ -123,7 +125,7 @@ class AdaLayerNorm(nn.Module):
             emb, 6, dim=1
         )
 
-        x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        x = scale_shift(self.norm(x), scale_msa, shift_msa)
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -139,7 +141,7 @@ class AdaLayerNormFinal(nn.Module):
     def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
         emb = self.linear(self.silu(emb))
         scale, shift = torch.chunk(emb, 2, dim=1)
-        return self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+        return scale_shift(self.norm(x), scale, shift)
 
 
 class SwiGLU(nn.Module):
@@ -339,12 +341,12 @@ class DiTBlock(nn.Module):
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
-        x = x + gate_msa.unsqueeze(1) * self.attn(
-            x=norm, mask=mask, rope=rope, bias=bias
+        x = gated_residual(
+            x, gate_msa, self.attn(x=norm, mask=mask, rope=rope, bias=bias)
         )
 
-        norm = self.ff_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
-        return x + gate_mlp.unsqueeze(1) * self.ff(norm)
+        norm = scale_shift(self.ff_norm(x), scale_mlp, shift_mlp)
+        return gated_residual(x, gate_mlp, self.ff(norm))
 
 
 class MMDiTBlock(nn.Module):
@@ -406,13 +408,13 @@ class MMDiTBlock(nn.Module):
             bias=bias,
         )
 
-        c = c + c_gate_msa.unsqueeze(1) * c_attn
-        norm_c = self.ff_norm_c(c) * (1 + c_scale_mlp[:, None]) + c_shift_mlp[:, None]
-        c = c + c_gate_mlp.unsqueeze(1) * self.ff_c(norm_c)
+        c = gated_residual(c, c_gate_msa, c_attn)
+        norm_c = scale_shift(self.ff_norm_c(c), c_scale_mlp, c_shift_mlp)
+        c = gated_residual(c, c_gate_mlp, self.ff_c(norm_c))
 
-        x = x + x_gate_msa.unsqueeze(1) * x_attn
-        norm_x = self.ff_norm_x(x) * (1 + x_scale_mlp[:, None]) + x_shift_mlp[:, None]
-        x = x + x_gate_mlp.unsqueeze(1) * self.ff_x(norm_x)
+        x = gated_residual(x, x_gate_msa, x_attn)
+        norm_x = scale_shift(self.ff_norm_x(x), x_scale_mlp, x_shift_mlp)
+        x = gated_residual(x, x_gate_mlp, self.ff_x(norm_x))
         return c, x
 
 
