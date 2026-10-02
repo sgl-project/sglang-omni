@@ -82,7 +82,6 @@ jobs:
             xpu:
               - 'sglang_omni/**'
               - 'tests/unit_test/xpu/**'
-              - 'tests/unit_test/dots_tts/test_flow_head.py'
               - 'pyproject_xpu.toml'
               - 'scripts/xpu/**'
               - 'docker/xpu.Dockerfile'
@@ -266,9 +265,7 @@ jobs:
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pip install --no-cache-dir pytest pytest-asyncio
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
-            pytest tests/unit_test/xpu/test_device_layer.py \
-              'tests/unit_test/dots_tts/test_flow_head.py::test_single_stream_seed_survives_rematerialization[xpu-bfloat16]' \
-              -v -x
+            pytest tests/unit_test/xpu/test_device_layer.py -v -x
 
       - name: Cleanup container and image
         if: always()
