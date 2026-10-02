@@ -101,7 +101,7 @@ class AutocastFusedDiT(FusedAdaLNDiT):
     ) -> torch.Tensor:
         dtype = self.fused_adaln[-1].weight.dtype
         device_type = timesteps.device.type
-        autocast = device_type == "cuda" and dtype in {
+        autocast = device_type in ("cuda", "xpu") and dtype in {
             torch.float16,
             torch.bfloat16,
         }
