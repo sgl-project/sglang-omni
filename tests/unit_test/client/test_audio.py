@@ -1,5 +1,7 @@
 import io
+from unittest.mock import MagicMock
 
+import av
 import numpy as np
 import pytest
 
@@ -14,6 +16,38 @@ from sglang_omni.client.audio import (
     resample_linear,
     to_numpy,
 )
+
+
+@pytest.mark.parametrize("failure", ["shape", "frame", "encode", "mux", "flush"])
+def test_pyav_encoding_closes_container_on_failure(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    container = MagicMock()
+    container.__enter__.return_value = container
+    container.__exit__.side_effect = lambda *exception: (container.close(), False)[1]
+    stream = container.add_stream.return_value
+    stream.encode.return_value = ()
+    monkeypatch.setattr(av, "open", lambda *arguments, **keywords: container)
+    audio = np.zeros(8, dtype=np.float32)
+    if failure == "shape":
+        audio = np.zeros((3, 8), dtype=np.float32)
+    elif failure == "frame":
+        frame = MagicMock()
+        frame.from_ndarray.side_effect = RuntimeError("test encoding failure")
+        monkeypatch.setattr(av, "AudioFrame", frame)
+    elif failure == "encode":
+        stream.encode.side_effect = RuntimeError("test encoding failure")
+    elif failure == "mux":
+        stream.encode.return_value = (MagicMock(),)
+        container.mux.side_effect = RuntimeError("test encoding failure")
+    else:
+        stream.encode.side_effect = [(), RuntimeError("test encoding failure")]
+    with pytest.raises(
+        ValueError if failure == "shape" else RuntimeError,
+        match="mono or stereo" if failure == "shape" else "test encoding failure",
+    ):
+        encode_with_pyav(audio, 16000, "flac", ("flac",), {16000})
+    container.close.assert_called_once()
 
 
 def stereo_test_signal() -> tuple[np.ndarray, int]:
