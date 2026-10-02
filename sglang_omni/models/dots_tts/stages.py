@@ -462,7 +462,7 @@ def create_reference_encode_executor(
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("dots.tts requires CUDA")
+        raise RuntimeError("CUDA was requested but is not available")
     else:
         pass
     codec = load_dots_audio_codec(model_path, device=str(concrete_device))
@@ -494,7 +494,7 @@ def create_sglang_latent_engine_executor(
 
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("dots.tts requires CUDA")
+        raise RuntimeError("CUDA was requested but is not available")
     else:
         pass
     return DotsTTSEngineBuilder(
@@ -523,7 +523,7 @@ def create_vocoder_executor(
 ) -> DotsTTSStreamingVocoder:
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("dots.tts requires CUDA")
+        raise RuntimeError("CUDA was requested but is not available")
     else:
         pass
     codec = load_dots_audio_codec(model_path, device=str(concrete_device))
