@@ -460,11 +460,11 @@ def create_reference_encode_executor(
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    concrete_device = resolve_concrete_device(device, gpu_id)
-    if concrete_device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
+    if not (torch.xpu.is_available() or torch.cuda.is_available()):
+        raise RuntimeError("dots.tts requires XPU or CUDA")
     else:
         pass
+    concrete_device = resolve_concrete_device(device, gpu_id)
     codec = load_dots_audio_codec(model_path, device=str(concrete_device))
     encoder = DotsReferenceEncoder(
         codec,
@@ -520,11 +520,11 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
 ) -> DotsTTSStreamingVocoder:
-    concrete_device = resolve_concrete_device(device, gpu_id)
-    if concrete_device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
+    if not (torch.xpu.is_available() or torch.cuda.is_available()):
+        raise RuntimeError("dots.tts requires XPU or CUDA")
     else:
         pass
+    concrete_device = resolve_concrete_device(device, gpu_id)
     codec = load_dots_audio_codec(model_path, device=str(concrete_device))
     vocoder = DotsTTSStreamingVocoder(
         codec,
