@@ -8,7 +8,14 @@ import binascii
 import math
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class UsageResponse(BaseModel):
@@ -82,6 +89,7 @@ class ChatCompletionRequest(BaseModel):
     video_min_pixels: int | None = None
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
+    use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, object]] | None = None
@@ -227,6 +235,10 @@ class SerializedMultimodalInputs(BaseModel):
     tensors: dict[str, SerializedMultimodalTensor] = Field(min_length=1)
 
 
+# Token ids are stored as signed 64-bit integers.
+TOKEN_ID_STORAGE_BOUND = 1 << 63
+
+
 class RolloutGenerateRequest(BaseModel):
     """Rollout request for ``POST /generate``; set exactly one of
     ``input_ids``, ``prompt``, ``messages``."""
@@ -235,9 +247,9 @@ class RolloutGenerateRequest(BaseModel):
 
     model: str | None = None
 
-    input_ids: list[int] | None = None
+    input_ids: list[int] | None = Field(default=None, min_length=1)
     prompt: str | None = None
-    messages: list[RolloutMessage] | None = None
+    messages: list[RolloutMessage] | None = Field(default=None, min_length=1)
 
     sampling_params: RolloutSamplingParams = Field(
         default_factory=RolloutSamplingParams
@@ -255,6 +267,20 @@ class RolloutGenerateRequest(BaseModel):
     return_omni_rollout: bool = False
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
+
+    @field_validator("input_ids")
+    @classmethod
+    def validate_input_ids(cls, input_ids: list[int] | None) -> list[int] | None:
+        # One located error keeps the 422 small for a long invalid prompt.
+        for index, token_id in enumerate(input_ids or ()):
+            if not 0 <= token_id < TOKEN_ID_STORAGE_BOUND:
+                raise ValueError(
+                    f"input_ids[{index}] is {token_id}. "
+                    "Token ids must be in [0, 2**63)."
+                )
+            else:
+                pass
+        return input_ids
 
 
 class GenerateFinishReason(BaseModel):

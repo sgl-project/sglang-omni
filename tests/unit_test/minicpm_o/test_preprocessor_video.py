@@ -210,3 +210,49 @@ def test_minicpm_video_options_preserve_other_media(
     prompt_text = result.data["prompt"]["prompt_text"]
     assert prompt_text.count("<image>./</image>") == len(expected_images)
     assert prompt_text.count("<audio>./</audio>") == int(with_audio)
+
+
+@pytest.mark.parametrize("changed", ["image", "video"])
+def test_minicpm_visual_cache_key_tracks_decoded_content(monkeypatch, changed) -> None:
+    preprocessor = object.__new__(MiniCPMOPreprocessor)
+    preprocessor._processor = (
+        FakeProcessor()  # noqa: leading-underscore  # production name
+    )
+    preprocessor.speech_enabled = False
+    monkeypatch.setattr(
+        preprocessor, "render_chat_template", lambda messages, **_: str(messages)
+    )
+    media = {"image": Image.new("RGB", (2, 2), "red"), "video": torch.zeros(2, 3, 2, 2)}
+
+    async def images(raw_images):
+        return [media["image"]]
+
+    async def videos(raw_videos, **kwargs):
+        return [media["video"]], [1.0], None
+
+    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", images)
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", videos)
+
+    def cache_key(name: str = "same") -> str:
+        inputs = {
+            "messages": [{"role": "user", "content": "Describe this."}],
+            "images": [f"https://media.invalid/{name}.png"],
+            "videos": [f"https://media.invalid/{name}.mp4"],
+        }
+        data = asyncio.run(preprocessor(make_payload(inputs))).data
+        key = data["encoder_inputs"]["image_encoder"]["cache_key"]
+        assert data["mm_inputs"]["image"]["cache_key"] == key
+        return key
+
+    before = cache_key()
+    assert cache_key() == before
+    # New content behind the same URL must not reuse the previous entry.
+    media[changed] = (
+        Image.new("RGB", (2, 2), "blue")
+        if changed == "image"
+        else torch.ones(2, 3, 2, 2)
+    )
+    after = cache_key()
+    assert after != before
+    # Identical content at another address shares the entry.
+    assert cache_key("other") == after

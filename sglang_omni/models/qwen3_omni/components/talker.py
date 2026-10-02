@@ -19,7 +19,6 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import add_prefix
 from torch import nn
 
-from sglang_omni.models.qwen3_omni.components import predictor_kernels
 from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextAttention,
     Qwen3OmniMoeThinkerTextDecoderLayer,
@@ -35,6 +34,11 @@ from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
     resolve_row_seed,
+)
+from sglang_omni.utils.predictor_layers import (
+    add_rmsnorm_rounded,
+    resolve_fused_predictor_layers,
+    supports_exact_add_rmsnorm,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
@@ -904,50 +908,18 @@ class Qwen3OmniTalker(nn.Module):
         self.predictor_pair_cache_slots = (
             self.predictor_cache_slots[:2, :].t().reshape(-1).contiguous()
         )
-        # note (ratish): the fused layer's buffers hold a row per token of the opening pair.
-        self.predictor_layer_shape = predictor_kernels.resolve_predictor_layer_shape(
-            self.code_predictor, predictor_len, device
+        self.predictor_fused_layers = resolve_fused_predictor_layers(
+            self.code_predictor,
+            predictor_len,
+            max_batch_size,
+            device,
+            self.model.codec_embedding.weight.dtype,
         )
-        predictor_rows = 2 * max_batch_size
-        predictor_dtype = self.model.codec_embedding.weight.dtype
-        self.predictor_q_buffer = torch.zeros(
-            predictor_rows,
-            predictor_attention.num_heads * predictor_attention.head_dim,
-            device=device,
-            dtype=predictor_dtype,
-        )
-        self.predictor_residual = torch.zeros(
-            predictor_rows, hidden_size, device=device, dtype=predictor_dtype
-        )
-        self.predictor_activated = torch.zeros(
-            predictor_rows,
-            self.code_predictor.model.layers[0].mlp.down_proj.weight.shape[1],
-            device=device,
-            dtype=predictor_dtype,
-        )
-        if self.predictor_layer_shape is not None:
-            (
-                self.predictor_partials,
-                self.predictor_sum_sq_partials,
-                self.predictor_tile_counters,
-            ) = predictor_kernels.allocate_split_scratch(
-                self.predictor_layer_shape, predictor_rows, device
-            )
-        else:
-            self.predictor_partials = torch.zeros(0, device=device, dtype=torch.float32)
-            self.predictor_sum_sq_partials = torch.zeros(
-                0, device=device, dtype=torch.float32
-            )
-            self.predictor_tile_counters = torch.zeros(
-                0, device=device, dtype=torch.int32
-            )
         # note (ratish): where the exact kernel does not apply, the add and the norm
         # stay two launches.
-        self.predictor_exact_add_norm = predictor_kernels.supports_exact_add_rmsnorm(
+        self.predictor_exact_add_norm = supports_exact_add_rmsnorm(
             hidden_size, self.model.codec_embedding.weight.dtype, device
         )
-        predictor_path = "fused" if self.predictor_layer_shape is not None else "plain"
-        logger.info(f"Qwen3-Omni predictor layers: {predictor_path}")
         self.sampled_token_ids = torch.zeros(
             max_batch_size,
             dtype=torch.long,
@@ -1777,12 +1749,17 @@ class Qwen3OmniTalker(nn.Module):
                 "the predictor runs one token per row, or two at an empty cache: "
                 f"got seq_len={seq_len} at cache_len={cache_len}"
             )
-        if self.predictor_layer_shape is not None:
-            return self.predictor_forward_tokens_fused(
+        fused = self.predictor_fused_layers
+        if fused is not None and fused.covers(batch_size * seq_len):
+            return fused.forward(
+                layers=self.code_predictor.model.layers,
+                final_norm=self.code_predictor.model.norm,
                 token_embeds=token_embeds,
                 batch_size=batch_size,
                 cache_len=cache_len,
                 positions=positions,
+                k_cache=self.predictor_k_cache,
+                v_cache=self.predictor_v_cache,
             )
         else:
             pass
@@ -1818,89 +1795,13 @@ class Qwen3OmniTalker(nn.Module):
         )
         return hidden_states.reshape(batch_size, seq_len, hidden_size)
 
-    def predictor_forward_tokens_fused(
-        self,
-        *,
-        token_embeds: torch.Tensor,
-        batch_size: int,
-        cache_len: int,
-        positions: torch.Tensor,
-    ) -> torch.Tensor:
-        """The rows through the fused launches; the residual stream lives in
-        predictor_residual and the result is the final norm of it. The caches are
-        (row, slot, kv head, head dim), the slot being the position."""
-        shape = self.predictor_layer_shape
-        seq_len, hidden_size = token_embeds.shape[1:]
-        rows = batch_size * seq_len
-        end = cache_len + seq_len
-        hidden = token_embeds.reshape(rows, hidden_size)
-        residual = self.predictor_residual[:rows]
-        q_out = self.predictor_q_buffer[:rows]
-        activated = self.predictor_activated[:rows]
-        for layer_idx, layer in enumerate(self.code_predictor.model.layers):
-            attention = layer.self_attn
-            layer_k_cache = self.predictor_k_cache[layer_idx, :batch_size]
-            layer_v_cache = self.predictor_v_cache[layer_idx, :batch_size]
-            predictor_kernels.attention_inputs(
-                x=hidden,
-                tokens_per_row=seq_len,
-                norm=layer.input_layernorm,
-                attention=attention,
-                q_out=q_out,
-                positions=positions,
-                k_cache=layer_k_cache,
-                v_cache=layer_v_cache,
-                partials=self.predictor_partials,
-                sum_sq_partials=self.predictor_sum_sq_partials,
-                counters=self.predictor_tile_counters,
-                shape=shape,
-            )
-            q = q_out.view(
-                batch_size, seq_len, shape.num_q_heads, shape.head_dim
-            ).transpose(1, 2)
-            attention_output = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                layer_k_cache[:, :end].transpose(1, 2),
-                layer_v_cache[:, :end].transpose(1, 2),
-                is_causal=seq_len > 1,
-                enable_gqa=shape.num_q_heads != shape.num_kv_heads,
-            )
-            predictor_kernels.o_proj_add(
-                attention_output=attention_output,
-                tokens_per_row=seq_len,
-                weight=attention.o_proj.weight,
-                residual_in=hidden,
-                residual_out=residual,
-                partials=self.predictor_partials,
-                counters=self.predictor_tile_counters,
-                shape=shape,
-            )
-            hidden = residual
-            predictor_kernels.mlp_up(
-                residual=residual,
-                norm=layer.post_attention_layernorm,
-                weight=layer.mlp.gate_up_proj.weight,
-                activated=activated,
-                shape=shape,
-            )
-            predictor_kernels.down_add(
-                activated=activated,
-                weight=layer.mlp.down_proj.weight,
-                residual=residual,
-                partials=self.predictor_partials,
-                counters=self.predictor_tile_counters,
-                shape=shape,
-            )
-        normed = self.code_predictor.model.norm(residual)
-        return normed.reshape(batch_size, seq_len, hidden_size)
-
     def predictor_add_norm(
         self, norm: RMSNorm, hidden_states: torch.Tensor, residual: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """residual + hidden_states, then the norm of the rounded sum, as the plain
         path computes it; one launch where the exact kernel applies, else two."""
         if self.predictor_exact_add_norm:
-            return predictor_kernels.add_rmsnorm_rounded(
+            return add_rmsnorm_rounded(
                 hidden_states, residual, norm.weight, norm.variance_epsilon
             )
         else:

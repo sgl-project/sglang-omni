@@ -20,6 +20,24 @@ else:
     pass
 
 
+def validate_prompt_token_ids(input_ids: torch.Tensor, vocab_size: int) -> None:
+    """Reject prompt token ids outside [0, vocab_size) before the embedding lookup.
+
+    Call it before multimodal pad remapping, which writes ids at or above vocab_size.
+    """
+    flat_input_ids = input_ids.reshape(-1)
+    out_of_vocabulary = (flat_input_ids < 0) | (flat_input_ids >= vocab_size)
+    if bool(out_of_vocabulary.any()):
+        position = int(out_of_vocabulary.nonzero()[0])
+        raise ValueError(
+            "prompt contains out-of-vocabulary token id "
+            f"{int(flat_input_ids[position])} at position {position}. "
+            f"Valid token ids are in [0, {vocab_size})."
+        )
+    else:
+        pass
+
+
 @dataclass
 class SGLangARRequestData(ARRequestData):
     """Per-request state for SGLang-backed AR stages."""
