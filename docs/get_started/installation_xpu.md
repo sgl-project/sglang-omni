@@ -206,8 +206,8 @@ defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
 ### dots.tts (text-to-speech, single XPU)
 
-The XPU installation includes `dots.tts==0.2.1`. 
-All three checkpoints were validated on one 24 GB Intel Arc Pro B60 with bf16, 
+The XPU installation includes `dots.tts==0.2.1`.
+All three checkpoints were validated on one 24 GB Intel Arc Pro B60 with bf16,
 `mem_fraction_static=0.20`, and `max_generate_length=500`:
 
 | Checkpoint | Config | `num_steps` | `max_running_requests` tested |
