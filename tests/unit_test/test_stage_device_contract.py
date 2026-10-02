@@ -21,6 +21,7 @@ MODELS_DIR = Path(importlib.import_module("sglang_omni.models").__file__).parent
 # the pipeline process with tts_engine; qwen3_omni's mm_aggregate is an identity
 # stage placed on a GPU in the "text" topology for pure colocation.
 CPU_ONLY_GPU_PLACED = {
+    ("easymagpie_tts", "preprocessing"),
     ("qwen3_omni", "mm_aggregate"),
     ("zonos2", "preprocessing"),
 }
@@ -277,6 +278,11 @@ ENGINE_FACTORIES = {
         "sglang_omni.models.dots_tts.stages.create_sglang_latent_engine_executor",
         "sglang_omni.models.dots_tts.engine_builder",
         "DotsTTSEngineBuilder",
+    ),
+    "easymagpie_tts": (
+        "sglang_omni.models.easymagpie_tts.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.easymagpie_tts.engine_builder",
+        "EasyMagpieTTSEngineBuilder",
     ),
     "moss_tts": (
         "sglang_omni.models.moss_tts.stages.create_sglang_tts_engine_executor",
