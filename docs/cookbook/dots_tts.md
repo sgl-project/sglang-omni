@@ -55,9 +55,9 @@ sgl-omni serve \
   --port 8000
 ```
 
-SOAR is a flow-matching checkpoint. It runs the single-request solver with classifier-free guidance, so its config pins `max_running_requests: 1` and `num_steps: 10`; continuous batching is MeanFlow-only. Every request example below works on all three checkpoints — only the `model` field changes.
+SOAR is a flow-matching checkpoint. It runs the single-request solver with classifier-free guidance, so its config pins `max_running_requests: 1` and `num_steps: 10`; continuous batching is MeanFlow-only. Every request example below works on either checkpoint — only the `model` field changes.
 
-`examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment on CUDA. It enables the optimized acoustic tail and vocoder (`optimize: true`, on by default), continuous batching at `max_running_requests=16`, and the backbone decode CUDA graph. `--model-path` alone keeps the optimized tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
+`examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment. It is already tuned; compiled acoustic tail and vocoder (`optimize: true`, on by default); continuous batching at `max_running_requests=16`; and the backbone decode CUDA graph. `--model-path` alone keeps the compiled tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
 
 If startup fails with `dots.tts acoustic-tail admission failed at startup`, the GPU cannot hold `max_running_requests × max_generate_length` full-length acoustic pools — lower those knobs yourself. The engine never silently shrinks them.
 
