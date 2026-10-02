@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import pickle
 import threading
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -19,7 +22,7 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
-from sglang_omni.proto import DataReadyMessage, SubmitMessage
+from sglang_omni.proto import DataReadyMessage, ProfilerStartMessage, SubmitMessage
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -37,6 +40,57 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     tensor_equal,
 )
 from tests.unit_test.pipeline.helpers import make_stage
+
+
+@pytest.mark.parametrize("template", [None, "{unknown}", "{", "{}"])
+def test_invalid_profiler_template_preserves_event_recording(
+    monkeypatch: pytest.MonkeyPatch, template: str | None
+) -> None:
+    profiler = Mock()
+    profiler.is_active.return_value = False
+    recorder = Mock()
+    monkeypatch.setattr(stage_runtime_module, "TorchProfiler", profiler)
+    monkeypatch.setattr(stage_runtime_module, "_get_recorder", lambda: recorder)
+    stage = make_stage(name="test-stage")
+    stage.on_profiler_start(
+        ProfilerStartMessage(
+            run_id="run",
+            enable_torch=True,
+            trace_path_template=template,
+            event_dir="events",
+        ),
+    )
+    profiler.start.assert_not_called()
+    recorder.start.assert_called_once_with(
+        run_id="run", event_dir="events", stage="test-stage"
+    )
+
+
+def test_valid_profiler_template_starts_both_recorders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    profiler = Mock()
+    profiler.is_active.return_value = False
+    recorder = Mock()
+    monkeypatch.setattr(stage_runtime_module, "TorchProfiler", profiler)
+    monkeypatch.setattr(stage_runtime_module, "_get_recorder", lambda: recorder)
+    monkeypatch.setenv("SGLANG_TORCH_PROFILER_DIR", str(tmp_path))
+    stage = make_stage(name="test-stage")
+    stage.on_profiler_start(
+        ProfilerStartMessage(
+            run_id="run",
+            enable_torch=True,
+            trace_path_template="{run_id}/{stage}/trace",
+            event_dir="events",
+        )
+    )
+    profiler.start.assert_called_once_with(
+        str(tmp_path / "run" / "test-stage" / f"trace_pid{os.getpid()}"),
+        run_id="run",
+    )
+    recorder.start.assert_called_once_with(
+        run_id="run", event_dir="events", stage="test-stage"
+    )
 
 
 @pytest.fixture(autouse=True)
