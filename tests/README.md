@@ -522,6 +522,8 @@ that happened to contain an older version of the test.
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
   runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
+  `test_audio_signal.py` covers offline WAV diagnostics with synthetic audio and
+  CLI subprocesses, without model weights or accelerator dependencies.
   `test_omni_seedtts_warmup.py` checks separate concurrent warmup, output
   isolation, failure reporting, disabled warmup, and CLI configuration using
   the real benchmark runner with a fake speech generator.
