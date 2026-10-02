@@ -49,6 +49,76 @@ MODEL_FAMILIES = {
 }
 
 
+@pytest.mark.parametrize(
+    "origin", ["https://app.example.com", "https://admin.example.com"]
+)
+def test_configured_cors_origins_allow_credentialed_requests(
+    monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    monkeypatch.setenv(
+        "SGLANG_CORS_ORIGINS",
+        " https://app.example.com, , https://admin.example.com, ",
+    )
+    client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
+    preflight = client.options(
+        "/v1/models",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "Authorization",
+        },
+    )
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == origin
+    assert preflight.headers["access-control-allow-credentials"] == "true"
+    assert "authorization" in preflight.headers["access-control-allow-headers"].lower()
+    response = client.get(
+        "/v1/models", headers={"Origin": origin, "Cookie": "session=test"}
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+@pytest.mark.parametrize("origins", ["https://app.example.com", "", " , , "])
+def test_configured_cors_origins_reject_unlisted_origins(
+    monkeypatch: pytest.MonkeyPatch, origins: str
+) -> None:
+    monkeypatch.setenv("SGLANG_CORS_ORIGINS", origins)
+    client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
+    response = client.options(
+        "/v1/models",
+        headers={
+            "Origin": "https://unlisted.example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+    response = client.get(
+        "/v1/models", headers={"Origin": "https://unlisted.example.com"}
+    )
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_default_preserves_wildcard_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SGLANG_CORS_ORIGINS", raising=False)
+    client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
+    response = client.options(
+        "/v1/models",
+        headers={
+            "Origin": "https://app.example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://app.example.com"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
 class FaultInjectingCoordinator(Coordinator):
     """Inject a model-stage failure through the real Coordinator/Client path."""
 

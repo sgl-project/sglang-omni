@@ -64,6 +64,21 @@ remains available as a backward-compatible alias. Automatic Omni model
 detection is not enabled yet; select the backend explicitly with
 `--model-type omni`.
 
+## Browser Origins
+
+Set SGLANG_CORS_ORIGINS to a comma-separated list of trusted browser origins:
+
+```bash
+SGLANG_CORS_ORIGINS=https://app.example.com,https://admin.example.com \
+  sgl-omni serve --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
+```
+
+Whitespace and empty list entries are ignored. An explicitly empty value allows
+no cross-origin browser requests. When the variable is unset, the existing
+permissive wildcard configuration is preserved. Credentials remain enabled;
+configure explicit trusted origins when using a browser application with cookies.
+CORS controls browser access and does not replace API authentication.
+
 ## Check That It Works
 
 ### Health check
