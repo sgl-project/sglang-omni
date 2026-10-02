@@ -42,7 +42,15 @@ futures-util = { version = "=0.3.32", default-features = false, features = ["sin
 rlimit = { version = "=0.11.0", default-features = false }
 
 [dev-dependencies]
-tokio = { version = "=1.51.4", default-features = false, features = ["test-util"] }
+tokio = { version = "=1.51.4", default-features = false, features = ["test-util", "process", "io-util", "io-std"] }
+axum = { version = "=0.8.9", default-features = false, features = ["json", "multipart"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["json", "multipart", "stream"] }
+toml = { version = "=1.1.3", default-features = false, features = ["display"] }
+base64 = "=0.22.1"
+
+[[example]]
+name = "mock_fleet"
+path = "examples/mock_fleet/main.rs"
 
 [lints.rust]
 unreachable_pub = "deny"
