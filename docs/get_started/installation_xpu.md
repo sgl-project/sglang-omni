@@ -206,8 +206,8 @@ defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
 ### dots.tts (text-to-speech, single XPU)
 
-The XPU installation includes `dots.tts==0.2.1`. All three checkpoints were
-validated on one 24 GB Intel Arc Pro B60 with bf16,
+The XPU installation includes `dots.tts==0.2.1`. 
+All three checkpoints were validated on one 24 GB Intel Arc Pro B60 with bf16, 
 `mem_fraction_static=0.20`, and `max_generate_length=500`:
 
 | Checkpoint | Config | `num_steps` | `max_running_requests` tested |
@@ -216,9 +216,7 @@ validated on one 24 GB Intel Arc Pro B60 with bf16,
 | `dots-studio/dots.tts-soar` | `examples/configs/dots_tts_soar.yaml` | 10 | 1 |
 | `dots-studio/dots.tts-base` | `examples/configs/dots_tts_soar.yaml` | 10 | 1 |
 
-Run from the repository root. For MF on B60, lower the config's default
-16 request slots to the four slots used in validation. Keep the checkpoint
-revision pinned by the config:
+For MF on B60, lower the config's default 16 request slots to the 4 slots used in validation. Keep the checkpoint revision pinned by the config:
 
 ```bash
 ZE_AFFINITY_MASK=0 sgl-omni serve \
