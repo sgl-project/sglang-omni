@@ -21,6 +21,10 @@ dots.tts is a continuous-latent model, not a codec model. The backbone emits no 
 | [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | Flow matching. Single request at a time (`max_running_requests=1`) with CFG, `num_steps=10`. `examples/configs/dots_tts_soar.yaml` |
 | [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Flow matching, same as SOAR. Serve it with `examples/configs/dots_tts_soar.yaml` and `--model-path dots-studio/dots.tts-base` |
 
+All three checkpoints also serve on Intel GPUs. Follow the
+[Intel XPU recipe](../get_started/installation_xpu.md#dotstts-text-to-speech-single-xpu)
+for installation and launch settings validated on one Intel Arc Pro B60.
+
 ## Prerequisites
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download and launch the server:
@@ -51,9 +55,9 @@ sgl-omni serve \
   --port 8000
 ```
 
-SOAR is a flow-matching checkpoint. It runs the single-request solver with classifier-free guidance, so its config pins `max_running_requests: 1` and `num_steps: 10`; continuous batching is MeanFlow-only. Every request example below works on either checkpoint — only the `model` field changes.
+SOAR is a flow-matching checkpoint. It runs the single-request solver with classifier-free guidance, so its config pins `max_running_requests: 1` and `num_steps: 10`; continuous batching is MeanFlow-only. Every request example below works on all three checkpoints — only the `model` field changes.
 
-`examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment. It is already tuned; compiled acoustic tail and vocoder (`optimize: true`, on by default); continuous batching at `max_running_requests=16`; and the backbone decode CUDA graph. `--model-path` alone keeps the compiled tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
+`examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment on CUDA. It enables the optimized acoustic tail and vocoder (`optimize: true`, on by default), continuous batching at `max_running_requests=16`, and the backbone decode CUDA graph. `--model-path` alone keeps the optimized tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
 
 If startup fails with `dots.tts acoustic-tail admission failed at startup`, the GPU cannot hold `max_running_requests × max_generate_length` full-length acoustic pools — lower those knobs yourself. The engine never silently shrinks them.
 
@@ -68,7 +72,7 @@ patch_capacity = max_generate_length + 1
 dit_cache_tokens = patch_capacity × (hidden_patch_size + latent_patch_size)   # MF: ×5
 ```
 
-Pool bytes scale roughly as `max_running_requests × patch_capacity` and include DiT KV (per NFE), semantic-encoder KV, scratch K/V, masks, window, and AdaLN mods. Startup logs the estimated breakdown and free CUDA memory, then refuses to allocate when free VRAM is below the estimate plus a 15% headroom for graphs and workspace.
+Pool bytes scale roughly as `max_running_requests × patch_capacity` and include DiT KV (per NFE), semantic-encoder KV, scratch K/V, masks, window, and AdaLN mods. On CUDA, startup logs the estimated breakdown and free memory, then refuses to allocate when free VRAM is below the estimate plus a 15% headroom for graphs and workspace.
 
 `mem_fraction_static` (default `0.20` in `examples/configs/dots_tts.yaml`) only budgets the **SGLang backbone** KV cache. Acoustic-tail pools are separate and are **not** covered by that fraction.
 

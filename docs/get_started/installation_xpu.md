@@ -13,7 +13,7 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano,
-MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS and PersonaPlex) plus the API server;
+MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
@@ -174,6 +174,76 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "response_format":"wav"}' -o out.wav
 ```
 
+### dots.tts (text-to-speech, single XPU)
+
+The XPU installation includes `dots.tts==0.2.1`. All three checkpoints were
+validated on one 24 GB Intel Arc Pro B60 with bf16,
+`mem_fraction_static=0.20`, and `max_generate_length=500`:
+
+| Checkpoint | Config | `num_steps` | `max_running_requests` tested |
+|---|---|---|---|
+| `dots-studio/dots.tts-mf` | `examples/configs/dots_tts.yaml` | 4 | 4 |
+| `dots-studio/dots.tts-soar` | `examples/configs/dots_tts_soar.yaml` | 10 | 1 |
+| `dots-studio/dots.tts-base` | `examples/configs/dots_tts_soar.yaml` | 10 | 1 |
+
+Run from the repository root. For MF on B60, lower the config's default
+16 request slots to the four slots used in validation. Keep the checkpoint
+revision pinned by the config:
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --config examples/configs/dots_tts.yaml \
+  --latent_engine.engine.max_running_requests 4 \
+  --latent_engine.engine.cuda_graph_max_bs 4 \
+  --allowed-local-media-path docs/_static/audio \
+  --host 0.0.0.0 --port 8000
+```
+
+For SOAR, use its single-request config:
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path dots-studio/dots.tts-soar \
+  --config examples/configs/dots_tts_soar.yaml \
+  --allowed-local-media-path docs/_static/audio \
+  --host 0.0.0.0 --port 8000
+```
+
+For base, use the same command with
+`--model-path dots-studio/dots.tts-base`. Base and SOAR require
+`max_running_requests=1`; continuous batching is MF-only.
+
+The `disable_cuda_graph` and `cuda_graph_max_bs` config names also control
+SGLang backbone decode graphs on XPU. The configs enable them; use
+`--latent_engine.engine.disable_cuda_graph true` for eager backbone decode.
+The batched acoustic tail runs eager on XPU. Its memory admission precheck
+currently runs only on CUDA, so oversized XPU pools can fail with an
+out-of-memory error at startup. Lower `max_running_requests` and/or
+`max_generate_length` explicitly; `mem_fraction_static` only budgets
+the backbone KV cache.
+
+Each request needs one reference clip and its matching transcript:
+
+```bash
+curl -sS -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dots-studio/dots.tts-mf",
+    "input": "Have a nice day and enjoy south california sunshine.",
+    "references": [{
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
+    }],
+    "seed": 42
+  }' \
+  --output output.wav
+```
+
+Set `model` to the checkpoint being served. The validation runs produced
+48 kHz mono audio and passed ASR checks against the requested text.
+See the [dots.tts cookbook](../cookbook/dots_tts.md) for streaming and
+solver parameters.
+
 ### ZONOS2 (MoE TTS, single XPU)
 
 ZONOS2 needs the Descript DAC codec. `--no-deps` is required:
@@ -289,7 +359,7 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS and PersonaPlex all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o and PersonaPlex single-card;
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts all serve end-to-end on Intel XPU**
+> (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).
