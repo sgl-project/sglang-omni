@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 from transformers import PretrainedConfig
 
+import sglang_omni.platforms as platforms
+from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
@@ -36,6 +38,16 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+
+def ming_tts_uses_mlx() -> bool:
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+    selected = use_mlx()
+    if selected and not platforms.current_platform.is_mps():
+        raise ValueError("Ming native MLX requires Apple Silicon / Metal")
+    else:
+        return selected
 
 
 def is_truthy(value: object) -> bool:
@@ -97,7 +109,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
         self.nccl_port = nccl_port
         self.config: PretrainedConfig | None = None
         self.tokenizer: MingTTSTokenizerBundle | None = None
-        self.model_runner: MingTTSModelRunner | None = None
+        self.model_runner: MingTTSModelRunner | MlxSchedulerModelRunner | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from sglang_omni.models.ming_tts import stages as ming_stages
@@ -148,7 +160,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
         self.context_length = int(context_length)
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
-        return {
+        defaults: GenerationDefaults = {
             "max_running_requests": 8,
             "dtype": dtype,
             "disable_cuda_graph": True,
@@ -159,6 +171,16 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             "sampling_backend": "pytorch",
             "trust_remote_code": False,
         }
+        if ming_tts_uses_mlx() or platforms.current_platform.is_mps():
+            defaults.update(
+                max_running_requests=1,
+                max_total_tokens=self.context_length,
+                max_prefill_tokens=self.context_length,
+                attention_backend="torch_native",
+            )
+        else:
+            pass
+        return defaults
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         overrides.pop("context_length", None)
@@ -199,6 +221,58 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
         else:
             pass
 
+        use_mlx = ming_tts_uses_mlx()
+        if not use_mlx and not platforms.current_platform.is_mps():
+            return
+        else:
+            pass
+        backend = "Ming MLX" if use_mlx else "Ming Torch/MPS"
+        if self.tp_size != 1 or self.tp_rank != 0:
+            raise ValueError(f"{backend} requires TP=1")
+        else:
+            pass
+        if int(overrides["max_running_requests"]) != 1:
+            raise ValueError(f"{backend} requires max_running_requests=1")
+        else:
+            pass
+        if not overrides["disable_cuda_graph"]:
+            raise ValueError(f"{backend} requires disable_cuda_graph=true")
+        else:
+            pass
+        if use_mlx and overrides.get("attention_backend") != "torch_native":
+            raise ValueError(
+                "Ming MLX bookkeeping requires attention_backend=torch_native"
+            )
+        else:
+            pass
+        for phase in (
+            "attention_backend",
+            "prefill_attention_backend",
+            "decode_attention_backend",
+        ):
+            if overrides.get(phase) not in (None, "torch_native"):
+                raise ValueError(f"{backend} requires {phase}=torch_native")
+            else:
+                pass
+        if not use_mlx and overrides.get("quantization") is not None:
+            raise ValueError(
+                "Ming Torch/MPS does not support quantization; use MLX for mlx_q4"
+            )
+        else:
+            pass
+        if overrides.get("speculative_algorithm") is not None:
+            raise ValueError(f"{backend} does not support speculative decoding")
+        else:
+            pass
+        if min(
+            int(overrides["max_total_tokens"]), int(overrides["max_prefill_tokens"])
+        ) < self.context_length:
+            raise ValueError(
+                f"{backend} requires a full context token pool and unsplit prefill"
+            )
+        else:
+            pass
+
     def infra_kwargs(self) -> InfrastructureOptions:
         return {
             "tp_rank": self.tp_rank,
@@ -220,11 +294,14 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
         from sglang_omni.models.ming_tts.tokenizer import load_ming_tts_tokenizer
 
         self.model_worker = model_worker
-        model_worker.model_runner.model.eval()
         self.tokenizer = load_ming_tts_tokenizer(
             checkpoint_dir,
             llm_config=self.config.llm_config,
         )
+        if ming_tts_uses_mlx():
+            return
+        else:
+            model_worker.model_runner.model.eval()
         logger.info(
             "Ming AR SGLang startup: gpu_id=%s tp_rank=%s/%s "
             "total_gpu_memory_fraction=%s disable_cuda_graph=%s cuda_graph_bs=%s "
@@ -239,8 +316,11 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             self.nccl_port,
         )
 
-    def get_model_buffer_bs(self, model: MingTTSSGLangModel) -> int | None:
-        return int(model.decode_input_embedding.num_embeddings)
+    def get_model_buffer_bs(self, model: MingTTSSGLangModel | None) -> int | None:
+        if ming_tts_uses_mlx():
+            return None
+        else:
+            return int(model.decode_input_embedding.num_embeddings)
 
     def post_cuda_graph_setup(
         self, model: MingTTSSGLangModel | None, server_args: ServerArgs
@@ -260,10 +340,15 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
         self,
         model_worker: ModelWorker | MlxTpModelWorker,
         output_proc: SGLangOutputProcessor,
-    ) -> MingTTSModelRunner:
-        from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
+    ) -> MingTTSModelRunner | MlxSchedulerModelRunner:
+        if ming_tts_uses_mlx():
+            from sglang_omni.models.ming_tts.mlx.worker import MingTTSMlxModelRunner
 
-        self.model_runner = MingTTSModelRunner(model_worker, output_proc)
+            self.model_runner = MingTTSMlxModelRunner(model_worker, output_proc)
+        else:
+            from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
+
+            self.model_runner = MingTTSModelRunner(model_worker, output_proc)
         return self.model_runner
 
     def make_adapters(self, model: MingTTSSGLangModel | None) -> tuple[
@@ -274,6 +359,10 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             make_ming_tts_scheduler_adapters,
         )
 
+        if ming_tts_uses_mlx():
+            model = self.model_worker._mlx_runner.model  # noqa: leading-underscore - SGLang worker interface.
+        else:
+            pass
         return make_ming_tts_scheduler_adapters(
             model=model,
             tokenizer=self.tokenizer,

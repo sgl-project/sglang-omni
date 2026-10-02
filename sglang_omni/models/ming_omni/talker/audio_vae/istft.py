@@ -122,7 +122,7 @@ class ISTFT(nn.Module):
         Returns:
             Tensor: Reconstructed time-domain signal of shape (B, L), where L is the length of the output signal.
         """
-        if spec.device.type == "npu":
+        if spec.device.type == "npu" or self.window.device.type == "mps":
             # The large overlap-add used by Ming (n_fft=3528) can trigger an
             # Ascend vector-core fault in torch.nn.functional.fold. Keep the
             # neural decoder and spectrogram on NPU, but run only ISTFT on CPU.
@@ -208,6 +208,11 @@ class ISTFTHead(FourierHead):
     def predict_spectrum(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Project hidden states into a complex spectrum and raw head output."""
         x_pred = self.out(x).transpose(1, 2)
+        if x_pred.device.type == "mps":
+            # Metal does not support the complex spectrum/FFT path.
+            x_pred = x_pred.float().cpu()
+        else:
+            pass
         mag, phase = x_pred.chunk(2, dim=1)
         mag = torch.clip(torch.exp(mag), max=1e2)
         spectrum = mag * (torch.cos(phase) + 1j * torch.sin(phase))

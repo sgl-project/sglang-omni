@@ -2,21 +2,121 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
+from sglang_omni.models.ming_tts import engine_builder
+from sglang_omni.models.ming_tts.engine_builder import (
+    MingTtsEngineBuilder,
+    ming_tts_uses_mlx,
+)
 from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
 
 
+@pytest.fixture(
+    params=[True, False],
+    ids=["mlx", "torch_mps"],
+)
+def mlx_backend(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> bool:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(engine_builder, "ming_tts_uses_mlx", lambda: request.param)
+    monkeypatch.setattr(current_platform, "is_mps", lambda: True)
+    return request.param
+
+
+@pytest.mark.parametrize(
+    "selected,apple,expected",
+    [(False, False, False), (True, True, True), (True, False, None), (False, True, False)],
+)
+def test_backend_selection(
+    monkeypatch: pytest.MonkeyPatch, selected: bool, apple: bool, expected: bool | None
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime
+
+    from sglang_omni import platforms
+
+    monkeypatch.setattr(runtime, "use_mlx", lambda: selected)
+    monkeypatch.setattr(platforms, "current_platform", SimpleNamespace(is_mps=lambda: apple))
+    if expected is None:
+        with pytest.raises(ValueError):
+            ming_tts_uses_mlx()
+    else:
+        assert ming_tts_uses_mlx() is expected
+
+
+def test_builder_defaults(mlx_backend: bool) -> None:
+    builder = MingTtsEngineBuilder()
+    builder.context_length = 2048
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    builder.adjust_overrides(defaults)
+    assert defaults["max_running_requests"] == 1
+    assert defaults["max_total_tokens"] == 2048
+    assert defaults["attention_backend"] == "torch_native"
+    assert defaults["chunked_prefill_size"] == 0
+    if mlx_backend:
+        assert builder.get_model_buffer_bs(None) is None
+    else:
+        model = SimpleNamespace(decode_input_embedding=SimpleNamespace(num_embeddings=1))
+        assert builder.get_model_buffer_bs(model) == 1
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("max_running_requests", 2),
+        ("disable_cuda_graph", False),
+        ("attention_backend", "triton"),
+        ("max_total_tokens", 10),
+        ("max_prefill_tokens", 10),
+        ("chunked_prefill_size", 128),
+        ("prefill_attention_backend", "triton"),
+        ("decode_attention_backend", "triton"),
+        ("speculative_algorithm", "EAGLE"),
+    ],
+)
+@pytest.mark.usefixtures("mlx_backend")
+def test_builder_rejects_unsupported_execution(key: str, value: Any) -> None:
+    builder = MingTtsEngineBuilder()
+    builder.context_length = 2048
+    overrides = builder.generation_defaults(dtype="bfloat16")
+    overrides[key] = value
+    with pytest.raises(ValueError):
+        builder.adjust_overrides(overrides)
+
+
+@pytest.mark.usefixtures("mlx_backend")
+def test_builder_rejects_tp() -> None:
+    builder = MingTtsEngineBuilder(tp_size=2, nccl_port=12345)
+    builder.context_length = 2048
+    with pytest.raises(ValueError, match="TP=1"):
+        builder.adjust_overrides(builder.generation_defaults(dtype="bfloat16"))
+
+
+def test_builder_quantization(mlx_backend: bool) -> None:
+    builder = MingTtsEngineBuilder()
+    builder.context_length = 64
+    overrides = builder.generation_defaults(dtype="bfloat16")
+    overrides["quantization"] = "mlx_q4"
+    if mlx_backend:
+        builder.adjust_overrides(overrides)
+    else:
+        with pytest.raises(ValueError, match="does not support quantization"):
+            builder.adjust_overrides(overrides)
+
+
 def adjust_overrides(key: str, value: Any) -> dict[str, Any]:
+    builder = MingTtsEngineBuilder()
     overrides: dict[str, Any] = {
-        "disable_overlap_schedule": True,
-        "disable_radix_cache": True,
+        **builder.generation_defaults(dtype="bfloat16"),
         key: value,
     }
-    MingTtsEngineBuilder().adjust_overrides(overrides)
+    builder.adjust_overrides(overrides)
     return overrides
 
 

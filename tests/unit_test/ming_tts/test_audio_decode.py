@@ -22,10 +22,47 @@ from sglang_omni.models.ming_tts.audio_decode import (
     CapturedAudioVAEGraph,
     MingAudioDecoder,
     MingAudioStreamingRunner,
+    MingTorchAudioDecoder,
     decode_ming_tts_audio_payload,
 )
 from sglang_omni.models.ming_tts.payload_types import MingTTSState
 from sglang_omni.proto import OmniRequest, StagePayload
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="Requires Apple Metal")
+def test_mps_audio_vae_encode_and_full_decode() -> None:
+    backbone = dict(
+        vocab_size=8,
+        hidden_size=16,
+        intermediate_size=24,
+        num_hidden_layers=4,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        max_position_embeddings=256,
+        _attn_implementation="sdpa",
+        use_sliding_window=True,
+        sliding_window=5,
+        max_window_layers=0,
+    )
+    config = AudioVAEconfig(
+        sample_rate=44100,
+        patch_size=2,
+        enc_kwargs=dict(backbone=backbone, input_dim=8, hop_size=8, latent_dim=4),
+        dec_kwargs=dict(backbone=backbone, output_dim=8, latent_dim=4),
+    )
+    vae = AudioVAE(config).eval().to(device="mps", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        latents, _ = vae.encode_latent(
+            torch.randn(1, 64, device="mps", dtype=torch.bfloat16),
+            torch.tensor([64], device="mps"),
+        )
+    assert latents.shape == (1, 4, 4)
+    decoder = MingTorchAudioDecoder(vae)
+    waveform = decoder.decode_full(latents.reshape(2, 2, 4))
+    assert waveform.shape == (64,)
+    assert waveform.device.type == "cpu" and waveform.dtype == torch.float32
+    assert torch.isfinite(waveform).all()
+    assert decoder.decode_full(torch.empty(0, 2, 4)).numel() == 0
 
 
 class FakeAudioVAE(torch.nn.Module):

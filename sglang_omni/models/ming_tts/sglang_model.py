@@ -810,8 +810,9 @@ class MingTTSSGLangModel(nn.Module):
         super().__init__()
         # Note(yzxiao): Ming-TTS requires a platform joint-RoPE implementation;
         # this release provides CUDA. Resolve it before constructing the model.
+        # Note(altale): MPS has no joint kernel; use native Torch acoustic RoPE.
         rope_kernel = current_platform.get_joint_rope_inplace_kernel()
-        if rope_kernel is None:
+        if rope_kernel is None and not current_platform.is_mps():
             raise RuntimeError(
                 "Ming-TTS requires a joint in-place RoPE kernel, but "
                 f"{type(current_platform).__name__} does not provide one."

@@ -9,6 +9,7 @@ import pytest
 import torch
 
 
+@pytest.mark.parametrize("is_mps", [False, True])
 @pytest.mark.parametrize(
     (
         "max_running_requests",
@@ -26,6 +27,7 @@ import torch
 )
 def test_ming_tts_owns_tail_execution_geometry(
     monkeypatch: pytest.MonkeyPatch,
+    is_mps: bool,
     max_running_requests: int,
     disable_cuda_graph: bool,
     graph_max_batch_size: int,
@@ -85,12 +87,12 @@ def test_ming_tts_owns_tail_execution_geometry(
             decode=SimpleNamespace(max_bs=graph_max_batch_size)
         ),
     )
-    kernel = Mock()
+    kernel = None if is_mps else Mock()
     provider = Mock(return_value=kernel)
     monkeypatch.setattr(
         sglang_model,
         "current_platform",
-        SimpleNamespace(get_joint_rope_inplace_kernel=provider),
+        SimpleNamespace(get_joint_rope_inplace_kernel=provider, is_mps=lambda: is_mps),
     )
     monkeypatch.setattr(sglang_model, "MingBailingMoeTextModel", Backbone)
     monkeypatch.setattr(sglang_model, "Aggregator", CapturingAggregator)
@@ -108,6 +110,7 @@ def test_ming_tts_owns_tail_execution_geometry(
     )
 
     model = sglang_model.MingTTSSGLangModel(config)
+    assert isinstance(model.model, Backbone)
 
     aggregator_execution = captured["aggregator"]["execution_config"]
     dit_execution = captured["dit"]["execution_config"]
@@ -137,7 +140,8 @@ def test_ming_tts_owns_tail_execution_geometry(
     assert config.aggregator_config["execution_config"] is stale_execution_config
     assert config.ditar_config["execution_config"] is stale_execution_config
     provider.assert_called_once_with()
-    kernel.assert_not_called()
+    if kernel is not None:
+        kernel.assert_not_called()
 
 
 @pytest.mark.parametrize(
