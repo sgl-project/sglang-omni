@@ -304,22 +304,37 @@ stages:
         ConfigManager.from_file(str(config_path))
 
 
-def test_qwen3_omni_h100_bf16_config_enables_speech_prefill_graph() -> None:
-    from pathlib import Path
-
-    repo_root = Path(__file__).resolve().parents[3]
+def test_qwen3_omni_h100_bf16_profile_pins_the_measured_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The H100 profile ships the breakable prefill graph, the thinker reserve,
+    the talker admission estimate and the code2wav batching knobs."""
+    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: False)
     config_path = (
-        repo_root / "examples" / "configs" / "qwen3_omni_colocated_h100_bf16.yaml"
+        REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h100_bf16.yaml"
     )
 
     config = ConfigManager.from_file(str(config_path)).config
-    overrides = make_stage(config, "thinker").engine.overrides()
+    thinker = make_stage(config, "thinker")
+    overrides = thinker.engine.overrides()
+    thinker_args = resolve_stage_factory_args(thinker, config)
+    code2wav_args = resolve_stage_factory_args(make_stage(config, "code2wav"), config)
 
     assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
     assert "disable_radix_cache" not in overrides
     assert overrides["cuda_graph_backend_prefill"] == "breakable"
     assert "cuda_graph_bs_prefill" not in overrides
     assert overrides["cuda_graph_max_bs_prefill"] == 2048
+    assert thinker_args["encoder_mem_reserve"] == pytest.approx(0.045)
+    assert make_stage(config, "talker_ar").env == {
+        "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
+        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "256",
+    }
+    assert code2wav_args["enable_batching"] is True
+    assert code2wav_args["max_batch_wait_ms"] == 8
+    assert code2wav_args["batch_floor"] == 4
+    assert code2wav_args["batch_ceiling"] == 16
+    assert code2wav_args["initial_codec_chunk_frames"] == 2
 
 
 def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
