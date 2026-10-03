@@ -409,13 +409,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.tp_size = get_parallel().tp_size
         self.pp_rank = 0
         self.pp_size = get_parallel().pp_size
-        self.dp_rank = None
         self.dp_size = get_parallel().dp_size
-        self.moe_ep_rank = 0
-        self.moe_ep_size = 1
-        self.moe_dp_rank = None
-        self.moe_dp_size = get_parallel().moe_dp_size
-        self.attn_cp_rank = 0
         self.attn_cp_size = get_parallel().attn_cp_size
         self.page_size = get_schedule().page_size
         self.enable_overlap = enable_overlap
@@ -648,8 +642,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
         self.init_parallel_state(tp_worker)
         self.ipc_channels: OmniIpcChannels[RequestDataT] = OmniIpcChannels(self)
-        self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
-        self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
+        self.init_metrics_collector()
+        self.init_metrics_reporter()
         self.scheduler_stage_metrics = self.metrics_reporter.scheduler_stage_metrics
         self.init_upstream_scheduler_components()
 
@@ -738,7 +732,7 @@ class OmniScheduler(Generic[RequestDataT]):
         )
 
         self.ngram_embedding_manager = NgramEmbeddingManager(
-            enabled=False, table=None, n=0, k=0
+            enabled=False, table=None, n=0
         )
         from types import SimpleNamespace
 
@@ -776,12 +770,10 @@ class OmniScheduler(Generic[RequestDataT]):
 
         self.dp_attn_adapter = SchedulerDPAttnAdapter(
             model_runner=self.tp_worker.model_runner,
-            tp_group=self.tp_group,
             req_to_token_pool=self.req_to_token_pool,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
             tree_cache=self.tree_cache,
             offload_tags=self.offload_tags,
-            ps=self.ps,
             model_config=self.model_config,
             enable_overlap=self.enable_overlap,
             spec_algorithm=self.spec_algorithm,
@@ -813,7 +805,6 @@ class OmniScheduler(Generic[RequestDataT]):
         self.init_load_publisher()
         self.load_inquirer = SchedulerLoadInquirer(
             disaggregation_mode=self.disaggregation_mode,
-            ps=self.ps,
             server_args=self.server_args,
             max_total_num_tokens=self.max_total_num_tokens,
             max_running_requests=self.max_running_requests,
@@ -957,34 +948,6 @@ class OmniScheduler(Generic[RequestDataT]):
 
         self.current_scheduler_metrics_enabled = (
             self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
-        )
-        self.refresh_upstream_parallel_state()
-
-    def refresh_upstream_parallel_state(self) -> None:
-        """Build the rank container expected by upstream scheduler methods."""
-        from sglang.srt.distributed.parallel_state_wrapper import ParallelState
-        from sglang.srt.runtime_context import get_parallel
-
-        self.ps = ParallelState(
-            tp_rank=self.tp_rank,
-            tp_size=self.tp_size,
-            pp_rank=self.pp_rank,
-            pp_size=self.pp_size,
-            dp_rank=self.dp_rank,
-            dp_size=self.dp_size,
-            attn_tp_rank=self.attn_tp_rank,
-            attn_tp_size=self.attn_tp_size,
-            attn_cp_rank=self.attn_cp_rank,
-            attn_cp_size=self.attn_cp_size,
-            attn_dcp_rank=self.tp_rank % get_parallel().dcp_size,
-            attn_dcp_size=get_parallel().dcp_size,
-            attn_dp_rank=self.attn_dp_rank,
-            attn_dp_size=self.attn_dp_size,
-            moe_ep_rank=self.moe_ep_rank,
-            moe_ep_size=self.moe_ep_size,
-            moe_dp_rank=self.moe_dp_rank,
-            moe_dp_size=self.moe_dp_size,
-            gpu_id=self.gpu_id,
         )
 
     def poll_request_timeout_aborts(self) -> tuple[RequestTimeoutAbort, ...]:

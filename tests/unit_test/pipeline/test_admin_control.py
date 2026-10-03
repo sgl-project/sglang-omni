@@ -346,7 +346,6 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(
         clear=lambda: reset_calls.append("kv_pool")
     )
-    scheduler.ps = SimpleNamespace(pp_size=1)
     scheduler.metrics_reporter = SimpleNamespace(
         reset_metrics=lambda: reset_calls.append("metrics"),
         is_stats_logging_rank=False,
