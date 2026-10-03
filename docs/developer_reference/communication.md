@@ -197,6 +197,11 @@ control message. Both put and get operations expose
 `await wait_for_completion(timeout=...)`. Stages keep the operation alive until
 the transfer is safe to release.
 
+The SHM receiver unlinks its block after copying it. If the sender's completion
+wait fails, times out, or is cancelled, the sender unlinks any remaining block
+and returns its transfer credit. Cancellation still propagates to the caller;
+an already-open receiver mapping remains valid until the receiver closes it.
+
 The CUDA IPC relay owns a bounded sender-side GPU pool. Its allocation granule
 defaults to 64 KiB and is configurable with `cuda_ipc_slot_size_kb`. A tensor may
 reserve several contiguous slots, but those slots remain one logical transfer.
