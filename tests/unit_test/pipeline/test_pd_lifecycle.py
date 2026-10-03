@@ -121,6 +121,29 @@ def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
     assert scheduler.is_fully_idle() is True
 
 
+def upstream_idle_by_waiting_queue(self, for_health_check=False, ignore_waiting=False):
+    return ignore_waiting or len(self.waiting_queue) == 0
+
+
+def test_paused_flush_skips_the_waiting_queue_on_prefill_only(monkeypatch):
+    monkeypatch.setattr(_Upstream, "is_fully_idle", upstream_idle_by_waiting_queue)
+    prefill = object.__new__(OmniPrefillScheduler)
+    prefill.pd_outstanding_releases = set()
+    prefill.waiting_queue = [SimpleNamespace(rid="retracted")]
+    decode = object.__new__(OmniDecodeScheduler)
+    decode.pd_lifecycle_lock = threading.RLock()
+    decode.pd_deferred_admission = None
+    decode.pd_admissions = queue.SimpleQueue()
+    decode.pd_receiver = SimpleNamespace(has_reservations=lambda: False)
+    decode.pd_outstanding_releases = set()
+    decode.waiting_queue = [SimpleNamespace(rid="admitted")]
+
+    assert prefill.is_fully_idle(ignore_waiting=True) is True
+    assert decode.is_fully_idle(ignore_waiting=True) is False
+    decode.waiting_queue = []
+    assert decode.is_fully_idle(ignore_waiting=True) is True
+
+
 def prefill_scheduler_for_handoff(*, request_finished_callback=None):
     scheduler = object.__new__(OmniPrefillScheduler)
     scheduler.pd_state_builder = state_builder
