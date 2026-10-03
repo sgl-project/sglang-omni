@@ -82,6 +82,7 @@ ALLOWED_DEFS: frozenset[tuple[str, str]] = frozenset(
         ),
         ("sglang_omni/models/fun_cosyvoice3/mlx/runner.py", "_load_model"),
         ("sglang_omni/models/qwen3_asr/mlx/runner.py", "_load_model"),
+        ("sglang_omni/models/fun_asr/mlx/runner.py", "_load_model"),
         # OmniPlatform hook kept to avoid infinite recursion
         ("sglang_omni/platforms/interface.py", "_get_device_graph_backend"),
         ("sglang_omni/platforms/cuda.py", "_get_device_graph_backend"),
