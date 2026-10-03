@@ -306,6 +306,8 @@ def test_tensor_update_failure_keeps_engine_paused(failure_mode: str) -> None:
 
 
 def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
+    from sglang.srt.runtime_context import get_context
+
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
     class EmptyBatch:
@@ -339,6 +341,8 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     )
     scheduler.disaggregation_mode = None
     scheduler.enable_hierarchical_cache = False
+    scheduler.enable_lmcache = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.req_to_token_pool = SimpleNamespace(
         clear=lambda: reset_calls.append("req_pool"),
         reset_aux_cache_allocator=lambda: reset_calls.append("aux_cache"),
@@ -352,7 +356,8 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     )
     scheduler.draft_worker = None
 
-    assert OmniScheduler.flush_cache_after_update(scheduler) is True
+    with get_context().override_server_args():
+        assert OmniScheduler.flush_cache_after_update(scheduler) is True
     assert scheduler.device_module is not None
     assert reset_calls == [
         "tree",

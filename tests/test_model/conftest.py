@@ -575,6 +575,7 @@ def qwen3_omni_vision_sglang_env():
     os.environ.setdefault("NCCL_P2P_DISABLE", "1")
 
     from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.distributed import bootstrap
     from sglang.srt.distributed.parallel_state import (
         init_distributed_environment,
         initialize_model_parallel,
@@ -584,8 +585,18 @@ def qwen3_omni_vision_sglang_env():
     from sglang.srt.models.qwen3_omni_moe import (  # noqa: F401 -- lazy-import order
         Qwen3OmniMoeVisionEncoder,
     )
-    from sglang.srt.runtime_context import publish
+    from sglang.srt.runtime_context import SpawnRanks, publish
     from sglang.srt.server_args import ServerArgs
+
+    sa = ServerArgs(
+        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
+        trust_remote_code=True,
+        tp_size=1,
+        dtype="bfloat16",
+        disable_cuda_graph=True,
+        random_seed=123,
+    )
+    publish(sa, role="scheduler", ranks=SpawnRanks(world_rank=0, gpu_id=0))
 
     if not torch_dist.is_initialized():
         init_distributed_environment(
@@ -596,18 +607,10 @@ def qwen3_omni_vision_sglang_env():
             backend="nccl",
         )
     if not model_parallel_is_initialized():
-        initialize_model_parallel(tensor_model_parallel_size=1)
+        initialize_model_parallel()
 
-    sa = ServerArgs(
-        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
-        trust_remote_code=True,
-        tp_size=1,
-        dtype="bfloat16",
-        disable_cuda_graph=True,
-        random_seed=123,
-    )
-    publish(sa, role="scheduler")
-    initialize_dp_attention(sa, ModelConfig.from_server_args(sa))
+    initialize_dp_attention(sa)
+    bootstrap.init_layer_runtime(model_config=ModelConfig.from_server_args(sa))
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

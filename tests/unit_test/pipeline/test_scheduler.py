@@ -20,6 +20,7 @@ import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
@@ -80,10 +81,23 @@ def init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
     scheduler.processed_tokens_counter = 0
+    scheduler.enable_lmcache = False
+    scheduler.sliding_window_size = None
+    scheduler.chunked_prefill_size = None
     if not hasattr(scheduler, "max_queued_requests"):
         scheduler.max_queued_requests = None
     if not hasattr(scheduler, "deferred_request_payloads"):
         scheduler.deferred_request_payloads = {}
+    state = vars(scheduler)
+    if "page_size" in state and "token_to_kv_pool_allocator" not in state:
+        scheduler.token_to_kv_pool_allocator = PagedTokenToKVPoolAllocator(
+            scheduler.max_total_num_tokens,
+            scheduler.page_size,
+            torch.float32,
+            "cpu",
+            None,
+            False,
+        )
 
 
 def init_terminal_output_state(scheduler: OmniScheduler) -> None:
@@ -471,6 +485,7 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     scheduler.max_queued_requests = 0
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
+    scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
     aborts: list[tuple[str, bool]] = []
     scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(
@@ -514,6 +529,7 @@ def requeue_scheduler() -> OmniScheduler:
     scheduler.max_queued_requests = None
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
+    scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
     scheduler.processed_tokens_counter = 0
     return scheduler
@@ -637,6 +653,7 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.max_queued_requests = 1
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
+    scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
