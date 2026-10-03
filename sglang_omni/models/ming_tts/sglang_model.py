@@ -56,10 +56,7 @@ from sglang_omni.models.ming_tts.weight_loading import (
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
+from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     LayerCommunicator,
     LayerScatterModes,
@@ -409,7 +406,7 @@ class MingBailingMoeMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_parallel().tp_size
         self.gate_up_proj = MergedColumnParallelLinear(
             int(config.hidden_size),
             [int(intermediate_size), int(intermediate_size)],
@@ -478,7 +475,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
             getattr(config, "routed_scaling_factor", 1.0)
         )
         self.multi_gate = bool(getattr(config, "multi_gate", False))
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_parallel().tp_size
 
         self.gate = MingBailingMoeGate(config)
         if self.multi_gate:

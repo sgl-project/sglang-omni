@@ -68,10 +68,9 @@ def filter_weights_by_prefix(
 
 def free_gpu_memory_bytes(device: str, gpu_id: int) -> int:
     """Currently free GPU memory in bytes, min-reduced across the world group."""
-    from sglang.srt.distributed.parallel_state import get_world_group
     from sglang.srt.utils.common import get_available_gpu_memory
 
-    world_group = get_world_group()
+    world_group = get_parallel().world_group
     free_gib = get_available_gpu_memory(
         device,
         gpu_id,
@@ -197,10 +196,9 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         total_memory: int,
     ) -> int:
         """Profile colocated KV headroom from this stage's load-time delta."""
-        from sglang.srt.distributed.parallel_state import get_world_group
         from sglang.srt.utils.common import get_available_gpu_memory
 
-        world_group = get_world_group()
+        world_group = get_parallel().world_group
         post_model_load_memory = get_available_gpu_memory(
             self.device,
             self.gpu_id,

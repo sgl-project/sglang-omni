@@ -32,10 +32,7 @@ from sglang_omni.models.ming_omni.configuration import (
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
+from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     LayerCommunicator,
     LayerScatterModes,
@@ -300,7 +297,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         self.n_group = config.n_group
         self.topk_group = config.topk_group
         self.routed_scaling_factor = config.routed_scaling_factor
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_parallel().tp_size
 
         # Gate: linear projection for router scores
         self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, bias=False)

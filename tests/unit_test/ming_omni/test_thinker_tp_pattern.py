@@ -87,7 +87,7 @@ def test_ming_moe_unified_reduction_pattern():
         "class BailingMoeV2DecoderLayer",
     )
 
-    assert "self.tp_size = get_tensor_model_parallel_world_size()" in moe_src
+    assert "self.tp_size = get_parallel().tp_size" in moe_src
     assert "reduce_results=False" in moe_src
     assert "final_hidden_states = routed_output + shared_output" in moe_src
     assert "tensor_model_parallel_all_reduce(final_hidden_states)" in moe_src
