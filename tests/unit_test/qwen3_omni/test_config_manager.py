@@ -155,6 +155,18 @@ def test_config_manager_rejects_trailing_key_without_value() -> None:
         )
 
 
+def test_config_manager_rejects_bare_flag_before_another_flag() -> None:
+    """A flag followed by another flag is a missing value, not a pair."""
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+
+    with pytest.raises(ValueError, match="Missing value"):
+        manager.parse_extra_args(["--thinker.gpu_memory_fraction", "--thinker.tp_size"])
+
+    assert manager.parse_extra_args(["--thinker.tp_size", "2"]) == [
+        ("thinker.tp_size", "2")
+    ]
+
+
 def test_qwen3_omni_h20_colocated_example_config_loads_and_plans() -> None:
     config_path = REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
 
