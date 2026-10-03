@@ -11,6 +11,7 @@ one position later, a finished output frame streamed to the codec.
 
 from __future__ import annotations
 
+from itertools import groupby
 from typing import Protocol
 
 import torch
@@ -28,7 +29,7 @@ from sglang_omni.models.personaplex.architecture import (
     NUM_STREAMS,
     USER_STREAM_OFFSET,
 )
-from sglang_omni.models.personaplex.sampling import sample_token
+from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -116,26 +117,51 @@ class PersonaPlexModelRunner(ModelRunner):
             pass
         return lambda logits: sample_token(logits, sampling.audio, generator)
 
-    def spell_frame(
+    def spell_frames(
         self,
-        index: int,
-        request: SchedulerRequest,
-        text_token: torch.Tensor,
-        forced: torch.Tensor,
+        requests: list[SchedulerRequest],
+        text_token_B: torch.Tensor,
+        forced_BK: torch.Tensor,
     ) -> None:
-        """Run the depformer for the position just predicted and record it."""
-        data = request.data
-        inputs = data.talker_model_inputs
-        device_rows = self.rows_on_device(data)
-        hidden = self.model.hidden_out[index : index + 1]
-        codes = self.model.depformer.generate(
-            text_token.view(1), hidden, forced.view(1, -1), self.audio_sampler(data)
-        )[0]
-        frame = output_frame(device_rows["agent_row"], codes)
-        device_rows["agent_row"] = codes
-        inputs["agent_rows"].append(codes)
-        inputs["frames"].append(frame)
-        inputs["pending_frames"].append(frame)
+        """Run the depformer for the positions just predicted and record them.
+
+        Row i of text_token_B, forced_BK and hidden_out belongs to requests[i].
+        """
+
+        def depformer_pass_key(
+            request: SchedulerRequest,
+        ) -> tuple[AudioSampling, str | None]:
+            sampling = request.data.talker_model_inputs["sampling"]
+            # Note (Jinjie Guo): A seeded request uses its own random generator, so it
+            # always gets a pass of its own.
+            if sampling.audio_seed is None:
+                return sampling.audio, None
+            else:
+                return sampling.audio, request.request_id
+
+        start = 0
+        # Note (Jinjie Guo): A pass takes only requests that are next to each other.
+        # Then each pass can use a slice of rows, and no index tensor goes to the
+        # device.
+        for _, group in groupby(requests, key=depformer_pass_key):
+            pass_requests = list(group)
+            end = start + len(pass_requests)
+            codes_BK = self.model.depformer.generate(
+                text_token_B[start:end],
+                self.model.hidden_out[start:end],
+                forced_BK[start:end],
+                self.audio_sampler(pass_requests[0].data),
+            )
+            for request, codes in zip(pass_requests, codes_BK, strict=True):
+                data = request.data
+                inputs = data.talker_model_inputs
+                device_rows = self.rows_on_device(data)
+                frame = output_frame(device_rows["agent_row"], codes)
+                device_rows["agent_row"] = codes
+                inputs["agent_rows"].append(codes)
+                inputs["frames"].append(frame)
+                inputs["pending_frames"].append(frame)
+            start = end
 
     def free_codes(self) -> torch.Tensor:
         return torch.full(
@@ -206,11 +232,13 @@ class PersonaPlexModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        sampled = result.next_token_ids
-        for index, request in enumerate(requests):
-            inputs = request.data.talker_model_inputs
-            forced = inputs.pop("prefill_forced")
-            self.spell_frame(index, request, sampled[index], forced)
+        forced_BK = torch.stack(
+            [
+                request.data.talker_model_inputs.pop("prefill_forced")
+                for request in requests
+            ]
+        )
+        self.spell_frames(requests, result.next_token_ids, forced_BK)
 
     def before_decode(
         self,
@@ -244,7 +272,5 @@ class PersonaPlexModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        sampled = result.next_token_ids
-        free = self.free_codes()
-        for index, request in enumerate(requests):
-            self.spell_frame(index, request, sampled[index], free)
+        free_BK = self.free_codes().expand(len(requests), -1)
+        self.spell_frames(requests, result.next_token_ids, free_BK)
