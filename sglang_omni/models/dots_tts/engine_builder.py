@@ -8,11 +8,16 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.dots_tts import CAPABILITIES
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     TtsEngineBuilder,
+)
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
 )
 
 if TYPE_CHECKING:
@@ -36,6 +41,9 @@ logger = logging.getLogger(__name__)
 class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     model_name = "dots.tts"
     context_length = 2048
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
@@ -83,6 +91,12 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "disable_cuda_graph": True,
+            "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
+            # note (0xtoward): prefills are never chunked, so the ladder reaches
+            # the context length.
+            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(
+                self.context_length
+            ),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
