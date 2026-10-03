@@ -10,7 +10,6 @@ import pytest
 import torch
 
 import sglang_omni.models.fun_cosyvoice3.model_runner as model_runner_module
-from sglang_omni.models.fun_cosyvoice3.config import RepetitionAwareSamplingMode
 from sglang_omni.models.fun_cosyvoice3.model_runner import (
     FunCosyVoice3MlxSchedulerModelRunner,
     FunCosyVoice3ModelRunner,
@@ -275,19 +274,8 @@ def test_cosyvoice3_torch_mps_clears_ras_history_on_finish() -> None:
     assert runner.cosyvoice3_recent_tokens == {"keep": [2]}
 
 
-@pytest.mark.parametrize(
-    "repetition_aware_sampling, expected_token_ids, redraw_eos_prob",
-    [
-        ("off", [9, 5, 9, EOS_ID], None),
-        ("request_temperature", [EOS_ID, 5, 9, EOS_ID], 0.1),
-        ("unit_temperature", [EOS_ID, 5, 9, EOS_ID], 0.1**0.7),
-    ],
-)
 def test_cosyvoice3_ras_redraws_repeated_speech_token_from_full_distribution(
     monkeypatch: pytest.MonkeyPatch,
-    repetition_aware_sampling: RepetitionAwareSamplingMode,
-    expected_token_ids: list[int],
-    redraw_eos_prob: float | None,
 ) -> None:
     # Rows: a repeated speech token, a new speech token, a greedy request, and
     # a control token.
@@ -312,7 +300,6 @@ def test_cosyvoice3_ras_redraws_repeated_speech_token_from_full_distribution(
         model_runner_module, "sampling_from_probs_torch", take_most_likely
     )
     runner = object.__new__(FunCosyVoice3ModelRunner)
-    runner.repetition_aware_sampling = repetition_aware_sampling
     runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
     requests = [
         SimpleNamespace(
@@ -333,7 +320,6 @@ def test_cosyvoice3_ras_redraws_repeated_speech_token_from_full_distribution(
             is_all_greedy=False,
             sampling_seed=None,
             top_ks=torch.tensor([20, 20, 1, 20]),
-            temperatures=torch.full((4, 1), 0.7),
         ),
         forward_mode=SimpleNamespace(is_decode=lambda: True),
         positions=torch.arange(4),
@@ -347,16 +333,12 @@ def test_cosyvoice3_ras_redraws_repeated_speech_token_from_full_distribution(
         logits_output, forward_batch, None, requests
     )
 
-    assert token_ids.tolist() == expected_token_ids
-    emitted_prob = probs[0, expected_token_ids[0]].item()
+    assert token_ids.tolist() == [EOS_ID, 5, 9, EOS_ID]
     assert requests[0].data.output_token_logprobs == [
-        [pytest.approx(math.log(emitted_prob)), expected_token_ids[0]]
+        [pytest.approx(math.log(0.1)), EOS_ID]
     ]
-    if redraw_eos_prob is None:
-        assert redraw_probs == []
-    else:
-        assert redraw_probs[0][0, 9].item() == 0.0
-        assert redraw_probs[0][0, EOS_ID].item() == pytest.approx(redraw_eos_prob)
+    assert redraw_probs[0][0, 9].item() == 0.0
+    assert redraw_probs[0][0, EOS_ID].item() == pytest.approx(0.1)
 
 
 def test_cosyvoice3_load_weights_maps_custom_and_backbone_keys(

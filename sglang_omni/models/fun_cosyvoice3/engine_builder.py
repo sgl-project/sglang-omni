@@ -11,7 +11,6 @@ from typing import Any
 import torch
 
 from sglang_omni.models.fun_cosyvoice3 import request_builders
-from sglang_omni.models.fun_cosyvoice3.config import RepetitionAwareSamplingMode
 from sglang_omni.models.fun_cosyvoice3.streaming import TOKEN_HOP_LEN
 from sglang_omni.models.fun_cosyvoice3.utils import (
     CosyVoice3Tokenizer,
@@ -37,7 +36,6 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         onnx_intra_op_threads: int = 16,
         mlx_model_path: str | None = None,
         mlx_model_revision: str | None = None,
-        repetition_aware_sampling: RepetitionAwareSamplingMode,
     ) -> None:
         super().__init__()
         hop = int(token_hop_len)
@@ -46,7 +44,6 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         else:
             pass
         self.token_hop_len = hop
-        self.repetition_aware_sampling = repetition_aware_sampling
         self.checkpoint_root: str | None = None
         self.mlx_model_path = mlx_model_path
         self.mlx_model_revision = mlx_model_revision
@@ -221,14 +218,10 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.fun_cosyvoice3.model_runner"
         )
-        logger.info(
-            f"Fun-CosyVoice3 repetition_aware_sampling={self.repetition_aware_sampling}"
-        )
         return model_runner_mod.FunCosyVoice3ModelRunner(
             model_worker,
             output_proc,
             token_hop_len=self.token_hop_len,
-            repetition_aware_sampling=self.repetition_aware_sampling,
         )
 
     def validate_before_infrastructure(self, server_args: Any) -> None:

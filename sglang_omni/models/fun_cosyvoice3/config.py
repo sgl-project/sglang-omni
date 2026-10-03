@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 
 from pydantic import Field
 
@@ -15,10 +15,6 @@ from sglang_omni.config import (
 )
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
-
-# note (Yucheng Hu): RAS redraw on the non-MPS Torch path: off, at the request's
-# temperature, or at temperature 1. Torch MPS and MLX keep their own RAS.
-RepetitionAwareSamplingMode = Literal["off", "request_temperature", "unit_temperature"]
 
 FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES: tuple[tuple[int, int], ...] = (
     (15, 624),
@@ -100,7 +96,6 @@ class FunCosyVoice3EngineFactoryArgs(FactoryArgs):
 
     mlx_model_path: str | None = Field(default=None)
     mlx_model_revision: str | None = Field(default=None)
-    repetition_aware_sampling: RepetitionAwareSamplingMode | None = Field(default=None)
 
 
 class FunCosyVoice3EngineStageConfig(EngineStageConfig):

@@ -13,7 +13,6 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
-from sglang_omni.models.fun_cosyvoice3.config import RepetitionAwareSamplingMode
 from sglang_omni.models.fun_cosyvoice3.streaming import (
     TOKEN_HOP_LEN,
     first_ar_flush_tokens,
@@ -41,7 +40,6 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         output_processor: Any,
         *,
         token_hop_len: int = TOKEN_HOP_LEN,
-        repetition_aware_sampling: RepetitionAwareSamplingMode,
     ) -> None:
         super().__init__(tp_worker, output_processor)
         hop = int(token_hop_len)
@@ -54,7 +52,6 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         self.outbox: Any | None = None
         self.vocoder_target = "vocoder"
         self.cosyvoice3_recent_tokens: dict[str, list[int]] = {}
-        self.repetition_aware_sampling = repetition_aware_sampling
 
     def set_stream_outbox(self, outbox: Any) -> None:
         self.outbox = outbox
@@ -223,15 +220,12 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     ) -> torch.Tensor:
         """Redraw a sampled speech token that repeats within the recent window.
 
-        The redraw masks the candidate and samples the full distribution, so EOS
-        stays reachable after top-k/top-p collapses onto the repeated token.
+        The redraw masks the candidate and samples the full distribution at the
+        request temperature, so EOS stays reachable after top-k/top-p collapses
+        onto the repeated token.
         """
         sampling_info = forward_batch.sampling_info
-        if (
-            self.repetition_aware_sampling == "off"
-            or sampling_info.is_all_greedy
-            or not forward_batch.forward_mode.is_decode()
-        ):
+        if sampling_info.is_all_greedy or not forward_batch.forward_mode.is_decode():
             return next_token_ids
         else:
             pass
@@ -255,10 +249,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             & (next_token_ids < VOCAB_SIZE)
             & (sampling_info.top_ks != 1)
         )
-        if self.repetition_aware_sampling == "unit_temperature":
-            redraw_probs = probs.pow(sampling_info.temperatures)
-        else:
-            redraw_probs = probs.to(torch.float32, copy=True)
+        redraw_probs = probs.to(torch.float32, copy=True)
         redraw_probs.scatter_(1, candidate_ids, 0.0)
         # note (Yucheng Hu): multinomial rejects an all-zero row, and a row
         # whose whole mass sat on the candidate has nothing else to draw.
