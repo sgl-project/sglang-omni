@@ -97,7 +97,14 @@ class ModelWorker:
         self.tp_rank = tp_rank
         self.init_model_config()
         effective_quantization = self.configure_backend_policy()
-        from sglang.srt.runtime_context import SpawnRanks, publish, spawn_world_rank
+        from sglang.srt.distributed import bootstrap
+        from sglang.srt.runtime_context import (
+            SpawnRanks,
+            get_device,
+            publish,
+            spawn_world_rank,
+        )
+        from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
         publish(
             self.server_args,
@@ -109,6 +116,16 @@ class ModelWorker:
                 gpu_id=gpu_id,
             ),
         )
+        if self.nccl_port is None:
+            self.nccl_port = resolve_nccl_port()
+        else:
+            pass
+        bootstrap.init_parallel_runtime(
+            server_args=self.server_args,
+            device=get_device().device,
+            dist_port=self.nccl_port,
+        )
+        bootstrap.init_layer_runtime(model_config=self.model_config)
         initialize_model_worker_backend_globals(
             self.model_config, effective_quantization
         )
@@ -117,8 +134,6 @@ class ModelWorker:
         self.prefill_cuda_graph_usage = PrefillCudaGraphUsage()
 
         self.device = self.model_runner.device
-        from sglang.srt.runtime_context import get_device
-        from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
         self.random_seed = broadcast_pyobj(
             [get_device().random_seed],
@@ -305,19 +320,11 @@ class ModelWorker:
     def init_model_runner(self):
         from .sglang_model_runner import SGLModelRunner
 
-        nccl_port = (
-            self.nccl_port if self.nccl_port is not None else resolve_nccl_port()
-        )
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
             server_args=self.server_args,
             gpu_id=self.gpu_id,
-            tp_rank=self.tp_rank,
-            moe_ep_rank=0,
-            moe_ep_size=1,
-            pp_rank=0,
-            pp_size=1,
-            nccl_port=nccl_port,
+            nccl_port=self.nccl_port,
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,

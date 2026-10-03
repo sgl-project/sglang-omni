@@ -9,12 +9,10 @@ from threading import Lock
 
 import torch
 from sglang.srt.configs.model_config import ModelConfig
-from sglang.srt.distributed.parallel_state_wrapper import ParallelState
-from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
-from sglang.srt.server_args import PortArgs, ServerArgs
+from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
@@ -261,11 +259,6 @@ class SGLModelRunner(ModelRunner):
         model_config: ModelConfig,
         server_args: ServerArgs,
         gpu_id: int,
-        tp_rank: int,
-        moe_ep_rank: int,
-        moe_ep_size: int,
-        pp_rank: int,
-        pp_size: int,
         nccl_port: int,
         model_arch_override: str | None = None,
         weight_prefix: str | None = None,
@@ -281,49 +274,10 @@ class SGLModelRunner(ModelRunner):
         self.weight_ipc_leader_monitor = None
         self.register_omni_model()
 
-        port_args = PortArgs.init_new(server_args)
-        tp_size = get_parallel().tp_size
-        self.nccl_port = port_args.nccl_port
-
-        # model_config is already fully configured by ModelWorker._init_model_config()
-        # (architecture override, text_config swap, etc. are all done there)
-
-        attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
-            compute_dp_attention_world_info(
-                get_parallel().enable_dp_attention,
-                tp_rank,
-                tp_size,
-                get_parallel().dp_size,
-                get_parallel().attn_cp_size,
-            )
-        )
-        ps = ParallelState(
-            tp_rank=tp_rank,
-            tp_size=tp_size,
-            pp_rank=pp_rank,
-            pp_size=pp_size,
-            dp_rank=None,
-            dp_size=get_parallel().dp_size,
-            attn_tp_rank=attn_tp_rank,
-            attn_tp_size=attn_tp_size,
-            attn_cp_rank=0,
-            attn_cp_size=get_parallel().attn_cp_size,
-            attn_dcp_rank=tp_rank % get_parallel().dcp_size,
-            attn_dcp_size=get_parallel().dcp_size,
-            attn_dp_rank=attn_dp_rank,
-            attn_dp_size=attn_dp_size,
-            moe_ep_rank=moe_ep_rank,
-            moe_ep_size=moe_ep_size,
-            moe_dp_rank=None,
-            moe_dp_size=get_parallel().moe_dp_size,
-            gpu_id=gpu_id,
-        )
-
         super().__init__(
             model_config=model_config,
             mem_fraction_static=get_schedule().mem_fraction_static,
             gpu_id=gpu_id,
-            ps=ps,
             nccl_port=nccl_port,
             server_args=server_args,
         )
