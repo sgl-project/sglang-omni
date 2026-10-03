@@ -20,9 +20,12 @@ import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
@@ -34,6 +37,101 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleSched
 from sglang_omni.scheduling.types import ModelRunnerOutput
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.pipeline.helpers import run_scheduler
+
+
+@pytest.mark.parametrize(
+    ("page_size", "prefix_lengths"),
+    [(4, [2]), (4, [4]), (4, [2, 4]), (1, [2, 4]), (128, [37, 128])],
+    ids=[
+        "within-page",
+        "new-page",
+        "mixed-batch",
+        "single-token-pages",
+        "ascend-pages",
+    ],
+)
+def test_talker_wait_preserves_live_kv_pages(
+    monkeypatch: pytest.MonkeyPatch, page_size: int, prefix_lengths: list[int]
+) -> None:
+    allocator = PagedTokenToKVPoolAllocator(
+        size=16 * page_size,
+        page_size=page_size,
+        dtype=torch.float32,
+        device="cpu",
+        kvcache=None,
+        need_sort=False,
+    )
+    scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler.token_to_kv_pool_allocator = allocator
+    cached_tokens: list[torch.Tensor] = []
+    requests: list[SimpleNamespace] = []
+    token_mapping = torch.zeros(
+        (len(prefix_lengths), max(prefix_lengths) + 1), dtype=torch.int64
+    )
+    for row, prefix_length in enumerate(prefix_lengths):
+        allocated = allocator.alloc(
+            ((prefix_length + page_size - 1) // page_size) * page_size
+        )
+        assert allocated is not None
+        cached_tokens.append(allocated[:prefix_length])
+        token_mapping[row, :prefix_length] = cached_tokens[-1]
+        requests.append(
+            SimpleNamespace(
+                decode_batch_idx=0,
+                kv=SimpleNamespace(
+                    kv_committed_len=prefix_length, kv_allocated_len=prefix_length
+                ),
+            )
+        )
+    live_tokens = set(torch.cat(cached_tokens).tolist())
+    available_before_decode = allocator.available_size()
+    monkeypatch.setattr(
+        QwenTalkerScheduler, "is_batch_ready_to_run", lambda self, batch: False
+    )
+
+    for _ in range(3):
+        output_locations: list[int] = []
+        for row, prefix_length in enumerate(prefix_lengths):
+            if prefix_length % page_size == 0:
+                new_page = allocator.alloc(page_size)
+                assert new_page is not None
+                output_location = int(new_page[0])
+            else:
+                output_location = int(cached_tokens[row][-1]) + 1
+            output_locations.append(output_location)
+            token_mapping[row, prefix_length] = output_location
+            requests[row].decode_batch_idx += 1
+            requests[row].kv.kv_committed_len += 1
+            requests[row].kv.kv_allocated_len += 1
+        prepared_lengths = torch.tensor(prefix_lengths, dtype=torch.int64) + 1
+        batch = SimpleNamespace(
+            forward_mode=ForwardMode.DECODE,
+            out_cache_loc=torch.tensor(output_locations, dtype=torch.int64),
+            reqs=requests,
+            seq_lens=prepared_lengths.clone(),
+            seq_lens_cpu=prepared_lengths.clone(),
+            orig_seq_lens=prepared_lengths.clone(),
+            req_pool_indices=torch.arange(len(prefix_lengths)),
+            req_to_token_pool=SimpleNamespace(req_to_token=token_mapping),
+        )
+        monkeypatch.setattr(OmniScheduler, "get_next_batch_to_run", lambda self: batch)
+
+        assert scheduler.get_next_batch_to_run() is None
+        assert allocator.available_size() == available_before_decode
+        other_request_tokens = allocator.alloc(available_before_decode)
+        assert other_request_tokens is not None
+        assert live_tokens.isdisjoint(other_request_tokens.tolist())
+        allocator.free(other_request_tokens)
+        assert batch.out_cache_loc is None
+        assert batch.seq_lens.tolist() == prefix_lengths
+        assert batch.seq_lens_cpu.tolist() == prefix_lengths
+        assert batch.orig_seq_lens.tolist() == prefix_lengths
+        for row, prefix_length in enumerate(prefix_lengths):
+            assert requests[row].decode_batch_idx == 0
+            assert requests[row].kv.kv_committed_len == prefix_length
+            assert requests[row].kv.kv_allocated_len == prefix_length
+            assert torch.equal(token_mapping[row, :prefix_length], cached_tokens[row])
+            assert token_mapping[row, prefix_length] == 0
 
 
 class SchedulerStageMetricsRecorder:

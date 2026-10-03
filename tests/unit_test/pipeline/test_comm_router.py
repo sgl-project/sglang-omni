@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -144,6 +146,38 @@ def test_comm_router_uses_shm_for_accelerator_payloads_and_streams(
     assert router.outbound_payload("decode", payload) is TransportKind.SHM
     assert (
         router.outbound_stream("decode", torch.empty(1, device=ACCEL))
+        is TransportKind.SHM
+    )
+
+
+def test_comm_router_routes_npu_payload_when_is_cuda_reports_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NPUTensorSeenAsCuda(torch.Tensor):
+        @property
+        def device(self) -> SimpleNamespace:
+            return SimpleNamespace(type="npu")
+
+        @property
+        def is_cuda(self) -> bool:
+            return True
+
+    monkeypatch.setattr(platforms.current_platform, "device_type", "npu")
+    # PyTorch exposes tensor subclass construction through this private API.
+    npu_tensor = torch.Tensor._make_subclass(  # noqa: leading-underscore
+        NPUTensorSeenAsCuda, torch.empty(1), False
+    )
+    router = CommRouter(
+        stage_name="thinker",
+        gpu_id=0,
+        same_process_targets=set(),
+        gpu_stage_names=set(),
+    )
+
+    assert (
+        router.outbound_payload(
+            "decode", {"audio": npu_tensor, "lengths": torch.empty(1)}
+        )
         is TransportKind.SHM
     )
 

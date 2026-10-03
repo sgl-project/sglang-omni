@@ -178,7 +178,9 @@ class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
         else:
             pass
         if batch.out_cache_loc is not None:
-            self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
+            allocator = self.token_to_kv_pool_allocator
+            new_pages = (batch.seq_lens - 1) % allocator.page_size == 0
+            allocator.free(batch.out_cache_loc[new_pages])
             batch.out_cache_loc = None
         else:
             pass
