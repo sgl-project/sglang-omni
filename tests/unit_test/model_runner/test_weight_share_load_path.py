@@ -398,11 +398,14 @@ def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):
         ModelRunner, "load_model", fake_upstream_load({"auto": 1.0})
     ):
         runner.load_model()
-    for method in (
-        runner.update_weights_from_disk,
-        runner.update_weights_from_tensor,
-        runner.update_weights_from_distributed,
+    for method, args in (
+        (runner.update_weights_from_disk, ()),
+        (runner.update_weights_from_tensor, ()),
+        (
+            runner.update_weights_from_distributed,
+            (["weight"], ["float32"], [[1]], "group"),
+        ),
     ):
-        ok, message = method()
+        ok, message = method(*args)
         assert ok is False
         assert "weight sharing" in message

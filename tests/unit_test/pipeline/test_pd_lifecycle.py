@@ -323,6 +323,7 @@ def decode_scheduler():
     scheduler.token_to_kv_pool_allocator = KVAllocator()
     scheduler.waiting_queue = []
     scheduler.outbox = queue.Queue()
+    scheduler.decode_offload_manager = None
     scheduler.pd_receiver = DecodeKVReceiver(
         pool_id="decode:kv",
         allocator=scheduler.token_to_kv_pool_allocator,

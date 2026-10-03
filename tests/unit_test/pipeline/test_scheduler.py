@@ -21,6 +21,10 @@ import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import (
+    CacheRequestHandle,
+    CacheRequestOutcome,
+)
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
@@ -487,6 +491,10 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     scheduler.enable_hicache_storage = False
     scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
+    cache_finishes: list[tuple[CacheRequestHandle, CacheRequestOutcome]] = []
+    scheduler.tree_cache = SimpleNamespace(
+        finish=lambda handle, outcome: cache_finishes.append((handle, outcome))
+    )
     aborts: list[tuple[str, bool]] = []
     scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(
         (rid, defer_running_cleanup)
@@ -496,6 +504,7 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     trace_aborts: list[dict] = []
     req = SimpleNamespace(
         rid="req-over-limit",
+        cache_request_handle=CacheRequestHandle(rid="req-over-limit", attempt_id=0),
         priority=None,
         weight_version_events=[],
         output_ids=[],
@@ -517,6 +526,7 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     assert aborts == [(req.rid, False)]
     assert trace_aborts == [{"reason": "The request queue is full."}]
     assert scheduler.waiting_queue == []
+    assert cache_finishes == [(req.cache_request_handle, CacheRequestOutcome.ABORT)]
 
 
 def requeue_scheduler() -> OmniScheduler:
@@ -894,6 +904,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     scheduler.enable_hierarchical_cache = False
     scheduler.forward_ct = 1
     scheduler.server_args = SimpleNamespace()
+    scheduler.decode_offload_manager = None
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 0)
     scheduler.tree_cache = SimpleNamespace(
         req_to_token_pool=SimpleNamespace(mamba_allocator=None)
