@@ -5,7 +5,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.qwen3_tts.config import (
+    ADMISSION_NEW_TOKENS_ESTIMATE_ENV,
+    Qwen3TTSPipelineConfig,
+)
 
 
 @pytest.mark.parametrize("size", ["0.6B", "1.7B"])
@@ -101,3 +105,23 @@ def test_non_custom_voice_config_preserves_existing_hooks(
     assert config.resolve_custom_voice_config() is None
     assert config.requires_uploaded_voice_for_named_voice() is uploaded_voices
     assert config.supports_uploaded_voice_references() is uploaded_voices
+
+
+def test_tts_engine_admits_by_a_256_frame_estimate_by_default() -> None:
+    config = Qwen3TTSPipelineConfig(model_path="org/model")
+
+    assert config.stage_named("tts_engine").env == {
+        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "256"
+    }
+
+
+def test_tts_engine_admission_estimate_override_replaces_the_default() -> None:
+    manager = ConfigManager(Qwen3TTSPipelineConfig(model_path="org/model"))
+
+    config = manager.merge_config(
+        {f"tts_engine.env.{ADMISSION_NEW_TOKENS_ESTIMATE_ENV}": "512"}
+    )
+
+    assert config.stage_named("tts_engine").env == {
+        ADMISSION_NEW_TOKENS_ESTIMATE_ENV: "512"
+    }

@@ -29,6 +29,13 @@ _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
     "voicedesign",
 )
 
+# note (wenyao): the SGLang admitter charges min(max_new_tokens, this) KV per running
+# request. With the 2048 default it held about 37 of 64 slots; 256 codec frames (21 s
+# of audio) fills all 64 at the three-process layout's 0.72 KV fraction. Measured on
+# H100 80GB (#2472).
+ADMISSION_NEW_TOKENS_ESTIMATE_ENV = "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION"
+TTS_ENGINE_ADMISSION_ESTIMATE_FRAMES = "256"
+
 
 class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
     load_frontend: bool
@@ -89,6 +96,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory=FactoryArgs(dtype="bfloat16"),
             gpu=0,
+            env={
+                ADMISSION_NEW_TOKENS_ESTIMATE_ENV: TTS_ENGINE_ADMISSION_ESTIMATE_FRAMES
+            },
             next="vocoder",
             stream_to=["vocoder"],
         ),
