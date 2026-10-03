@@ -7,10 +7,46 @@ from types import SimpleNamespace
 import aiohttp
 import numpy as np
 import pytest
+from aiohttp import web
 
 import benchmarks.benchmarker.runner as runner_module
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trust_env", [False, True])
+async def test_environment_proxy_is_opt_in(monkeypatch, trust_env: bool) -> None:
+    async def proxy(_request):
+        return web.Response(text="via proxy")
+
+    app = web.Application()
+    app.router.add_get("/{path:.*}", proxy)
+    server = web.AppRunner(app)
+    await server.setup()
+    site = web.TCPSite(server, "127.0.0.1", 0)
+    await site.start()
+    port = server.addresses[0][1]
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{port}")
+    monkeypatch.setenv("no_proxy", "")
+
+    async def send(session, sample):
+        assert session.trust_env is trust_env
+        if not trust_env:
+            return RequestResult(request_id=sample, is_success=True)
+        async with session.get(
+            "http://benchmark-proxy-test.invalid/result"
+        ) as response:
+            return RequestResult(
+                request_id=sample, text=await response.text(), is_success=True
+            )
+
+    try:
+        runner = BenchmarkRunner(RunConfig(warmup=0, trust_env=trust_env, timeout_s=2))
+        results = await runner.run(["one"], send)
+        assert results[0].text == ("via proxy" if trust_env else "")
+    finally:
+        await server.cleanup()
 
 
 @pytest.mark.parametrize(
@@ -258,3 +294,9 @@ async def test_closed_loop_runs_do_not_report_dispatch_lateness() -> None:
     results = await runner.run(["a", "b"], _send)
 
     assert all(r.dispatch_lateness_s is None for r in results)
+
+
+def test_run_config_preserves_positional_arrival_seed() -> None:
+    config = RunConfig(4, 2.0, 0, True, 60, 42)
+    assert config.arrival_seed == 42
+    assert config.trust_env is False
