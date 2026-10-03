@@ -1117,7 +1117,12 @@ def prepare_vocoder_startup(
         lambda scheduler: startup_events.append("packed_warmup"),
     )
     if device_type == "cuda":
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            stages.current_platform, "get_device_graph_backend", lambda device: object()
+        )
+        monkeypatch.setattr(
+            stages.current_platform, "get_graph_capture_sdpa_backends", lambda: ()
+        )
 
         class RecordingFlowCudaGraphRunner:
             def __init__(self, flow, *, device, autocast_dtype) -> None:

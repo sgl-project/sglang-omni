@@ -70,6 +70,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     TOKEN_MEL_RATIO,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as load_pipeline_state
@@ -422,9 +423,17 @@ def verify_flow_cuda_graph_capture_shapes(
     return capture_shapes
 
 
+def flow_graph_device_scope(
+    device: torch.device,
+) -> contextlib.AbstractContextManager[None]:
+    """Scope the current device for one capture or replay, if the device has one."""
+    scope = getattr(torch.get_device_module(device), "device", None)
+    return contextlib.nullcontext() if scope is None else scope(device)
+
+
 @dataclass
 class CapturedFlowCudaGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     static_inputs: tuple[torch.Tensor, ...]
     static_output: torch.Tensor
 
@@ -491,12 +500,26 @@ class FlowCudaGraphRunner:
         # note(ratish): CosyVoice's loader leaves an onnxruntime session in a cycle;
         # a collection inside the capture would free it there and invalidate the graph.
         gc.collect()
+        backend = current_platform.get_device_graph_backend(self.device)
+        if backend is None:
+            raise RuntimeError(
+                "Fun-CosyVoice3 Flow graph capture needs a device-graph backend, "
+                f"and platform {current_platform.device_type!r} has none for "
+                f"device {self.device}"
+            )
+        else:
+            pass
+        device_module = torch.get_device_module(self.device)
         graphs: dict[tuple[int, int], CapturedFlowCudaGraph] = {}
-        current_stream = torch.cuda.current_stream(self.device)
-        stream = torch.cuda.Stream(device=self.device)
+        current_stream = device_module.current_stream(self.device)
+        stream = device_module.Stream(self.device)
         stream.wait_stream(current_stream)
-        with torch.cuda.device(self.device), torch.cuda.stream(stream):
-            self.pool = torch.cuda.graph_pool_handle()
+        with (
+            current_platform.graph_capture_attention(),
+            flow_graph_device_scope(self.device),
+            device_module.stream(stream),
+        ):
+            self.pool = device_module.graph_pool_handle()
             for batch_size, mel_frame in capture_shapes:
                 static_inputs = self.capture_inputs(batch_size, mel_frame)
                 with torch.autocast(
@@ -505,14 +528,12 @@ class FlowCudaGraphRunner:
                     enabled=self.autocast_dtype is not None,
                 ):
                     solve_flow_euler(self.flow.decoder, *static_inputs)
-                graph = torch.cuda.CUDAGraph()
                 with (
-                    torch.cuda.graph(
-                        cuda_graph=graph,
+                    backend.capture(
                         pool=self.pool,
                         stream=stream,
-                        capture_error_mode="thread_local",
-                    ),
+                        thread_local_errors=True,
+                    ) as graph,
                     torch.autocast(
                         device_type=self.device.type,
                         dtype=self.autocast_dtype,
@@ -526,7 +547,7 @@ class FlowCudaGraphRunner:
                     static_output=static_output,
                 )
         current_stream.wait_stream(stream)
-        torch.cuda.empty_cache()
+        device_module.empty_cache()
         self.graphs = graphs
         return
 
@@ -599,7 +620,7 @@ class FlowCudaGraphRunner:
                 return None
             else:
                 with (
-                    torch.cuda.device(self.device),
+                    flow_graph_device_scope(self.device),
                     torch.autocast(
                         device_type=self.device.type,
                         dtype=self.autocast_dtype,
@@ -2640,9 +2661,25 @@ def create_vocoder_executor(
     )
 
     device_obj = torch.device(device)
-    if enable_flow_cuda_graph and (
-        device_obj.type != "cuda" or not torch.cuda.is_available()
+    if (
+        enable_flow_cuda_graph
+        and current_platform.get_device_graph_backend(device_obj) is None
     ):
+        logger.info(
+            f"Fun-CosyVoice3 Flow graphs stay off: platform {current_platform.device_type!r} "
+            f"records no graph on device {device_obj}; the Flow decoder will run eager"
+        )
+        enable_flow_cuda_graph = False
+    elif (
+        enable_flow_cuda_graph
+        and enable_dit_torch_compile
+        and current_platform.get_graph_capture_sdpa_backends()
+    ):
+        logger.info(
+            f"Fun-CosyVoice3 Flow graphs stay off on {device_obj}: capture pins SDPA, but the "
+            "compiled DiT keeps the kernel it was traced with, which cannot be "
+            "recorded; set enable_dit_torch_compile false to capture them"
+        )
         enable_flow_cuda_graph = False
     else:
         pass
@@ -2678,6 +2715,11 @@ def create_vocoder_executor(
         )
         runner.capture(capture_shapes)
         flow.attach_cuda_graph_runner(runner)
+        shapes = ", ".join(f"{batch}x{frames}" for batch, frames in capture_shapes)
+        logger.info(
+            f"Captured {len(capture_shapes)} Fun-CosyVoice3 Flow graphs on {device_obj} "
+            f"(batch x mel_frame: {shapes})"
+        )
     else:
         pass
 

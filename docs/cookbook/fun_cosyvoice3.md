@@ -88,6 +88,56 @@ sgl-omni serve \
   --port 8000
 ```
 
+## Intel XPU
+
+Install `sglang-omni` from source as in [XPU Installation](../get_started/installation_xpu.md). The extra lives in `pyproject_xpu.toml`, so ask the XPU installer for it rather than running `pip install -e ".[fun-cosyvoice3]"`, which would resolve the CUDA project file and pull that file's CUDA-only dependencies:
+
+```bash
+scripts/xpu/install_xpu.sh --extras fun-cosyvoice3
+```
+
+The installer also installs `openai-whisper`, which the speech tokenizer needs for its log-mel front end, with `--no-deps`, so it cannot replace `triton-xpu` with PyPI `triton`.
+
+The CosyVoice and Matcha-TTS checkouts and the two `PYTHONPATH` entries are the same as above. `sox` is not needed: it belongs to a different model's preprocessing.
+
+Pin the server to one card:
+
+```bash
+export ZE_AFFINITY_MASK=0
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --vocoder.factory.enable_flow_cuda_graph false \
+  --port 8000
+```
+
+The flag is explained below: the Flow decoder's graphs do capture on XPU but measure slower than eager here.
+
+The DiT `torch.compile` default applies on XPU as well. On one Intel Arc Pro B60 it raised concurrency-16 throughput from 17.5x to 22.1x realtime on long text and from 14.4x to 18.1x on medium text, while single-request latency stayed within run-to-run variance. It lengthens startup: from a cold compile cache the server was ready after 159 s instead of 69 s.
+
+The Flow decoder's graphs are a separate mechanism from the AR engine's, they are on by default, and they do record on XPU, but not while the DiT is compiled. The compiled DiT keeps the SDPA kernel it was traced with, and capture on XPU needs SDPA pinned to a kernel it can record, so with compile on, startup leaves the graphs off and logs:
+
+```
+Fun-CosyVoice3 Flow graphs stay off on xpu:0: capture pins SDPA, but the compiled DiT keeps the kernel it was traced with, which cannot be recorded; set enable_dit_torch_compile false to capture them
+```
+
+Drop the `enable_flow_cuda_graph` flag from the command above and add `--vocoder.factory.enable_dit_torch_compile false` and `--tts_engine.engine.disable_cuda_graph true` (see the end of this section), and startup logs the shapes it captured, which for the default set takes about three minutes:
+
+```
+Captured 55 Fun-CosyVoice3 Flow graphs on xpu:0 (batch x mel_frame: 15x624, 16x576, ...)
+```
+
+A graph is replayed only when a request's batch size and its mel frame count rounded up to the next multiple of 16 both match a captured shape; anything else falls back to the eager solve. The default shapes cover batches 1-16 at 416-640 mel frames. Mel runs at 50 frames per second here (`token_frame_rate` 25 times `token_mel_ratio` 2), so that band is about 8.3-12.8 s of audio per request, and utterances on either side of it miss every shape.
+
+**On XPU the graphs are measurably not worth their cost, so pass `--vocoder.factory.enable_flow_cuda_graph false`.** Capture has to pin SDPA to a kernel XPU can record, and the recorded graph keeps that kernel for every replay. Measured on one Intel Arc Pro B60 for a batch-1 464-frame solve: eager with free dispatch 318 ms, eager pinned to the recordable kernel 426 ms, graph replay 411 ms. Replay is faster than the kernel it records (1.04x) but 29% slower than the kernel eager would have chosen, so the substitution costs more than replay saves. The graphs are correct — replay is bit-exact against eager under the same pin — they are just slower here, and capture additionally costs about three minutes of startup and roughly 6.5 GB of device memory for the 55 default shapes. At server level, on medium text inside the captured band at concurrency 16 and with the AR engine's decode graphs off in all three runs, the graphs reached 9.1x realtime against 9.2x eager and 11.0x with the compiled DiT. On a card where the recordable kernel is also the fastest kernel, the trade goes the other way.
+
+The Flow graphs and the AR engine's decode graphs cannot both be captured in one server on XPU. The vocoder captures its graphs under `inference_mode` before the AR engine captures its own, and with PyTorch 2.13 on XPU a live graph captured under `inference_mode` makes every later capture outside it fail, so startup stops with:
+
+```
+Exception: Capture cuda graph failed: Inplace update to inference tensor outside
+InferenceMode is not allowed.
+```
+
+That is why the Flow graphs need `--tts_engine.engine.disable_cuda_graph true`. The command above keeps the AR decode graphs, which matter more: on the same card they cut the serial latency of a 25 s utterance from 19.3 s to 6.3 s.
 
 ## Synthesizing Speech
 

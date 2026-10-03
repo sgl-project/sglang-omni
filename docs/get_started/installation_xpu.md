@@ -14,7 +14,10 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano,
 MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS and PersonaPlex) plus the API server;
-`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
+`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
+that model's CosyVoice dependencies — see the
+[Fun-CosyVoice3 cookbook](../cookbook/fun_cosyvoice3.md#intel-xpu), which also
+needs two `PYTHONPATH` entries. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
 families (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
