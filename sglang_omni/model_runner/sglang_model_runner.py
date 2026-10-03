@@ -559,13 +559,32 @@ class SGLModelRunner(ModelRunner):
             pass
         return self.weight_updater.update_weights_from_tensor(*args, **kwargs)
 
-    def update_weights_from_distributed(self, *args, **kwargs):
+    def update_weights_from_distributed(
+        self,
+        names: list[str],
+        dtypes: list[str],
+        shapes: list[list[int]],
+        group_name: str,
+        load_format: str | None = None,
+    ) -> tuple[bool, str]:
         reason = self.weight_update_blocked_reason()
         if reason is not None:
             return False, reason
         else:
             pass
-        return self.weight_updater.update_weights_from_distributed(*args, **kwargs)
+        try:
+            weights = self.weight_updater.receive_weights_from_distributed(
+                names=names,
+                dtypes=dtypes,
+                shapes=shapes,
+                group_name=group_name,
+                load_format=load_format,
+            )
+        except Exception as error:
+            message = f"Failed to receive weights: {error}"
+            logger.error(message)
+            return False, message
+        return self.weight_updater.load_weights_from_distributed(weights)
 
     # Process-group lifecycle does not mutate weights, so it stays unguarded.
     def init_weights_update_group(self, *args, **kwargs):
