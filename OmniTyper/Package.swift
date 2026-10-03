@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 // SPDX-License-Identifier: Apache-2.0
 import PackageDescription
 
@@ -10,5 +10,6 @@ let package = Package(
     targets: [
         .executableTarget(name: "OmniTyper", resources: [.process("Resources")]),
         .testTarget(name: "OmniTyperTests", dependencies: ["OmniTyper"])
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

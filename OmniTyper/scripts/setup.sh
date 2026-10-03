@@ -8,6 +8,7 @@ if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
   echo 'OmniTyper local inference requires macOS 14+ on Apple Silicon.' >&2
   exit 1
 fi
+swift package --package-path "$APP_ROOT" dump-package >/dev/null
 export SGLANG_OMNI_VENV="${OMNITYPER_VENV:-$APP_ROOT/.venv}"
 bash "$REPO_ROOT/install.sh" --non-interactive
 uv pip install --python "$SGLANG_OMNI_VENV/bin/python" -r "$APP_ROOT/backend/requirements.txt"

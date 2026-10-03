@@ -14,7 +14,7 @@ project and is not affiliated with Typeless.
 ## Requirements
 
 - macOS 14 or later on Apple Silicon.
-- Xcode Command Line Tools; a Swift 6 toolchain is required to run the tests.
+- Xcode Command Line Tools with Swift 6.0+ for building and testing.
 - Homebrew, installed before running setup.
 - At least 16 GB of memory is recommended, plus several GB of free disk space for
   the Python environment and model weights.
