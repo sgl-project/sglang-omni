@@ -29,19 +29,26 @@ class ReqDouble:
         self.accepted_lengths: list[int] = []
         self.is_finished = False
 
+    @property
+    def seqlen(self) -> int:
+        return len(self.origin_input_ids) + len(self.output_ids)
+
     def update_finish_state(self, *, new_accepted_len: int = 1) -> None:
         self.accepted_lengths.append(new_accepted_len)
 
     def finished(self) -> bool:
-        return self.is_finished
+        return self.is_finished or self.finished_reason is not None
 
 
-def make_scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
+def make_scheduler(
+    *, fdfo: bool, block_size: int = 4, context_len: int = 4096
+) -> DllmScheduler:
     scheduler = object.__new__(DllmScheduler)
     scheduler.dllm_config = SimpleNamespace(
         first_done_first_out_mode=fdfo,
         block_size=block_size,
     )
+    scheduler.model_config = SimpleNamespace(context_len=context_len)
     scheduler.rid_to_req_data = {}
     scheduler.result_adapter = lambda value: value
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
@@ -268,6 +275,30 @@ def test_fdfo_result_requires_accept_lengths() -> None:
 
     with pytest.raises(AssertionError, match="missing accept lengths"):
         scheduler.apply_results(batch, result)
+
+
+@pytest.mark.parametrize(
+    ("context_len", "finish_reason"),
+    [(9, "length"), (10, None)],
+)
+def test_block_that_cannot_be_followed_inside_the_context_finishes_by_length(
+    context_len: int, finish_reason: str | None
+) -> None:
+    scheduler = make_scheduler(fdfo=False, context_len=context_len)
+    req = ReqDouble()
+    req_data = SimpleNamespace(output_ids=None, finish_reason=None)
+    scheduler.rid_to_req_data = {req.rid: req_data}
+    batch = SimpleNamespace(reqs=[req])
+    result = SimpleNamespace(
+        next_token_ids=[[10, 11, 12, 13]],
+        accept_length_per_req_cpu=None,
+        dllm_algo_state=None,
+    )
+
+    scheduler.apply_results(batch, result)
+
+    assert req.finished() is (finish_reason is not None)
+    assert req_data.finish_reason == finish_reason
 
 
 def test_sync_dllm_result_commits_generated_suffix() -> None:
