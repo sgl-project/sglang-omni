@@ -75,6 +75,12 @@ def test_sixteen_step_checkpoint_loads_its_first_eight_steps():
     eight.load_reference_weights(first_steps(weights, 8))
     for name, value in eight.state_dict().items():
         torch.testing.assert_close(sixteen.state_dict()[name], value, atol=0, rtol=0)
+    torch.testing.assert_close(
+        sixteen.depformer_in_weight[6],
+        weights["depformer_in.6.weight"],
+        atol=0,
+        rtol=0,
+    )
     layer = sixteen.layers[0]
     torch.testing.assert_close(
         layer.gate_in_weight[3],
