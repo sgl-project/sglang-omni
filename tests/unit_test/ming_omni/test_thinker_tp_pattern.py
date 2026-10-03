@@ -39,15 +39,15 @@ def test_ming_attention_and_layer_boundary_tp_pattern():
     assert "tp_size=attn_tp_size" in src
     assert "reduce_results=False" in attention_src
 
-    assert "LayerCommunicator" in src
-    assert "LayerScatterModes" in src
-    assert "prepare_attn_and_capture_last_layer_outputs" in decoder_src
-    assert "prepare_mlp" in decoder_src
-    assert "should_fuse_mlp_allreduce_with_next_layer" in decoder_src
-    assert "should_use_reduce_scatter" in decoder_src
-    assert "postprocess_layer" in decoder_src
-    assert "_sglang_needs_allreduce_fusion" in decoder_src
-    assert "allow_reduce_scatter=True" in decoder_src
+    assert "make_stages(" in decoder_src
+    assert "declare_ffn(sparse=is_layer_sparse" in decoder_src
+    assert "self.attn_boundary.prepare(" in decoder_src
+    assert "self.attn_boundary.finish(" in decoder_src
+    assert "self.ffn_boundary.prepare(" in decoder_src
+    assert "self.ffn_boundary.exit(forward_batch)" in decoder_src
+    assert "should_allreduce_fusion=ffn_exit.fuse_mlp_allreduce" in decoder_src
+    assert "use_reduce_scatter=ffn_exit.mlp_reduce_scatter" in decoder_src
+    assert "ffn_exit.finish(hidden_states)" in decoder_src
     assert "should_allreduce_fusion = False" not in decoder_src
     assert "use_reduce_scatter = False" not in decoder_src
 
