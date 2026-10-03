@@ -60,6 +60,64 @@ hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base
 
 ## Server Configuration
 
+### Apple Silicon MLX: 0.6B CustomVoice
+
+The MLX path uses the same `preprocessing → tts_engine → vocoder` stages as
+CUDA, with predefined CustomVoice speakers. The talker, code predictor, and
+speech decoder run locally in MLX. One request is active by default. Concurrent
+requests share one set of model weights; codec chunks are generated round-robin, with independent
+request caches and sampling seeds. It does not use the SGLang autoregressive
+MLX engine. It uses
+the converted 0.6B checkpoint and does not require the `qwen-tts` or `mlx-audio`
+Python packages. Install from this checkout on Apple Silicon:
+
+```bash
+./install.sh
+source .venv-apple/bin/activate
+```
+
+The official Qwen checkpoint supplies the model configuration and speaker
+list; the converted checkpoint supplies the MLX weights.
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+  --config examples/configs/qwen3_tts_0_6b_customvoice_mlx.yaml \
+  --port 8000
+```
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice","input":"Hello from MLX.","voice":"Ryan","language":"English","response_format":"wav","stream":false}' \
+  --output output.wav
+```
+
+This path supports CustomVoice speakers, language, seed, and the standard
+generation limit and sampling parameters. Streaming returns PCM audio as codec
+frames are generated, with request-local attention and convolution caches.
+The default chunk contains four codec frames (320 ms of audio); configure it
+with `--tts-engine.factory.stream_chunk_frames`. For example:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice","input":"Hello from MLX.","voice":"Ryan","language":"English","response_format":"pcm","stream":true}' \
+  --output output.pcm
+```
+
+Set `--tts-engine.factory.max_concurrency 2` to keep two requests active,
+or increase the limit further. Requests beyond the limit
+queue in arrival order. Concurrent requests share the Metal GPU, so increasing
+the limit does not guarantee higher throughput or real-time audio for every
+request. Buffered responses decode the complete codec sequence at the vocoder;
+streaming responses decode each chunk as it arrives.
+
+Voice cloning, style instructions, and speed changes are not yet supported. This implementation
+currently targets the 12Hz 0.6B CustomVoice checkpoint shown above.
+
+### CUDA
+
 The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several minutes
 while the `tts_engine` captures CUDA graphs.
 

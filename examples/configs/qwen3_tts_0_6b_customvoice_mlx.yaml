@@ -1,0 +1,6 @@
+config_cls: Qwen3TTSMlxPipelineConfig
+model_path: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+stages:
+  tts_engine:
+    factory:
+      mlx_model_path: mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16

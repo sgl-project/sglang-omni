@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import ClassVar, TypedDict
 
+from pydantic import Field
+
 from sglang_omni.config import (
     CustomVoiceConfig,
     EngineStageConfig,
@@ -220,3 +222,76 @@ def is_qwen3_tts_base_model(model_path: str) -> bool:
 
 
 EntryClass = Qwen3TTSPipelineConfig
+
+
+class Qwen3TTSMlxCheckpointArgs(FactoryArgs):
+    """Converted checkpoint for the native MLX pipeline."""
+
+    mlx_model_path: str | None = None
+    mlx_model_revision: str | None = None
+
+
+class Qwen3TTSMlxFactoryArgs(Qwen3TTSMlxCheckpointArgs):
+    stream_chunk_frames: int = Field(default=4, gt=0)
+    max_concurrency: int = Field(default=1, gt=0)
+
+
+class Qwen3TTSMlxStageConfig(StageConfig):
+    factory: Qwen3TTSMlxFactoryArgs = Field(default_factory=Qwen3TTSMlxFactoryArgs)
+
+
+class Qwen3TTSMlxVocoderStageConfig(StageConfig):
+    factory: Qwen3TTSMlxCheckpointArgs = Field(
+        default_factory=Qwen3TTSMlxCheckpointArgs
+    )
+
+
+class Qwen3TTSMlxPipelineConfig(Qwen3TTSPipelineConfig):
+    """Native CustomVoice inference on Apple Silicon."""
+
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "tts_engine": Qwen3TTSMlxStageConfig,
+        "vocoder": Qwen3TTSMlxVocoderStageConfig,
+    }
+    stages: list[StageConfig] = [
+        StageConfig(
+            name="preprocessing",
+            process="pipeline",
+            factory_path=f"{_PKG}.mlx.executor.create_mlx_preprocessing_executor",
+            next="tts_engine",
+        ),
+        Qwen3TTSMlxStageConfig(
+            name="tts_engine",
+            process="pipeline",
+            factory_path=f"{_PKG}.mlx.executor.create_mlx_tts_executor",
+            gpu=0,
+            next="vocoder",
+            stream_to=["vocoder"],
+        ),
+        Qwen3TTSMlxVocoderStageConfig(
+            name="vocoder",
+            process="pipeline",
+            factory_path=f"{_PKG}.mlx.executor.create_mlx_vocoder_executor",
+            gpu=0,
+            terminal=True,
+            can_accept_stream_before_payload=True,
+        ),
+    ]
+
+    @classmethod
+    def generation_admission_defaults(cls) -> dict[str, int]:
+        return {}
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, str | None]:
+        if stage_name == "vocoder":
+            engine_factory = self.stage_named("tts_engine").factory
+            assert isinstance(engine_factory, Qwen3TTSMlxFactoryArgs)
+            return {
+                "mlx_model_path": engine_factory.mlx_model_path,
+                "mlx_model_revision": engine_factory.mlx_model_revision,
+            }
+        else:
+            return {}
+
+
+Variants = {"mlx": Qwen3TTSMlxPipelineConfig}
