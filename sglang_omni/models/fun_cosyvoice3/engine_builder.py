@@ -236,7 +236,15 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         gpu_id: int,
         server_args: ServerArgs,
     ) -> None:
-        del model_worker, checkpoint_dir, device, gpu_id, server_args
+        from sglang_omni.models.fun_cosyvoice3.metadata_graph import (
+            patch_metadata_capture,
+        )
+
+        if torch.device(device).type == "cuda":
+            patch_metadata_capture(
+                model_worker.model_runner.prefill_attention_backend_str,
+                model_worker.model_runner.decode_attention_backend_str,
+            )
 
     def make_model_runner(
         self,
