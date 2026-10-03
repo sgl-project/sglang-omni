@@ -190,6 +190,22 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 
 The throughput results in the table and H100 case study are from an 80 GB H100 with Higgs. The H200 DP8 profile was validated separately on the full SeedTTS English dataset at concurrency 64 per replica. Re-evaluate replica count, CPU allocation, token capacity, and saturation concurrency before applying either profile to different hardware or workloads.
 
+## Fun-CosyVoice3 DP3 on one H200
+
+Three Fun-CosyVoice3 replicas under MPS on one 141 GB H200 serve 1.9x the throughput of one server on the same main, at a somewhat higher time to first audio per request.
+
+```bash
+CONFIG=examples/mps_dp/configs/fun_cosyvoice3_h200_dp3.yaml N=3 CORE_BLOCKS="56-64 65-73 74-83" HEALTH_TRIES=100 bash examples/mps_dp/launch.sh up
+```
+
+| Setup (c=16 streaming per server, full SeedTTS EN set per server, main at fd8369efe) | Throughput (sum) | Audio s/s (sum) | TTFA mean | TTFA p95 | Latency p95 | Failed |
+|---|---:|---:|---:|---:|---:|---:|
+| main, one server (reference, 2 runs) | 10.89 req/s | 51.8 | 0.73 s | 1.08 s | 2.00 s | 0 of 2176 |
+| this config, `launch.sh` DP3 with MPS | 21.04 req/s | 103.2 | 0.98 s | 1.49 to 1.51 s | 3.18 to 3.26 s | 0 of 3264 |
+
+On main before #2406 and #2424 the same comparison was 6.56 against 18.70 req/s, with DCGM SM Active rising from 35% to 87%; three servers without MPS reached only 11.73 req/s.
+
+The config needs [#2406](https://github.com/sgl-project/sglang-omni/pull/2406) (Flow prefix KV cache), [#2443](https://github.com/sgl-project/sglang-omni/pull/2443) (compiled HiFT decode, ONNX pools no longer spin) and [#2441](https://github.com/sgl-project/sglang-omni/pull/2441) (streaming with the vocoder in its own process). Each replica is two MPS clients (AR engine 4.5 GiB, vocoder 12.2 GiB including the 8 GB prefix pool); the card held 50 GiB after startup and 73 GiB after the run. The in-process `processes.pipeline.num_replicas` path is not recommended for this model yet: at N >= 2 it hit CUDA illegal memory access on long runs.
 
 ## Shared weights across replicas (opt-in, default off)
 

@@ -241,6 +241,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ## Serving Optimization
 
+To serve three replicas on one H200 under CUDA MPS, see [Fun-CosyVoice3 DP3 on one H200](../basic_usage/mps_dp.md#fun-cosyvoice3-dp3-on-one-h200).
+
 ### Flow Decoder Batching
 
 For complete buffered requests, scheduler admission uses exact mel frames (`flow_batch_admission_frames`, default `8000`). Adaptive Flow grouping is enabled by default: it sorts admitted requests by total mel length and lets adjacent requests share one Flow solve when the maximum within-group length gap and global added-padding budget stay within:
