@@ -294,6 +294,8 @@ pub(crate) struct HealthConfig {
     timeout_ms: u64,
     success_threshold: u8,
     failure_threshold: u8,
+    pub(crate) request_failure_threshold: Option<u8>,
+    request_failure_cooldown_ms: u64,
 }
 
 impl Default for HealthConfig {
@@ -303,11 +305,17 @@ impl Default for HealthConfig {
             timeout_ms: 5_000,
             success_threshold: 2,
             failure_threshold: 3,
+            request_failure_threshold: None,
+            request_failure_cooldown_ms: 30_000,
         }
     }
 }
 
 impl HealthConfig {
+    pub(crate) fn request_failure_cooldown(&self) -> Duration {
+        Duration::from_millis(self.request_failure_cooldown_ms)
+    }
+
     pub(crate) fn interval(&self) -> Duration {
         Duration::from_millis(self.interval_ms)
     }
@@ -819,6 +827,22 @@ impl Config {
     }
 
     fn validate_health(&self) -> Result<(), ConfigError> {
+        if self
+            .health
+            .request_failure_threshold
+            .is_some_and(|threshold| !(1..=32).contains(&threshold))
+        {
+            return Err(ConfigError::invalid(
+                "health.request_failure_threshold",
+                "must be between 1 and 32",
+            ));
+        }
+        if !(100..=300_000).contains(&self.health.request_failure_cooldown_ms) {
+            return Err(ConfigError::invalid(
+                "health.request_failure_cooldown_ms",
+                "must be between 100 and 300000",
+            ));
+        }
         if !(100..=300_000).contains(&self.health.interval_ms) {
             return Err(ConfigError::invalid(
                 "health.interval_ms",
