@@ -226,9 +226,11 @@ def test_saved_speed_summary_preserves_missing_and_observed_cap_metrics(
     assert "0.5" in printed
     if cap_metrics is None:
         assert "Max token hits:" not in printed
+        assert "Finish reasons observed:" not in printed
     else:
+        printed_lines = [" ".join(line.split()) for line in printed.splitlines()]
+        assert f"Max token hits: {cap_metrics['max_token_hits']}" in printed_lines
         assert (
-            f"{cap_metrics['max_token_hits']} / "
-            f"{cap_metrics['finish_reason_observed']} observed"
-        ) in printed
+            f"Finish reasons observed: {cap_metrics['finish_reason_observed']}"
+        ) in printed_lines
     assert json.loads(results_path.read_text())["summary"] == summary

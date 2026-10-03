@@ -287,13 +287,10 @@ def print_speed_summary(
         print(f"  {'Concurrency:':<{lw}} {concurrency}")
     print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
     print(f"  {'Failed requests:':<{lw}} {metrics['failed_requests']}")
-    if "finish_reason_observed" in metrics:
-        print(
-            f"  {'Max token hits:':<{lw}} {metrics['max_token_hits']} / "
-            f"{metrics['finish_reason_observed']} observed"
-        )
-    else:
-        pass
+    print_speed_metric_line(lw, "Max token hits:", metrics, "max_token_hits")
+    print_speed_metric_line(
+        lw, "Finish reasons observed:", metrics, "finish_reason_observed"
+    )
     print(f"{'-' * w}")
     print_speed_metric_line(lw, "Latency mean (s):", metrics, "latency_mean_s")
     print_speed_metric_line(lw, "Latency median (s):", metrics, "latency_median_s")
