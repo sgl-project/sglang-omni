@@ -15,13 +15,20 @@ shared:
       num_steps: 4
       max_generate_length: 500
 
+# note (0xtoward): isolate the reference and vocoder CPU work. MPS allows
+# kernels from these processes to overlap on one GPU; this adds no replicas.
+mps: auto
+
 stages:
   reference_encode:
+    process: reference
+    gpu_memory_fraction: 0.05
     factory:
       max_concurrency: 8
       max_batch_size: 1
       max_batch_wait_ms: 4
   latent_engine:
+    gpu_memory_fraction: 0.55
     factory:
       optimize: true
     engine:
@@ -33,6 +40,8 @@ stages:
       disable_cuda_graph: false
       cuda_graph_max_bs: 16
   vocoder:
+    process: vocoder
+    gpu_memory_fraction: 0.25
     factory:
       optimize: true
       max_batch_size: 4

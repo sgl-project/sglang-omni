@@ -55,6 +55,8 @@ SOAR is a flow-matching checkpoint. It runs the single-request solver with class
 
 `examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment. It is already tuned; compiled acoustic tail and vocoder (`optimize: true`, on by default); continuous batching at `max_running_requests=16`; and the backbone decode CUDA graph. `--model-path` alone keeps the compiled tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
 
+The config gives reference encode and the vocoder separate processes on one GPU. `mps: auto` allows their kernels to overlap; it does not add replicas. The process memory fractions are 0.05 for reference encode, 0.55 for the latent engine, and 0.25 for the vocoder. Without MPS, separate CUDA contexts can add latency. To use one process, set `mps: off` and remove the two `process:` overrides and all three `gpu_memory_fraction` overrides.
+
 If startup fails with `dots.tts acoustic-tail admission failed at startup`, the GPU cannot hold `max_running_requests × max_generate_length` full-length acoustic pools — lower those knobs yourself. The engine never silently shrinks them.
 
 The examples below read local clips from `docs/_static/audio`. To fetch reference audio over HTTP instead, allow the domains you need, e.g. `--allowed-media-domain huggingface.co`.
