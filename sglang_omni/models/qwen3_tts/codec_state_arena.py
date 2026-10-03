@@ -41,6 +41,7 @@ class CodecStateStats(TypedDict, total=False):
     exhausted: int
     enabled: bool
     left_context_fallbacks: int
+    bootstrap_reference_context_frames: int | None
     cuda_graphs: CodecCudaGraphStats
 
 

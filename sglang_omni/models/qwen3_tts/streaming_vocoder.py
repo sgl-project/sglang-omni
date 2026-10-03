@@ -133,6 +133,8 @@ class Qwen3TTSStreamState:
     incremental_codec_state: Qwen3TTSIncrementalCodecState | None = None
     incremental_codec_fallback: bool = False
     codec_slot: int | None = None
+    # note (wenyao): under the cap this host cursor starts at ref_frames minus
+    # bootstrap_reference_context_frames; the arena slot's device position starts at 0.
     codec_frame_position: int = 0
     suppress_bootstrap: bool = False
 
@@ -573,6 +575,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         incremental_codec_cuda_graph_min_free_gb: float = 3.0,
         suppress_bootstrap_silence: bool = True,
         suppress_bootstrap_max_streams: int = 24,
+        bootstrap_reference_context_frames: int | None = None,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -587,6 +590,13 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
         if initial_chunk_frames is not None and initial_chunk_frames < 0:
             raise ValueError("initial_chunk_frames must be >= 0")
+        else:
+            pass
+        if (
+            bootstrap_reference_context_frames is not None
+            and bootstrap_reference_context_frames < 0
+        ):
+            raise ValueError("bootstrap_reference_context_frames must be >= 0")
         else:
             pass
         ramp_in_effect = False
@@ -799,6 +809,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.followup_batch_wait_s = float(followup_batch_wait_ms) / 1000.0
         self.default_initial_chunk_frames = int(initial_chunk_frames)
         self.stream_left_context_frames = int(stream_left_context_frames)
+        self.bootstrap_reference_context_frames = (
+            None
+            if bootstrap_reference_context_frames is None
+            else int(bootstrap_reference_context_frames)
+        )
         self.async_decode = (
             False
             if self.enable_stateful_codec_decoder and self.deterministic_inference
@@ -822,14 +837,12 @@ class Qwen3TTSStreamingVocoderScheduler(
             codec_state_slots=int(codec_state_slots),
             enabled=incremental_codec_cuda_graph,
             compile_kernels=bool(incremental_codec_compile),
+            # note (wenyao): an explicit cold-frame list is used verbatim; only the
+            # default list grows with bootstrap_reference_context_frames.
             cold_frames=(
                 incremental_codec_cuda_graph_cold_frames
                 if incremental_codec_cuda_graph_cold_frames is not None
-                else (
-                    (int(initial_chunk_frames), int(initial_chunk_frames) + 1)
-                    if self.suppress_bootstrap_silence
-                    else (int(initial_chunk_frames),)
-                )
+                else self.default_cold_graph_frames(int(initial_chunk_frames))
             ),
             window_frames=tuple(
                 (int(frames) for frames in incremental_codec_cuda_graph_window_frames)
@@ -1040,6 +1053,36 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
         return (initial, window, followups)
 
+    def default_cold_graph_frames(self, initial_chunk_frames: int) -> tuple[int, ...]:
+        """Bootstrap widths a fresh Codec state decodes, captured as cold graphs."""
+        # note (wenyao): a zero first chunk is served at the steady stride.
+        initial_chunk_frames = int(initial_chunk_frames) or self.stream_stride
+        width_frames = [initial_chunk_frames]
+        if (
+            self.suppress_bootstrap_silence
+            and initial_chunk_frames < self.stream_stride
+        ):
+            width_frames.append(initial_chunk_frames + 1)
+        else:
+            pass
+        reference_context_frames = self.bootstrap_reference_context_frames
+        # note (wenyao): no bumped capped width: the bump needs a CustomVoice request,
+        # which carries no reference codes, so a capped bootstrap is never bumped.
+        if reference_context_frames is not None:
+            width_frames.append(reference_context_frames + initial_chunk_frames)
+        else:
+            pass
+        return tuple(sorted(set(width_frames)))
+
+    def bootstrap_start_frame(self, state: Qwen3TTSStreamState) -> int:
+        """First absolute frame a fresh Codec state consumes for this stream."""
+        reference_context_frames = self.bootstrap_reference_context_frames
+        if reference_context_frames is None:
+            return 0
+        else:
+            pass
+        return max(0, state.ref_frames - reference_context_frames)
+
     def codec_state_stats(self) -> CodecStateStats:
         """Snapshot of incremental Codec state usage."""
         if self.codec_arena is None:
@@ -1049,6 +1092,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         stats = self.codec_arena.describe()
         stats["enabled"] = True
         stats["left_context_fallbacks"] = self.codec_fallback_count
+        stats["bootstrap_reference_context_frames"] = (
+            self.bootstrap_reference_context_frames
+        )
         stats["cuda_graphs"] = {
             "cold": (
                 self.initial_incremental_decode_graphs.stats()
@@ -1408,7 +1454,9 @@ class Qwen3TTSStreamingVocoderScheduler(
                 )
             else:
                 pass
-            candidate_state = Qwen3TTSIncrementalCodecState()
+            candidate_state = Qwen3TTSIncrementalCodecState(
+                frame_position=self.bootstrap_start_frame(state)
+            )
         else:
             candidate_state = committed_state.clone()
         consumed_frames = candidate_state.frame_position
@@ -1530,14 +1578,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             state.codec_slot = slot
-            state.codec_frame_position = 0
+            state.codec_frame_position = self.bootstrap_start_frame(state)
         else:
             pass
         consumed_frames = state.codec_frame_position
         expected_consumed_frames = (
             state.ref_frames + state.emitted_generated_frames
             if state.decoded_chunks
-            else 0
+            else self.bootstrap_start_frame(state)
         )
         if consumed_frames != expected_consumed_frames:
             raise RuntimeError(
@@ -2507,6 +2555,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                     planned_incremental.append((request_id, state, plan))
                 else:
                     planned.append((request_id, state, plan))
+        # note (wenyao): cohorts key on the bootstrap width, so reference-prefixed
+        # requests share a cohort only when the cap gives them the same capped width.
         for cohort in self.group_decode_plans(planned_incremental):
             for group in self.split_incremental_group_for_graph(
                 cohort,

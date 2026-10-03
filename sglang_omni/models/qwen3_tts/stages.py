@@ -343,6 +343,7 @@ def create_vocoder_executor(
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
+    bootstrap_reference_context_frames: int | None = None,
 ) -> Qwen3TTSStreamingVocoderScheduler:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -400,6 +401,7 @@ def create_vocoder_executor(
         ),
         suppress_bootstrap_silence=suppress_bootstrap_silence,
         suppress_bootstrap_max_streams=suppress_bootstrap_max_streams,
+        bootstrap_reference_context_frames=bootstrap_reference_context_frames,
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work

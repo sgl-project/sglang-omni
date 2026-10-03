@@ -46,6 +46,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
+    DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     IncrementalDecodePlan,
     Qwen3TTSDecodePlan,
     Qwen3TTSInitialDecodeGraphs,
@@ -2336,6 +2337,7 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
         incremental_codec_cuda_graph_cold_frames=(24, 32),
         incremental_codec_cuda_graph_window_frames=(8, 16),
         incremental_codec_cuda_graph_min_free_gb=1.5,
+        bootstrap_reference_context_frames=16,
     )
 
     assert isinstance(scheduler, FakeScheduler)
@@ -2345,6 +2347,7 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
     assert captured["incremental_codec_cuda_graph_cold_frames"] == (24, 32)
     assert captured["incremental_codec_cuda_graph_window_frames"] == (8, 16)
     assert captured["incremental_codec_cuda_graph_min_free_gb"] == 1.5
+    assert captured["bootstrap_reference_context_frames"] == 16
     assert captured["warmed"] is True
 
 
@@ -2444,6 +2447,7 @@ def stateful_qwen3_tts_scheduler(
     stream_left_context_frames: int = 1,
     stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     stream_chunk_ramp: tuple[int, ...] | None = None,
+    bootstrap_reference_context_frames: int | None = None,
 ) -> tuple[Qwen3TTSStreamingVocoderScheduler, FakeIncrementalQwen3TTSDecoder]:
     created = []
 
@@ -2466,6 +2470,7 @@ def stateful_qwen3_tts_scheduler(
         stream_followup_stride=stream_followup_stride,
         stream_chunk_ramp=stream_chunk_ramp,
         enable_stateful_codec_decoder=True,
+        bootstrap_reference_context_frames=bootstrap_reference_context_frames,
     )
     return scheduler, created[0]
 
@@ -2869,6 +2874,231 @@ def test_qwen3_tts_stateful_codec_uses_reference_once_then_fresh_frames(
     assert state.incremental_codec_state.frame_position == 5
     assert state.emitted_generated_frames == 3
     assert state.pruned_frames == 3
+
+
+def test_qwen3_tts_stateful_codec_bootstrap_reference_context_caps_primed_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental = stateful_qwen3_tts_scheduler(
+        monkeypatch, bootstrap_reference_context_frames=2
+    )
+    state = scheduler.create_stream_state("request")
+    state.ref_frames = 5
+    state.code_chunks.append(
+        torch.tensor([[10 * n, n] for n in range(1, 8)], dtype=torch.long)
+    )
+    state.total_frames = 7
+
+    first = scheduler.decode_delta("request", state, is_final=False)
+    state.code_chunks.append(torch.tensor([[80, 8]], dtype=torch.long))
+    state.total_frames = 8
+    second = scheduler.decode_delta("request", state, is_final=False)
+
+    # Only the last two reference frames prime the state; the delta still
+    # starts at the first generated frame.
+    assert first is not None
+    assert first.tolist() == [60.0] * 4 + [70.0] * 4
+    assert second is not None
+    assert second.tolist() == [80.0] * 4
+    assert [tuple(item.shape) for item in incremental.decode_inputs] == [
+        (1, 2, 4),
+        (1, 2, 1),
+    ]
+    assert incremental.decode_inputs[0][0, 0].tolist() == [40, 50, 60, 70]
+    assert state.incremental_codec_state is not None
+    assert state.incremental_codec_state.frame_position == 8
+    assert state.emitted_generated_frames == 3
+
+
+def test_qwen3_tts_stateful_codec_bootstrap_reference_context_default_keeps_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental = stateful_qwen3_tts_scheduler(monkeypatch)
+    state = scheduler.create_stream_state("request")
+    state.ref_frames = 5
+    state.code_chunks.append(
+        torch.tensor([[10 * n, n] for n in range(1, 8)], dtype=torch.long)
+    )
+    state.total_frames = 7
+
+    first = scheduler.decode_delta("request", state, is_final=False)
+
+    assert first is not None
+    assert first.tolist() == [60.0] * 4 + [70.0] * 4
+    assert [tuple(item.shape) for item in incremental.decode_inputs] == [(1, 2, 7)]
+    assert scheduler.codec_state_stats()["bootstrap_reference_context_frames"] is None
+
+
+def test_qwen3_tts_stateful_codec_bootstrap_reference_context_shares_cohort_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental = stateful_qwen3_tts_scheduler(
+        monkeypatch, bootstrap_reference_context_frames=2
+    )
+    arena = scheduler.codec_arena
+    assert arena is not None
+    planned = []
+    for request_id, ref_frames in (("long", 5), ("short", 1), ("longer", 9)):
+        state = scheduler.create_stream_state(request_id)
+        scheduler.stream_states[request_id] = state
+        state.ref_frames = ref_frames
+        state.initial_chunk_frames = 2
+        state.code_chunks.append(
+            torch.tensor(
+                [[10 * n, n] for n in range(1, ref_frames + 3)], dtype=torch.long
+            )
+        )
+        state.total_frames = ref_frames + 2
+        plan, is_incremental = scheduler.plan_stream_decode(
+            request_id, state, is_final=False, max_generated_frames=2
+        )
+        assert is_incremental is True
+        assert plan is not None
+        planned.append((request_id, state, plan))
+
+    long_plan, short_plan, longer_plan = (entry[2] for entry in planned)
+    # Reference prefixes longer than the cap all bootstrap at cap + first chunk.
+    assert (long_plan.fresh_frames, long_plan.reference_trim_frames) == (4, 2)
+    assert (longer_plan.fresh_frames, longer_plan.reference_trim_frames) == (4, 2)
+    assert long_plan.decoder_input[0, 0].tolist() == [40, 50, 60, 70]
+    assert planned[0][1].codec_frame_position == 3
+    # A prefix shorter than the cap is primed whole, as before.
+    assert (short_plan.fresh_frames, short_plan.reference_trim_frames) == (3, 1)
+    assert planned[1][1].codec_frame_position == 0
+    cohorts = scheduler.group_decode_plans(planned)
+    assert sorted(len(cohort) for cohort in cohorts) == [1, 2]
+    assert scheduler.codec_state_stats()["bootstrap_reference_context_frames"] == 2
+
+    # Decode and commit the shared-width cohort: the delta is only generated
+    # audio, the host cursor lands on ref + chunk, and the arena rows kept
+    # their own (slot-relative) zero positions.
+    cohort = next(group for group in cohorts if len(group) == 2)
+    decoded = scheduler.decode_incremental_group(cohort, stream=None)
+    assert decoded is not None
+    for (request_id, state, plan), delta in zip(*decoded):
+        scheduler.commit_initial(request_id, state, plan, delta)
+    assert incremental.decode_positions[-1] == [0, 0]
+    emitted = {}
+    while scheduler.outbox.qsize():
+        chunk = scheduler.outbox.get_nowait()
+        assert chunk.type == "stream"
+        emitted[chunk.request_id] = torch.frombuffer(
+            bytearray(chunk.data["audio_waveform"]), dtype=torch.float32
+        ).tolist()
+    assert emitted == {
+        "long": [60.0] * 4 + [70.0] * 4,
+        "longer": [100.0] * 4 + [110.0] * 4,
+    }
+    assert planned[0][1].codec_frame_position == 7
+    assert planned[2][1].codec_frame_position == 11
+    assert planned[0][1].emitted_generated_frames == 2
+
+    # A follow-up plan continues from the committed cursor with fresh frames only.
+    long_state = planned[0][1]
+    long_state.code_chunks.append(torch.tensor([[80, 8]], dtype=torch.long))
+    long_state.total_frames = 8
+    followup = scheduler.build_incremental_plan(long_state, is_final=True)
+    assert followup is not None
+    assert (followup.fresh_frames, followup.reference_trim_frames) == (1, 0)
+    assert followup.decoder_input[0, 0].tolist() == [80]
+
+    scheduler.finish_codec_slots([entry[1].codec_slot for entry in planned])
+    for request_id, _, _ in planned:
+        scheduler.clear_stream_state(request_id)
+    assert arena.active_slots() == 0
+
+
+def test_qwen3_tts_stateful_codec_bootstrap_reference_context_extends_cold_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    default, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    capped, _ = stateful_qwen3_tts_scheduler(
+        monkeypatch, bootstrap_reference_context_frames=16
+    )
+    assert default.initial_incremental_decode_graphs is not None
+    assert capped.initial_incremental_decode_graphs is not None
+    # The default ramp bootstraps 1 frame (2 when silence suppression bumps
+    # it); a 16-frame primed prefix moves reference-prefixed bootstraps to
+    # 17, and both families stay captured.
+    assert default.initial_incremental_decode_graphs.fresh_frames == (1, 2)
+    assert capped.initial_incremental_decode_graphs.fresh_frames == (1, 2, 17)
+    zero, _ = stateful_qwen3_tts_scheduler(
+        monkeypatch, bootstrap_reference_context_frames=0
+    )
+    assert zero.initial_incremental_decode_graphs.fresh_frames == (1, 2)
+    state = zero.create_stream_state("request")
+    state.ref_frames = 5
+    assert zero.bootstrap_start_frame(state) == 5
+    # A first chunk at the steady stride is never bumped, so no +1 widths.
+    unbumped = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        initial_chunk_frames=DEFAULT_QWEN3_TTS_STREAM_STRIDE,
+        enable_stateful_codec_decoder=False,
+    )
+    assert unbumped.default_cold_graph_frames(DEFAULT_QWEN3_TTS_STREAM_STRIDE) == (
+        DEFAULT_QWEN3_TTS_STREAM_STRIDE,
+    )
+    # A zero first chunk bootstraps at the steady stride, so the cold widths
+    # follow the stride (plus the cap) instead of an unserved 0 / N width.
+    zero_chunk = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        initial_chunk_frames=0,
+        enable_stateful_codec_decoder=False,
+        bootstrap_reference_context_frames=16,
+    )
+    assert zero_chunk.default_cold_graph_frames(0) == (
+        DEFAULT_QWEN3_TTS_STREAM_STRIDE,
+        16 + DEFAULT_QWEN3_TTS_STREAM_STRIDE,
+    )
+
+
+def test_qwen3_tts_stateful_codec_capped_bootstrap_falls_back_with_left_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental = stateful_qwen3_tts_scheduler(
+        monkeypatch, fail_on_call=2, bootstrap_reference_context_frames=2
+    )
+    assert scheduler.initial_incremental_decode_graphs is not None
+    assert scheduler.initial_incremental_decode_graphs.fresh_frames == (1, 2, 3)
+    state = scheduler.create_stream_state("request")
+    state.ref_frames = 5
+    state.code_chunks.append(
+        torch.tensor([[10, 1], [20, 2], [30, 3]], dtype=torch.long)
+    )
+    state.code_chunks.append(torch.tensor([[40, 4], [50, 5]], dtype=torch.long))
+    state.code_chunks.append(torch.tensor([[60, 6], [70, 7]], dtype=torch.long))
+    state.total_frames = 7
+
+    first = scheduler.decode_delta("request", state, is_final=False)
+    state.code_chunks.append(torch.tensor([[80, 8]], dtype=torch.long))
+    state.total_frames = 8
+    second = scheduler.decode_delta("request", state, is_final=False)
+
+    # The capped bootstrap primed frames 3 and 4 and pruned the chunks before
+    # the left-context window; the injected failure then hands the request to
+    # the left-context decoder, which still finds frame 6 retained.
+    assert first is not None
+    assert first.tolist() == [60.0] * 4 + [70.0] * 4
+    assert state.pruned_frames == 5
+    assert second is not None
+    assert second.tolist() == [80.0] * 4
+    assert state.incremental_codec_fallback is True
+    assert state.incremental_codec_state is not None
+    assert state.incremental_codec_state.frame_position == 7
+    assert state.emitted_generated_frames == 3
+    assert len(incremental.decode_inputs) == 2
+    assert incremental.decode_inputs[0][0, 0].tolist() == [40, 50, 60, 70]
+    assert len(scheduler.decoder.decode_inputs) == 1
+    assert scheduler.decoder.decode_inputs[0][0, 0].tolist() == [70, 80]
+
+
+def test_qwen3_tts_stateful_codec_rejects_negative_bootstrap_reference_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="bootstrap_reference_context_frames"):
+        stateful_qwen3_tts_scheduler(monkeypatch, bootstrap_reference_context_frames=-1)
 
 
 def test_qwen3_tts_stateful_codec_failure_falls_back_without_committing_state(
