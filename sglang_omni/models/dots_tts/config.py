@@ -21,6 +21,7 @@ class DotsVocoderFactoryArgs(FactoryArgs):
     """dots.tts vocoder constructor knobs, typed like the shared ones."""
 
     stream_slots: int | None = Field(default=None, ge=1)
+    enable_stateful_codec_decoder: bool = False
 
 
 class DotsVocoderStageConfig(StageConfig):

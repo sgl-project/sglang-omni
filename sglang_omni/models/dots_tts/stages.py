@@ -19,6 +19,10 @@ from sglang_omni.models.dots_tts.codec import (
     load_dots_audio_codec,
 )
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.models.dots_tts.incremental_codec import DotsIncrementalDecoder
+from sglang_omni.models.dots_tts.incremental_codec_cuda_graph import (
+    DotsIncrementalCodecCudaGraphRunner,
+)
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
 from sglang_omni.models.dots_tts.vocoder import DotsTTSStreamingVocoder
@@ -510,6 +514,11 @@ def create_sglang_latent_engine_executor(
     )
 
 
+# note (0xtoward): cold windows grow by one latent patch per step until the
+# slot is warm. These buckets bound the cold graphs and still pad little.
+COLD_WINDOW_BUCKET_FRAMES = (8, 16, 24, 32)
+
+
 def create_vocoder_executor(
     model_path: str,
     *,
@@ -520,6 +529,7 @@ def create_vocoder_executor(
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
+    enable_stateful_codec_decoder: bool = False,
 ) -> DotsTTSStreamingVocoder:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -540,7 +550,21 @@ def create_vocoder_executor(
     )
     # note (guozhihao-224): allocate the slot pool at setup so OOM / shape
     # mismatch surface before readiness, not on the first live chunk.
-    vocoder.ensure_slot_pool()
+    pool = vocoder.ensure_slot_pool()
+    if enable_stateful_codec_decoder:
+        decoder = DotsIncrementalDecoder(codec.inference)
+        pool.incremental_codec = DotsIncrementalCodecCudaGraphRunner(
+            decoder,
+            decoder.new_state_arena(pool.num_slots),
+            max_batch_size=max_batch_size,
+            warm_fresh_frames=[
+                codec.patch_size * patches
+                for patches in range(1, vocoder.merge_steps + 1)
+            ],
+            cold_window_frames=sorted({*COLD_WINDOW_BUCKET_FRAMES, pool.window_size}),
+        )
+    else:
+        pass
     logging.getLogger(__name__).info(
         "dots.tts vocoder backend: slot-pooled eager streaming "
         "(optimize=%s, merge_steps=%d, stream_slots=%d, batch_size=%d, "
