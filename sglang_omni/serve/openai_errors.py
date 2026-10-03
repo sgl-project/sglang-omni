@@ -20,6 +20,7 @@ _BAD_REQUEST_MARKERS = (
     "Invalid media data while decoding video path=",
     "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
     "max_new_tokens must be",
+    "supports only greedy decoding",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",
     "multimodal_train_inputs",

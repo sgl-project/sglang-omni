@@ -3,12 +3,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
 
+import torch
+from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
 from transformers import PreTrainedTokenizerBase, ProcessorMixin
 
+from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
@@ -16,6 +22,14 @@ from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     MossTranscribeDiarizeRequestData,
 )
+from sglang_omni.models.moss_transcribe_diarize.sglang_model import (
+    MossTranscribeDiarizeForConditionalGeneration,
+)
+from sglang_omni.models.moss_transcribe_diarize.torch_mps_runner import (
+    MossTranscribeDiarizeTorchMpsModelRunner,
+    install_torch_mps_language_model,
+)
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
@@ -26,14 +40,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
-
-if TYPE_CHECKING:
-
-    from sglang_omni.models.moss_transcribe_diarize.sglang_model import (
-        MossTranscribeDiarizeForConditionalGeneration,
-    )
-else:
-    pass
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 
 class MossTranscribeDiarizeEngineBuilder(
@@ -100,6 +107,20 @@ class MossTranscribeDiarizeEngineBuilder(
         self.audio_encoder_service: BatchedAudioEncoderService | None = None
         self.max_new_tokens = 0
         self.context_length = 0
+        self.device: str | None = None
+        self.torch_mps_model_runner: MossTranscribeDiarizeTorchMpsModelRunner | None = (
+            None
+        )
+
+    def uses_torch_mps(self) -> bool:
+        return (
+            not mlx_runtime.use_mlx()
+            and self.device is not None
+            and torch.device(self.device).type == "mps"
+        )
+
+    def uses_apple(self) -> bool:
+        return mlx_runtime.use_mlx() or self.uses_torch_mps()
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoProcessor
@@ -123,6 +144,41 @@ class MossTranscribeDiarizeEngineBuilder(
         )
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        use_torch_mps = self.uses_torch_mps()
+        if mlx_runtime.use_mlx() or use_torch_mps:
+            if not current_platform.is_mps():
+                raise RuntimeError(
+                    "MOSS-Transcribe-Diarize Apple backends require Metal"
+                )
+            else:
+                pass
+            apple_context_length = (
+                min(self.context_length, 32768)
+                if use_torch_mps
+                else self.context_length
+            )
+            defaults = {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_total_tokens": apple_context_length,
+                "max_prefill_tokens": apple_context_length,
+                "chunked_prefill_size": -1,
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "sampling_backend": "pytorch",
+                "mem_fraction_static": self.mem_fraction_static,
+                "dtype": dtype,
+            }
+            if use_torch_mps:
+                defaults["context_length"] = apple_context_length
+            else:
+                pass
+            return defaults
+        else:
+            pass
         # note (Xinyu): cached-prefix extends commonly contain one or two new
         # tokens, so keep exact graph buckets below the shared ladder's 4-token
         # floor instead of failing the prefill padding-factor replay guard.
@@ -150,8 +206,24 @@ class MossTranscribeDiarizeEngineBuilder(
         # note (Dayuxiaoshui): context_length is an explicit server-args
         # parameter, so consume the operator override before the shared builder
         # expands overrides.
+        previous_context_length = self.context_length
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
+        else:
+            pass
+        if self.uses_apple():
+            default_context_lengths = {previous_context_length}
+            if self.uses_torch_mps():
+                default_context_lengths.add(min(previous_context_length, 32768))
+            else:
+                pass
+            for field in ("max_total_tokens", "max_prefill_tokens"):
+                if overrides.get(field) in default_context_lengths:
+                    overrides[field] = self.context_length
+                else:
+                    pass
+            overrides["enable_torch_compile"] = False
+            overrides["max_running_requests"] = 1
         else:
             pass
 
@@ -159,6 +231,73 @@ class MossTranscribeDiarizeEngineBuilder(
         # note (Dayuxiaoshui): adapters must use the context length finalized by
         # ServerArgs, matching the pre-refactor factory behavior.
         self.context_length = int(server_args.context_length)
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        if self.uses_apple():
+            if (
+                not server_args.disable_radix_cache
+                or server_args.chunked_prefill_size != -1
+            ):
+                raise ValueError(
+                    "MOSS-Transcribe-Diarize Apple backends require disabled radix cache "
+                    "and chunked prefill"
+                )
+            else:
+                pass
+            if mlx_runtime.use_mlx() and server_args.mlx_enable_sampling:
+                raise ValueError(
+                    "MOSS-Transcribe-Diarize MLX currently requires "
+                    "mlx_enable_sampling=False"
+                )
+            else:
+                pass
+            if server_args.quantization is not None:
+                raise ValueError(
+                    "MOSS-Transcribe-Diarize Apple backends currently require "
+                    "unquantized HF weights"
+                )
+            else:
+                pass
+        else:
+            pass
+        super().validate_before_infrastructure(server_args)
+
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> ModelRunner[MossTranscribeDiarizeRequestData]:
+        if mlx_runtime.use_mlx():
+            return MlxSchedulerModelRunner(model_worker, output_proc)
+        elif self.uses_torch_mps():
+            self.torch_mps_model_runner = MossTranscribeDiarizeTorchMpsModelRunner(
+                model_worker, output_proc
+            )
+            return self.torch_mps_model_runner
+        else:
+            return super().make_model_runner(model_worker, output_proc)
+
+    def setup_model(
+        self,
+        *,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: ServerArgs,
+    ) -> None:
+        if self.uses_torch_mps():
+            install_torch_mps_language_model(
+                model_worker.model_runner.model, checkpoint_dir
+            )
+        else:
+            pass
+
+    def make_abort_callback(self) -> Callable[[str], None] | None:
+        if self.torch_mps_model_runner is None:
+            return None
+        else:
+            return self.torch_mps_model_runner.abort_request
 
     def setup_model_resources(
         self,
@@ -168,6 +307,10 @@ class MossTranscribeDiarizeEngineBuilder(
         generation_cuda_graph_enabled: bool,
     ) -> None:
         del server_args
+        if self.uses_apple():
+            return
+        else:
+            pass
         input_feature_len = int(self.processor.feature_extractor.nb_max_frames)
         if self.encoder_torch_compile:
             model.compile_encoder(self.encoder_chunk_buckets, input_feature_len)
@@ -184,6 +327,10 @@ class MossTranscribeDiarizeEngineBuilder(
         server_args: ServerArgs,
     ) -> None:
         del server_args
+        if self.uses_apple():
+            return
+        else:
+            pass
         self.audio_encoder_service = BatchedAudioEncoderService(
             model,
             max_batch_size=self.encoder_max_batch_size,
@@ -201,11 +348,13 @@ class MossTranscribeDiarizeEngineBuilder(
             context_length=self.context_length,
             duration_scaled_default=self.requested_max_new_tokens is None,
             audio_encoder_service=self.audio_encoder_service,
+            greedy_only=self.uses_apple(),
         )
 
     def extra_scheduler_kwargs(
         self,
     ) -> SchedulerExtras[MossTranscribeDiarizeRequestData]:
+        use_apple = self.uses_apple()
         return {
             "stream_output_builder": (
                 request_builders.make_moss_transcribe_diarize_stream_output_builder(
@@ -213,9 +362,11 @@ class MossTranscribeDiarizeEngineBuilder(
                     min_emit_interval_s=self.stream_emit_interval_s,
                 )
             ),
-            "enable_async_decode": self.enable_async_decode,
+            "enable_async_decode": False if use_apple else self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
-            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_requests": (
+                0 if use_apple else self.prefill_coalesce_requests
+            ),
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
             "prefill_coalesce_requires_pending_builds": (
@@ -224,6 +375,8 @@ class MossTranscribeDiarizeEngineBuilder(
             "prefill_coalesce_after_builds_during_decode": (
                 self.prefill_coalesce_after_builds_during_decode
             ),
-            "request_build_max_workers": self.request_build_max_workers,
+            "request_build_max_workers": (
+                1 if use_apple else self.request_build_max_workers
+            ),
             "request_build_max_pending": self.request_build_max_pending,
         }
