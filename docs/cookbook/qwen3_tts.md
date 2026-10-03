@@ -483,6 +483,14 @@ each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
 for the left-context decoder, with first playable audio at 55 to 58 ms
 against 82 to 89 ms.
 
+With `followup_urgent_slack_ms` above 0 (default 30), every follow-up batch
+launches its cohorts in deadline order. A batch whose earliest playback deadline
+is within that many milliseconds also stops waiting for new arrivals but still
+takes what is already queued and, unless a full batch is already queued behind
+it, runs the most urgent cohort alone and commits it as soon as its decode
+finishes. `--vocoder.factory.followup_urgent_slack_ms 0` restores the plain
+collection window and pop-order launches.
+
 #### First-audio chunk ramp
 
 For latency-sensitive deployments the whole early chunk schedule can be
