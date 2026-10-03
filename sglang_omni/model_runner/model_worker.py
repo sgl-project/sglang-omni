@@ -97,9 +97,18 @@ class ModelWorker:
         self.tp_rank = tp_rank
         self.init_model_config()
         effective_quantization = self.configure_backend_policy()
-        from sglang.srt.runtime_context import publish
+        from sglang.srt.runtime_context import SpawnRanks, publish, spawn_world_rank
 
-        publish(self.server_args, role="scheduler")
+        publish(
+            self.server_args,
+            role="scheduler",
+            ranks=SpawnRanks(
+                world_rank=spawn_world_rank(
+                    self.server_args, tp_rank=tp_rank, pp_rank=0
+                ),
+                gpu_id=gpu_id,
+            ),
+        )
         initialize_model_worker_backend_globals(
             self.model_config, effective_quantization
         )

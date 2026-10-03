@@ -285,6 +285,7 @@ def create_mlx_model_worker(
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
     from sglang.srt.runtime_context import (
+        SpawnRanks,
         get_device,
         get_exec,
         get_memory,
@@ -292,6 +293,7 @@ def create_mlx_model_worker(
         get_parallel,
         get_schedule,
         publish,
+        spawn_world_rank,
     )
     from sglang.srt.server_args import PortArgs
 
@@ -367,7 +369,14 @@ def create_mlx_model_worker(
         def get_attention_tp_cpu_group(self):
             return self.model_runner.attention_tp_group.cpu_group
 
-    publish(server_args, role="scheduler")
+    publish(
+        server_args,
+        role="scheduler",
+        ranks=SpawnRanks(
+            world_rank=spawn_world_rank(server_args, tp_rank=tp_rank, pp_rank=0),
+            gpu_id=gpu_id,
+        ),
+    )
     attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
         compute_dp_attention_world_info(
             get_parallel().enable_dp_attention,
