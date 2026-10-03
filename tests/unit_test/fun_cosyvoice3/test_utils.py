@@ -98,14 +98,25 @@ def test_cosyvoice3_prompt_mel_uses_flow_layout_and_fixed_configuration(
     assert torch.equal(result[0, 0], torch.arange(0, 80 * 3, 3, dtype=torch.float32))
 
 
-def test_cosyvoice3_reference_encoders_pin_onnx_providers(monkeypatch) -> None:
+def test_cosyvoice3_reference_encoders_pin_onnx_providers_and_stop_spinning(
+    monkeypatch,
+) -> None:
     captured: list[object] = []
+    configs: list[dict[str, str]] = []
+
+    class FakeSessionOptions:
+        def __init__(self) -> None:
+            self.entries: dict[str, str] = {}
+
+        def add_session_config_entry(self, key: str, value: str) -> None:
+            self.entries[key] = value
 
     def fake_session(model_path, sess_options, providers):
         captured.append(providers)
+        configs.append(sess_options.entries)
 
     fake_onnxruntime = types.SimpleNamespace(
-        SessionOptions=types.SimpleNamespace,
+        SessionOptions=FakeSessionOptions,
         GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=99),
         InferenceSession=fake_session,
     )
@@ -123,3 +134,4 @@ def test_cosyvoice3_reference_encoders_pin_onnx_providers(monkeypatch) -> None:
         ["CPUExecutionProvider"],
         ["CPUExecutionProvider"],
     ]
+    assert configs == [{"session.intra_op.allow_spinning": "0"}] * 3
