@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CUDA graphs for the Qwen3-TTS speaker encoder at bucketed mel lengths."""
+"""Device graphs for the Qwen3-TTS speaker encoder at bucketed mel lengths."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ import torch.nn.functional as F
 from librosa.filters import mel as librosa_mel_fn
 
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import smallest_bucket
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
+from sglang_omni.utils.device import device_guard, supports_device_streams
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +109,7 @@ def encode_bucketed(
 
 @dataclass
 class CapturedSpeakerEncoderGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     static_mels: torch.Tensor
     static_frames: torch.Tensor
     static_embedding: torch.Tensor
@@ -164,18 +167,24 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
         """One graph per bucket of the reference encoder's ladder, in mel frames;
         none when a capture fails, so every clip runs eager."""
         param = next(self.encoder.parameters())
-        if param.device.type not in {"cuda", "musa"}:
+        graph_backend = current_platform.get_device_graph_backend(param.device)
+        if not supports_device_streams(param.device) or graph_backend is None:
             return
         else:
             pass
+        device_module = torch.get_device_module(param.device)
         buckets = sorted(
             frames * codec_hop // SPEAKER_MEL_HOP for frames in codec_frame_buckets
         )
+        if not buckets:
+            return
+        else:
+            pass
         graphs: dict[int, CapturedSpeakerEncoderGraph] = {}
         try:
-            with torch.cuda.device(param.device):
-                pool = torch.cuda.graph_pool_handle()
-                stream = torch.cuda.Stream(device=param.device)
+            with device_guard(param.device):
+                pool = graph_backend.graph_pool_handle()
+                stream = device_module.Stream(device=param.device)
                 # note(ratish): largest first so the shared pool is sized once.
                 for frames in reversed(buckets):
                     static_mels = torch.zeros(
@@ -186,21 +195,19 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
                     static_frames = torch.full(
                         (1,), frames, device=param.device, dtype=torch.long
                     )
-                    stream.wait_stream(torch.cuda.current_stream(param.device))
-                    with torch.inference_mode(), torch.cuda.stream(stream):
+                    stream.wait_stream(device_module.current_stream(param.device))
+                    with torch.inference_mode(), device_module.stream(stream):
                         for _ in range(2):
                             encode_bucketed(
                                 self.encoder, static_mels, static_frames, self.pads
                             )
-                    graph = torch.cuda.CUDAGraph()
                     with (
                         torch.inference_mode(),
-                        torch.cuda.graph(
-                            graph,
+                        graph_backend.capture(
                             pool=pool,
                             stream=stream,
-                            capture_error_mode="thread_local",
-                        ),
+                            thread_local_errors=True,
+                        ) as graph,
                     ):
                         static_embedding = encode_bucketed(
                             self.encoder, static_mels, static_frames, self.pads

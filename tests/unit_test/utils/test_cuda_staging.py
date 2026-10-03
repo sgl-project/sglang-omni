@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the pinned staging buffer and transfer slot primitives.
 
-``torch.cuda.Event`` is replaced with a CPU stand-in, and so is pinned
-allocation when no CUDA device is present, so the growth, inference-mode,
+The device event factory is replaced with a CPU stand-in, and so is pinned
+allocation when no accelerator is present, so the growth, inference-mode,
 event-reuse, and error-propagation contracts can be checked without a GPU.
 The ``accelerator``-marked cases run the real pinned/event path: an
 asynchronous D2H copy observed through ``query()``, and the device guard with
@@ -57,14 +57,14 @@ def install_fake_events(
 ) -> list[FakeEvent]:
     created: list[FakeEvent] = []
 
-    def factory():
+    def factory(device: torch.device | None = None) -> FakeEvent:
         event = FakeEvent()
         if configure is not None:
             configure(event)
         created.append(event)
         return event
 
-    monkeypatch.setattr(torch.cuda, "Event", factory)
+    monkeypatch.setattr(cuda_staging, "new_device_event", factory)
     return created
 
 
@@ -222,18 +222,18 @@ def test_pinned_transfer_slot_first_record_failure_rejects_completion_reads(
 def test_pinned_transfer_slot_event_construction_failure_rejects_completion_reads(
     monkeypatch,
 ):
-    """A failed ``torch.cuda.Event()`` leaves no event; the retry creates it."""
+    """A failed event construction leaves no event; the retry creates it."""
     created = install_fake_events(monkeypatch)
     install_fake_pinned_alloc(monkeypatch)
     slot = PinnedTransferSlot("cpu", torch.float32)
     init_error = RuntimeError("event init failed")
-    factory = torch.cuda.Event
+    factory = cuda_staging.new_device_event
 
-    def exploding_once():
-        monkeypatch.setattr(torch.cuda, "Event", factory)
+    def exploding_once(device: torch.device | None = None) -> FakeEvent:
+        monkeypatch.setattr(cuda_staging, "new_device_event", factory)
         raise init_error
 
-    monkeypatch.setattr(torch.cuda, "Event", exploding_once)
+    monkeypatch.setattr(cuda_staging, "new_device_event", exploding_once)
     with pytest.raises(RuntimeError) as init_info:
         slot.record(object())
     assert init_info.value is init_error

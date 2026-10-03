@@ -1,19 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve the device spec a pipeline stage runs on.
 
-Only the index fallback in ``resolve_concrete_device`` touches the accelerator
-runtime (it asks which card the process is already on); everything else is
-string work.
+Only the index fallback in resolve_concrete_device and device_guard reach the
+accelerator runtime; everything else is string work.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from contextlib import AbstractContextManager, nullcontext
 
-if TYPE_CHECKING:
-    import torch
-else:
-    pass
+import torch
+
+
+def supports_device_streams(device: torch.device) -> bool:
+    """The device types the omni audio paths stage through, which is narrower than
+    the ones that have streams: Ascend NPU has them but waits for its own
+    measurements."""
+    return device.type in {"cuda", "musa", "xpu"}
+
+
+def device_guard(device: torch.device) -> AbstractContextManager[None]:
+    """Pin the calling thread to device, or do nothing off an accelerator."""
+    if supports_device_streams(device):
+        return torch.get_device_module(device).device(device)
+    else:
+        return nullcontext()
 
 
 def with_index(dev_type: str, raw_index: str, index: int | None) -> str:
@@ -57,15 +68,13 @@ def resolve_device_spec(device: str | None, index: int | None = None) -> str:
 
 def resolve_concrete_device(
     device: str | None, index: int | None = None
-) -> "torch.device":
+) -> torch.device:
     """Resolve device/index to a concrete torch.device with an index.
 
     Falls back to asking the host which card this process is already on
     when neither the caller nor placement supplied an index, rather than
     assuming 0.
     """
-    import torch
-
     concrete = torch.device(resolve_device_spec(device, index))
     if concrete.type == "cpu" or concrete.index is not None:
         return concrete
@@ -85,4 +94,9 @@ def resolve_concrete_device(
     )
 
 
-__all__ = ["resolve_concrete_device", "resolve_device_spec"]
+__all__ = [
+    "device_guard",
+    "resolve_concrete_device",
+    "resolve_device_spec",
+    "supports_device_streams",
+]

@@ -317,6 +317,18 @@ def test_musa_captures_the_qwen3_tts_code_predictor() -> None:
     assert MUSAOmniPlatform().enable_tts_predictor_graph() is True
 
 
+def test_only_xpu_declines_the_qwen3_tts_vocoder_fast_path() -> None:
+    """CUDA, ROCm and MUSA keep the codec decode graphs, the reference encoder
+    graphs and asynchronous decode; XPU declines them."""
+    for platform_type in (
+        CUDAOmniPlatform,
+        ROCMOmniPlatform,
+        platforms.MUSAOmniPlatform,
+    ):
+        assert platform_type().enable_tts_vocoder_fast_path() is True, platform_type
+    assert XPUOmniPlatform().enable_tts_vocoder_fast_path() is False
+
+
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
     """The accelerators that capture name a backend; the rest answer None.
 
