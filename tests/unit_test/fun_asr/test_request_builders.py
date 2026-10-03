@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import torch
 
+import sglang_omni.models.fun_asr.engine_builder as fun_asr_builder
 import sglang_omni.models.fun_asr.request_builders as request_builders
 import sglang_omni.preprocessing.transcription as transcription
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -479,3 +480,58 @@ def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
 
     with pytest.raises(ValueError, match=r"longer than the model's context length"):
         request_builder(payload)
+
+
+class _CharTokenizer(_FakeTokenizer):
+    """One id per character around audio placeholders, so prompt text length counts."""
+
+    def __call__(self, text: str, *, add_special_tokens: bool = False):
+        assert not add_special_tokens
+        input_ids: list[int] = []
+        for index, piece in enumerate(text.split(_AUDIO_PAD)):
+            if index:
+                input_ids.append(_AUDIO_PAD_ID)
+            input_ids.extend([7] * len(piece))
+        return SimpleNamespace(input_ids=input_ids)
+
+
+@pytest.mark.parametrize("language", [None, "zh", "en"])
+def test_fun_asr_context_length_admits_30s_request_in_builtin_languages(
+    monkeypatch, language: str | None
+) -> None:
+    tokenizer = _CharTokenizer()
+    monkeypatch.setattr(
+        fun_asr_builder.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: tokenizer,
+    )
+    monkeypatch.setattr(
+        fun_asr_builder.AutoFeatureExtractor,
+        "from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(nb_max_frames=500),
+    )
+    builder = object.__new__(fun_asr_builder.FunASREngineBuilder)
+    builder.max_new_tokens = 200
+    builder.pre_infra_setup("unused-checkpoint-dir")
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(30 * 16000, dtype=np.float32),
+    )
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=200,
+        feature_extractor=_feature_extractor(500),
+        context_length=builder.context_length,
+    )
+    params = {} if language is None else {"language": language}
+    payload = StagePayload(
+        request_id=f"req-fun-asr-30s-{language}",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.max_new_tokens == 200
+    assert len(data.prompt_token_ids) + data.max_new_tokens <= builder.context_length
