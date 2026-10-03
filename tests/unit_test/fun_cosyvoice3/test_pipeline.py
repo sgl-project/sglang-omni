@@ -76,6 +76,48 @@ def test_fun_cosyvoice3_engine_process_resolves_spawn_omp_default(
         prep.runtime_dir.close()
 
 
+@pytest.mark.parametrize(
+    "written_omp_setting",
+    [
+        ("env_defaults.OMP_NUM_THREADS", "3"),
+        ("vocoder.env.OMP_NUM_THREADS", "3"),
+    ],
+)
+def test_fun_cosyvoice3_engine_process_spawns_with_a_written_omp_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    written_omp_setting: tuple[str, str],
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    config = ConfigManager(
+        FunCosyVoice3PipelineConfig(model_path="model")
+    ).merge_config([written_omp_setting])
+    prepared_runtime = prepare_pipeline_runtime(config)
+    try:
+        stage_groups = build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prepared_runtime.stages_cfg,
+            endpoints=prepared_runtime.endpoints,
+            placement_plan=prepared_runtime.placement_plan,
+            process_plan=prepared_runtime.process_plan,
+            replica_topology=prepared_runtime.replica_topology,
+        )
+        (engine_process_spec,) = [
+            process_spec
+            for stage_group in stage_groups
+            for process_spec in stage_group.process_specs
+            if any(
+                stage_spec.stage_name == "tts_engine"
+                for stage_spec in process_spec.stage_specs
+            )
+        ]
+
+        with patched_spawn_env(engine_process_spec):
+            assert os.environ["OMP_NUM_THREADS"] == "3"
+    finally:
+        prepared_runtime.runtime_dir.close()
+
+
 def test_fun_cosyvoice3_config_and_registry_contract() -> None:
     config = FunCosyVoice3PipelineConfig(model_path="model")
 
