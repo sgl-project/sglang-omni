@@ -83,13 +83,30 @@ def test_ming_hf_config_registration_does_not_import_thinker() -> None:
     from sglang_omni.models.ming_omni import registration
 
     sys.modules.pop("sglang_omni.models.ming_omni.thinker", None)
-    registration._ming_hf_config_registered = (
-        False  # noqa: leading-underscore  # production name
-    )
 
     registration.register_ming_hf_config()
 
     assert "sglang_omni.models.ming_omni.thinker" not in sys.modules
+
+
+def test_ming_hf_config_registration_survives_the_sglang_config_registry() -> None:
+    import sglang.srt.utils.hf_transformers_utils  # noqa: F401
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    from sglang_omni.models.ming_omni import registration
+    from sglang_omni.models.ming_omni.configuration import (
+        BailingMM2Config,
+        BailingMoeV2Config,
+    )
+
+    registration.register_ming_hf_config()
+
+    assert CONFIG_MAPPING["bailingmm_moe_v2_lite"] is BailingMM2Config
+    config = BailingMM2Config(
+        llm_config={"rope_scaling": {"factor": None, "type": "video_rope"}}
+    )
+    assert isinstance(config.llm_config, BailingMoeV2Config)
+    assert config.llm_config.rope_scaling is None
 
 
 def test_ming_text_variant_uses_text_image_pipeline(monkeypatch) -> None:
