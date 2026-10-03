@@ -5,6 +5,8 @@ from __future__ import annotations
 import collections
 import gc
 import importlib
+import json
+import logging
 import threading
 import time
 import weakref
@@ -29,6 +31,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.profiler.event_recorder import reset_active_stage, set_active_stage
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
@@ -1981,6 +1984,154 @@ def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
     assert scheduler.outbox.empty()
     assert req.omni_data is None
     assert data.req is req
+
+
+class StopAtToken:
+    def to_json(self) -> dict[str, object]:
+        return {"type": "stop", "matched": 9}
+
+
+def terminal_receipt_scheduler(
+    monkeypatch: pytest.MonkeyPatch, *, enabled: bool
+) -> OmniScheduler:
+    if enabled:
+        monkeypatch.setenv(omni_scheduler_module.TERMINAL_RECEIPTS_ENV, "1")
+    else:
+        monkeypatch.delenv(omni_scheduler_module.TERMINAL_RECEIPTS_ENV, raising=False)
+    scheduler = object.__new__(OmniScheduler)
+    init_terminal_output_state(scheduler)
+    scheduler.outbox = Queue()
+    scheduler.aborted_request_ids = set()
+    scheduler.abort_callback = None
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.result_adapter = lambda data: {"ok": True}
+    return scheduler
+
+
+def finished_request_with_stop_tokens(
+    *, has_tokenizer: bool = True, has_finished_reason: bool = True
+) -> SimpleNamespace:
+    data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
+    if has_tokenizer:
+        tokenizer: SimpleNamespace | None = SimpleNamespace(
+            eos_token_id=9, additional_stop_token_ids=None
+        )
+    else:
+        tokenizer = None
+    request = SimpleNamespace(
+        rid="req-receipt",
+        finished=lambda: True,
+        finished_reason=StopAtToken() if has_finished_reason else None,
+        output_ids=[1, 9],
+        omni_data=data,
+        _omni_terminal_claimed=False,
+        eos_token_ids={9},
+        tokenizer=tokenizer,
+        sampling_params=SimpleNamespace(
+            max_new_tokens=4, stop_token_ids=[10, 9], ignore_eos=False
+        ),
+    )
+    data.req = request
+    return request
+
+
+def terminal_receipt_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("OMNI_TERMINAL_RECEIPT ")
+    ]
+
+
+def test_stream_output_logs_terminal_receipt_on_entry_rank(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=omni_scheduler_module.logger.name)
+    scheduler = terminal_receipt_scheduler(monkeypatch, enabled=True)
+    request = finished_request_with_stop_tokens()
+
+    stage_token = set_active_stage("talker")
+    try:
+        scheduler.stream_output([request])
+    finally:
+        reset_active_stage(stage_token)
+
+    assert scheduler.outbox.get_nowait().type == "result"
+    assert request.output_ids == [1, 9]
+    (line,) = terminal_receipt_lines(caplog)
+    assert json.loads(line.removeprefix("OMNI_TERMINAL_RECEIPT ")) == {
+        "request_id": "req-receipt",
+        "stage": "talker",
+        "finish_class": "StopAtToken",
+        "finish_detail": {"type": "stop", "matched": 9},
+        "output_token_count": 2,
+        "last_token_id": 9,
+        "max_new_tokens": 4,
+        "eos_token_ids": [9],
+        "stop_token_ids": [9, 10],
+        "ignore_eos": False,
+        "tokenizer_eos_token_id": 9,
+        "tokenizer_additional_stop_token_ids": [],
+    }
+
+
+def test_stream_output_terminal_receipt_without_tokenizer(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=omni_scheduler_module.logger.name)
+    scheduler = terminal_receipt_scheduler(monkeypatch, enabled=True)
+    request = finished_request_with_stop_tokens(has_tokenizer=False)
+
+    scheduler.stream_output([request])
+
+    (line,) = terminal_receipt_lines(caplog)
+    receipt = json.loads(line.removeprefix("OMNI_TERMINAL_RECEIPT "))
+    assert receipt["tokenizer_eos_token_id"] is None
+    assert receipt["tokenizer_additional_stop_token_ids"] == []
+    assert receipt["eos_token_ids"] == [9]
+
+
+def test_stream_output_terminal_receipt_without_finish_reason(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=omni_scheduler_module.logger.name)
+    scheduler = terminal_receipt_scheduler(monkeypatch, enabled=True)
+    request = finished_request_with_stop_tokens(has_finished_reason=False)
+
+    scheduler.stream_output([request])
+
+    (line,) = terminal_receipt_lines(caplog)
+    receipt = json.loads(line.removeprefix("OMNI_TERMINAL_RECEIPT "))
+    assert receipt["finish_class"] is None
+    assert receipt["finish_detail"] is None
+    assert receipt["output_token_count"] == 2
+
+
+@pytest.mark.parametrize("skip_reason", ["disabled", "replica_rank", "aborted"])
+def test_stream_output_skips_terminal_receipt(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, skip_reason: str
+) -> None:
+    caplog.set_level(logging.INFO, logger=omni_scheduler_module.logger.name)
+    scheduler = terminal_receipt_scheduler(
+        monkeypatch, enabled=skip_reason != "disabled"
+    )
+    request = finished_request_with_stop_tokens()
+    if skip_reason == "replica_rank":
+        scheduler.is_entry_rank = False
+    elif skip_reason == "aborted":
+        scheduler.aborted_request_ids = {request.rid}
+    else:
+        pass
+
+    scheduler.stream_output([request])
+
+    assert terminal_receipt_lines(caplog) == []
+    if skip_reason == "aborted":
+        assert scheduler.outbox.empty()
+    else:
+        assert scheduler.outbox.get_nowait().type == "result"
 
 
 def test_stream_output_closes_late_stream_ingress() -> None:
