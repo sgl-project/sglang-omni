@@ -23,6 +23,7 @@ from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageE
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
 from sglang_omni.models.minicpm_o.merge import build_decode_result
+from sglang_omni.models.minicpm_o.native_config import TALKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
@@ -124,7 +125,7 @@ def create_sglang_talker_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    max_seq_len: int = 4096,
+    max_seq_len: int = TALKER_CONTEXT_LENGTH,
     server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     session_mode: bool = False,
@@ -167,6 +168,8 @@ def create_sglang_talker_executor_from_config(
         f"tp_rank={tp_rank}/{tp_size} context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"mem_fraction_static={resolved_view(server_args).mem_fraction_static} "
+        f"max_running_requests={resolved_view(server_args).max_running_requests} "
+        f"max_total_tokens={resolved_view(server_args).max_total_tokens} "
         f"pre_load_avail_mem={avail_gpu_mem(gpu_id)} pid={os.getpid()}"
     )
     scheduler = create_talker_scheduler(

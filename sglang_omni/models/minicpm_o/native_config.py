@@ -16,6 +16,9 @@ from sglang_omni.config import (
 PKG = "sglang_omni.models.minicpm_o.native_stages"
 DEFAULT_MAX_SESSIONS = 2
 DEFAULT_SPEECH_STATE_BYTES_PER_SESSION = 2 << 30
+THINKER_CONTEXT_LENGTH = 8192
+THINKER_GPU_MEMORY_FRACTION = 0.52
+TALKER_CONTEXT_LENGTH = 4096
 
 
 def stages() -> list[StageConfig]:
@@ -32,7 +35,7 @@ def stages() -> list[StageConfig]:
             name="thinker",
             process="thinker",
             gpu=0,
-            gpu_memory_fraction=0.52,
+            gpu_memory_fraction=THINKER_GPU_MEMORY_FRACTION,
             factory_path=f"{PKG}.create_thinker_scheduler",
             next="talker",
             # note (Junnan Li): Compiling every decode graph batch size adds minutes to startup.
@@ -140,6 +143,9 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     )
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, JsonValue]:
+        request_slots = (
+            self.max_sessions + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+        )
         if stage_name in {"perception", "speech"}:
             kwargs: dict[str, JsonValue] = {
                 "reference_audio": self.reference_audio,
@@ -157,13 +163,41 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
             else:
                 pass
             return kwargs
-        elif stage_name in {"thinker", "talker"}:
-            return {
-                "server_args_overrides": {
-                    "max_running_requests": self.max_sessions
-                    + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
-                }
+        elif stage_name == "thinker":
+            kwargs = {"server_args_overrides": {"max_running_requests": request_slots}}
+            stage = self.stage_named(stage_name)
+            # note (Junnan Li): A thinker memory size the deployment writes wins; a fraction counts as written when it differs from the default.
+            if (
+                stage.gpu_memory_fraction == THINKER_GPU_MEMORY_FRACTION
+                and stage.engine.kv_cache_bytes is None
+                and stage.engine.mem_fraction_static is None
+                and stage.engine.max_total_tokens is None
+            ):
+                kwargs["kv_cache_tokens"] = (
+                    request_slots
+                    * stage.engine.model_extra.get(
+                        "context_length", THINKER_CONTEXT_LENGTH
+                    )
+                )
+            else:
+                pass
+            return kwargs
+        elif stage_name == "talker":
+            server_args_overrides: dict[str, JsonValue] = {
+                "max_running_requests": request_slots
             }
+            engine = self.stage_named(stage_name).engine
+            if (
+                engine.kv_cache_bytes is None
+                and engine.mem_fraction_static is None
+                and engine.max_total_tokens is None
+            ):
+                server_args_overrides["max_total_tokens"] = (
+                    request_slots * TALKER_CONTEXT_LENGTH
+                )
+            else:
+                pass
+            return {"server_args_overrides": server_args_overrides}
         else:
             return super().stage_factory_kwargs(stage_name)
 

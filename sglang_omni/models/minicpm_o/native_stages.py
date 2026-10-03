@@ -37,12 +37,13 @@ from sglang_omni.models.minicpm_o.components.tts_runtime import (
 )
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
+from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_MAX_SESSIONS,
     DEFAULT_SPEECH_SETTINGS,
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
-from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -53,7 +54,9 @@ from sglang_omni.scheduling.session import (
     SessionAppend,
     SessionScheduler,
 )
+from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.gpu_memory import format_bytes_gib, get_gpu_device_info
 
 logger = logging.getLogger(__name__)
 
@@ -402,15 +405,58 @@ def create_thinker_scheduler(
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, JsonValue] | None = None,
     total_gpu_memory_fraction: float | None = None,
+    kv_cache_tokens: int | None = None,
 ) -> OmniScheduler:
-    return MiniCPMOThinkerEngineBuilder().build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype,
-        server_args_overrides=server_args_overrides,
-        total_gpu_memory_fraction=total_gpu_memory_fraction,
-    )
+    builder = MiniCPMOThinkerEngineBuilder()
+    if kv_cache_tokens is None:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            server_args_overrides=server_args_overrides,
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
+        )
+    else:
+        text_config = MiniCPMOConfig.from_pretrained(model_path).get_text_config()
+        kv_bytes_per_token = (
+            2
+            * text_config.num_hidden_layers
+            * text_config.num_key_value_heads
+            * text_config.head_dim
+            * resolve_dtype(dtype).itemsize
+        )
+        kv_cache_bytes = kv_cache_tokens * kv_bytes_per_token
+        logger.info(
+            f"MiniCPM-o thinker KV pool sized from max_sessions: "
+            f"kv_cache_tokens={kv_cache_tokens} "
+            f"kv_bytes_per_token={kv_bytes_per_token} "
+            f"kv_cache_bytes={kv_cache_bytes} "
+            f"total_gpu_memory_fraction={total_gpu_memory_fraction}"
+        )
+        total_memory_bytes = get_gpu_device_info(
+            resolve_concrete_device(device, gpu_id).index or 0
+        ).total_memory_bytes
+        if (
+            total_memory_bytes is not None
+            and kv_cache_bytes > total_gpu_memory_fraction * total_memory_bytes
+        ):
+            raise ValueError(
+                f"max_sessions needs {format_bytes_gib(kv_cache_bytes)} of thinker KV, "
+                f"more than gpu_memory_fraction={total_gpu_memory_fraction} of the card; "
+                "lower max_sessions or set the thinker's engine.kv_cache_bytes"
+            )
+        else:
+            pass
+        with stage_kv_cache_budget("thinker", kv_cache_bytes):
+            return builder.build(
+                model_path,
+                device=device,
+                gpu_id=gpu_id,
+                dtype=dtype,
+                server_args_overrides=server_args_overrides,
+                total_gpu_memory_fraction=total_gpu_memory_fraction,
+            )
 
 
 def create_speech_scheduler(

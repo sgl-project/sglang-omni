@@ -15,6 +15,7 @@ from pydantic import JsonValue, ValidationError
 from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
+from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
@@ -25,11 +26,15 @@ from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
+    TALKER_CONTEXT_LENGTH,
+    THINKER_CONTEXT_LENGTH,
     MiniCPMODuplexPipelineConfig,
     MiniCPMODuplexVision,
 )
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
 from sglang_omni.scheduling.session import BatchedSessionHooks
+from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+from sglang_omni.utils.gpu_memory import GpuDeviceInfo
 
 
 class ConfigLoaded(Exception):
@@ -46,6 +51,7 @@ def snapshot(tmp_path: Path) -> Path:
         "hidden_size": 64,
         "num_attention_heads": 8,
         "num_key_value_heads": 8,
+        "head_dim": 8,
         "num_hidden_layers": 1,
         "vision_config": {"hidden_size": 32},
         "audio_config": {"d_model": 32},
@@ -236,6 +242,91 @@ def test_duplex_yaml_builds_session_stages(
     )
     native_stages.PerceptionHooks.return_value.warm_up.assert_called_once_with(sessions)
     native_stages.AutoProcessor.from_pretrained.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("settings", "sessions", "thinker_tokens_per_session", "derived_talker"),
+    [
+        ("max_sessions: 64\n", 64, THINKER_CONTEXT_LENGTH, True),
+        (
+            "stages:\n  thinker:\n    gpu_memory_fraction: 0.4\n"
+            "  talker:\n    engine:\n      max_total_tokens: 1000\n",
+            2,
+            None,
+            False,
+        ),
+        (
+            "stages:\n  thinker:\n    engine:\n      context_length: 16384\n"
+            "  talker:\n    engine:\n      mem_fraction_static: 0.1\n",
+            2,
+            16384,
+            False,
+        ),
+    ],
+)
+def test_duplex_engine_memory_follows_max_sessions(
+    settings: str,
+    sessions: int,
+    thinker_tokens_per_session: int | None,
+    derived_talker: bool,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "duplex.yaml"
+    config_path.write_text(
+        "config_cls: MiniCPMODuplexPipelineConfig\nmodel_path: unused\n" + settings
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+    request_slots = sessions + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+    thinker = config.stage_factory_kwargs("thinker")
+    talker = config.stage_factory_kwargs("talker")["server_args_overrides"]
+    assert thinker["server_args_overrides"]["max_running_requests"] == request_slots
+    assert talker["max_running_requests"] == request_slots
+    if thinker_tokens_per_session is None:
+        assert "kv_cache_tokens" not in thinker
+    else:
+        assert thinker["kv_cache_tokens"] == request_slots * thinker_tokens_per_session
+    if derived_talker:
+        assert talker["max_total_tokens"] == request_slots * TALKER_CONTEXT_LENGTH
+    else:
+        assert "max_total_tokens" not in talker
+
+
+def test_thinker_kv_pool_holds_the_derived_tokens_within_its_card_share(
+    snapshot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        MiniCPMOThinkerEngineBuilder,
+        "build",
+        lambda self, *args, **kwargs: consume_stage_kv_cache_bytes(),
+    )
+    # note (Junnan Li): The snapshot thinker has 1 layer of 8 KV heads of width 8 in bfloat16.
+    kv_cache_bytes = 1000 * 2 * 1 * 8 * 8 * 2
+    assert (
+        native_stages.create_thinker_scheduler(
+            str(snapshot),
+            device="cpu",
+            kv_cache_tokens=1000,
+            total_gpu_memory_fraction=0.4,
+        )
+        == kv_cache_bytes
+    )
+    monkeypatch.setattr(
+        native_stages,
+        "get_gpu_device_info",
+        lambda gpu_id: GpuDeviceInfo(
+            logical_gpu_id=gpu_id,
+            device_id=None,
+            name=None,
+            total_memory_bytes=2 * kv_cache_bytes,
+        ),
+    )
+    with pytest.raises(ValueError, match="max_sessions needs"):
+        native_stages.create_thinker_scheduler(
+            str(snapshot),
+            device="cpu",
+            kv_cache_tokens=1000,
+            total_gpu_memory_fraction=0.4,
+        )
 
 
 @pytest.mark.parametrize(
