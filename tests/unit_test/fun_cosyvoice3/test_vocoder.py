@@ -987,6 +987,44 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     }
 
 
+@pytest.mark.parametrize("flow_steps", [None, 4])
+def test_create_vocoder_executor_sets_flow_steps(monkeypatch, flow_steps) -> None:
+    fake_flow = stages.FunCosyVoice3Flow(RunnableFakeFlow())
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(
+        stages,
+        "load_cosyvoice3_flow_hift",
+        lambda checkpoint_dir, device, fp16, **kwargs: (fake_flow, FakeHiFT()),
+    )
+    kwargs = {} if flow_steps is None else {"flow_steps": flow_steps}
+
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        flow_prefix_cache_gb=0.0,
+        device="cpu",
+        enable_dit_torch_compile=False,
+        **kwargs,
+    )
+
+    assert scheduler.vocoder.flow is fake_flow
+    assert fake_flow.euler_steps == (flow_steps or stages.FLOW_EULER_STEPS)
+
+
+def test_create_vocoder_executor_rejects_non_positive_flow_steps() -> None:
+    with pytest.raises(ValueError, match="flow_steps"):
+        stages.create_vocoder_executor(
+            "model",
+            flow_prefix_cache_gb=0.0,
+            device="cpu",
+            flow_steps=0,
+            enable_dit_torch_compile=False,
+        )
+
+
 def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(

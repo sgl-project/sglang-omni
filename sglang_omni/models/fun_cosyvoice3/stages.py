@@ -460,7 +460,7 @@ class FlowCudaGraphRunner:
             .clone()
         )
         time_span = torch.linspace(
-            0, 1, FLOW_EULER_STEPS + 1, device=model_device, dtype=parameter_dtype
+            0, 1, self.flow.euler_steps + 1, device=model_device, dtype=parameter_dtype
         )
         if decoder.t_scheduler == "cosine":
             time_span = 1 - torch.cos(time_span * 0.5 * torch.pi)
@@ -713,7 +713,7 @@ def prepare_flow_conditioning(
     unit_span = torch.linspace(
         0,
         1,
-        FLOW_EULER_STEPS + 1,
+        flow.euler_steps + 1,
         device=token_condition.device,
         dtype=token_condition.dtype,
     )
@@ -870,6 +870,7 @@ class FunCosyVoice3Flow:
         # estimator, whose fixed (2, 80, T) profile keeps the padded layout.
         self.packed_estimator = packed_estimator
         self.prefix_pool: PrefixKVPool | None = None
+        self.euler_steps = FLOW_EULER_STEPS
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.flow, name)
@@ -1467,7 +1468,7 @@ def build_prefix_pool(
     head_dim = int(attention.inner_dim) // head_num
     bytes_per_frame = PrefixKVPool.bytes_per_frame(
         layer_num=layer_num,
-        euler_steps=FLOW_EULER_STEPS,
+        euler_steps=flow.euler_steps,
         head_num=head_num,
         head_dim=head_dim,
         dtype=dtype,
@@ -1478,7 +1479,7 @@ def build_prefix_pool(
     budget_bytes = min(float(budget_gb) * 2**30, 0.25 * device_bytes)
     pool = PrefixKVPool(
         layer_num=layer_num,
-        euler_steps=FLOW_EULER_STEPS,
+        euler_steps=flow.euler_steps,
         head_num=head_num,
         head_dim=head_dim,
         capacity_frames=int(budget_bytes // bytes_per_frame),
@@ -2557,6 +2558,7 @@ def create_vocoder_executor(
     token_max_hop_len: int = TOKEN_MAX_HOP_LEN,
     disable_hop_growth: bool = False,
     flow_prefix_cache_gb: float,
+    flow_steps: int = FLOW_EULER_STEPS,
     mlx_model_path: str | None = None,
     mlx_model_revision: str | None = None,
 ) -> FunCosyVoice3StreamingVocoderScheduler | FunCosyVoice3MlxStreamingVocoderScheduler:
@@ -2570,6 +2572,10 @@ def create_vocoder_executor(
         pass
     if flow_prefix_cache_gb < 0:
         raise ValueError("flow_prefix_cache_gb must be >= 0")
+    else:
+        pass
+    if flow_steps < 1:
+        raise ValueError("flow_steps must be >= 1")
     else:
         pass
 
@@ -2595,6 +2601,12 @@ def create_vocoder_executor(
         if max_batch_size not in (None, 1):
             raise ValueError(
                 "Fun-CosyVoice3 native MLX vocoder requires max_batch_size=1"
+            )
+        else:
+            pass
+        if flow_steps != FLOW_EULER_STEPS:
+            raise ValueError(
+                "Fun-CosyVoice3 native MLX vocoder does not support flow_steps"
             )
         else:
             pass
@@ -2638,6 +2650,11 @@ def create_vocoder_executor(
         autocast_dtype=autocast_dtype,
         enable_flow_estimator_trt=enable_flow_estimator_trt,
     )
+    flow.euler_steps = flow_steps
+    if flow_steps != FLOW_EULER_STEPS:
+        logger.info(f"Fun-CosyVoice3 Flow runs {flow_steps} Euler steps per solve")
+    else:
+        pass
 
     device_obj = torch.device(device)
     if enable_flow_cuda_graph and (
