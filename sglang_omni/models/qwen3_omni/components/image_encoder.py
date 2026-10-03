@@ -9,16 +9,22 @@ from typing import TypedDict
 
 import torch
 import torch.nn as nn
+from transformers.initialization import no_init_weights
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeThinkerConfig,
+    Qwen3OmniMoeVisionEncoderConfig,
 )
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
 from sglang_omni.models.qwen3_omni.components.vision_compat import (
     Qwen3OmniMoeVisionEncoderCompat,
 )
+from sglang_omni.models.qwen3_omni.components.vision_encoder import (
+    Qwen3OmniVisionEncoder,
+)
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
-from sglang_omni.utils import instantiate_module
+from sglang_omni.platforms import current_platform
+from sglang_omni.utils.hf import instantiate_module
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +131,21 @@ def unpack_visual_output(visual_out):
     return visual_out.pooler_output, visual_out.deepstack_features
 
 
+def instantiate_visual(
+    vision_config: Qwen3OmniMoeVisionEncoderConfig,
+    *,
+    device: str,
+) -> Qwen3OmniMoeVisionEncoderCompat:
+    if torch.device(device).type != current_platform.device_type:
+        return instantiate_module(VISUAL_CLASS, vision_config)
+    else:
+        with no_init_weights():
+            return Qwen3OmniVisionEncoder._from_config(  # noqa: leading-underscore  # Transformers construction API
+                vision_config,
+                joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(),
+            )
+
+
 def build_visual(
     model_path: str,
     *,
@@ -132,8 +153,7 @@ def build_visual(
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:
-    vision_cfg = thinker_cfg.vision_config
-    visual = instantiate_module(VISUAL_CLASS, vision_cfg)
+    visual = instantiate_visual(thinker_cfg.vision_config, device=device)
     visual = load_module(
         visual,
         model_path,
