@@ -28,6 +28,7 @@ FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
+FLOW_WARMUP_TOKENS = 32
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -41,6 +42,7 @@ class MiniCPMOCode2Wav(nn.Module):
         dtype: str | torch.dtype | None = None,
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
+        enable_dit_torch_compile: bool = False,
         enable_flow_variable_length: bool,
         reference_workers: int,
         prompt_cache_capacity: int,
@@ -53,6 +55,11 @@ class MiniCPMOCode2Wav(nn.Module):
             raise ValueError(
                 "reference_workers and prompt_cache_capacity must be positive, got "
                 f"{reference_workers} and {prompt_cache_capacity}"
+            )
+        elif enable_dit_torch_compile and resolved_device.type != "cuda":
+            raise ValueError(
+                f"enable_dit_torch_compile is validated on CUDA only, got {device}; "
+                "set enable_dit_torch_compile to false"
             )
         else:
             pass
@@ -109,6 +116,40 @@ class MiniCPMOCode2Wav(nn.Module):
         )
         self.sample_rate = OUTPUT_SAMPLE_RATE
         self.eval()
+        if enable_dit_torch_compile:
+            flow = self.token2wav.flow
+            # note (Dayuxiaoshui): compile the dense blocks only; the packed path
+            # slices by data-dependent lengths and would recompile per length.
+            for block in flow.decoder.estimator.blocks:
+                block.forward = torch.compile(block.forward, dynamic=True)
+            warmup_prompt = SpeakerPrompt(
+                prompt_tokens=torch.zeros(
+                    1, FLOW_WARMUP_TOKENS, dtype=torch.int32, device=resolved_device
+                ),
+                prompt_token_lengths=torch.tensor(
+                    [FLOW_WARMUP_TOKENS], dtype=torch.int32, device=resolved_device
+                ),
+                speaker_embedding=torch.zeros(
+                    1,
+                    flow.speaker_embedding_projection.in_features,
+                    device=resolved_device,
+                ),
+                prompt_mel=torch.zeros(
+                    1,
+                    FLOW_WARMUP_TOKENS * flow.up_rate,
+                    flow.output_size,
+                    device=resolved_device,
+                ),
+            )
+            # note (Dayuxiaoshui): trace once at startup so no request pays the compile.
+            with self.device_context, torch.inference_mode():
+                self.flow_mel(
+                    warmup_prompt.prompt_tokens,
+                    warmup_prompt.prompt_token_lengths,
+                    [warmup_prompt],
+                )
+        else:
+            pass
 
     @torch.inference_mode()
     def forward(
@@ -260,6 +301,34 @@ class MiniCPMOCode2Wav(nn.Module):
         """Drain reference preparation and reject later submissions."""
         self.reference_executor.shutdown(wait=True)
 
+    def flow_mel(
+        self,
+        speech_tokens: torch.Tensor,
+        speech_token_lengths: torch.Tensor,
+        speaker_prompts: Sequence[SpeakerPrompt],
+    ) -> torch.Tensor:
+        """Run the flow on padded codec tokens, one speaker prompt per row."""
+        with torch.amp.autocast(
+            self.token2wav.device.type,
+            dtype=self.token2wav.dtype,
+            enabled=self.token2wav.dtype != torch.float32,
+        ):
+            return self.token2wav.flow.inference(
+                speech_tokens,
+                speech_token_lengths,
+                pad_sequence(
+                    [prompt.prompt_tokens[0] for prompt in speaker_prompts],
+                    batch_first=True,
+                ),
+                torch.cat([prompt.prompt_token_lengths for prompt in speaker_prompts]),
+                pad_sequence(
+                    [prompt.prompt_mel[0] for prompt in speaker_prompts],
+                    batch_first=True,
+                ),
+                torch.cat([prompt.speaker_embedding for prompt in speaker_prompts]),
+                self.token2wav.n_timesteps,
+            )
+
     def vocode(
         self,
         token_sequences: Sequence[Sequence[int]],
@@ -283,27 +352,11 @@ class MiniCPMOCode2Wav(nn.Module):
         speech_token_lengths = torch.tensor(
             token_lengths, dtype=torch.int32, device=device
         )
-        speaker_prompts = self.prepare_references(references)
-        with torch.amp.autocast(
-            self.token2wav.device.type,
-            dtype=self.token2wav.dtype,
-            enabled=self.token2wav.dtype != torch.float32,
-        ):
-            mel = self.token2wav.flow.inference(
-                speech_tokens,
-                speech_token_lengths,
-                pad_sequence(
-                    [prompt.prompt_tokens[0] for prompt in speaker_prompts],
-                    batch_first=True,
-                ),
-                torch.cat([prompt.prompt_token_lengths for prompt in speaker_prompts]),
-                pad_sequence(
-                    [prompt.prompt_mel[0] for prompt in speaker_prompts],
-                    batch_first=True,
-                ),
-                torch.cat([prompt.speaker_embedding for prompt in speaker_prompts]),
-                self.token2wav.n_timesteps,
-            )
+        mel = self.flow_mel(
+            speech_tokens,
+            speech_token_lengths,
+            self.prepare_references(references),
+        )
 
         up_rate = self.token2wav.flow.up_rate
         rows_by_token_length: defaultdict[int, list[int]] = defaultdict(list)

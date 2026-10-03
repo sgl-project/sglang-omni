@@ -245,7 +245,10 @@ class ScriptedRunnerTransition:
     latent_dim = 3
     max_output_samples = 4
     input_dtype = torch.float32
-    device = torch.device("cpu")
+    device = torch.device("cuda", 0)
+    device_module = torch.cuda
+    device_context = AudioVAEFixedStreamingTransition.device_context
+    synchronize_stream = AudioVAEFixedStreamingTransition.synchronize_stream
 
     def __init__(self) -> None:
         self.decode_actions: deque[AudioVAEFixedStreamingOutput | Exception] = deque()
@@ -871,3 +874,48 @@ def test_ming_tts_full_payload_decodes_once(keep_latents: bool) -> None:
     }
     audio = np.frombuffer(result.data["audio_waveform"], dtype=np.float32)
     np.testing.assert_array_equal(audio, waveform.numpy())
+
+
+@pytest.mark.accelerator
+def test_eager_streaming_runner_decodes_on_the_platform_accelerator() -> None:
+    from sglang_omni.platforms import current_platform
+
+    if current_platform.device_type == "cpu":
+        pytest.skip("requires an accelerator")
+    else:
+        pass
+    device = torch.device(current_platform.device_type, 0)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        audio_vae = make_tiny_audio_vae().to(device=device, dtype=torch.bfloat16)
+    transition = AudioVAEFixedStreamingTransition(
+        audio_vae.decoder, capacity=1, max_step_latents=4
+    )
+    runner = MingAudioStreamingRunner(transition, cuda_graph_required=False)
+    try:
+        (waveform,) = runner.run(
+            slot_ids=(0,),
+            patch_groups=((torch.ones((4, 4)),),),
+            terminal_flags=(True,),
+        )
+    finally:
+        runner.close()
+
+    assert waveform.numel() > 0
+    assert torch.isfinite(waveform).all()
+
+
+def test_eager_streaming_runner_decodes_a_cpu_decoder() -> None:
+    transition = AudioVAEFixedStreamingTransition(
+        make_tiny_audio_vae().decoder, capacity=1, max_step_latents=4
+    )
+    runner = MingAudioStreamingRunner(transition, cuda_graph_required=False)
+    (waveform,) = runner.run(
+        slot_ids=(0,),
+        patch_groups=((torch.ones((4, 4)),),),
+        terminal_flags=(True,),
+    )
+
+    assert not runner.host_waveform.is_pinned()
+    assert waveform.numel() > 0
+    assert torch.isfinite(waveform).all()

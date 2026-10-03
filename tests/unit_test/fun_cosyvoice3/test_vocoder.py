@@ -266,7 +266,9 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
             return self
 
     flow = Model()
-    flow.decoder = SimpleNamespace(estimator=torch.nn.Module())
+    estimator = torch.nn.Module()
+    estimator.transformer_blocks = torch.nn.ModuleList()
+    flow.decoder = SimpleNamespace(estimator=estimator)
     hift = Model()
 
     def fake_load_hyperpyyaml(handle, overrides):
@@ -1089,7 +1091,7 @@ def prepare_vocoder_startup(
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
-        lambda checkpoint_dir, device, fp16, enable_flow_estimator_trt=False: (
+        lambda checkpoint_dir, device, fp16, autocast_dtype, enable_flow_estimator_trt=False: (
             fake_flow,
             FakeHiFT(),
         ),

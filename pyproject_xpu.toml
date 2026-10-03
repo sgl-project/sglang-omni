@@ -77,6 +77,9 @@ dependencies = [
     "einops>=0.8.1",
     "onnx>=1.18.0",
 
+    # --- PersonaPlex -------------------------------------------------------
+    "sentencepiece>=0.2.0",
+
     # --- AuK ---------------------------------------------------------------
     "omegaconf",              # Released AuK checkpoints use OmegaConf YAML
     "x-transformers",         # AuK DiT rotary embeddings

@@ -32,6 +32,7 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.scheduling.types import ModelRunnerOutput
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.pipeline.helpers import run_scheduler
 
 
@@ -653,24 +654,25 @@ def enqueue_limit_scheduler(monkeypatch):
     return scheduler, events, aborts
 
 
+def admission_req(rid: str, token_ids: list[int]) -> SimpleNamespace:
+    return SimpleNamespace(
+        rid=rid,
+        priority=None,
+        weight_version_events=[],
+        output_ids=[],
+        origin_input_ids=array("q", token_ids),
+        origin_input_ids_unpadded=array("q", token_ids),
+        time_stats=SimpleNamespace(
+            wait_queue_entry_time=0.0,
+            trace_ctx=SimpleNamespace(abort=lambda *, abort_info: None),
+        ),
+    )
+
+
 def test_enqueue_built_request_honors_max_queued_requests(monkeypatch) -> None:
     scheduler, events, aborts = enqueue_limit_scheduler(monkeypatch)
 
-    def make_req(rid: str):
-        return SimpleNamespace(
-            rid=rid,
-            priority=None,
-            weight_version_events=[],
-            output_ids=[],
-            origin_input_ids=array("q", [1]),
-            origin_input_ids_unpadded=array("q", [1]),
-            time_stats=SimpleNamespace(
-                wait_queue_entry_time=0.0,
-                trace_ctx=SimpleNamespace(abort=lambda *, abort_info: None),
-            ),
-        )
-
-    first, second = make_req("req-ok"), make_req("req-reject")
+    first, second = admission_req("req-ok", [1]), admission_req("req-reject", [1])
     for req in (first, second):
         OmniScheduler.enqueue_built_request(
             scheduler,
@@ -688,6 +690,57 @@ def test_enqueue_built_request_honors_max_queued_requests(monkeypatch) -> None:
     assert reject.type == "error"
     assert "queue is full" in str(reject.data)
     assert aborts == ["req-reject"]
+
+
+def test_enqueue_built_request_rejects_a_prompt_without_tokens(monkeypatch) -> None:
+    scheduler, events, aborts = enqueue_limit_scheduler(monkeypatch)
+    req = admission_req("req-empty", [])
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id=req.rid),
+        False,
+        SimpleNamespace(req=req, enforce_request_limits=False),
+    )
+
+    reject = scheduler.outbox.get_nowait()
+    assert reject.request_id == "req-empty"
+    assert reject.type == "error"
+    assert is_bad_request_error(RuntimeError(str(reject.data)))
+    assert aborts == ["req-empty"]
+    assert scheduler.waiting_queue == []
+    assert "scheduler_queue_enter" not in events
+
+
+def test_enqueue_built_request_admits_an_empty_session_append_with_history(
+    monkeypatch,
+) -> None:
+    scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
+    unit = SimpleNamespace(is_enqueued=False)
+    session_request = admission_req("req-append", [1, 2, 3])
+
+    def create_session_request(payload, request_data) -> None:
+        request_data.req = session_request
+
+    scheduler.session_bridge = SimpleNamespace(
+        units_by_request_id={"req-append": unit},
+        create_session_request=create_session_request,
+        check_session_capacity=lambda request_id: None,
+    )
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id="req-append"),
+        False,
+        SimpleNamespace(
+            req=admission_req("req-append", []), enforce_request_limits=False
+        ),
+    )
+
+    assert scheduler.waiting_queue == [session_request]
+    assert unit.is_enqueued
+    assert scheduler.outbox.empty()
+    assert aborts == []
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (

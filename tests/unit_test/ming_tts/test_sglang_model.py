@@ -430,3 +430,88 @@ def test_ming_decoder_scopes_mlp_collective_flags(
     ) is (  # noqa: leading-underscore  # production name
         fuse_mlp_allreduce
     )
+
+
+class TinyTailModel:
+    hidden_size = 8
+    history_patch_size = 2
+    latent_dim = 4
+
+    def __init__(self, device: torch.device) -> None:
+        self.decode_input_embedding = torch.nn.Embedding(
+            1, 8, device=device, dtype=torch.bfloat16
+        )
+
+    def make_tail_sampling_inputs(self, *, batch_size: int, device: torch.device):
+        return (
+            torch.randn(batch_size, 1, 4, device=device),
+            torch.linspace(0.0, 1.0, 3, device=device),
+            torch.randn(2, batch_size, 1, 4, device=device),
+        )
+
+    def compute_tail_step(self, inputs, *, noise, timesteps, sde_random):
+        from sglang_omni.models.ming_tts.sglang_model import MingTTSTailOutputs
+
+        hidden = inputs.hidden_states.unsqueeze(1)
+        attended = torch.nn.functional.scaled_dot_product_attention(
+            hidden, hidden, hidden
+        ).squeeze(1)
+        sampled = (
+            attended[..., :4].float() * inputs.cfg[:, None, None]
+            + noise * inputs.sigma[:, None, None] * timesteps[-1]
+            + sde_random.sum(0)
+            + inputs.latent_history.mean(1, keepdim=True)
+        )
+        feedback = self.decode_input_embedding.weight[0] * sampled.sum(
+            -1, keepdim=True
+        ).to(torch.bfloat16)
+        return MingTTSTailOutputs(
+            sampled=sampled,
+            feedback_embeddings=feedback,
+            stop_prob=torch.sigmoid(sampled.mean((1, 2))),
+        )
+
+
+@pytest.mark.accelerator
+def test_ming_tts_tail_graph_replay_matches_eager_on_the_platform_accelerator() -> None:
+    from sglang_omni.models.ming_tts.sglang_model import (
+        MingTTSTailGraph,
+        MingTTSTailInputs,
+    )
+    from sglang_omni.platforms import current_platform
+
+    if current_platform.device_type == "cpu":
+        pytest.skip("requires an accelerator")
+    else:
+        pass
+    device = torch.device(current_platform.device_type, 0)
+    model = TinyTailModel(device)
+    graph = MingTTSTailGraph(model, batch_size=2)
+    graph.capture()
+    inputs = MingTTSTailInputs(
+        hidden_states=torch.randn(1, 1, 8, device=device, dtype=torch.bfloat16),
+        latent_history=torch.randn(1, 2, 4, device=device),
+        cfg=torch.full((1,), 2.0, device=device),
+        sigma=torch.full((1,), 0.25, device=device),
+        temperature=torch.zeros(1, device=device),
+    )
+    noise = torch.randn(1, 1, 4, device=device)
+    sde_random = torch.randn(2, 1, 1, 4, device=device)
+
+    replayed = graph.replay(inputs, noise=noise, sde_random=sde_random)
+    eager = model.compute_tail_step(
+        inputs, noise=noise, timesteps=graph.timesteps, sde_random=sde_random
+    )
+
+    torch.testing.assert_close(replayed.sampled, eager.sampled)
+    torch.testing.assert_close(replayed.feedback_embeddings, eager.feedback_embeddings)
+    torch.testing.assert_close(replayed.stop_prob, eager.stop_prob)
+
+
+def test_ming_tts_tail_graph_rejects_a_device_without_a_graph_backend() -> None:
+    from sglang_omni.models.ming_tts.sglang_model import MingTTSTailGraph
+
+    graph = MingTTSTailGraph(TinyTailModel(torch.device("cpu")), batch_size=1)
+
+    with pytest.raises(RuntimeError, match="no device graph backend for cpu"):
+        graph.capture()

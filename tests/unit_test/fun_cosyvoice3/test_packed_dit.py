@@ -195,6 +195,44 @@ def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
         torch.testing.assert_close(actual, reference, rtol=1e-9, atol=1e-9)
 
 
+def test_packed_dit_shares_the_projection_weights_and_keeps_the_dit_forward() -> None:
+    dit = tiny_dit()
+    padded = padded_inputs()
+
+    def native_forward() -> torch.Tensor:
+        with torch.inference_mode():
+            return dit(
+                padded["x"],
+                padded["mask"],
+                padded["mu"],
+                padded["t"],
+                padded["spks"],
+                padded["cond"],
+                streaming=True,
+            )
+
+    before = native_forward()
+    estimator = PackedDiT(dit, device=CPU)
+
+    assert torch.equal(native_forward(), before)
+    for block, qkv_weight, qkv_bias in zip(
+        dit.transformer_blocks,
+        estimator.qkv_weights,
+        estimator.qkv_biases,
+        strict=True,
+    ):
+        attention = block.attn
+        for projection in (attention.to_q, attention.to_k, attention.to_v):
+            assert (
+                projection.weight.untyped_storage().data_ptr()
+                == qkv_weight.untyped_storage().data_ptr()
+            )
+            assert (
+                projection.bias.untyped_storage().data_ptr()
+                == qkv_bias.untyped_storage().data_ptr()
+            )
+
+
 @pytest.mark.parametrize("streaming", [True, False])
 def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
     dit = tiny_dit()

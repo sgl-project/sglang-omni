@@ -250,6 +250,7 @@ def build_code2wav_stage(
         "unused",
         device=None,
         gpu_id=0,
+        enable_dit_torch_compile=factory.enable_dit_torch_compile,
         enable_flow_variable_length=factory.enable_flow_variable_length,
         reference_workers=factory.reference_workers,
         prompt_cache_capacity=factory.prompt_cache_capacity,
@@ -352,6 +353,69 @@ def test_mixed_reference_batch_matches_single_row_mels(
         model.close_reference_pool()
 
 
+@pytest.fixture(scope="module")
+def compiled_vocoder() -> Iterator[MiniCPMOCode2Wav]:
+    checkpoint = find_checkpoint_dir()
+    device = resolve_concrete_device(None)
+    if checkpoint is None or device.type != "cuda":
+        pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for compiled flow checks")
+    else:
+        pass
+    factory = code2wav_stage_factory()
+    model = MiniCPMOCode2Wav(
+        str(checkpoint),
+        device=str(device),
+        dtype=factory.dtype,
+        enable_dit_torch_compile=True,
+        enable_flow_variable_length=factory.enable_flow_variable_length,
+        reference_workers=factory.reference_workers,
+        prompt_cache_capacity=factory.prompt_cache_capacity,
+    )
+    yield model
+    model.close_reference_pool()
+
+
+@pytest.mark.accelerator
+def test_compiled_flow_serves_new_batches_without_recompiling(
+    compiled_vocoder: MiniCPMOCode2Wav,
+) -> None:
+    tokens = CHECKPOINT_CODEC_TOKENS
+    sequences = [tokens * 3, tokens, *([tokens * 7] * 5)]
+    with torch.compiler.set_stance("fail_on_recompile"):
+        waveforms = compiled_vocoder.vocode(sequences[:2], [None] * 2)
+        waveforms += compiled_vocoder.vocode(sequences[2:], [None] * 5)
+    assert [wave.shape for wave in waveforms] == [
+        (len(sequence) * SAMPLES_PER_CODEC_TOKEN,) for sequence in sequences
+    ]
+    assert all(np.isfinite(wave).all() for wave in waveforms)
+
+
+@pytest.mark.accelerator
+def test_compiled_flow_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None:
+    device = compiled_vocoder.token2wav.device
+    tokens = torch.tensor(
+        [CHECKPOINT_CODEC_TOKENS * 7], dtype=torch.int32, device=device
+    )
+    token_lengths = torch.tensor([tokens.shape[1]], dtype=torch.int32, device=device)
+    prompts = compiled_vocoder.prepare_references([None])
+    compiled = compiled_vocoder.flow_mel(tokens, token_lengths, prompts).float()
+    with torch.compiler.set_stance("force_eager"):
+        eager = compiled_vocoder.flow_mel(tokens, token_lengths, prompts).float()
+    assert relative_rms_error(compiled, eager) < 5e-3
+
+
+def test_dit_torch_compile_rejects_non_cuda_device() -> None:
+    with pytest.raises(ValueError, match="CUDA only"):
+        MiniCPMOCode2Wav(
+            "unused",
+            device="xpu:0",
+            enable_dit_torch_compile=True,
+            enable_flow_variable_length=True,
+            reference_workers=8,
+            prompt_cache_capacity=32,
+        )
+
+
 def wav_data_uri(audio: bytes) -> str:
     return "data:audio/wav;base64," + base64.b64encode(audio).decode("ascii")
 
@@ -411,8 +475,9 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert factory.max_batch_size == 8
     assert factory.max_batch_wait_ms == 0.0
     assert factory.batch_wait_when_idle is False
-    assert factory.dtype is None
-    assert factory.enable_flow_variable_length is True
+    assert factory.dtype == "float16"
+    assert factory.enable_dit_torch_compile is True
+    assert factory.enable_flow_variable_length is False
     assert factory.reference_workers == 8
     assert factory.prompt_cache_capacity == 32
 

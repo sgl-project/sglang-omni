@@ -161,9 +161,11 @@ class Coordinator(CoordinatorSessions):
         logger.info("Coordinator started")
 
     async def stop(self) -> None:
-        """Stop the coordinator."""
+        """Stop the coordinator and fail every request it still owns."""
         await self.stop_sessions()
-        self.running = False
+        # This also rejects later submissions, which would otherwise be sent on
+        # the closed control plane and never answered.
+        await self.fail_pending_requests(self.fatal_error or "Coordinator stopped")
         self.control_plane.close()
         logger.info("Coordinator stopped")
 
@@ -385,7 +387,7 @@ class Coordinator(CoordinatorSessions):
             result = await future
             return result
         finally:
-            self.completion_futures.pop(request_id, None)
+            await self.release_submission(request_id, future)
 
     async def stream(
         self, request_id: str, request: object
@@ -458,6 +460,14 @@ class Coordinator(CoordinatorSessions):
             pass
         if self.request_id_is_reserved(request_id):
             raise ValueError(f"Request {request_id} already exists")
+        else:
+            pass
+        if stream_queue is not None and stream_queue.maxsize > 0:
+            raise ValueError(
+                "stream_queue must be unbounded because one completion loop "
+                "delivers events for every request and a full queue would stall "
+                f"them all, got maxsize={stream_queue.maxsize}"
+            )
         else:
             pass
 
@@ -533,15 +543,27 @@ class Coordinator(CoordinatorSessions):
             metadata={"entry_stage": self.entry_stage},
         )
 
-        await self.control_plane.submit_to_stage(
-            entry_instance,
-            entry_info.control_endpoint,
-            SubmitMessage(
-                request_id=request_id,
-                data=payload,
-                replica_bindings=replica_bindings,
-            ),
-        )
+        try:
+            await self.control_plane.submit_to_stage(
+                entry_instance,
+                entry_info.control_endpoint,
+                SubmitMessage(
+                    request_id=request_id,
+                    data=payload,
+                    replica_bindings=replica_bindings,
+                ),
+            )
+        except Exception:
+            # Serialization runs before the socket send, and a ZMQ send either
+            # queues the whole message or raises. No stage holds this request,
+            # so it is dropped without an abort that would retire its ID there.
+            self.requests.pop(request_id, None)
+            await self.release_submission(request_id, future)
+            raise
+        except BaseException:
+            # A cancelled send may already be queued for the entry stage.
+            await self.release_submission(request_id, future)
+            raise
 
         # Update state
         info = self.requests.get(request_id)
@@ -557,6 +579,31 @@ class Coordinator(CoordinatorSessions):
             )
         else:
             pass
+
+    async def release_submission(self, request_id: str, future: asyncio.Future) -> None:
+        """Release a submission whose caller no longer awaits its completion."""
+        if self.completion_futures.get(request_id) is not future:
+            return
+        else:
+            pass
+        # Nobody awaits this future any more, so settle it before abort can
+        # attach an exception that would never be retrieved.
+        if not future.cancel() and not future.cancelled():
+            future.exception()
+        else:
+            pass
+        try:
+            await self.abort(request_id)
+        except Exception:
+            # The coordinator-owned abort task logs its own failure and the
+            # request stays owned until a later abort or stop releases it.
+            pass
+        finally:
+            if self.completion_futures.get(request_id) is future:
+                self.completion_futures.pop(request_id, None)
+                self.stream_queues.pop(request_id, None)
+            else:
+                pass
 
     def request_id_is_reserved(self, request_id: str) -> bool:
         """Return whether any coordinator owner still holds this request ID."""
@@ -607,9 +654,10 @@ class Coordinator(CoordinatorSessions):
         else:
             pass
 
+        # A FAILED request is still owned only when its abort was not
+        # delivered, so aborting it again retries that release.
         if info.state in (
             RequestState.COMPLETED,
-            RequestState.FAILED,
             RequestState.ABORTED,
         ):
             return False
@@ -724,7 +772,8 @@ class Coordinator(CoordinatorSessions):
             },
         )
 
-        if request_id not in self.requests:
+        info = self.requests.get(request_id)
+        if info is None or info.state == RequestState.FAILED:
             logger.debug(
                 "Coordinator ignored completion for inactive req=%s from %s",
                 request_id,
@@ -733,8 +782,6 @@ class Coordinator(CoordinatorSessions):
             return
         else:
             pass
-
-        info = self.requests[request_id]
 
         # Note (wenyao): the client reads ``from_stage`` off the completion.
         # Observability emits above keep the instance name.
@@ -748,9 +795,20 @@ class Coordinator(CoordinatorSessions):
         if not msg.success:
             info.state = RequestState.FAILED
             info.error = msg.error
-            await self.control_plane.broadcast_abort(
-                AbortMessage(request_id=request_id)
-            )
+            try:
+                await self.control_plane.broadcast_abort(
+                    AbortMessage(request_id=request_id)
+                )
+            except Exception:
+                # Other stages may still hold this request, so keep its ID and
+                # admission slot until a later abort or stop releases them.
+                logger.warning(
+                    "Failed to abort failed request %s, keeping it owned",
+                    request_id,
+                    exc_info=True,
+                )
+            else:
+                self.requests.pop(request_id, None)
             self.partial_results.pop(request_id, None)
             self.reject_completion_future(
                 request_id, QueueFullError.from_message(msg.error)
@@ -760,7 +818,6 @@ class Coordinator(CoordinatorSessions):
                 await stream_queue.put(msg)
             else:
                 pass
-            self.requests.pop(request_id, None)
             return
         else:
             pass

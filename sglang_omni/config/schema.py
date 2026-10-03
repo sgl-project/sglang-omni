@@ -788,6 +788,14 @@ class PipelineConfig(BaseModel):
         """
         return dict(self.env_defaults)
 
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        """Resolve launch-time environment defaults for a logical stage.
+
+        Stage settings override pipeline defaults; model policies may derive
+        missing values here without persisting them in the configuration.
+        """
+        return {**self.resolved_env_defaults(), **self.stage_named(stage_name).env}
+
     @classmethod
     def generation_admission_defaults(cls) -> dict[str, int]:
         """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""

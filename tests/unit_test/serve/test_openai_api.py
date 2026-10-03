@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
+from sglang_omni.client.client import extract_inputs
 from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
@@ -939,7 +940,7 @@ def test_admin_routes_forward_to_client() -> None:
     ]
 
 
-def test_chat_stream_failure_closes_without_done_sentinel() -> None:
+def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
     chunks: list[str] = []
     client = fault_client("qwen3-omni")
     req = ChatCompletionRequest(
@@ -961,11 +962,15 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
         ):
             chunks.append(chunk)
 
-    with pytest.raises(RuntimeError, match="cuda out of memory"):
-        asyncio.run(drive())
+    asyncio.run(drive())
 
     assert chunks
-    assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
+    assert chunks[-1] == "data: [DONE]\n\n"
+    assert json.loads(chunks[-2][6:])["error"] == {
+        "message": "cuda out of memory",
+        "type": "server_error",
+        "code": 500,
+    }
 
 
 def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
@@ -1256,6 +1261,23 @@ def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
     assert gen_req.sampling.top_p == 1.0
     assert gen_req.sampling.top_k == -1
     assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+
+
+@pytest.mark.parametrize("use_audio_in_video", [True, False])
+def test_chat_request_forwards_embedded_video_audio_flag(
+    use_audio_in_video: bool,
+) -> None:
+    req = ChatCompletionRequest(
+        model="qwen3-omni",
+        messages=[{"role": "user", "content": "hello"}],
+        videos=["clip.mp4"],
+        use_audio_in_video=use_audio_in_video,
+    )
+
+    gen_req = build_chat_generate_request(req)
+
+    assert gen_req.metadata["use_audio_in_video"] is use_audio_in_video
+    assert extract_inputs(gen_req)["use_audio_in_video"] is use_audio_in_video
 
 
 def test_chat_request_preserves_explicit_default_sampling_values() -> None:
@@ -2847,6 +2869,67 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.model == "openai/whisper-large-v3"
     assert request.prompt["filename"] == "sample.wav"
     assert request.extra_params["language"] == "en"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (
+            "use_audio_in_video requires every video in a multi-video request "
+            "to contain a decodable audio track",
+            400,
+        ),
+        ("Embedded audio stream decoded no samples: /tmp/empty.mp4", 400),
+        (
+            "Invalid media data while extracting embedded audio from /tmp/corrupt.mp4",
+            400,
+        ),
+        ("Invalid media data while decoding video path=/tmp/corrupt.mp4", 400),
+        (
+            "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
+            400,
+        ),
+        ("Failed to extract embedded audio from /tmp/video.mp4: out of memory", 500),
+        (
+            "Failed to extract embedded audio from /tmp/video.mp4: permission denied",
+            500,
+        ),
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+def test_chat_endpoint_classifies_embedded_audio_errors(
+    error: str, expected_status: int, stream: bool
+) -> None:
+    client = TestClient(create_app(fault_client("qwen3-omni", error=error)))
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-omni",
+            "messages": [{"role": "user", "content": "Describe the video."}],
+            "use_audio_in_video": True,
+            "stream": stream,
+        },
+    )
+    if stream:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        events = [
+            line.removeprefix("data: ")
+            for line in response.iter_lines()
+            if line.startswith("data: ")
+        ]
+        assert events[-1] == "[DONE]"
+        assert events.count("[DONE]") == 1
+        assert json.loads(events[-2])["error"] == {
+            "message": error,
+            "type": (
+                "invalid_request_error" if expected_status == 400 else "server_error"
+            ),
+            "code": expected_status,
+        }
+    else:
+        assert response.status_code == expected_status
+        assert error in response.text
 
 
 def test_transcription_endpoint_maps_disallowed_special_token_to_400() -> None:

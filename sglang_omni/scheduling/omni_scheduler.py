@@ -1615,6 +1615,19 @@ class OmniScheduler(Generic[RequestDataT]):
         req = req_data.req
         self.normalize_req_token_arrays(req)
         req_id = req.rid
+        # Session appends are checked after history restore, as SGLang does.
+        if not req.origin_input_ids:
+            self.emit_request_error(
+                req_id,
+                ValueError(
+                    "Request has no prompt tokens after preprocessing. "
+                    "Send input that tokenizes to at least one token."
+                ),
+            )
+            self.abort(req_id)
+            return
+        else:
+            pass
         if req_data.enforce_request_limits:
             error_msg = self.prepare_request_limits(req_data)
             if error_msg:
