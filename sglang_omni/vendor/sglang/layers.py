@@ -13,7 +13,9 @@ from typing import Optional, Tuple, Union
 
 import torch
 from sglang.srt.layers.activation import SiluAndMul
-from sglang.srt.layers.communicator import LayerCommunicator, LayerScatterModes
+from sglang.srt.layers.aux_hidden_states import AuxHiddenStateList
+from sglang.srt.layers.layer_boundary import declare_attn, declare_ffn, make_stages
+from sglang.srt.layers.layer_boundary.residual import batch as residual_batch
 from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.linear import (
     MergedColumnParallelLinear,
@@ -104,7 +106,10 @@ __all__ = [
     "get_moe_impl_class",
     "RoutingMethodType",
     "QuantizationConfig",
-    "LayerCommunicator",
-    "LayerScatterModes",
+    "AuxHiddenStateList",
+    "declare_attn",
+    "declare_ffn",
+    "make_stages",
+    "residual_batch",
     "FusedMoE",
 ]

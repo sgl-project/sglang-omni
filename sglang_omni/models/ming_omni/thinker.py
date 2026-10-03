@@ -20,7 +20,7 @@ import math
 from typing import Iterable, Optional, Tuple
 
 import torch
-from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
+from sglang.srt.layers.layer_boundary import enable_moe_dense_fully_dp
 from sglang.srt.runtime_context import get_parallel
 from torch import nn
 from transformers import PretrainedConfig
