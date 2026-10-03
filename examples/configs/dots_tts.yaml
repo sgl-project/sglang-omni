@@ -24,6 +24,8 @@ stages:
   latent_engine:
     factory:
       optimize: true
+      # note (0xtoward): Disable padding to favor first-audio latency over throughput.
+      enable_acoustic_tail_batch_padding: true
     engine:
       mem_fraction_static: 0.20
       max_running_requests: 16

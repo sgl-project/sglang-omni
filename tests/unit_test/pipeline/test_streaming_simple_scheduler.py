@@ -450,6 +450,19 @@ def test_serving_loop_drains_pending_then_inbox_before_the_ready_step() -> None:
     assert scheduler.inbox.empty()
 
 
+def test_ready_work_intake_budget_preserves_unconsumed_inbox() -> None:
+    scheduler = ReadyStepScheduler()
+    scheduler.ready_work_message_batch_limit = 1
+    scheduler.ready = True
+    scheduler.pending_messages.append(make_chunk("a", "x"))
+    scheduler.inbox.put(make_chunk("b", "y"))
+
+    scheduler.start()
+
+    assert scheduler.events == ["chunk:a", "step"]
+    assert scheduler.inbox.get_nowait().request_id == "b"
+
+
 class DeferredDoneScheduler(StreamingSchedulerUnderTest):
     def on_stream_done(self, request_id: str) -> None:
         del request_id

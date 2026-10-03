@@ -14,6 +14,7 @@ from sglang_omni.models.dots_tts.vocoder_slot_pool import (
     append_decoder_input_per_row,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto import OmniRequest, StagePayload
 
 
 class RecordingSlotPool:
@@ -42,6 +43,7 @@ class RecordingSlotPool:
         self.free.append(slot)
 
     def step(self, slot_latents: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
+        assert all(latents.shape[1] < 32 for latents in slot_latents.values())
         self.steps.append(
             {slot: latents.clone() for slot, latents in slot_latents.items()}
         )
@@ -359,3 +361,233 @@ def test_decode_delta_non_final_is_a_no_op() -> None:
     assert state.pending
     assert state.slot is not None
     assert not pool.steps
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_buffer_scheduling_preserves_patch_order_and_completes(enabled: bool) -> None:
+    pool = RecordingSlotPool()
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(),
+        optimize=True,
+        slot_pool=pool,
+        enable_buffer_scheduling=enabled,
+    )
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs=[], params={"stream": True}),
+        data={},
+    )
+    vocoder.handle_streaming_new_request("req", payload)
+    for index in range(7):
+        vocoder.on_stream_chunk_batch(
+            [
+                (
+                    "req",
+                    StreamItem(
+                        chunk_id=index,
+                        data=patch(float(index)),
+                        from_stage="latent_engine",
+                        metadata={"modality": "audio_latents", "stream": True},
+                    ),
+                )
+            ]
+        )
+    if enabled:
+        assert not pool.steps
+    else:
+        assert pool.steps
+    vocoder.handle_stream_done("req")
+    if enabled:
+        assert not pool.steps
+        for _ in range(8):
+            if not vocoder.has_ready_work():
+                break
+            vocoder.run_ready_step()
+    assert len(pool.flushes) == 1
+    slot = pool.flushes[0]
+    consumed = [step[slot] for step in pool.steps]
+    assert [tensor.shape[1] for tensor in consumed] == [3, 3, 12, 3]
+    torch.testing.assert_close(
+        torch.cat(consumed, dim=1),
+        torch.cat([patch(float(i)) for i in range(7)], dim=1),
+    )
+    messages = []
+    while not vocoder.outbox.empty():
+        messages.append(vocoder.outbox.get_nowait())
+    assert [message.type for message in messages] == ["stream"] * 4 + ["result"]
+    assert not pool.in_use
+    assert not vocoder.stream_states
+    assert not vocoder.stream_payloads
+
+
+@pytest.mark.parametrize("termination", ["abort", "stop", "failure"])
+def test_buffer_scheduling_releases_pending_slots(
+    termination: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = RecordingSlotPool()
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(), optimize=True, slot_pool=pool, enable_buffer_scheduling=True
+    )
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs=[], params={"stream": True}),
+        data={},
+    )
+    vocoder.handle_streaming_new_request("req", payload)
+    state = vocoder.stream_states["req"]
+    vocoder.ingest("req", state, patch())
+    vocoder.handle_stream_done("req")
+    assert state.done
+    if termination == "abort":
+        vocoder.abort("req")
+    elif termination == "stop":
+        vocoder.stop()
+    else:
+
+        def fail_step(slot_latents: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
+            raise RuntimeError("decode failed")
+
+        monkeypatch.setattr(pool, "step", fail_step)
+        vocoder.run_ready_step()
+    assert not vocoder.has_ready_work()
+    assert not pool.in_use
+    assert not vocoder.stream_states
+    assert not pool.steps
+
+
+def test_buffer_scheduling_prioritizes_first_audio_without_starving_started_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = RecordingSlotPool()
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(), optimize=True, slot_pool=pool, enable_buffer_scheduling=True
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.dots_tts.vocoder.time.perf_counter", lambda: 1.0
+    )
+    for request_id in ["old-a", "old-b", "new"]:
+        state = vocoder.create_stream_state(request_id)
+        vocoder.stream_states[request_id] = state
+        for _ in range(4):
+            vocoder.ingest(request_id, state, patch())
+        if request_id != "new":
+            state.received_patches += 2
+            state.playback_end_seconds = 2.0
+            vocoder.mark_stream_emitted(request_id)
+    vocoder.stream_states["new"].first_ingest_seconds = 0.97
+    assert [request_id for request_id, _ in vocoder.select_step_participants()] == [
+        "new"
+    ]
+    vocoder.stream_states["old-a"].ready_since_seconds = 0.8
+    assert [request_id for request_id, _ in vocoder.select_step_participants()] == [
+        "old-a",
+        "old-b",
+    ]
+    pool.num_slots = 3
+    vocoder.stream_states["old-a"].done = True
+    vocoder.record_aborted_request_id("old-a")
+    assert all(
+        request_id != "old-a" for request_id, _ in vocoder.select_step_participants()
+    )
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("num_slots", [1, 2])
+def test_eos_releases_full_pool_before_ingesting_successor(
+    enabled: bool, num_slots: int
+) -> None:
+    pool = RecordingSlotPool(num_slots=num_slots)
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(),
+        optimize=True,
+        slot_pool=pool,
+        stream_slots=num_slots,
+        enable_buffer_scheduling=enabled,
+    )
+    for generation in ["old", "new"]:
+        for index in range(num_slots):
+            request_id = f"{generation}-{index}"
+            payload = StagePayload(
+                request_id=request_id,
+                request=OmniRequest(inputs=[], params={"stream": True}),
+                data={},
+            )
+            vocoder.handle_streaming_new_request(request_id, payload)
+            for chunk_id in range(16):
+                vocoder.on_stream_chunk_batch(
+                    [
+                        (
+                            request_id,
+                            StreamItem(
+                                chunk_id=chunk_id,
+                                data=patch(float(chunk_id)),
+                                from_stage="latent_engine",
+                                metadata={"modality": "audio_latents", "stream": True},
+                            ),
+                        )
+                    ]
+                )
+        for index in range(num_slots):
+            vocoder.handle_stream_done(f"{generation}-{index}")
+    while vocoder.has_ready_work():
+        vocoder.run_ready_step()
+    assert len(pool.flushes) == 2 * num_slots
+    assert all(tensor.shape[1] <= 12 for step in pool.steps for tensor in step.values())
+    assert not pool.in_use
+    assert not vocoder.stream_states
+
+
+def test_pressure_drain_failure_aborts_old_request_but_admits_successor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = RecordingSlotPool(num_slots=1)
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(),
+        optimize=True,
+        slot_pool=pool,
+        stream_slots=1,
+        enable_buffer_scheduling=True,
+    )
+    callbacks = []
+    vocoder.abort_callback = callbacks.append
+    for request_id in ["old", "new"]:
+        vocoder.handle_streaming_new_request(
+            request_id,
+            StagePayload(
+                request_id=request_id,
+                request=OmniRequest(inputs=[], params={"stream": True}),
+                data={},
+            ),
+        )
+    vocoder.ingest("old", vocoder.stream_states["old"], patch())
+    vocoder.handle_stream_done("old")
+
+    def fail_step(slot_latents: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
+        raise RuntimeError("old decode failed")
+
+    monkeypatch.setattr(pool, "step", fail_step)
+    vocoder.on_stream_chunk_batch(
+        [
+            (
+                "new",
+                StreamItem(
+                    chunk_id=0,
+                    data=patch(),
+                    from_stage="latent_engine",
+                    metadata={"modality": "audio_latents", "stream": True},
+                ),
+            )
+        ]
+    )
+    assert callbacks == ["old"]
+    assert vocoder.is_aborted("old")
+    assert not vocoder.is_aborted("new")
+    assert vocoder.stream_states["new"].slot is not None
+    messages = []
+    while not vocoder.outbox.empty():
+        messages.append(vocoder.outbox.get_nowait())
+    assert [(message.request_id, message.type) for message in messages] == [
+        ("old", "error")
+    ]
+    vocoder.stop()
+    assert not pool.in_use
