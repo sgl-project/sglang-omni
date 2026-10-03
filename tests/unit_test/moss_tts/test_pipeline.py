@@ -2541,3 +2541,41 @@ def test_single_process_variant_keeps_legacy_topology() -> None:
     assert [(group.name, group.stage_names) for group in topology.groups] == [
         ("pipeline", ("preprocessing", "tts_engine", "vocoder"))
     ]
+
+
+@pytest.mark.accelerator
+def test_moss_npu_seeded_sampling_stays_on_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+    from sglang_omni.platforms import current_platform
+
+    if not current_platform.is_npu():
+        pytest.skip("requires Ascend NPU")
+
+    def fail_host(*args, **kwargs):
+        raise AssertionError("NPU sampling must not enter the host sampler")
+
+    monkeypatch.setattr(MossTTSModelRunner, "multinomial_with_seed_cpu", fail_host)
+
+    device = torch.device("npu")
+    common = {
+        "temperature": torch.full((2,), 1.5, device=device),
+        "top_p": torch.ones(2, device=device),
+        "top_k": torch.full((2,), 4, dtype=torch.long, device=device),
+        "seeds": torch.tensor([100, 101], dtype=torch.long, device=device),
+        "positions": torch.tensor([3, 7], dtype=torch.long, device=device),
+    }
+    logits = torch.tensor([[3.0, 2.0, 1.0, 0.0], [0.0, 1.0, 2.0, 3.0]], device=device)
+
+    full = MossTTSModelRunner.sample_tokens(logits, **common)
+    compact = MossTTSModelRunner.sample_tokens(
+        logits[:, :2],
+        candidate_token_ids=torch.tensor([12, 13], dtype=torch.long, device=device),
+        **common,
+    )
+
+    assert full.device.type == "npu"
+    assert compact.device.type == "npu"
+    assert full.tolist() == [0, 2]
+    assert compact.tolist() == [13, 13]

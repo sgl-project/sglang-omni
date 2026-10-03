@@ -10,6 +10,8 @@ from sglang.kernels.ops.sampling.murmur_hash import fmix32, murmur3_mix, murmur_
 from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
 
+from sglang_omni.platforms import current_platform
+
 _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
 
 
@@ -148,7 +150,7 @@ def seeded_gumbel_argmax(
     return result
 
 
-@torch.compile(dynamic=True)
+@torch.compile(dynamic=True, disable=current_platform.is_npu())
 def multinomial_with_seed_and_token_ids(
     logprobs: torch.Tensor,
     seed: torch.Tensor,
@@ -156,6 +158,11 @@ def multinomial_with_seed_and_token_ids(
     token_ids: torch.Tensor,
 ) -> torch.Tensor:
     """Seeded Gumbel-max using original vocabulary ids as RNG columns."""
+
+    if logprobs.device.type == "npu":
+        return multinomial_with_seed(
+            logprobs, seed, positions, token_ids=token_ids
+        ).view(-1)
 
     seed = seed.to(torch.uint64)
     hashed = murmur_hash32(seed, positions, token_ids)
