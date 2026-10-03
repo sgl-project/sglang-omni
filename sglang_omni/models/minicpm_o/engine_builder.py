@@ -40,7 +40,6 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
             dtype=dtype,
             enable_streaming_session=True,
             disable_overlap_schedule=True,
-            disable_cuda_graph=True,
             chunked_prefill_size=-1,
             enable_return_hidden_states=True,
             sampling_backend="pytorch",

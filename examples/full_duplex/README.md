@@ -20,7 +20,7 @@ Two configs are provided:
 | Config | Use it for |
 |---|---|
 | `minicpmo.yaml` | Normal serving; replies are sampled the way the MiniCPM-o demo samples them |
-| `minicpmo-parity.yaml` | Repeatable output for regression and parity recordings; it differs only in greedy sampling and `top_k: 100` |
+| `minicpmo-parity.yaml` | Repeatable output for regression and parity recordings; it differs in greedy sampling, `top_k: 100`, and running the thinker and talker without CUDA graphs |
 
 Settings you may want to change in the config:
 
@@ -29,6 +29,7 @@ Settings you may want to change in the config:
 | `max_sessions` | 2 | Conversations served at the same time. Startup warms up perception at each batch size up to this value |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation; a conversation that needs more is closed and the others keep running |
+| `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling.*` | see file | Default sampling for sessions that do not set their own |
 | `vision.*` | see file | Limits on camera frames per unit (1 s of audio) |
 

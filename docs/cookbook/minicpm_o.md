@@ -248,4 +248,4 @@ These are set in `examples/full_duplex/minicpmo.yaml`:
 
 One conversation can hold 8192 tokens of history, which is the model's limit. When a conversation fills it, the server sends a `context_exhausted` error and closes the session. Start a new session to continue.
 
-For repeatable output, start the server from `examples/full_duplex/minicpmo-parity.yaml`, which uses greedy sampling.
+For repeatable output, start the server from `examples/full_duplex/minicpmo-parity.yaml`, which uses greedy sampling and runs without CUDA graphs.
