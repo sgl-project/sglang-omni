@@ -72,6 +72,7 @@ from sglang_omni.scheduling.speaker_cache import (
     get_speaker_artifact_cache,
 )
 from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
 from tests.unit_test.fakes import FakeExecutionBridge
 
@@ -6267,21 +6268,51 @@ def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
     assert calls[0]["instruct_id"] is not None
 
 
-def test_qwen3_tts_base_checkpoint_text_only_rejects_custom_voice_default() -> None:
+@pytest.mark.parametrize(
+    ("model_type", "tts_params", "message"),
+    [
+        ("base", {}, "Base requires ref_audio or speaker_embedding"),
+        ("base", {"task_type": "Base"}, "Base requires reference audio"),
+        (
+            "base",
+            {"task_type": "Base", "ref_audio": "ref.wav", "x_vector_only_mode": False},
+            "Base requires non-empty ref_text",
+        ),
+        ("base", {"task_type": "CustomVoice"}, "Base checkpoint does not support"),
+        ("voice_design", {}, "VoiceDesign checkpoint does not support"),
+        (
+            "voice_design",
+            {"task_type": "VoiceDesign"},
+            "VoiceDesign requires instructions",
+        ),
+        (
+            "voice_design",
+            {
+                "task_type": "VoiceDesign",
+                "instructions": "A warm voice.",
+                "ref_text": "hi",
+            },
+            "VoiceDesign does not accept ref_text",
+        ),
+    ],
+)
+def test_qwen3_tts_request_contract_errors_are_bad_requests(
+    model_type: str, tts_params: dict[str, str | bool], message: str
+) -> None:
     class FakeWrapper:
         def _merge_generate_kwargs(self, **kwargs):
             return kwargs
 
-    model = SimpleNamespace(tts_model_type="base")
+    model = SimpleNamespace(tts_model_type=model_type)
 
-    with pytest.raises(
-        ValueError, match="Base requires ref_audio or speaker_embedding"
-    ):
+    with pytest.raises(ValueError, match=message) as raised:
         qwen3_request_builders.prepare_qwen3_tts_request(
-            make_payload(inputs="target"),
+            make_payload(inputs="target", tts_params=tts_params),
             model=model,
             wrapper=FakeWrapper(),
         )
+
+    assert is_bad_request_error(raised.value)
 
 
 def test_qwen3_tts_preprocessing_abort_cleans_prepared_state() -> None:

@@ -53,7 +53,7 @@ class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     model: str | None = None
-    messages: list[ChatMessage]
+    messages: list[ChatMessage] = Field(min_length=1)
 
     # Sampling parameters
     temperature: float | None = None
@@ -61,8 +61,8 @@ class ChatCompletionRequest(BaseModel):
     top_k: int | None = None
     min_p: float | None = None
     repetition_penalty: float | None = None
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_completion_tokens: int | None = Field(default=None, ge=1)
     stop: str | list[str] | None = None
     seed: int | None = None
 

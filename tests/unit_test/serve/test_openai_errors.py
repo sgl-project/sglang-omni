@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from sglang.srt.sampling.sampling_params import (
     MAX_STOP_COUNT,
@@ -13,8 +14,12 @@ from sglang.srt.sampling.sampling_params import (
 )
 
 from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.preprocessing.resource_connector import media_http_error
 from sglang_omni.proto import SubmitMessage
-from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.openai_errors import (
+    generation_error_status_code,
+    is_bad_request_error,
+)
 from tests.unit_test.fixtures.pipeline_fakes import (
     RecordingCoordinatorControlPlane,
     make_stage_payload,
@@ -91,5 +96,21 @@ def test_an_unrelated_failure_stays_internal() -> None:
         "AuK generated latent contains NaN/Inf",
         "internal cache size is a server-level setting",
         "index out of range in self",
+        "decoder said Media URL returned HTTP 404: internal",
+        "Qwen3-TTS CustomVoice requires a checkpoint with configured spk_id",
     ):
         assert not is_bad_request_error(RuntimeError(message))
+
+
+@pytest.mark.parametrize(("status_code", "expected_status"), [(404, 400), (500, 500)])
+def test_only_a_missing_media_url_is_a_bad_request(
+    status_code: int, expected_status: int
+) -> None:
+    url = "https://example.com/media.mp4"
+    response = httpx.Response(status_code, request=httpx.Request("GET", url))
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        response.raise_for_status()
+
+    error = media_http_error(raised.value, url)
+
+    assert generation_error_status_code(error) == expected_status

@@ -53,7 +53,13 @@ MODEL_FAMILIES = {
 class FaultInjectingCoordinator(Coordinator):
     """Inject a model-stage failure through the real Coordinator/Client path."""
 
-    def __init__(self, terminal_stage: str, error: str = "cuda out of memory"):
+    def __init__(
+        self,
+        terminal_stage: str,
+        error: str = "cuda out of memory",
+        *,
+        partial_output: bool = True,
+    ) -> None:
         super().__init__(
             completion_endpoint="inproc://complete",
             abort_endpoint="inproc://abort",
@@ -63,6 +69,7 @@ class FaultInjectingCoordinator(Coordinator):
         self.control_plane = RecordingCoordinatorControlPlane()
         self.terminal_stage = terminal_stage
         self.error = error
+        self.partial_output = partial_output
         self.register_stage("preprocess", "inproc://preprocess")
 
     async def submit_request(
@@ -79,8 +86,10 @@ class FaultInjectingCoordinator(Coordinator):
         )
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
-        if bool(request.params.get("stream", False)):
+        if self.partial_output and bool(request.params.get("stream", False)):
             await self.handle_stream(self.partial_stream_message(request_id, request))
+        else:
+            pass
         await self.handle_completion(
             CompleteMessage(
                 request_id=request_id,
@@ -112,8 +121,17 @@ class FaultInjectingCoordinator(Coordinator):
         )
 
 
-def fault_client(model_name: str, error: str = "cuda out of memory") -> Client:
-    return Client(FaultInjectingCoordinator(MODEL_FAMILIES[model_name], error=error))
+def fault_client(
+    model_name: str,
+    error: str = "cuda out of memory",
+    *,
+    partial_output: bool = True,
+) -> Client:
+    return Client(
+        FaultInjectingCoordinator(
+            MODEL_FAMILIES[model_name], error=error, partial_output=partial_output
+        )
+    )
 
 
 class SuccessfulSpeechClient:
@@ -680,6 +698,87 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     assert speech_resp.status_code == 500
     assert speech_resp.json()["error"]["type"] == "server_error"
     assert "cuda out of memory" in speech_resp.json()["error"]["message"]
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/generate"])
+def test_non_streaming_queue_full_returns_503(endpoint: str) -> None:
+    client = TestClient(
+        create_app(
+            fault_client("qwen3-omni", QueueFullError.MESSAGE),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        endpoint, json={"messages": [{"role": "user", "content": "hello"}]}
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == QueueFullError.MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("error", "error_type", "code"),
+    [
+        (QueueFullError.MESSAGE, "server_error", 503),
+        (
+            "Media URL returned HTTP 404: https://example.com/missing.png",
+            "invalid_request_error",
+            400,
+        ),
+        ("cuda out of memory", "server_error", 500),
+    ],
+)
+def test_chat_stream_failure_before_output_reports_error_before_done_sentinel(
+    error: str, error_type: str, code: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = TestClient(
+        create_app(
+            fault_client("qwen3-omni", error, partial_output=False),
+            model_name="qwen3-omni",
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.serve.openai_api"):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hello"}], "stream": True},
+        )
+
+    assert response.status_code == 200
+    events = [
+        line.removeprefix("data: ")
+        for line in response.iter_lines()
+        if line.startswith("data: ")
+    ]
+    assert json.loads(events[0]) == {
+        "error": {"message": error, "type": error_type, "code": code}
+    }
+    assert events[1:] == ["[DONE]"]
+    assert any(record.exc_info for record in caplog.records) == (code == 500)
+
+
+@pytest.mark.parametrize(
+    ("invalid_fields", "field"),
+    [
+        ({"messages": []}, "messages"),
+        ({"max_tokens": 0}, "max_tokens"),
+        ({"max_tokens": -1}, "max_tokens"),
+        ({"max_completion_tokens": 0}, "max_completion_tokens"),
+    ],
+)
+def test_chat_rejects_invalid_envelope_before_generation(
+    invalid_fields: dict[str, int | list[str]], field: str
+) -> None:
+    client = TestClient(create_app(fault_client("qwen3-omni"), model_name="qwen3-omni"))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hello"}], **invalid_fields},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", field]
 
 
 def test_speech_stream_admission_reject_returns_503_without_traceback(
@@ -2267,8 +2366,16 @@ def test_chunk_segments_skip_silent_chunks() -> None:
     assert response.segments[1].start == 2.0
 
 
-def test_chunk_failure_fails_the_whole_request() -> None:
-    transcription_client = ChunkRecordingTranscriptionClient(fail_chunk=1)
+@pytest.mark.parametrize(
+    ("message", "expected_status"),
+    [("cuda out of memory", 500), (QueueFullError.MESSAGE, 503)],
+)
+def test_chunk_failure_fails_the_whole_request(
+    message: str, expected_status: int
+) -> None:
+    transcription_client = ChunkRecordingTranscriptionClient(
+        fail_chunk=1, fail_message=message
+    )
     client = chunking_test_client(transcription_client)
 
     response = client.post(
@@ -2278,9 +2385,9 @@ def test_chunk_failure_fails_the_whole_request() -> None:
     )
 
     # No partial 200: one failed chunk fails the request, naming the chunk.
-    assert response.status_code == 500
+    assert response.status_code == expected_status
     assert "chunk 1" in response.json()["detail"]
-    assert "cuda out of memory" in response.json()["detail"]
+    assert message in response.json()["detail"]
 
 
 def test_chunk_bad_request_failure_maps_to_400() -> None:
@@ -3281,8 +3388,20 @@ def test_transcription_endpoint_maps_processor_max_length_error_to_400() -> None
     assert "exceeds max_length" in response.json()["detail"]
 
 
-def test_transcription_endpoint_keeps_500_for_server_errors() -> None:
-    transcription_client = FailingTranscriptionClient("scheduler worker crashed")
+@pytest.mark.parametrize(
+    ("message", "exc_type", "expected_status"),
+    [
+        ("scheduler worker crashed", ClientError, 500),
+        (QueueFullError.MESSAGE, RuntimeError, 503),
+    ],
+)
+def test_transcription_endpoint_maps_server_and_overload_errors(
+    message: str,
+    exc_type: type[Exception],
+    expected_status: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcription_client = FailingTranscriptionClient(message, exc_type=exc_type)
     client = TestClient(
         create_app(
             transcription_client,
@@ -3290,13 +3409,15 @@ def test_transcription_endpoint_keeps_500_for_server_errors() -> None:
         )
     )
 
-    response = client.post(
-        "/v1/audio/transcriptions",
-        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
-        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
-    )
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+            files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+        )
 
-    assert response.status_code == 500
+    assert response.status_code == expected_status
+    assert not any(record.exc_info for record in caplog.records)
 
 
 def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
@@ -3386,11 +3507,14 @@ def test_transcription_first_chunk_disconnect_aborts_backend() -> None:
     asyncio.run(drive())
 
 
-def test_transcription_stream_keeps_500_for_server_errors() -> None:
-    transcription_client = FailingTranscriptionClient(
-        "scheduler worker crashed",
-        exc_type=RuntimeError,
-    )
+@pytest.mark.parametrize(
+    ("message", "expected_status"),
+    [("scheduler worker crashed", 500), (QueueFullError.MESSAGE, 503)],
+)
+def test_transcription_stream_maps_server_and_overload_errors(
+    message: str, expected_status: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    transcription_client = FailingTranscriptionClient(message, exc_type=RuntimeError)
     client = TestClient(
         create_app(
             transcription_client,
@@ -3398,16 +3522,18 @@ def test_transcription_stream_keeps_500_for_server_errors() -> None:
         )
     )
 
-    response = client.post(
-        "/v1/audio/transcriptions",
-        data={
-            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
-            "stream": "true",
-        },
-        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
-    )
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/v1/audio/transcriptions",
+            data={
+                "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+                "stream": "true",
+            },
+            files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+        )
 
-    assert response.status_code == 500
+    assert response.status_code == expected_status
+    assert any(record.exc_info for record in caplog.records) == (expected_status == 500)
 
 
 def test_transcription_endpoint_uses_openai_temperature_default() -> None:
