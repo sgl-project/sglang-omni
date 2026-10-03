@@ -1856,7 +1856,7 @@ async def speech_audio_response(
             pass
 
     async def _body() -> AsyncGenerator[bytes, None]:
-        nonlocal emitted_samples, final_usage
+        nonlocal emitted_samples
         active_request = True
         try:
             yield first_audio_bytes
