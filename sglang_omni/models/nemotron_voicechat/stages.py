@@ -153,6 +153,7 @@ def speech_generation_config(model_path: str) -> dict:
 def create_talker_executor(
     model_path,
     *,
+    can_use_local_code_handoff: bool = False,
     dtype=None,
     device=None,
     gpu_id=None,
@@ -161,6 +162,7 @@ def create_talker_executor(
     **overrides,
 ):
     builder = NemotronVoiceChatTalkerEngineBuilder(
+        can_use_local_code_handoff=can_use_local_code_handoff,
         max_running_requests=1,
         context_length=context_length,
     )
@@ -173,7 +175,14 @@ def create_talker_executor(
     )
 
 
-def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None):
+def create_code2wav_executor(
+    model_path,
+    *,
+    can_use_local_code_handoff: bool = False,
+    dtype=None,
+    device=None,
+    gpu_id=None,
+):
     device = resolve_concrete_device(device, gpu_id)
     generation = speech_generation_config(model_path)
     weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
@@ -207,7 +216,12 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None
         )
         return payload
 
-    return NemotronCode2WavScheduler(decoder, device, compute_fn=decode)
+    return NemotronCode2WavScheduler(
+        decoder,
+        device,
+        compute_fn=decode,
+        can_use_local_code_handoff=can_use_local_code_handoff,
+    )
 
 
 def create_decode_executor(model_path, **_):

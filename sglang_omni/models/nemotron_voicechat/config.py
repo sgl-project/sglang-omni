@@ -2,13 +2,14 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import (
+from sglang_omni.config.schema import (
     EngineArgs,
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
     PlacementConfig,
     StageConfig,
+    stage_process_name,
 )
 
 # The ckpt is all saved in float32.
@@ -94,6 +95,32 @@ class NemotronVoiceChatPipelineConfig(PipelineConfig):
         )
     )
     stages: list[StageConfig] = Field(default_factory=nemotron_voicechat_stages_factory)
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
+        if stage_name not in ("talker", "code2wav"):
+            return {}
+        else:
+            talker_stage = self.stage_named("talker")
+            code2wav_stage = self.stage_named("code2wav")
+            talker_gpu = (
+                talker_stage.gpu[0]
+                if isinstance(talker_stage.gpu, list)
+                else talker_stage.gpu
+            )
+            code2wav_gpu = (
+                code2wav_stage.gpu[0]
+                if isinstance(code2wav_stage.gpu, list)
+                else code2wav_stage.gpu
+            )
+            return {
+                "can_use_local_code_handoff": (
+                    stage_process_name(talker_stage)
+                    == stage_process_name(code2wav_stage)
+                    and talker_stage.tp_size == code2wav_stage.tp_size == 1
+                    and talker_gpu is not None
+                    and talker_gpu == code2wav_gpu
+                )
+            }
 
 
 EntryClass = NemotronVoiceChatPipelineConfig
