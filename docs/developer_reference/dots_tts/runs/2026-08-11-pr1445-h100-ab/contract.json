@@ -1,0 +1,66 @@
+{
+  "run_id": "dots-pr1445-h100-ab-20260811-080403-722495000",
+  "status": "COMPLETE",
+  "source": {
+    "repository": "https://github.com/sgl-project/sglang-omni",
+    "pull_request": "https://github.com/sgl-project/sglang-omni/pull/1445",
+    "base_commit": "2b45073cc08f3bdb202248cb247f491bd0e059c2",
+    "candidate_commit": "6d54e21adb70eef2533940a4201c88d5a9e2f452",
+    "candidate_branch": "luojiaxuan/dots-split-codec-lock-h100"
+  },
+  "runtime": {
+    "image": "hongccc/sglang-omni:dev",
+    "image_id": "sha256:832e31ce61309be004ec1b085cb92eab5da28f3687a96d854934753a13dff1e7",
+    "image_created_at": "2026-08-05T05:25:13.880314656Z",
+    "dots_tts_version": "0.2.1"
+  },
+  "hardware": {
+    "host": "h100",
+    "gpu_model": "NVIDIA H100",
+    "physical_gpu_ids": [
+      0,
+      1
+    ]
+  },
+  "allocation": {
+    "preflight": "five-second continuous-zero sample immediately before each container start",
+    "selection": "user-authorized physical GPUs 0 and 1",
+    "execution": "two concurrent revisions with GPU crossover between rounds",
+    "task_container": "sglang-omni-jaxan-20260811-080403-722495000",
+    "persistent_host_run_root": "/data/jaxan/dots_seedtts_runs/dots-pr1445-h100-ab-20260811-080403-722495000"
+  },
+  "benchmark": {
+    "model": "dots-studio/dots.tts-mf",
+    "dataset": "zhaochenyang20/seed-tts-eval-arrow",
+    "dataset_revision": "27f4c1adee83b5b29b7c4b375f6b976324bda308",
+    "split": "en",
+    "samples_per_run": 1088,
+    "concurrency_levels": [
+      16,
+      32
+    ],
+    "rounds": {
+      "16": 2,
+      "32": 4
+    },
+    "stream": false,
+    "generate_only": true,
+    "seed": 42,
+    "warmup_requests": 10,
+    "server_config": "examples/configs/dots_tts.yaml",
+    "max_running_requests": 16,
+    "cuda_graph_max_bs": 16
+  },
+  "validation": {
+    "focused_tests": "42 passed",
+    "test_files": [
+      "tests/unit_test/dots_tts/test_reference_encode_batching.py",
+      "tests/unit_test/dots_tts/test_vocoder.py",
+      "tests/unit_test/dots_tts/test_vocoder_streaming.py"
+    ],
+    "all_runs_completed": true,
+    "failed_requests": 0,
+    "wer_rerun": false
+  },
+  "summary": "results-summary.json"
+}
