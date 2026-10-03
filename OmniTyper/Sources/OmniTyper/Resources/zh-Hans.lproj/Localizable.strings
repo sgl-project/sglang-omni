@@ -312,3 +312,9 @@
 "settings.interfaceLanguage" = "界面语言";
 "settings.followSystem" = "跟随系统";
 "settings.interfaceLanguageNote" = "立即生效。macOS 的权限弹窗仍跟随系统语言。";
+
+"panel.dragHint" = "拖动窗口顶部可移动窗口。";
+"control.expanded" = "已展开";
+"control.collapsed" = "已收起";
+"settings.keepModelLoaded" = "在后台保持语音模型加载";
+"settings.keepModelLoadedNote" = "启动应用时预加载，录音之间保留在内存中，下次可更快开始。关闭后会在空闲时释放，下次录音需重新加载。";

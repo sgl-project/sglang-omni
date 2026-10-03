@@ -32,9 +32,13 @@ final class AppModel: ObservableObject {
     var showVoicePanel: (() -> Void)?
     var hideVoicePanel: (() -> Void)?
     private var target: InsertionTarget?
-    private var task: Task<Void, Never>?
+    var task: Task<Void, Never>?
+    @Published var preloadTask: Task<[String: Any], Error>?
+    var isPreloading: Bool { preloadTask != nil }
+    @Published private(set) var isCapturingShortcut = false
+    private var isShutDown = false
     private var speechStream: ASRStream?
-    private var generation = UUID()
+    var generation = UUID()
     private var timer: Timer?
     private var preferencesSubscription: AnyCancellable?
     private struct FailedRecording {
@@ -81,30 +85,40 @@ final class AppModel: ObservableObject {
                 self.store.prune()
             }
         }
+        if store.preferences.keepModelLoaded == true { prepareModels() }
     }
 
     var isBusy: Bool { phase != .idle }
     var shortcutLabel: String {
-        let p = store.preferences
-        var label = ""
-        if p.shortcutModifiers & CGEventFlags.maskControl.rawValue != 0 { label += "⌃" }
-        if p.shortcutModifiers & CGEventFlags.maskAlternate.rawValue != 0 { label += "⌥" }
-        if p.shortcutModifiers & CGEventFlags.maskShift.rawValue != 0 { label += "⇧" }
-        if p.shortcutModifiers & CGEventFlags.maskCommand.rawValue != 0 { label += "⌘" }
-        let names: [UInt16: String] = [49: L("shortcut.space"), 63: "Fn", 96: "F5", 97: "F6", 100: "F8", 101: "F9",
-                                       54: "⌘", 55: "⌘", 56: "⇧", 60: "⇧", 58: "⌥", 61: "⌥", 59: "⌃", 62: "⌃"]
-        return label + (names[p.shortcutKeyCode] ?? L("shortcut.key", String(p.shortcutKeyCode)))
+        ShortcutCapture.label(keyCode: store.preferences.shortcutKeyCode,
+                              modifiers: store.preferences.shortcutModifiers)
     }
 
     private func configureShortcut(_ preferences: Preferences) {
+        guard !isCapturingShortcut, !isShutDown else { return }
         shortcut.start(keyCode: preferences.shortcutKeyCode, modifiers: preferences.shortcutModifiers,
                        hold: preferences.holdToTalk,
-                       onStart: { [weak self] in self?.toggle() },
+                       onStart: { [weak self] in
+                           guard let self, !self.isCapturingShortcut, !self.isShutDown else { return }
+                           self.toggle()
+                       },
                        onStop: { [weak self] in
-                           if self?.phase == .recording { self?.finish() }
-                           else if self?.phase == .starting { self?.cancel() }
+                           guard let self, !self.isCapturingShortcut, !self.isShutDown else { return }
+                           if self.phase == .recording { self.finish() }
+                           else if self.phase == .starting { self.cancel() }
                        },
                        onCancel: { [weak self] in if self?.isBusy == true { self?.cancel() } })
+    }
+
+    func beginShortcutCapture() {
+        isCapturingShortcut = true
+        shortcut.stop()
+    }
+
+    func endShortcutCapture() {
+        guard isCapturingShortcut else { return }
+        isCapturingShortcut = false
+        configureShortcut(store.preferences)
     }
 
     func refreshPermissions() {
@@ -171,8 +185,12 @@ final class AppModel: ObservableObject {
         let token = UUID(); generation = token
         task = Task { [self] in
             do {
-                let response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel],
+                let response: [String: Any]
+                if let preloadTask { response = try await preloadTask.value }
+                else {
+                    response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel],
                                                         python: sessionPreferences.pythonExecutable)
+                }
                 guard generation == token, !Task.isCancelled else { return }
                 do {
                     let stream = try ASRStream(url: response["realtime_url"] as? String ?? "", onPartial: { [weak self] text in
@@ -199,6 +217,7 @@ final class AppModel: ObservableObject {
                 guard generation == token else { return }
                 speechStream?.cancel(); speechStream = nil
                 target = nil; phase = .idle; hideVoicePanel?(); self.error = error.localizedDescription; refreshPermissions(); showMainWindow?()
+                releaseIdleModel()
             }
         }
     }
@@ -213,6 +232,7 @@ final class AppModel: ObservableObject {
         } catch {
             speechStream?.cancel(); speechStream = nil
             target = nil; phase = .idle; self.error = error.localizedDescription; hideVoicePanel?(); showMainWindow?()
+            releaseIdleModel()
         }
     }
 
@@ -255,6 +275,8 @@ final class AppModel: ObservableObject {
                                         target: capturedTarget, appName: lastApp)
         task = Task {
             do {
+                if let preloadTask { _ = try await preloadTask.value }
+                try Task.checkCancellation()
                 var payload = try request.get()
                 var streamingWarning = ""
                 if let stream = speechStream {
@@ -308,12 +330,14 @@ final class AppModel: ObservableObject {
                 }
                 guard generation == token else { return }
                 target = nil; phase = .idle; hideVoicePanel?()
+                releaseIdleModel()
                 if !self.error.isEmpty { showMainWindow?() }
             } catch {
                 guard generation == token else { try? FileManager.default.removeItem(at: audio); return }
                 speechStream?.cancel(); speechStream = nil
                 retryRecording = recording
                 target = nil; phase = .idle; hideVoicePanel?()
+                releaseIdleModel()
                 self.error = error.localizedDescription
                 Diagnostics.record("dictation.failed", ["reason": Diagnostics.code(of: error)])
                 if let raw = (error as? WorkerFailure)?.rawText, !raw.isEmpty {
@@ -351,60 +375,21 @@ final class AppModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
-    func prepareModels() {
-        guard phase == .idle else { return }
-        phase = .preparing; error = ""; notice = ""
-        let preferences = store.preferences
-        let token = UUID(); generation = token
-        task = Task {
-            do {
-                _ = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel], python: preferences.pythonExecutable)
-                guard generation == token else { return }
-                notice = L("notice.modelReady")
-            } catch {
-                guard generation == token else { return }
-                self.error = error.localizedDescription
-            }
-            phase = .idle
-        }
-    }
-
-    func loadTextModels() {
-        guard phase == .idle else { return }
-        error = ""; notice = ""
-        do {
-            var request = try store.preferences.textSettings.payload(apiKey: textAPIKey, requireModel: false)
-            request["op"] = "models"
-            let python = store.preferences.pythonExecutable
-            phase = .preparing
-            let token = UUID(); generation = token
-            task = Task {
-                do {
-                    let response = try await worker.request(request, python: python)
-                    guard generation == token else { return }
-                    textModels = response["models"] as? [String] ?? []
-                    notice = textModels.isEmpty ? L("notice.modelsEmpty") : L("notice.modelsListed")
-                } catch {
-                    guard generation == token else { return }
-                    self.error = error.localizedDescription
-                }
-                phase = .idle
-            }
-        } catch { self.error = error.localizedDescription }
-    }
-
-    func releaseModels() { if phase == .idle { worker.stop(); notice = L("notice.modelUnloaded") } }
-
-    func cancel() {
+    func cancel(releaseModel: Bool = false) {
+        let keepModel = !releaseModel && store.preferences.keepModelLoaded == true
+        let interruptsWorker = worker.hasPendingRequest && preloadTask == nil
         generation = UUID(); task?.cancel(); task = nil
         speechStream?.cancel(); speechStream = nil; liveText = ""; liveStatus = ""
-        recorder.cancel(); worker.stop(); target = nil; phase = .idle; hideVoicePanel?()
+        recorder.cancel(); target = nil; phase = .idle; hideVoicePanel?()
+        if !keepModel || interruptsWorker { stopModelWorker() }
+        if keepModel && !worker.isRunning { prepareModels() }
         notice = L("notice.cancelled")
     }
 
     func shutdown() {
+        isShutDown = true
         preferencesSubscription?.cancel(); preferencesSubscription = nil
-        cancel(); shortcut.stop(); timer?.invalidate()
+        cancel(releaseModel: true); shortcut.stop(); timer?.invalidate()
         textAPIKey = ""; sessionAPIKey = ""
         discardRetryRecording()
     }

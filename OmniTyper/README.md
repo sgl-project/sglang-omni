@@ -133,6 +133,9 @@ OmniTyper starts or reuses the ASR service before recording. Wait for **Listenin
 before speaking. Preparing the model in Settings avoids the first-load delay.
 In hold-to-talk mode, releasing the shortcut during startup cancels that attempt.
 
+Enable **Keep the speech model loaded** in Settings to preload at launch and
+retain it between recordings, using memory while idle.
+
 Audio is streamed to `/v1/realtime?intent=transcription`, with partial transcripts
 shown in the recording panel and main window. The current upstream defaults
 process approximately two seconds of new audio per partial update and segment
