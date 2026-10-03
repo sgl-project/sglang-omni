@@ -287,6 +287,34 @@ restart the transcription rather than retrying packets on the old session.
 Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen
 rollback state.
 
+#### Apple realtime lifecycle checks
+
+The existing model test starts its own realtime server and checks manual and
+VAD finalization, clear followed by new audio, repeated commits, and reconnect
+after receiving a partial result. From an installed Apple environment, run the
+two backends separately:
+
+```bash
+export QWEN3_ASR_REALTIME_SERVER_ARGS="--asr.engine.max_running_requests 1 --asr.engine.max_total_tokens 2048 --asr.factory.pre_lm_cache_size_bytes 134217728"
+
+SGLANG_USE_MLX=1 \
+QWEN3_ASR_REALTIME_MODEL_PATH=mlx-community/Qwen3-ASR-0.6B-4bit \
+python -m pytest -s -x tests/test_model/test_qwen3_asr_realtime.py
+
+SGLANG_USE_MLX=0 \
+QWEN3_ASR_REALTIME_MODEL_PATH=Qwen/Qwen3-ASR-0.6B \
+python -m pytest -s -x tests/test_model/test_qwen3_asr_realtime.py
+```
+
+Without overrides, the test keeps its Qwen3-ASR-1.7B server configuration.
+`QWEN3_ASR_REALTIME_SERVER_ARGS` accepts shell-style quoting for additional
+server arguments. `QWEN3_ASR_REALTIME_TURNS` sets a positive number of repeated
+commits in one session (default: 3). This is a bounded lifecycle smoke test;
+passing it does not establish long-session stability or transcription accuracy.
+The different checkpoints above also do not establish matched-precision backend
+performance. Record the commit, model revision, backend, Mac chip, memory, and
+dependency versions alongside each hardware result.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
