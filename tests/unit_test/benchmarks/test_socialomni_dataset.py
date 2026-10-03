@@ -234,14 +234,43 @@ def test_level1_rejects_symlink_escape(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [(3, 3.0), ("3.5", 3.5), ("01:03.5", 63.5), ("00:17:25", 17.25)],
+    [
+        (3, 3.0),
+        (60, 60.0),
+        ("99", 99.0),
+        ("3.5", 3.5),
+        ("01:03.5", 63.5),
+        ("00:59.99", 59.99),
+        ("01:00", 60.0),
+        ("00:17:25", 17.25),
+        ("00:59:99", 59.99),
+        ("01:00:00", 60.0),
+    ],
 )
 def test_parse_timestamp(raw: object, expected: float) -> None:
     assert parse_socialomni_timestamp(raw) == expected
 
 
 @pytest.mark.parametrize(
-    "raw", [True, "", "bad", 0, -1, float("nan"), float("inf"), float("-inf")]
+    "raw",
+    [
+        True,
+        "",
+        "bad",
+        0,
+        -1,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "00:60",
+        "01:99",
+        "01:60.01",
+        "00:60:00",
+        "01:99:25",
+        "00:01:100",
+        "00:-1",
+        "00:01:-1",
+    ],
 )
 def test_parse_timestamp_rejects_invalid_values(raw: object) -> None:
     with pytest.raises((TypeError, ValueError)):

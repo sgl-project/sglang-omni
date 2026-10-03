@@ -73,7 +73,7 @@ def download_dataset(
     quiet: bool = False,
     local_dir: str | None = None,
 ) -> None:
-    """Pre-warm the HuggingFace datasets cache for *repo_id*."""
+    """Download dataset files or pre-warm the HuggingFace datasets cache."""
     from datasets import get_dataset_config_names, load_dataset
     from huggingface_hub import hf_hub_download
 
@@ -94,20 +94,18 @@ def download_dataset(
     elif revision is None and dataset_id == MEANWHILE_DATASET_ID:
         revision = MEANWHILE_DATASET_REVISION
     revision_kwargs = {"revision": revision} if revision else {}
-    if not quiet:
-        logger.info(
-            f"Pre-warming HuggingFace cache for {dataset_id} "
-            f"split={split if separator else 'all'} "
-            f"revision={revision or 'default'} ..."
-        )
-
     if dataset_id == SOCIALOMNI_DATASET_ID:
         from huggingface_hub import snapshot_download
 
+        destination = local_dir or "benchmarks/cache/socialomni"
+        if not quiet:
+            logger.info(
+                f"Downloading {dataset_id} revision={revision} to {destination} ..."
+            )
         snapshot_download(
             repo_id=dataset_id,
             repo_type="dataset",
-            local_dir=local_dir or "benchmarks/cache/socialomni",
+            local_dir=destination,
             allow_patterns=[
                 "README.md",
                 "data/level_1/**",
@@ -115,7 +113,18 @@ def download_dataset(
             ],
             **revision_kwargs,
         )
-    elif dataset_id == "MMMU/MMMU":
+        if not quiet:
+            logger.info(f"Dataset {dataset_id} downloaded to {destination}.")
+        return
+
+    if not quiet:
+        logger.info(
+            f"Pre-warming HuggingFace cache for {dataset_id} "
+            f"split={split if separator else 'all'} "
+            f"revision={revision or 'default'} ..."
+        )
+
+    if dataset_id == "MMMU/MMMU":
         config_names = get_dataset_config_names(dataset_id, **revision_kwargs)
         for config_name in config_names:
             load_dataset(
@@ -175,7 +184,7 @@ def main() -> None:
     parser.add_argument(
         "--local-dir",
         default=None,
-        help="Materialization directory for datasets that contain media files.",
+        help="SocialOmni download directory (default: benchmarks/cache/socialomni).",
     )
     args = parser.parse_args()
 

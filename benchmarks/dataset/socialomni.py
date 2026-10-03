@@ -273,10 +273,10 @@ def parse_socialomni_timestamp(value: Any) -> float:
         text = str(value or "").strip()
         if re.fullmatch(r"\d+(?:\.\d+)?", text):
             seconds = float(text)
-        elif re.fullmatch(r"\d+:\d+(?:\.\d+)?", text):
+        elif re.fullmatch(r"\d+:[0-5]?\d(?:\.\d+)?", text):
             minutes, tail = text.split(":")
             seconds = int(minutes) * 60 + float(tail)
-        elif re.fullmatch(r"\d+:\d{2}:\d{2}", text):
+        elif re.fullmatch(r"\d+:[0-5]\d:\d{2}", text):
             minutes, tail, centiseconds = text.split(":")
             seconds = int(minutes) * 60 + int(tail) + int(centiseconds) / 100
         else:
