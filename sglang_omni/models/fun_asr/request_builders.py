@@ -200,6 +200,7 @@ def make_fun_asr_scheduler_adapters(
     feature_extractor: FunAsrNanoFeatureExtractor | None = None,
     context_length: int | None = None,
     audio_encoder_service: FunASRPreLMEncoderService | None = None,
+    greedy_only: bool = False,
 ) -> tuple[
     Callable[[StagePayload], FunASRRequestData],
     Callable[[FunASRRequestData], StagePayload],
@@ -226,6 +227,13 @@ def make_fun_asr_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> FunASRRequestData:
         params = payload.request.params or {}
+        temperature = float(params.get("temperature") or 0.0)
+        if greedy_only and temperature != 0.0:
+            raise ValueError(
+                "Fun-ASR Apple currently requires temperature=0 (greedy decoding)"
+            )
+        else:
+            pass
         prepared = prepare_audio(
             payload,
             source_name="Fun-ASR",
@@ -321,7 +329,6 @@ def make_fun_asr_scheduler_adapters(
         mm_inputs.mrope_positions = positions.unsqueeze(0).expand(3, -1).clone()
         mm_inputs.mrope_position_delta = torch.tensor([0], dtype=torch.long)
 
-        temperature = float(params.get("temperature") or 0.0)
         request_max_new_tokens = request_token_budget(
             params, audio_duration_s, max_new_tokens
         )
