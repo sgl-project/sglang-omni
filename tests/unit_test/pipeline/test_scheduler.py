@@ -354,7 +354,7 @@ def test_take_deferred_request_payloads_is_event_driven() -> None:
 
 def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) -> None:
     """Forward failures are owned by the scheduler, not model executors."""
-    release_calls: list[tuple[str, object]] = []
+    release_calls: list[tuple[str, object, bool]] = []
     tree_cache = object()
     model_path_events: list[tuple[str, str, str | None]] = []
     monkeypatch.setattr(
@@ -367,11 +367,15 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         "_emit_model_path_end",
         lambda rid, *, status: model_path_events.append(("end", rid, status)),
     )
-    monkeypatch.setattr(
-        omni_scheduler_module,
-        "release_kv_cache",
-        lambda req, cache: release_calls.append((req.rid, cache)),
-    )
+
+    def release_kv_cache(req, cache) -> None:
+        skip_insert = getattr(req, "skip_radix_cache_insert", False)
+        release_calls.append((req.rid, cache, skip_insert))
+        if len(release_calls) == 1:
+            # note (Richard Wang): the coordinator's abort echo can land mid release
+            scheduler.abort(req.rid)
+
+    monkeypatch.setattr(omni_scheduler_module, "release_kv_cache", release_kv_cache)
 
     class BoomModelRunner:
         def execute(self, sched_output):
@@ -430,6 +434,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         req.omni_data.req = req
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
+    scheduler.chunked_req = failed_reqs[1]
     init_sync_request_build_state(scheduler)
 
     result = scheduler.run_batch(batch)
@@ -446,7 +451,8 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     assert batch.reqs == failed_reqs
     assert all(req.finished() for req in failed_reqs)
     assert all(req.omni_data is None for req in failed_reqs)
-    assert release_calls == [("req-1", tree_cache), ("req-2", tree_cache)]
+    assert release_calls == [("req-1", tree_cache, True), ("req-2", tree_cache, True)]
+    assert scheduler.chunked_req is None
     assert scheduler.pending_stream_ingress == {}
     assert scheduler.deferred_request_payloads == {}
     assert scheduler.dirty_deferred_request_ids == set()

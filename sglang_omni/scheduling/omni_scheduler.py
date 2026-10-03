@@ -2140,6 +2140,19 @@ class OmniScheduler(Generic[RequestDataT]):
         reqs = list(batch.reqs)
         request_ids = [req.rid for req in reqs]
         logger.exception("OmniScheduler batch failed for requests=%s", request_ids)
+        # note (Richard Wang): free possibly unwritten KV uncached, never on a listener thread
+        for req in reqs:
+            req.skip_radix_cache_insert = True
+            req._omni_terminal_claimed = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            # note (Richard Wang): session cancel needs this, and abort skips it once claimed
+            if req.to_finish is None and not req.finished():
+                req.to_finish = FINISH_ABORT()
+            else:
+                pass
+            if req is self.chunked_req:
+                self.chunked_req = None
+            else:
+                pass
         for req in reqs:
             self.emit_request_error(req.rid, error)
             self.emit_model_path_end_once(req.rid, status="error")
