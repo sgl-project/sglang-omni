@@ -258,6 +258,8 @@ def create_code2wav_executor(
     enable_flow_variable_length: bool = True,
     reference_workers: int = 8,
     prompt_cache_capacity: int = 32,
+    enable_flow_cuda_graph: bool,
+    flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     model = MiniCPMOCode2Wav(
         model_path,
@@ -267,6 +269,8 @@ def create_code2wav_executor(
         enable_flow_variable_length=enable_flow_variable_length,
         reference_workers=reference_workers,
         prompt_cache_capacity=prompt_cache_capacity,
+        enable_flow_cuda_graph=enable_flow_cuda_graph,
+        flow_cuda_graph_capture_shapes=flow_cuda_graph_capture_shapes,
     )
 
     def codec_token_cost(payload: StagePayload) -> int:
