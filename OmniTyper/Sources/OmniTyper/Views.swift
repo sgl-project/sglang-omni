@@ -147,6 +147,7 @@ struct PreparationCard: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(L("prepare.title")).font(.system(size: 13, weight: .semibold))
                 Text(worker.status.isEmpty ? L("prepare.body") : worker.status).font(.system(size: 11)).foregroundStyle(.secondary)
+                if let fraction = worker.downloadFraction { ProgressView(value: fraction) }
             }
             Spacer(); Button(L("action.cancel")) { model.cancel() }
         }.padding(20).background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
@@ -295,6 +296,7 @@ struct VoicePanel: View {
                         .font(.system(size: 12, weight: .semibold)).lineLimit(1)
                     Text(model.phase == .recording ? String(format: L("panel.elapsed"), Int(recorder.elapsed) / 60, Int(recorder.elapsed) % 60) : worker.status)
                         .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    if model.phase == .starting, let fraction = worker.downloadFraction { ProgressView(value: fraction) }
                 }
                 Spacer(minLength: 0)
                 if model.phase == .recording {
