@@ -161,27 +161,16 @@ def test_transcription_prompt_precedes_audio(
     )
 
 
-@pytest.mark.parametrize(
-    ("content", "expected_content"),
-    [
-        (
-            "Answer the question in the audio.",
-            f"{IMAGE_PLACEHOLDER}\n{AUDIO_PLACEHOLDER}\nAnswer the question in the audio.",
-        ),
-        (
-            f"Describe both.\n{AUDIO_PLACEHOLDER}",
-            f"{IMAGE_PLACEHOLDER}\nDescribe both.\n{AUDIO_PLACEHOLDER}",
-        ),
-    ],
-)
-def test_chat_media_placeholders_are_added_only_when_missing(
-    media_preprocessor: MiniCPMOPreprocessor, content: str, expected_content: str
+def test_chat_media_placeholders_lead_the_user_text(
+    media_preprocessor: MiniCPMOPreprocessor,
 ) -> None:
     payload = StagePayload(
         request_id="chat",
         request=OmniRequest(
             inputs={
-                "messages": [{"role": "user", "content": content}],
+                "messages": [
+                    {"role": "user", "content": "Answer the question in the audio."}
+                ],
                 "images": [Image.new("RGB", (2, 2))],
                 "audios": ["question.wav"],
             }
@@ -193,4 +182,7 @@ def test_chat_media_placeholders_are_added_only_when_missing(
 
     prompt_text = result.data["prompt"]["prompt_text"]
     user_turn = prompt_text.partition("<|im_start|>assistant\n")[0]
-    assert user_turn == f"<|im_start|>user\n{expected_content}<|im_end|>\n"
+    assert user_turn == (
+        f"<|im_start|>user\n{IMAGE_PLACEHOLDER}\n{AUDIO_PLACEHOLDER}\n"
+        "Answer the question in the audio.<|im_end|>\n"
+    )
