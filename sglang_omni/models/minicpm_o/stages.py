@@ -146,7 +146,6 @@ def create_sglang_talker_executor_from_config(
         overrides.update(
             enable_streaming_session=True,
             disable_overlap_schedule=True,
-            disable_cuda_graph=True,
         )
     else:
         pass

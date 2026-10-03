@@ -35,7 +35,8 @@ def stages() -> list[StageConfig]:
             gpu_memory_fraction=0.52,
             factory_path=f"{PKG}.create_thinker_scheduler",
             next="talker",
-            engine=EngineArgs(disable_cuda_graph=True),
+            # note (Junnan Li): Compiling every decode graph batch size adds minutes to startup.
+            engine=EngineArgs(enable_torch_compile=False),
         ),
         EngineStageConfig(
             name="talker",
@@ -44,7 +45,7 @@ def stages() -> list[StageConfig]:
             gpu_memory_fraction=0.15,
             factory_path="sglang_omni.models.minicpm_o.stages.create_sglang_session_talker_executor_from_config",
             next="speech",
-            engine=EngineArgs(disable_cuda_graph=True),
+            engine=EngineArgs(enable_torch_compile=False),
         ),
         StageConfig(
             name="speech",

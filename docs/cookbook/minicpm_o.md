@@ -62,13 +62,14 @@ We provide two demonstrative config files.
 | Config | Use it for |
 |---|---|
 | `examples/full_duplex/minicpmo.yaml` | Normal serving. Sampling matches the MiniCPM-o demo |
-| `examples/full_duplex/minicpmo-parity.yaml` | Repeatable output for regression and parity recordings. Differs only in greedy sampling and `top_k: 100` |
+| `examples/full_duplex/minicpmo-parity.yaml` | Repeatable output for regression and parity recordings. Differs in greedy sampling, `top_k: 100`, and running the thinker and talker without CUDA graphs |
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503. Startup warms up perception at each batch size up to this value |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
+| `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | see the config | Default sampling when a session does not set its own |
 | `vision` | see the config | Camera-frame limits per unit (1 s of audio) |
 

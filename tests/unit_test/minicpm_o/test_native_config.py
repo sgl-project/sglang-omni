@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
@@ -22,6 +22,7 @@ from sglang_omni.config.runtime import (
 )
 from sglang_omni.models.minicpm_o import native_stages, stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
+from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexPipelineConfig,
@@ -158,16 +159,18 @@ def stub_stage_models(monkeypatch: pytest.MonkeyPatch) -> SessionHooks:
 
 
 @pytest.mark.parametrize(
-    ("settings", "sessions", "state_bytes", "thinker", "talker"),
+    ("settings", "sessions", "state_bytes", "thinker", "talker", "talker_compile"),
     [
-        ("", 2, 2 << 30, 3, 3),
+        ("", 2, 2 << 30, 3, 3, False),
         (
             "max_sessions: 64\nspeech_state_bytes_per_session: 1024\nstages:\n"
-            "  talker:\n    engine:\n      max_running_requests: 3\n",
+            "  talker:\n    engine:\n      max_running_requests: 3\n"
+            "      enable_torch_compile: true\n",
             64,
             1024,
             65,
             3,
+            True,
         ),
     ],
 )
@@ -177,6 +180,7 @@ def test_duplex_yaml_builds_session_stages(
     state_bytes: int,
     thinker: int,
     talker: int,
+    talker_compile: bool,
     tmp_path: Path,
     stub_stage_models: SessionHooks,
 ) -> None:
@@ -203,9 +207,14 @@ def test_duplex_yaml_builds_session_stages(
         assert scheduler.max_concurrency == 1
     assert speech.max_state_bytes_per_session == state_bytes
     assert build_realtime_deployment(Mock(), config).max_connections == sessions
-    for stage_name, factory, expected in (
-        ("thinker", native_stages.create_thinker_scheduler, thinker),
-        ("talker", stages.create_sglang_session_talker_executor_from_config, talker),
+    for stage_name, factory, expected, compile_enabled in (
+        ("thinker", native_stages.create_thinker_scheduler, thinker, False),
+        (
+            "talker",
+            stages.create_sglang_session_talker_executor_from_config,
+            talker,
+            talker_compile,
+        ),
     ):
         kwargs = apply_typed_stage_kwargs(
             factory,
@@ -214,6 +223,9 @@ def test_duplex_yaml_builds_session_stages(
             stage_name=stage_name,
         )
         assert kwargs["server_args_overrides"]["max_running_requests"] == expected
+        assert (
+            kwargs["server_args_overrides"]["enable_torch_compile"] is compile_enabled
+        )
     for encoder in (
         native_stages.MiniCPMOAudioEncoder,
         native_stages.MiniCPMOImageEncoder,
@@ -225,6 +237,52 @@ def test_duplex_yaml_builds_session_stages(
     )
     native_stages.PerceptionHooks.return_value.warm_up.assert_called_once_with(sessions)
     native_stages.AutoProcessor.from_pretrained.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("config_name", "disable_cuda_graph"),
+    [("minicpmo.yaml", False), ("minicpmo-parity.yaml", True)],
+)
+def test_shipped_duplex_configs_select_decode_graphs_without_compile(
+    config_name: str, disable_cuda_graph: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mapping = dict(
+        CONFIG_MAPPING._extra_content
+    )  # noqa: leading-underscore  # upstream name
+    monkeypatch.setattr(CONFIG_MAPPING, "_extra_content", mapping)
+    examples = Path(__file__).parents[3] / "examples" / "full_duplex"
+    config = ConfigManager.from_file(str(examples / config_name)).config
+    talker_server_args: dict[str, JsonValue] = {}
+
+    def capture_server_args(model_path: str, **server_args: JsonValue) -> None:
+        talker_server_args.update(server_args)
+        raise ConfigLoaded
+
+    monkeypatch.setattr(stages, "build_sglang_server_args", capture_server_args)
+    overrides = {
+        stage_name: apply_typed_stage_kwargs(
+            factory,
+            config.stage_factory_kwargs(stage_name),
+            resolve_stage_typed_kwargs(config.stage_named(stage_name)),
+            stage_name=stage_name,
+        )["server_args_overrides"]
+        for stage_name, factory in (
+            ("thinker", native_stages.create_thinker_scheduler),
+            ("talker", stages.create_sglang_session_talker_executor_from_config),
+        )
+    }
+    for stage_overrides in overrides.values():
+        assert stage_overrides["enable_torch_compile"] is False
+        assert ("disable_cuda_graph" in stage_overrides) is disable_cuda_graph
+    with pytest.raises(ConfigLoaded):
+        stages.create_sglang_session_talker_executor_from_config(
+            "unused", device="cpu", server_args_overrides=overrides["talker"]
+        )
+    assert talker_server_args["disable_cuda_graph"] is disable_cuda_graph
+    assert (
+        "disable_cuda_graph"
+        not in MiniCPMOThinkerEngineBuilder().generation_defaults(dtype="bfloat16")
+    )
 
 
 def test_minicpmo_configs_load_without_sglang(tmp_path: Path) -> None:
