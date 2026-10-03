@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from sglang_omni.models.dots_tts.incremental_codec_cuda_graph import (
+    DotsIncrementalCodecCudaGraphRunner,
+)
+
 if TYPE_CHECKING:
     from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
 else:
@@ -120,6 +124,7 @@ class DotsVocoderSlotPool:
         self.emitted_frames = [0] * self.num_slots
         self.free_slots = list(reversed(range(self.num_slots)))
         self.in_use: set[int] = set()
+        self.incremental_codec: DotsIncrementalCodecCudaGraphRunner | None = None
 
     def acquire(self) -> int:
         if not self.free_slots:
@@ -219,17 +224,75 @@ class DotsVocoderSlotPool:
             )
         )
         new_window = append_decoder_input_per_row(decoder_input, window, valid)
-        audio_window = inference._decode_stream_window(
-            new_window
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-
         self.lstm_h[:, slot_index, :] = hidden_h
         self.lstm_c[:, slot_index, :] = hidden_c
         self.window[slot_index] = new_window
+        if self.incremental_codec is None:
+            audio_window = inference._decode_stream_window(
+                new_window
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            out: dict[int, torch.Tensor] = {}
+            for row, slot in enumerate(slots):
+                self.total_frames[slot] += step_t
+                out[slot] = self.slice_audio(
+                    slot, audio_window[row : row + 1], final=False
+                )
+            return out
+        else:
+            return self.incremental_step(slots, decoder_input, new_window, step_t)
+
+    def is_warm(self, slot: int) -> bool:
+        """Whether the slot's decoded history covers every stage's left context."""
+        assert self.incremental_codec is not None
+        decoder = self.incremental_codec.decoder
+        return self.total_frames[slot] - self.lookahead >= decoder.warm_history_frames
+
+    def incremental_step(
+        self,
+        slots: list[int],
+        decoder_input: torch.Tensor,
+        new_window: torch.Tensor,
+        step_t: int,
+    ) -> dict[int, torch.Tensor]:
+        """Decode one step: warm rows decode only their new frames.
+
+        Cold rows decode their whole window and record the history that later
+        warm steps continue from.
+        """
+        assert self.incremental_codec is not None
+        warm_rows = [row for row, slot in enumerate(slots) if self.is_warm(slot)]
+        cold_rows = [row for row, slot in enumerate(slots) if not self.is_warm(slot)]
         out: dict[int, torch.Tensor] = {}
-        for row, slot in enumerate(slots):
-            self.total_frames[slot] += step_t
-            out[slot] = self.slice_audio(slot, audio_window[row : row + 1], final=False)
+        if warm_rows:
+            audio = self.incremental_codec.decode_warm(
+                decoder_input[warm_rows], [slots[row] for row in warm_rows]
+            )
+            for position, row in enumerate(warm_rows):
+                slot = slots[row]
+                self.total_frames[slot] += step_t
+                self.emitted_frames[slot] = self.total_frames[slot] - self.lookahead
+                out[slot] = audio[position : position + 1]
+        else:
+            pass
+        if cold_rows:
+            valid = [
+                min(self.total_frames[slots[row]] + step_t, self.window_size)
+                for row in cold_rows
+            ]
+            audio_window = self.incremental_codec.decode_cold(
+                new_window[cold_rows],
+                [slots[row] for row in cold_rows],
+                [frames - self.lookahead for frames in valid],
+                valid,
+            )
+            for position, row in enumerate(cold_rows):
+                slot = slots[row]
+                self.total_frames[slot] += step_t
+                out[slot] = self.slice_audio(
+                    slot, audio_window[position : position + 1], final=False
+                )
+        else:
+            pass
         return out
 
     @torch.no_grad()
@@ -239,9 +302,19 @@ class DotsVocoderSlotPool:
             raise RuntimeError(f"dots.tts streaming flush referenced free slot {slot}")
         else:
             pass
-        audio_window = self.inference._decode_stream_window(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self.window[slot : slot + 1]
-        )
+        if self.incremental_codec is None:
+            audio_window = self.inference._decode_stream_window(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                self.window[slot : slot + 1]
+            )
+        elif self.is_warm(slot):
+            audio = self.incremental_codec.flush(slot)
+            self.emitted_frames[slot] = self.total_frames[slot]
+            return audio
+        else:
+            valid = min(self.total_frames[slot], self.window_size)
+            audio_window = self.incremental_codec.decode_cold(
+                self.window[slot : slot + 1], [slot], [valid], [valid]
+            )
         return self.slice_audio(slot, audio_window, final=True)
 
     def reset_slot(self, slot: int) -> None:

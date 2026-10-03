@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 from safetensors.torch import load_file
 
+from sglang_omni.models.dots_tts.alias_free import install_alias_free_fusion
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import (
     load_dots_tts_state,
@@ -74,6 +75,25 @@ class DotsAudioCodec:
         self.hop_size = int(vocoder.hop_size)
         self.device = torch.device(device)
         self.lock = threading.RLock()
+        self.alias_free_fusion_enabled: bool | None = None
+
+    def configure_alias_free_fusion(self, enabled: bool) -> None:
+        """Fix the shared codec's decoder mode before creating a vocoder."""
+        with self.lock:
+            if self.alias_free_fusion_enabled is not None:
+                if self.alias_free_fusion_enabled != enabled:
+                    raise RuntimeError(
+                        "The shared dots.tts codec already has a different "
+                        "enable_alias_free_fusion setting"
+                    )
+                else:
+                    pass
+            else:
+                if enabled:
+                    install_alias_free_fusion(self.vocoder.decoder)
+                else:
+                    pass
+                self.alias_free_fusion_enabled = enabled
 
     @staticmethod
     def reference_load_workers(count: int) -> int:
