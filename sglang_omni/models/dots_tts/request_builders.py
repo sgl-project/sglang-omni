@@ -158,6 +158,8 @@ def build_stream_output(
     request_id: str,
     data: DotsTTSSGLangRequestData,
     req_output: RequestOutput,
+    *,
+    stream_latents_on_cpu: bool = False,
 ) -> Iterator[OutgoingMessage]:
     del req_output
     latent = data.latest_latent_patch
@@ -169,11 +171,13 @@ def build_stream_output(
     metadata = dict(data.stream_metadata or {})
     metadata["chunk_id"] = data.chunk_id
     data.chunk_id += 1
+    # note (0xtoward): a 2 KB host copy goes through SHM; a CUDA IPC chunk costs the
+    # vocoder an IPC handle open and close per patch. The step's EOS sync already ran.
     yield OutgoingMessage(
         request_id=request_id,
         type="stream",
         target="vocoder",
-        data=latent,
+        data=latent.cpu() if stream_latents_on_cpu else latent,
         metadata=metadata,
     )
 

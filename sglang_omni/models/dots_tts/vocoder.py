@@ -249,7 +249,11 @@ class DotsTTSStreamingVocoder(
             )
         else:
             pass
-        return codes.to(self.codec.device)
+        if codes.device.type == "cpu":
+            # note (0xtoward): host chunks stay on the host until the step packs them.
+            return codes
+        else:
+            return codes.to(self.codec.device)
 
     def ingest(
         self, request_id: str, state: DotsStreamState, codes: torch.Tensor

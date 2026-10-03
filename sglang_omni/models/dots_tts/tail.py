@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.utils.cuda_staging import indices_to_device
 
 import_dots_tts()
 
@@ -831,7 +832,7 @@ class DotsTtsAcousticTail:
         fm_hidden_rows: torch.Tensor,
     ) -> torch.Tensor:
         spec = self.spec
-        slot_index = torch.tensor(slots, device=self.device, dtype=torch.long)
+        slot_index = indices_to_device(slots, self.device)
         for slot in slots:
             self._fm_seq_len[
                 slot
@@ -850,9 +851,7 @@ class DotsTtsAcousticTail:
             raise RuntimeError("dots.tts flow history exceeded the DiT cache")
         else:
             pass
-        persistent_index = torch.tensor(
-            persistent, device=self.device, dtype=torch.long
-        )
+        persistent_index = indices_to_device(persistent, self.device)
         noise = self.sample_noise(slots)
         direct_kv = len(slots) == spec.num_slots and sorted(slots) == list(
             range(spec.num_slots)
@@ -1078,7 +1077,7 @@ class DotsTtsAcousticTail:
     def encode_feedback(
         self, slots: list[int], latent_patches: torch.Tensor
     ) -> torch.Tensor:
-        slot_index = torch.tensor(slots, device=self.device, dtype=torch.long)
+        slot_index = indices_to_device(slots, self.device)
         rows = len(slots)
         block = self.encoder_block
         starts = [self.encoder_seq_len[slot] for slot in slots]
@@ -1087,7 +1086,7 @@ class DotsTtsAcousticTail:
             raise RuntimeError("dots.tts patch-encoder cache overflow")
         else:
             pass
-        start_index = torch.tensor(starts, device=self.device, dtype=torch.long)
+        start_index = indices_to_device(starts, self.device)
         graph = self.select_graph(self.encoder_graphs, rows, capacity)
         if graph is None:
             self.graph_misses["semantic_encoder"] += 1

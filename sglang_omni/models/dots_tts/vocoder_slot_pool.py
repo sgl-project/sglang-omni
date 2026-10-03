@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from sglang_omni.utils.cuda_staging import indices_to_device
+
 if TYPE_CHECKING:
     from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
 else:
@@ -190,20 +192,24 @@ class DotsVocoderSlotPool:
             else:
                 pass
 
-        slot_index = torch.tensor(slots, device=self.window.device, dtype=torch.long)
+        slot_index = indices_to_device(slots, self.window.device)
         # note (guozhihao-224): upstream stream kernels take channel-major
         # latents [B, C, T]; Omni chunks arrive as [1, T, C].
         packed = torch.cat(
             [slot_latents[slot].transpose(1, 2).contiguous() for slot in slots],
             dim=0,
         )
+        if packed.device != self.window.device:
+            # note (0xtoward): host chunks move once per step through pinned memory.
+            packed = packed.pin_memory().to(self.window.device, non_blocking=True)
+        else:
+            pass
         hidden_h = self.lstm_h.index_select(1, slot_index).contiguous()
         hidden_c = self.lstm_c.index_select(1, slot_index).contiguous()
         window = self.window.index_select(0, slot_index).contiguous()
-        valid = torch.tensor(
+        valid = indices_to_device(
             [min(self.total_frames[slot], self.window_size) for slot in slots],
-            device=window.device,
-            dtype=torch.int64,
+            window.device,
         )
 
         inference = self.inference
