@@ -95,7 +95,7 @@ class BenchmarkRunner:
                 session, samples, send_fn, after_send
             )
             self.wall_clock_s = time.perf_counter() - t0
-            # note (ratish): only the final collection drain is outside the timed window.
+            # note (Yucheng Hu): only the final collection drain is outside the timed window.
             await asyncio.gather(*follow_up_tasks)
         return results
 

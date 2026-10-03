@@ -155,7 +155,7 @@ class GenerateChunk:
     output_token_logprobs: list[list[float | int]] | None = None
     omni_rollout: dict[str, object] | None = None
     finish_reason: str | None = None
-    # note (ratish): None preserves typed producers; empty marks a synthetic terminal reason.
+    # note (Yucheng Hu): None preserves typed producers; empty marks a synthetic terminal reason.
     model_finish_reason: str | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
