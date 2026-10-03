@@ -76,10 +76,11 @@ function load() {
 }
 
 export class Settings {
-  constructor(ui, { capabilitiesUrl, defaultInstructions }) {
+  constructor(ui, { capabilitiesUrl, defaultInstructions, editableInstructions = true }) {
     this.ui = ui;
     this.capabilitiesUrl = capabilitiesUrl;
     this.defaultInstructions = defaultInstructions;
+    this.editableInstructions = editableInstructions;
     this.capabilities = null;
     this.presets = [];
     this.state = { presetId: "", prompt: defaultInstructions, voice: { source: "default" }, output: "audio", mic: "", sampling: {}, sliceNums: "", ...load() };
@@ -181,7 +182,7 @@ export class Settings {
     if (image && this.state.sliceNums) extension.max_slice_nums = Math.min(parseInt(this.state.sliceNums, 10), image.max_slice_nums || 1);
     const textOnly = this.state.output === "text" && this.capabilities && (this.capabilities.output_modalities || []).includes("text");
     return {
-      instructions: (this.state.prompt || "").trim(),
+      instructions: this.editableInstructions ? (this.state.prompt || "").trim() : "",
       outputModalities: textOnly ? ["text"] : ["audio"],
       extension,
     };
@@ -214,6 +215,7 @@ export class Settings {
     ui.setPreset.replaceChildren(...this.presets.map((preset) => new Option(preset.label, preset.key)), new Option("Custom", ""));
     ui.setPreset.value = this.presets.some((preset) => preset.key === this.state.presetId) ? this.state.presetId : "";
     ui.setPrompt.value = this.state.prompt || "";
+    ui.setPrompt.closest("label").hidden = !this.editableInstructions;
     ui.voiceRow.hidden = !this.supportsVoice;
     ui.setVoice.replaceChildren(
       new Option("Model default", "default"),
