@@ -445,6 +445,11 @@ when the router cannot infer a single safe worker set:
 - `X-SGLang-Omni-Route-Worker`: the `X-SGLang-Omni-Worker` value from a streaming
   speech response, echoed verbatim; required on `GET /v1/audio/speech/{request_id}`
 
+Use the raw PCM response's `X-SGLang-Omni-Speech-Id` as the GET path's
+`request_id`, independently of the `X-Request-Id` correlation header. Look up
+the outcome after the stream ends. Outcomes are retained in a bounded
+worker-local cache; a missing outcome does not establish how generation ended.
+
 Speech and speech-batch JSON bodies larger than 1 MiB are conservatively pinned
 to the voice owner because the router cannot fully inspect them to rule out an
 uploaded voice reference. Without an eligible owner, the router conservatively

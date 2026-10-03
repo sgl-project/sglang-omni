@@ -184,12 +184,15 @@ preserved; otherwise the router generates one. The same value is sent to the
 worker and returned to the client.
 
 Media responses carry `x-sglang-omni-worker`, the configured id of the worker
-that answered. A streaming PCM speech response's terminal state lives only on
-that worker, so `GET /v1/audio/speech/{request_id}` requires the client to echo
-the value as `x-sglang-omni-route-worker`; the router pins the lookup to that
-worker without keeping any per-request state. The hint is not forwarded
+that answered. A streaming PCM speech response also carries
+`x-sglang-omni-speech-id`, a generated resource ID independent of `x-request-id`.
+After the stream ends, use that speech ID in `GET /v1/audio/speech/{request_id}`
+and echo the worker ID as `x-sglang-omni-route-worker`. The router pins the lookup
+to that worker without keeping per-request state. The hint is not forwarded
 upstream. A missing or duplicate hint answers `400`, a worker id outside the
-media trust domain `404`, and an unhealthy worker `503`.
+media trust domain `404`, and an unhealthy worker `503`. Outcomes are retained
+in a bounded worker-local cache; a missing outcome does not establish how
+generation ended.
 
 ## Routing and Relay
 
