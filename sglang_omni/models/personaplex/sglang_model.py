@@ -31,6 +31,7 @@ from sglang_omni.models.personaplex.architecture import (
     TEXT_CARD,
 )
 from sglang_omni.models.personaplex.components.depformer import Depformer
+from sglang_omni.models.personaplex.profiling import component_scope
 
 BACKBONE_LAYER_PREFIX = "transformer.layers."
 
@@ -121,15 +122,17 @@ class PersonaPlexForCausalLM(nn.Module):
             input_embeds = self.fusion_buffer[: input_ids.shape[0]]
         else:
             pass
-        hidden = self.llm.model(input_ids, positions, forward_batch, input_embeds)
+        with component_scope("temporal_transformer"):
+            hidden = self.llm.model(input_ids, positions, forward_batch, input_embeds)
         if forward_batch.forward_mode.is_decode():
             self.hidden_out[: hidden.shape[0]] = hidden
         else:
             last_rows = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
             self.hidden_out[: last_rows.shape[0]] = hidden[last_rows]
-        return self.llm.logits_processor(
-            input_ids, hidden, self.llm.lm_head, forward_batch
-        )
+        with component_scope("text_logits"):
+            return self.llm.logits_processor(
+                input_ids, hidden, self.llm.lm_head, forward_batch
+            )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
         backbone: list[tuple[str, torch.Tensor]] = []

@@ -6,6 +6,7 @@ import subprocess
 import threading
 from contextlib import nullcontext
 
+from torch._C._profiler import _ExperimentalConfig
 from torch.profiler import ProfilerActivity, profile, supported_activities
 
 from sglang_omni.platforms import current_platform
@@ -33,16 +34,15 @@ def profiler_activities() -> list[ProfilerActivity]:
 
 
 class TorchProfiler(ProfilerBase):
-    """
-    Torch-based profiler configured for End-to-End continuous recording.
-    Uses 'on_trace_ready' to handle Trace export.
-    Compression is offloaded to a background subprocess to avoid blocking the worker loop.
+    """Capture continuous CPU/device activity and export at stop.
+
+    Compression runs in a subprocess after synchronous trace export.
     """
 
     profiler: profile | None = None
     trace_template: str = ""
     active_run_id: str | None = None
-    lock = threading.Lock()
+    lock: threading.Lock = threading.Lock()
 
     @classmethod
     def get_active_run_id(cls) -> str | None:
@@ -54,59 +54,48 @@ class TorchProfiler(ProfilerBase):
         Start the profiler with the given trace path template.
         """
         with cls.lock:
+            rank = cls.get_rank()
+            experimental_config: _ExperimentalConfig | None = None
+            if os.environ.get("SGLANG_TORCH_PROFILER_PROFILE_ALL_THREADS") == "1":
+                try:
+                    experimental_config = _ExperimentalConfig(profile_all_threads=True)
+                except TypeError as error:
+                    raise RuntimeError(
+                        "This torch build does not support profiling all worker threads"
+                    ) from error
+            else:
+                pass
             if cls.profiler is not None:
                 if run_id is not None and cls.active_run_id == run_id:
                     return f"{cls.trace_template}_rank{rank}.trace.json.gz"
                 else:
                     pass
                 logger.warning(
-                    "[Rank %s] Torch profiler already active (run_id=%s), restarting for run_id=%s",
-                    rank,
-                    cls.active_run_id,
-                    run_id,
+                    f"Torch profiler already active rank={rank} "
+                    f"run_id={cls.active_run_id}; restarting run_id={run_id}"
                 )
                 try:
                     cls.profiler.stop()
                 except Exception as e:
-                    logger.warning(
-                        "[Rank %s] Failed to stop existing profiler: %s", rank, e
-                    )
+                    logger.warning(f"Failed to stop existing profiler rank={rank}: {e}")
+                cls.export_trace(
+                    cls.profiler, f"{cls.trace_template}_rank{rank}.trace.json"
+                )
                 cls.profiler = None
                 cls.active_run_id = None
                 cls.trace_template = ""
             else:
                 pass
-            rank = cls.get_rank()
             trace_path_template = os.path.abspath(trace_path_template)
             cls.trace_template = trace_path_template
             cls.active_run_id = run_id
             json_file = f"{trace_path_template}_rank{rank}.trace.json"
             os.makedirs(os.path.dirname(json_file), exist_ok=True)
-            logger.info(
-                "[Rank %s] Starting End-to-End Torch profiler (run_id=%s)", rank, run_id
-            )
-
-            def trace_handler(p):
-                nonlocal json_file
-                try:
-                    p.export_chrome_trace(json_file)
-                    logger.info(f"[Rank {rank}] Trace exported to {json_file}")
-                    try:
-                        subprocess.Popen(["gzip", "-f", json_file])
-                        logger.info(
-                            f"[Rank {rank}] Triggered background compression for {json_file}"
-                        )
-                        json_file = f"{json_file}.gz"
-                    except Exception as compress_err:
-                        logger.warning(
-                            f"[Rank {rank}] Background gzip failed to start: {compress_err}"
-                        )
-                except Exception as e:
-                    logger.warning(f"[Rank {rank}] Failed to export trace: {e}")
+            logger.info(f"Starting torch profiler rank={rank} run_id={run_id}")
 
             cls.profiler = profile(
                 activities=profiler_activities(),
-                on_trace_ready=trace_handler,
+                experimental_config=experimental_config,
                 record_shapes=os.environ.get("SGLANG_TORCH_PROFILER_RECORD_SHAPES")
                 == "1",
                 profile_memory=os.environ.get("SGLANG_TORCH_PROFILER_PROFILE_MEMORY")
@@ -118,7 +107,24 @@ class TorchProfiler(ProfilerBase):
             return f"{trace_path_template}_rank{rank}.trace.json.gz"
 
     @classmethod
-    def stop(cls, *, run_id: str | None = None) -> dict | None:
+    def export_trace(cls, profiler: profile, json_path: str) -> None:
+        """Export once before starting background trace compression."""
+        try:
+            os.makedirs(os.path.dirname(json_path), exist_ok=True)
+            profiler.export_chrome_trace(json_path)
+        except Exception as error:
+            logger.warning(f"Failed to export trace {json_path}: {error}")
+        else:
+            logger.info(f"Trace exported to {json_path}")
+            try:
+                subprocess.Popen(["gzip", "-f", json_path])
+            except OSError as error:
+                logger.warning(f"Failed to compress trace {json_path}: {error}")
+            else:
+                logger.info(f"Started background compression for {json_path}")
+
+    @classmethod
+    def stop(cls, *, run_id: str | None = None) -> dict[str, str | None] | None:
         """
         Stop the profiler.
 
@@ -134,10 +140,8 @@ class TorchProfiler(ProfilerBase):
             active = cls.active_run_id
             if run_id is not None and active is not None and (active != run_id):
                 logger.warning(
-                    "[Rank %s] Ignoring profiler stop for run_id=%s because active_run_id=%s",
-                    rank,
-                    run_id,
-                    active,
+                    f"Ignoring profiler stop rank={rank} run_id={run_id} "
+                    f"because active_run_id={active}"
                 )
                 return None
             else:
@@ -149,31 +153,15 @@ class TorchProfiler(ProfilerBase):
             try:
                 profiler.stop()
             except Exception as e:
-                logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
-            try:
-                os.makedirs(os.path.dirname(json_path), exist_ok=True)
-                profiler.export_chrome_trace(json_path)
-                logger.info("[Rank %s] Trace exported to %s", rank, json_path)
-                try:
-                    subprocess.Popen(["gzip", "-f", json_path])
-                    logger.info(
-                        "[Rank %s] Triggered background compression for %s",
-                        rank,
-                        json_path,
-                    )
-                except Exception as compress_err:
-                    logger.warning(
-                        "[Rank %s] Background gzip failed: %s", rank, compress_err
-                    )
-            except Exception as e:
-                logger.warning("[Rank %s] Failed to export trace: %s", rank, e)
+                logger.warning(f"Profiler stop failed rank={rank}: {e}")
+            cls.export_trace(profiler, json_path)
             cls.profiler = None
             cls.active_run_id = None
             cls.trace_template = ""
             return {"trace": gz_path, "table": None}
 
     @classmethod
-    def step(cls):
+    def step(cls) -> None:
         if cls.profiler is not None:
             cls.profiler.step()
         else:
@@ -184,7 +172,7 @@ class TorchProfiler(ProfilerBase):
         return cls.profiler is not None
 
     @classmethod
-    def get_step_context(cls):
+    def get_step_context(cls) -> nullcontext[None]:
         return nullcontext()
 
 

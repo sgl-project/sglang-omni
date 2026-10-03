@@ -160,6 +160,8 @@ def reconstruct_timelines(
 # first_emit and first_stream_chunk_sent → thinker TTFT / talker TTFCC).
 _STAGE_INTERVAL_EVENTS = (
     ("stage_input_received", "stage_complete"),
+    ("stage_dispatch", "preprocess_start"),
+    ("stage_dispatch", "encoder_start"),
     ("encoder_start", "encoder_end"),
     ("preprocess_start", "preprocess_end"),
     ("scheduler_request_build_start", "scheduler_request_build_end"),
