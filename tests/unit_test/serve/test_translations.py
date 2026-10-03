@@ -84,6 +84,7 @@ def post_translation(
     stream: bool = False,
     language: str | None = "fr",
     audio: bytes = b"RIFF",
+    extra_fields: dict[str, str] | None = None,
 ) -> httpx.Response:
     data: dict[str, str] = {
         "model": model,
@@ -92,6 +93,8 @@ def post_translation(
     }
     if language is not None:
         data["language"] = language
+    if extra_fields:
+        data.update(extra_fields)
 
     async def post() -> httpx.Response:
         async with httpx.AsyncClient(
@@ -119,6 +122,34 @@ def test_whisper_translation_sets_translate_task_and_preserves_language() -> Non
     assert request.model == WHISPER_MODEL
     assert request.extra_params["task"] == "translate"
     assert request.extra_params["language"] == "fr"
+
+
+def test_translation_forwards_repetition_penalty() -> None:
+    # The shared form already parses repetition_penalty; /v1/audio/transcriptions
+    # forwards it to the generate request, so /v1/audio/translations must too.
+    client, backend = _translation_client()
+
+    response = _post_translation(
+        client, language="fr", extra_fields={"repetition_penalty": "1.3"}
+    )
+
+    assert response.status_code == 200
+    (request,) = backend.requests
+    assert request.sampling.repetition_penalty == 1.3
+    assert request.metadata["explicit_generation_params"] == ["repetition_penalty"]
+
+
+def test_translation_leaves_repetition_penalty_implicit_by_default() -> None:
+    client, backend = _translation_client()
+
+    response = _post_translation(client, language="fr")
+
+    assert response.status_code == 200
+    (request,) = backend.requests
+    assert request.sampling.repetition_penalty == 1.0
+    assert "repetition_penalty" not in request.metadata.get(
+        "explicit_generation_params", []
+    )
 
 
 def test_unsupported_model_returns_openai_shaped_400_before_audio_read() -> None:
