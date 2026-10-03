@@ -25,6 +25,8 @@ from __future__ import annotations
 import argparse
 import logging
 
+from sglang_omni.utils.logging import configure_dependency_loggers
+
 logger = logging.getLogger(__name__)
 
 SEEDTTS_DATASET_ID = "zhaochenyang20/seed-tts-eval-arrow"
@@ -146,7 +148,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     download_dataset(DATASETS[args.dataset], revision=args.revision)
 
 
