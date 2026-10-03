@@ -142,13 +142,31 @@ class EarTtsTalker(nn.Module):
             codes_TQ[:, level] = index_T
         return codes_TQ
 
+    def build_level_schedule(
+        self, num_iter: int, exponent: float, device: torch.device
+    ) -> list[tuple[int, int]]:
+        """(first_level, level_count) per sampling iteration, empty ones dropped."""
+        # Same ops on the runtime device, so ceil lands on the same level counts.
+        rates = torch.linspace(0.0, 1.0, num_iter + 1, device=device)[:-1]
+        masking = (1.0 - rates.pow(exponent)).pow(1.0 / exponent)
+        counts = torch.ceil(masking * self.num_quantizers).long()
+        counts = counts - torch.cat([counts[1:], counts.new_zeros(1)])
+        level_schedule = []
+        first_level = 0
+        for count in counts.tolist():
+            if count > 0:
+                level_schedule.append((first_level, count))
+            else:
+                pass
+            first_level += count
+        return level_schedule
+
     def generate_codes(
         self,
         hidden_TD,
         mog_head,
         *,
-        num_iter: int,
-        exponent: float,
+        level_schedule: list[tuple[int, int]],
         top_p: float | None = None,
         noise_scale: float = 1.0,
         guidance_scale: float = 0.0,
@@ -161,18 +179,8 @@ class EarTtsTalker(nn.Module):
         codes_TQ = torch.zeros(
             frames, self.num_quantizers, dtype=torch.long, device=hidden_TD.device
         )
-        rates = torch.linspace(0.0, 1.0, num_iter + 1, device=hidden_TD.device)[:-1]
-        masking = (1.0 - rates.pow(exponent)).pow(1.0 / exponent)
-        counts = torch.ceil(masking * self.num_quantizers).long()
-        counts = counts - torch.cat([counts[1:], counts.new_zeros(1)])
-
-        assigned = 0
-        for count in counts.tolist():
-            if count == 0:
-                continue
-            else:
-                pass
-            depth_TD = self.embed_code(self.depth_sum(codes_TQ, assigned))
+        for first_level, count in level_schedule:
+            depth_TD = self.embed_code(self.depth_sum(codes_TQ, first_level))
             fed_TD = depth_TD + hidden_TD
             if guidance_scale > 0:
                 fed_TD = torch.cat([fed_TD, depth_TD + uncond_TD])
@@ -185,8 +193,7 @@ class EarTtsTalker(nn.Module):
                 mean_TD
                 + torch.exp(log_std_T1) * torch.randn_like(mean_TD) * noise_scale
             )
-            codes_TQ = self.quantise(sampled_TD, codes_TQ, assigned, count)
-            assigned += count
+            codes_TQ = self.quantise(sampled_TD, codes_TQ, first_level, count)
         return codes_TQ
 
     def depth_sum(self, codes_TQ, levels: int):
