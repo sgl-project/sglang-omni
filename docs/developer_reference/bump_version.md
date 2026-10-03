@@ -108,14 +108,18 @@ context, and every rank read made before the placement was published raised.
 The image encoders that build model parallel groups outside a worker publish
 their own placement first, and follow the same contract.
 
-**Decoder layers.** The Qwen3-Omni thinker, the Ming-Omni thinker and the
+**Decoder layers.** The Qwen3-Omni talker, the Ming-Omni thinker and the
 Ming-TTS model define their own decoder layers on upstream's layer boundary
-API (`sglang_omni/vendor/sglang/layers.py` re-exports it). A layer written
-against that API is a copy of upstream's layer forward with Omni's hooks in
-it. Diff upstream's layer for the same architecture between the tags and
-mirror the change in order: which boundary prepares, which finishes, what the
-exit scope publishes for the MoE reduction. Outputs of a boundary are modified
-in place or through its accessors; the boundary checks the stream identity.
+API (`sglang_omni/vendor/sglang/layers.py` re-exports it). The Qwen3-Omni
+talker's layer lives in `qwen3_omni/components/thinker_model.py`; the
+Qwen3-Omni thinker itself runs upstream's `Qwen3MoeLLMModel`, and Qwen3-TTS
+keeps its own decoder layer with an explicit residual and reuses only the
+attention class. A layer written against the boundary API is a copy of
+upstream's layer forward with Omni's hooks in it. Diff upstream's layer for
+the same architecture between the tags and mirror the change in order: which
+boundary prepares, which finishes, what the exit scope publishes for the MoE
+reduction. Outputs of a boundary are modified in place or through its
+accessors; the boundary checks the stream identity.
 
 **The vendor layer.** `sglang_omni/vendor/sglang/layers.py` patches
 `RMSNorm.forward_cuda` and `models.py` patches `apply_qk_norm`; the module
