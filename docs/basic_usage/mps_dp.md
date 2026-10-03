@@ -70,10 +70,38 @@ byte-derived pool.
 
 The runtime owns the full lifecycle. Every managed process is verified against
 the daemon's client list before serving starts, because a process that misses
-the pipe directory silently falls back to time slicing. A watchdog fails the
-pipeline if daemon identity or control access is lost mid-serving. Shutdown
-re-evaluates the current client list, drains this serve's clients, and quits the
-daemon only when no other serve still owns it.
+the pipe directory silently falls back to time slicing. The watchdog queries
+only the startup-verified server PID with `get_server_status`, failing the
+pipeline on query errors or any status other than `ACTIVE`. It does not adopt
+a replacement server. Shutdown re-evaluates the current client list, drains
+this serve's clients, and quits the daemon only when no other serve still owns it.
+
+The manager uses one per-GPU filesystem `flock` for shared state changes and
+native control transactions across serve processes. A complete server/client
+snapshot and a worker's client termination each run in one transaction. Draining
+clients releases the transaction lock between polls while keeping the owner
+lease held. Final release rechecks daemon identity, clients, and owners under
+the same lock before deciding whether to leave or quit the daemon. The lock
+file remains in the state root after GPU state cleanup. Each serve also keeps
+its own owner lease lock for its lifetime, and the runtime serializes its local
+MPS operations with an `asyncio.Lock`.
+
+Startup readiness, attachment verification, client retirement, release drain,
+and daemon-exit confirmation use bounded polling. Each read operation retries
+native query timeouts, temporary I/O errors (`EINTR`, `EAGAIN`, `ETIMEDOUT`), and
+permission errors identified at the I/O boundary, preserving the original native
+exception as the cause. Retries stop at the phase deadline and report the last
+control error. An unreadable client environment is never treated as a detached
+or unattributable client. Permanent I/O errors, nonzero command exits, malformed
+PID, token or protocol data, a dead or mismatched daemon, and an invalid owner
+lease fail immediately. Verification, retirement and drain release the GPU transaction
+between attempts while keeping the owner lease; initial daemon creation and
+final quit confirmation retain their transaction until the state transition is
+complete. Start, terminate and quit commands are never replayed by this policy.
+Each phase keeps one deadline, including both
+temporary read failures and clients that have not yet attached or drained. The
+deadline bounds retry scheduling; individual native commands and lock acquisition
+retain their existing blocking behavior. The watchdog remains a single query.
 
 If a managed worker does not exit before the shutdown timeout, the runtime
 terminates that directly owned child process and reaps it before the launcher
@@ -93,8 +121,10 @@ node crash), even an idle daemon or one dead co-owner makes the next start
 preserve the state and fail with owner/client details and safe cleanup guidance.
 An unlocked or retained owner blocks every later start until an operator has
 inspected and cleaned the state. Existing healthy co-owners keep serving, but
-new owners cannot join and no process retries cleanup automatically. Clean up
-and start again. A normal shutdown leaves nothing behind.
+new owners cannot join and no process retries cleanup of retained dirty state
+automatically. Clean up
+and start again. When the last owner shuts down cleanly, its GPU state directory
+is removed and only the reusable transaction lock file remains in the state root.
 
 Operator notes: state lives under `/tmp/sglang-omni-mps-<user>/<gpu-uuid>/`
 (`SGLANG_OMNI_MPS_STATE_ROOT` overrides it). Serves that are meant to share

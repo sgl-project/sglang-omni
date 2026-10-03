@@ -53,15 +53,8 @@ def resolve_cuda_device_uuids(
             status, device_uuid = driver.cuDeviceGetUuid(device)
             check_cuda(status, f"cuDeviceGetUuid({ordinal})")
             raw_uuid = bytes(device_uuid.bytes)
-            if len(raw_uuid) != 16:
-                raise RuntimeError(
-                    f"cuDeviceGetUuid({ordinal}) returned {len(raw_uuid)} bytes, "
-                    "expected 16"
-                )
-            else:
-                pass
             resolved[ordinal] = f"GPU-{uuid.UUID(bytes=raw_uuid)}"
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             errors[ordinal] = str(exc)
     return resolved, errors
 

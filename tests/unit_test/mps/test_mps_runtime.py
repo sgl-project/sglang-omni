@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import shutil
 import stat
@@ -21,6 +22,7 @@ from sglang_omni.mps.devices import MpsPhysicalDevice
 from sglang_omni.mps.manager import (
     MPS_CLIENT_TOKEN_ENV,
     MpsClientRef,
+    MpsControlError,
     MpsDirtyStateError,
     MpsError,
 )
@@ -161,6 +163,30 @@ def test_off_does_not_inspect_external_process_pipe(short_root):
 
 def test_auto_without_colocation_creates_nothing(short_root):
     assert create(short_root, procs=[proc("a", 0), proc("b", 1)]) is None
+
+
+@pytest.mark.parametrize("failure", [TypeError("invalid binding"), KeyError(0)])
+def test_device_inspection_contract_error_propagates(short_root, monkeypatch, failure):
+    device_info = FakeDeviceInfo()
+
+    def inspect(gpu_ids):
+        if isinstance(failure, TypeError):
+            raise failure
+        else:
+            return {}
+
+    monkeypatch.setattr(device_info, "inspect", inspect)
+
+    with pytest.raises(type(failure)):
+        MpsPipelineRuntime.create(
+            mode="auto",
+            process_specs=colocated(),
+            device_info=device_info,
+            client=FakeControlClient(),
+            state_root=short_root,
+        )
+
+    assert not list(short_root.iterdir())
 
 
 @pytest.mark.asyncio
@@ -455,6 +481,76 @@ async def test_cancelled_start_rolls_back_before_any_client_can_attach(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("quit_fails", [False, True])
+async def test_cancelled_close_finishes_drain_before_releasing_owner(
+    short_root, monkeypatch, quit_fails
+):
+    client = FakeControlClient()
+    if quit_fails:
+        client.quit_error = MpsControlError("quit unavailable")
+    else:
+        pass
+    runtime = create(short_root, client=client)
+    await runtime.start()
+    manager = manager_on(runtime, 0)
+    lease = runtime.leases[manager.gpu_uuid]
+    marker = owner_marker(manager)
+    lock_path = short_root / f".lock-{manager.gpu_uuid}"
+    client.set_clients(manager.paths.pipe_dir, {7000: [101, 102]})
+    client.client_tokens.update(
+        {
+            101: runtime.env_for_process("a")[MPS_CLIENT_TOKEN_ENV],
+            102: runtime.env_for_process("b")[MPS_CLIENT_TOKEN_ENV],
+        }
+    )
+    await runtime.verify()
+    manager.drain_timeout = 5
+    draining = threading.Event()
+    detached = threading.Event()
+
+    def wait_for_detach(seconds):
+        draining.set()
+        assert detached.wait(5)
+
+    monkeypatch.setattr("sglang_omni.mps.manager.time.sleep", wait_for_detach)
+    close_task = asyncio.create_task(runtime.close())
+    try:
+        assert await asyncio.to_thread(draining.wait, 2)
+        with lock_path.open("r") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with marker.open("r") as owner:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for _ in range(2):
+            close_task.cancel()
+            await asyncio.sleep(0)
+            assert not close_task.done()
+            assert runtime.has_leases
+            assert lease.owner_fd >= 0
+    finally:
+        detach_all(runtime, client)
+        detached.set()
+        with pytest.raises(asyncio.CancelledError) as cancellation:
+            await close_task
+
+    assert not runtime.has_leases
+    assert lease.owner_fd == -1
+    if quit_fails:
+        assert isinstance(cancellation.value.__cause__, MpsDirtyStateError)
+        assert "quit unavailable" in str(cancellation.value.__cause__)
+        assert marker.read_text() == "retained\n"
+        assert not client.owner_lease_held(marker)
+        assert manager.paths.state_dir.exists()
+        assert client.daemon_process_alive(lease.daemon_pid)
+    else:
+        assert not marker.exists()
+        assert not manager.paths.state_dir.exists()
+        assert not client.daemon_process_alive(lease.daemon_pid)
+    with lock_path.open("r") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@pytest.mark.asyncio
 async def test_new_state_root_is_created_private(short_root):
     client = FakeControlClient()
     state_root = short_root / "new-state"
@@ -671,6 +767,49 @@ async def test_multi_gpu_pre_spawn_rollback_leaves_shared_owner_clean(short_root
     assert (shared.paths.owners_dir / "888").read_text() == "active\n"
     assert client.snapshot(shared.paths.pipe_dir) == {foreign}
     assert client.daemon_process_alive(9000)
+
+
+@pytest.mark.asyncio
+async def test_failed_start_rollback_still_releases_the_other_gpus(
+    short_root, monkeypatch
+):
+    client = FakeControlClient()
+    runtime = create(
+        short_root,
+        mode="on",
+        procs=[proc("a", 0), proc("b", 1), proc("c", 2)],
+        client=client,
+    )
+    clean = manager_on(runtime, 0)
+    failed_rollback = manager_on(runtime, 1)
+    rejected = manager_on(runtime, 2)
+    rejected.paths.pipe_dir.mkdir(parents=True)
+    rejected.paths.log_dir.mkdir()
+    rejected.paths.owners_dir.mkdir()
+    (rejected.paths.owners_dir / "777").write_text("retained\n")
+    quit_daemon = client.quit_daemon
+    quit_attempts = []
+
+    def fail_one_quit(pipe_dir):
+        quit_attempts.append(pipe_dir)
+        if pipe_dir == failed_rollback.paths.pipe_dir:
+            raise MpsControlError("rollback quit failed")
+        quit_daemon(pipe_dir)
+
+    monkeypatch.setattr(client, "quit_daemon", fail_one_quit)
+
+    with pytest.raises(MpsError, match="dirty state") as exc_info:
+        await runtime.start()
+
+    assert isinstance(exc_info.value.__cause__, MpsDirtyStateError)
+    assert "rollback quit failed" in str(exc_info.value.__cause__)
+    assert not runtime.has_leases
+    assert quit_attempts == [failed_rollback.paths.pipe_dir, clean.paths.pipe_dir]
+    assert not clean.paths.state_dir.exists()
+    assert owner_marker(failed_rollback).read_text() == "retained\n"
+    assert not client.owner_lease_held(owner_marker(failed_rollback))
+    assert failed_rollback.paths.state_dir.exists()
+    assert (rejected.paths.owners_dir / "777").read_text() == "retained\n"
 
 
 @pytest.mark.asyncio
