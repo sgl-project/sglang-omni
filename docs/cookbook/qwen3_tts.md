@@ -465,9 +465,10 @@ first chunk, so their audio arrives complete in a single final flush.
 
 Streaming decodes run on the stateful incremental codec by default: each
 follow-up chunk decodes only its fresh frames against per-stream state held in
-a preallocated arena, steady-state cohorts replay CUDA graphs whose decode step
-is `torch.compile`d, and the follow-up workers collect for 4 ms. Startup spends
-about a minute compiling the steady shapes. The left-context decoder remains
+a preallocated arena, and the follow-up workers collect for 4 ms. On NVIDIA, AMD
+and MUSA GPUs steady-state cohorts also decode asynchronously on a priority stream
+and replay CUDA graphs whose decode step is `torch.compile`d, which costs about
+a minute of startup compiling the steady shapes. The left-context decoder remains
 available as a rollback:
 
 ```yaml
@@ -477,12 +478,16 @@ stages:
       enable_stateful_codec_decoder: false
 ```
 
-`incremental_codec_cuda_graph`, `incremental_codec_compile` and
+`incremental_codec_cuda_graph`, `incremental_codec_compile`, `async_decode` and
 `followup_batch_wait_ms` are the individual switches. Measured on one H100
 80GB at 20 requests per second, three client seeds of roughly 1200 requests
 each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
 for the left-context decoder, with first playable audio at 55 to 58 ms
 against 82 to 89 ms.
+
+Intel XPU, Ascend NPU, CPU and Apple MPS decode synchronously by default. To opt
+in on Intel GPUs, follow the
+[Qwen3-TTS XPU recipe](../get_started/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
 
 #### First-audio chunk ramp
 
