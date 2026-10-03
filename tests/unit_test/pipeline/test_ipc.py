@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from pathlib import Path
+from traceback import format_exception
 from types import FrameType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -710,3 +711,109 @@ async def test_launcher_preserves_runner_start_error(
 
     with pytest.raises(RuntimeError, match="start failed"):
         await launcher.run_server(config, port=8000)
+
+
+@pytest.mark.parametrize(
+    "window", ["start", "handover", "serve", "stop", "failed_stop"]
+)
+def test_launcher_cleans_up_before_passing_on_sigterm(
+    window: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import launcher
+
+    events: list[str] = []
+    original_handler = signal.getsignal(signal.SIGTERM)
+
+    def previous_handler(sig: int, frame: FrameType | None) -> None:
+        events.append("previous handler")
+
+    async def receive_sigterm_then_clean_up() -> None:
+        signal.raise_signal(signal.SIGTERM)
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError as cancelled:
+            events.append("cancelled")
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(0)
+            if window == "failed_stop":
+                raise cancelled from RuntimeError("stop failed")
+            else:
+                pass
+            events.append("cleaned up")
+            raise
+
+    class FakeRunner:
+        def __init__(self, pipeline_config: PipelineConfig) -> None:
+            self.coordinator = StubCoordinator()
+            self.stage_control_endpoints = {}
+            self.prep = SimpleNamespace(
+                placement_plan=SimpleNamespace(gpus={}),
+                process_plan=SimpleNamespace(groups=(), tp_stage_to_processes={}),
+            )
+
+        async def start(self, timeout: float) -> None:
+            if window == "start":
+                await receive_sigterm_then_clean_up()
+            else:
+                pass
+
+        async def stop(self) -> None:
+            events.append("stop")
+            if window in ("stop", "failed_stop"):
+                await receive_sigterm_then_clean_up()
+            else:
+                pass
+
+        async def wait_failed(self) -> None:
+            await asyncio.Future()
+
+    def create_app(*args, **kwargs) -> FastAPI:
+        if window == "handover":
+            signal.raise_signal(signal.SIGTERM)
+        else:
+            pass
+        return FastAPI()
+
+    async def serve(server: launcher.uvicorn.Server, sockets=None) -> None:
+        if window == "serve":
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(0.01)
+            assert server.should_exit
+        elif window == "handover":
+            for _ in range(100):
+                await asyncio.sleep(0)
+        else:
+            pass
+
+    monkeypatch.setattr(launcher, "apply_gpu_compat_env_defaults", Mock())
+    monkeypatch.setattr(launcher, "find_available_port", lambda host, port: port)
+    monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
+    monkeypatch.setattr(launcher, "ProfilerControlClient", Mock())
+    monkeypatch.setattr(launcher, "create_app", create_app)
+    monkeypatch.setattr(launcher.uvicorn.Server, "_serve", serve)
+    signal.signal(signal.SIGTERM, previous_handler)
+    try:
+        if window == "serve":
+            launcher.launch_server(make_config(tmp_path), port=8000)
+        else:
+            with pytest.raises(asyncio.CancelledError) as raised:
+                launcher.launch_server(make_config(tmp_path), port=8000)
+        assert signal.getsignal(signal.SIGTERM) is previous_handler
+    finally:
+        signal.signal(signal.SIGTERM, original_handler)
+
+    expected_events = {
+        "start": ["cancelled", "cleaned up", "previous handler"],
+        "handover": ["stop", "previous handler"],
+        "serve": ["stop"],
+        "stop": ["stop", "cancelled", "cleaned up", "previous handler"],
+        "failed_stop": ["stop", "cancelled"],
+    }
+    assert events == expected_events[window]
+    if window == "failed_stop":
+        error_text = "".join(format_exception(raised.value))
+        assert "RuntimeError: stop failed" in error_text
+    else:
+        pass
