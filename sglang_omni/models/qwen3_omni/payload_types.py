@@ -4,25 +4,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
+
+if TYPE_CHECKING:
+    import torch
+
+    from sglang_omni.models.qwen3_omni.components.image_encoder import (
+        ImageEncoderOutput,
+    )
+else:
+    pass
 
 
 class PromptInputs(TypedDict):
     """Tokenized prompt inputs for the thinker."""
 
-    input_ids: Any
-    attention_mask: Any
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
     prompt_text: str
-
-
-class PreprocessingData(TypedDict, total=False):
-    """Preprocessing outputs stored on StagePayload.data."""
-
-    raw_inputs: Any
-    prompt: PromptInputs
-    mm_inputs: dict[str, Any]
-    encoder_inputs: dict[str, dict[str, Any]]
-    stream_state: dict[str, Any]
 
 
 class ThinkerOutput(TypedDict, total=False):
@@ -31,7 +30,61 @@ class ThinkerOutput(TypedDict, total=False):
     output_ids: list[int]
     step: int
     is_final: bool
-    extra_model_outputs: dict[str, Any]
+    extra_model_outputs: dict[str, torch.Tensor | list[torch.Tensor] | list[int]]
+    finish_reason: str
+    weight_version: str
+    output_token_logprobs: list[list[float | int]]
+
+
+class StreamState(TypedDict, total=False):
+    token_ids: list[int]
+    text: str
+    emitted_text: str
+
+
+class ThinkerModelInputs(TypedDict, total=False):
+    image_embeds: torch.Tensor
+    video_embeds: torch.Tensor
+    audio_embeds: torch.Tensor
+    image_grid_thw: torch.Tensor
+    video_grid_thw: torch.Tensor
+    feature_attention_mask: torch.Tensor
+    audio_feature_lengths: torch.Tensor
+    video_second_per_grid: torch.Tensor
+    image_deepstack_visual_embeds: list[torch.Tensor]
+    video_deepstack_visual_embeds: list[torch.Tensor]
+    deepstack_visual_embeds: list[torch.Tensor]
+    use_audio_in_video: bool
+
+
+class ThinkerInputs(TypedDict, total=False):
+    model_inputs: ThinkerModelInputs
+    media_cache_keys: dict[str, str]
+
+
+class EncoderOutputs(TypedDict, total=False):
+    image_encoder: ImageEncoderOutput
+    audio_encoder: dict[str, torch.Tensor]
+
+
+class EngineOutputs(EncoderOutputs, total=False):
+    thinker: ThinkerOutput
+
+
+class EncoderInputs(TypedDict, total=False):
+    pixel_values: torch.Tensor | None
+    image_grid_thw: torch.Tensor | None
+    pixel_values_videos: torch.Tensor | None
+    video_grid_thw: torch.Tensor | None
+    video_second_per_grid: torch.Tensor | None
+    use_audio_in_video: bool
+    input_features: torch.Tensor | None
+    feature_attention_mask: torch.Tensor | None
+    audio_feature_lengths: torch.Tensor | None
+    cache_key: str
+    _active: bool
+    _skip: bool
+    _result: ImageEncoderOutput | dict[str, torch.Tensor]
 
 
 @dataclass
@@ -42,18 +95,20 @@ class Qwen3OmniPipelineState:
     process boundaries.
     """
 
-    raw_inputs: Any | None = None
+    raw_inputs: object | None = None
     prompt: PromptInputs | None = None
-    mm_inputs: dict[str, Any] = field(default_factory=dict)
-    encoder_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
-    encoder_outs: dict[str, Any] = field(default_factory=dict)
-    thinker_inputs: dict[str, Any] = field(default_factory=dict)
+    mm_inputs: dict[str, dict[str, torch.Tensor | bool | None]] = field(
+        default_factory=dict
+    )
+    encoder_inputs: dict[str, EncoderInputs] = field(default_factory=dict)
+    encoder_outs: EncoderOutputs = field(default_factory=dict)
+    thinker_inputs: dict[str, object] = field(default_factory=dict)
     thinker_out: ThinkerOutput | None = None
-    engine_outputs: dict[str, Any] = field(default_factory=dict)
-    stream_state: dict[str, Any] = field(default_factory=dict)
+    engine_outputs: EngineOutputs = field(default_factory=dict)
+    stream_state: StreamState = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "Qwen3OmniPipelineState":
+    def from_dict(cls, data: object) -> "Qwen3OmniPipelineState":
         if not isinstance(data, dict):
             data = {}
         else:
@@ -77,8 +132,8 @@ class Qwen3OmniPipelineState:
             stream_state=stream_state if isinstance(stream_state, dict) else {},
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {}
+    def to_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {}
         if self.raw_inputs is not None:
             data["raw_inputs"] = self.raw_inputs
         else:
@@ -137,5 +192,5 @@ class Qwen3OmniEvent:
 
     type: Qwen3OmniEventType
     modality: str
-    payload: dict[str, Any]
+    payload: dict[str, object]
     is_final: bool = False

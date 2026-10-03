@@ -484,8 +484,10 @@ def test_fused_raw_logit_sampler_matches_reference_for_signed_zero_order(
         assert torch.equal(actual, expected), f"seed_offset={seed_offset}"
 
 
+@pytest.mark.parametrize("max_top_k", [32, 50])
 def test_fused_raw_logit_sampler_captures_without_reference_top_k(
     monkeypatch: pytest.MonkeyPatch,
+    max_top_k: int,
 ) -> None:
     batch_size = 4
     logits = torch.randn(
@@ -497,7 +499,7 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
     temperatures = torch.tensor(
         [0.7, 0.8, 0.9, 1.0], device="cuda", dtype=torch.float32
     )
-    top_ks = torch.tensor([32, 31, 30, 29], device="cuda", dtype=torch.long)
+    top_ks = max_top_k - torch.arange(batch_size, device="cuda", dtype=torch.long)
     top_ps = torch.full((batch_size,), 0.8, device="cuda", dtype=torch.float32)
     seeds = torch.arange(700, 700 + batch_size, device="cuda", dtype=torch.long)
     positions = torch.arange(30, 30 + batch_size, device="cuda", dtype=torch.long)
@@ -506,7 +508,7 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
         top_ks,
         top_ps,
         seeds,
-        max_top_k=32,
+        max_top_k=max_top_k,
     )
 
     expected = reference_seeded_tokens(
@@ -597,6 +599,42 @@ def test_fused_raw_logit_sampler_capture_falls_back_without_triton_gather(
 
     assert top_k_calls
     assert torch.equal(captured, expected)
+
+
+@pytest.mark.parametrize("max_top_k", [50, 128])
+def test_fused_raw_logit_sampler_keeps_the_single_kernel_off_sm90(
+    monkeypatch: pytest.MonkeyPatch,
+    max_top_k: int,
+) -> None:
+    batch_size = 64
+    generator = torch.Generator().manual_seed(max_top_k)
+    logits = (torch.randn(batch_size, 2048, generator=generator) * 3).to(
+        device="cuda", dtype=torch.bfloat16
+    )
+    sample_inputs = (
+        logits,
+        torch.full((batch_size,), 0.9, device="cuda", dtype=torch.float32),
+        torch.full((batch_size,), max_top_k, device="cuda", dtype=torch.long),
+        torch.ones((batch_size,), device="cuda", dtype=torch.float32),
+        torch.arange(900, 900 + batch_size, device="cuda", dtype=torch.long),
+        torch.arange(50, 50 + batch_size, device="cuda", dtype=torch.long),
+    )
+    expected = sample_from_logits_with_seed_top_k_top_p(
+        *sample_inputs, max_top_k=max_top_k, has_top_p=False
+    )
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (8, 9))
+    monkeypatch.setattr(sampling_kernels_module, "seeded_top_k_chunk_kernel", None)
+    monkeypatch.setattr(
+        sampling_kernels_module, "seeded_top_k_merge_sample_kernel", None
+    )
+
+    assert torch.equal(
+        sample_from_logits_with_seed_top_k_top_p(
+            *sample_inputs, max_top_k=max_top_k, has_top_p=False
+        ),
+        expected,
+    )
 
 
 def test_fused_raw_logit_sampler_falls_back_for_unproven_shapes() -> None:

@@ -1,15 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import logging
+import os
+from pathlib import Path
+
 import pytest
 
 from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
+from sglang_omni.config.schema import EndpointsConfig, ProcessConfig
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
     Variants,
 )
+from sglang_omni.pipeline.mp_runner import apply_cpu_thread_plan, build_stage_groups
+from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from sglang_omni.pipeline.stage_workers import patched_spawn_env
 from sglang_omni.platforms import current_platform
+from sglang_omni.utils import cpu
+from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
@@ -39,6 +49,88 @@ def set_colocated_runtime(
         make_stage(config, "talker_ar").engine.mem_fraction_static = (
             0.11 if conflicting_mem_fraction else 0.12
         )
+
+
+@pytest.mark.parametrize("colocated,replicas", [(False, 1), (False, 2), (True, 1)])
+@pytest.mark.parametrize("cpu_quota", [32, 2])
+@pytest.mark.parametrize("parent_threads", [None, "12"])
+def test_qwen_worker_cpu_policy_and_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    colocated: bool,
+    replicas: int,
+    cpu_quota: int,
+    parent_threads: str | None,
+) -> None:
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda process_id: set(range(32)))
+    monkeypatch.setattr(cpu, "cgroup_cpu_quota_count", lambda: cpu_quota)
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.runtime_config.visible_device_count", lambda: 2
+    )
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.delenv("SGLANG_OMNI_OMP_FROM_CPU_PLAN", raising=False)
+    if parent_threads is not None:
+        monkeypatch.setenv("OMP_NUM_THREADS", parent_threads)
+    config = (
+        Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+        if colocated
+        else Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    )
+    if colocated:
+        set_colocated_runtime(config)
+    config.processes["preprocessing"] = ProcessConfig(num_replicas=replicas)
+    config.endpoints = EndpointsConfig(base_path=str(tmp_path))
+    prep = prepare_pipeline_runtime(config)
+    try:
+        groups = build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+            replica_topology=prep.replica_topology,
+        )
+        apply_cpu_thread_plan(groups)
+        process_count = (6 if colocated else 7) + replicas - 1
+        fallback_threads = max(1, cpu_quota // process_count)
+        assert sum(group.process_count for group in groups) == process_count
+        assert f"fallback_threads_per_process={fallback_threads}" in caplog.text
+        assert (
+            f"fallback_overcommitted={str(process_count > cpu_quota).lower()}"
+            in caplog.text
+        )
+        for group in groups:
+            for process_spec in group.process_specs:
+                is_preprocessing = (
+                    prep.replica_topology.logical_name(
+                        process_spec.stage_specs[0].stage_name
+                    )
+                    == "preprocessing"
+                )
+                model_threads = (
+                    8 if colocated else cpu_quota if is_preprocessing else None
+                )
+                expected_threads = parent_threads or str(
+                    model_threads or fallback_threads
+                )
+                with patched_spawn_env(process_spec):
+                    assert os.environ["OMP_NUM_THREADS"] == expected_threads
+                    assert os.environ.get("SGLANG_OMNI_OMP_FROM_CPU_PLAN") == (
+                        "1"
+                        if parent_threads is None and model_threads is None
+                        else None
+                    )
+                    assert (
+                        f"process={process_spec.process_name} OMP_NUM_THREADS={expected_threads}"
+                        in caplog.text
+                    )
+                assert os.environ.get("OMP_NUM_THREADS") == parent_threads
+                assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+    finally:
+        prep.runtime_dir.close()
 
 
 def test_default_speech_topology_stays_disaggregated() -> None:

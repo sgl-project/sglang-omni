@@ -125,6 +125,7 @@ from benchmarks.tasks.tts import (
     run_seedtts_utmos,
     save_generated_audio_metadata,
     save_speed_results,
+    stream_outcome_collector,
 )
 from sglang_omni.admission import QueueFullError
 
@@ -137,12 +138,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTS_BENCHMARK_CONCURRENCY = int(os.getenv("TTS_BENCHMARK_CONCURRENCY", "16"))
 
 
+DEFAULT_MAX_NEW_TOKENS = 2048
+
+
 @dataclass(frozen=True)
 class _ModelBenchmarkProfile:
     """Per-checkpoint CLI defaults and managed-server knobs."""
 
     argument_defaults: dict[str, Any] = field(default_factory=dict)
     forward_sglang_engine: bool = True
+    # note (Yucheng Hu): None omits max_new_tokens so the server's own default applies.
+    max_new_tokens: int | None = DEFAULT_MAX_NEW_TOKENS
 
 
 _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
@@ -157,6 +163,10 @@ _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
 _MODEL_BENCHMARK_PROFILES: dict[str, _ModelBenchmarkProfile] = {
     "auk": _AUK_BENCHMARK_PROFILE,
     "auk-flash": _AUK_BENCHMARK_PROFILE,
+    # note (Yucheng Hu): Fun-CosyVoice3 caps generation at min(2048, 20x target
+    # text tokens) unless the request sets max_new_tokens; a flat 2048 lets a
+    # runaway run 82 s.
+    "fun-cosyvoice3-0.5b-2512": _ModelBenchmarkProfile(max_new_tokens=None),
 }
 
 
@@ -201,7 +211,7 @@ class TtsSeedttsBenchmarkConfig:
     # clients replay DISJOINT dataset shards (offset i*max_samples) so shared
     # radix/fingerprint caches don't inflate multi-client throughput.
     sample_offset: int = 0
-    max_new_tokens: int | None = 2048
+    max_new_tokens: int | None = None
     token_count: int | str | None = None
     temperature: float | None = None
     top_p: float | None = None
@@ -215,7 +225,9 @@ class TtsSeedttsBenchmarkConfig:
     warmup: int | None = None
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
+    arrival_seed: int | None = None
     stream: bool = False
+    collect_stream_outcomes: bool = True
     initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     max_running_requests: int = 64
@@ -236,10 +248,22 @@ class TtsSeedttsBenchmarkConfig:
     environment_fingerprint: BenchmarkFingerprint | None = None
 
 
+def resolve_max_new_tokens(config: TtsSeedttsBenchmarkConfig) -> int | None:
+    # note (Yucheng Hu): resolved here rather than in _parse_args so a config built
+    # without the CLI, as tests/test_model/test_tts_ci.py does, follows the profile.
+    if config.max_new_tokens is not None:
+        return config.max_new_tokens
+    else:
+        return _profile_for_model(config.model).max_new_tokens
+
+
 def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
     generation_kwargs: dict = {}
-    if config.max_new_tokens is not None:
-        generation_kwargs["max_new_tokens"] = config.max_new_tokens
+    max_new_tokens = resolve_max_new_tokens(config)
+    if max_new_tokens is not None:
+        generation_kwargs["max_new_tokens"] = max_new_tokens
+    else:
+        pass
     if config.token_count is not None:
         generation_kwargs["token_count"] = config.token_count
     if config.temperature is not None:
@@ -289,9 +313,10 @@ def _build_results_config(
         "task_type": config.task_type,
         "instructions": config.instructions,
         "stream": config.stream,
+        "collect_stream_outcomes": config.stream and config.collect_stream_outcomes,
         "max_samples": config.max_samples,
         "sample_offset": config.sample_offset,
-        "max_new_tokens": config.max_new_tokens,
+        "max_new_tokens": resolve_max_new_tokens(config),
         "temperature": config.temperature,
         "top_p": config.top_p,
         "top_k": config.top_k,
@@ -302,6 +327,7 @@ def _build_results_config(
         "warmup": _resolve_warmup(config),
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
+        "arrival_seed": config.arrival_seed,
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "max_running_requests": config.max_running_requests,
         "max_queued_requests": config.max_queued_requests,
@@ -419,9 +445,14 @@ async def run_tts_seedtts_benchmark(
             request_rate=config.request_rate,
             warmup=_resolve_warmup(config),
             disable_tqdm=config.disable_tqdm,
+            arrival_seed=config.arrival_seed,
         )
     )
-    outputs = await runner.run(samples, send_fn)
+    if config.stream and config.collect_stream_outcomes:
+        async with stream_outcome_collector(api_url) as collect:
+            outputs = await runner.run(samples, send_fn, after_send=collect)
+    else:
+        outputs = await runner.run(samples, send_fn)
     warn_if_tail_percentile_is_thin(len(outputs))
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
@@ -451,7 +482,7 @@ def run_tts_seedtts_transcribe(
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
-        "max_new_tokens": config.max_new_tokens,
+        "max_new_tokens": resolve_max_new_tokens(config),
         "token_count": config.token_count,
         "temperature": config.temperature,
         "top_p": config.top_p,
@@ -460,6 +491,7 @@ def run_tts_seedtts_transcribe(
         "seed": config.seed,
         "max_samples": config.max_samples,
         "stream": config.stream,
+        "collect_stream_outcomes": config.stream and config.collect_stream_outcomes,
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
@@ -503,7 +535,9 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         warmup=args.warmup,
         concurrency=args.concurrency,
         request_rate=args.request_rate,
+        arrival_seed=args.arrival_seed,
         stream=args.stream,
+        collect_stream_outcomes=args.collect_stream_outcomes,
         initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
         max_running_requests=args.max_running_requests,
@@ -852,7 +886,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--sample-offset", type=int, default=0)
-    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Generation length cap sent with every request (default "
+            f"{DEFAULT_MAX_NEW_TOKENS}). Fun-CosyVoice3 omits it by default so the "
+            "server applies the model's own text-length contract; pass a value to "
+            "override that contract."
+        ),
+    )
     parser.add_argument(
         "--token-count",
         type=_parse_token_count,
@@ -929,9 +973,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Requests/s (inf = burst). Soak defaults to 2x capacity if omitted.",
     )
     parser.add_argument(
+        "--arrival-seed",
+        type=int,
+        default=None,
+        help="Seed for the open-loop Poisson arrivals; omit for a fresh sequence.",
+    )
+    parser.add_argument(
         "--stream",
         action="store_true",
         help="Use streaming for TTS generation.",
+    )
+    parser.add_argument(
+        "--collect-stream-outcomes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Collect raw PCM finish reasons with background GETs; disable to measure their overhead.",
     )
     parser.add_argument(
         "--initial-codec-chunk-frames",

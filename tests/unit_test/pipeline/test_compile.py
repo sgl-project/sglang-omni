@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
+from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, ProcessConfig
 from sglang_omni.pipeline.mp_runner import (
+    apply_cpu_thread_plan,
     build_stage_groups,
     resolve_same_process_targets,
 )
@@ -16,6 +19,59 @@ from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
+
+
+def test_cpu_thread_plan_counts_final_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for replicas, process_count, threads in [(1, 4, 4), (2, 5, 3)]:
+        capacity = Mock(return_value=16)
+        monkeypatch.setattr(
+            "sglang_omni.pipeline.mp_runner.effective_cpu_count", capacity
+        )
+        config = PipelineConfig(
+            model_path="model",
+            env_defaults={"OMP_NUM_THREADS": "12", "PIPELINE_TEST_ENV": "1"},
+            endpoints=EndpointsConfig(base_path=str(tmp_path)),
+            stages=[
+                stage("preprocessing", process="preprocessing", next="thinker"),
+                stage(
+                    "thinker",
+                    process="thinker",
+                    next="talker",
+                    env={"OMP_NUM_THREADS": "6"},
+                ),
+                stage("talker", process="talker", next="code2wav"),
+                stage("code2wav", process="code2wav", terminal=True),
+            ],
+            processes={"thinker": ProcessConfig(num_replicas=replicas)},
+        )
+        prep = prepare_pipeline_runtime(config)
+        try:
+            groups = build_stage_groups(
+                config,
+                ctx=FakeMpContext(),
+                stages_cfg=prep.stages_cfg,
+                endpoints=prep.endpoints,
+                placement_plan=prep.placement_plan,
+                process_plan=prep.process_plan,
+                replica_topology=prep.replica_topology,
+            )
+            apply_cpu_thread_plan(groups)
+        finally:
+            prep.runtime_dir.close()
+
+        process_specs = [spec for group in groups for spec in group.process_specs]
+        capacity.assert_called_once_with()
+        assert len(process_specs) == process_count
+        assert all(spec.cpu_threads == threads for spec in process_specs)
+        for process_spec in process_specs:
+            for stage_spec in process_spec.stage_specs:
+                logical_name = prep.replica_topology.logical_name(stage_spec.stage_name)
+                assert stage_spec.env_defaults == {
+                    "OMP_NUM_THREADS": "6" if logical_name == "thinker" else "12",
+                    "PIPELINE_TEST_ENV": "1",
+                }
 
 
 def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:

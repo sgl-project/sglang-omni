@@ -12,7 +12,8 @@ import asyncio
 import logging
 import multiprocessing
 import socket
-from typing import Any
+from collections.abc import Mapping
+from typing import TypedDict
 
 from sglang_omni.config.placement import (
     StagePlacementPlan,
@@ -26,7 +27,11 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    PipelineConfig,
+    StageConfig,
+    parse_replica_instance_name,
+)
 from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
 from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
 from sglang_omni.pipeline import Coordinator
@@ -43,9 +48,16 @@ from sglang_omni.pipeline.stage_workers import (
     StageWorkerProcessSpec,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
+from sglang_omni.utils.cpu import effective_cpu_count
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
+
+
+class StageByteBudgets(TypedDict):
+    kv_cache_bytes: int | None
+    total_reserve_bytes: int | None
+    enforce_total_reserve: bool
 
 
 def resolve_coordinator_max_in_flight(
@@ -82,6 +94,33 @@ def resolve_coordinator_max_in_flight(
         pass
     num_replicas = logical_process_plan.process_of(stage.name).num_replicas
     return (running + queued) * num_replicas
+
+
+class StageLaunchKwargs(TypedDict):
+    stage_name: str
+    factory: str
+    next_stages: str | list[str] | None
+    route_fn: str | None
+    is_terminal: bool
+    env_defaults: dict[str, str]
+    wait_for: list[str] | None
+    wait_for_fn: str | None
+    merge_fn: str | None
+    project_payload: dict[str, str]
+    coordinator_endpoint: str
+    abort_endpoint: str
+    stage_endpoints: dict[str, str]
+    rank_endpoints: dict[str, tuple[str, ...]]
+    stream_targets: list[str]
+    stream_done_to_fn: str | None
+    gpu_stage_names: set[str]
+    stage_gpu_ids: dict[str, tuple[int, ...]]
+    require_factory_gpu_id: bool
+    same_process_targets: set[str]
+    is_stream_receiver: bool
+    can_accept_stream_before_payload: bool
+    disable_direct_cuda_ipc_payload: bool
+    replica_topology: dict[str, list[str]]
 
 
 def build_stage_groups(
@@ -136,6 +175,7 @@ def build_stage_groups(
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
+        logical_stage_name, _ = parse_replica_instance_name(stage_cfg.name)
         tp_size = stage_cfg.tp_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
@@ -154,13 +194,13 @@ def build_stage_groups(
         base_factory_kwargs = resolve_stage_factory_kwargs(stage_cfg, config)
         typed_kwargs = resolve_stage_typed_kwargs(stage_cfg)
 
-        stage_kwargs = dict(
+        stage_kwargs: StageLaunchKwargs = dict(
             stage_name=stage_cfg.name,
             factory=stage_cfg.factory_path,
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
-            env_defaults={**config.resolved_env_defaults(), **stage_cfg.env},
+            env_defaults=config.resolved_stage_env_defaults(logical_stage_name),
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -239,6 +279,42 @@ def build_stage_groups(
     attach_process_memory_fraction_defaults(groups)
 
     return groups
+
+
+def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
+    """Set equal-share thread-pool fallbacks for final OS worker processes.
+
+    Environment and model policies can override these defaults; their sum
+    does not bound the pipeline's concurrent CPU usage.
+    """
+    process_specs = [spec for group in groups for spec in group.process_specs]
+    if not process_specs:
+        return {}
+    else:
+        pass
+
+    cpu_budget = effective_cpu_count()
+    process_count = len(process_specs)
+    threads_per_process = max(1, cpu_budget // process_count)
+    plan = {}
+    for spec in process_specs:
+        spec.cpu_threads = threads_per_process
+        plan[spec.process_name] = threads_per_process
+
+    allocations = {
+        spec.process_name: {
+            "fallback_threads": spec.cpu_threads,
+            "stages": [stage.stage_name for stage in spec.stage_specs],
+        }
+        for spec in process_specs
+    }
+    logger.info(
+        f"CPU thread fallback plan: budget={cpu_budget} processes={process_count} "
+        f"fallback_threads_per_process={threads_per_process} "
+        f"fallback_overcommitted={str(process_count > cpu_budget).lower()} "
+        f"allocations={allocations}"
+    )
+    return plan
 
 
 def attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
@@ -320,7 +396,7 @@ def resolve_same_process_targets(
     return same_process_targets
 
 
-def stage_byte_budget_kwargs(stage_cfg: StageConfig) -> dict[str, Any]:
+def stage_byte_budget_kwargs(stage_cfg: StageConfig) -> StageByteBudgets:
     """Spec fields carrying the stage's byte budgets to the worker process."""
 
     return {
@@ -338,9 +414,9 @@ def build_single_stage_spec(
     config: PipelineConfig,
     gpu_id: int | None,
     recv_endpoint: str,
-    base_factory_kwargs: dict[str, Any],
-    typed_kwargs: dict[str, Any],
-    stage_kwargs: dict[str, Any],
+    base_factory_kwargs: Mapping[str, object],
+    typed_kwargs: Mapping[str, object],
+    stage_kwargs: StageLaunchKwargs,
 ) -> StageLaunchConfig:
     comm_config = resolve_comm_config(stage_cfg, gpu_id=gpu_id)
     return StageLaunchConfig(
@@ -370,9 +446,9 @@ def build_tp_stage_specs(
     gpu_ids: list[int | None],
     nccl_port: int | None,
     recv_endpoint: str,
-    base_factory_kwargs: dict[str, Any],
-    typed_kwargs: dict[str, Any],
-    stage_kwargs: dict[str, Any],
+    base_factory_kwargs: Mapping[str, object],
+    typed_kwargs: Mapping[str, object],
+    stage_kwargs: StageLaunchKwargs,
 ) -> list[StageLaunchConfig]:
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
     follower_abort_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
@@ -385,7 +461,7 @@ def build_tp_stage_specs(
             raise ValueError(f"TP stage {stage_cfg.name!r} requires GPU placement")
         else:
             pass
-        factory_kwargs = dict(base_factory_kwargs)
+        factory_kwargs: dict[str, object] = dict(base_factory_kwargs)
         factory_kwargs["tp_rank"] = tp_rank
         factory_kwargs["tp_size"] = stage_cfg.tp_size
         factory_kwargs["nccl_port"] = nccl_port
@@ -450,7 +526,7 @@ def resolve_comm_config(
     stage_cfg: StageConfig,
     *,
     gpu_id: int | None,
-) -> dict[str, Any]:
+) -> dict[str, int | str | None]:
     """Build stage-local communication options from placement."""
     comm_config = build_comm_config(stage_cfg)
     if stage_cfg.gpu is not None:
@@ -463,7 +539,7 @@ def resolve_comm_config(
 class NcclPortAllocator:
     """Allocate unique NCCL ports for per-stage TP groups."""
 
-    def __init__(self, base_port: int = 29500):
+    def __init__(self, base_port: int = 29500) -> None:
         self.next = base_port
 
     def allocate(self) -> int:
@@ -516,7 +592,7 @@ def wave_stage_names(wave: list[StageGroup]) -> list[str]:
 
 class MultiProcessPipelineRunner:
 
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: PipelineConfig) -> None:
         self.config = config
         self._coordinator: Coordinator | None = (
             None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -597,6 +673,7 @@ class MultiProcessPipelineRunner:
                 process_plan=prep.process_plan,
                 replica_topology=prep.replica_topology,
             )
+            apply_cpu_thread_plan(groups)
 
             # Note (Jiaxin Deng): roles are assigned before the coordinator
             # binds and before any child is spawned, so an unshareable topology

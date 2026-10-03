@@ -11,6 +11,7 @@ tests/
 │   ├── test_qwen3_omni_*_ci.py
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   ├── test_tts_ci.py
+│   ├── test_tts_latency_ci.py
 │   ├── test_asr_ci_multi_speaker.py
 │   └── test_asr_ci_seedtts.py
 └── unit_test/
@@ -46,7 +47,8 @@ tests/
     ├── preprocessing/
     │   ├── test_cache_key.py
     │   ├── test_resample_cache.py
-    │   └── test_transcription.py
+    │   ├── test_transcription.py
+    │   └── test_video.py
     ├── sampling/
     │   └── test_seed.py
     ├── vendor/
@@ -423,6 +425,12 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
   speaker-similarity checks. Non-streaming and streaming WER pass the selected
   TTS generation concurrency into the result config while keeping Qwen3-ASR
   transcription concurrency at 4.
+- `test_tts_latency_ci.py`: streaming first-audio latency for the Qwen3-TTS
+  presets. One worker behind the router takes open-loop Poisson arrivals at
+  1 rps (60 samples) and 20 rps (the full EN set), and the median first
+  playable latency is gated against the calibrated references in
+  `tts_ci_config.py`; tail percentiles and continuity rates are printed.
+  It runs in its own pytest invocation so its worker is alone on the GPU.
 - `test_tts_consistency_artifacts.py`: CPU-only stage-3 check that compares
   TTS non-stream and streaming `speed_results.json` under
   `${OMNI_CI_HOME}/tts-stage-results/{nonstream,stream}/`.
@@ -557,8 +565,9 @@ that happened to contain an older version of the test.
     full drain, and reset-then-reuse behavior.
   - deferred request admission completion, abort, and dependency-failure
     semantics.
-  - breakable prefill CUDA Graph policy: backend/cap/bucket validation, shared
-    cap-derived ladders, disable precedence, and capability/attestation wiring.
+  - prefill CUDA Graph policy: per-model backend eligibility, cap/bucket
+    validation, shared cap-derived ladders, disable precedence, and
+    capability/attestation wiring.
   - `ReferenceEncodeService` cache, same-key single-flight, timeout, failure,
     and revalidation semantics.
   - `StageOutputCache` thread safety: concurrent get/put byte-accounting,
@@ -647,6 +656,9 @@ that happened to contain an older version of the test.
   - SGLang argument builders
   - backend policy and quantization compatibility contracts
   - tokenizer and preprocessing fallback behavior
+  - embedded-video audio ordering and silent-video handling; two videos plus
+    standalone audio through the real processor, including sampled frame-rate
+    validation, without model weights or accelerator hardware
   - audio cache identity from complete decoded content, mixed-batch cache
     hits, and cached output ownership across reused encoder buffers
     (`test_pipeline.py`, `test_audio_encoder_batch_dedup.py`). The output
@@ -831,6 +843,8 @@ that happened to contain an older version of the test.
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
   - OpenAI-compatible request/response behavior
+  - `use_audio_in_video` forwarding and HTTP 400/500 classification for invalid
+    media, mixed audio presence, unequal sampled frame rates, and server failures
   - shared speech-to-text form, request, response-format, and serialization mechanics,
     including headerless G.711 uploads getting a WAV container at read time
   - streaming response framing and failure semantics.
@@ -932,7 +946,14 @@ that happened to contain an older version of the test.
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
   resampling, audio-source resolution (including declared G.711 bytes getting
   a WAV container), duration validation, fingerprinting, downmixing, and
-  legacy input compatibility. `test_resource_connector.py` covers the
+  legacy input compatibility.
+  `test_video.py` covers embedded-audio decoding, resampling, downmixing,
+  absent/empty audio tracks, corrupt-media versus server errors, sibling-task
+  cancellation, and decoder-thread cleanup under repeated cancellation. Its small
+  video fixture uses PyAV, which is declared in all platform dependency sets.
+  Failure probes stop after 32 packets. Media-loader tests cover image, audio
+  and video sibling cleanup on failure and repeated cancellation.
+  `test_resource_connector.py` covers the
   `MultiModalResourceConnector` local-media policy: bare local paths and
   `file://` URLs are both scoped to `allowed_local_media_path` once it is
   configured, and `..` traversal and symlink escapes are rejected before

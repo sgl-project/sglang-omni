@@ -8,7 +8,6 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any
 
 import torch
 
@@ -482,7 +481,7 @@ class MingTTSStreamingVocoderScheduler(
         request_id: str,
         payload: StagePayload,
         state: StreamState,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         del request_id
         final_state = load_ming_tts_state(payload)
         final_state.sample_rate = int(self.decoder.sample_rate)

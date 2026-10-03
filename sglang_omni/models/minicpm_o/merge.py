@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.payload_types import (
+    MiniCPMOPipelineState,
+    ThinkerOutput,
+)
 from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.streaming_detokenizer import Tokenizer
@@ -16,7 +17,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     base = payloads.get("preprocessing") or next(iter(payloads.values()))
     state = MiniCPMOPipelineState.from_dict(base.data)
 
-    model_inputs: dict[str, Any] = {}
+    model_inputs: dict[str, object] = {}
     for payload in payloads.values():
         branch = MiniCPMOPipelineState.from_dict(payload.data)
         for encoder_out in branch.encoder_outs.values():
@@ -35,7 +36,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     )
 
 
-def thinker_output(state: MiniCPMOPipelineState) -> dict:
+def thinker_output(state: MiniCPMOPipelineState) -> ThinkerOutput:
     thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
     if isinstance(thinker_out, dict):
         return thinker_out

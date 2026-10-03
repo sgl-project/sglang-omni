@@ -139,7 +139,7 @@ class SessionInbox(queue.Queue[IncomingMessage]):
         super().put(message, block, timeout)
 
 
-class SessionScheduler(SimpleScheduler):
+class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
     """Opt-in scheduler for persistent hooks, with bounded stage admission."""
 
     def __init__(

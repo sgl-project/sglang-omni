@@ -16,9 +16,19 @@ addresses are fixed for the process lifetime.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
+
+from sglang_omni.scheduling.types import SchedulerRequest
+
+if TYPE_CHECKING:
+    from sglang_omni.models.moss_tts_local.request_builders import (
+        MossTTSLocalSGLangRequestData,
+    )
+    from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
+else:
+    pass
 
 
 class MossTTSLocalDecodeStatePool:
@@ -29,7 +39,7 @@ class MossTTSLocalDecodeStatePool:
     the configured concurrency cap without any literal row count.
     """
 
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: "MossTTSLocalSGLangModel") -> None:
         self.model = model
         weight = model.decode_input_embedding.weight
         # P = max_running_requests + 1; the +1 is the reserved padding row.
@@ -155,7 +165,7 @@ class MossTTSLocalDecodeStatePool:
         self.audio_token_presence[row_idx].zero_()
         self.audio_repetition_penalty_rows.discard(int(row_idx))
 
-    def write_params(self, row_idx: int, data: Any) -> None:
+    def write_params(self, row_idx: int, data: "MossTTSLocalSGLangRequestData") -> None:
         """Write the seven request-static sampling fields into ``row_idx``.
 
         Routed through the same ``float(...)``/``int(...)`` host casts the
@@ -179,7 +189,9 @@ class MossTTSLocalDecodeStatePool:
         else:
             self.audio_repetition_penalty_rows.add(int(row_idx))
 
-    def ensure_params(self, row_idx: int, rid: str, data: Any) -> None:
+    def ensure_params(
+        self, row_idx: int, rid: str, data: "MossTTSLocalSGLangRequestData"
+    ) -> None:
         """Write request-static params once for the current row acquisition."""
         if rid not in self.params_written_rids:
             self.write_params(row_idx, data)
@@ -295,7 +307,7 @@ class MossTTSLocalDecodeStatePool:
         return self.rid_to_row.get(rid)
 
     def prepare_active_rows(
-        self, requests: list[Any]
+        self, requests: list[SchedulerRequest]
     ) -> tuple[torch.Tensor, list[int], bool]:
         """Acquire active rows and write request-static params for this batch."""
         pool_rows = []

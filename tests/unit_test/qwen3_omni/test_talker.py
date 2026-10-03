@@ -28,10 +28,6 @@ from sglang_omni.models.qwen3_omni.config import (
     ENABLE_TALKER_START_TOPOLOGY,
     TALKER_START_MIN_CHUNKS,
 )
-from sglang_omni.models.qwen3_omni.pending_text_queue import (
-    PendingTextTensorQueue,
-    coerce_pending_text_queue,
-)
 from sglang_omni.models.qwen3_omni.request_builders import build_sglang_talker_request
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import (
@@ -42,6 +38,10 @@ from sglang_omni.models.qwen3_omni.talker_scheduler import (
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.pending_text_queue import (
+    PendingTextTensorQueue,
+    coerce_pending_text_queue,
+)
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from tests.unit_test.fixtures.qwen_fakes import FakeQwenTokenizer
 from tests.unit_test.fixtures.qwen_predictor import (
@@ -605,7 +605,7 @@ def build_fake_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
         lm_head=nn.ModuleList([FakePredictorLmHead().to(device) for _ in range(3)]),
     )
 
-    def fake_forward_one_token(
+    def fake_forward_tokens(
         *,
         token_embeds: torch.Tensor,
         batch_size: int,
@@ -613,7 +613,7 @@ def build_fake_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
     ) -> torch.Tensor:
         return token_embeds[:batch_size] + float(cache_len + 1)
 
-    talker.predictor_forward_one_token = fake_forward_one_token
+    talker.predictor_forward_tokens = fake_forward_tokens
     return talker
 
 
@@ -757,6 +757,81 @@ def test_qwen_predictor_decode_graph_covers_real_incremental_step(
     assert (2, torch.int) in talker.predictor_decode_graphs
     torch.testing.assert_close(graph_codes, eager_codes)
     torch.testing.assert_close(graph_embeds, eager_embeds)
+
+
+def test_qwen_predictor_opening_pair_matches_two_single_token_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The causal pair pass leaves the same second-token hidden and cache as two steps."""
+    monkeypatch.setattr(talker_module, "apply_qk_norm", lambda q, k, **_: (q, k))
+    device = torch.device("cpu")
+    torch.manual_seed(5)
+    batch_size, hidden_size = 3, 8
+    tokens = torch.randn(batch_size, 2, hidden_size, device=device)
+
+    paired = build_real_step_predictor_graph_talker(device)
+    with torch.no_grad():
+        pair_hidden = paired.predictor_forward_tokens(
+            token_embeds=tokens, batch_size=batch_size, cache_len=0
+        )
+
+    single = build_real_step_predictor_graph_talker(device)
+    with torch.no_grad():
+        single.predictor_forward_tokens(
+            token_embeds=tokens[:, 0:1], batch_size=batch_size, cache_len=0
+        )
+        second_hidden = single.predictor_forward_tokens(
+            token_embeds=tokens[:, 1:2], batch_size=batch_size, cache_len=1
+        )
+
+    torch.testing.assert_close(pair_hidden[:, 1:2], second_hidden)
+    torch.testing.assert_close(
+        paired.predictor_k_cache[:, :batch_size, :2],
+        single.predictor_k_cache[:, :batch_size, :2],
+    )
+    torch.testing.assert_close(
+        paired.predictor_v_cache[:, :batch_size, :2],
+        single.predictor_v_cache[:, :batch_size, :2],
+    )
+
+
+def test_qwen_predictor_rejects_several_tokens_on_a_filled_cache() -> None:
+    device = torch.device("cpu")
+    talker = build_real_step_predictor_graph_talker(device)
+    tokens = torch.randn(2, 2, 8, device=device)
+    with pytest.raises(ValueError, match="empty cache"):
+        talker.predictor_forward_tokens(token_embeds=tokens, batch_size=2, cache_len=1)
+
+
+def test_qwen_predictor_one_token_step_keeps_the_pre_norm_residual_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(talker_module, "apply_qk_norm", lambda q, k, **_: (q, k))
+    device = torch.device("cpu")
+    talker = build_real_step_predictor_graph_talker(device)
+    layer = talker.code_predictor.model.layers[0]
+    batch_size, hidden_size = 2, 8
+    torch.manual_seed(3)
+    token_embeds = torch.randn(batch_size, 1, hidden_size, device=device)
+
+    with torch.no_grad():
+        actual = talker.predictor_forward_tokens(
+            token_embeds=token_embeds, batch_size=batch_size, cache_len=0
+        )
+        positions = talker.predictor_positions[0:1].repeat(batch_size)
+        attn_out = talker.predictor_cached_self_attention(
+            layer_idx=0,
+            attn=layer.self_attn,
+            hidden_states=token_embeds,
+            positions=positions,
+            cache_slots=talker.predictor_cache_slots[0, :batch_size],
+            batch_size=batch_size,
+            cache_len=0,
+        )
+        after_attention = token_embeds + attn_out
+        expected = after_attention + layer.mlp(after_attention)
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 @pytest.mark.accelerator
@@ -1044,7 +1119,7 @@ def test_topology_rechecks_deferred_payload_on_every_chunk() -> None:
 def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
 
     def stub_request_builder(payload: Any) -> Any:
-        origin_input_ids: list[int] = []
+        origin_input_ids: list[int] = [0]
         return SGLangARRequestData(
             req=SimpleNamespace(
                 rid=payload.request_id,
@@ -1428,7 +1503,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
 
     def stub_request_builder(payload: Any) -> Any:
         captured_done = bool(payload.prefetched_stream_done)
-        origin_input_ids: list[int] = []
+        origin_input_ids: list[int] = [0]
         req_data = SGLangARRequestData(
             req=SimpleNamespace(
                 rid=payload.request_id,

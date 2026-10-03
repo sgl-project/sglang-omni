@@ -7,11 +7,10 @@ import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
-from transformers import AutoConfig
+from transformers import AutoConfig, PretrainedConfig
 
 try:
     from transformers.initialization import no_init_weights
@@ -42,7 +41,7 @@ _PERSONAPLEX_ARCHITECTURE = "PersonaPlexForCausalLM"
 _PERSONAPLEX_LAYOUT_MARKER = "tokenizer_spm_32k_3.model"
 
 
-def architecture_from_hf_config(hf_config: Any) -> str | None:
+def architecture_from_hf_config(hf_config: PretrainedConfig) -> str | None:
     """Prefer HF architectures; fall back to architecture/model_type."""
     archs = getattr(hf_config, "architectures", None)
     if archs:
@@ -316,7 +315,7 @@ def load_hf_config(
     *,
     trust_remote_code: bool = True,
     local_files_only: bool = True,
-) -> Any:
+) -> PretrainedConfig:
     """Load the HF config, preferring the local cache."""
     try:
         config_path = cached_file(
@@ -334,7 +333,9 @@ def load_hf_config(
     return cfg
 
 
-def instantiate_module(module_cls: type[nn.Module], config: Any) -> nn.Module:
+def instantiate_module(
+    module_cls: type[nn.Module], config: PretrainedConfig
+) -> nn.Module:
     """Instantiate a module without allocating its parameters."""
     with no_init_weights():
         if hasattr(module_cls, "_from_config"):

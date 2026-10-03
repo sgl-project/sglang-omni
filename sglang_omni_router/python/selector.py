@@ -13,6 +13,10 @@ class NoEligibleWorkerError(RuntimeError):
     pass
 
 
+class UnknownRouteWorkerError(LookupError):
+    pass
+
+
 def eligible_workers(
     workers: list[Worker],
     *,

@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import logging
 import types
+from typing import TypedDict
 
 import torch
 import torch.nn as nn
+from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+    Qwen3OmniMoeThinkerConfig,
+)
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
 from sglang_omni.models.qwen3_omni.components.vision_compat import (
@@ -96,6 +100,17 @@ def optimize_patch_embed(visual: nn.Module) -> None:
     )
 
 
+class ImageEncoderOutput(TypedDict, total=False):
+    image_embeds: torch.Tensor | None
+    image_grid_thw: torch.Tensor
+    image_token_counts: torch.Tensor
+    deepstack_visual_embeds_image: list[torch.Tensor] | None
+    video_embeds: torch.Tensor | None
+    video_grid_thw: torch.Tensor
+    video_token_counts: torch.Tensor
+    deepstack_visual_embeds_video: list[torch.Tensor] | None
+
+
 def unpack_visual_output(visual_out):
     """Unpack visual forward output regardless of return type.
 
@@ -113,7 +128,7 @@ def unpack_visual_output(visual_out):
 def build_visual(
     model_path: str,
     *,
-    thinker_cfg: object,
+    thinker_cfg: Qwen3OmniMoeThinkerConfig,
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:
@@ -167,8 +182,8 @@ class Qwen3OmniImageEncoder(nn.Module):
         pixel_values_videos: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
         **_: object,
-    ) -> dict[str, torch.Tensor]:
-        outputs: dict[str, torch.Tensor] = {}
+    ) -> ImageEncoderOutput:
+        outputs: ImageEncoderOutput = {}
         merge = self.spatial_merge_size**2
 
         if isinstance(pixel_values, torch.Tensor) and isinstance(

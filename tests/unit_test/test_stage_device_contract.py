@@ -196,9 +196,14 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     arm_device_spec_resolvers(monkeypatch, factory_path=stage.factory_path)
+    parameters = factory_parameters(stage.factory_path)
     kwargs: dict[str, object] = {"device": None, "gpu_id": 2}
-    if "model_path" in factory_parameters(stage.factory_path):
+    if "model_path" in parameters:
         kwargs["model_path"] = "unused"
+    configured = stage.factory.model_dump()
+    for name, default in parameters.items():
+        if default is ... and name not in kwargs and name in configured:
+            kwargs[name] = configured[name]
     try:
         factory(**kwargs)
     except Settled as settled:
@@ -232,6 +237,16 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
 # note (lennox): forwarding into resolve_device_spec isn't the same as binding
 # its result -- this drives the real build() chain and checks what it fixed.
 ENGINE_FACTORIES = {
+    "nemotron_voicechat_thinker": (
+        "sglang_omni.models.nemotron_voicechat.stages.create_thinker_executor",
+        "sglang_omni.models.nemotron_voicechat.engine_builder",
+        "NemotronVoiceChatEngineBuilder",
+    ),
+    "nemotron_voicechat_talker": (
+        "sglang_omni.models.nemotron_voicechat.stages.create_talker_executor",
+        "sglang_omni.models.nemotron_voicechat.engine_builder",
+        "NemotronVoiceChatTalkerEngineBuilder",
+    ),
     "arkasr": (
         "sglang_omni.models.arkasr.stages.create_sglang_arkasr_executor",
         "sglang_omni.models.arkasr.engine_builder",

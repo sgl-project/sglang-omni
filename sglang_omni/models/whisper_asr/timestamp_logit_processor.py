@@ -3,10 +3,25 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 from sglang.srt.sampling.custom_logit_processor import CustomLogitProcessor
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import Req
+else:
+    pass
+
+
+class WhisperTimestampParams(TypedDict):
+    segment_timestamps: bool
+    timestamp_begin_id: int
+    no_timestamps_token_id: int
+    eos_token_id: int
+    max_initial_timestamp_index: object
+    __req__: Req
 
 
 class WhisperTimestampLogitProcessor(CustomLogitProcessor):
@@ -15,7 +30,7 @@ class WhisperTimestampLogitProcessor(CustomLogitProcessor):
     def __call__(
         self,
         logits: torch.Tensor,
-        custom_param_list: list[dict[str, Any]] | None = None,
+        custom_param_list: Sequence[WhisperTimestampParams | None] | None = None,
     ) -> torch.Tensor:
         if not custom_param_list:
             return logits

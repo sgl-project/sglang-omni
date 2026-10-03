@@ -36,7 +36,6 @@ from sglang_omni_router.python.admission_shm import (
 )
 from sglang_omni_router.python.app import (
     error_response,
-    find_worker,
     pool_summary,
     recover_worker_pool_from_journal,
     register_admin_routes,
@@ -61,7 +60,12 @@ from sglang_omni_router.python.snapshot import (
     SnapshotWriter,
 )
 from sglang_omni_router.python.update_journal import build_journal
-from sglang_omni_router.python.worker import Worker, WorkerState, build_workers
+from sglang_omni_router.python.worker import (
+    Worker,
+    WorkerState,
+    build_workers,
+    find_worker,
+)
 
 logger = logging.getLogger("sglang_omni_router.python.control_plane")
 

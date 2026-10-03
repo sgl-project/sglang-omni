@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.cuda import CudaDeviceMixin
 
-from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 from sglang_omni.quantization import resolve_quant_config
 from sglang_omni.utils.misc import model_config_has_moe, normalize_quantization
 from sglang_omni.vendor.sglang.server_args import override_server_args
@@ -16,7 +16,6 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
-    from sglang_omni.platforms.interface import JointRopeInplaceKernel
 else:
     pass
 
@@ -59,6 +58,9 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
 
         return CudaDeviceGraphBackend()
+
+    def enable_codec_decode_graph(self) -> bool:
+        return True
 
     def get_stage_process_env(
         self,

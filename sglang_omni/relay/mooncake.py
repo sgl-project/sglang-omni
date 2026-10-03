@@ -4,7 +4,8 @@ import asyncio
 import logging
 import socket
 import uuid
-from typing import Any, Callable, Dict
+from collections.abc import Mapping
+from typing import Callable, Dict
 
 import torch
 
@@ -241,13 +242,17 @@ class MooncakeConnection:
 class MooncakeOperation(RelayOperation):
     """Base class for Mooncake async operations."""
 
-    def __init__(self, connection: MooncakeConnection, metadata: Any = None):
+    def __init__(
+        self,
+        connection: MooncakeConnection,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         self.conn = connection
         self._metadata = metadata  # noqa: leading-underscore
         self.completed = False
 
     @property
-    def metadata(self) -> Any:
+    def metadata(self) -> dict[str, object] | None:
         return self._metadata  # noqa: leading-underscore
 
 
@@ -261,11 +266,11 @@ class PutOperation(MooncakeOperation):
     def __init__(
         self,
         connection: MooncakeConnection,
-        metadata: Any,
+        metadata: dict[str, object],
         transfer_id: str,
         tensor_ref: torch.Tensor,
         on_completion_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(connection, metadata)
         self.transfer_id = transfer_id
         self.tensor_ref = tensor_ref
@@ -309,7 +314,7 @@ class GetOperation(MooncakeOperation):
         size: int,
         transfer_id: str,
         on_completion_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(connection, metadata=None)
         self.remote_session_id = remote_session_id
         self.local_ptr = local_ptr
@@ -470,7 +475,7 @@ class MooncakeRelay(Relay):
             tensor_view = tensor.view(torch.uint8).reshape(-1)
             pool_slice.copy_(tensor_view)
             buffer_ptr = self.pool_ptr + credit_id
-            metadata = {
+            metadata: dict[str, object] = {
                 "engine_id": self.engine_id,
                 "session_id": self.connection.session_id,
                 "protocol": self.connection.protocol,
@@ -499,7 +504,10 @@ class MooncakeRelay(Relay):
             raise e
 
     async def get_async(
-        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+        self,
+        metadata: Mapping[str, object],
+        dest_tensor: torch.Tensor,
+        request_id: str | None = None,
     ) -> GetOperation:
         """
         Asynchronously receive tensor via Mooncake using memory pool.

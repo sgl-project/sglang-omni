@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 import numpy as np
@@ -186,23 +185,30 @@ def reference_path_cache_key(
     return f"file:{digest}"
 
 
-def hash_media_item(item: Any) -> str | None:
+def hash_media_item(item: object) -> str | None:
     """Generate hash for a single media item (unified logic for image/audio/video).
 
     Supported types:
-    - str/Path: local file -> sampled hash; URL -> string hash
+    - str/Path -> content hash of a data URL. Other strings are keyed by their
+      text, or by a sampled hash (size plus head and tail bytes) when they name
+      a local file, so an edit can keep the old key. Prefer loaded media.
     - PIL.Image: mode + size + content hash
     - numpy.ndarray: dtype + shape + content hash
     - torch.Tensor: dtype + shape + content hash
     - bytes/bytearray: content hash
 
-    Returns None for unsupported types (caller should skip caching).
+    Returns None for unsupported types and for http, https or file URLs, whose
+    bytes can change behind the same address (caller should skip caching).
     """
     # File path or URL
     if isinstance(item, (str, Path)):
         s = str(item)
         if is_url_like(s):
-            return f"url:{hash_bytes(s.encode())}"
+            # Only a data URL carries its bytes. Key other URLs after loading.
+            if urlparse(s).scheme == "data":
+                return f"url:{hash_bytes(s.encode())}"
+            else:
+                return None
         else:
             pass
         p = Path(s)
@@ -234,8 +240,15 @@ def hash_media_item(item: Any) -> str | None:
     if isinstance(item, torch.Tensor):
         cpu = item.detach().cpu()
         meta = f"{cpu.dtype}|{tuple(cpu.shape)}"
-        content_hash = hash_bytes(cpu.numpy().tobytes())
-        return f"pt:{meta}:{content_hash}"
+        # Hash a strided tensor, such as channels-last video, one frame at a
+        # time so only one frame is copied. The digest is the same as hashing
+        # the whole buffer. A tensor with more frames than values per frame is
+        # copied whole to keep the loop short.
+        by_frame = not cpu.is_contiguous() and cpu.shape[0] ** 2 <= cpu.numel()
+        state = xxhash.xxh3_64()
+        for frame in cpu if by_frame else [cpu]:
+            state.update(memoryview(frame.contiguous().numpy()))
+        return f"pt:{meta}:{state.hexdigest()}"
     else:
         pass
 
@@ -249,7 +262,7 @@ def hash_media_item(item: Any) -> str | None:
     return None
 
 
-def compute_media_cache_key(items: Any, *, prefix: str) -> str | None:
+def compute_media_cache_key(items: object, *, prefix: str) -> str | None:
     """Compute cache key for media items (image/audio/video).
 
     Args:

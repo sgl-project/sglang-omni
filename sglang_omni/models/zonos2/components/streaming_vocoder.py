@@ -11,8 +11,9 @@ the delay/flush tail until ``stream_done``.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Mapping
 
 import torch
 
@@ -68,7 +69,8 @@ def get_vocoder(device: str) -> Zonos2DACVocoder:
 def decode_to_pcm(
     audio_codes: torch.Tensor,
     eos_frame: int | None = None,
-    device: str = "cuda",
+    *,
+    device: str,
 ) -> torch.Tensor:
     """Decode delayed ``[T, 9]`` AR codes to 1-D float32 PCM @ 44.1 kHz.
 
@@ -87,7 +89,8 @@ def decode_to_pcm(
 def decode_batch(
     audio_codes_list: list[torch.Tensor],
     eos_frames: list[int | None],
-    device: str = "cuda",
+    *,
+    device: str,
 ) -> list[torch.Tensor]:
     """Batched analogue of ``decode_to_pcm``: one DAC forward for many items.
 
@@ -223,15 +226,27 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
     def __init__(
         self,
         *,
-        device: str = "cuda",
-        compute_fn: Any = None,
-        batch_compute_fn: Any = None,
+        device: str,
+        compute_fn: (
+            Callable[
+                [StagePayload],
+                StagePayload | Coroutine[None, None, StagePayload],
+            ]
+            | None
+        ) = None,
+        batch_compute_fn: (
+            Callable[
+                [list[StagePayload]],
+                list[StagePayload] | Coroutine[None, None, list[StagePayload]],
+            ]
+            | None
+        ) = None,
         steady_chunk_frames: int = _STREAM_STEADY_CHUNK_FRAMES,
         initial_chunk_frames: int = _STREAM_INITIAL_CHUNK_FRAMES,
         overlap_frames: int = _STREAM_OLA_OVERLAP_FRAMES,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
-        request_cost_fn: Any = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
     ) -> None:
         if steady_chunk_frames <= 0:
@@ -267,7 +282,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
         self,
         request_id: str,
         state: Zonos2StreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -422,7 +437,9 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
         pcm = decode_to_pcm(codes, zstate.eos_frame, device=self.device)
         return pcm if pcm.numel() > 0 else None
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         del request_id
         return audio_waveform_payload(
             waveform.detach().to("cpu", torch.float32),
@@ -433,10 +450,10 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: Zonos2StreamState
-    ) -> dict[str, Any]:
+    ) -> dict[str, str | int | dict[str, int | float]]:
         del request_id, state
         zstate = Zonos2State.from_dict(payload.data)
-        final_data: dict[str, Any] = {
+        final_data: dict[str, str | int | dict[str, int | float]] = {
             "modality": "audio",
             "sample_rate": int(zstate.sample_rate),
         }

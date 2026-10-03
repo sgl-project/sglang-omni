@@ -7,8 +7,9 @@ import logging
 import queue
 import threading
 import types
+from collections.abc import Mapping
 from contextlib import nullcontext
-from typing import Any, Callable
+from typing import Callable
 from uuid import uuid4
 
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
@@ -16,7 +17,7 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling.message import OutgoingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
     DecodeKVReceiver,
     DecodeRequestPoolExhausted,
@@ -80,12 +81,12 @@ class PDKVLifecycle(OmniScheduler):
 
     def run_weight_update_with_lifecycle(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         update_fn,
-        result_data: dict[str, Any],
+        result_data: Mapping[str, object],
         *,
         keep_pause_on_failure: bool = False,
-    ) -> dict[str, Any]:
+    ) -> AdminActionResult:
         def update_after_pd_drains(update_payload):
             self.drain_due_releases()
             if self.pd_holds_kv():

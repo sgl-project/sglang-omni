@@ -265,13 +265,13 @@ On the other hand, decrease the admission budget to reduce latency and lower pea
 
 ### Vocoder Configuration
 
-Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. `enable_flow_estimator_trt` stays opt-in and is mutually exclusive with DiT compile.
+Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. `enable_flow_estimator_trt` stays opt-in; enabling it turns the DiT compile default off, and enabling both explicitly is rejected.
 
 The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
 
 ### torch.compile for the DiT backbone
 
-`torch.compile` is on by default. It reduces DiT kernel-launch overhead for supported TTS execution paths, including streaming PackedDiT. The compiled path uses symbolic dynamic shapes (`dynamic=True`) to support varying utterance lengths. Existing CUDA Graph behavior is unchanged. Pass `enable_dit_torch_compile=false` to run the DiT eager.
+`torch.compile` is on by default. It reduces DiT kernel-launch overhead for supported TTS execution paths, including streaming PackedDiT. Startup warmup covers varying batch sizes and mel lengths before serving. Existing CUDA Graph behavior is unchanged. Pass `enable_dit_torch_compile=false` to run the DiT eager.
 
 ```bash
 sgl-omni serve \
@@ -280,11 +280,11 @@ sgl-omni serve \
   --port 8000
 ```
 
-Do not enable it together with TensorRT.
+Enabling TensorRT turns this default off.
 
 ### TensorRT for the DiT backbone
 
-TensorRT accelerates the DiT by building a cached `.plan` engine from the bundled ONNX. The CFG batch is frozen at 2 with dynamic mel dimensions; larger request batches are handled by chunking cond/uncond pairs. TensorRT and torch.compile are mutually exclusive.
+TensorRT accelerates the DiT by building a cached `.plan` engine from the bundled ONNX. The CFG batch is frozen at 2 with dynamic mel dimensions; larger request batches are handled by chunking cond/uncond pairs. Enabling it turns the DiT torch.compile default off; enabling both explicitly is rejected.
 
 ```bash
 uv pip install tensorrt
@@ -503,6 +503,6 @@ Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
 - **Reference conditioning cache.** Local files, data URLs, and byte payloads are cached by audio content and encoder configuration. Mutable HTTP URLs are intentionally encoded on every request instead of being cached by URL alone.
 - **Speed control.** Applied once, on the decoded waveform, by the shared `/v1/audio/speech` response-encoding path.
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
-- **Streaming decode.** Causal Flow + HiFT emit PCM after each hop (hop grows 25 → 50 → 100 by default). Quality can differ slightly from the buffered whole-utterance path. Opt-in TensorRT (`enable_flow_estimator_trt`) also accelerates streaming hops; do not enable it together with `enable_dit_torch_compile`. TRT freezes DiT attention, so streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT wrapper when streaming: CosyVoice's raw TRT enqueue is incompatible with packed hop-batch CFG shapes.
+- **Streaming decode.** Causal Flow + HiFT emit PCM after each hop (hop grows 25 → 50 → 100 by default). Quality can differ slightly from the buffered whole-utterance path. Opt-in TensorRT (`enable_flow_estimator_trt`) also accelerates streaming hops; it turns the `enable_dit_torch_compile` default off. TRT freezes DiT attention, so streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT wrapper when streaming: CosyVoice's raw TRT enqueue is incompatible with packed hop-batch CFG shapes.
 - **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. Buffered HiFT grouping is independent and uses `hift_max_padding_waste`. Streaming coalesces first/follow-up hops across requests (`_can_batch_stream_chunks`, short peer wait) so TTFP stays low under load.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be installed from GitHub. Matcha-TTS is a required submodule and must also be importable; only the CosyVoice Flow and HiFT paths are used by the vocoder.

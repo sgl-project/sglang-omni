@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from sglang_omni.config import (
     EngineStageConfig,
@@ -74,7 +74,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         "initial_chunk_frames",
     )
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, object]:
         if stage_name == "tts_engine":
             vocoder_extra = self.stage_named("vocoder").factory.model_extra or {}
             return {
@@ -89,7 +89,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 "compile_decode": False,
                 "decode_cuda_graph_frame_counts": (
                     tuple(range(1, 151))
-                    if current_platform.enable_code2wav_graph()
+                    if current_platform.enable_codec_decode_graph()
                     else ()
                 ),
             }
@@ -97,7 +97,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             pass
         return {}
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         stages = {stage.name: stage for stage in self.stages}
         preprocessing = stages["preprocessing"]

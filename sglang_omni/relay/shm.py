@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Mapping
 from multiprocessing import shared_memory as _shm
-from typing import Any, Callable
+from typing import Callable, TypedDict
 
 import numpy as np
 import torch
@@ -22,11 +23,23 @@ from .base import Relay, RelayOperation, register_relay
 logger = logging.getLogger(__name__)
 
 
+class ShmTransferInfo(TypedDict):
+    shm_name: str
+    size: int
+    req_id: str
+
+
+class ShmPutMetadata(TypedDict):
+    engine_id: str
+    transfer_info: ShmTransferInfo
+
+
 def shm_create_from_tensor(tensor: torch.Tensor) -> _shm.SharedMemory:
     t_np = tensor.numpy().reshape(-1)
     size = t_np.nbytes
 
-    shm = _shm.SharedMemory(create=True, size=size)
+    # note (Junnan Li): SharedMemory rejects size 0, and the receiver expects a block for every tensor.
+    shm = _shm.SharedMemory(create=True, size=max(size, 1))
     shm_view = np.ndarray(t_np.shape, dtype=t_np.dtype, buffer=shm.buf)
     shm_view[:] = t_np[:]
 
@@ -36,12 +49,12 @@ def shm_create_from_tensor(tensor: torch.Tensor) -> _shm.SharedMemory:
 class ShmOperation(RelayOperation):
     """Base class implementation for SHM operations."""
 
-    def __init__(self, metadata: Any):
+    def __init__(self, metadata: Mapping[str, object] | ShmPutMetadata) -> None:
         self._metadata = metadata  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.completed = False
 
     @property
-    def metadata(self) -> Any:
+    def metadata(self) -> Mapping[str, object] | ShmPutMetadata:
         return (
             self._metadata
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -52,12 +65,12 @@ class ShmPutOperation(ShmOperation):
 
     def __init__(
         self,
-        metadata: Any,
+        metadata: ShmPutMetadata,
         shm_obj: _shm.SharedMemory,
         *,
         shm_name: str,
         release_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(metadata)
         self.shm_name = shm_name
         self.release_cb = release_cb
@@ -109,7 +122,9 @@ class ShmPutOperation(ShmOperation):
 class ShmGetOperation(ShmOperation):
     """Receiver-side copy from SHM to destination tensor."""
 
-    def __init__(self, metadata: Any, dest_tensor: torch.Tensor):
+    def __init__(
+        self, metadata: Mapping[str, object] | ShmPutMetadata, dest_tensor: torch.Tensor
+    ) -> None:
         super().__init__(metadata)
         self.transfer_info = metadata["transfer_info"]
         self.dest_tensor = dest_tensor
@@ -174,7 +189,7 @@ class ShmRelay(Relay):
         request_id: str | None = None,
         dst_rank: int | None = None,
         receiver_id: str | None = None,
-    ) -> RelayOperation:
+    ) -> ShmPutOperation:
         if request_id is None:
             request_id = str(uuid.uuid4())
         else:
@@ -184,8 +199,8 @@ class ShmRelay(Relay):
 
         try:
             shm = shm_create_from_tensor(tensor)
-            size_bytes = shm.size
-            metadata = {
+            size_bytes = tensor.numel() * tensor.element_size()
+            metadata: ShmPutMetadata = {
                 "engine_id": self.engine_id,
                 "transfer_info": {
                     "shm_name": shm.name,
@@ -205,8 +220,11 @@ class ShmRelay(Relay):
             raise
 
     async def get_async(
-        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
-    ) -> RelayOperation:
+        self,
+        metadata: Mapping[str, object] | ShmPutMetadata,
+        dest_tensor: torch.Tensor,
+        request_id: str | None = None,
+    ) -> ShmGetOperation:
         # Note: metadata validation is implicit here based on usage in test
         return ShmGetOperation(metadata=metadata, dest_tensor=dest_tensor)
 

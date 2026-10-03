@@ -9,7 +9,7 @@ import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
-from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +50,31 @@ class XPUOmniPlatform(OmniPlatform):
             return None
         return fused_inplace_qknorm_rope
 
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
+        from sgl_kernel.jit.rope import apply_rope_inplace
+
+        return apply_rope_inplace
+
     def enable_talker_graph(self) -> bool:
         return True
 
     def enable_thinker_decode_graph(self) -> bool:
         # Capture leaves the scheduler thread's stream recording; host reads fail.
         return False
+
+    def enable_zonos2_torch_compile(self) -> bool:
+        return False
+
+    def supports_fp8_moe(self) -> bool:
+        return False
+
+    def zonos2_bf16_mem_fraction_static(self, device: torch.device) -> float | None:
+        if device.type != self.device_type:
+            return None
+        else:
+            # Measured on an Arc Pro B60: 14.34 GiB of bf16 experts plus a
+            # 5.98 GiB KV pool.
+            return 0.85
 
     def _get_device_graph_backend(self) -> DeviceGraphBackend:
         from sglang_omni.platforms.device_graph import XpuDeviceGraphBackend
@@ -74,6 +93,9 @@ class XPUOmniPlatform(OmniPlatform):
         from torch.nn.attention import SDPBackend
 
         return (SDPBackend.FLASH_ATTENTION, SDPBackend.MATH)
+
+    def supports_graph_captured_fft(self) -> bool:
+        return False
 
     def apply_model_worker_backend_policy(
         self,

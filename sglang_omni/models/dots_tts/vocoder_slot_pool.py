@@ -3,9 +3,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
+else:
+    pass
 
 
 def append_decoder_input_per_row(
@@ -80,7 +85,7 @@ class DotsVocoderSlotPool:
 
     def __init__(
         self,
-        inference: Any,
+        inference: "VocoderInference",
         *,
         num_slots: int,
         chunk_size: int,

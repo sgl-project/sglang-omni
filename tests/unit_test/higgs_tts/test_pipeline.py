@@ -1563,7 +1563,7 @@ def test_higgs_vocoder_fails_startup_when_cuda_graph_capture_fails(
         SimpleNamespace(
             device_type="cuda",
             is_npu=lambda: False,
-            enable_code2wav_graph=lambda: True,
+            enable_codec_decode_graph=lambda: True,
         ),
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
@@ -2128,6 +2128,17 @@ def make_fake_codec(call_log: list[tuple[int, int]]):
     codec.decode_cuda_graph_missed_shapes = set()
     codec.decode_single_flight_lock = threading.Lock()
     return codec
+
+
+def test_codec_capture_refuses_a_device_with_no_graph_backend(monkeypatch) -> None:
+    from sglang_omni.models.higgs_tts import audio_codec
+    from sglang_omni.platforms.cuda import CUDAOmniPlatform
+
+    monkeypatch.setattr(audio_codec, "current_platform", CUDAOmniPlatform())
+    codec = make_fake_codec([])
+
+    with pytest.raises(RuntimeError, match="no device graph backend for cpu"):
+        codec.capture_decode_cuda_graphs((1, 2))
 
 
 def test_decode_batch_buckets_by_length() -> None:

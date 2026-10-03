@@ -38,7 +38,7 @@ EXPECTED_QWEN3_ASR_PROMPT_PREFIX = (
 
 
 def unwrap_built(
-    result: Qwen3ASRRequestData | DeferredAdmission,
+    result: Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData],
 ) -> Qwen3ASRRequestData:
     if isinstance(result, DeferredAdmission):
         result.ready.result(timeout=5)
@@ -411,7 +411,7 @@ def template_for_prompt(monkeypatch, prompt: str | None) -> str:
         max_new_tokens=32,
         feature_extractor=feature_extractor,
     )
-    params = {} if prompt is None else {"prompt": prompt}
+    params: dict[str, object] = {} if prompt is None else {"prompt": prompt}
     request_builder(
         StagePayload(
             request_id="req-bias",
@@ -496,7 +496,7 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
 )
 def test_qwen3_asr_request_builder_preserves_sampling_mode(
     monkeypatch,
-    params: dict[str, float],
+    params: dict[str, object],
     expected_temperature: float,
     expected_sampling_temperature: float,
     expected_top_k: int,

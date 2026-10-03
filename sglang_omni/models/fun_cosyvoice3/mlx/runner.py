@@ -3,11 +3,31 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import mlx.core as mx
+import numpy as np
 
 from .model import SPEECH_TOKEN_SIZE
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.kv_cache.attention_kv_cache import (
+        ContiguousAttentionKVCache,
+    )
+    from sglang.srt.hardware_backend.mlx.model_runner import (
+        MlxModelRunner,
+        MlxPendingDecode,
+        MlxPendingPrefill,
+    )
+    from sglang.srt.hardware_backend.mlx.sampling import (
+        MlxLazyLogprobs,
+        MlxLogprobSpec,
+        MlxSamplingParams,
+    )
+    from sglang.srt.managers.schedule_batch import Req
+else:
+    pass
 
 _SPEECH_IDS = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
 # Note (yexiaodong): MLX streams are thread-local; bind this lookup on the
@@ -34,7 +54,7 @@ class FunCosyVoice3MlxModelRunner:
         )
         self._trunk = None  # noqa: leading-underscore
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         self.cosyvoice3_prompt_lengths: dict[str, int] = {}
         self.cosyvoice3_min_lengths: dict[str, int] = {}
@@ -44,7 +64,9 @@ class FunCosyVoice3MlxModelRunner:
         self.cosyvoice3_sampling_pending_tokens: mx.array | None = None
 
     @staticmethod
-    def request_prompt(req: Any) -> tuple[list[int], list[int]]:
+    def request_prompt(
+        req: "Req",
+    ) -> tuple[list[int], list[int]]:
         text_ids = getattr(
             req, "_cosyvoice3_text_token_ids", None
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -63,7 +85,7 @@ class FunCosyVoice3MlxModelRunner:
         self,
         logits: mx.array,
         req_ids: list[str],
-        caches: list[list[Any]],
+        caches: list[list[ContiguousAttentionKVCache]],
         *,
         initial: bool = False,
         pending_tokens: mx.array | None = None,
@@ -127,11 +149,11 @@ class FunCosyVoice3MlxModelRunner:
         prefix_slot_ids: list[int],
         new_slot_ids: list[int],
         req_pool_idx: int,
-        req: Any | None = None,
+        req: "Req | None" = None,
         needs_logits: bool = True,
         logit_edit_row: mx.array | None = None,
-        logprob_spec: Any = None,
-    ):
+        logprob_spec: MlxLogprobSpec | None = None,
+    ) -> MlxPendingPrefill:
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingPrefill
 
         del new_token_ids, new_slot_ids
@@ -195,7 +217,7 @@ class FunCosyVoice3MlxModelRunner:
             lazy_logprobs=lazy_logprobs,
         )
 
-    def sampling_params_for_request(self, req: Any) -> Any:
+    def sampling_params_for_request(self, req: "Req") -> MlxSamplingParams:
         from sglang.srt.hardware_backend.mlx.sampling import (
             DEFAULT_SAMPLING_SEED,
             MlxSamplingParams,
@@ -223,9 +245,15 @@ class FunCosyVoice3MlxModelRunner:
         self,
         req_ids: list[str],
         edit_rows: mx.array | None = None,
-        logprob_spec: Any = None,
-        logits_hook: Any = None,
-    ):
+        logprob_spec: MlxLogprobSpec | None = None,
+        logits_hook: (
+            Callable[
+                [np.ndarray[tuple[int, ...], np.dtype[np.float32]]],
+                np.ndarray[tuple[int, ...], np.dtype[np.float32]],
+            ]
+            | None
+        ) = None,
+    ) -> MlxPendingDecode:
         if len(req_ids) != 1:
             return super().decode_batch_start(
                 req_ids,
@@ -293,10 +321,10 @@ class FunCosyVoice3MlxModelRunner:
         self,
         last_logits: mx.array,
         req_ids: list[str],
-        caches: list[list[Any]],
+        caches: list[list[ContiguousAttentionKVCache]],
         edit_rows: mx.array | None = None,
-        logprob_spec: Any = None,
-    ):
+        logprob_spec: MlxLogprobSpec | None = None,
+    ) -> tuple[mx.array, MlxLazyLogprobs | None]:
         """Apply CosyVoice RAS fallback around SGLang's MLX sampler.
 
         The reference sampler first draws from nucleus/top-k and, when that
@@ -397,7 +425,7 @@ class FunCosyVoice3MlxModelRunner:
         )
         return tokens, lazy_logprobs
 
-    def decode_batch_start_chained(self, prev):
+    def decode_batch_start_chained(self, prev: MlxPendingDecode) -> MlxPendingDecode:
         if len(prev.req_ids) != 1:
             return super().decode_batch_start_chained(prev)
         else:
@@ -434,7 +462,7 @@ class FunCosyVoice3MlxModelRunner:
             edit_rows=prev.edit_rows,
         )
 
-    def prefill_finalize(self, pending) -> int:
+    def prefill_finalize(self, pending: MlxPendingPrefill) -> int:
         token_id = super().prefill_finalize(pending)
         if 0 <= token_id < SPEECH_TOKEN_SIZE:
             self.record_seen_token(pending.req_id, token_id)
@@ -442,7 +470,7 @@ class FunCosyVoice3MlxModelRunner:
             pass
         return token_id
 
-    def decode_batch_finalize(self, pending) -> list[int]:
+    def decode_batch_finalize(self, pending: MlxPendingDecode) -> list[int]:
         token_ids = super().decode_batch_finalize(pending)
         for req_id, token_id in zip(pending.req_ids, token_ids, strict=True):
             if 0 <= token_id < SPEECH_TOKEN_SIZE:
@@ -477,7 +505,7 @@ class FunCosyVoice3MlxModelRunner:
         self.cosyvoice3_recent_tokens.clear()
 
 
-def make_fun_cosyvoice3_mlx_runner_class():
+def make_fun_cosyvoice3_mlx_runner_class() -> type[MlxModelRunner]:
     """Build the runner after SGLang's MLX backend has been imported."""
     from sglang.srt.hardware_backend.mlx.model_runner import MlxModelRunner
 

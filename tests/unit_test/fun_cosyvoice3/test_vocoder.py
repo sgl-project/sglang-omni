@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -21,6 +22,7 @@ from sglang_omni.models.fun_cosyvoice3.config import (
 from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
+    CosyVoice3StreamState,
     FunCosyVoice3StreamingVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -29,21 +31,52 @@ from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
 
 
+class FakeF0Predictor(torch.nn.Module):
+    condnet: ClassVar[list[SimpleNamespace]] = [SimpleNamespace(causal_padding=0)]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor, finalize: bool = True) -> torch.Tensor:
+        return torch.zeros(x.shape[0], x.shape[2], dtype=x.dtype, device=x.device)
+
+
 class FakeHiFT(torch.nn.Module):
+    """Emits the absolute sample index of every mel frame, so sliced deltas check exactly."""
+
     # cosyvoice3.yaml: upsample_rates [8, 5, 3], istft_params.hop_len 4.
     upsample_rates: ClassVar[list[int]] = [8, 5, 3]
     istft_params: ClassVar[dict[str, int]] = {"n_fft": 16, "hop_len": 4}
+    conv_pre_look_right: ClassVar[int] = 0
+
+    @property
+    def samples_per_frame(self) -> int:
+        return int(np.prod(self.upsample_rates)) * self.istft_params["hop_len"]
 
     def __init__(self):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1))
         self.calls = []
+        self.f0_predictor = FakeF0Predictor()
 
     def inference(self, *, speech_feat, finalize):
         self.calls.append((speech_feat, finalize))
         batch, _, frames = speech_feat.shape
-        row = torch.arange(frames * 480, dtype=torch.float32).reshape(1, -1)
-        return row.repeat(batch, 1), None
+        row = torch.arange(frames * self.samples_per_frame, dtype=torch.float32)
+        return row.reshape(1, -1).repeat(batch, 1), None
+
+    def f0_upsamp(self, f0: torch.Tensor) -> torch.Tensor:
+        return f0.repeat_interleave(self.samples_per_frame, dim=-1)
+
+    def m_source(self, s: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+        positions = torch.arange(s.shape[1], dtype=torch.float32, device=s.device)
+        return positions.reshape(1, -1, 1).repeat(s.shape[0], 1, 1), None, None
+
+    def decode(
+        self, x: torch.Tensor, s: torch.Tensor, finalize: bool = True
+    ) -> torch.Tensor:
+        return s[:, 0, :]
 
 
 class FakeEstimator(torch.nn.Module):
@@ -75,14 +108,10 @@ class GraphRunnableFakeFlow(RunnableFakeFlow):
 class RecordingPackedDiT(PackedDiT):
     def __init__(self) -> None:
         self.is_ragged = True
-        self.disable_calls = 0
 
     def compile(self, dtype: torch.dtype | None) -> bool:
         del dtype
         return True
-
-    def disable_compile(self) -> None:
-        self.disable_calls += 1
 
 
 def packed_compile_scheduler(
@@ -101,6 +130,7 @@ def packed_compile_scheduler(
         token_mel_ratio=2,
         spk_embed_affine_layer=SimpleNamespace(in_features=192),
         packed_estimator=packed_estimator,
+        prefix_pool=None,
     )
     vocoder = SimpleNamespace(
         flow=flow,
@@ -134,10 +164,12 @@ def test_packed_dit_compile_warmup_materializes_serving_variants() -> None:
 
     scheduler.warmup_packed_dit_compile()
 
-    assert len(hop_batches) == len(leftover_batches) == 1
+    assert [len(batch) for batch in hop_batches] == [1, 2]
+    assert [len(batch) for batch in leftover_batches] == [1, 2]
+    assert hop_batches[1][0].token.shape != hop_batches[1][1].token.shape
 
 
-def test_packed_dit_compile_warmup_failure_disables_compiled_path() -> None:
+def test_packed_dit_compile_warmup_failure_fails_startup() -> None:
     packed_estimator = RecordingPackedDiT()
     scheduler, _, leftover_batches = packed_compile_scheduler(
         packed_estimator,
@@ -147,7 +179,6 @@ def test_packed_dit_compile_warmup_failure_disables_compiled_path() -> None:
     with pytest.raises(RuntimeError, match="causal materialization failed"):
         scheduler.warmup_packed_dit_compile()
 
-    assert packed_estimator.disable_calls == 1
     assert leftover_batches == []
 
 
@@ -174,6 +205,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
         flow_prompt_speech_token=torch.tensor([[1, 2]], dtype=torch.int32),
         flow_prompt_speech_feat=torch.ones(1, 2, 80),
         flow_embedding=torch.ones(1, 192),
+        finish_reason="length",
     )
     payload = make_payload(state)
     scheduler.stream_payloads["req"] = payload
@@ -191,6 +223,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
     messages = scheduler.on_stream_done("req")
 
     assert [message.type for message in messages] == ["stream", "result"]
+    assert messages[1].data.data["finish_reason"] == "length"
 
 
 def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
@@ -235,7 +268,9 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
             return self
 
     flow = Model()
-    flow.decoder = SimpleNamespace(estimator=torch.nn.Module())
+    estimator = torch.nn.Module()
+    estimator.transformer_blocks = torch.nn.ModuleList()
+    flow.decoder = SimpleNamespace(estimator=estimator)
     hift = Model()
 
     def fake_load_hyperpyyaml(handle, overrides):
@@ -851,6 +886,7 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     # about the default value.
     scheduler = stages.create_vocoder_executor(
         "model",
+        flow_prefix_cache_gb=0.0,
         device="cpu",
         flow_batch_admission_frames=2000,
         enable_dit_torch_compile=False,
@@ -883,7 +919,7 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         ),
     )
     scheduler = stages.create_vocoder_executor(
-        "model", device="cpu", enable_dit_torch_compile=False
+        "model", device="cpu", enable_dit_torch_compile=False, flow_prefix_cache_gb=0.0
     )
 
     assert scheduler.max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
@@ -924,6 +960,7 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
 
     scheduler = stages.create_vocoder_executor(
         "model",
+        flow_prefix_cache_gb=0.0,
         device="cpu",
         enable_dit_torch_compile=False,
         dtype="float16",
@@ -972,6 +1009,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
 
     stages.create_vocoder_executor(
         "model",
+        flow_prefix_cache_gb=0.0,
         device="cpu",
         max_batch_size=4,
         enable_dit_torch_compile=False,
@@ -1007,7 +1045,9 @@ def create_scheduler_recording_native_compile(
         compiled.append(flow)
 
     monkeypatch.setattr(stages, "compile_dit_backbone", fake_compile)
-    scheduler = stages.create_vocoder_executor("model", device="cpu", **kwargs)
+    scheduler = stages.create_vocoder_executor(
+        "model", device="cpu", flow_prefix_cache_gb=0.0, **kwargs
+    )
     return compiled, scheduler
 
 
@@ -1053,7 +1093,7 @@ def prepare_vocoder_startup(
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
-        lambda checkpoint_dir, device, fp16, enable_flow_estimator_trt=False: (
+        lambda checkpoint_dir, device, fp16, autocast_dtype, enable_flow_estimator_trt=False: (
             fake_flow,
             FakeHiFT(),
         ),
@@ -1113,6 +1153,7 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
 
     _scheduler = stages.create_vocoder_executor(
         "model",
+        flow_prefix_cache_gb=0.0,
         device="cuda",
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_cuda_graph=True,
@@ -1129,7 +1170,7 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     assert ("packed_warmup" in startup_events) is enable_dit_torch_compile
 
 
-def test_create_vocoder_executor_trt_alone_skips_the_default_compile(
+def test_create_vocoder_executor_trt_without_compile_skips_the_compile(
     monkeypatch,
 ) -> None:
     compiled, _scheduler = create_scheduler_recording_native_compile(
@@ -1144,6 +1185,7 @@ def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
     with pytest.raises(ValueError, match="enable only one"):
         stages.create_vocoder_executor(
             "model",
+            flow_prefix_cache_gb=0.0,
             enable_dit_torch_compile=True,
             enable_flow_estimator_trt=True,
         )
@@ -1280,6 +1322,7 @@ def test_create_vocoder_executor_rejects_non_positive_admission_budget(
     with pytest.raises(ValueError, match="flow_batch_admission_frames"):
         stages.create_vocoder_executor(
             "model",
+            flow_prefix_cache_gb=0.0,
             device="cpu",
             flow_batch_admission_frames=0,
             enable_dit_torch_compile=False,
@@ -1301,11 +1344,11 @@ def test_pipeline_config_sets_flow_batch_admission_by_default() -> None:
         "max_batch_size": 16,
         "max_batch_wait_ms": 30,
         "enable_flow_cuda_graph": True,
-        "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
+        "flow_prefix_cache_gb": 24.0,
     }
 
 
@@ -1322,3 +1365,244 @@ def test_vocoder_hift_defaults_to_float32(monkeypatch) -> None:
         enabled=vocoder.hift_autocast_dtype is not None,
     ):
         assert not torch.is_autocast_enabled()
+
+
+class HiftFlowStub:
+    output_size: ClassVar[int] = 80
+
+    def parameters(self) -> Iterator[torch.Tensor]:
+        yield torch.zeros(1, device="cuda")
+
+    @property
+    def decoder(self) -> SimpleNamespace:
+        return SimpleNamespace(estimator=torch.nn.Identity())
+
+
+def make_causal_hift(voiced_threshold: float) -> torch.nn.Module:
+    generator = pytest.importorskip("cosyvoice.hifigan.generator")
+    f0_predictor = pytest.importorskip("cosyvoice.hifigan.f0_predictor")
+    torch.manual_seed(0)
+    hift = generator.CausalHiFTGenerator(
+        in_channels=80,
+        base_channels=512,
+        nb_harmonics=8,
+        sampling_rate=24000,
+        nsf_alpha=0.1,
+        nsf_sigma=0.003,
+        nsf_voiced_threshold=voiced_threshold,
+        upsample_rates=[8, 5, 3],
+        upsample_kernel_sizes=[16, 11, 7],
+        istft_params={"n_fft": 16, "hop_len": 4},
+        resblock_kernel_sizes=[3, 7, 11],
+        resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+        source_resblock_kernel_sizes=[7, 7, 11],
+        source_resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+        lrelu_slope=0.1,
+        audio_limit=0.99,
+        conv_pre_look_right=4,
+        f0_predictor=f0_predictor.CausalConvRNNF0Predictor(
+            num_class=1, in_channels=80, cond_channels=512
+        ),
+    )
+    with torch.no_grad():
+        hift.f0_predictor.classifier.weight.mul_(100.0)
+        hift.f0_predictor.classifier.bias.fill_(voiced_threshold)
+    hift = hift.cuda().eval()
+    stages.keep_hift_constants_on_device(hift, "cuda")
+    stages.patch_causal_conv_cache()
+    return hift
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_hift_step_matches_the_whole_history_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    voiced_threshold = 10.0
+    hift = make_causal_hift(voiced_threshold)
+    vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
+    torch.manual_seed(1)
+    mels = [
+        torch.randn(1, 80, frames, device="cuda") * 3 for frames in (180, 240, 240, 300)
+    ]
+    hop_ends = (56, 156)
+    with torch.inference_mode():
+        voiced = torch.cat(
+            [
+                hift.f0_predictor(mel.double(), finalize=True) > voiced_threshold
+                for mel in mels
+            ],
+            dim=1,
+        ).float()
+        assert 0.2 < voiced.mean().item() < 0.8
+        chains: list[tuple[torch.Tensor | None, int]] = [(None, 0) for _ in mels]
+        for step in range(len(hop_ends) + 1):
+            is_final = step == len(hop_ends)
+            rows: list[stages.HiftStepRow] = []
+            expected: list[tuple[torch.Tensor, int]] = []
+            for index, mel in enumerate(mels):
+                end_frame = mel.shape[2] if is_final else hop_ends[step]
+                hift_mel, emitted_samples = chains[index]
+                start_frame = 0 if hift_mel is None else hift_mel.shape[2]
+                delta, hift_mel, emitted_after = vocoder.hift_delta(
+                    mel[:, :, start_frame:end_frame],
+                    hift_mel=hift_mel,
+                    speech_offset=emitted_samples,
+                    finalize=is_final,
+                )
+                chains[index] = (hift_mel, emitted_after)
+                expected.append((delta, emitted_after))
+                rows.append(
+                    stages.HiftStepRow(
+                        history=mel[:, :, :end_frame],
+                        emitted_samples=emitted_samples,
+                        is_final=is_final,
+                    )
+                )
+            for (delta, emitted_after), (reference, reference_after) in zip(
+                vocoder.hift_step(rows), expected, strict=True
+            ):
+                assert emitted_after == reference_after
+                torch.testing.assert_close(delta, reference, atol=1e-4, rtol=0)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("is_final", [False, True])
+def test_hift_step_window_is_bit_identical_to_the_whole_history_call(
+    monkeypatch: pytest.MonkeyPatch, is_final: bool
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), make_causal_hift(10.0))
+    torch.manual_seed(1)
+    mel = torch.randn(1, 80, 300, device="cuda") * 3
+    end_frame = 300 if is_final else 256
+    with torch.inference_mode():
+        _, hift_mel, emitted_samples = vocoder.hift_delta(
+            mel[:, :, :156], hift_mel=None, speech_offset=0, finalize=False
+        )
+        reference, _, _ = vocoder.hift_delta(
+            mel[:, :, 156:end_frame],
+            hift_mel=hift_mel,
+            speech_offset=emitted_samples,
+            finalize=is_final,
+        )
+        ((delta, _),) = vocoder.hift_step(
+            [
+                stages.HiftStepRow(
+                    history=mel[:, :, :end_frame],
+                    emitted_samples=emitted_samples,
+                    is_final=is_final,
+                )
+            ]
+        )
+    assert torch.equal(delta, reference)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_hift_step_final_is_bit_identical_beside_finals_of_other_widths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each final's samples and cursor equal its own call, whatever it shares a step with and in which order."""
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), make_causal_hift(10.0))
+    torch.manual_seed(1)
+    samples_per_frame = vocoder.hift_samples_per_mel_frame
+    rows = [
+        stages.HiftStepRow(
+            history=torch.randn(1, 80, total_frames, device="cuda") * 3,
+            emitted_samples=emitted_frames * samples_per_frame,
+            is_final=True,
+        )
+        for total_frames, emitted_frames in (
+            (300, 200),
+            (240, 148),
+            (24, 0),
+            (18, 0),
+            (24, 0),
+        )
+    ]
+    with torch.inference_mode():
+        batched = vocoder.hift_step(rows)
+        alone = [vocoder.hift_step([row])[0] for row in rows]
+    for (delta, emitted_after), (reference, reference_after) in zip(
+        batched, alone, strict=True
+    ):
+        assert emitted_after == reference_after
+        assert torch.equal(delta, reference)
+
+
+def prefix_pool_scheduler(
+    room: list[bool],
+) -> tuple[FunCosyVoice3StreamingVocoderScheduler, list[tuple[str, int]]]:
+    """A scheduler whose pool admits one row per True in room, in order; cached
+    rows return their index in the cached call, plain rows -1."""
+    released: list[tuple[str, int]] = []
+    admissions = iter(room)
+
+    def prefix_cache_rows(frames: int) -> tuple[str, int] | None:
+        return ("pair", frames) if next(admissions) else None
+
+    def grow_prefix_cache(pair: tuple[str, int], frames: int) -> bool:
+        return next(admissions)
+
+    def hop_batch_prefix(
+        items: list[stages.FlowBatchInput], caches: list[tuple[str, int]]
+    ) -> list[torch.Tensor]:
+        return [torch.full((1, 1, 1), float(i)) for i, _ in enumerate(items)]
+
+    def hop_batch(items: list[stages.FlowBatchInput]) -> list[torch.Tensor]:
+        return [torch.full((1, 1, 1), -1.0) for _ in items]
+
+    vocoder = SimpleNamespace(
+        flow=SimpleNamespace(prefix_pool=object()),
+        prefix_cache_rows=prefix_cache_rows,
+        grow_prefix_cache=grow_prefix_cache,
+        release_prefix_cache=released.append,
+        hop_batch_prefix=hop_batch_prefix,
+        hop_batch=hop_batch,
+    )
+    return FunCosyVoice3StreamingVocoderScheduler(vocoder), released
+
+
+def prefix_hop_item(tokens: int) -> stages.FlowBatchInput:
+    return stages.FlowBatchInput(
+        token=torch.zeros(1, tokens, dtype=torch.int32),
+        prompt_token=torch.zeros(1, 4, dtype=torch.int32),
+        prompt_feat=torch.zeros(1, 8, 80),
+        embedding=torch.zeros(1, 192),
+    )
+
+
+def test_hop_batch_with_prefix_keeps_row_order_across_cached_and_plain_rows() -> None:
+    scheduler, _ = prefix_pool_scheduler(room=[False, True])
+    states = [CosyVoice3StreamState(), CosyVoice3StreamState()]
+    participants = [("a", states[0]), ("b", states[1])]
+    items = [prefix_hop_item(8), prefix_hop_item(8)]
+
+    mels = scheduler.hop_batch_with_prefix(participants, items)
+
+    assert [mel.item() for mel in mels] == [-1.0, 0.0]
+    assert states[0].flow_cache is None
+    assert states[1].flow_cache == ("pair", 18)
+
+
+def test_hop_batch_with_prefix_drops_a_row_the_pool_cannot_grow_and_readmits_it() -> (
+    None
+):
+    scheduler, released = prefix_pool_scheduler(room=[True, False, True])
+    state = CosyVoice3StreamState()
+    participants = [("a", state)]
+
+    scheduler.hop_batch_with_prefix(participants, [prefix_hop_item(8)])
+    scheduler.hop_batch_with_prefix(participants, [prefix_hop_item(16)])
+    assert released == [("pair", 18)]
+    assert state.flow_cache is None
+
+    scheduler.hop_batch_with_prefix(participants, [prefix_hop_item(24)])
+    assert state.flow_cache == ("pair", 50)
