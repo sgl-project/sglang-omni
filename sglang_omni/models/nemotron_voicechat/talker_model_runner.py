@@ -8,6 +8,8 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.models.nemotron_voicechat.talker import GraphCodeGenerator
+from sglang_omni.platforms import current_platform
 
 NUM_ITER = 8
 
@@ -21,7 +23,7 @@ def char_vocab_from_tokenizer(tokenizer) -> dict[str, int]:
 
 
 class NemotronVoiceChatTalkerModelRunner(ModelRunner):
-    def __init__(self, tp_worker, output_processor):
+    def __init__(self, tp_worker, output_processor, *, enable_cuda_graph: bool):
         super().__init__(tp_worker, output_processor)
         speech = self.model.config.nemotron_speech
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -36,12 +38,30 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         # is <SPECIAL_12>, the text channel's PAD, which means still speaking.
         self.text_pad_id = int(self.tokenizer.pad_token_id)
         self.text_eos_id = int(self.tokenizer.eos_token_id)
-        self.exponent = float(speech["tts_config"]["exponent"])
+        self.level_schedule = self.model.talker.build_level_schedule(
+            NUM_ITER,
+            float(speech["tts_config"]["exponent"]),
+            self.model.hidden_out.device,
+        )
         self.top_p = float(speech["inference_top_p_or_k"])
         self.noise_scale = float(speech["inference_noise_scale"])
         self.force_silence = bool(speech["inference_force_speech_silence_on_eos"])
         self.speech_pad_id = int(speech["codec_config"]["codebook_size"])
         self.warmup_rows = None
+        backend = current_platform.get_device_graph_backend(
+            self.model.hidden_out.device
+        )
+        if enable_cuda_graph and backend is not None:
+            self.graph_code_generator = GraphCodeGenerator(
+                self.model.talker,
+                self.model.mog_head,
+                backend=backend,
+                level_schedule=self.level_schedule,
+                top_p=self.top_p,
+                noise_scale=self.noise_scale,
+            )
+        else:
+            self.graph_code_generator = None
 
     def fusion_device(self) -> torch.device:
         return self.model.fusion_buffer.device
@@ -182,11 +202,14 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
 
     def generate_codes(self, index: int) -> torch.Tensor:
         model = self.model
+        if self.graph_code_generator is not None:
+            return self.graph_code_generator(model.hidden_out[index : index + 1])
+        else:
+            pass
         return model.talker.generate_codes(
             model.hidden_out[index : index + 1].float(),
             model.mog_head,
-            num_iter=NUM_ITER,
-            exponent=self.exponent,
+            level_schedule=self.level_schedule,
             top_p=self.top_p,
             noise_scale=self.noise_scale,
         )
