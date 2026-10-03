@@ -4,8 +4,96 @@ use std::time::{Duration, SystemTime};
 
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinSet};
+use tokio::time::Instant;
 
 use super::WorkerRecord;
+
+pub(super) struct CircuitBreaker {
+    failure_threshold: u8,
+    cooldown: Duration,
+    state: Mutex<CircuitState>,
+}
+
+struct CircuitState {
+    generation: u64,
+    failures: u8,
+    open_until: Option<Instant>,
+    recovery_successes: u8,
+}
+
+impl CircuitBreaker {
+    pub(super) fn new(failure_threshold: u8, cooldown: Duration) -> Self {
+        Self {
+            failure_threshold,
+            cooldown,
+            state: Mutex::new(CircuitState {
+                generation: 0,
+                failures: 0,
+                open_until: None,
+                recovery_successes: 0,
+            }),
+        }
+    }
+
+    fn state(&self) -> MutexGuard<'_, CircuitState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn generation(&self) -> u64 {
+        self.state().generation
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        self.state().open_until.is_none()
+    }
+
+    pub(super) fn record_failure(&self, generation: u64) {
+        let mut state = self.state();
+        if state.generation != generation || state.open_until.is_some() {
+            return;
+        }
+        state.failures = state.failures.saturating_add(1);
+        if state.failures >= self.failure_threshold {
+            state.open_until = Some(Instant::now() + self.cooldown);
+            state.generation += 1;
+        }
+    }
+
+    pub(super) fn record_success(&self, generation: u64) {
+        let mut state = self.state();
+        if state.generation == generation && state.open_until.is_none() {
+            state.failures = 0;
+        }
+    }
+
+    fn recovery_probe_generation(&self) -> Option<u64> {
+        let state = self.state();
+        state
+            .open_until
+            .filter(|deadline| Instant::now() >= *deadline)
+            .map(|_| state.generation)
+    }
+
+    fn record_probe(&self, generation: u64, success: bool, success_threshold: u8) {
+        let mut state = self.state();
+        if state.generation != generation || state.open_until.is_none() {
+            return;
+        }
+        if success {
+            state.recovery_successes = state.recovery_successes.saturating_add(1);
+            if state.recovery_successes >= success_threshold {
+                state.open_until = None;
+                state.failures = 0;
+                state.recovery_successes = 0;
+                state.generation += 1;
+            }
+        } else {
+            state.recovery_successes = 0;
+        }
+    }
+}
 
 /// Health observed by the worker probe loop.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -228,6 +316,10 @@ async fn run_worker_health(
             _ = ticker.tick() => {}
         }
 
+        let recovery_generation = record
+            .circuit
+            .as_ref()
+            .and_then(CircuitBreaker::recovery_probe_generation);
         let response = tokio::select! {
             biased;
             _ = shutdown.changed() => return,
@@ -247,6 +339,9 @@ async fn run_worker_health(
         let next = tracker.observe(success);
         record.probe.record(outcome, status, &tracker);
         record.health.store(next);
+        if let (Some(circuit), Some(generation)) = (&record.circuit, recovery_generation) {
+            circuit.record_probe(generation, success, success_threshold);
+        }
         if previous != next {
             tracing::info!(
                 worker_id = record.worker_id.as_str(),
@@ -321,7 +416,8 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{
-        AtomicHealth, HealthSupervisor, ProbeOutcome, ProbeState, ProbeTracker, WorkerHealth,
+        AtomicHealth, CircuitBreaker, HealthSupervisor, ProbeOutcome, ProbeState, ProbeTracker,
+        WorkerHealth,
     };
     use crate::worker_pool::WorkerRecord;
     use crate::worker_pool::profile::{
@@ -329,6 +425,71 @@ mod tests {
         StreamMode, TrustDomain, WorkerId,
     };
     use crate::worker_pool::resolver::{ResolvedTarget, build_health_client};
+
+    #[tokio::test(start_paused = true)]
+    async fn circuit_requires_cooldown_and_consecutive_recovery_probes() {
+        let circuit = CircuitBreaker::new(2, Duration::from_secs(1));
+        let generation = circuit.generation();
+        circuit.record_failure(generation);
+        assert!(circuit.is_closed());
+        circuit.record_success(generation);
+        circuit.record_failure(generation);
+        assert!(circuit.is_closed());
+        circuit.record_failure(generation);
+        assert!(!circuit.is_closed());
+        assert_eq!(circuit.recovery_probe_generation(), None);
+        circuit.record_success(generation);
+        assert!(!circuit.is_closed());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let recovery_generation = circuit
+            .recovery_probe_generation()
+            .expect("cooldown elapsed");
+        circuit.record_probe(recovery_generation, true, 2);
+        assert!(!circuit.is_closed());
+        circuit.record_probe(recovery_generation, false, 2);
+        circuit.record_probe(recovery_generation, true, 2);
+        assert!(!circuit.is_closed());
+        circuit.record_probe(recovery_generation, true, 2);
+        assert!(circuit.is_closed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn circuit_ignores_request_and_probe_results_from_previous_generations() {
+        let circuit = CircuitBreaker::new(1, Duration::from_secs(1));
+        let old_generation = circuit.generation();
+        circuit.record_failure(old_generation);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let recovery_generation = circuit
+            .recovery_probe_generation()
+            .expect("cooldown elapsed");
+        circuit.record_probe(recovery_generation, true, 1);
+        circuit.record_failure(old_generation);
+        assert!(circuit.is_closed());
+
+        let generation = circuit.generation();
+        circuit.record_failure(generation);
+        circuit.record_probe(recovery_generation, true, 1);
+        circuit.record_success(generation);
+        assert!(!circuit.is_closed());
+        assert_eq!(circuit.recovery_probe_generation(), None);
+    }
+
+    #[test]
+    fn concurrent_failures_open_one_circuit_generation() {
+        let circuit = Arc::new(CircuitBreaker::new(8, Duration::from_secs(1)));
+        let generation = circuit.generation();
+        let threads: Vec<_> = (0..32)
+            .map(|_| {
+                let circuit = Arc::clone(&circuit);
+                thread::spawn(move || circuit.record_failure(generation))
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("join failure reporter");
+        }
+        assert!(!circuit.is_closed());
+        assert_eq!(circuit.generation(), generation + 1);
+    }
 
     fn test_target(address: SocketAddr) -> ResolvedTarget {
         ResolvedTarget::from_parts(&format!("http://{address}/"), "/health")
@@ -358,6 +519,7 @@ mod tests {
             health: AtomicHealth::unknown(),
             probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
+            circuit: None,
         })
     }
 
