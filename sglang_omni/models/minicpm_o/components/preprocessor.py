@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,9 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoTokenizer
 
+from sglang_omni.models.minicpm_o.components.image_processing import (
+    process_images,
+)
 from sglang_omni.models.minicpm_o.payload_types import (
     AudioEncoderInputs,
     ImageEncoderInputs,
@@ -135,6 +139,13 @@ class MiniCPMOPreprocessor:
             self._processor = AutoProcessor.from_pretrained(  # noqa: leading-underscore
                 self.model_dir, trust_remote_code=True
             )
+            if torch.cuda.is_available():
+                processor = self._processor  # noqa: leading-underscore
+                processor.process_image = partial(
+                    process_images, processor.image_processor
+                )
+            else:
+                pass
         else:
             pass
         return self._processor  # noqa: leading-underscore
