@@ -3,10 +3,16 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from benchmarks.benchmarker.data import FinishReason, RequestResult
-from benchmarks.metrics.performance import compute_speed_metrics
+from benchmarks.metrics.performance import (
+    compute_speed_metrics,
+    print_saved_tts_speed_summary,
+)
 from benchmarks.metrics.playback_continuity import (
     compute_max_playback_underrun_s,
     continuity_pass_rate,
@@ -182,3 +188,47 @@ def test_compute_speed_metrics_counts_max_token_hits() -> None:
     unknown = compute_speed_metrics([request_result(FinishReason.UNKNOWN)])
     assert unknown["max_token_hits"] == 0
     assert unknown["finish_reason_observed"] == 0
+
+
+@pytest.mark.parametrize(
+    "cap_metrics",
+    [
+        None,
+        {"max_token_hits": 0, "finish_reason_observed": 0},
+        {"max_token_hits": 1, "finish_reason_observed": 2},
+    ],
+)
+def test_saved_speed_summary_preserves_missing_and_observed_cap_metrics(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    cap_metrics: dict[str, int] | None,
+) -> None:
+    summary = {
+        "completed_requests": 3,
+        "failed_requests": 1,
+        "latency_mean_s": 0.5,
+    }
+    if cap_metrics is not None:
+        summary.update(cap_metrics)
+    else:
+        pass
+    results_path = tmp_path / "speed_results.json"
+    results_path.write_text(
+        json.dumps({"summary": summary, "config": {"concurrency": 2}})
+    )
+
+    assert print_saved_tts_speed_summary(
+        str(tmp_path), "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    )
+
+    printed = capsys.readouterr().out
+    assert "Latency mean (s):" in printed
+    assert "0.5" in printed
+    if cap_metrics is None:
+        assert "Max token hits:" not in printed
+    else:
+        assert (
+            f"{cap_metrics['max_token_hits']} / "
+            f"{cap_metrics['finish_reason_observed']} observed"
+        ) in printed
+    assert json.loads(results_path.read_text())["summary"] == summary
