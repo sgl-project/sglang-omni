@@ -375,6 +375,10 @@ The router infers required capabilities from each request:
 - `/v1/audio/speech` and `/v1/audio/speech/batch` require `speech`;
   `/v1/audio/speech` also requires `streaming` when `stream: true` (batch speech
   does not support streaming)
+- `GET /v1/audio/speech/{request_id}` requires `speech` and is pinned to the
+  worker named by `X-SGLang-Omni-Route-Worker`, because a stream's terminal
+  state lives only on the worker that produced it; a missing header answers
+  `400` and an unknown worker `404`
 - speech requests using `ref_audio` or audio-bearing `references` also require
   `audio_input`
 - `/v1/audio/speech/stream` WebSocket sessions require `speech` and `streaming`,
@@ -438,6 +442,13 @@ when the router cannot infer a single safe worker set:
 - `X-SGLang-Omni-Route-Capabilities`: comma-separated capabilities such as
   `image_input`, `audio_input`, `video_input`, `audio_output`, or `streaming`
 - `X-SGLang-Omni-Route-Stream`: `true` or `false` for large streaming requests
+- `X-SGLang-Omni-Route-Worker`: the `X-SGLang-Omni-Worker` value from a streaming
+  speech response, echoed verbatim; required on `GET /v1/audio/speech/{request_id}`
+
+Use the raw PCM response's `X-SGLang-Omni-Speech-Id` as the GET path's
+`request_id`, independently of the `X-Request-Id` correlation header. Look up
+the outcome after the stream ends. Outcomes are retained in a bounded
+worker-local cache; a missing outcome does not establish how generation ended.
 
 Speech and speech-batch JSON bodies larger than 1 MiB are conservatively pinned
 to the voice owner because the router cannot fully inspect them to rule out an
@@ -603,7 +614,8 @@ At `N >= 2` the router runs as a small process tree:
 - A **supervisor** binds the public port once and passes the listening socket
   to `N` **data-plane (DP)** processes, which accept from the shared queue and
   relay the model routes (`/generate`, `/v1/chat/completions`,
-  `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/audio/translations`).
+  `/v1/audio/speech`, `/v1/audio/speech/{request_id}`, `/v1/audio/transcriptions`,
+  `/v1/audio/translations`).
 - One **control plane (CP)** owns the worker registry, health checks, and the
   admin surface. DPs learn the routable-worker set from a snapshot file the CP
   republishes on every state change and on a fixed keepalive cadence. Admin

@@ -2508,6 +2508,7 @@ class FunCosyVoice3MlxStreamingVocoderScheduler(
             "modality": "audio",
             "sample_rate": self.sample_rate,
         }
+        result["finish_reason"] = pipeline_state.finish_reason
         usage = build_usage(pipeline_state)
         if usage is not None:
             result["usage"] = usage

@@ -54,7 +54,7 @@ from sglang.srt.session.session_controller import SessionController
 from sglang.srt.utils import broadcast_pyobj
 from typing_extensions import TypedDict
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
 from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerPendingStep
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -1103,13 +1103,28 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             unit = bridge.accept(payload, operation)
             chunk = unit.chunk
+            try:
+                bypass_generation = bridge.prepare_unit(unit, payload)
+            except Exception:
+                bridge.complete(payload.request_id)
+                raise
             is_empty_eos = (
                 chunk.eos
                 and chunk.duration_ms == 0
                 and isinstance(chunk.payload, bytes)
                 and not chunk.payload
             )
-            if not is_empty_eos:
+            if bypass_generation:
+                bridge.complete(payload.request_id)
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=payload.request_id,
+                        type="result",
+                        data=payload,
+                    )
+                )
+                return False
+            elif not is_empty_eos:
                 return True
             else:
                 try:
@@ -1597,7 +1612,15 @@ class OmniScheduler(Generic[RequestDataT]):
         if req_data.enforce_request_limits:
             error_msg = self.prepare_request_limits(req_data)
             if error_msg:
-                self.emit_request_error(req_id, ValueError(error_msg))
+                if session_unit is not None:
+                    error = ContextExhaustedError(
+                        f"{ContextExhaustedError.CODE}: thinker context length "
+                        f"{self.server_args.context_length} tokens exhausted "
+                        f"(effective input limit={self.max_req_input_len}). {error_msg}"
+                    )
+                else:
+                    error = ValueError(error_msg)
+                self.emit_request_error(req_id, error)
                 self.abort(req_id)
                 return
             else:

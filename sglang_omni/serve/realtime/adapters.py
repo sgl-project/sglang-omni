@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterable
 from typing import Protocol
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.client.client import Client
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
@@ -146,9 +147,12 @@ class CoordinatorAdapter(InteractionAdapter):
             if self.unit_completion is not None and not self.unit_completion.done():
                 self.unit_completion.set_exception(exc)
             else:
-                await self.output_sink(
-                    TurnFailure("server_error", "internal", str(exc))
+                code = (
+                    ContextExhaustedError.CODE
+                    if ContextExhaustedError.matches(exc)
+                    else "internal"
                 )
+                await self.output_sink(TurnFailure("server_error", code, str(exc)))
 
     async def process(self, unit: Unit) -> int:
         assert (
@@ -165,7 +169,11 @@ class CoordinatorAdapter(InteractionAdapter):
             samples_to_ms(unit.start_sample, self.input_sample_rate_hz),
             samples_to_ms(unit.real_samples, self.input_sample_rate_hz),
             unit.index,
-            unit.pcm,
+            (
+                unit.pcm
+                if not unit.images
+                else {"pcm": unit.pcm, "images": list(unit.images)}
+            ),
             format="pcm16",
             eos=unit.eos,
         )

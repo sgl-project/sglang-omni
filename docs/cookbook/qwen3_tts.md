@@ -354,6 +354,7 @@ with open("output.wav", "wb") as f:
 Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or
 `X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length`
 response still contains decodable audio, but the utterance may be incomplete.
+Models that do not report how generation ended send `X-Finish-Reason: unknown`.
 Batch responses expose the same value as each item's `finish_reason`.
 
 #### Leading silence in x-vector mode

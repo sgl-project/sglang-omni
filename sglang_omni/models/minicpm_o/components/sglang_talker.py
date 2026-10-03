@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import torch
-import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -15,18 +14,10 @@ from sglang.srt.models.llama import LlamaForCausalLM
 from torch import nn
 from transformers import LlamaConfig, PretrainedConfig
 
-
-class MiniCPMTTSProjector(nn.Module):
-    """Checkpoint-compatible thinker-hidden → talker-hidden projector."""
-
-    def __init__(self, input_size: int, hidden_size: int) -> None:
-        super().__init__()
-        self.linear1 = nn.Linear(input_size, hidden_size, bias=True)
-        self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(hidden_size, hidden_size, bias=True)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.linear2(self.relu(self.linear1(hidden_states)))
+from sglang_omni.models.minicpm_o.components.talker import (
+    MiniCPMTTSProjector,
+    build_tts_condition,
+)
 
 
 class MiniCPMOTalkerForCausalLM(nn.Module):
@@ -94,35 +85,14 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
         self, tts_token_ids: torch.Tensor, tts_hidden: torch.Tensor
     ) -> torch.Tensor:
         """Return (T+2, hidden) condition embeddings, including boundary tokens."""
-        device = self.emb_text.weight.device
-        dtype = self.emb_text.weight.dtype
-        boundary = self.emb_text(
-            torch.tensor(
-                [self.text_eos_token_id, self.audio_bos_token_id],
-                device=device,
-                dtype=torch.long,
-            )
+        return build_tts_condition(
+            tts_token_ids,
+            tts_hidden,
+            text_embedding=self.emb_text,
+            semantic_projector=self.projector_semantic,
+            boundary_tokens=(self.text_eos_token_id, self.audio_bos_token_id),
+            normalize_projected_hidden=self.normalize_projected_hidden,
         )
-        if tts_token_ids.numel() == 0:
-            return boundary
-        else:
-            pass
-        tokens = tts_token_ids.to(device=device, dtype=torch.long).reshape(-1)
-        hidden = tts_hidden.to(device=device, dtype=dtype)
-        if hidden.shape[0] != tokens.shape[0]:
-            raise ValueError(
-                f"talker condition length mismatch: token_ids={tokens.shape[0]} "
-                f"hidden_states={hidden.shape[0]}"
-            )
-        else:
-            pass
-        hidden_embeds = self.projector_semantic(hidden)
-        if self.normalize_projected_hidden:
-            hidden_embeds = F.normalize(hidden_embeds, p=2, dim=-1)
-        else:
-            pass
-        condition = self.emb_text(tokens) + hidden_embeds
-        return torch.cat([condition, boundary], dim=0)
 
     def forward(
         self,

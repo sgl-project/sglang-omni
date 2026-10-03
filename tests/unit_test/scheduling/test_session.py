@@ -3,13 +3,16 @@
 
 import queue
 import threading
+from collections import deque
 from dataclasses import asdict, dataclass
+from types import MethodType, SimpleNamespace
 from typing import Literal
+from unittest.mock import Mock
 
 import msgpack
 import pytest
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     OutputChunk,
@@ -20,10 +23,16 @@ from sglang_omni.proto.session import (
     wire_size,
 )
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import (
     SessionContext,
     SessionHooks,
     SessionScheduler,
+)
+from sglang_omni.scheduling.sglang_backend.ar_session import (
+    ARSessionBridge,
+    BridgeSession,
+    SessionUnit,
 )
 from tests.unit_test.fixtures.session_pipeline import (
     compute_registered,
@@ -360,3 +369,70 @@ def test_operation_finished_by_abort_before_running_does_not_wait():
         seen.append(events.get_nowait()[0])
     assert seen == ["open", "append"]
     assert not scheduler.cursors_by_session and not scheduler.arrivals_by_request_id
+
+
+def test_context_exhaustion_releases_append_unit() -> None:
+    request_id = "append-1"
+    identity = SessionIdentity("session-1")
+    request = SimpleNamespace(
+        rid=request_id,
+        origin_input_ids=[1] * 8191,
+        origin_input_ids_unpadded=[1] * 8191,
+        sampling_params=SimpleNamespace(max_new_tokens=1),
+    )
+    unit = SessionUnit(
+        request_id=request_id,
+        session_identity=identity,
+        stages=("thinker",),
+        chunk=TimedChunk("audio", 0, 1000, 0, b""),
+        session_request=request,
+    )
+    scheduler = Mock(spec=OmniScheduler)
+    scheduler.scheduler_thread_id = None
+    scheduler.request_admission_lock = threading.RLock()
+    scheduler.deferred_request_payloads = {}
+    scheduler.pending_request_builds = {}
+    scheduler.pending_request_admissions = {}
+    scheduler.pending_stream_ingress = {}
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.backlogged_request_build_payloads = deque()
+    scheduler.waiting_queue = []
+    scheduler.mark_running_request_aborted.return_value = False
+    scheduler.mark_request_finished_immediately.return_value = []
+    scheduler.init_req_max_new_tokens = Mock()
+    scheduler.max_req_input_len = 8190
+    scheduler.server_args = SimpleNamespace(context_length=8192)
+    scheduler.active_session_unit = MethodType(
+        OmniScheduler.active_session_unit, scheduler
+    )
+    scheduler.normalize_req_token_arrays = OmniScheduler.normalize_req_token_arrays
+    scheduler.prepare_request_limits = MethodType(
+        OmniScheduler.prepare_request_limits, scheduler
+    )
+    scheduler.abort = MethodType(OmniScheduler.abort, scheduler)
+    scheduler.session_controller = Mock()
+    bridge = ARSessionBridge(scheduler, Mock())
+    bridge.sessions[identity.id] = BridgeSession(session_identity=identity, unit=unit)
+    bridge.units_by_request_id[request_id] = unit
+    bridge.create_session_request = Mock()
+    scheduler.session_bridge = bridge
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id=request_id),
+        False,
+        SimpleNamespace(req=request, enforce_request_limits=True),
+    )
+
+    error = scheduler.emit_request_error.call_args.args[1]
+    assert isinstance(error, ContextExhaustedError)
+    assert str(error).startswith("context_exhausted:")
+    assert "8192" in str(error)
+    assert not bridge.units_by_request_id
+    assert bridge.sessions[identity.id].unit is None
+    scheduler.session_controller.get.return_value.abort_req.assert_called_once()
