@@ -35,6 +35,7 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.json import JsonValue
 
 if TYPE_CHECKING:
@@ -239,8 +240,6 @@ def load_standalone_preprocessing_context(
     except ImportError as exc:
         raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
 
-    from sglang_omni.utils.device import resolve_concrete_device
-
     checkpoint_dir = _resolve_checkpoint(model_path)
     device = str(resolve_concrete_device(device, gpu_id))
     torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
@@ -333,6 +332,7 @@ def create_vocoder_executor(
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
+    async_decode: bool | None = None,
     fused_snake_activation: bool = True,
     enable_stateful_codec_decoder: bool = True,
     codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
@@ -344,8 +344,6 @@ def create_vocoder_executor(
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
 ) -> Qwen3TTSStreamingVocoderScheduler:
-    from sglang_omni.utils.device import resolve_concrete_device
-
     device = str(resolve_concrete_device(device, gpu_id))
     # note (luojiaxuan): the graph and compile switches follow the decoder
     # they belong to unless set explicitly, so turning the stateful decoder
@@ -382,6 +380,7 @@ def create_vocoder_executor(
         followup_batch_wait_ms=followup_batch_wait_ms,
         followup_worker_count=followup_worker_count,
         initial_cuda_graph=initial_cuda_graph,
+        async_decode=async_decode,
         enable_deterministic_inference=enable_deterministic_inference,
         followup_cuda_graph=followup_cuda_graph,
         fused_snake_activation=fused_snake_activation,

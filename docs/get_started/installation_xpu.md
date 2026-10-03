@@ -174,6 +174,33 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "response_format":"wav"}' -o out.wav
 ```
 
+#### Codec decoding on XPU
+
+The stateful incremental codec decoder runs, but the pipeline starts it with
+`async_decode: false`, and the vocoder captures its decode graphs during the
+asynchronous decode warmup, so none are captured. Capturing the shape set the CUDA
+defaults imply has not been shown to pay here yet: on one Arc Pro B60 it ran past
+the 600 s stage startup budget, and the engine then ran out of memory on a 24 GB
+card once the graphs were resident. The reference and speaker encoder graphs start
+off for the same reason, through empty bucket lengths on the engine stage.
+
+To try the fast path, turn the asynchronous path back on; `incremental_codec_compile`
+is worth dropping with it, since compiling the codec kernels is what dominated that
+startup:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      async_decode: true
+      incremental_codec_compile: false
+```
+
+An explicit stage value wins over the pipeline default, and the encoder graphs come
+back by naming their bucket lengths on the `tts_engine` stage
+(`reference_encoder_cuda_graph_bucket_frames`). See the platform-neutral defaults in
+[docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
+
 ### ZONOS2 (MoE TTS, single XPU)
 
 ZONOS2 needs the Descript DAC codec. `--no-deps` is required:

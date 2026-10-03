@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import hashlib
 import json
+import logging
 import queue
 import threading
 import time
@@ -23,6 +24,7 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
     Qwen3TTSReferenceEncoderCudaGraphRunner,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
@@ -47,6 +49,9 @@ from sglang_omni.scheduling.speaker_cache import (
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
+from sglang_omni.utils.device import supports_device_streams
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSModel, Qwen3TTSTokenizer
@@ -150,7 +155,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     enforce_request_limits: bool = True
     output_codes: list[torch.Tensor] = field(default_factory=list)
     latest_stream_code_chunk: torch.Tensor | None = None
-    codes_ready_event: torch.cuda.Event | None = None
+    codes_ready_event: torch.Event | None = None
     stream_ref_sent: bool = False
     stream_codec_output: bool = False
     suppress_bootstrap_silence: bool = False
@@ -180,7 +185,7 @@ class Qwen3TTSPreparedRequest:
     prompt_input_embeds: torch.Tensor
     tts_pad_embed: torch.Tensor
     gen_kwargs: Mapping[str, object]
-    ready_event: torch.cuda.Event | None = None
+    ready_event: torch.Event | None = None
 
 
 @dataclass
@@ -193,7 +198,7 @@ class Qwen3TTSPreprocessingContext:
     # note (luojiaxuan): in-process preprocessing runs its GPU work on this
     # stream so it never queues behind the talker's step on the default
     # stream; the scheduler waits on the per-request event before reading.
-    stream: torch.cuda.Stream | None = None
+    stream: torch.Stream | None = None
 
 
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
@@ -236,10 +241,10 @@ def set_qwen3_tts_preprocessing_context(
             wrapper=wrapper,
             standalone=standalone,
             stream=(
-                torch.cuda.Stream(device=device)
+                torch.get_device_module(device).Stream(device=device)
                 if (
                     device is not None
-                    and device.type in {"cuda", "musa"}
+                    and supports_device_streams(device)
                     and not standalone
                 )
                 else None
@@ -275,7 +280,8 @@ def prepared_request_id(payload: StagePayload) -> str | None:
 
 def adopt_prepared_tensors(prepared: Qwen3TTSPreparedRequest) -> None:
     """Order the scheduler's stream after preprocessing and keep its tensors alive."""
-    stream = torch.cuda.current_stream(prepared.prompt_input_embeds.device)
+    device = prepared.prompt_input_embeds.device
+    stream = torch.get_device_module(device).current_stream(device)
     stream.wait_event(prepared.ready_event)
     for tensor in (
         prepared.attention_mask,
@@ -284,7 +290,7 @@ def adopt_prepared_tensors(prepared: Qwen3TTSPreparedRequest) -> None:
         prepared.prompt_input_embeds,
         prepared.tts_pad_embed,
     ):
-        if tensor is not None and tensor.device.type in {"cuda", "musa"}:
+        if tensor is not None and supports_device_streams(tensor.device):
             tensor.record_stream(stream)
         else:
             pass
@@ -927,20 +933,22 @@ class Qwen3TTSAdhocReferenceInput:
     x_vector_only_mode: bool
 
 
-def new_cuda_encode_stream(device: torch.device) -> torch.cuda.Stream | None:
-    if device.type not in {"cuda", "musa"}:
+def new_encode_stream(device: torch.device) -> torch.Stream | None:
+    if not supports_device_streams(device):
         return None
     else:
         pass
-    return torch.cuda.Stream(device=device)
+    return torch.get_device_module(device).Stream(device=device)
 
 
 def record_ref_code_consumer_stream(ref_code: torch.Tensor) -> torch.Tensor:
     # note (luojiaxuan): reference codes may be allocated on the batcher's
     # private stream; register the consumer stream with the caching allocator
     # so a later batch cannot recycle the block while reads are still queued.
-    if isinstance(ref_code, torch.Tensor) and ref_code.device.type in {"cuda", "musa"}:
-        ref_code.record_stream(torch.cuda.current_stream(ref_code.device))
+    if isinstance(ref_code, torch.Tensor) and supports_device_streams(ref_code.device):
+        ref_code.record_stream(
+            torch.get_device_module(ref_code.device).current_stream(ref_code.device)
+        )
     else:
         pass
     return ref_code
@@ -964,9 +972,18 @@ class Qwen3TTSRefCodeBatcher:
         self.encoder_dtype = param.dtype
         self.max_batch_size = max(int(max_batch_size), 1)
         self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self.encode_stream = new_cuda_encode_stream(self.encoder_device)
+        self.encode_stream = new_encode_stream(self.encoder_device)
         self.graph_runner: Qwen3TTSReferenceEncoderCudaGraphRunner | None = None
-        if self.encode_stream is not None and graph_bucket_frames:
+        capturable = current_platform.supports_graph_captured_host_read()
+        if graph_bucket_frames and not capturable:
+            logger.warning(
+                f"qwen3_tts_reference_encoder_graph resolved=eager "
+                f"platform={current_platform.device_type}: the encoder reads a "
+                f"tensor on the host mid-capture"
+            )
+        else:
+            pass
+        if self.encode_stream is not None and graph_bucket_frames and capturable:
             self.graph_runner = Qwen3TTSReferenceEncoderCudaGraphRunner(
                 self.encoder,
                 hop=self.hop,
@@ -1038,7 +1055,7 @@ class Qwen3TTSRefCodeBatcher:
         # on the dedicated stream's event leaves the default stream, where
         # speaker-embedding kernels run concurrently, untouched.
         if self.encode_stream is not None:
-            handoff = torch.cuda.Event()
+            handoff = torch.get_device_module(self.encoder_device).Event()
             handoff.record(self.encode_stream)
             handoff.synchronize()
             return
@@ -1094,7 +1111,7 @@ class Qwen3TTSRefCodeBatcher:
             ]
             outcomes: dict[int, torch.Tensor | Exception] = {}
             encode_stream_ctx = (
-                torch.cuda.stream(self.encode_stream)
+                torch.get_device_module(self.encoder_device).stream(self.encode_stream)
                 if self.encode_stream is not None
                 else contextlib.nullcontext()
             )
@@ -1615,14 +1632,15 @@ def preprocess_qwen3_tts_payload(
             default_stream_codec_output=default_stream_codec_output,
         )
     else:
-        with torch.cuda.stream(context.stream):
+        stream_device_module = torch.get_device_module(context.stream.device)
+        with stream_device_module.stream(context.stream):
             prepared = prepare_qwen3_tts_request(
                 payload,
                 model=context.model,
                 wrapper=context.wrapper,
                 default_stream_codec_output=default_stream_codec_output,
             )
-            prepared.ready_event = torch.cuda.Event()
+            prepared.ready_event = stream_device_module.Event()
             prepared.ready_event.record(context.stream)
     if context.standalone:
         return store_prepared_qwen3_tts_payload(payload, prepared)
@@ -1973,8 +1991,10 @@ def make_qwen3_tts_scheduler_adapters(
                 codes = torch.cat((ref_code, codes), dim=0)
                 # note (luojiaxuan): the step's ready event was recorded before
                 # this cat, so the prefixed chunk needs its own.
-                if codes.device.type in {"cuda", "musa"}:
-                    data.codes_ready_event = torch.cuda.Event()
+                if supports_device_streams(codes.device):
+                    data.codes_ready_event = torch.get_device_module(
+                        codes.device
+                    ).Event()
                     data.codes_ready_event.record()
                 else:
                     pass
