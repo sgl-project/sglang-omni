@@ -29,6 +29,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
 )
 from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
     FunCosyVoice3StreamingVocoderScheduler,
+    causal_hop_frames,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -141,6 +142,22 @@ def make_scheduler(
             FakeHiFT(),
         ),
         **scheduler_kwargs,
+    )
+
+
+def test_streaming_vocoder_uses_flow_token_mel_ratio() -> None:
+    flow, scheduler = make_scheduler()
+    flow.token_mel_ratio = 3
+
+    warmup = scheduler.make_warmup_flow_input(4)
+
+    assert warmup.prompt_feat.shape[1] == scheduler.token_hop_len * 3
+    assert (
+        causal_hop_frames(
+            warmup,
+            token_mel_ratio=int(flow.token_mel_ratio),
+        )
+        == (scheduler.token_hop_len + 4 - PRE_LOOKAHEAD_LEN) * 3
     )
 
 

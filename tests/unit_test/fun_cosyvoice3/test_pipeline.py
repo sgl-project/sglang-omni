@@ -16,6 +16,7 @@ from sglang_omni.config.runtime import (
 from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import (
     FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
+    FUN_COSYVOICE3_DEFAULT_PREFIX_CUDA_GRAPH_CAPTURE_SHAPES,
     FunCosyVoice3PipelineConfig,
 )
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
@@ -111,7 +112,9 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "flow_merge_max_gap_frames": 384,
         "flow_merge_pad_budget_percent": 25.0,
         "flow_cuda_graph_capture_shapes": FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
+        "flow_prefix_cuda_graph_capture_shapes": FUN_COSYVOICE3_DEFAULT_PREFIX_CUDA_GRAPH_CAPTURE_SHAPES,
         "enable_flow_cuda_graph": True,
+        "enable_flow_prefix_cuda_graph": False,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
@@ -139,16 +142,23 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
                 [5, 544],
                 [7, 576],
             ],
+            "vocoder.factory.flow_prefix_cuda_graph_capture_shapes": [
+                [1, 100, 100, 512, [100]],
+            ],
+            "vocoder.factory.flow_prefix_cuda_graph_max_slack_frames": 50,
         }
     )
     vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
+    assert vocoder.factory.flow_prefix_cuda_graph_max_slack_frames == 50
 
     assert vocoder.factory.model_extra == {
         "flow_batch_admission_frames": 4000,
         "flow_merge_max_gap_frames": 40,
         "flow_merge_pad_budget_percent": 3,
         "flow_cuda_graph_capture_shapes": [[1, 496], [5, 544], [7, 576]],
+        "flow_prefix_cuda_graph_capture_shapes": [[1, 100, 100, 512, [100]]],
         "enable_flow_cuda_graph": True,
+        "enable_flow_prefix_cuda_graph": False,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
@@ -164,6 +174,18 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         [5, 544],
         [7, 576],
     ]
+    assert args["flow_prefix_cuda_graph_capture_shapes"] == [[1, 100, 100, 512, [100]]]
+    assert args["flow_prefix_cuda_graph_max_slack_frames"] == 50
+
+
+def test_fun_cosyvoice3_prefix_cuda_graph_flag_uses_factory_path() -> None:
+    merged = ConfigManager(
+        FunCosyVoice3PipelineConfig(model_path="model")
+    ).merge_config({"vocoder.factory.enable_flow_prefix_cuda_graph": True})
+    vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
+
+    assert vocoder.factory.model_extra["enable_flow_prefix_cuda_graph"] is True
+    assert resolve_stage_typed_kwargs(vocoder)["enable_flow_prefix_cuda_graph"] is True
 
 
 @pytest.mark.parametrize(

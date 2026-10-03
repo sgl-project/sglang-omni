@@ -74,6 +74,28 @@ FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES: tuple[tuple[int, int], ..
     (1, 416),
 )
 
+FUN_COSYVOICE3_DEFAULT_PREFIX_CUDA_GRAPH_CAPTURE_SHAPES: tuple[
+    tuple[int, int, int, int, tuple[int, ...]], ...
+] = (
+    (1, 300, 300, 3072, (300,)),
+    (1, 450, 450, 512, (450,)),
+    (3, 400, 200, 1536, (200, 100, 100)),
+    (4, 900, 400, 2048, (400, 200, 150, 150)),
+    (2, 500, 350, 2048, (350, 150)),
+    (3, 650, 350, 3072, (350, 150, 150)),
+    (3, 1100, 400, 512, (400, 350, 350)),
+    (1, 100, 100, 512, (100,)),
+    (2, 200, 100, 512, (100, 100)),
+    (3, 500, 300, 1024, (300, 100, 100)),
+    (4, 1200, 400, 1024, (400, 300, 250, 250)),
+    (3, 850, 350, 1024, (350, 250, 250)),
+    (5, 1150, 350, 512, (350, 200, 200, 200, 200)),
+    (8, 1700, 300, 1536, (300, 300, 250, 200, 200, 150, 150, 150)),
+    (2, 600, 300, 512, (300, 300)),
+    (4, 700, 300, 1024, (300, 150, 150, 100)),
+    (6, 1450, 400, 2048, (400, 250, 200, 200, 200, 200)),
+)
+
 _DIT_ACCELERATOR_CONFLICT = (
     "enable_flow_estimator_trt and enable_dit_torch_compile both "
     "target flow.decoder.estimator; enable only one"
@@ -109,6 +131,7 @@ class FunCosyVoice3VocoderFactoryArgs(FactoryArgs):
 
     mlx_model_path: str | None = Field(default=None)
     mlx_model_revision: str | None = Field(default=None)
+    flow_prefix_cuda_graph_max_slack_frames: int | None = Field(default=None, gt=0)
 
 
 class FunCosyVoice3VocoderStageConfig(StageConfig):
@@ -160,7 +183,9 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 max_batch_size=16,
                 max_batch_wait_ms=30,
                 enable_flow_cuda_graph=True,
+                enable_flow_prefix_cuda_graph=False,
                 flow_cuda_graph_capture_shapes=FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
+                flow_prefix_cuda_graph_capture_shapes=FUN_COSYVOICE3_DEFAULT_PREFIX_CUDA_GRAPH_CAPTURE_SHAPES,
                 # note (guozhihao-224, chenyang):
                 # CUDA Graph and DiT torch.compile are on by default. TensorRT stays opt-in;
                 # stage_factory_kwargs sets the compile default.
