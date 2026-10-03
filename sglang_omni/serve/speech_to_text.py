@@ -391,12 +391,15 @@ def assemble_speech_to_text_response(
         endpoint_path=endpoint_path,
         response_formats=response_formats,
     )
+    adapter = resolve_speech_to_text_adapter(architectures)
+    raw_text = text
     if normalized_response_format == "text":
-        return PlainTextResponse(text)
+        return PlainTextResponse(raw_text)
     else:
         pass
 
-    adapter = resolve_speech_to_text_adapter(architectures)
+    text = adapter.postprocess_text(raw_text)
+
     if (
         normalized_response_format in SEGMENT_RESPONSE_FORMATS
         and not adapter.supports_segment_timestamps
@@ -410,8 +413,6 @@ def assemble_speech_to_text_response(
         )
     else:
         pass
-    raw_text = text
-    text = adapter.postprocess_text(raw_text)
     if duration_s is None:
         duration_s = probe_audio_duration(audio_bytes)
     else:
