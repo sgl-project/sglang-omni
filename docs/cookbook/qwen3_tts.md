@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.20 stack remains
+dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.21 stack remains
 in place:
 
 ```bash
@@ -42,7 +42,7 @@ factories (`create_causal_mask` and friends), which now spell `input_embeds` as
 `inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
 differences in
 `sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.20
+applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.21
 stack is therefore the supported configuration, not a workaround.
 
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
@@ -152,7 +152,7 @@ graph per token bucket; the codec head and sampling still run outside it.
 them. Each backend is accepted only on models that declare it, so a stage that
 has not adopted `full` still rejects it. `full` also needs a prefill attention
 backend that captures an ordinary prefill batch, `fa3` or `flashinfer` in
-SGLang 0.5.20: with any other backend the CustomVoice default stays
+SGLang 0.5.21: with any other backend the CustomVoice default stays
 `breakable`, and an explicit `full` fails at startup. SGLang logs the full
 prefill backend as experimental and its own compatibility rules never
 auto-disable it, so the generation batch policy's checks are what guard it
