@@ -114,6 +114,7 @@ tests/
     ├── ming_omni/
     │   ├── test_omni_serve.py
     │   ├── test_pipeline.py
+    │   ├── test_preprocessing.py
     │   ├── test_streaming_decode.py
     │   ├── test_streaming_e2e_glue.py
     │   ├── test_streaming_speech_config.py
@@ -769,6 +770,10 @@ that happened to contain an older version of the test.
     `MingOmniStreamingSpeechPipelineConfig` wiring (segmenter between thinker and
     talker, terminal talker-stream stage, thinker/talker GPU-range collision
     rejection, streaming variant exposure).
+  - video preprocessing contracts (`test_preprocessing.py`): every decoded
+    frame reaches `video_grid_thw`, the token count matches the grid, and the
+    caller's frame tensor is not mutated. Checkpoint loading is stubbed, so it
+    runs on CPU.
 
 - `unit_test/ming_tts/`: Ming-TTS unit tests:
   - request builder rejection for unsupported seed inputs until the FlowLoss RNG
