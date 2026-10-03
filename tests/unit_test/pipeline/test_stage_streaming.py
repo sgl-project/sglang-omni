@@ -556,7 +556,7 @@ def test_stage_routes_inline_stream_chunk_to_scheduler(
             relay=relay,
             scheduler=scheduler,
         )
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
         payload = StagePayload(
             request_id="req",
             request=OmniRequest(inputs="hello"),
@@ -650,7 +650,7 @@ def test_stage_fails_pre_payload_stream_chunk_by_default() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
         codes = torch.arange(11, dtype=torch.float32)
 
         await stage.on_stream_chunk(
@@ -691,7 +691,7 @@ def test_stage_routes_stream_chunk_after_payload_by_default() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
         payload = StagePayload(
             request_id="req",
             request=OmniRequest(inputs="hello"),
@@ -738,7 +738,7 @@ def test_stage_routes_pre_payload_stream_events_for_capable_receiver() -> None:
             scheduler=scheduler,
             can_accept_stream_before_payload=True,
         )
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
         codes = torch.arange(11, dtype=torch.float32)
 
         await stage.on_stream_chunk(
@@ -862,7 +862,7 @@ def test_stage_stream_error_fails_request_even_with_stream_queue() -> None:
             scheduler=scheduler,
             is_terminal=True,
         )
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
         stage.stream_queue.open("req")
 
         await stage.queue_stream_error(
@@ -899,7 +899,7 @@ def test_terminal_request_can_be_readmitted_after_cleanup() -> None:
             scheduler=scheduler,
             can_accept_stream_before_payload=True,
         )
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
         stage.stream_queue.open("req")
         stage.active_requests.add("req")
 
@@ -1092,7 +1092,7 @@ def test_stage_routes_relay_stream_chunk_to_scheduler() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
         stage.stream_queue.open("req")
 
         await stage.on_stream_chunk(

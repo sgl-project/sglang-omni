@@ -511,6 +511,29 @@ class AudioChunkingConfig(BaseModel):
             pass
 
 
+class StreamDeliveryConfig(BaseModel):
+    """Operator caps on stream chunk bytes held for readers that fall behind.
+
+    Set with YAML or dotted CLI overrides; none turns a cap off.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    max_request_backlog_bytes: int | None = Field(default=256 * 1024 * 1024, ge=1)
+    max_total_backlog_bytes: int | None = Field(default=1024 * 1024 * 1024, ge=1)
+
+    def model_post_init(self, __context: object = None) -> None:
+        if (
+            self.max_request_backlog_bytes is not None
+            and self.max_total_backlog_bytes is not None
+            and self.max_total_backlog_bytes < self.max_request_backlog_bytes
+        ):
+            raise ValueError(
+                f"max_total_backlog_bytes={self.max_total_backlog_bytes} must be at least max_request_backlog_bytes={self.max_request_backlog_bytes}"
+            )
+        else:
+            pass
+
+
 @dataclass(frozen=True)
 class ResolvedAudioChunking:
     """The merged long-audio contract the transcription handlers consume.
@@ -599,6 +622,7 @@ class PipelineConfig(BaseModel):
     "Stage name -> ``StageConfig`` subclass for this pipeline's stage types.\n\n    The mapping is what makes a stage's type survive a dump/rebuild round\n    trip: the resolver mutates ``model_dump()`` output and reconstructs the\n    config, and this is how each stage document gets validated against its\n    own subclass (engine marker, model-specific ``model.*`` fields) instead\n    of the base ``StageConfig``. Stage names absent from the mapping --\n    including stages a user file adds -- validate as plain ``StageConfig``.\n    "
     model_path: str
     audio_chunking: AudioChunkingConfig = Field(default_factory=AudioChunkingConfig)
+    stream_delivery: StreamDeliveryConfig = Field(default_factory=StreamDeliveryConfig)
     stages: list[StageConfig]
     name: str | None = None
     entry_stage: str | None = None

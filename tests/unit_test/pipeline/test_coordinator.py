@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+from collections.abc import AsyncGenerator
 
 import pytest
 
@@ -209,8 +210,10 @@ def test_coordinator_stream_received_event_pairs_terminal_chunk(monkeypatch) -> 
             entry_stage="preprocess",
             terminal_stages=["decode"],
         )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
         queue: asyncio.Queue = asyncio.Queue()
-        coordinator.stream_queues["req-1"] = queue
+        await coordinator.submit_request("req-1", "hello", stream_queue=queue)
 
         await coordinator.handle_stream(
             StreamMessage(
@@ -1276,5 +1279,283 @@ def test_coordinator_without_replicas_sends_no_bindings() -> None:
         await coordinator.submit_request("req-0", "hello")
 
         assert control_plane.submitted[0][2].replica_bindings is None
+
+    asyncio.run(run())
+
+
+def audio_chunk(request_id: str, payload_bytes: int) -> StreamMessage:
+    return StreamMessage(
+        request_id=request_id,
+        from_stage="decode",
+        chunk={"audio_waveform": bytes(payload_bytes), "sample_rate": 24000},
+        stage_name="decode",
+        modality="audio",
+    )
+
+
+def backlog_coordinator(
+    *,
+    max_request_backlog_bytes: int | None = None,
+    max_total_backlog_bytes: int | None = None,
+    terminal_stages: list[str] | None = None,
+) -> tuple[Coordinator, RecordingCoordinatorControlPlane]:
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="preprocess",
+        terminal_stages=terminal_stages or ["decode"],
+        max_request_backlog_bytes=max_request_backlog_bytes,
+        max_total_backlog_bytes=max_total_backlog_bytes,
+    )
+    control_plane = RecordingCoordinatorControlPlane()
+    coordinator.control_plane = control_plane
+    coordinator.register_stage("preprocess", "inproc://preprocess")
+    return coordinator, control_plane
+
+
+async def open_stream(coordinator: Coordinator, request_id: str) -> tuple[
+    AsyncGenerator[CompleteMessage | StreamMessage, None],
+    asyncio.Task[CompleteMessage | StreamMessage],
+]:
+    """Start a reader and wait until its request is registered."""
+    stream = coordinator.stream(request_id, "hello")
+    first_message = asyncio.create_task(anext(stream))
+    for _ in range(100):
+        if request_id in coordinator.stream_queues:
+            break
+        else:
+            await asyncio.sleep(0)
+    return stream, first_message
+
+
+async def open_stream_and_take_one(
+    coordinator: Coordinator, request_id: str, payload_bytes: int
+) -> AsyncGenerator[CompleteMessage | StreamMessage, None]:
+    stream, first_message = await open_stream(coordinator, request_id)
+    await coordinator.handle_stream(audio_chunk(request_id, payload_bytes))
+    await first_message
+    return stream
+
+
+@pytest.mark.parametrize("is_generation_done", [False, True])
+def test_total_backlog_cap_fails_the_longest_idle_reader(
+    is_generation_done: bool,
+) -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=10)
+        stalled = await open_stream_and_take_one(coordinator, "req-stalled", 4)
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        coordinator.stream_backlogs["req-stalled"].reader_idle_since_s -= 100.0
+        if is_generation_done:
+            await coordinator.handle_completion(
+                CompleteMessage("req-stalled", "decode", True, result={})
+            )
+        else:
+            pass
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["backlog_bytes"] == 8
+        assert delivery["streams_after_generation"] == int(is_generation_done)
+
+        reading, reading_first_message = await open_stream(coordinator, "req-reading")
+        await coordinator.handle_stream(audio_chunk("req-reading", 4))
+
+        assert (await reading_first_message).chunk["audio_waveform"] == bytes(4)
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["backlog_bytes"] == 0
+        assert delivery["failed_streams"] == {
+            "max_request_backlog_bytes": 0,
+            "max_total_backlog_bytes": 1,
+        }
+        if is_generation_done:
+            assert control_plane.aborts == []
+        else:
+            assert [msg.request_id for msg in control_plane.aborts] == ["req-stalled"]
+        assert "req-stalled" not in coordinator.requests
+        # The request ID stays reserved until the stalled reader closes.
+        assert "req-stalled" in coordinator.stream_queues
+        with pytest.raises(QueueFullError):
+            await anext(stalled)
+        assert "req-stalled" not in coordinator.stream_queues
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        assert coordinator.stream_backlog_bytes == 0
+
+        await coordinator.handle_stream(audio_chunk("req-reading", 4))
+        assert (await anext(reading)).chunk["audio_waveform"] == bytes(4)
+        await reading.aclose()
+        assert coordinator.stream_backlogs == {}
+        assert coordinator.stream_backlog_bytes == 0
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_prefers_the_idle_reader_over_the_larger_backlog() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=12)
+        idle = await open_stream_and_take_one(coordinator, "req-idle", 4)
+        await coordinator.handle_stream(audio_chunk("req-idle", 4))
+        coordinator.stream_backlogs["req-idle"].reader_idle_since_s -= 100.0
+        behind = await open_stream_and_take_one(coordinator, "req-behind", 4)
+        await coordinator.handle_stream(audio_chunk("req-behind", 4))
+        await coordinator.handle_stream(audio_chunk("req-behind", 4))
+        assert coordinator.stream_backlog_bytes == 12
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["open_streams"] == 2
+        assert delivery["longest_reader_idle_s"] >= 100.0
+
+        await coordinator.handle_stream(audio_chunk("req-behind", 4))
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-idle"]
+        assert coordinator.stream_backlogs["req-behind"].undelivered_bytes == 12
+        assert coordinator.stream_backlog_bytes == 12
+        with pytest.raises(QueueFullError):
+            await anext(idle)
+        for _ in range(3):
+            assert (await anext(behind)).chunk["audio_waveform"] == bytes(4)
+        await behind.aclose()
+        assert coordinator.stream_backlog_bytes == 0
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_fails_streams_until_the_total_fits() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=12)
+        oldest = await open_stream_and_take_one(coordinator, "req-oldest", 4)
+        await coordinator.handle_stream(audio_chunk("req-oldest", 2))
+        coordinator.stream_backlogs["req-oldest"].reader_idle_since_s -= 200.0
+        older = await open_stream_and_take_one(coordinator, "req-older", 4)
+        await coordinator.handle_stream(audio_chunk("req-older", 4))
+        coordinator.stream_backlogs["req-older"].reader_idle_since_s -= 100.0
+        fresh = await open_stream_and_take_one(coordinator, "req-fresh", 4)
+        await coordinator.handle_stream(audio_chunk("req-fresh", 4))
+        assert coordinator.stream_backlog_bytes == 10
+
+        await coordinator.handle_stream(audio_chunk("req-fresh", 6))
+
+        assert [msg.request_id for msg in control_plane.aborts] == [
+            "req-oldest",
+            "req-older",
+        ]
+        assert coordinator.stream_backlog_bytes == 10
+        failed_streams = coordinator.health()["stream_delivery"]["failed_streams"]
+        assert failed_streams["max_total_backlog_bytes"] == 2
+        for stream in (oldest, older):
+            with pytest.raises(QueueFullError):
+                await anext(stream)
+        await fresh.aclose()
+        assert coordinator.stream_backlog_bytes == 0
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_measures_idle_from_the_last_read() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=15)
+        active = await open_stream_and_take_one(coordinator, "req-active", 4)
+        stalled = await open_stream_and_take_one(coordinator, "req-stalled", 4)
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        await coordinator.handle_stream(audio_chunk("req-active", 4))
+        await coordinator.handle_stream(audio_chunk("req-active", 4))
+        coordinator.stream_backlogs["req-active"].reader_idle_since_s -= 200.0
+        coordinator.stream_backlogs["req-stalled"].reader_idle_since_s -= 100.0
+
+        # A read restarts the idle clock; a chunk for a reader that is behind
+        # does not.
+        assert (await anext(active)).chunk["audio_waveform"] == bytes(4)
+        await coordinator.handle_stream(audio_chunk("req-active", 4))
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-stalled"]
+        assert coordinator.stream_backlog_bytes == 8
+        with pytest.raises(QueueFullError):
+            await anext(stalled)
+        await active.aclose()
+        assert coordinator.stream_backlog_bytes == 0
+
+    asyncio.run(run())
+
+
+def test_request_backlog_cap_fails_a_reader_that_is_behind() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_request_backlog_bytes=10)
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        await coordinator.handle_stream(audio_chunk("req-1", 6))
+        assert control_plane.aborts == []
+
+        await coordinator.handle_stream(audio_chunk("req-1", 6))
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
+        failed_streams = coordinator.health()["stream_delivery"]["failed_streams"]
+        assert failed_streams["max_request_backlog_bytes"] == 1
+        assert coordinator.stream_backlog_bytes == 0
+        with pytest.raises(QueueFullError):
+            await anext(stream)
+        assert coordinator.stream_queues == {}
+
+    asyncio.run(run())
+
+
+def test_request_backlog_cap_spares_a_caught_up_reader() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(
+            max_request_backlog_bytes=10, max_total_backlog_bytes=20
+        )
+        stream = await open_stream_and_take_one(coordinator, "req-1", 16)
+        await coordinator.handle_stream(audio_chunk("req-1", 16))
+        assert (await anext(stream)).chunk["audio_waveform"] == bytes(16)
+        await coordinator.handle_completion(
+            CompleteMessage("req-1", "decode", True, result={})
+        )
+        assert (await anext(stream)).success
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+        assert control_plane.aborts == []
+        assert coordinator.health()["stream_delivery"]["failed_streams"] == {
+            "max_request_backlog_bytes": 0,
+            "max_total_backlog_bytes": 0,
+        }
+
+    asyncio.run(run())
+
+
+def test_stream_backlog_is_released_when_the_reader_closes_early() -> None:
+    async def run() -> None:
+        coordinator, _ = backlog_coordinator(max_total_backlog_bytes=100)
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        await coordinator.handle_stream(audio_chunk("req-1", 4))
+        await coordinator.handle_stream(audio_chunk("req-1", 4))
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["backlog_bytes"] == 8
+        assert delivery["open_streams"] == 1
+
+        await stream.aclose()
+
+        assert coordinator.stream_backlog_bytes == 0
+        assert coordinator.stream_backlogs == {}
+
+    asyncio.run(run())
+
+
+def test_backlog_failure_after_one_of_two_terminals_cleans_partial_results() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(
+            max_total_backlog_bytes=10, terminal_stages=["thinker", "decode"]
+        )
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        await coordinator.handle_completion(
+            CompleteMessage("req-1", "thinker", True, result={"text": "hi"})
+        )
+        assert "req-1" in coordinator.partial_results
+        await coordinator.handle_stream(audio_chunk("req-1", 6))
+        await coordinator.handle_stream(audio_chunk("req-1", 6))
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
+        assert "req-1" not in coordinator.partial_results
+        assert "req-1" not in coordinator.requests
+        with pytest.raises(QueueFullError):
+            await anext(stream)
+        assert coordinator.stream_queues == {}
+        assert coordinator.completion_futures == {}
 
     asyncio.run(run())

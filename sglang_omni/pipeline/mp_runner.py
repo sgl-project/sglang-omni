@@ -700,6 +700,7 @@ class MultiProcessPipelineRunner:
                 self.config,
                 logical_process_plan=prep.logical_process_plan,
             )
+            stream_delivery = self.config.stream_delivery
             self._coordinator = Coordinator(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
@@ -709,6 +710,13 @@ class MultiProcessPipelineRunner:
                 replica_topology=prep.replica_topology,
                 logical_process_plan=prep.logical_process_plan,
                 max_in_flight=max_in_flight,
+                max_request_backlog_bytes=stream_delivery.max_request_backlog_bytes,
+                max_total_backlog_bytes=stream_delivery.max_total_backlog_bytes,
+            )
+            logger.info(
+                f"Coordinator stream backlog caps: "
+                f"max_request_backlog_bytes={stream_delivery.max_request_backlog_bytes} "
+                f"max_total_backlog_bytes={stream_delivery.max_total_backlog_bytes}"
             )
             if max_in_flight is not None:
                 logger.info(

@@ -134,6 +134,32 @@ HTTP **503** (`The request queue is full.`) before preprocessing, or later
 if the AR waiting queue or request-build backlog is full. Qwen3-TTS
 defaults to 4 request-build workers with pending depth 16.
 
+A finished request no longer counts toward that capacity, but its streamed
+audio waits in the API process until the client reads it. Two caps bound
+that memory:
+
+| Knob | Meaning | Default |
+|---|---|---|
+| `--stream_delivery.max_request_backlog_bytes` | Undelivered stream bytes one request may hold while its reader is behind | `268435456` (256 MiB) |
+| `--stream_delivery.max_total_backlog_bytes` | Undelivered stream bytes all requests may hold together | `1073741824` (1 GiB) |
+
+A client that reads at least as fast as audio is generated holds almost
+nothing in the API process. A slower client holds the audio that is
+generated but not yet in its socket buffers; 24 kHz float32 audio is
+about 96 kB per second. This includes a client that reads at playback
+speed while generation runs faster than real time, once its socket
+buffers are full.
+
+A stream fails if it goes over `max_request_backlog_bytes` while its
+reader is behind. Over `max_total_backlog_bytes`, the streams whose
+readers have been idle longest fail first, until the total fits. A failed
+stream's generation is aborted if it is still running. SSE
+(`stream_format=sse`) and WebSocket clients get an error event with
+`The request queue is full.`; a raw PCM stream is closed early. New
+requests are not refused because of these caps. The caps apply per API
+process; `none` turns a cap off. `/health` reports the held bytes, open
+streams and per-cap failure counts under `stream_delivery`.
+
 ### Prefill CUDA graphs
 
 Every Qwen3-TTS checkpoint (Base, CustomVoice, VoiceDesign) defaults to a
