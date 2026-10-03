@@ -17,6 +17,7 @@ import urllib.request
 import wave
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,7 +27,39 @@ MODEL_REVISION = "313d850181767edf09f00a9c289becca70e58cd0"
 SERVED_MODEL = "Qwen/Qwen3-ASR-0.6B"
 
 
-def model_snapshot(model: str, revision: str) -> str:
+def normalize_hf_endpoint(value: str, *, strict: bool) -> str:
+    endpoint = value.strip()
+    if not endpoint:
+        return ""
+    else:
+        try:
+            parts = urlsplit(endpoint)
+            port = parts.port
+            valid = (
+                not any(
+                    character.isspace() or ord(character) < 32 for character in endpoint
+                )
+                and parts.scheme.lower() in {"http", "https"}
+                and bool(parts.hostname)
+                and parts.username is None
+                and parts.password is None
+                and not parts.query
+                and not parts.fragment
+                and (port is None or 1 <= port <= 65535)
+            )
+        except ValueError:
+            valid = False
+        if valid:
+            return endpoint.rstrip("/")
+        elif strict:
+            raise ValueError(
+                "hf_endpoint must be an HTTP(S) URL without credentials, query, or fragment."
+            )
+        else:
+            return ""
+
+
+def model_snapshot(model: str, revision: str, hf_endpoint: str = "") -> str:
     """Use a complete pinned local snapshot offline; download on first use."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
@@ -48,33 +81,52 @@ def model_snapshot(model: str, revision: str) -> str:
     except LocalEntryNotFoundError:
         # Note (Jiaxin Deng): Not cached yet, so fall through to the online download below.
         pass
-    return snapshot_download(
-        model,
-        revision=revision,
-        allow_patterns=["*.json", "*.safetensors", "*.txt"],
-    )
+    options = {
+        "revision": revision,
+        "allow_patterns": ["*.json", "*.safetensors", "*.txt"],
+    }
+    if hf_endpoint:
+        options["endpoint"] = hf_endpoint
+    else:
+        pass
+    try:
+        return snapshot_download(model, **options)
+    except Exception as exc:
+        source = f" from {hf_endpoint}" if hf_endpoint else ""
+        raise RuntimeError(
+            f"Could not download the speech model{source}. Check the endpoint or network connection: {exc}"
+        ) from exc
 
 
 class NativeASRServer:
     def __init__(self) -> None:
         self.process: subprocess.Popen[bytes] | None = None
         self.url = ""
+        self.hf_endpoint = ""
         # Note (Codex): Local audio must not leave loopback through inherited proxy settings.
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def start(self, progress: Callable[[str], None]) -> None:
+    def start(self, progress: Callable[[str], None], hf_endpoint: str = "") -> None:
         if self.process is not None and self.process.poll() is None:
-            return
-        self.close()
+            if self.hf_endpoint == hf_endpoint:
+                return
+            else:
+                self.close()
+        else:
+            self.close()
         progress(
             "Loading the pinned local speech model; first use downloads model files…"
         )
-        model_path = model_snapshot(DEFAULT_MODEL, MODEL_REVISION)
+        model_path = model_snapshot(DEFAULT_MODEL, MODEL_REVISION, hf_endpoint)
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]
         self.url = f"http://127.0.0.1:{port}"
         environment = os.environ.copy()
+        if hf_endpoint:
+            environment["HF_ENDPOINT"] = hf_endpoint
+        else:
+            environment.pop("HF_ENDPOINT", None)
         environment["SGLANG_USE_MLX"] = "1"
         environment["SGLANG_OMNI_STRICT_PORT"] = "1"
         environment["SGLANG_OMNI_ADMIN_KEY"] = secrets.token_urlsafe(32)
@@ -116,6 +168,7 @@ class NativeASRServer:
             env=environment,
             start_new_session=True,
         )
+        self.hf_endpoint = hf_endpoint
         deadline = time.monotonic() + 1200
         next_progress = time.monotonic() + 15
         try:

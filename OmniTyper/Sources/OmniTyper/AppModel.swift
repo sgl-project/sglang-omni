@@ -171,7 +171,8 @@ final class AppModel: ObservableObject {
         let token = UUID(); generation = token
         task = Task { [self] in
             do {
-                let response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel],
+                let response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel,
+                                                         "hf_endpoint": sessionPreferences.hfEndpointText],
                                                         python: sessionPreferences.pythonExecutable)
                 guard generation == token, !Task.isCancelled else { return }
                 do {
@@ -230,6 +231,7 @@ final class AppModel: ObservableObject {
         var request: [String: Any] = [
             "op": audio == nil ? "process" : "transcribe",
             "asr_model": preferences.asrModel,
+            "hf_endpoint": preferences.hfEndpointText,
             "mode": mode.rawValue, "language": preferences.language,
             "target_language": preferences.targetLanguage, "style": rule?.style ?? preferences.style,
             "instructions": instructions,
@@ -358,7 +360,8 @@ final class AppModel: ObservableObject {
         let token = UUID(); generation = token
         task = Task {
             do {
-                _ = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel], python: preferences.pythonExecutable)
+                _ = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel,
+                                              "hf_endpoint": preferences.hfEndpointText], python: preferences.pythonExecutable)
                 guard generation == token else { return }
                 notice = L("notice.modelReady")
             } catch {
