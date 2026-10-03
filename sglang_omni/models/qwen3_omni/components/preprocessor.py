@@ -15,6 +15,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 import xxhash
+from av.error import FFmpegError
 from transformers import BatchFeature, PreTrainedTokenizerBase
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
@@ -39,6 +40,7 @@ from sglang_omni.preprocessing import (
     ensure_video_list_async,
     normalize_messages,
 )
+from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     ResourceHTTPConnection,
@@ -575,6 +577,48 @@ class Qwen3OmniPreprocessor:
             else:
                 pass
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
+            audio_bytes = inputs.get("audio_bytes")
+            if audio_bytes is not None:
+                if not isinstance(audio_bytes, bytes):
+                    raise ValueError(
+                        "Qwen3-Omni could not decode the uploaded audio: "
+                        "audio_bytes must be bytes"
+                    )
+                else:
+                    pass
+                try:
+                    waveform, _ = await asyncio.to_thread(
+                        AudioMediaIO(target_sr=audio_target_sr).load_bytes,
+                        audio_bytes,
+                    )
+                    if waveform.size == 0:
+                        raise ValueError("The uploaded audio contains no samples")
+                    else:
+                        pass
+                except (ValueError, FFmpegError) as exc:
+                    raise ValueError(
+                        "Qwen3-Omni could not decode the uploaded audio; "
+                        "provide a valid audio file"
+                    ) from exc
+                transcription_prompt = (
+                    "Please transcribe the speech in the audio verbatim. "
+                    "Output only the transcription in its original language, "
+                    "without explanations."
+                )
+                language = str(payload.request.params.get("language") or "").strip()
+                if language:
+                    transcription_prompt += f"\nThe spoken language is {language}."
+                else:
+                    pass
+                context = str(payload.request.params.get("prompt") or "").strip()
+                if context:
+                    transcription_prompt += f"\nTranscription context: {context}"
+                else:
+                    pass
+                messages = [{"role": "user", "content": transcription_prompt}]
+                raw_audios = [waveform]
+            else:
+                pass
             video_fps = inputs.get("video_fps", self.default_video_fps)
             video_max_frames = inputs.get(
                 "video_max_frames",
