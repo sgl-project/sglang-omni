@@ -20,6 +20,7 @@ import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
@@ -2521,6 +2522,26 @@ def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None
     assert (
         scheduler._should_defer_prefill() is False
     )  # noqa: leading-underscore  # upstream name
+
+
+def test_first_prefill_result_counts_its_tokens_and_busy_time(monkeypatch) -> None:
+    """The borrowed step counter runs on a scheduler built by the real init."""
+    scheduler = construct_omni_scheduler(monkeypatch)
+    prefill_batch = SimpleNamespace(
+        forward_mode=ForwardMode.EXTEND,
+        reqs=[SimpleNamespace(rid="request-1")],
+        forward_iter=1,
+        launch_ts=time.monotonic() - 0.01,
+        after_idle_gap=False,
+        extend_num_tokens=5,
+    )
+
+    scheduler._record_step_counters(
+        prefill_batch, None
+    )  # noqa: leading-underscore  # upstream name
+
+    assert scheduler.total_prefill_uncached_tokens == 5
+    assert scheduler.total_prefill_busy_us > 0
 
 
 def test_request_build_pending_limit_does_not_cap_unconfigured_backlog(

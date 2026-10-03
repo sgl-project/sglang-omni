@@ -474,6 +474,7 @@ class OmniScheduler(Generic[RequestDataT]):
         # kv_cache_builder; no Omni model serves hybrid-SWA, so they stay None.
         self.full_tokens_per_layer = None
         self.swa_tokens_per_layer = None
+        self.sliding_window_size = None
         self.min_free_slots_delayer = None
         self.enable_fpm = False
 
@@ -571,6 +572,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.enable_trace = False
         self.enable_hierarchical_cache = False
         self.enable_hicache_storage = False
+        self.enable_lmcache = False
         self.enable_unified_cache_external_linker = False
         self.enable_kv_cache_events = False
         self.is_generation = True
@@ -801,6 +803,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.total_prefill_busy_us = 0
         self.decode_moment_totals: list[float] = [0.0] * 6
         self._prev_step = None  # noqa: leading-underscore
+        self._prev_prefill_end_ts = None  # noqa: leading-underscore
         self._sched_idled = False  # noqa: leading-underscore
         self.init_load_publisher()
         self.load_inquirer = SchedulerLoadInquirer(
