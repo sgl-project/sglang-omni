@@ -7,15 +7,16 @@ import json
 import sys
 from pathlib import Path
 
-from websockets.asyncio.server import serve
+from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 
-async def handle(socket):
+async def handle(socket: ServerConnection) -> None:
     try:
         await socket.send(json.dumps({"type": "session.created"}))
         update = json.loads(await socket.recv())
         assert update["session"]["turn_detection"] is None
+        Path(sys.argv[2]).write_text(json.dumps(update["session"]), encoding="utf-8")
         language = update["session"]["language"]
         if language == "stall":
             await socket.wait_closed()

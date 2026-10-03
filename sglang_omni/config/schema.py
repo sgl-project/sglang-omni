@@ -27,6 +27,7 @@ class RealtimeTranscriptionConfig:
     decode_interval_ms: int = 2000
     server_vad: bool = False
     max_segment_s: float | None = None
+    supports_prompt: bool = False
 
     def __post_init__(self) -> None:
         if self.decode_interval_ms <= 0:

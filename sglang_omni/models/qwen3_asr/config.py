@@ -59,6 +59,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             strategy_cls=Qwen3ASRStreamingStrategy,
             server_vad=True,
             max_segment_s=30.0,
+            supports_prompt=True,
         )
     )
 

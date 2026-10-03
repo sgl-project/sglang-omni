@@ -166,6 +166,7 @@ final class AppModel: ObservableObject {
         lastApp = target?.applicationName ?? "OmniTyper"
         do { _ = try payload(audio: nil) }
         catch { self.error = error.localizedDescription; showMainWindow?(); return }
+        let dictionaryHotwords = store.dictionary.map(\.written)
         phase = .starting
         showVoicePanel?()
         let token = UUID(); generation = token
@@ -183,7 +184,7 @@ final class AppModel: ObservableObject {
                         self.liveStatus = L("status.livePreviewSaved")
                     })
                     speechStream = stream
-                    try await stream.connect(language: sessionPreferences.language)
+                    try await stream.connect(language: sessionPreferences.language, hotwords: dictionaryHotwords)
                     liveStatus = L("status.listening")
                 } catch {
                     guard generation == token, !Task.isCancelled else { return }

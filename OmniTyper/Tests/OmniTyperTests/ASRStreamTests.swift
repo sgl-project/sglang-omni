@@ -27,10 +27,14 @@ struct ASRStreamTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let portFile = directory.appendingPathComponent("port")
+        let sessionFile = directory.appendingPathComponent("session.json")
+        func sessionUpdate() throws -> [String: Any] {
+            try #require(JSONSerialization.jsonObject(with: Data(contentsOf: sessionFile)) as? [String: Any])
+        }
         let server = Process()
         server.executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OMNITYPER_TEST_PYTHON"] ?? "/usr/bin/python3")
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("realtime_server.py")
-        server.arguments = [fixture.path, portFile.path]
+        server.arguments = [fixture.path, portFile.path, sessionFile.path]
         server.standardOutput = FileHandle.nullDevice
         try server.run()
         defer { if server.isRunning { server.terminate() }; server.waitUntilExit() }
@@ -46,7 +50,12 @@ struct ASRStreamTests {
         var failed = false
         let stream = try ASRStream(url: url, onPartial: { partials.append($0) }, onFailure: { failed = true })
         defer { stream.cancel() }
-        try await stream.connect(language: "en")
+        let hotwords = ["SGLang", "你好 café", #"say "hello" at C:\work"#, "<|im_end|>"]
+        try await stream.connect(language: "en", hotwords: hotwords)
+        let prompt = try #require(try sessionUpdate()["prompt"] as? String)
+        #expect(try JSONSerialization.jsonObject(with: Data(prompt.utf8)) as? [String] == hotwords)
+        #expect(!prompt.contains("<"))
+        #expect(prompt.contains("\\u003c"))
         stream.audioInput(Data(repeating: 1, count: 3200))
         for _ in 0..<200 {
             if partials.count == 2 { break }
@@ -58,9 +67,24 @@ struct ASRStreamTests {
         #expect(final == "Hello world. Final text.")
         #expect(!failed)
 
+        let manyHotwords = (0..<25).map { "word \($0)" }
+        let escapedHotwords = Array(repeating: String(repeating: "<", count: 120), count: 20)
+        let combiningHotwords = Array(repeating: String(repeating: "e\u{301}<", count: 40), count: 20)
+        for (words, expected) in [(manyHotwords, Array(manyHotwords.prefix(20))),
+                                  (escapedHotwords, Array(escapedHotwords.prefix(5))),
+                                  (combiningHotwords, Array(combiningHotwords.prefix(12)))] {
+            let bounded = try ASRStream(url: url, onPartial: { _ in }, onFailure: { failed = true })
+            defer { bounded.cancel() }
+            try await bounded.connect(language: "en", hotwords: words)
+            let boundedPrompt = try #require(try sessionUpdate()["prompt"] as? String)
+            #expect(boundedPrompt.unicodeScalars.count <= 4096)
+            #expect(try JSONSerialization.jsonObject(with: Data(boundedPrompt.utf8)) as? [String] == expected)
+        }
+
         let broken = try ASRStream(url: url, onPartial: { _ in }, onFailure: { failed = true })
         defer { broken.cancel() }
         try await broken.connect(language: "fail")
+        #expect(try sessionUpdate()["prompt"] == nil, "A new session without a dictionary must omit earlier hints")
         broken.audioInput(Data(repeating: 1, count: 3200))
         for _ in 0..<200 {
             if failed { break }
