@@ -3,25 +3,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
-import shutil
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
-PREFIX_ENCODING = {
-    "video_codec": "libx264",
-    "preset": "fast",
-    "crf": "18",
-    "audio_codec": "aac",
-    "audio_bitrate": "192k",
-}
+from benchmarks.dataset.socialomni_media import sha256_file
 
 SOCIALOMNI_DATASET_ID = "alexisty/SocialOmni"
 SOCIALOMNI_DATASET_REVISION = "3b76009b45090eaa54007454c93a831f3cc8e1e6"
@@ -79,35 +69,6 @@ def _read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid SocialOmni metadata {path}: {exc}") from exc
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _source_signature(path: Path) -> tuple[int, ...]:
-    stat = path.stat()
-    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-
-
-@lru_cache(maxsize=256)
-def _cached_source_digest(path: Path, signature: tuple[int, ...]) -> str:
-    digest = sha256_file(path)
-    if _source_signature(path) != signature:
-        raise RuntimeError("Source video changed while computing its digest")
-    return digest
-
-
-def source_digest(path: Path) -> str:
-    signature = _source_signature(path)
-    # Filesystems can coalesce timestamps for closely spaced writes.
-    if time.time_ns() - signature[-1] < 1_000_000_000:
-        return _cached_source_digest.__wrapped__(path, signature)
-    return _cached_source_digest(path, signature)
 
 
 def inspect_socialomni_dataset(
@@ -171,7 +132,7 @@ def _video_path(level_dir: Path, raw: str, level: str, description: str) -> str:
         raise ValueError(f"{description} uses an empty media path")
     videos = (level_dir / "videos").resolve()
     path = videos.joinpath(*parts).resolve()
-    if not videos.is_relative_to(level_dir) or not path.is_relative_to(videos):
+    if not path.is_relative_to(videos):
         raise ValueError(f"{description} media path escapes videos/")
     if not path.is_file():
         raise FileNotFoundError(f"{description} video is missing: {path}")
@@ -374,40 +335,3 @@ def load_socialomni_level2_samples(
     if mini:
         samples = _mini(samples, ("YES", "NO"), lambda sample: sample.gold_when)
     return _limit(samples, max_samples)
-
-
-from . import socialomni_media  # noqa: E402
-
-socialomni_media.shutil = shutil
-build_ffmpeg_prefix_command = socialomni_media.build_ffmpeg_prefix_command
-resolve_ffmpeg_executable = socialomni_media.resolve_ffmpeg_executable
-
-
-async def create_video_prefix(
-    input_path: str | Path, timestamp_s: float, cache_dir: str | Path
-) -> Path:
-    """Create a cached video prefix while preserving the public patch points."""
-    original_resolver = socialomni_media.resolve_ffmpeg_executable
-    original_command_builder = socialomni_media.build_ffmpeg_prefix_command
-    socialomni_media.resolve_ffmpeg_executable = resolve_ffmpeg_executable
-    socialomni_media.build_ffmpeg_prefix_command = build_ffmpeg_prefix_command
-    try:
-        return await socialomni_media.create_video_prefix(
-            input_path, timestamp_s, cache_dir
-        )
-    finally:
-        socialomni_media.resolve_ffmpeg_executable = original_resolver
-        socialomni_media.build_ffmpeg_prefix_command = original_command_builder
-
-
-__all__ = [
-    "SocialOmniLevel1Sample",
-    "SocialOmniLevel2Sample",
-    "build_ffmpeg_prefix_command",
-    "create_video_prefix",
-    "inspect_socialomni_dataset",
-    "load_socialomni_level1_samples",
-    "load_socialomni_level2_samples",
-    "parse_socialomni_timestamp",
-    "resolve_ffmpeg_executable",
-]

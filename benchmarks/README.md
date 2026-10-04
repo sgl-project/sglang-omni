@@ -416,7 +416,17 @@ media paths. `--base-url` accepts the server root, such as
 Level 1 parses the last non-empty response line, matching the prompt's
 `Answer: X` format; preceding explanations are ignored. Ambiguous final answers
 remain unparseable. A malformed completion response is recorded as a request
-failure even when the server returns HTTP 200.
+failure even when the server returns HTTP 200. Level 1 allows up to 256 output
+tokens so a short explanation can precede the final answer. Level 2 turn-entry
+decisions allow 32 tokens and must contain only Answer: A or Answer: B; the
+continuation budget remains 256 tokens.
+
+Missing or null token usage does not invalidate an otherwise valid completion.
+Other non-object usage values and invalid token counts remain response errors.
+Unavailable token counts use the shared runner's zero default, so token totals
+and token rates are incomplete when usage is absent. The server's finish reason
+is retained; length-truncated completions are recorded as failures and counted
+in max_token_hits, rather than accepted as complete model or judge answers.
 
 Model requests use `--max-concurrency`; judge concurrency is configured per
 endpoint. Environment proxies are disabled by default. Use `--trust-env` to
@@ -517,7 +527,11 @@ before evaluation results are written.
 Dataset preparation defaults to `benchmarks/cache/socialomni/`; `--local-dir`
 overrides it. Prefixes are cached in `benchmarks/cache/socialomni-prefixes/`;
 result JSON files go to `benchmarks/results/socialomni/`. All three directories
-are ignored by Git.
+are ignored by Git. The dataset's videos directory may be a symlink to external
+storage; individual media paths must stay inside that resolved directory.
+Level 2 requires an audio track with decodable samples in every prefix. Missing
+audio is reported as a prefix preparation failure. Prefix cache keys include
+the required audio mapping, so older optional-audio entries are not reused.
 Source video digests are reused within a process while device, inode, size,
 modification time and change time remain unchanged. Files changed within the
 last second bypass the cache to avoid timestamp collisions. The bounded cache

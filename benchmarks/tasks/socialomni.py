@@ -14,7 +14,8 @@ import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
-from benchmarks.dataset.socialomni import SocialOmniLevel2Sample, create_video_prefix
+from benchmarks.dataset.socialomni import SocialOmniLevel2Sample
+from benchmarks.dataset.socialomni_media import create_video_prefix
 from benchmarks.metrics.socialomni import SOCIALOMNI_SCORE_BUCKETS
 from benchmarks.tasks.socialomni_protocol import (
     JUDGE_PARSE_ATTEMPTS,
@@ -210,7 +211,7 @@ async def run_judges(
                 )
             return result
 
-        # Disable warmup to avoid duplicate paid judge requests.
+        # note (Teery): disable warmup to avoid duplicate paid judge requests.
         runner = BenchmarkRunner(
             RunConfig(
                 max_concurrency=judge.max_concurrency,

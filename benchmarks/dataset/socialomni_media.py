@@ -9,8 +9,50 @@ import json
 import math
 import os
 import shutil
+import time
 import uuid
+from functools import lru_cache
 from pathlib import Path
+
+import av
+
+PREFIX_ENCODING = {
+    "video_codec": "libx264",
+    "preset": "fast",
+    "crf": "18",
+    "audio_codec": "aac",
+    "audio_bitrate": "192k",
+    "audio_stream": "0:a:0",
+}
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _source_signature(path: Path) -> tuple[int, ...]:
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+@lru_cache(maxsize=256)
+def _cached_source_digest(path: Path, signature: tuple[int, ...]) -> str:
+    digest = sha256_file(path)
+    if _source_signature(path) != signature:
+        raise RuntimeError("Source video changed while computing its digest")
+    return digest
+
+
+def source_digest(path: Path) -> str:
+    signature = _source_signature(path)
+    # note (Teery): filesystems can coalesce timestamps for closely spaced writes.
+    if time.time_ns() - signature[-1] < 1_000_000_000:
+        return _cached_source_digest.__wrapped__(path, signature)
+    return _cached_source_digest(path, signature)
 
 
 def resolve_ffmpeg_executable() -> str | None:
@@ -29,8 +71,6 @@ def resolve_ffmpeg_executable() -> str | None:
 def build_ffmpeg_prefix_command(
     ffmpeg: str, source: Path, timestamp_s: float, output: Path
 ) -> list[str]:
-    from .socialomni import PREFIX_ENCODING
-
     return [
         ffmpeg,
         "-hide_banner",
@@ -43,7 +83,7 @@ def build_ffmpeg_prefix_command(
         "-map",
         "0:v:0",
         "-map",
-        "0:a?",
+        PREFIX_ENCODING["audio_stream"],
         "-c:v",
         PREFIX_ENCODING["video_codec"],
         "-preset",
@@ -61,12 +101,18 @@ def build_ffmpeg_prefix_command(
     ]
 
 
+def validate_video_prefix(path: Path) -> None:
+    with av.open(str(path)) as container:
+        if not container.streams.video or not container.streams.audio:
+            raise RuntimeError(f"Video prefix requires video and audio tracks: {path}")
+        if not any(frame.samples for frame in container.decode(audio=0)):
+            raise RuntimeError(f"Video prefix has no decodable audio samples: {path}")
+
+
 async def create_video_prefix(
     input_path: str | Path, timestamp_s: float, cache_dir: str | Path
 ) -> Path:
     """Re-encode video and audio up to the query time into an atomic cache entry."""
-    from .socialomni import PREFIX_ENCODING, source_digest
-
     if not math.isfinite(timestamp_s) or timestamp_s <= 0:
         raise ValueError("timestamp_s must be finite and positive")
     source = Path(input_path).resolve()
@@ -86,6 +132,7 @@ async def create_video_prefix(
     cache.mkdir(parents=True, exist_ok=True)
     output = cache / f"{key}.mp4"
     if output.is_file() and output.stat().st_size:
+        await asyncio.to_thread(validate_video_prefix, output)
         return output
     ffmpeg = resolve_ffmpeg_executable()
     if not ffmpeg:
@@ -117,6 +164,7 @@ async def create_video_prefix(
             f"{stderr.decode(errors='replace')[:2000]}"
         )
     try:
+        validate_video_prefix(temporary)
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)

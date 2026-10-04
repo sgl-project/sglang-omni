@@ -16,16 +16,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import FinishReason, RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.metrics.socialomni import SOCIALOMNI_JUDGE_NAMES
 
 RETRYABLE_STATUS = frozenset({408, 429})
-# Reasoning-capable judges may consume hidden tokens before emitting the score.
+# note (Teery): reasoning judges may use hidden tokens before emitting a score.
 JUDGE_MAX_TOKENS = 8192
 JUDGE_PARSE_ATTEMPTS = 3
-LEVEL1_MAX_TOKENS = 32
-LEVEL2_WHEN_MAX_TOKENS = 8
+LEVEL1_MAX_TOKENS = 256
+LEVEL2_WHEN_MAX_TOKENS = 32
 LEVEL2_RESPONSE_MAX_TOKENS = 256
 
 
@@ -245,7 +245,14 @@ async def request_chat_completion(
                                         error=f"invalid completion response: {exc}",
                                     )
                                 )
-                            usage = body.get("usage", {})
+                            raw_finish_reason = body["choices"][0].get("finish_reason")
+                            try:
+                                finish_reason = FinishReason(raw_finish_reason)
+                            except ValueError:
+                                finish_reason = FinishReason.UNKNOWN
+                            usage = body.get("usage")
+                            if usage is None:
+                                usage = {}
                             try:
                                 if not isinstance(usage, dict):
                                     raise ValueError("usage must be an object")
@@ -261,6 +268,7 @@ async def request_chat_completion(
                                     RequestResult(
                                         request_id=request_id,
                                         text=text,
+                                        finish_reason=finish_reason,
                                         latency_s=time.perf_counter() - request_started,
                                         error=f"invalid token usage: {exc}",
                                     )
@@ -270,7 +278,13 @@ async def request_chat_completion(
                                 RequestResult(
                                     request_id=request_id,
                                     text=text,
-                                    is_success=True,
+                                    is_success=finish_reason != FinishReason.LENGTH,
+                                    finish_reason=finish_reason,
+                                    error=(
+                                        "Completion truncated at the output token limit"
+                                        if finish_reason == FinishReason.LENGTH
+                                        else ""
+                                    ),
                                     latency_s=elapsed,
                                     engine_time_s=elapsed,
                                     tok_per_s=(
