@@ -109,7 +109,10 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         gpu_id: int,
         server_args: ServerArgs,
     ) -> None:
-        """Nothing beyond SGLang's own load: the model owns its buffers."""
+        """Warm the Depformer pointwise kernels before accepting requests."""
+        model = model_worker.model_runner.model
+        assert isinstance(model, PersonaPlexForCausalLM)
+        model.depformer.warmup_pointwise()
 
     def make_model_runner(
         self,

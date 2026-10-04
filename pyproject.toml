@@ -41,6 +41,8 @@ dependencies = [
     "imageio==2.36.0",       # sglang.multimodal_gen vision utils; MiniMax DIT import
     "imageio-ffmpeg==0.5.1", # Pinned with the sglang diffusion extra
     "flash-attn-4>=4.0.0b18; sys_platform != 'darwin' or platform_machine != 'arm64'",  # Required by sglang, pairs with cutlass-dsl 4.6.2
+    "nvidia-cutlass-dsl==4.6.2; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "apache-tvm-ffi>=0.1.5,<0.2; sys_platform != 'darwin' or platform_machine != 'arm64'",
     "kernels>=0.14.1,<0.15; sys_platform != 'darwin' or platform_machine != 'arm64'",  # Match the pinned sglang stack
     "nixl-cu13>=1.1.0; sys_platform != 'darwin' or platform_machine != 'arm64'",  # CUDA 13 relay wheel; the generic nixl/-cu12 wheel breaks on cu130
     "mooncake-transfer-engine-cuda13>=0.3.10; sys_platform != 'darwin' or platform_machine != 'arm64'",  # CUDA 13 relay wheel; generic mooncake-transfer-engine pulls cu12 and breaks import mooncake on cu130
