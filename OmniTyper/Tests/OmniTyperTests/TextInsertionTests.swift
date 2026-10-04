@@ -54,4 +54,17 @@ struct TextInsertionTests {
         #expect(!TextInsertion.pasteWasIgnored(before: 0, after: nil, inserted: 43, replaced: 0))
         #expect(!TextInsertion.pasteWasIgnored(before: nil, after: 0, inserted: 43, replaced: 0))
     }
+
+    @Test @MainActor func pastedTextIsMarkedTransientForClipboardManagers() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("OmniTyperTests-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        TextInsertion.markTransient(pasteboard)
+        let cleared = pasteboard.changeCount
+        #expect(pasteboard.setString("dictated", forType: .string))
+        #expect(pasteboard.changeCount == cleared)
+        let types = try #require(pasteboard.pasteboardItems?.first?.types)
+        #expect(Set(TextInsertion.transientTypes).isSubset(of: Set(types)))
+        #expect(pasteboard.string(forType: .string) == "dictated")
+    }
 }
