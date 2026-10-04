@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.layers.sampler import sampling_from_probs_torch
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -33,6 +32,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     prompt_token_len,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.sampling.repetition_aware import repetition_aware_redraw
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
@@ -51,9 +51,6 @@ else:
     pass
 
 _COSYVOICE3_RAS_WINDOW_SIZE = 10
-# note (Yucheng Hu): the redraw reusing the first draw's seeded noise would be
-# conditioned on the rejected candidate having won that draw.
-COSYVOICE3_RAS_SEED_SALT = 0x2545F491
 
 
 class FunCosyVoice3ModelRunner(ModelRunner):
@@ -262,39 +259,15 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         # note (Yucheng Hu): the pytorch sampler softmaxes next_token_logits in place
         # and applies top-k/top-p to a sorted copy.
         probs = logits_output.next_token_logits
-        recent_token_rows = [
-            list(request.data.req.output_ids[-_COSYVOICE3_RAS_WINDOW_SIZE:])
-            for request in requests
-        ]
-        recent_token_ids = torch.tensor(
-            [
-                row + [-1] * (_COSYVOICE3_RAS_WINDOW_SIZE - len(row))
-                for row in recent_token_rows
-            ],
-            dtype=torch.long,
-        ).to(probs.device, non_blocking=True)
-        candidate_ids = next_token_ids.long().unsqueeze(1)
-        is_repeated = (
-            (recent_token_ids == candidate_ids).any(dim=1)
-            & (next_token_ids < VOCAB_SIZE)
-            & (sampling_info.top_ks != 1)
+        next_token_ids, is_repeated = repetition_aware_redraw(
+            probs,
+            next_token_ids,
+            [request.data.req.output_ids for request in requests],
+            _COSYVOICE3_RAS_WINDOW_SIZE,
+            (next_token_ids < VOCAB_SIZE) & (sampling_info.top_ks != 1),
+            sampling_info.sampling_seed,
+            forward_batch.positions,
         )
-        redraw_probs = probs.to(torch.float32, copy=True)
-        redraw_probs.scatter_(1, candidate_ids, 0.0)
-        # note (Yucheng Hu): multinomial rejects an all-zero row, and a row
-        # whose whole mass sat on the candidate has nothing else to draw.
-        redraw_probs = torch.where(
-            redraw_probs.sum(dim=1, keepdim=True) > 0, redraw_probs, probs
-        )
-        redraw_seeds = (
-            None
-            if sampling_info.sampling_seed is None
-            else sampling_info.sampling_seed ^ COSYVOICE3_RAS_SEED_SALT
-        )
-        redraw_ids = sampling_from_probs_torch(
-            redraw_probs, redraw_seeds, forward_batch.positions
-        )
-        next_token_ids = torch.where(is_repeated, redraw_ids, next_token_ids)
         if logits_output.next_token_logprobs is not None:
             emitted_logprobs = torch.log(
                 probs.gather(1, next_token_ids.long().unsqueeze(1)).squeeze(1)

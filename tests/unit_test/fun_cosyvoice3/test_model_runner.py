@@ -10,6 +10,7 @@ import pytest
 import torch
 
 import sglang_omni.models.fun_cosyvoice3.model_runner as model_runner_module
+import sglang_omni.sampling.repetition_aware as repetition_aware_module
 from sglang_omni.models.fun_cosyvoice3.model_runner import (
     FunCosyVoice3MlxSchedulerModelRunner,
     FunCosyVoice3ModelRunner,
@@ -297,7 +298,7 @@ def test_cosyvoice3_ras_redraws_repeated_speech_token_from_full_distribution(
         return probs.argmax(dim=1).to(torch.int32)
 
     monkeypatch.setattr(
-        model_runner_module, "sampling_from_probs_torch", take_most_likely
+        repetition_aware_module, "sampling_from_probs_torch", take_most_likely
     )
     runner = object.__new__(FunCosyVoice3ModelRunner)
     runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
