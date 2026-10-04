@@ -11,8 +11,27 @@ from einops import rearrange
 from torch import nn
 from torch.nn import functional
 
-from sglang_omni.models.personaplex.architecture import MimiSpec
+from sglang_omni.models.personaplex.architecture import MIMI, MimiSpec
 from sglang_omni.models.personaplex.components.causal_conv import StreamingModule
+
+if torch.version.cuda is not None:
+    from sglang_omni.models.personaplex.components.mimi_kernels import (
+        fused_mimi_rope_cache,
+    )
+else:
+    pass
+
+
+def rope_phases(
+    positions: torch.Tensor, dim: int, max_period: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute the reference's float32 rotation phases."""
+    freqs = torch.exp(
+        torch.arange(dim // 2, device=positions.device, dtype=torch.float32)
+        * (-math.log(max_period) * 2 / dim)
+    )
+    angles = positions.to(torch.float32).view(-1, 1) * freqs
+    return torch.cos(angles), torch.sin(angles)
 
 
 def apply_interleaved_rope(
@@ -25,12 +44,7 @@ def apply_interleaved_rope(
         positions: [T] absolute positions.
     """
     dim = q.shape[-1]
-    freqs = torch.exp(
-        torch.arange(dim // 2, device=q.device, dtype=torch.float32)
-        * (-math.log(max_period) * 2 / dim)
-    )
-    angles = positions.to(torch.float32).view(-1, 1) * freqs
-    cos, sin = torch.cos(angles), torch.sin(angles)
+    cos, sin = rope_phases(positions, dim, max_period)
 
     def rotate(x: torch.Tensor) -> torch.Tensor:
         pairs = x.float().view(*x.shape[:-1], dim // 2, 2)
@@ -75,33 +89,73 @@ class MimiAttention(nn.Module):
     ) -> torch.Tensor:
         length = x.shape[1]
         projected = functional.linear(x, self.in_proj_weight)
-        q, k, v = rearrange(
-            projected, "b t (p h d) -> p b h t d", p=3, h=self.num_heads
-        )
         pos_q = offset + torch.arange(length, device=x.device)
-        q, k = apply_interleaved_rope(q, k, pos_q, self.max_period)
-        if state is None:
-            pos_k = pos_q
-            delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
-            # Note (wilsonzheng0327): The reference writes a whole chunk into its ring
-            # before attending, and once the ring is full it labels the slot at the
-            # write cursor as a future position. So a query sees only the keys
-            # newer than cursor - context, the cursor taken after its own chunk:
-            # the plain window until the ring fills, one to two keys fewer after.
-            # A partial last chunk only advances the cursor by what it holds.
-            # As a rule over positions this is one batched attention that matches
-            # the frame-by-frame ring bit for bit.
-            cursor = ((pos_q // self.write_chunk + 1) * self.write_chunk).clamp(
-                max=offset + length
+        if (
+            state is not None
+            and x.is_cuda
+            and torch.version.cuda is not None
+            and not torch.is_grad_enabled()
+            and projected.dtype == torch.float32
+            and projected.shape == (1, MIMI.frame_ratio, 3 * MIMI.dim)
+            and self.num_heads == MIMI.num_heads
+            and self.context == MIMI.context
+            and self.write_chunk == MIMI.frame_ratio
+            and (
+                state.keys is None
+                or (
+                    state.keys.is_contiguous()
+                    and state.values is not None
+                    and state.values.is_contiguous()
+                )
             )
-            mask = (delta >= 0) & (
-                pos_k.view(1, -1) > (cursor - self.context).view(-1, 1)
+        ):
+            if state.keys is None:
+                shape = (1, MIMI.num_heads, MIMI.context, MIMI.dim // MIMI.num_heads)
+                state.keys = projected.new_zeros(shape)
+                state.values = projected.new_zeros(shape)
+            else:
+                pass
+            cosine, sine = rope_phases(
+                pos_q, MIMI.dim // MIMI.num_heads, self.max_period
             )
-        else:
-            pos_k = self.write_ring(k, v, state)
+            q, mask = fused_mimi_rope_cache(
+                projected,
+                cosine,
+                sine,
+                state.keys,
+                state.values,
+                offset,
+                state.end_offset,
+            )
+            state.end_offset += length
             k, v = state.keys, state.values
-            delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
-            mask = (pos_k.view(1, -1) >= 0) & (delta >= 0) & (delta < self.context)
+        else:
+            q, k, v = rearrange(
+                projected, "b t (p h d) -> p b h t d", p=3, h=self.num_heads
+            )
+            q, k = apply_interleaved_rope(q, k, pos_q, self.max_period)
+            if state is None:
+                pos_k = pos_q
+                delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
+                # Note (wilsonzheng0327): The reference writes a whole chunk into its ring
+                # before attending, and once the ring is full it labels the slot at the
+                # write cursor as a future position. So a query sees only the keys
+                # newer than cursor - context, the cursor taken after its own chunk:
+                # the plain window until the ring fills, one to two keys fewer after.
+                # A partial last chunk only advances the cursor by what it holds.
+                # As a rule over positions this is one batched attention that matches
+                # the frame-by-frame ring bit for bit.
+                cursor = ((pos_q // self.write_chunk + 1) * self.write_chunk).clamp(
+                    max=offset + length
+                )
+                mask = (delta >= 0) & (
+                    pos_k.view(1, -1) > (cursor - self.context).view(-1, 1)
+                )
+            else:
+                pos_k = self.write_ring(k, v, state)
+                k, v = state.keys, state.values
+                delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
+                mask = (pos_k.view(1, -1) >= 0) & (delta >= 0) & (delta < self.context)
         out = functional.scaled_dot_product_attention(q, k, v, attn_mask=mask)
         return self.out_proj(rearrange(out, "b h t d -> b t (h d)"))
 
