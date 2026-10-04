@@ -678,7 +678,10 @@ class DotsTTSFlowHead(nn.Module):
             self.validate_request(num_steps=steps, ode_method=method)
         hidden = hidden_states[:, -1] if hidden_states.ndim == 3 else hidden_states
         probabilities = self.eos_proj(hidden).softmax(dim=-1)[:, 1]
-        eos_hits = probabilities.gt(probabilities.new_tensor(eos_thresholds))
+        thresholds = torch.tensor(
+            eos_thresholds, dtype=probabilities.dtype, pin_memory=probabilities.is_cuda
+        ).to(probabilities.device, non_blocking=True)
+        eos_hits = probabilities.gt(thresholds)
         for row, state in enumerate(states):
             if state.suppress_first_eos_check and state.decoded_patches == 0:
                 eos_hits[row] = False

@@ -84,6 +84,7 @@ def test_result_and_stream_use_pipeline_state(monkeypatch) -> None:
     )
 
     [message] = list(build_stream_output("rid", data, None))
+    assert message.data is patch
     payload = apply_latent_result(data)
 
     assert message.metadata == {
@@ -96,3 +97,25 @@ def test_result_and_stream_use_pipeline_state(monkeypatch) -> None:
     assert restored.prompt_tokens == 1
     assert restored.completion_tokens == 1
     assert restored.engine_time_s == 2.5
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("stream_latents_on_cpu", [False, True])
+def test_stream_latent_transport(stream_latents_on_cpu: bool) -> None:
+    state = DotsTTSState(
+        stream=True,
+        generation_schedule=torch.tensor([[1, 99]]),
+        audio_span_token_ids=[99],
+        vocab_size=128,
+    )
+    data = build_sglang_dots_tts_request(make_payload(state))
+    patch = torch.arange(12, device="cuda").reshape(1, 4, 3)
+    data.latest_latent_patch = patch
+    [message] = list(
+        build_stream_output(
+            "rid", data, None, stream_latents_on_cpu=stream_latents_on_cpu
+        )
+    )
+    assert message.data.is_cuda is not stream_latents_on_cpu
+    torch.testing.assert_close(message.data.cpu(), patch.cpu(), rtol=0, atol=0)

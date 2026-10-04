@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING
 
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -44,6 +45,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         num_steps: int = 4,
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
+        stream_latents_on_cpu: bool = False,
     ) -> None:
         from sglang_omni.models.dots_tts.hf_config import DOTS_TTS_MODEL_ARCH_OVERRIDE
 
@@ -52,6 +54,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         self.num_steps = int(num_steps)
         self.max_audio_patches = int(max_audio_patches)
         self.max_running_requests = int(max_running_requests)
+        self.stream_latents_on_cpu = stream_latents_on_cpu
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
         else:
@@ -237,7 +240,9 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         from sglang_omni.models.dots_tts.request_builders import build_stream_output
 
         return {
-            "stream_output_builder": build_stream_output,
+            "stream_output_builder": partial(
+                build_stream_output, stream_latents_on_cpu=self.stream_latents_on_cpu
+            ),
             "enable_async_decode": False,
         }
 
