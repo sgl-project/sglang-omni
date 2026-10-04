@@ -867,6 +867,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     def next_message(self) -> IncomingMessage | None:
         with self.state_lock:
             self.reap_retired()
+            self.emit_completed_windows()
         if self.can_batch_stream_chunks:
             first_chunks: list[IncomingMessage] = []
             for msg in self.drain_inbox():
@@ -906,6 +907,24 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         timeout = 0.1
         if deadline is not None:
             timeout = min(timeout, max(deadline - time.monotonic(), 0.0))
+        else:
+            pass
+        with self.state_lock:
+            in_flight_slot = next(
+                (
+                    state.pending.slot
+                    for state in self.stream_states.values()
+                    if state.pending is not None and not state.pending.slot.query()
+                ),
+                None,
+            )
+        if in_flight_slot is not None and self.inbox.empty():
+            # note (ratish): with nothing queued, wait for the launched window rather
+            # than hold its audio until the stream's next codes arrive.
+            in_flight_slot.synchronize()
+            with self.state_lock:
+                self.emit_completed_windows()
+            return None
         else:
             pass
         try:
@@ -989,6 +1008,19 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     def stop(self) -> None:
         self.drain_mode = True
         super().stop()
+
+    def emit_completed_windows(self) -> None:
+        """Send every pipelined window whose host copy has finished; callers hold state_lock."""
+        for request_id, state in list(self.stream_states.items()):
+            if (
+                state.pending is not None
+                and not self.is_aborted(request_id)
+                and state.pending.slot.query()
+            ):
+                for message in self.drain_pending_window(request_id):
+                    self.outbox.put(message)
+            else:
+                pass
 
     def drain_pending_window(self, request_id: str) -> list[OutgoingMessage]:
         state = self.stream_states.get(request_id)

@@ -373,6 +373,45 @@ def test_overlap_first_window_sync_second_deferred(monkeypatch) -> None:
     assert snapshot == control
 
 
+def test_overlap_completed_window_leaves_on_next_loop_pass(monkeypatch) -> None:
+    control = run_stream(overlap=False, n_chunks=20)
+
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler)
+    feed(scheduler, "req-1", range(20))
+    assert scheduler.outbox.qsize() == 1
+
+    assert scheduler.next_message() is None
+    assert scheduler.outbox.qsize() == 2
+    assert scheduler.stream_states["req-1"].pending is None
+    scheduler.handle_stream_done("req-1")
+    assert drain_snapshot(scheduler) == control
+
+
+def test_overlap_in_flight_window_waits_only_with_empty_inbox(monkeypatch) -> None:
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler)
+    feed(scheduler, "req-1", range(20))
+    pending = scheduler.stream_states["req-1"].pending
+    assert pending is not None
+    event = slot_event(pending.slot)
+    event.complete = False
+
+    queued = IncomingMessage(request_id="req-2", type="stream_done", data=None)
+    scheduler.inbox.put(queued)
+    assert scheduler.next_message() is queued
+    assert event.synchronize_calls == 0
+    assert scheduler.outbox.qsize() == 1
+
+    assert scheduler.next_message() is None
+    # note (ratish): the wait, then the flush's own fence.
+    assert event.synchronize_calls == 2
+    assert scheduler.outbox.qsize() == 2
+    assert scheduler.stream_states["req-1"].pending is None
+
+
 def test_overlap_nonstreaming_pending_appends_parts_result_only(monkeypatch) -> None:
     control = run_stream(overlap=False, n_chunks=21, stream=False)
     overlap = run_stream(
