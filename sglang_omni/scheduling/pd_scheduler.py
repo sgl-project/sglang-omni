@@ -56,14 +56,18 @@ class PDKVLifecycle(OmniScheduler):
         self.pd_outstanding_releases.add(req.rid)
         self.pd_due_releases.put(req)
 
-    def is_fully_idle(self, for_health_check: bool = False) -> bool:
+    def is_fully_idle(
+        self, for_health_check: bool = False, ignore_waiting: bool = False
+    ) -> bool:
         # Health checks only care whether a running request can carry their
         # result. Destructive operations must also see PD-owned KV.
         if not for_health_check and self.pd_holds_kv():
             return False
         else:
             pass
-        return _Upstream.is_fully_idle(self, for_health_check=for_health_check)
+        return _Upstream.is_fully_idle(
+            self, for_health_check=for_health_check, ignore_waiting=ignore_waiting
+        )
 
     def drain_due_releases(self) -> None:
         while True:
@@ -332,7 +336,11 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 or super().pd_holds_kv()
             )
 
-    def is_fully_idle(self, for_health_check: bool = False) -> bool:
+    def is_fully_idle(
+        self, for_health_check: bool = False, ignore_waiting: bool = False
+    ) -> bool:
+        # note (ratish): an admitted request waits holding its transferred KV,
+        # so the waiting queue counts even when a paused flush asks to skip it.
         with self.pd_lifecycle_lock:
             return super().is_fully_idle(for_health_check=for_health_check)
 

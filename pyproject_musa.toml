@@ -50,7 +50,7 @@ dependencies = [
     "soundfile>=0.12.0",
     "mistral_common[audio]>=1.11.0",
     # silero-vad 6.2.2 requires torchaudio<2.10, which conflicts with the
-    # torchaudio 2.11 MUSA stack inherited from SGLang v0.5.20.
+    # torchaudio 2.11 MUSA stack inherited from SGLang v0.5.21.
     "silero-vad==6.2.1",
     "onnxruntime>=1.17",
     "websockets>=12.0",

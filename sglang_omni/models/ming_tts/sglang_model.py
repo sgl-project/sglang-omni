@@ -13,13 +13,7 @@ from typing import Iterable, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.runtime_context import (
-    get_exec,
-    get_forward,
-    get_model,
-    get_parallel,
-    get_schedule,
-)
+from sglang.srt.runtime_context import get_exec, get_model, get_parallel, get_schedule
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
@@ -56,13 +50,8 @@ from sglang_omni.models.ming_tts.weight_loading import (
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
+from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
-    LayerCommunicator,
-    LayerScatterModes,
     MergedColumnParallelLinear,
     MRotaryEmbedding,
     QKVParallelLinear,
@@ -73,8 +62,12 @@ from sglang_omni.vendor.sglang.layers import (
     SiluAndMul,
     TopK,
     VocabParallelEmbedding,
+    declare_attn,
+    declare_ffn,
     get_moe_impl_class,
     get_rope,
+    make_stages,
+    residual_batch,
     should_skip_post_experts_all_reduce,
 )
 from sglang_omni.vendor.sglang.models import (
@@ -409,7 +402,7 @@ class MingBailingMoeMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_parallel().tp_size
         self.gate_up_proj = MergedColumnParallelLinear(
             int(config.hidden_size),
             [int(intermediate_size), int(intermediate_size)],
@@ -478,7 +471,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
             getattr(config, "routed_scaling_factor", 1.0)
         )
         self.multi_gate = bool(getattr(config, "multi_gate", False))
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_parallel().tp_size
 
         self.gate = MingBailingMoeGate(config)
         if self.multi_gate:
@@ -587,19 +580,24 @@ class MingBailingMoeDecoderLayer(nn.Module):
             int(config.hidden_size),
             eps=float(config.rms_norm_eps),
         )
-        self.layer_scatter_modes = LayerScatterModes.init_new(
-            layer_id=layer_id,
-            num_layers=int(config.num_hidden_layers),
-            is_layer_sparse=self.is_layer_sparse,
-            is_previous_layer_sparse=self._is_layer_sparse(config, layer_id - 1),
-            is_next_layer_sparse=self._is_layer_sparse(config, layer_id + 1),
-        )
-        self.layer_communicator = LayerCommunicator(
-            layer_scatter_modes=self.layer_scatter_modes,
-            input_layernorm=self.input_layernorm,
-            post_attention_layernorm=self.post_attention_layernorm,
-            allow_reduce_scatter=True,
-            is_last_layer=layer_id == int(config.num_hidden_layers) - 1,
+        self.attn_boundary, self.ffn_boundary = make_stages(
+            (declare_attn(), self.input_layernorm),
+            (
+                declare_ffn(
+                    sparse=self.is_layer_sparse,
+                    next_sparse=self._is_layer_sparse(config, layer_id + 1),
+                ),
+                self.post_attention_layernorm,
+            ),
+            previous=(
+                declare_ffn(
+                    sparse=self._is_layer_sparse(config, layer_id - 1),
+                    next_sparse=self.is_layer_sparse,
+                )
+                if layer_id != 0
+                else None
+            ),
+            terminal=layer_id == int(config.num_hidden_layers) - 1,
         )
 
     @staticmethod
@@ -613,47 +611,17 @@ class MingBailingMoeDecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
-        residual: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        hidden_states, residual = (
-            self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-                hidden_states,
-                residual,
-                forward_batch,
-            )
-        )
+    ) -> torch.Tensor:
+        hidden_states = self.attn_boundary.prepare(hidden_states, forward_batch)
         if hidden_states.shape[0] != 0:
             hidden_states = self.attention(positions, hidden_states, forward_batch)
         else:
             pass
-        hidden_states, residual = self.layer_communicator.prepare_mlp(
-            hidden_states=hidden_states,
-            residual=residual,
-            forward_batch=forward_batch,
-        )
-        fuse_mlp_allreduce = (
-            self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
-                forward_batch
-            )
-        )
-        mlp_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
-            forward_batch
-        )
-        with get_forward().scoped(
-            fuse_mlp_allreduce=fuse_mlp_allreduce,
-            mlp_reduce_scatter=mlp_reduce_scatter,
-        ):
+        hidden_states = self.attn_boundary.finish(hidden_states, forward_batch)
+        hidden_states = self.ffn_boundary.prepare(hidden_states, forward_batch)
+        with self.ffn_boundary.exit(forward_batch) as ffn_exit:
             hidden_states = self.mlp(hidden_states, forward_batch)
-
-        if fuse_mlp_allreduce:
-            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        else:
-            hidden_states, residual = self.layer_communicator.postprocess_layer(
-                hidden_states,
-                residual,
-                forward_batch,
-            )
-        return hidden_states, residual
+        return ffn_exit.finish(hidden_states)
 
 
 class MingBailingMoeTextModel(nn.Module):
@@ -780,16 +748,15 @@ class MingBailingMoeTextModel(nn.Module):
         else:
             hidden_states = input_embeds
 
-        residual = None
+        residual_batch.start(forward_batch)
         layers = self.layers
         for layer_id in range(self.start_layer, self.end_layer):
-            hidden_states, residual = layers[layer_id](
-                positions,
-                hidden_states,
-                forward_batch,
-                residual,
-            )
-        hidden_states, _ = self.norm(hidden_states, residual)
+            hidden_states = layers[layer_id](positions, hidden_states, forward_batch)
+        hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
+        if hidden_states.shape[0] != 0:
+            hidden_states = residual_batch.norm(hidden_states, forward_batch, self.norm)
+        else:
+            pass
         return hidden_states
 
 

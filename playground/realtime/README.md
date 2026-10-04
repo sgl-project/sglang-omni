@@ -20,7 +20,7 @@ docker run -d --name omni-playground \
   -w /workspace/sglang-omni \
   --entrypoint /bin/bash hongccc/sglang-omni:dev -c 'sleep infinity'
 
-docker exec omni-playground python -m pip install --no-deps -e . 'sglang==0.5.20'
+docker exec omni-playground python -m pip install --no-deps -e . 'sglang==0.5.21'
 docker exec omni-playground python -m pip install 'onnx==1.23.0' aiohttp soundfile scipy pyyaml pillow
 
 docker exec omni-playground hf download openbmb/MiniCPM-o-4_5 \

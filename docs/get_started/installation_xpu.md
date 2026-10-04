@@ -86,7 +86,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.20   # the pinned release
+git checkout v0.5.21   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
@@ -173,6 +173,36 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "voice":"default","ref_audio":"/path/to/ref.wav","ref_text":"reference transcript",
        "response_format":"wav"}' -o out.wav
 ```
+
+#### Codec decoding on XPU
+
+The stateful incremental codec decoder runs, but the pipeline starts it with
+`async_decode: false`, and the vocoder captures its decode graphs during the
+asynchronous decode warmup, so none are captured. Capturing the shape set the CUDA
+defaults imply has not been shown to pay here yet: on one Arc Pro B60 it ran past
+the 600 s stage startup budget, and the engine then ran out of memory on a 24 GB
+card once the graphs were resident.
+
+The speaker encoder graphs do capture, on the default bucket ladder, for about 2 s of
+extra startup. The reference encoder stays eager whatever the ladder says: its
+transformers Mimi encoder reads a mask tensor on the host mid-forward, which a capture
+cannot record, so the platform declines that one capability and the batcher logs
+`qwen3_tts_reference_encoder_graph resolved=eager`.
+
+To try the fast path, turn the asynchronous path back on; `incremental_codec_compile`
+is worth dropping with it, since compiling the codec kernels is what dominated that
+startup:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      async_decode: true
+      incremental_codec_compile: false
+```
+
+An explicit stage value wins over the pipeline default. See the platform-neutral
+defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
 ### ZONOS2 (MoE TTS, single XPU)
 
@@ -264,8 +294,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
 RoPE is sgl-kernel's SYCL JIT kernel, which needs `icpx` on `PATH`; add the compiler directory
-alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.2.0
-wheel that SGLang v0.5.20 pins; older sgl-kernel builds fail with
+alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.3.0
+wheel that SGLang v0.5.21 pins; older sgl-kernel builds fail with
 `"fused_topk_softmax_kernel" not implemented for 'Float'`.
 ```bash
 export PATH="/opt/intel/oneapi/compiler/latest/bin:$PATH" SGLANG_OMNI_STARTUP_TIMEOUT=1800

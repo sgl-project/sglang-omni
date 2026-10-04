@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import time
 from typing import Any
@@ -77,6 +78,7 @@ from benchmarks.tasks.asr import (
     build_asr_eval_results,
     run_asr_transcription,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 MODES = ("vad", "manual")
 DEFAULT_TRAILING_SILENCE_MS = 1000
@@ -363,6 +365,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     max_samples = args.max_samples if args.max_samples > 0 else None
     is_local_source = os.path.isfile(args.meta) or args.meta.endswith(".lst")

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 INSTALLER = Path(__file__).resolve().parents[3] / "install.sh"
-RELEASE = "v0.5.20"
+RELEASE = "v0.5.21"
 
 
 def git(repo: Path, *args: str, check: bool = True):

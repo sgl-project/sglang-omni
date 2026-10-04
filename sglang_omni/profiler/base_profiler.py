@@ -3,14 +3,7 @@
 # Original files:
 # - https://github.com/vllm-project/vllm-omni/blob/main/vllm_omni/diffusion/profiler/base.py
 
-import logging
 from abc import ABC, abstractmethod
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
 
 
 class ProfilerBase(ABC):
