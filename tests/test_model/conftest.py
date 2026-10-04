@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 pytest_plugins = ["tests.utils"]
 
@@ -660,6 +663,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     option_value = config.getoption(TTS_CONCURRENCY_OPTION)
     config.stash[SELECTED_TTS_CONCURRENCIES] = parse_tts_concurrency(option_value)
     stage_value = config.getoption(TTS_STAGE_OPTION)

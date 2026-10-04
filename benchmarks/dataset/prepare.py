@@ -30,6 +30,7 @@ from benchmarks.dataset.socialomni import (
     SOCIALOMNI_DATASET_ID,
     SOCIALOMNI_DATASET_REVISION,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +189,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     download_dataset(
         DATASETS[args.dataset], revision=args.revision, local_dir=args.local_dir
     )
