@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.parakeet import stages as parakeet_stages
@@ -51,6 +53,31 @@ def test_factory_defaults() -> None:
     assert signature.parameters["max_batch_audio_s"].default == 600.0
 
 
+def fake_platform(device_type: str) -> SimpleNamespace:
+    return SimpleNamespace(device_type=device_type, is_mps=lambda: device_type == "mps")
+
+
+@pytest.mark.parametrize("device_type", ["cuda", "cpu", "xpu"])
+def test_factory_refuses_hosts_other_than_apple_silicon(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> None:
+    monkeypatch.setattr(parakeet_stages, "current_platform", fake_platform(device_type))
+    with pytest.raises(ValueError, match="only on macOS Apple Silicon"):
+        parakeet_stages.create_parakeet_asr_executor("unused")
+
+
+def test_factory_refuses_the_cpu_device_on_apple_silicon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(parakeet_stages, "current_platform", fake_platform("mps"))
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_concrete_device",
+        lambda device, gpu_id: torch.device(device),
+    )
+    with pytest.raises(ValueError, match="only on the MPS device"):
+        parakeet_stages.create_parakeet_asr_executor("unused", device="cpu")
+
+
 @pytest.mark.parametrize(
     "kwargs, message",
     [
@@ -60,8 +87,9 @@ def test_factory_defaults() -> None:
     ],
 )
 def test_factory_rejects_invalid_batch_limits_before_loading(
-    kwargs: dict[str, object], message: str
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, object], message: str
 ) -> None:
+    monkeypatch.setattr(parakeet_stages, "current_platform", fake_platform("mps"))
     with pytest.raises(ValueError, match=message):
         parakeet_stages.create_parakeet_asr_executor("unused", **kwargs)
 

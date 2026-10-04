@@ -3,7 +3,7 @@
 
 Parakeet has no language-model decoder, so it runs outside the SGLang engine:
 one FastConformer encoder pass per batch, then the checkpoint's own greedy
-CTC, RNN-T, or TDT decode. The same code serves CUDA, Apple MPS, and CPU.
+CTC, RNN-T, or TDT decode. The serving stage runs it on Apple MPS only.
 """
 
 from __future__ import annotations
