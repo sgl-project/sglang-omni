@@ -17,6 +17,7 @@ from typing import Protocol
 
 import torch
 import torch._dynamo as dynamo
+import torch.nn.functional as F
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     FA3_PAGE_SIZE,
@@ -364,10 +365,9 @@ def forward_prefix(
             hidden_states, emb=t
         )
         attn = block.attn
-        normed = norm.to(attn.to_q.weight.dtype)
-        query = attn.to_q(normed)
-        key = attn.to_k(normed)
-        value = attn.to_v(normed)
+        query, key, value = F.linear(
+            norm, estimator.qkv_weights[layer], estimator.qkv_biases[layer]
+        ).chunk(3, dim=-1)
         if torch.compiler.is_compiling():
             query = rotated(query, *rope)
             key = rotated(key, *rope)

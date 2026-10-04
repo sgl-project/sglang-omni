@@ -20,6 +20,12 @@ import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import (
+    CacheRequestHandle,
+    CacheRequestOutcome,
+)
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
@@ -32,6 +38,7 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.scheduling.types import ModelRunnerOutput
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.pipeline.helpers import run_scheduler
 
 
@@ -78,10 +85,23 @@ def init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
     scheduler.processed_tokens_counter = 0
+    scheduler.enable_lmcache = False
+    scheduler.sliding_window_size = None
+    scheduler.chunked_prefill_size = None
     if not hasattr(scheduler, "max_queued_requests"):
         scheduler.max_queued_requests = None
     if not hasattr(scheduler, "deferred_request_payloads"):
         scheduler.deferred_request_payloads = {}
+    state = vars(scheduler)
+    if "page_size" in state and "token_to_kv_pool_allocator" not in state:
+        scheduler.token_to_kv_pool_allocator = PagedTokenToKVPoolAllocator(
+            scheduler.max_total_num_tokens,
+            scheduler.page_size,
+            torch.float32,
+            "cpu",
+            None,
+            False,
+        )
 
 
 def init_terminal_output_state(scheduler: OmniScheduler) -> None:
@@ -353,7 +373,7 @@ def test_take_deferred_request_payloads_is_event_driven() -> None:
 
 def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) -> None:
     """Forward failures are owned by the scheduler, not model executors."""
-    release_calls: list[tuple[str, object]] = []
+    release_calls: list[tuple[str, object, bool]] = []
     tree_cache = object()
     model_path_events: list[tuple[str, str, str | None]] = []
     monkeypatch.setattr(
@@ -366,11 +386,15 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         "_emit_model_path_end",
         lambda rid, *, status: model_path_events.append(("end", rid, status)),
     )
-    monkeypatch.setattr(
-        omni_scheduler_module,
-        "release_kv_cache",
-        lambda req, cache: release_calls.append((req.rid, cache)),
-    )
+
+    def release_kv_cache(req, cache) -> None:
+        skip_insert = getattr(req, "skip_radix_cache_insert", False)
+        release_calls.append((req.rid, cache, skip_insert))
+        if len(release_calls) == 1:
+            # note (Richard Wang): the coordinator's abort echo can land mid release
+            scheduler.abort(req.rid)
+
+    monkeypatch.setattr(omni_scheduler_module, "release_kv_cache", release_kv_cache)
 
     class BoomModelRunner:
         def execute(self, sched_output):
@@ -429,6 +453,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         req.omni_data.req = req
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
+    scheduler.chunked_req = failed_reqs[1]
     init_sync_request_build_state(scheduler)
 
     result = scheduler.run_batch(batch)
@@ -445,7 +470,8 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     assert batch.reqs == failed_reqs
     assert all(req.finished() for req in failed_reqs)
     assert all(req.omni_data is None for req in failed_reqs)
-    assert release_calls == [("req-1", tree_cache), ("req-2", tree_cache)]
+    assert release_calls == [("req-1", tree_cache, True), ("req-2", tree_cache, True)]
+    assert scheduler.chunked_req is None
     assert scheduler.pending_stream_ingress == {}
     assert scheduler.deferred_request_payloads == {}
     assert scheduler.dirty_deferred_request_ids == set()
@@ -469,7 +495,12 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     scheduler.max_queued_requests = 0
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
+    scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
+    cache_finishes: list[tuple[CacheRequestHandle, CacheRequestOutcome]] = []
+    scheduler.tree_cache = SimpleNamespace(
+        finish=lambda handle, outcome: cache_finishes.append((handle, outcome))
+    )
     aborts: list[tuple[str, bool]] = []
     scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(
         (rid, defer_running_cleanup)
@@ -479,6 +510,7 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     trace_aborts: list[dict] = []
     req = SimpleNamespace(
         rid="req-over-limit",
+        cache_request_handle=CacheRequestHandle(rid="req-over-limit", attempt_id=0),
         priority=None,
         weight_version_events=[],
         output_ids=[],
@@ -500,6 +532,7 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     assert aborts == [(req.rid, False)]
     assert trace_aborts == [{"reason": "The request queue is full."}]
     assert scheduler.waiting_queue == []
+    assert cache_finishes == [(req.cache_request_handle, CacheRequestOutcome.ABORT)]
 
 
 def requeue_scheduler() -> OmniScheduler:
@@ -512,6 +545,7 @@ def requeue_scheduler() -> OmniScheduler:
     scheduler.max_queued_requests = None
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
+    scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
     scheduler.processed_tokens_counter = 0
     return scheduler
@@ -635,6 +669,7 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.max_queued_requests = 1
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
+    scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
@@ -653,24 +688,25 @@ def enqueue_limit_scheduler(monkeypatch):
     return scheduler, events, aborts
 
 
+def admission_req(rid: str, token_ids: list[int]) -> SimpleNamespace:
+    return SimpleNamespace(
+        rid=rid,
+        priority=None,
+        weight_version_events=[],
+        output_ids=[],
+        origin_input_ids=array("q", token_ids),
+        origin_input_ids_unpadded=array("q", token_ids),
+        time_stats=SimpleNamespace(
+            wait_queue_entry_time=0.0,
+            trace_ctx=SimpleNamespace(abort=lambda *, abort_info: None),
+        ),
+    )
+
+
 def test_enqueue_built_request_honors_max_queued_requests(monkeypatch) -> None:
     scheduler, events, aborts = enqueue_limit_scheduler(monkeypatch)
 
-    def make_req(rid: str):
-        return SimpleNamespace(
-            rid=rid,
-            priority=None,
-            weight_version_events=[],
-            output_ids=[],
-            origin_input_ids=array("q", [1]),
-            origin_input_ids_unpadded=array("q", [1]),
-            time_stats=SimpleNamespace(
-                wait_queue_entry_time=0.0,
-                trace_ctx=SimpleNamespace(abort=lambda *, abort_info: None),
-            ),
-        )
-
-    first, second = make_req("req-ok"), make_req("req-reject")
+    first, second = admission_req("req-ok", [1]), admission_req("req-reject", [1])
     for req in (first, second):
         OmniScheduler.enqueue_built_request(
             scheduler,
@@ -688,6 +724,57 @@ def test_enqueue_built_request_honors_max_queued_requests(monkeypatch) -> None:
     assert reject.type == "error"
     assert "queue is full" in str(reject.data)
     assert aborts == ["req-reject"]
+
+
+def test_enqueue_built_request_rejects_a_prompt_without_tokens(monkeypatch) -> None:
+    scheduler, events, aborts = enqueue_limit_scheduler(monkeypatch)
+    req = admission_req("req-empty", [])
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id=req.rid),
+        False,
+        SimpleNamespace(req=req, enforce_request_limits=False),
+    )
+
+    reject = scheduler.outbox.get_nowait()
+    assert reject.request_id == "req-empty"
+    assert reject.type == "error"
+    assert is_bad_request_error(RuntimeError(str(reject.data)))
+    assert aborts == ["req-empty"]
+    assert scheduler.waiting_queue == []
+    assert "scheduler_queue_enter" not in events
+
+
+def test_enqueue_built_request_admits_an_empty_session_append_with_history(
+    monkeypatch,
+) -> None:
+    scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
+    unit = SimpleNamespace(is_enqueued=False)
+    session_request = admission_req("req-append", [1, 2, 3])
+
+    def create_session_request(payload, request_data) -> None:
+        request_data.req = session_request
+
+    scheduler.session_bridge = SimpleNamespace(
+        units_by_request_id={"req-append": unit},
+        create_session_request=create_session_request,
+        check_session_capacity=lambda request_id: None,
+    )
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id="req-append"),
+        False,
+        SimpleNamespace(
+            req=admission_req("req-append", []), enforce_request_limits=False
+        ),
+    )
+
+    assert scheduler.waiting_queue == [session_request]
+    assert unit.is_enqueued
+    assert scheduler.outbox.empty()
+    assert aborts == []
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
@@ -823,6 +910,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     scheduler.enable_hierarchical_cache = False
     scheduler.forward_ct = 1
     scheduler.server_args = SimpleNamespace()
+    scheduler.decode_offload_manager = None
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 0)
     scheduler.tree_cache = SimpleNamespace(
         req_to_token_pool=SimpleNamespace(mamba_allocator=None)
@@ -1974,7 +2062,6 @@ def test_request_timeout_fails_only_the_expired_request(
     scheduler = object.__new__(OmniScheduler)
     scheduler.tp_size = 1
     scheduler.is_entry_rank = True
-    scheduler.ps = SimpleNamespace(pp_size=1)
     scheduler.outbox = Queue()
     scheduler.inbox = Queue()
     scheduler.idle_wait_message = None
@@ -2298,7 +2385,7 @@ def construct_omni_scheduler(
     monkeypatch.setattr(
         OmniScheduler,
         "init_parallel_state",
-        lambda self, _tp_worker: setattr(self, "ps", SimpleNamespace(pp_size=1)),
+        lambda self, _tp_worker: None,
     )
     monkeypatch.setattr(
         OmniScheduler,
@@ -2471,44 +2558,24 @@ def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None
     )  # noqa: leading-underscore  # upstream name
 
 
-def test_refresh_upstream_parallel_state_reads_dcp_from_the_parallel_bag(
-    monkeypatch,
-) -> None:
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
-
-    monkeypatch.setattr(
-        "sglang.srt.runtime_context.get_parallel",
-        lambda: SimpleNamespace(dcp_size=2),
+def test_first_prefill_result_counts_its_tokens_and_busy_time(monkeypatch) -> None:
+    """The borrowed step counter runs on a scheduler built by the real init."""
+    scheduler = construct_omni_scheduler(monkeypatch)
+    prefill_batch = SimpleNamespace(
+        forward_mode=ForwardMode.EXTEND,
+        reqs=[SimpleNamespace(rid="request-1")],
+        forward_iter=1,
+        launch_ts=time.monotonic() - 0.01,
+        after_idle_gap=False,
+        extend_num_tokens=5,
     )
-    scheduler = object.__new__(omni_scheduler_module.OmniScheduler)
-    ranks = {
-        "tp_rank": 3,
-        "tp_size": 4,
-        "pp_rank": 0,
-        "pp_size": 1,
-        "dp_rank": None,
-        "dp_size": 1,
-        "attn_tp_rank": 3,
-        "attn_tp_size": 4,
-        "attn_cp_rank": 0,
-        "attn_cp_size": 1,
-        "attn_dp_rank": 0,
-        "attn_dp_size": 1,
-        "moe_ep_rank": 0,
-        "moe_ep_size": 1,
-        "moe_dp_rank": None,
-        "moe_dp_size": 1,
-        "gpu_id": 3,
-    }
-    for name, value in ranks.items():
-        setattr(scheduler, name, value)
 
-    scheduler.refresh_upstream_parallel_state()
+    scheduler._record_step_counters(
+        prefill_batch, None
+    )  # noqa: leading-underscore  # upstream name
 
-    assert isinstance(scheduler.ps, ParallelState)
-    assert scheduler.ps.tp_rank == 3
-    assert scheduler.ps.attn_dcp_rank == 1
-    assert scheduler.ps.attn_dcp_size == 2
+    assert scheduler.total_prefill_uncached_tokens == 5
+    assert scheduler.total_prefill_busy_us > 0
 
 
 def test_request_build_pending_limit_does_not_cap_unconfigured_backlog(
@@ -2572,7 +2639,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
     monkeypatch.setattr(
         OmniScheduler,
         "init_parallel_state",
-        lambda self, _tp_worker: setattr(self, "ps", SimpleNamespace(pp_size=1)),
+        lambda self, _tp_worker: None,
     )
     monkeypatch.setattr(
         OmniScheduler,
@@ -2714,7 +2781,7 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
     monkeypatch.setattr(
         OmniScheduler,
         "init_parallel_state",
-        lambda self, _tp_worker: setattr(self, "ps", SimpleNamespace(pp_size=1)),
+        lambda self, _tp_worker: None,
     )
     tp_worker = SimpleNamespace(
         gpu_id=0,

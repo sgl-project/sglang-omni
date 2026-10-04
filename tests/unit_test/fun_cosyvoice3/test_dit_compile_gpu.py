@@ -22,7 +22,7 @@ cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
 pytestmark = pytest.mark.accelerator
 
 TOL = 1e-4
-COMPILED_OVER_EAGER_ERROR = 2.0
+COMPILED_OVER_EAGER_ERROR = 1.1
 
 
 def native_inputs(batch: int, frames: int) -> tuple[torch.Tensor, ...]:
@@ -72,6 +72,7 @@ def test_compile_dit_backbone_matches_eager_beyond_the_warmup_shapes() -> None:
                 inputs = native_inputs(batch, frames)
                 cases.append((inputs, streaming, dit(*inputs, streaming=streaming)))
 
+    PackedDiT(dit, device="cuda")
     stages.compile_dit_backbone(flow, warmup_mel_frames=16, warmup_steps=1)
 
     with torch.inference_mode():

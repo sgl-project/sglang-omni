@@ -73,7 +73,7 @@ import os
 
 import numpy as np
 
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import FinishReason, RequestResult
 from benchmarks.metrics._format import (
     SPEED_LABEL_WIDTH,
     SPEED_LINE_WIDTH,
@@ -128,6 +128,8 @@ def compute_speed_metrics(
             "total_requests": len(outputs),
             "completed_requests": 0,
             "failed_requests": len(outputs),
+            "max_token_hits": 0,
+            "finish_reason_observed": 0,
         }
 
     latencies = [o.latency_s for o in successes]
@@ -165,6 +167,13 @@ def compute_speed_metrics(
         for o in successes
         if getattr(o, "chunk_audio_duration_s", None)
     ]
+    # note (Yucheng Hu): generations that ended at their max-token cap, out of
+    # those that reported how they ended; a cap hit is not by itself a runaway.
+    finish_reasons = [
+        o.finish_reason
+        for o in successes
+        if o.finish_reason is not FinishReason.UNKNOWN
+    ]
 
     if wall_clock_s is not None and wall_clock_s > 0:
         throughput = round(len(successes) / wall_clock_s, 3)
@@ -178,6 +187,8 @@ def compute_speed_metrics(
         "total_requests": len(outputs),
         "completed_requests": len(successes),
         "failed_requests": len(outputs) - len(successes),
+        "max_token_hits": finish_reasons.count(FinishReason.LENGTH),
+        "finish_reason_observed": len(finish_reasons),
         "client_slot_waits": sum(
             1 for o in outputs if getattr(o, "waited_for_slot", False)
         ),
@@ -276,6 +287,10 @@ def print_speed_summary(
         print(f"  {'Concurrency:':<{lw}} {concurrency}")
     print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
     print(f"  {'Failed requests:':<{lw}} {metrics['failed_requests']}")
+    print_speed_metric_line(lw, "Max token hits:", metrics, "max_token_hits")
+    print_speed_metric_line(
+        lw, "Finish reasons observed:", metrics, "finish_reason_observed"
+    )
     print(f"{'-' * w}")
     print_speed_metric_line(lw, "Latency mean (s):", metrics, "latency_mean_s")
     print_speed_metric_line(lw, "Latency median (s):", metrics, "latency_median_s")
@@ -436,6 +451,7 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         "rtf": round(output.rtf, 4) if output.rtf < float("inf") else None,
         "prompt_tokens": output.prompt_tokens or None,
         "completion_tokens": output.completion_tokens or None,
+        "finish_reason": output.finish_reason.value,
         "output_token_rate": (
             round(output.tok_per_s, 1) if output.tok_per_s > 0 else None
         ),

@@ -20,6 +20,7 @@ from sglang_omni.client.audio import (
     to_numpy,
 )
 from sglang_omni.client.types import (
+    UNKNOWN_FINISH_REASON,
     AbortLevel,
     AbortResult,
     ClientError,
@@ -352,7 +353,11 @@ class Client:
             format=actual_format,
             sample_rate=sample_rate,
             usage=last_chunk.usage if last_chunk else None,
-            finish_reason=last_chunk.finish_reason if last_chunk else None,
+            finish_reason=(
+                (last_chunk.reported_finish_reason or UNKNOWN_FINISH_REASON)
+                if last_chunk
+                else UNKNOWN_FINISH_REASON
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -585,7 +590,9 @@ class Client:
 
     @staticmethod
     def default_result_builder(request_id: str, result: object) -> GenerateChunk:
-        chunk = GenerateChunk(request_id=request_id, finish_reason="stop")
+        chunk = GenerateChunk(
+            request_id=request_id, finish_reason="stop", model_finish_reason=""
+        )
         if isinstance(result, GenerateChunk):
             result.request_id = request_id
             return result
@@ -614,6 +621,9 @@ class Client:
                 finish_reason = decode_result.get("finish_reason")
                 if finish_reason is not None:
                     chunk.finish_reason = finish_reason
+                    chunk.model_finish_reason = decode_result.get(
+                        "model_finish_reason", finish_reason
+                    )
                 else:
                     pass
                 output_token_logprobs = decode_result.get("output_token_logprobs")
@@ -675,6 +685,9 @@ class Client:
             finish_reason = result.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
+                chunk.model_finish_reason = result.get(
+                    "model_finish_reason", finish_reason
+                )
             else:
                 pass
             chunk.stage_id = result.get("stage_id")
@@ -768,6 +781,9 @@ class Client:
             finish_reason = data.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
+                chunk.model_finish_reason = data.get(
+                    "model_finish_reason", finish_reason
+                )
             else:
                 pass
             chunk.usage = Client.build_usage_info(data)
@@ -870,6 +886,7 @@ def extract_inputs(request: GenerateRequest) -> object:
             "video_min_pixels",
             "video_max_pixels",
             "video_total_pixels",
+            "use_audio_in_video",
         ):
             value = request.metadata.get(key)
             if value is not None:

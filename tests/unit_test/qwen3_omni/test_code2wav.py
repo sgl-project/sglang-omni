@@ -1086,7 +1086,9 @@ def make_tiny_code2wav(
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
+)
 @pytest.mark.parametrize(
     ("batch_size", "frames"),
     [(1, 7), (3, 10)],
@@ -1105,7 +1107,7 @@ def test_channels_last_code2wav_matches_the_hf_forward(
 
     assert actual.shape == expected.shape
     assert actual.is_contiguous()
-    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-6)
+    torch.testing.assert_close(actual, expected)
 
 
 @pytest.mark.accelerator

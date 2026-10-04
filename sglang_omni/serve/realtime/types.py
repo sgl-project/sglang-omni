@@ -63,6 +63,13 @@ class Capabilities:
     native_unit_ms: int = 20
     tail_policy: TailPolicy = "flush"
     partial_style: PartialStyle = "append_only"
+    input_modalities: tuple[str, ...] = ("audio",)
+    max_image_bytes: int = 512 * 1024
+    sampling_parameters: tuple[str, ...] = ()
+    supports_reference_audio: bool = False
+    # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
+    image_frames_per_unit: tuple[int, ...] = (1,)
+    default_max_slice_nums: int = 1
 
     def __post_init__(self) -> None:
         if self.interaction != "native":
@@ -75,6 +82,10 @@ class Capabilities:
             raise ValueError("positive rates and cadence required")
         elif self.input_sample_rate_hz * self.native_unit_ms % MS_PER_SECOND:
             raise ValueError("native cadence must contain whole samples")
+        elif self.max_image_bytes <= 0 or min(self.image_frames_per_unit) <= 0:
+            raise ValueError("positive image byte and frame limits required")
+        elif not 1 <= self.default_max_slice_nums <= len(self.image_frames_per_unit):
+            raise ValueError("default slice count exceeds the slice limit")
         elif self.tail_policy not in get_args(TailPolicy):
             raise ValueError("unsupported tail policy")
         elif (
@@ -96,13 +107,13 @@ class Capabilities:
         return samples_to_ms(sample_count, self.input_sample_rate_hz)
 
     def to_granted_capabilities(self) -> GrantedCapabilities:
-        return dict(
+        granted: GrantedCapabilities = dict(
             interaction=self.interaction,
             native_full_duplex=self.interaction == "native",
             proactive_output=False,
             turn_control=[None],
             client_commit=False,
-            input_modalities=["audio"],
+            input_modalities=list(self.input_modalities),
             output_modalities=list(self.output_modalities),
             input_audio_format=dict(type="audio/pcm", rate=self.input_sample_rate_hz),
             output_audio_format=dict(type="audio/pcm", rate=self.output_sample_rate_hz),
@@ -116,7 +127,22 @@ class Capabilities:
             partial_style=self.partial_style,
             pressure_policy="reject",
             strict_order=True,
+            sampling_parameters=list(self.sampling_parameters),
+            supports_reference_audio=self.supports_reference_audio,
         )
+
+        if "image" in self.input_modalities:
+            granted["input_image_format"] = dict(
+                types=["image/jpeg", "image/png"],
+                max_bytes=self.max_image_bytes,
+                max_frames_per_unit=self.image_frames_per_unit[
+                    self.default_max_slice_nums - 1
+                ],
+                max_slice_nums=len(self.image_frames_per_unit),
+            )
+        else:
+            pass
+        return granted
 
 
 @dataclass(frozen=True)
@@ -127,6 +153,7 @@ class Unit:
     real_samples: int
     eos: bool = False
     output_modalities: tuple[str, ...] | None = None
+    images: tuple[bytes, ...] = ()
 
     @property
     def unit_id(self) -> str:

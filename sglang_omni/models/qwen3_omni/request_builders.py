@@ -28,6 +28,7 @@ from sglang_omni.scheduling.pending_text_queue import (
     coerce_pending_text_queue,
 )
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import validate_prompt_token_ids
 from sglang_omni.scheduling.types import ARRequestData, RequestOutput
 
 if TYPE_CHECKING:
@@ -725,6 +726,7 @@ def build_sglang_thinker_request(
 
     prompt = state.prompt
     input_ids = prompt["input_ids"]
+    validate_prompt_token_ids(input_ids, vocab_size)
     original_input_ids = input_ids
 
     attention_mask = prompt.get("attention_mask")

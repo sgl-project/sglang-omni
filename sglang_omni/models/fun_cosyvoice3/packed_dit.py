@@ -254,6 +254,37 @@ class PackedDiT:
         device = torch.device(device)
         self.is_ragged = device.type == "cuda" and _is_fa3_supported()
         self.is_compiled = False
+        # note (ratish): Parameters, whose shapes Dynamo keeps static under the dynamic
+        # prefix compile. to_q, to_k and to_v become row views of them, so the DiT
+        # must already hold its serving dtype.
+        qkv_weights: list[torch.nn.Parameter] = []
+        qkv_biases: list[torch.nn.Parameter] = []
+        with torch.no_grad():
+            for block in dit.transformer_blocks:
+                attention = block.attn
+                projections = (attention.to_q, attention.to_k, attention.to_v)
+                qkv_weight = torch.nn.Parameter(
+                    torch.cat([projection.weight for projection in projections]),
+                    requires_grad=False,
+                )
+                qkv_bias = torch.nn.Parameter(
+                    torch.cat([projection.bias for projection in projections]),
+                    requires_grad=False,
+                )
+                for index, projection in enumerate(projections):
+                    rows = slice(
+                        index * attention.inner_dim, (index + 1) * attention.inner_dim
+                    )
+                    projection.weight = torch.nn.Parameter(
+                        qkv_weight[rows], requires_grad=False
+                    )
+                    projection.bias = torch.nn.Parameter(
+                        qkv_bias[rows], requires_grad=False
+                    )
+                qkv_weights.append(qkv_weight)
+                qkv_biases.append(qkv_bias)
+        self.qkv_weights = tuple(qkv_weights)
+        self.qkv_biases = tuple(qkv_biases)
         logger.info(
             "Fun-CosyVoice3 Flow row attention on %s: %s",
             device,
@@ -332,10 +363,15 @@ class PackedDiT:
         h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
         h = self.conv_pos_embed(h, rows) + h
         residual = h
-        for block in dit.transformer_blocks:
+        for block_index, block in enumerate(dit.transformer_blocks):
             norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(h, emb=t)
             h = h + gate_msa.unsqueeze(1) * self.attend(
-                block.attn, norm, rope, attention
+                block.attn,
+                norm,
+                rope,
+                attention,
+                self.qkv_weights[block_index],
+                self.qkv_biases[block_index],
             )
             ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
             h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
@@ -366,13 +402,10 @@ class PackedDiT:
         x: torch.Tensor,
         rope: tuple[torch.Tensor, torch.Tensor],
         attention: PackedRowAttention,
+        qkv_weight: torch.Tensor,
+        qkv_bias: torch.Tensor,
     ) -> torch.Tensor:
-        # note (ratish): under autocast to_q, to_k and to_v would each cast the
-        # float32 norm output again.
-        x = x.to(attn.to_q.weight.dtype)
-        query = attn.to_q(x)
-        key = attn.to_k(x)
-        value = attn.to_v(x)
+        query, key, value = F.linear(x, qkv_weight, qkv_bias).chunk(3, dim=-1)
         if torch.compiler.is_compiling():
             query = rotated(query, *rope)
             key = rotated(key, *rope)

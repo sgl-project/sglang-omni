@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 # Intel XPU variant of pyproject.toml (see docs/get_started/installation_xpu.md).
 # Torch family pinned to +xpu; CUDA-only wheels dropped; deps scoped to the
-# XPU-supported models. sglang is verified against v0.5.20 but cannot be
+# XPU-supported models. sglang is verified against v0.5.21 but cannot be
 # pinned here -- every published wheel pulls CUDA torch.
 
 [project]
@@ -76,6 +76,9 @@ dependencies = [
     # --- MiniCPM-o ---------------------------------------------------------
     "einops>=0.8.1",
     "onnx>=1.18.0",
+
+    # --- PersonaPlex -------------------------------------------------------
+    "sentencepiece>=0.2.0",
 
     # --- AuK ---------------------------------------------------------------
     "omegaconf",              # Released AuK checkpoints use OmegaConf YAML

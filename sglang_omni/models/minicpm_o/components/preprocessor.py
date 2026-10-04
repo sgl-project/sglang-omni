@@ -288,10 +288,6 @@ class MiniCPMOPreprocessor:
         video_kwargs = {
             key.removeprefix("video_"): value for key, value in video_params.items()
         }
-        image_cache_key = compute_image_cache_key(raw_images)
-        video_cache_key = (
-            compute_video_cache_key(raw_videos, **video_kwargs) if raw_videos else None
-        )
 
         images = await ensure_image_list_async(raw_images)
         if raw_videos:
@@ -303,6 +299,9 @@ class MiniCPMOPreprocessor:
             )
         else:
             videos, video_audios = [], None
+        # Hash the loaded media, before video frames join the image list.
+        image_cache_key = compute_image_cache_key(images)
+        video_cache_key = compute_video_cache_key(videos, **video_kwargs)
         video_images = [frame for video in videos for frame in video_to_images(video)]
         images.extend(video_images)
         audios = await ensure_audio_list_async(raw_audios, target_sr=16000)

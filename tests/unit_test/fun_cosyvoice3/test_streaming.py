@@ -188,6 +188,7 @@ def stream_payload(
         flow_prompt_speech_token=torch.zeros(1, prompt_token_len, dtype=torch.int32),
         flow_prompt_speech_feat=torch.zeros(1, prompt_feat_frames, 80),
         flow_embedding=torch.ones(1, 192),
+        finish_reason="length",
     )
     return StagePayload(
         request_id=request_id,
@@ -227,6 +228,7 @@ def test_streaming_vocoder_emits_causal_chunk_then_finalizes_remainder() -> None
     assert waveform(messages[0].data).shape == (6 + hold_frames,)
     assert messages[1].data.data["modality"] == "audio"
     assert messages[1].data.data["sample_rate"] == 24000
+    assert messages[1].data.data["finish_reason"] == "length"
     assert "req-stream" not in scheduler.stream_states
 
 

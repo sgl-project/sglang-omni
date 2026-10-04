@@ -55,7 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import FinishReason, RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
 from benchmarks.benchmarker.utils import (
     managed_omni_server,
@@ -992,6 +992,10 @@ def _load_request_results(records: list[object]) -> list[RequestResult]:
         if not isinstance(record, Mapping):
             continue
         values = {key: record[key] for key in result_fields if key in record}
+        if "finish_reason" in values:
+            values["finish_reason"] = FinishReason(values["finish_reason"])
+        else:
+            pass
         outputs.append(RequestResult(**values))
     return outputs
 

@@ -31,7 +31,7 @@ cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
 CHUNK = 50
 CHANNELS = 80
 HEADS, HEAD_DIM, LAYERS = 4, 32, 3
-COMPILED_OVER_EAGER_ERROR = 2.0
+COMPILED_OVER_EAGER_ERROR = 1.1
 
 
 def make_estimator() -> PackedDiT:

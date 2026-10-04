@@ -29,10 +29,10 @@ _MISSING = object()
 # multiple of the real token count.
 _PREFILL_PADDING_FACTOR = 2
 
-# note (luojiaxuan): prefill attention backends whose SGLang 0.5.20 graph
-# metadata captures an ordinary EXTEND batch. The triton backend only captures
-# decode, target verify and draft extend, so a full prefill graph over it fails
-# during capture.
+# note (luojiaxuan): prefill attention backends whose graph metadata captures
+# an ordinary EXTEND batch. The triton backend captures decode, target verify,
+# draft extend and dLLM extend, so a full prefill graph over it fails during
+# capture.
 FULL_PREFILL_ATTENTION_BACKENDS = frozenset({"fa3", "flashinfer"})
 
 

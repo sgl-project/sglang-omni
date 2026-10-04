@@ -1087,6 +1087,7 @@ def load_cosyvoice3_flow_hift(
     device: str,
     fp16: bool = False,
     *,
+    autocast_dtype: torch.dtype | None,
     enable_flow_estimator_trt: bool = False,
 ) -> "tuple[FunCosyVoice3Flow, CausalHiFTGenerator | MpsHiFTAdapter]":
     if torch.device(device).type == "mps":
@@ -1137,6 +1138,16 @@ def load_cosyvoice3_flow_hift(
         folded,
     )
     del cv.model.llm
+    if autocast_dtype is not None and torch.device(device).type == "cuda":
+        # note(ratish): autocast caches no weight cast under inference mode, so
+        # each Linear and Conv1d would recast its weights on every Euler step.
+        for module in flow.decoder.estimator.modules():
+            if isinstance(module, (torch.nn.Linear, torch.nn.Conv1d)):
+                module.to(autocast_dtype)
+            else:
+                pass
+    else:
+        pass
     wrapped = FunCosyVoice3Flow(
         flow, packed_estimator=PackedDiT(flow.decoder.estimator, device=device)
     )
@@ -2497,6 +2508,7 @@ class FunCosyVoice3MlxStreamingVocoderScheduler(
             "modality": "audio",
             "sample_rate": self.sample_rate,
         }
+        result["finish_reason"] = pipeline_state.finish_reason
         usage = build_usage(pipeline_state)
         if usage is not None:
             result["usage"] = usage
@@ -2624,6 +2636,7 @@ def create_vocoder_executor(
         checkpoint_dir,
         device=device,
         fp16=(dtype == "float16"),
+        autocast_dtype=autocast_dtype,
         enable_flow_estimator_trt=enable_flow_estimator_trt,
     )
 
@@ -2636,17 +2649,6 @@ def create_vocoder_executor(
         pass
 
     patch_chunk_mask()
-
-    if autocast_dtype is not None and device_obj.type == "cuda":
-        # note(ratish): autocast caches no weight cast under inference mode, so
-        # each Linear and Conv1d would recast its weights on every Euler step.
-        for module in flow.decoder.estimator.modules():
-            if isinstance(module, (torch.nn.Linear, torch.nn.Conv1d)):
-                module.to(autocast_dtype)
-            else:
-                pass
-    else:
-        pass
 
     if enable_dit_torch_compile:
         compile_dit_backbone(flow, autocast_dtype=autocast_dtype)

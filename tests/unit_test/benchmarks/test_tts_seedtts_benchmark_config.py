@@ -65,6 +65,23 @@ def test_seedtts_benchmark_batch_args_are_independent() -> None:
     assert results_config["max_queued_requests"] == 16
 
 
+@pytest.mark.parametrize(
+    "arguments, expected",
+    [
+        ([], False),
+        (["--stream"], True),
+        (["--stream", "--no-collect-stream-outcomes"], False),
+    ],
+)
+def test_outcome_collection_control_is_preserved_in_results(
+    arguments: list[str],
+    expected: bool,
+) -> None:
+    config = config_from_cli(*arguments)
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["collect_stream_outcomes"] is expected
+
+
 def test_seedtts_benchmark_records_quantization() -> None:
     config = config_from_cli("--quantization", "fp8")
     assert config.quantization == "fp8"
@@ -106,6 +123,22 @@ def test_results_config_records_sampling_and_omits_fingerprint() -> None:
     assert unset["top_k"] is None
     assert unset["repetition_penalty"] is None
     assert unset["seed"] is None
+
+
+@pytest.mark.parametrize(
+    "model, max_new_tokens",
+    [
+        ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", 2048),
+    ],
+)
+def test_results_config_records_the_resolved_max_new_tokens(
+    model: str, max_new_tokens: int | None
+) -> None:
+    results_config = _build_results_config(
+        config_from_cli("--model", model), base_url="http://localhost:8000"
+    )
+    assert results_config["max_new_tokens"] == max_new_tokens
 
 
 def test_results_config_includes_fingerprint_when_set() -> None:

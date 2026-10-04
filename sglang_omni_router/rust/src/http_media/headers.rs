@@ -99,7 +99,7 @@ pub(crate) fn validate_bodyless_request(headers: &HeaderMap) -> Result<(), HttpF
     Ok(())
 }
 
-fn one_route_header<'a>(
+pub(super) fn one_route_header<'a>(
     headers: &'a HeaderMap,
     name: &'static str,
 ) -> Result<Option<&'a str>, HttpFault> {

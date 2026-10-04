@@ -1119,7 +1119,7 @@ def test_topology_rechecks_deferred_payload_on_every_chunk() -> None:
 def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
 
     def stub_request_builder(payload: Any) -> Any:
-        origin_input_ids: list[int] = []
+        origin_input_ids: list[int] = [0]
         return SGLangARRequestData(
             req=SimpleNamespace(
                 rid=payload.request_id,
@@ -1503,7 +1503,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
 
     def stub_request_builder(payload: Any) -> Any:
         captured_done = bool(payload.prefetched_stream_done)
-        origin_input_ids: list[int] = []
+        origin_input_ids: list[int] = [0]
         req_data = SGLangARRequestData(
             req=SimpleNamespace(
                 rid=payload.request_id,

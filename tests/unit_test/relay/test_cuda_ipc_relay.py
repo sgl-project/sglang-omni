@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import multiprocessing as mp
 import queue
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from multiprocessing.connection import Connection
 
@@ -21,6 +23,7 @@ import torch
 from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPool
 from sglang_omni.relay.cuda_ipc import (
     ContiguousSlotAllocator,
+    CudaIpcGetOperation,
     CudaIpcPutOperation,
     CudaIpcRelay,
 )
@@ -108,6 +111,105 @@ def test_cuda_ipc_put_fails_fast_after_relay_failure() -> None:
             await relay.put_async(torch.zeros(1, dtype=torch.uint8))
 
     asyncio.run(run())
+
+
+class GatedCopyEvent:
+    """CPU stand-in for the CUDA event that marks a launched copy as finished."""
+
+    def __init__(self) -> None:
+        self.copy_done = threading.Event()
+
+    def query(self) -> bool:
+        return self.copy_done.is_set()
+
+    def synchronize(self) -> None:
+        self.copy_done.wait()
+
+
+def make_copy_owning_get(
+    event: GatedCopyEvent, executor: ThreadPoolExecutor
+) -> CudaIpcGetOperation:
+    # A negative device index makes torch.cuda.device a no-op, so this runs on CPU.
+    return CudaIpcGetOperation(
+        event,
+        None,
+        0,
+        1,
+        request_id="copy-owning-get",
+        size=0,
+        device_index=-1,
+        wait_executor=executor,
+        finish_on_interrupt=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "interruption", ["timeout", "timeout_then_cancel", "cancel_twice"]
+)
+def test_cuda_ipc_get_waits_for_launched_copy_through_interruptions(
+    interruption: str,
+) -> None:
+    event = GatedCopyEvent()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    async def run() -> None:
+        timeout = 0.01 if interruption.startswith("timeout") else 30.0
+        task = asyncio.create_task(
+            make_copy_owning_get(event, executor).wait_for_completion(timeout=timeout)
+        )
+        try:
+            await asyncio.sleep(0.05)
+            if interruption == "timeout_then_cancel":
+                task.cancel()
+            elif interruption == "cancel_twice":
+                task.cancel()
+                await asyncio.sleep(0.05)
+                task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done(), "receive returned while its GPU copy was running"
+        finally:
+            event.copy_done.set()
+
+        expected = (
+            asyncio.TimeoutError
+            if interruption == "timeout"
+            else asyncio.CancelledError
+        )
+        with pytest.raises(expected):
+            await task
+
+    try:
+        asyncio.run(run())
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_cuda_ipc_relay_close_keeps_queued_copy_waits(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_CUDA_IPC_WAIT_THREADS", "1")
+    relay = CudaIpcRelay(engine_id="receiver", device="cuda:0", pool_size_mb=1)
+    event = GatedCopyEvent()
+
+    async def run() -> None:
+        tasks = [
+            asyncio.create_task(
+                make_copy_owning_get(event, relay.wait_executor).wait_for_completion()
+            )
+            for _ in range(2)
+        ]
+        try:
+            await asyncio.sleep(0.05)
+            relay.close()
+            await asyncio.sleep(0.05)
+            assert not any(task.done() for task in tasks), "close dropped a copy wait"
+        finally:
+            event.copy_done.set()
+
+        assert await asyncio.gather(*tasks) == [None, None]
+
+    try:
+        asyncio.run(run())
+    finally:
+        relay.wait_executor.shutdown(wait=True)
 
 
 def test_cuda_ipc_default_pool_uses_small_slots() -> None:

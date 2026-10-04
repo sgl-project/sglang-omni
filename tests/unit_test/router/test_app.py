@@ -3602,6 +3602,7 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
         "/generate",
         "/v1/chat/completions",
         "/v1/audio/speech",
+        "/v1/audio/speech/{request_id}",
         "/v1/audio/transcriptions",
         "/v1/audio/translations",
     }

@@ -521,6 +521,14 @@ class Stage:
     async def on_submit(self, msg: SubmitMessage) -> None:
         request_id = msg.request_id
         if request_id in self.aborted:
+            # A new coordinator admission needs an explicit answer. Late
+            # downstream data still follows the silent stale-result path. The
+            # message keeps the duplicate ID form so both map to one status.
+            await self.send_failure(
+                request_id,
+                f"Request {request_id} (retired after abort or failure, use a "
+                "fresh request ID) already exists",
+            )
             return
         else:
             pass
