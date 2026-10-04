@@ -72,7 +72,7 @@ Supported Models
      - Experimental transcription and speech-to-English translation routes; see the `audio translation support matrix <basic_usage/audio_translations.html>`_
    * - `nvidia/parakeet-tdt-0.6b-v3 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>`_
      - ASR
-     - 25-language transcription; also CTC and RNN-T Parakeet checkpoints, on CUDA or Apple Silicon
+     - macOS Apple Silicon only; 25-language transcription, plus CTC and RNN-T Parakeet checkpoints
    * - `Qwen/Qwen3-Omni-30B-A3B-Instruct <https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct>`_
      - Omni
      - Text, image, audio, video → text + audio

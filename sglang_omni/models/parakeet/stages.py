@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage factory for Parakeet ASR."""
+"""Stage factory for Parakeet ASR on macOS Apple Silicon."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from sglang_omni.models.parakeet.request_builders import (
     build_parakeet_result,
     make_parakeet_request_builder,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -104,7 +105,12 @@ def create_parakeet_asr_executor(
     from sglang_omni.models.parakeet.model_runner import ParakeetModelRunner
     from sglang_omni.utils.device import resolve_concrete_device
 
-    if max_batch_size < 1:
+    if not current_platform.is_mps():
+        raise ValueError(
+            "Parakeet ASR runs only on macOS Apple Silicon (MPS); this host "
+            f"resolved to {current_platform.device_type!r}"
+        )
+    elif max_batch_size < 1:
         raise ValueError(f"max_batch_size must be >= 1, got {max_batch_size}")
     elif not math.isfinite(max_batch_wait_ms) or max_batch_wait_ms < 0:
         raise ValueError(
@@ -117,11 +123,14 @@ def create_parakeet_asr_executor(
     else:
         pass
 
-    runner = ParakeetModelRunner(
-        model_path,
-        device=str(resolve_concrete_device(device, gpu_id)),
-        dtype=dtype,
-    )
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    if concrete_device.type != "mps":
+        raise ValueError(
+            f"Parakeet ASR runs only on the MPS device, got device={device!r}"
+        )
+    else:
+        pass
+    runner = ParakeetModelRunner(model_path, device=str(concrete_device), dtype=dtype)
     batch_fn = make_parakeet_batch_fn(
         request_builder=make_parakeet_request_builder(sample_rate=runner.sample_rate),
         transcribe=runner.transcribe,

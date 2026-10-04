@@ -16,7 +16,11 @@ PARAKEET_DEFAULT_CLIP_S = 120.0
 
 
 class ParakeetASRPipelineConfig(PipelineConfig):
-    """Single-stage batched ASR pipeline for Hugging Face Parakeet checkpoints."""
+    """Single-stage batched ASR pipeline for Hugging Face Parakeet checkpoints.
+
+    Served on macOS Apple Silicon (MPS) only; the stage factory refuses to
+    start on any other platform.
+    """
 
     architecture: ClassVar[str] = "ParakeetForTDT"
     architecture_aliases: ClassVar[tuple[str, ...]] = (

@@ -1,6 +1,8 @@
 # Parakeet ASR
 
-NVIDIA Parakeet checkpoints serve the OpenAI-compatible `/v1/audio/transcriptions` endpoint. Parakeet pairs a FastConformer encoder with a CTC, RNN-T, or TDT head and has no language-model decoder, so it runs as a single batched stage on the Hugging Face Transformers implementation rather than through the SGLang engine. The same stage serves NVIDIA GPUs, Apple Silicon (MPS), and CPU.
+NVIDIA Parakeet checkpoints serve the OpenAI-compatible `/v1/audio/transcriptions` endpoint on **macOS Apple Silicon**. Parakeet pairs a FastConformer encoder with a CTC, RNN-T, or TDT head and has no language-model decoder, so it runs as a single batched stage on the Hugging Face Transformers implementation, on Torch MPS, rather than through the SGLang engine.
+
+Parakeet is supported on macOS arm64 only. On other platforms (NVIDIA, AMD, Intel, CPU-only hosts) the server refuses to start the Parakeet stage.
 
 ## Supported Checkpoints
 
@@ -14,7 +16,7 @@ Any checkpoint published in Hugging Face Transformers format (a `config.json` wh
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md) (on macOS, `./install.sh`), then download a checkpoint:
+On an Apple Silicon Mac, install `sglang-omni` with `./install.sh` (see "Option B: macOS Apple Silicon installer" in [Installation](../get_started/installation.md)), then download a checkpoint:
 
 ```bash
 hf download nvidia/parakeet-tdt-0.6b-v3
@@ -28,7 +30,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-The stage places the model on the platform's accelerator: CUDA on NVIDIA GPUs and MPS on Apple Silicon. Startup runs one second of silence through the model so the first request does not pay for kernel setup.
+The stage loads the model on the MPS device. Startup runs one second of silence through the model so the first request does not pay for Metal kernel setup.
 
 Requests that arrive together are batched. A batch holds up to `max_batch_size` requests (default 16) and waits at most `max_batch_wait_ms` (default 5 ms) for company. Inside a batch, requests are sorted by length and split so that no forward pass pads more than `max_batch_audio_s` seconds of audio in total (default 600). A request that fails to decode fails alone; the rest of its batch still completes.
 
