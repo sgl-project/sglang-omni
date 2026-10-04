@@ -17,7 +17,7 @@ from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.dataset.socialomni import SocialOmniLevel2Sample
 from benchmarks.dataset.socialomni_media import create_video_prefix
-from benchmarks.metrics.socialomni import SOCIALOMNI_SCORE_BUCKETS
+from benchmarks.metrics.socialomni import SOCIALOMNI_SCORE_BUCKETS, requires_judge
 from benchmarks.tasks.socialomni_protocol import (
     JUDGE_PARSE_ATTEMPTS,
     LEVEL2_RESPONSE_MAX_TOKENS,
@@ -153,9 +153,11 @@ async def run_judges(
     eligible = [
         record
         for record in records
-        if record["gold_when"] == "YES"
-        and record["gold_response_success"]
-        and str(record["gold_response"]).strip()
+        if requires_judge(
+            record["gold_when"],
+            record["gold_response_success"],
+            record["gold_response"],
+        )
     ]
     attempts_by_score: dict[tuple[str, str], list[dict[str, Any]]] = {}
 

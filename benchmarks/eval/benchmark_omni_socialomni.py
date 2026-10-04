@@ -29,6 +29,7 @@ from benchmarks.metrics.socialomni import (
     compute_socialomni_level1_metrics,
     compute_socialomni_level2_metrics,
     compute_socialomni_when_metrics,
+    requires_judge,
     validate_judge_scores,
 )
 from benchmarks.runtime_metrics import collect_benchmark_provenance
@@ -91,10 +92,10 @@ def has_complete_judges(records: list[dict[str, Any]], configured: bool) -> bool
         return False
     try:
         for record in records:
-            if (
-                record["gold_when"] == "YES"
-                and record["gold_response_success"]
-                and str(record["gold_response"]).strip()
+            if requires_judge(
+                record["gold_when"],
+                record["gold_response_success"],
+                record["gold_response"],
             ):
                 validate_judge_scores(
                     record["gold_judge_scores"], str(record.get("sample_id", ""))
@@ -270,11 +271,12 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                 )
 
         required_judgments = sum(
-            1
+            requires_judge(
+                record["gold_when"],
+                record["gold_response_success"],
+                record["gold_response"],
+            )
             for record in records
-            if record["gold_when"] == "YES"
-            and record["gold_response_success"]
-            and str(record["gold_response"]).strip()
         )
         judges_complete = has_complete_judges(records, bool(judges))
         complete_metrics = (

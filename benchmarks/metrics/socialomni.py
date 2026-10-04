@@ -123,6 +123,15 @@ def _when(value: object) -> int | None:
     return 1 if text == "YES" else 0 if text == "NO" else None
 
 
+def requires_judge(
+    gold_when: str, gold_response_success: bool | None, gold_response: str
+) -> bool:
+    """Failed or empty responses score zero without requiring judge requests."""
+    return bool(
+        gold_when == "YES" and gold_response_success and str(gold_response).strip()
+    )
+
+
 def validate_judge_scores(value: object, sample_id: str) -> dict[str, int]:
     """Require one integer score in the allowed buckets from each fixed judge."""
     if not isinstance(value, Mapping) or set(value) != set(SOCIALOMNI_JUDGE_NAMES):
