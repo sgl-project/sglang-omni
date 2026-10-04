@@ -478,5 +478,67 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(instance.http.open.call_args.args[0], instance.url + "/health")
 
 
+class NotesTests(unittest.TestCase):
+    def test_split_transcript_packs_lines_and_splits_long_ones(self):
+        self.assertEqual(text_api.split_transcript("a\nb\n\nc", limit=3), ["a\nb", "c"])
+        long = "word " * 50
+        parts = text_api.split_transcript(long, limit=40)
+        self.assertTrue(all(len(part) <= 40 for part in parts))
+        self.assertEqual(" ".join(parts).split(), long.split())
+        self.assertEqual(
+            text_api.split_transcript("x" * 25, limit=10), ["x" * 10] * 2 + ["x" * 5]
+        )
+        self.assertEqual(text_api.split_transcript(" \n "), [])
+
+    def test_notes_accept_long_transcripts_and_require_a_model(self):
+        transcript = "line\n" * 5000
+        worker.validate_request(request(op="notes", text=transcript))
+        with self.assertRaises(ValueError):
+            worker.validate_request(request(op="process", text=transcript))
+        with self.assertRaises(ValueError):
+            worker.validate_request(
+                request(op="notes", text="x" * (worker.MAX_NOTES_TEXT + 1))
+            )
+        with self.assertRaisesRegex(ValueError, "text API model"):
+            worker.Worker().handle(request(op="notes", text="hi", text_model=""))
+
+    def test_notes_template_follows_the_transcript_language(self):
+        self.assertIn("## 摘要", text_api.notes_format("我们决定周五发布。"))
+        self.assertIn(
+            "## Summary", text_api.notes_format("We agreed to ship on Friday.")
+        )
+        self.assertIn("## Summary", text_api.notes_format("Ship the 1.2 build, 好的"))
+
+    def test_short_notes_use_one_request_and_long_ones_merge(self):
+        calls, raw = [], []
+
+        def fake(_request, messages):
+            raw.append(messages[1]["content"])
+            calls.append(json.loads(messages[1]["content"]))
+            return "# Title\n## Summary\nok" if "transcript" in calls[-1] else "- point"
+
+        with patch.object(text_api, "complete", side_effect=fake):
+            result = worker.Worker().handle(request(op="notes", text="we agreed <b>"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "# Title\n## Summary\nok")
+        self.assertEqual(calls, [{"transcript": "we agreed <b>"}])
+        self.assertNotIn("<", raw[0])
+
+        calls.clear()
+        transcript = "\n".join(f"sentence {i} " + "x" * 90 for i in range(200))
+        with patch.object(
+            text_api, "complete", side_effect=lambda r, m: calls.append(m) or "- point"
+        ):
+            text_api.write_notes(
+                worker.validate_request(request(op="notes", text=transcript)),
+                transcript,
+                lambda _: None,
+            )
+        parts = len(text_api.split_transcript(transcript))
+        self.assertGreater(parts, 1)
+        self.assertEqual(len(calls), parts + 1)
+        self.assertIn("partial_notes", calls[-1][1]["content"])
+
+
 if __name__ == "__main__":
     unittest.main()

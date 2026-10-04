@@ -57,7 +57,7 @@ final class WorkerClient: ObservableObject {
                         throw Failure("worker.badRequest")
                     }
                     var data = try JSONSerialization.data(withJSONObject: message)
-                    guard data.count < 256 * 1_024 else {
+                    guard data.count < 2 * 1_024 * 1_024 else {
                         throw Failure("worker.tooLarge")
                     }
                     data.append(0x0A)

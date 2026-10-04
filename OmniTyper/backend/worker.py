@@ -46,8 +46,9 @@ LANGUAGE_SPEC.loader.exec_module(LANGUAGE_MODULE)
 resolve_language = LANGUAGE_MODULE.resolve_language
 
 DEFAULT_TEXT_API = "http://127.0.0.1:11434/v1"
-MAX_LINE_BYTES = 256 * 1024
+MAX_LINE_BYTES = 2 * 1024 * 1024
 MAX_TEXT = 12000
+MAX_NOTES_TEXT = 300000
 MAX_AUDIO_SECONDS = 300
 logger = logging.getLogger(__name__)
 FIELDS = {
@@ -79,6 +80,7 @@ def validate_request(value: object) -> dict[str, Any]:
             "Unknown request field(s): " + ", ".join(sorted(value.keys() - FIELDS))
         )
     request = value.copy()
+    notes = request.get("op") == "notes"
     limits = {
         "id": 128,
         "op": 16,
@@ -94,7 +96,7 @@ def validate_request(value: object) -> dict[str, Any]:
         "instructions": 2000,
         "selected_text": MAX_TEXT,
         "app_name": 256,
-        "text": MAX_TEXT,
+        "text": MAX_NOTES_TEXT if notes else MAX_TEXT,
     }
     for field, limit in limits.items():
         item = request.get(field, "")
@@ -104,8 +106,8 @@ def validate_request(value: object) -> dict[str, Any]:
             )
     if not request.get("id", "").strip():
         raise ValueError("id must be a nonempty string.")
-    if request.get("op") not in {"prepare", "transcribe", "process", "models"}:
-        raise ValueError("op must be prepare, transcribe, process, or models.")
+    if request.get("op") not in {"prepare", "transcribe", "process", "models", "notes"}:
+        raise ValueError("op must be prepare, transcribe, process, models, or notes.")
     defaults = {
         "asr_model": DEFAULT_MODEL,
         "text_model": "",
@@ -250,6 +252,14 @@ class Worker:
                 "realtime_url": self.asr.url.replace("http://", "ws://", 1)
                 + "/v1/realtime?intent=transcription",
             }
+        if request["op"] == "notes":
+            notes = text_api.write_notes(request, request["text"], progress)
+            return {
+                "id": request["id"],
+                "ok": True,
+                "text": notes,
+                "duration": round(time.monotonic() - started, 3),
+            }
         raw = request["text"]
         if request["op"] == "transcribe":
             samples, rate = read_audio(request["audio_path"])
@@ -317,7 +327,7 @@ def serve(source: BinaryIO, output: TextIO, worker: Worker) -> None:
             if len(line) > MAX_LINE_BYTES:
                 while line and not line.endswith(b"\n"):
                     line = source.readline(MAX_LINE_BYTES + 1)
-                raise ValueError("Request exceeds the 256 KiB protocol limit.")
+                raise ValueError("Request exceeds the 2 MiB protocol limit.")
             value = json.loads(line)
             if isinstance(value, dict) and isinstance(value.get("id"), str):
                 request_id = value["id"][:128]

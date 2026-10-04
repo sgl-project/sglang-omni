@@ -16,12 +16,14 @@ final class AudioCaptureSink: @unchecked Sendable {
     private let format: AVAudioFormat
     private let onPCM: (@Sendable (Data) -> Void)?
     private var file: AVAudioFile?
+    private var isOpen = true
     private var failure: Error?
     private var meter = 0.0
     private var framesWritten: AVAudioFrameCount = 0
-    private let maximumFrames: AVAudioFrameCount = 300 * 16_000
+    private let maximumFrames: AVAudioFrameCount?
 
-    init(input: AVAudioFormat, url: URL, onPCM: (@Sendable (Data) -> Void)? = nil) throws {
+    init(input: AVAudioFormat, url: URL?, maximumSeconds: Double? = 300,
+         onPCM: (@Sendable (Data) -> Void)? = nil) throws {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                          sampleRate: 16_000, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: input, to: format) else {
@@ -30,6 +32,8 @@ final class AudioCaptureSink: @unchecked Sendable {
         self.format = format
         self.converter = converter
         self.onPCM = onPCM
+        maximumFrames = maximumSeconds.map { AVAudioFrameCount($0 * 16_000) }
+        guard let url else { return }
         file = try AVAudioFile(forWriting: url, settings: [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000,
@@ -44,7 +48,7 @@ final class AudioCaptureSink: @unchecked Sendable {
     func consume(_ input: AVAudioPCMBuffer) {
         lock.lock()
         defer { lock.unlock() }
-        guard let file, failure == nil, framesWritten < maximumFrames else { return }
+        guard isOpen, failure == nil, framesWritten < maximumFrames ?? .max else { return }
         let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * format.sampleRate / input.format.sampleRate)) + 32
         guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
         var supplied = false
@@ -62,7 +66,7 @@ final class AudioCaptureSink: @unchecked Sendable {
             failure = conversionError
             return
         }
-        output.frameLength = min(output.frameLength, maximumFrames - framesWritten)
+        output.frameLength = min(output.frameLength, (maximumFrames ?? .max) - framesWritten)
         guard output.frameLength > 0 else { return }
         if let samples = output.floatChannelData?[0] {
             var squares: Double = 0
@@ -72,7 +76,7 @@ final class AudioCaptureSink: @unchecked Sendable {
             meter = min(1, sqrt(squares / Double(output.frameLength)) * 5)
         }
         do {
-            try file.write(from: output)
+            try file?.write(from: output)
             framesWritten += output.frameLength
             if let onPCM, let samples = output.floatChannelData?[0] {
                 let pcm = (0..<Int(output.frameLength)).map { index -> Int16 in
@@ -91,6 +95,12 @@ final class AudioCaptureSink: @unchecked Sendable {
         return meter
     }
 
+    func error() -> Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return failure
+    }
+
     func fail(_ error: Error) {
         lock.lock()
         defer { lock.unlock() }
@@ -100,6 +110,7 @@ final class AudioCaptureSink: @unchecked Sendable {
     func close() throws {
         lock.lock()
         defer { lock.unlock() }
+        isOpen = false
         file = nil
         if let failure { throw failure }
     }
@@ -135,7 +146,9 @@ final class AudioRecorder: ObservableObject {
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    func start(deviceUID: String, onPCM: (@Sendable (Data) -> Void)? = nil) async throws {
+    /// `keepsFile: false` streams PCM to `onPCM` only; finish with `stopStream()` instead of `stop()`.
+    func start(deviceUID: String, onPCM: (@Sendable (Data) -> Void)? = nil,
+               keepsFile: Bool = true, maximumSeconds: Double? = 300) async throws {
         guard engine == nil, !isStarting else {
             throw Failure("sys.recording")
         }
@@ -174,9 +187,9 @@ final class AudioRecorder: ObservableObject {
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw Failure("sys.micNoInput")
         }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("OmniTyper-\(UUID().uuidString).wav")
-        let sink = try AudioCaptureSink(input: format, url: url, onPCM: onPCM)
+        let url = keepsFile ? FileManager.default.temporaryDirectory
+            .appendingPathComponent("OmniTyper-\(UUID().uuidString).wav") : nil
+        let sink = try AudioCaptureSink(input: format, url: url, maximumSeconds: maximumSeconds, onPCM: onPCM)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
             sink.consume(buffer)
         }
@@ -187,7 +200,7 @@ final class AudioRecorder: ObservableObject {
             input.removeTap(onBus: 0)
             engine.stop()
             try? sink.close()
-            try? FileManager.default.removeItem(at: url)
+            if let url { try? FileManager.default.removeItem(at: url) }
             throw error
         }
         self.engine = engine
@@ -223,6 +236,16 @@ final class AudioRecorder: ObservableObject {
             throw error
         }
         return url
+    }
+
+    var isCapturing: Bool { engine != nil }
+    var captureError: Error? { sink?.error() }
+
+    func stopStream() throws {
+        guard engine != nil else { throw Failure("sys.noRecording") }
+        let sink = self.sink
+        releaseAudio()
+        try sink?.close()
     }
 
     func cancel() {

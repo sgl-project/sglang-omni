@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     let recorder = AudioRecorder()
     let worker = WorkerClient()
     private let shortcut = GlobalShortcut()
+    lazy var noteTaker = NoteTaker(model: self)
     @Published var phase: Phase = .idle
     @Published var mode: VoiceMode = .dictate
     @Published var resultText = ""
@@ -84,7 +85,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var isBusy: Bool { phase != .idle }
+    var isBusy: Bool { phase != .idle || noteTaker.isActive }
+    private var isIdle: Bool { phase == .idle && !noteTaker.isActive }
     var shortcutLabel: String {
         let p = store.preferences
         var label = ""
@@ -151,7 +153,7 @@ final class AppModel: ObservableObject {
 
     func toggle(_ requestedMode: VoiceMode? = nil) {
         if phase == .recording { finish(); return }
-        guard phase == .idle else { return }
+        guard isIdle else { return }
         if let requestedMode { mode = requestedMode }
         start()
     }
@@ -343,9 +345,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var canRetry: Bool { retryRecording != nil && phase == .idle }
+    var canRetry: Bool { retryRecording != nil && isIdle }
     func retryLast() {
-        guard phase == .idle, let recording = retryRecording else { return }
+        guard isIdle, let recording = retryRecording else { return }
         retryRecording = nil
         target = recording.target; mode = recording.mode; lastApp = recording.appName
         sessionPreferences = store.preferences
@@ -354,7 +356,7 @@ final class AppModel: ObservableObject {
     }
 
     func retry(_ entry: HistoryEntry) {
-        guard phase == .idle, let audio = store.audioURL(for: entry) else { return }
+        guard isIdle, let audio = store.audioURL(for: entry) else { return }
         if entry.mode == .edit || entry.mode == .ask {
             error = L("error.retryNeedsRecording")
             return
@@ -370,7 +372,7 @@ final class AppModel: ObservableObject {
     }
 
     func prepareModels() {
-        guard phase == .idle else { return }
+        guard isIdle else { return }
         phase = .preparing; error = ""; notice = ""
         let preferences = store.preferences
         let token = UUID(); generation = token
@@ -389,7 +391,7 @@ final class AppModel: ObservableObject {
     }
 
     func loadTextModels() {
-        guard phase == .idle else { return }
+        guard isIdle else { return }
         error = ""; notice = ""
         do {
             var request = try store.preferences.textSettings.payload(apiKey: textAPIKey, requireModel: false)
@@ -413,7 +415,7 @@ final class AppModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
-    func releaseModels() { if phase == .idle { worker.stop(); notice = L("notice.modelUnloaded") } }
+    func releaseModels() { if isIdle { worker.stop(); notice = L("notice.modelUnloaded") } }
 
     func cancel() {
         // A cancelled start keeps loading the model so the next dictation starts warm.
@@ -425,13 +427,14 @@ final class AppModel: ObservableObject {
         notice = L("notice.cancelled")
     }
 
-    private func finishCancelledLoad() async {
+    func finishCancelledLoad() async {
         let load = loadingTask; loadingTask = nil
         await load?.value
     }
 
     func shutdown() {
         preferencesSubscription?.cancel(); preferencesSubscription = nil
+        noteTaker.shutdown()
         cancel(); loadingTask?.cancel(); loadingTask = nil; worker.stop(); shortcut.stop(); timer?.invalidate()
         textAPIKey = ""; sessionAPIKey = ""
         discardRetryRecording()

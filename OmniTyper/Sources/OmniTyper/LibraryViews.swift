@@ -223,7 +223,7 @@ struct RulesView: View {
 }
 
 @MainActor
-private enum FileActions {
+enum FileActions {
     static func importText() throws -> String? {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.commaSeparatedText, .plainText]
         panel.allowsMultipleSelection = false
@@ -240,6 +240,9 @@ private enum FileActions {
         func escape(_ text: String) -> String { "\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
         let text = "spoken,written\n" + entries.map { "\(escape($0.spoken)),\(escape($0.written))" }.joined(separator: "\n")
         save(name: "OmniTyper-dictionary.csv", type: .commaSeparatedText) { Data(text.utf8) }
+    }
+    static func exportMarkdown(_ text: String, name: String) {
+        save(name: name, type: UTType(filenameExtension: "md") ?? .plainText) { Data(text.utf8) }
     }
     static func exportAudio(_ url: URL) { save(name: "OmniTyper-recording.wav", type: .wav) { try Data(contentsOf: url) } }
     private static func save(name: String, type: UTType, data: () throws -> Data) {

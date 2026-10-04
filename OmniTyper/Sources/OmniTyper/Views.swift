@@ -16,10 +16,10 @@ let styles = ["clean", "verbatim", "casual", "formal", "concise"]
 let languages = ["English", "Chinese", "Japanese", "Korean", "French", "German", "Spanish", "Portuguese", "Italian", "Russian", "Arabic", "Hindi", "Cantonese"]
 
 enum Page: String, CaseIterable {
-    case home = "Home", history = "History", dictionary = "Dictionary", rules = "Writing style", settings = "Settings"
+    case home = "Home", notes = "Notes", history = "History", dictionary = "Dictionary", rules = "Writing style", settings = "Settings"
     var title: String { L("nav." + rawValue.replacingOccurrences(of: " ", with: "")) }
     var icon: String {
-        switch self { case .home: return "square.grid.2x2"; case .history: return "clock.arrow.circlepath"
+        switch self { case .home: return "square.grid.2x2"; case .notes: return "note.text"; case .history: return "clock.arrow.circlepath"
         case .dictionary: return "book.closed"; case .rules: return "slider.horizontal.3"; case .settings: return "gearshape" }
     }
     /// Whether the page shows preparation progress next to the control that starts it, which makes
@@ -59,6 +59,7 @@ struct RootView: View {
                         }
                         switch page {
                         case .home: HomeView(model: model, store: store)
+                        case .notes: NotesView(model: model, taker: model.noteTaker, notes: model.noteTaker.store, recorder: model.recorder)
                         case .history: HistoryView(model: model, store: store)
                         case .dictionary: DictionaryView(store: store)
                         case .rules: RulesView(store: store)
