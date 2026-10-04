@@ -484,6 +484,62 @@ each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
 for the left-context decoder, with first playable audio at 55 to 58 ms
 against 82 to 89 ms.
 
+A voice-cloning request carries its reference audio as a codec prefix, and the
+first decode of such a stream primes the fresh codec state with that whole
+prefix: a per-request width (reference frames plus the first chunk) that no
+other stream shares, so every bootstrap is a cohort of one and replays a
+sequence of captured window graphs, one window at a time.
+`bootstrap_reference_context_frames` caps the primed prefix to its last N
+reference frames:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      bootstrap_reference_context_frames: 32
+```
+
+With the cap, bootstraps of streams whose prefix is at least N frames share
+the width N plus the first chunk, batch into one cohort, and replay a single
+cold graph captured at that width. The cold widths are fixed at startup from
+the default first chunk, so a request that overrides
+`initial_codec_chunk_frames` still bootstraps through window graphs. The
+default cold widths grow to cover the capped width, which captures one more
+width per default cold batch size (1, 2, 4, 8) and, with
+`incremental_codec_compile`, compiles one more shape, so startup takes a little
+longer and holds a little more memory; an explicit
+`incremental_codec_cuda_graph_cold_frames` must list the width itself. Shorter
+prefixes are primed whole, so keep N at or below the shortest reference you
+serve. The unset default keeps the whole-prefix prime.
+
+The cap trades voice similarity for batching, because the first chunk sees
+only the last N reference frames. Measured on single-GPU H100 80GB servers in
+the three-process layout (`--preprocessing.process tts_frontend` plus
+`--vocoder.process vocoder`, see "Process topology" above), 1024 SeedTTS-EN
+voice-cloning requests per cell, repeated on two GPUs in forward and reverse
+arm order (measurements in #2473): N = 32 raised throughput at 64 concurrent
+from 23.4-23.7 requests/s to 24.9-26.4 (+5% to +13%; three runs read +11% to
++13%, the +5% run hit a 1.5 s admission stall that also put its median first
+audio at 0.67 s) and at 32 concurrent from 20.8 requests/s to 23.3-23.6 (+12%
+to +13%), and outside the stalled run cut median time to first audio from
+0.16-0.23 s to 0.10-0.14 s (p95 at 64 concurrent from 1.9 s to 1.6-1.8 s and at
+32 concurrent from 0.46 s to 0.32-0.34 s; the stalled run stayed at 1.9 s). By about
+1,200 completed requests the two forward passes had replayed 854 and 862 cold
+graphs against none for the control, whose bootstraps had replayed about 3,400
+window graphs instead. Paired WavLM speaker similarity to the reference
+(`benchmarks.eval` scorer, 0 to 100, mean about 71.5) fell by 0.44 to 0.67
+points in every cell with 95% intervals excluding zero; N = 16 bought the same
+throughput for 1.24 to 1.39 points. Word error rate stayed within noise (at
+most +0.15 points in one cell, with paired per-sentence differences not
+significant), so start at N = 32 and spot-check voice similarity on your
+references before lowering N. The throughput gain needs the vocoder process:
+in the default single-process layout the cap moved only first audio (median
+-20% to -30%), while throughput read +1.1% and -2.0% in two passes, -17.9% in a
+third that waited on one stream running to the 2048-token `max_new_tokens`
+limit, and +4.6% in an earlier single pass; the single-process capped arms ran
+3 streams to that limit in 9 cells against none for the control, so set the
+process layout first.
+
 #### First-audio chunk ramp
 
 For latency-sensitive deployments the whole early chunk schedule can be
