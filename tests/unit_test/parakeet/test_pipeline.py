@@ -48,7 +48,8 @@ def test_factory_receives_placement_kwargs() -> None:
 def test_factory_defaults() -> None:
     signature = inspect.signature(parakeet_stages.create_parakeet_asr_executor)
 
-    assert signature.parameters["dtype"].default == "float32"
+    assert signature.parameters["backend"].default == "mlx"
+    assert signature.parameters["dtype"].default == "bfloat16"
     assert signature.parameters["max_batch_size"].default == 16
     assert signature.parameters["max_batch_audio_s"].default == 600.0
 
@@ -81,6 +82,7 @@ def test_factory_refuses_the_cpu_device_on_apple_silicon(
 @pytest.mark.parametrize(
     "kwargs, message",
     [
+        ({"backend": "cuda"}, "backend must be one of"),
         ({"max_batch_size": 0}, "max_batch_size"),
         ({"max_batch_wait_ms": -1.0}, "max_batch_wait_ms"),
         ({"max_batch_audio_s": float("inf")}, "max_batch_audio_s"),
@@ -185,28 +187,25 @@ def test_batch_fn_fails_only_the_group_whose_forward_raised() -> None:
 
 
 @pytest.mark.parametrize(
-    "mlx_enabled, runner_module, runner_name",
+    "backend, runner_module, runner_name",
     [
-        (True, "sglang_omni.models.parakeet.mlx.runner", "ParakeetMlxModelRunner"),
-        (False, "sglang_omni.models.parakeet.model_runner", "ParakeetModelRunner"),
+        ("mlx", "sglang_omni.models.parakeet.mlx.runner", "ParakeetMlxModelRunner"),
+        ("torch", "sglang_omni.models.parakeet.model_runner", "ParakeetModelRunner"),
     ],
 )
-def test_runner_follows_sglang_use_mlx(
+def test_runner_follows_the_backend_setting(
     monkeypatch: pytest.MonkeyPatch,
-    mlx_enabled: bool,
+    backend: str,
     runner_module: str,
     runner_name: str,
 ) -> None:
-    if mlx_enabled:
+    if backend == "mlx":
         pytest.importorskip("mlx.core")
     else:
         pass
     import importlib
 
-    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
-
     calls: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: mlx_enabled)
     monkeypatch.setattr(
         importlib.import_module(runner_module),
         runner_name,
@@ -214,13 +213,13 @@ def test_runner_follows_sglang_use_mlx(
     )
 
     runner = parakeet_stages.make_parakeet_runner(
-        "ckpt", device=torch.device("mps", 0), dtype="bfloat16"
+        "ckpt", backend=backend, device=torch.device("mps", 0), dtype="float32"
     )
 
     assert runner == runner_name
     expected_kwargs = (
-        {"dtype": "bfloat16"}
-        if mlx_enabled
-        else {"device": "mps:0", "dtype": "bfloat16"}
+        {"dtype": "float32"}
+        if backend == "mlx"
+        else {"device": "mps:0", "dtype": "float32"}
     )
     assert calls == [("ckpt", expected_kwargs)]

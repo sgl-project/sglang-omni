@@ -93,11 +93,14 @@ def make_parakeet_batch_fn(
     return transcribe_batch
 
 
-def make_parakeet_runner(model_path: str, *, device: torch.device, dtype: str):
-    """Native MLX when ``SGLANG_USE_MLX=1``, otherwise Transformers on Torch MPS."""
-    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+PARAKEET_BACKENDS = ("mlx", "torch")
 
-    if use_mlx():
+
+def make_parakeet_runner(
+    model_path: str, *, backend: str, device: torch.device, dtype: str
+):
+    """Native MLX (default) or the Transformers model on Torch MPS."""
+    if backend == "mlx":
         from sglang_omni.models.parakeet.mlx.runner import ParakeetMlxModelRunner
 
         return ParakeetMlxModelRunner(model_path, dtype=dtype)
@@ -112,7 +115,8 @@ def create_parakeet_asr_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype: str = "float32",
+    backend: str = "mlx",
+    dtype: str = "bfloat16",
     max_batch_size: int = 16,
     max_batch_wait_ms: float = 5.0,
     max_batch_audio_s: float = 600.0,
@@ -123,6 +127,11 @@ def create_parakeet_asr_executor(
         raise ValueError(
             "Parakeet ASR runs only on macOS Apple Silicon (MPS); this host "
             f"resolved to {current_platform.device_type!r}"
+        )
+    elif backend not in PARAKEET_BACKENDS:
+        raise ValueError(
+            f"Parakeet ASR backend must be one of {list(PARAKEET_BACKENDS)}, "
+            f"got {backend!r}"
         )
     elif max_batch_size < 1:
         raise ValueError(f"max_batch_size must be >= 1, got {max_batch_size}")
@@ -144,7 +153,9 @@ def create_parakeet_asr_executor(
         )
     else:
         pass
-    runner = make_parakeet_runner(model_path, device=concrete_device, dtype=dtype)
+    runner = make_parakeet_runner(
+        model_path, backend=backend, device=concrete_device, dtype=dtype
+    )
     batch_fn = make_parakeet_batch_fn(
         request_builder=make_parakeet_request_builder(sample_rate=runner.sample_rate),
         transcribe=runner.transcribe,
@@ -167,6 +178,7 @@ def create_parakeet_asr_executor(
 
 
 __all__ = [
+    "PARAKEET_BACKENDS",
     "create_parakeet_asr_executor",
     "make_parakeet_batch_fn",
     "make_parakeet_runner",
