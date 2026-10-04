@@ -193,6 +193,7 @@ class PendingWindow:
 
     slot: PinnedTransferSlot
     samples: int
+    launch_index: int
 
 
 @dataclass
@@ -275,6 +276,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.default_slot_samples = self.stream_chunk_size * self.total_upsample
         self.pinned_free: list[PinnedTransferSlot] = []
         self.pinned_created = 0
+        self.window_launch_count = 0
         self.pinned_retired: list[PinnedTransferSlot] = []
         self.pinned_quarantined: list[PinnedTransferSlot] = []
         self.retired_chunks: list[RetiredChunks] = []
@@ -649,7 +651,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             else:
                 self.quarantine_slot(slot)
             raise
-        state.pending = PendingWindow(slot=slot, samples=samples)
+        self.window_launch_count += 1
+        state.pending = PendingWindow(
+            slot=slot, samples=samples, launch_index=self.window_launch_count
+        )
         state.emitted = end
         state.due_since = None
         if profile_metadata is not None:
@@ -699,7 +704,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             pass
         slot = pending.slot
         wait_start = time.monotonic_ns()
-        slot.synchronize()
+        if not slot.query():
+            slot.synchronize()
+        else:
+            pass
         wait_ns = time.monotonic_ns() - wait_start
         audio = slot.view(pending.samples).numpy().copy()
         state.pending = None
@@ -741,6 +749,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 self.device,
                 torch.float32,
                 initial_capacity=max(samples, self.default_slot_samples),
+                blocking=True,
             )
             self.pinned_created += 1
             return slot
@@ -867,7 +876,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     def next_message(self) -> IncomingMessage | None:
         with self.state_lock:
             self.reap_retired()
-            self.emit_completed_windows()
+            in_flight = self.emit_completed_windows()
         if self.can_batch_stream_chunks:
             first_chunks: list[IncomingMessage] = []
             for msg in self.drain_inbox():
@@ -909,21 +918,16 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             timeout = min(timeout, max(deadline - time.monotonic(), 0.0))
         else:
             pass
-        with self.state_lock:
-            in_flight_slot = next(
-                (
-                    state.pending.slot
-                    for state in self.stream_states.values()
-                    if state.pending is not None and not state.pending.slot.query()
-                ),
-                None,
-            )
-        if in_flight_slot is not None and self.inbox.empty():
-            # note (ratish): with nothing queued, wait for the launched window rather
-            # than hold its audio until the stream's next codes arrive.
-            in_flight_slot.synchronize()
-            with self.state_lock:
-                self.emit_completed_windows()
+        if in_flight is not None and self.inbox.empty():
+            # note (ratish): with nothing queued, sleep on the launched window rather
+            # than hold its audio until the stream's next codes; the next pass sends it.
+            request_id, slot = in_flight
+            try:
+                slot.synchronize()
+            except Exception as exc:
+                logger.exception("Qwen3-Omni code2wav failed waiting on %s", request_id)
+                self.emit_error(request_id, exc)
+                self.abort(request_id)
             return None
         else:
             pass
@@ -1009,18 +1013,41 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.drain_mode = True
         super().stop()
 
-    def emit_completed_windows(self) -> None:
-        """Send every pipelined window whose host copy has finished; callers hold state_lock."""
+    def emit_completed_windows(self) -> tuple[str, PinnedTransferSlot] | None:
+        """Send every streaming window whose host copy has finished and return the
+        earliest launched one still in flight; callers hold state_lock."""
+        in_flight: PendingWindow | None = None
+        in_flight_request_id = ""
         for request_id, state in list(self.stream_states.items()):
+            pending = state.pending
             if (
-                state.pending is not None
-                and not self.is_aborted(request_id)
-                and state.pending.slot.query()
+                pending is None
+                or not state.stream_enabled
+                or self.is_aborted(request_id)
             ):
-                for message in self.drain_pending_window(request_id):
-                    self.outbox.put(message)
+                continue
             else:
                 pass
+            try:
+                complete = pending.slot.query()
+                messages = self.drain_pending_window(request_id) if complete else []
+            except Exception as exc:
+                logger.exception("Qwen3-Omni code2wav failed to send %s", request_id)
+                self.emit_error(request_id, exc)
+                self.abort(request_id)
+                continue
+            for message in messages:
+                self.outbox.put(message)
+            if not complete and (
+                in_flight is None or pending.launch_index < in_flight.launch_index
+            ):
+                in_flight, in_flight_request_id = pending, request_id
+            else:
+                pass
+        if in_flight is None:
+            return None
+        else:
+            return in_flight_request_id, in_flight.slot
 
     def drain_pending_window(self, request_id: str) -> list[OutgoingMessage]:
         state = self.stream_states.get(request_id)

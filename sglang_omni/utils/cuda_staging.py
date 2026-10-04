@@ -27,9 +27,16 @@ def allocate_pinned(numel: int, dtype: torch.dtype) -> torch.Tensor:
         return torch.empty(numel, dtype=dtype, pin_memory=True)
 
 
-def new_device_event(device: torch.device) -> torch.Event:
-    """The device's completion event type, resolved through its torch module."""
-    return torch.get_device_module(device).Event()
+def new_device_event(device: torch.device, *, blocking: bool = False) -> torch.Event:
+    """The device's completion event type, resolved through its torch module.
+
+    A blocking event makes synchronize() sleep until the device signals instead of
+    spinning a host core.
+    """
+    if blocking:
+        return torch.get_device_module(device).Event(blocking=True)
+    else:
+        return torch.get_device_module(device).Event()
 
 
 def normalize_device(device: torch.device | str | int) -> torch.device:
@@ -113,9 +120,11 @@ class PinnedTransferSlot:
         dtype: torch.dtype,
         *,
         initial_capacity: int = 0,
+        blocking: bool = False,
     ) -> None:
         self.device = normalize_device(device)
         self.buffer = GrowablePinnedBuffer(dtype, initial_capacity=initial_capacity)
+        self.blocking = blocking
         self.event: torch.Event | None = None
         # Note (jiannan-17): True only while the most recent ``record()``
         # succeeded. The event object alone cannot tell "never recorded" from
@@ -158,7 +167,9 @@ class PinnedTransferSlot:
         else:
             pass
         with self.device_guard():
-            if self.event is None:
+            if self.event is None and self.blocking:
+                self.event = new_device_event(self.device, blocking=True)
+            elif self.event is None:
                 self.event = new_device_event(self.device)
             else:
                 pass
