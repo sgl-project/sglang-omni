@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+from av.error import FFmpegError
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
@@ -69,7 +70,7 @@ async def run_level2_model(
             prefix = await create_video_prefix(
                 sample.video_path, sample.timestamp_s, prefix_cache_dir
             )
-        except (OSError, RuntimeError, ValueError) as exc:
+        except (FFmpegError, OSError, RuntimeError, ValueError) as exc:
             failure = RequestResult(
                 request_id=f"{sample.sample_id}:prefix",
                 error=f"{type(exc).__name__}: {exc}",
