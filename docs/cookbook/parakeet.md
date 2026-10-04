@@ -1,6 +1,6 @@
 # Parakeet ASR
 
-NVIDIA Parakeet checkpoints serve the OpenAI-compatible `/v1/audio/transcriptions` endpoint on **macOS Apple Silicon**. Parakeet pairs a FastConformer encoder with a CTC, RNN-T, or TDT head and has no language-model decoder, so it runs as a single batched stage on the Hugging Face Transformers implementation, on Torch MPS, rather than through the SGLang engine.
+NVIDIA Parakeet checkpoints serve the OpenAI-compatible `/v1/audio/transcriptions` endpoint on **macOS Apple Silicon**. Parakeet pairs a FastConformer encoder with a CTC, RNN-T, or TDT head and has no language-model decoder, so it runs as a single batched stage rather than through the SGLang engine. Two backends read the same checkpoint: the Hugging Face Transformers implementation on Torch MPS (default), and a native MLX implementation selected with `SGLANG_USE_MLX=1`.
 
 Parakeet is supported on macOS arm64 only. On other platforms (NVIDIA, AMD, Intel, CPU-only hosts) the server refuses to start the Parakeet stage.
 
@@ -43,6 +43,31 @@ sgl-omni serve \
   --asr.factory.max_batch_size 32 \
   --port 8000
 ```
+
+## MLX Backend
+
+Set `SGLANG_USE_MLX=1` to run Parakeet on native MLX instead of Torch MPS:
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path nvidia/parakeet-tdt-0.6b-v3 \
+  --port 8000
+```
+
+The MLX backend loads the same Transformers-format checkpoint as the Torch path, so no MLX-converted repository (such as `mlx-community/parakeet-tdt-0.6b-v3`) is needed. It supports all three heads (CTC, RNN-T, TDT), the same request parameters, batching, and `dtype` setting, and computes log-mel features with the checkpoint's own Transformers feature extractor, so both backends see identical inputs.
+
+On an M5 Pro with `parakeet-tdt-0.6b-v3`, server-side end-to-end latency (single-request rows average three requests; the burst row is the median of three warm bursts of 32 concurrent 5-second clips):
+
+| Backend | dtype | 4.6 s clip | 210 s clip (2 chunks) | 32-request burst |
+|---|---|---|---|---|
+| Torch MPS | `float32` | 120 ms | 3.06 s | 1.28 s |
+| Torch MPS | `bfloat16` | 86 ms | 1.89 s | 0.66 s |
+| MLX | `float32` | 68 ms | 1.44 s | 0.66 s |
+| MLX | `bfloat16` | 58 ms | 0.93 s | 0.50 s |
+
+All four configurations returned identical transcripts in this test.
+
+MLX on the GPU computes `float32` matrix products at lower precision than PyTorch, so `float32` encoder outputs differ from Torch by up to about 1% relative; on the MLX CPU device they agree to within 1e-5. Transcripts matched across backends in our tests.
 
 ## Transcribe Audio
 

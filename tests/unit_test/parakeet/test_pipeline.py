@@ -182,3 +182,45 @@ def test_batch_fn_fails_only_the_group_whose_forward_raised() -> None:
 
     assert isinstance(results[0], RuntimeError)
     assert results[1].data["text"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "mlx_enabled, runner_module, runner_name",
+    [
+        (True, "sglang_omni.models.parakeet.mlx.runner", "ParakeetMlxModelRunner"),
+        (False, "sglang_omni.models.parakeet.model_runner", "ParakeetModelRunner"),
+    ],
+)
+def test_runner_follows_sglang_use_mlx(
+    monkeypatch: pytest.MonkeyPatch,
+    mlx_enabled: bool,
+    runner_module: str,
+    runner_name: str,
+) -> None:
+    if mlx_enabled:
+        pytest.importorskip("mlx.core")
+    else:
+        pass
+    import importlib
+
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
+
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: mlx_enabled)
+    monkeypatch.setattr(
+        importlib.import_module(runner_module),
+        runner_name,
+        lambda model_path, **kwargs: calls.append((model_path, kwargs)) or runner_name,
+    )
+
+    runner = parakeet_stages.make_parakeet_runner(
+        "ckpt", device=torch.device("mps", 0), dtype="bfloat16"
+    )
+
+    assert runner == runner_name
+    expected_kwargs = (
+        {"dtype": "bfloat16"}
+        if mlx_enabled
+        else {"device": "mps:0", "dtype": "bfloat16"}
+    )
+    assert calls == [("ckpt", expected_kwargs)]
