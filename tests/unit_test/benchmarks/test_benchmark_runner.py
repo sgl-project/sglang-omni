@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 
+import aiohttp
 import numpy as np
 import pytest
 from aiohttp import web
 
+import benchmarks.benchmarker.runner as runner_module
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
 
@@ -160,6 +163,59 @@ async def test_requests_that_get_a_slot_at_once_are_not_marked() -> None:
     results = await runner.run(["a", "b", "c"], _send)
 
     assert not any(r.waited_for_slot for r in results)
+
+
+@pytest.mark.asyncio
+async def test_after_send_runs_outside_the_slot_and_the_timed_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second_started = asyncio.Event()
+    timer_stopped = asyncio.Event()
+    followed: list[str] = []
+    release_followups = asyncio.Event()
+    clock_seconds = 10.0
+
+    def read_clock() -> float:
+        if second_started.is_set():
+            timer_stopped.set()
+        else:
+            pass
+        return clock_seconds
+
+    monkeypatch.setattr(runner_module, "time", SimpleNamespace(perf_counter=read_clock))
+
+    async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
+        nonlocal clock_seconds
+        if sample == "b":
+            clock_seconds = 12.0
+            second_started.set()
+        else:
+            pass
+        return RequestResult(request_id=sample, is_success=True)
+
+    async def after_send(result: RequestResult) -> None:
+        if result.request_id == "a":
+            await asyncio.wait_for(second_started.wait(), timeout=1)
+        else:
+            pass
+        await release_followups.wait()
+        followed.append(result.request_id)
+
+    runner = BenchmarkRunner(RunConfig(max_concurrency=1, warmup=2, disable_tqdm=True))
+    task = asyncio.create_task(runner.run(["a", "b"], send, after_send=after_send))
+    try:
+        await asyncio.wait_for(timer_stopped.wait(), timeout=2)
+        assert runner.wall_clock_s == 2.0
+        assert not task.done()
+        assert not followed
+    finally:
+        clock_seconds = 112.0
+        release_followups.set()
+        results = await asyncio.wait_for(task, timeout=2)
+
+    assert [r.request_id for r in results] == ["a", "b"]
+    assert sorted(followed) == ["a", "b"]
+    assert runner.wall_clock_s == 2.0
 
 
 def arrival_offsets(seed: int, rate: float, count: int) -> np.ndarray:

@@ -8,7 +8,7 @@
 FROM intel/deep-learning-essentials:2026.0.0-devel-ubuntu24.04 AS base
 
 ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
-ARG SGLANG_XPU_BRANCH=v0.5.20
+ARG SGLANG_XPU_BRANCH=v0.5.21
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_INDEX_URL=https://pypi.org/simple

@@ -357,14 +357,8 @@ def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
 @pytest.mark.parametrize(
     ("is_rocm", "expected_env"),
     [
-        (
-            True,
-            {
-                "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
-                "SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1",
-            },
-        ),
-        (False, {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}),
+        (True, {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}),
+        (False, {}),
     ],
 )
 def test_qwen3_omni_talker_stage_env_defaults(
@@ -372,7 +366,7 @@ def test_qwen3_omni_talker_stage_env_defaults(
     is_rocm: bool,
     expected_env: dict[str, str],
 ) -> None:
-    """Talker disables fused atomic MoE finalize; ROCm also disables aiter greedy."""
+    """The talker stage disables aiter greedy sampling on ROCm only."""
     monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
 
     for config_cls in (

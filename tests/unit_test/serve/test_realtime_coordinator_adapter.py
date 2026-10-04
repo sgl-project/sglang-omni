@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterable
 from typing import Literal
+from unittest.mock import Mock
 
 import pytest
 
@@ -213,3 +214,25 @@ async def test_unexpected_output_stream_end_fails_the_session() -> None:
 
     event, _ = sink.published[0]
     assert isinstance(event, TurnFailure)
+
+
+@pytest.mark.asyncio
+async def test_context_exhaustion_without_pending_unit_preserves_code() -> None:
+    coordinator = SessionCoordinator([])
+    sink = RecordingSink()
+    adapter = build_adapter(coordinator)
+    await adapter.open("sess_1", SESSION_CONFIG, sink)
+    adapter.active_unit = build_unit(0)
+    adapter.output_converter = Mock(
+        side_effect=RuntimeError(
+            "context_exhausted: thinker context length 8192 tokens"
+        )
+    )
+    coordinator.put(adapter.session_identity, 0, "data", b"reply")
+    await asyncio.wait_for(sink.has_published.wait(), PROCESS_TIMEOUT_S)
+    await adapter.close()
+
+    event, _ = sink.published[0]
+    assert isinstance(event, TurnFailure)
+    assert event.code == "context_exhausted"
+    assert "8192" in event.message

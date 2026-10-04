@@ -700,6 +700,29 @@ def test_vocode_payloads_returns_each_row_with_its_reference(
         )
 
 
+def test_vocode_payloads_skip_empty_codec_sequences(
+    build_code2wav_model: Code2WavBuilder,
+) -> None:
+    empty = StagePayload(
+        request_id="empty",
+        request=OmniRequest(inputs=None, params={}, metadata={}),
+        data=MiniCPMOPipelineState(
+            engine_outputs={
+                "talker": {"codec_tokens": torch.empty(0, dtype=torch.long)}
+            }
+        ).to_dict(),
+    )
+    outputs = vocode_code2wav_payloads(
+        build_code2wav_model(),
+        [empty, talker_payload(request_id="voiced", codec_tokens=[4, 5])],
+    )
+    assert outputs[0].data["audio_waveform_shape"] == [0]
+    np.testing.assert_array_equal(
+        np.frombuffer(outputs[1].data["audio_waveform"], dtype=np.float32),
+        expected_waveform([4, 5], DEFAULT_REFERENCE_AUDIO),
+    )
+
+
 QUEUED_REFERENCES = (("req-a", b"a"), ("req-b", b"b"))
 
 

@@ -86,7 +86,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.20   # the pinned release
+git checkout v0.5.21   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
@@ -264,8 +264,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
 RoPE is sgl-kernel's SYCL JIT kernel, which needs `icpx` on `PATH`; add the compiler directory
-alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.2.0
-wheel that SGLang v0.5.20 pins; older sgl-kernel builds fail with
+alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.3.0
+wheel that SGLang v0.5.21 pins; older sgl-kernel builds fail with
 `"fused_topk_softmax_kernel" not implemented for 'Float'`.
 ```bash
 export PATH="/opt/intel/oneapi/compiler/latest/bin:$PATH" SGLANG_OMNI_STARTUP_TIMEOUT=1800

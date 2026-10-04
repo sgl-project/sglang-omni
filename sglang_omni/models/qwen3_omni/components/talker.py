@@ -43,6 +43,7 @@ from sglang_omni.utils.predictor_layers import (
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
+    AuxHiddenStateList,
     MergedColumnParallelLinear,
     MRotaryEmbedding,
     QuantizationConfig,
@@ -50,6 +51,7 @@ from sglang_omni.vendor.sglang.layers import (
     RMSNorm,
     RowParallelLinear,
     SiluAndMul,
+    residual_batch,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
@@ -463,9 +465,9 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
         else:
             hidden_states = input_embeds
 
-        residual = None
+        residual_batch.start(forward_batch)
         capture_layers = set(self.layers_to_capture or [])
-        aux_hidden_states = []
+        aux_hidden_states = AuxHiddenStateList()
 
         # Match the hidden-capture contract used by the compare tooling:
         # layer 0 is the embedding output (input to the first transformer layer).
@@ -476,21 +478,18 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
 
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
-            hidden_states, residual = layer(
+            hidden_states = layer(
                 positions=positions,
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
-                residual=residual,
                 captured_last_layer_outputs=(
                     aux_hidden_states if i in capture_layers and i != 0 else None
                 ),
             )
 
+        hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
         if hidden_states.shape[0] != 0:
-            if residual is None:
-                hidden_states = self.norm(hidden_states)
-            else:
-                hidden_states, _ = self.norm(hidden_states, residual)
+            hidden_states = residual_batch.norm(hidden_states, forward_batch, self.norm)
         else:
             pass
 

@@ -205,6 +205,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
         flow_prompt_speech_token=torch.tensor([[1, 2]], dtype=torch.int32),
         flow_prompt_speech_feat=torch.ones(1, 2, 80),
         flow_embedding=torch.ones(1, 192),
+        finish_reason="length",
     )
     payload = make_payload(state)
     scheduler.stream_payloads["req"] = payload
@@ -222,6 +223,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
     messages = scheduler.on_stream_done("req")
 
     assert [message.type for message in messages] == ["stream", "result"]
+    assert messages[1].data.data["finish_reason"] == "length"
 
 
 def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:

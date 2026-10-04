@@ -21,10 +21,12 @@ MULTIPART_FIELD_VALUE_LIMIT_BYTES = 4 * 1024
 ROUTE_MODEL_HEADER = "x-sglang-omni-route-model"
 ROUTE_STREAM_HEADER = "x-sglang-omni-route-stream"
 ROUTE_CAPABILITIES_HEADER = "x-sglang-omni-route-capabilities"
+ROUTE_WORKER_HEADER = "x-sglang-omni-route-worker"
 ROUTE_HEADER_NAMES = {
     ROUTE_MODEL_HEADER,
     ROUTE_STREAM_HEADER,
     ROUTE_CAPABILITIES_HEADER,
+    ROUTE_WORKER_HEADER,
 }
 
 INPUT_FIELD_CAPABILITIES: dict[str, Capability] = {
@@ -57,6 +59,7 @@ class RouteKind(str, Enum):
     GENERATION = "generation"
     SPEECH = "speech"
     SPEECH_BATCH = "speech_batch"
+    SPEECH_OUTCOME = "speech_outcome"
     VOICE_CONTROL = "voice_control"
     TRANSCRIPTION = "transcription"
     TRANSLATION = "translation"
@@ -67,6 +70,8 @@ def classify_route(path: str) -> RouteKind:
         return RouteKind.SPEECH
     if path == "/v1/audio/speech/batch":
         return RouteKind.SPEECH_BATCH
+    if path.startswith("/v1/audio/speech/"):
+        return RouteKind.SPEECH_OUTCOME
     if path.startswith("/v1/audio/voices"):
         return RouteKind.VOICE_CONTROL
     if path == "/v1/audio/transcriptions":
@@ -88,6 +93,9 @@ class RouteMetadata:
     route_kind: RouteKind
     service_class: ServiceClass
     voice_names_requiring_registry: set[str]
+    # Note (Yucheng Hu): the worker a speech outcome lookup is pinned to, echoed
+    # by the caller from the streaming response's X-SGLang-Omni-Worker.
+    route_worker_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,6 +124,11 @@ def extract_route_metadata(
     route_capabilities, has_route_capabilities_header = route_capabilities_from_header(
         request
     )
+    route_worker_id = request.headers.get(ROUTE_WORKER_HEADER, "").strip()
+    if route_kind is RouteKind.SPEECH_OUTCOME and not route_worker_id:
+        raise RouteMetadataError(
+            f"{ROUTE_WORKER_HEADER} is required for speech outcome lookups"
+        )
     has_json_body = route_kind in {
         RouteKind.SPEECH,
         RouteKind.SPEECH_BATCH,
@@ -236,6 +249,7 @@ def extract_route_metadata(
             if speech_facts is not None
             else set()
         ),
+        route_worker_id=route_worker_id,
     )
 
 
@@ -625,7 +639,11 @@ def required_capabilities(
     route_capabilities: set[Capability],
     speech_facts: SpeechRouteFacts | None,
 ) -> set[Capability]:
-    if route_kind in {RouteKind.SPEECH, RouteKind.SPEECH_BATCH}:
+    if route_kind in {
+        RouteKind.SPEECH,
+        RouteKind.SPEECH_BATCH,
+        RouteKind.SPEECH_OUTCOME,
+    }:
         capabilities: set[Capability] = {"speech"}
     elif route_kind is RouteKind.VOICE_CONTROL:
         capabilities = {"speech"}
@@ -669,6 +687,8 @@ def service_class_for_route(route_kind: RouteKind) -> ServiceClass:
         return "speech_http"
     if route_kind is RouteKind.SPEECH_BATCH:
         return "speech_batch"
+    if route_kind is RouteKind.SPEECH_OUTCOME:
+        return "speech_outcome"
     if route_kind is RouteKind.VOICE_CONTROL:
         return "voice_control"
     if route_kind in {RouteKind.TRANSCRIPTION, RouteKind.TRANSLATION}:

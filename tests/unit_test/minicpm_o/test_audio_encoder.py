@@ -18,12 +18,14 @@ import torch
 
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
-    MiniCPMWhisperEncoder,
     MultiModalProjector,
     chunked_causal_mask,
     feature_lens_after_pooling,
     fuse_qkv,
     min_mel_frames,
+)
+from sglang_omni.models.minicpm_o.components.whisper_encoder import (
+    MiniCPMWhisperEncoder,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -123,7 +125,7 @@ def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
 
     native_mask = torch.where(allowed, 0.0, -1e9).unsqueeze(1)
     with torch.no_grad():
-        got = native(mel, native_mask)
+        got, _ = native(mel, native_mask)
 
     for i, length in enumerate(lens):
         valid_frames = (length - 1) // 2 + 1

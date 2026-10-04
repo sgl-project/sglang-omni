@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import Mapping
 
+import numpy as np
 import torch
 import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -126,6 +127,7 @@ def create_sglang_talker_executor_from_config(
     max_seq_len: int = 4096,
     server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
+    session_mode: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
@@ -138,6 +140,14 @@ def create_sglang_talker_executor_from_config(
         sampling_backend="pytorch",
     )
     overrides.setdefault("trust_remote_code", False)
+    if session_mode:
+        overrides.update(
+            enable_streaming_session=True,
+            disable_overlap_schedule=True,
+            disable_cuda_graph=True,
+        )
+    else:
+        pass
     overrides["tp_size"] = tp_size
     # note (MayDomine): cap talker KV allocation so it does not starve the thinker.
     overrides.setdefault("max_total_tokens", 32 * max_seq_len)
@@ -164,12 +174,32 @@ def create_sglang_talker_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        session_mode=session_mode,
     )
     logger.info(
         f"sglang_ar_started stage=talker gpu_id={gpu_id} "
         f"post_load_avail_mem={avail_gpu_mem(gpu_id)} pid={os.getpid()}"
     )
     return scheduler
+
+
+def create_sglang_session_talker_executor_from_config(
+    model_path: str,
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
+    total_gpu_memory_fraction: float | None = None,
+) -> OmniScheduler[SGLangARRequestData]:
+    """Returns the talker that keeps native KV across the units of a duplex session."""
+    return create_sglang_talker_executor_from_config(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        server_args_overrides=server_args_overrides,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        session_mode=True,
+    )
 
 
 def vocode_code2wav_payloads(
@@ -190,7 +220,15 @@ def vocode_code2wav_payloads(
         f"minicpm_code2wav_batch size={len(payloads)} "
         f"max_codec_tokens={max(len(token_ids) for token_ids in codec_tokens)}"
     )
-    waveforms = model.vocode(codec_tokens, references)
+    # note (Junnan Li): model.vocode rejects empty rows, which turns without speech produce.
+    voiced = [index for index, tokens in enumerate(codec_tokens) if tokens]
+    voiced_waveforms = model.vocode(
+        [codec_tokens[index] for index in voiced],
+        [references[index] for index in voiced],
+    )
+    waveforms = [np.zeros(0, dtype=np.float32) for _ in codec_tokens]
+    for index, waveform in zip(voiced, voiced_waveforms, strict=True):
+        waveforms[index] = waveform
 
     outputs: list[StagePayload] = []
     for payload, waveform in zip(payloads, waveforms, strict=True):
