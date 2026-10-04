@@ -172,6 +172,12 @@ def load_code2wav_model(
     )
     if current_platform.is_cuda() and torch.device(device).type == "cuda":
         model.use_channels_last()
+        if model.dtype in (torch.bfloat16, torch.float16):
+            model.use_fused_transformer(
+                current_platform.get_joint_rope_inplace_kernel()
+            )
+        else:
+            pass
     else:
         pass
     return model.eval()

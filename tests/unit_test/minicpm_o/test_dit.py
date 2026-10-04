@@ -69,7 +69,7 @@ def test_packed_causal_conv_preserves_sequence_boundaries() -> None:
     block = CausalConvBlock(4, 4).eval()
     causal_padding_frames = block.kernel_size - 1
     rows = [torch.randn(length, 4) for length in (3, 5, 2)]
-    expected = torch.cat([block(row.unsqueeze(0)).squeeze(0) for row in rows])
+    expected = torch.cat([block(row.unsqueeze(0))[0].squeeze(0) for row in rows])
     sequence_lengths = torch.tensor([len(row) for row in rows])
     frame_count = int(sequence_lengths.sum())
     sequence_ids = torch.repeat_interleave(torch.arange(len(rows)), sequence_lengths)

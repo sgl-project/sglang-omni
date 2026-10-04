@@ -70,44 +70,6 @@ def fake_packed_fa3(
     return torch.empty_like(q)
 
 
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::native_mish",
-    mutates_args=(),
-    device_types="cuda",
-)
-def native_mish(x: torch.Tensor) -> torch.Tensor:
-    """Preserve eager CUDA Mish arithmetic across the Inductor boundary."""
-    return F.mish(x)
-
-
-@native_mish.register_fake
-def fake_native_mish(x: torch.Tensor) -> torch.Tensor:
-    return torch.empty_like(x)
-
-
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::native_layer_norm",
-    mutates_args=(),
-    device_types="cuda",
-)
-def native_layer_norm(
-    x: torch.Tensor,
-    normalized_size: int,
-    eps: float,
-) -> torch.Tensor:
-    """Keep CUDA autocast's eager FP32 LayerNorm contract."""
-    return F.layer_norm(x.float(), (normalized_size,), None, None, eps)
-
-
-@native_layer_norm.register_fake
-def fake_native_layer_norm(
-    x: torch.Tensor,
-    normalized_size: int,
-    eps: float,
-) -> torch.Tensor:
-    return torch.empty_like(x, dtype=torch.float32)
-
-
 @dataclass(frozen=True)
 class PackedRows:
     lengths: tuple[int, ...]
@@ -292,6 +254,37 @@ class PackedDiT:
         device = torch.device(device)
         self.is_ragged = device.type == "cuda" and _is_fa3_supported()
         self.is_compiled = False
+        # note (ratish): Parameters, whose shapes Dynamo keeps static under the dynamic
+        # prefix compile. to_q, to_k and to_v become row views of them, so the DiT
+        # must already hold its serving dtype.
+        qkv_weights: list[torch.nn.Parameter] = []
+        qkv_biases: list[torch.nn.Parameter] = []
+        with torch.no_grad():
+            for block in dit.transformer_blocks:
+                attention = block.attn
+                projections = (attention.to_q, attention.to_k, attention.to_v)
+                qkv_weight = torch.nn.Parameter(
+                    torch.cat([projection.weight for projection in projections]),
+                    requires_grad=False,
+                )
+                qkv_bias = torch.nn.Parameter(
+                    torch.cat([projection.bias for projection in projections]),
+                    requires_grad=False,
+                )
+                for index, projection in enumerate(projections):
+                    rows = slice(
+                        index * attention.inner_dim, (index + 1) * attention.inner_dim
+                    )
+                    projection.weight = torch.nn.Parameter(
+                        qkv_weight[rows], requires_grad=False
+                    )
+                    projection.bias = torch.nn.Parameter(
+                        qkv_bias[rows], requires_grad=False
+                    )
+                qkv_weights.append(qkv_weight)
+                qkv_biases.append(qkv_bias)
+        self.qkv_weights = tuple(qkv_weights)
+        self.qkv_biases = tuple(qkv_biases)
         logger.info(
             "Fun-CosyVoice3 Flow row attention on %s: %s",
             device,
@@ -370,34 +363,30 @@ class PackedDiT:
         h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
         h = self.conv_pos_embed(h, rows) + h
         residual = h
-        for block in dit.transformer_blocks:
-            attn_norm = block.attn_norm
-            modulation = attn_norm.linear(attn_norm.silu(t))
-            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-                torch.chunk(modulation, 6, dim=1)
-            )
-            norm = layer_norm(attn_norm.norm, h) * (1 + scale_msa[:, None])
-            norm = norm + shift_msa[:, None]
+        for block_index, block in enumerate(dit.transformer_blocks):
+            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(h, emb=t)
             h = h + gate_msa.unsqueeze(1) * self.attend(
-                block.attn, norm, rope, attention
+                block.attn,
+                norm,
+                rope,
+                attention,
+                self.qkv_weights[block_index],
+                self.qkv_biases[block_index],
             )
-            ff_norm = layer_norm(block.ff_norm, h) * (1 + scale_mlp[:, None])
-            ff_norm = ff_norm + shift_mlp[:, None]
+            ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
             h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
         if dit.long_skip_connection is not None:
             h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
         else:
             pass
-        norm_out = dit.norm_out
-        scale, shift = torch.chunk(norm_out.linear(norm_out.silu(t)), 2, dim=1)
-        h = layer_norm(norm_out.norm, h) * (1 + scale)[:, None, :] + shift[:, None, :]
+        h = dit.norm_out(h, t)
         return dit.proj_out(h)
 
     def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
         module = self.dit.input_embed.conv_pos_embed
         x = scatter_rows(h, rows, rows.width).permute(0, 2, 1)
-        x = mish(module.conv1[0](F.pad(x, (module.kernel_size - 1, 0, 0, 0))))
-        x = mish(module.conv2[0](F.pad(x, (module.kernel_size - 1, 0, 0, 0))))
+        x = module.conv1(F.pad(x, (module.kernel_size - 1, 0, 0, 0)))
+        x = module.conv2(F.pad(x, (module.kernel_size - 1, 0, 0, 0)))
         return gather_rows(x.permute(0, 2, 1), rows)
 
     def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
@@ -413,13 +402,10 @@ class PackedDiT:
         x: torch.Tensor,
         rope: tuple[torch.Tensor, torch.Tensor],
         attention: PackedRowAttention,
+        qkv_weight: torch.Tensor,
+        qkv_bias: torch.Tensor,
     ) -> torch.Tensor:
-        # note (ratish): under autocast to_q, to_k and to_v would each cast the
-        # float32 norm output again.
-        x = x.to(attn.to_q.weight.dtype)
-        query = attn.to_q(x)
-        key = attn.to_k(x)
-        value = attn.to_v(x)
+        query, key, value = F.linear(x, qkv_weight, qkv_bias).chunk(3, dim=-1)
         if torch.compiler.is_compiling():
             query = rotated(query, *rope)
             key = rotated(key, *rope)
@@ -428,22 +414,6 @@ class PackedDiT:
             rotate_in_place(key, *rope)
         out = attention(query, key, value).to(query.dtype)
         return attn.to_out[1](attn.to_out[0](out))
-
-
-def layer_norm(module: torch.nn.LayerNorm, h: torch.Tensor) -> torch.Tensor:
-    # note(ratish): Inductor rewrites the layer norm and Mish in its own arithmetic;
-    # the custom ops keep the eager kernels, so the compiled forward stays exact.
-    if torch.compiler.is_compiling():
-        return native_layer_norm(h, module.normalized_shape[0], module.eps)
-    else:
-        return module(h)
-
-
-def mish(x: torch.Tensor) -> torch.Tensor:
-    if torch.compiler.is_compiling():
-        return native_mish(x)
-    else:
-        return F.mish(x)
 
 
 def rotate_in_place(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> None:

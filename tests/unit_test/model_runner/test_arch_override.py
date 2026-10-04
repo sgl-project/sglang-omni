@@ -20,7 +20,6 @@ pytest.importorskip("sglang")
 from sglang.srt.model_executor.model_runner_components.layer_setup import (  # noqa: E402
     resolve_layer_indices,
 )
-from sglang.srt.speculative.spec_info import SpeculativeAlgorithm  # noqa: E402
 
 from sglang_omni.model_runner.model_worker import ModelWorker  # noqa: E402
 
@@ -56,6 +55,7 @@ def qwen3_omni_engine_config():
         num_hidden_layers=thinker_text.num_hidden_layers,
         num_attention_layers=thinker_text.num_hidden_layers,
         num_nextn_predict_layers=None,
+        swa_attention_layer_ids=None,
         head_dim=thinker_text.head_dim,
         vocab_size=thinker_text.vocab_size,
     )
@@ -66,7 +66,6 @@ def pool_layers(config) -> int:
         model=object(),
         model_config=config,
         is_draft_worker=False,
-        spec_algorithm=SpeculativeAlgorithm.NONE,
     ).num_effective_layers
 
 

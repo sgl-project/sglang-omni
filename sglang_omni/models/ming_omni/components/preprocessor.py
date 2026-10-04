@@ -479,54 +479,26 @@ class MingPreprocessor:
             else:
                 pass
 
-        # Compute cache keys BEFORE async loading; same content -> same key so
-        # SGLang's radix prefix cache can correctly reuse KVs across requests, and
-        # different content -> different key so it never falsely aliases image
-        # placeholder positions (which share the same generic image_patch_token).
-        image_cache_key = compute_image_cache_key(raw_images) if raw_images else None
-        audio_cache_key = compute_audio_cache_key(audio_urls) if audio_urls else None
-        video_cache_key = (
-            compute_video_cache_key(
-                raw_videos,
-                fps=float(video_fps) if video_fps is not None else None,
-                max_frames=(
-                    int(video_max_frames) if video_max_frames is not None else None
-                ),
-                min_pixels=(
-                    int(video_min_pixels) if video_min_pixels is not None else None
-                ),
-                max_pixels=(
-                    int(video_max_pixels) if video_max_pixels is not None else None
-                ),
-                total_pixels=(
-                    int(video_total_pixels) if video_total_pixels is not None else None
-                ),
-            )
-            if raw_videos
-            else None
-        )
+        video_kwargs = {
+            "fps": float(video_fps) if video_fps is not None else None,
+            "max_frames": (
+                int(video_max_frames) if video_max_frames is not None else None
+            ),
+            "min_pixels": (
+                int(video_min_pixels) if video_min_pixels is not None else None
+            ),
+            "max_pixels": (
+                int(video_max_pixels) if video_max_pixels is not None else None
+            ),
+            "total_pixels": (
+                int(video_total_pixels) if video_total_pixels is not None else None
+            ),
+        }
 
         # --- Load images, videos and audio concurrently ---
         image_coro = ensure_image_list_async(raw_images) if raw_images else None
         video_coro = (
-            ensure_video_list_async(
-                raw_videos,
-                fps=float(video_fps) if video_fps is not None else None,
-                max_frames=(
-                    int(video_max_frames) if video_max_frames is not None else None
-                ),
-                min_pixels=(
-                    int(video_min_pixels) if video_min_pixels is not None else None
-                ),
-                max_pixels=(
-                    int(video_max_pixels) if video_max_pixels is not None else None
-                ),
-                total_pixels=(
-                    int(video_total_pixels) if video_total_pixels is not None else None
-                ),
-            )
-            if raw_videos
-            else None
+            ensure_video_list_async(raw_videos, **video_kwargs) if raw_videos else None
         )
         audio_coros = (
             [
@@ -584,6 +556,13 @@ class MingPreprocessor:
         waveforms: list[np.ndarray[tuple[int, ...], np.dtype[np.generic]]] = [
             a for a in audio_results if isinstance(a, np.ndarray)
         ]
+
+        # Key the loaded media, not the request strings. These keys also set the
+        # pad values that stop the radix prefix cache from reusing KV across
+        # different content behind the same URL or path.
+        image_cache_key = compute_image_cache_key(images)
+        audio_cache_key = compute_audio_cache_key(waveforms)
+        video_cache_key = compute_video_cache_key(videos, **video_kwargs)
 
         # --- Process images ---
         image_token_counts: list[int] = []

@@ -116,17 +116,15 @@ class MingImageEncoder(nn.Module):
         """Initialize sglang TP context for vision parallel layers."""
         import os
 
-        import sglang.srt.layers.dp_attention as dp
         from sglang.srt.distributed import parallel_state
+        from sglang.srt.runtime_context import SpawnRanks, get_parallel, publish
+        from sglang.srt.server_args import ServerArgs
 
-        dp_tp_ready = (
-            getattr(dp, "_ATTN_TP_SIZE", None) is not None
-            and dp._ATTN_TP_SIZE > 0  # noqa: leading-underscore
-        )
-        if dp_tp_ready and parallel_state.model_parallel_is_initialized():
-            if dp._ATTN_TP_SIZE != tp_size:  # noqa: leading-underscore
+        if parallel_state.model_parallel_is_initialized():
+            initialized_tp_size = get_parallel().tp_size
+            if initialized_tp_size != tp_size:
                 raise RuntimeError(
-                    f"TP already initialized with tp_size={dp._ATTN_TP_SIZE}, cannot reinitialize with tp_size={tp_size}"  # noqa: leading-underscore
+                    f"TP already initialized with tp_size={initialized_tp_size}, cannot reinitialize with tp_size={tp_size}"
                 )
             else:
                 pass
@@ -144,28 +142,21 @@ class MingImageEncoder(nn.Module):
                 os.environ["MASTER_PORT"] = str(s.getsockname()[1])
         else:
             pass
-        from sglang.srt.server_args import (
-            ServerArgs,
-            set_global_server_args_for_scheduler,
+        # note (ratish): the groups take their widths and this process its
+        # ranks from the published record.
+        publish(
+            ServerArgs(model_path="dummy", tp_size=tp_size),
+            role="scheduler",
+            ranks=SpawnRanks(world_rank=tp_rank),
         )
-
-        try:
-            set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
-        except Exception:
-            pass
-        if not parallel_state.model_parallel_is_initialized():
-            parallel_state.init_distributed_environment(
-                backend=current_platform.get_torch_distributed_backend_str(),
-                world_size=tp_size,
-                rank=tp_rank,
-                local_rank=0,
-            )
-            parallel_state.initialize_model_parallel(tensor_model_parallel_size=tp_size)
-            cls.did_init_tp = True
-        else:
-            pass
-        dp._ATTN_TP_SIZE = tp_size  # noqa: leading-underscore
-        dp._ATTN_TP_RANK = tp_rank  # noqa: leading-underscore
+        parallel_state.init_distributed_environment(
+            backend=current_platform.get_torch_distributed_backend_str(),
+            world_size=tp_size,
+            rank=tp_rank,
+            local_rank=0,
+        )
+        parallel_state.initialize_model_parallel()
+        cls.did_init_tp = True
 
     @classmethod
     def cleanup_sglang_tp(cls):

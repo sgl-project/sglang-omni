@@ -17,6 +17,7 @@ from typing import Protocol
 
 import torch
 import torch._dynamo as dynamo
+import torch.nn.functional as F
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     FA3_PAGE_SIZE,
@@ -24,8 +25,6 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
     PackedRows,
     gather_rows,
-    layer_norm,
-    mish,
     pack_rows,
     packed_fa3,
     ragged_fa3,
@@ -318,15 +317,11 @@ def conv_pos_embed_prefix(
         (slots >= 0).unsqueeze(-1), hidden_states[0][slots.clamp(min=0)], 0.0
     )  # (rows, width, hidden_size)
     first_input = torch.cat((first_context.to(padded.dtype), padded), dim=1)
-    first_output = mish(conv_pos_embed.conv1[0](first_input.permute(0, 2, 1))).permute(
-        0, 2, 1
-    )
+    first_output = conv_pos_embed.conv1(first_input.permute(0, 2, 1)).permute(0, 2, 1)
     second_input = torch.cat(
         (second_context.to(first_output.dtype), first_output), dim=1
     )
-    second_output = mish(
-        conv_pos_embed.conv2[0](second_input.permute(0, 2, 1))
-    ).permute(0, 2, 1)
+    second_output = conv_pos_embed.conv2(second_input.permute(0, 2, 1)).permute(0, 2, 1)
     tail_index = attention.tail_index.unsqueeze(-1).expand(-1, -1, first_input.shape[2])
     return (
         gather_rows(second_output, rows),
@@ -366,18 +361,13 @@ def forward_prefix(
     hidden_states = embedded + hidden_states
     residual = hidden_states
     for layer, block in enumerate(dit.transformer_blocks):
-        attn_norm = block.attn_norm
-        modulation = attn_norm.linear(attn_norm.silu(t))
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(
-            modulation, 6, dim=1
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(
+            hidden_states, emb=t
         )
-        norm = layer_norm(attn_norm.norm, hidden_states) * (1 + scale_msa[:, None])
-        norm = norm + shift_msa[:, None]
         attn = block.attn
-        normed = norm.to(attn.to_q.weight.dtype)
-        query = attn.to_q(normed)
-        key = attn.to_k(normed)
-        value = attn.to_v(normed)
+        query, key, value = F.linear(
+            norm, estimator.qkv_weights[layer], estimator.qkv_biases[layer]
+        ).chunk(3, dim=-1)
         if torch.compiler.is_compiling():
             query = rotated(query, *rope)
             key = rotated(key, *rope)
@@ -397,8 +387,9 @@ def forward_prefix(
         hidden_states = hidden_states + gate_msa.unsqueeze(1) * attn.to_out[1](
             attn.to_out[0](out)
         )
-        ff_norm = layer_norm(block.ff_norm, hidden_states) * (1 + scale_mlp[:, None])
-        ff_norm = ff_norm + shift_mlp[:, None]
+        ff_norm = (
+            block.ff_norm(hidden_states) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+        )
         hidden_states = hidden_states + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
     if dit.long_skip_connection is not None:
         hidden_states = dit.long_skip_connection(
@@ -406,12 +397,7 @@ def forward_prefix(
         )
     else:
         pass
-    norm_out = dit.norm_out
-    scale, shift = torch.chunk(norm_out.linear(norm_out.silu(t)), 2, dim=1)
-    hidden_states = (
-        layer_norm(norm_out.norm, hidden_states) * (1 + scale)[:, None, :]
-        + shift[:, None, :]
-    )
+    hidden_states = dit.norm_out(hidden_states, t)
     return dit.proj_out(hidden_states), first_tail, second_tail
 
 

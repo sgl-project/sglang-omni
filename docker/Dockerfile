@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
 ARG FLASHINFER_CACHE_IMAGE=hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
 
 FROM ${FLASHINFER_CACHE_IMAGE} AS flashinfer-cache

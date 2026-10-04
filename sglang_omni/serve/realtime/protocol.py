@@ -17,6 +17,7 @@ from sglang_omni.serve.realtime.schema import (
     CLIENT_EVENT,
     MAX_EVENT_ID_LENGTH,
     AudioAppendEvent,
+    ImageAppendEvent,
     SessionUpdateEvent,
 )
 from sglang_omni.serve.realtime.types import ProtocolError
@@ -179,6 +180,23 @@ class SharedRealtimeSession:
             await self.runtime.append(
                 pcm, event.sglang.seq, event.sglang.t_start_ms, event.event_id
             )
+        elif isinstance(event, ImageAppendEvent):
+            max_encoded_image_chars = (
+                (self.runtime.capabilities.max_image_bytes + 2) // 3 * 4
+            )
+            if len(event.image) > max_encoded_image_chars:
+                raise ProtocolError(
+                    "buffer_overflow", "encoded image exceeds input budget"
+                )
+            else:
+                pass
+            try:
+                image = base64.b64decode(event.image, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ProtocolError(
+                    "invalid_request", "invalid base64 image", "image"
+                ) from exc
+            await self.runtime.append_image(image, event.sglang.t_ms, event.event_id)
         elif event.type == "input_audio_buffer.clear":
             await self.runtime.clear(event.event_id)
         elif event.type == "sglang.input_audio.end":

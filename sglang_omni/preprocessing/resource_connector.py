@@ -11,7 +11,7 @@ import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Awaitable, TypeVar
 from urllib.parse import ParseResult, urlparse
 from urllib.request import url2pathname
 
@@ -33,6 +33,22 @@ _MAX_HTTP_REDIRECTS = 5
 # Global thread pool for CPU-bound tasks (decoding/resampling)
 global_thread_pool = ThreadPoolExecutor(max_workers=8)
 atexit.register(global_thread_pool.shutdown)
+
+
+async def await_media_cleanup(awaitable: Awaitable[None]) -> None:
+    """Finish cleanup before propagating cancellation of its caller."""
+    cleanup = asyncio.ensure_future(awaitable)
+    cancellation = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    cleanup.result()
+    if cancellation is not None:
+        raise cancellation
+    else:
+        pass
 
 
 class ResourceHTTPConnection:
@@ -462,7 +478,6 @@ class MultiModalResourceConnector:
             Loaded media object.
         """
         url_spec = urlparse(url)
-        loop = asyncio.get_running_loop()
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
             download_start = time.time()
@@ -481,9 +496,17 @@ class MultiModalResourceConnector:
                 pass
 
             decode_start = time.time()
-            result = await loop.run_in_executor(
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 global_thread_pool, media_io.load_http_bytes, data, media_type
             )
+
+            async def cleanup_http_decoder() -> None:
+                await asyncio.gather(decode_future, return_exceptions=True)
+
+            try:
+                result = await asyncio.shield(decode_future)
+            finally:
+                await await_media_cleanup(cleanup_http_decoder())
             decode_time = time.time() - decode_start
 
             if len(data) > 1024 * 1024:
@@ -503,9 +526,17 @@ class MultiModalResourceConnector:
             method = (
                 self.load_data_url if url_spec.scheme == "data" else self.load_file_url
             )
-            return await loop.run_in_executor(
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 global_thread_pool, method, url_spec, media_io
             )
+
+            async def cleanup_url_decoder() -> None:
+                await asyncio.gather(decode_future, return_exceptions=True)
+
+            try:
+                return await asyncio.shield(decode_future)
+            finally:
+                await await_media_cleanup(cleanup_url_decoder())
         else:
             pass
 

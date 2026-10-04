@@ -256,7 +256,10 @@ def test_stream_message_round_trips_terminal_chunk_id() -> None:
     assert round_trip.modality == "text"
 
 
-def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
+@pytest.mark.parametrize("abort_fails", [False, True])
+def test_coordinator_failure_completion_fails_fast_and_cleans_state(
+    abort_fails: bool,
+) -> None:
     """Preserves fail-fast behavior and cleanup after any terminal failure."""
 
     async def run() -> None:
@@ -277,20 +280,40 @@ def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
         )
         assert coordinator.partial_results["req-1"] == {"decode": {"text": "hi"}}
 
+        recording_abort = control_plane.broadcast_abort
+        if abort_fails:
+
+            async def unavailable_abort(msg) -> None:
+                await recording_abort(msg)
+                raise RuntimeError("abort transport unavailable")
+
+            control_plane.broadcast_abort = unavailable_abort
         await coordinator.handle_completion(
             CompleteMessage("req-1", "code2wav", False, error="boom")
         )
 
         with pytest.raises(RuntimeError, match="boom"):
             await future
-        assert "req-1" not in coordinator.requests
         assert "req-1" not in coordinator.partial_results
         assert control_plane.aborts[-1].request_id == "req-1"
+        if abort_fails:
+            # Stages may still hold the request, so late output cannot release it
+            # and its ID stays reserved until an abort is delivered.
+            for terminal in ("decode", "code2wav"):
+                await coordinator.handle_completion(
+                    CompleteMessage("req-1", terminal, True, result={"text": "late"})
+                )
+            with pytest.raises(ValueError, match="already exists"):
+                await coordinator.submit_request("req-1", "hello")
+            control_plane.broadcast_abort = recording_abort
+            assert await coordinator.abort("req-1") is True
+        assert "req-1" not in coordinator.requests
 
     asyncio.run(run())
 
 
-def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
+@pytest.mark.parametrize("stopping", [False, True])
+def test_coordinator_fail_pending_requests_resolves_waiters(stopping: bool) -> None:
     async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
@@ -300,16 +323,26 @@ def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
         )
         coordinator.control_plane = RecordingCoordinatorControlPlane()
         coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
 
         await coordinator.submit_request("req-1", "hello")
         future = coordinator.completion_futures["req-1"]
 
-        await coordinator.fail_pending_requests(RuntimeError("stage died"))
+        expected_error = "Coordinator stopped" if stopping else "stage died"
+        if stopping:
+            await coordinator.stop()
+        else:
+            await coordinator.fail_pending_requests(RuntimeError(expected_error))
 
-        with pytest.raises(RuntimeError, match="stage died"):
-            await future
+        with pytest.raises(RuntimeError, match=expected_error):
+            await asyncio.wait_for(future, timeout=1)
         assert coordinator.requests == {}
         assert coordinator.partial_results == {}
+
+        # Later work is rejected instead of being sent to a pipeline that is gone.
+        with pytest.raises(RuntimeError, match=expected_error):
+            await coordinator.submit_request("req-2", "hello")
+        assert coordinator.requests == {}
 
     asyncio.run(run())
 
@@ -584,7 +617,8 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
     asyncio.run(run())
 
 
-def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
+@pytest.mark.parametrize("streaming", [False, True])
+def test_cancellation_is_preserved_after_abort_cleanup(streaming: bool) -> None:
     async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
@@ -596,7 +630,12 @@ def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        next_event = asyncio.create_task(anext(coordinator.stream("req-1", "hello")))
+        operation = (
+            anext(coordinator.stream("req-1", "hello"))
+            if streaming
+            else coordinator.submit("req-1", "hello")
+        )
+        next_event = asyncio.create_task(operation)
         for _ in range(100):
             if "req-1" in coordinator.requests:
                 break
@@ -611,6 +650,64 @@ def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
         assert coordinator.completion_futures == {}
         assert coordinator.stream_queues == {}
         assert coordinator.abort_tasks == {}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("failure", ["serialization", "cancelled_send"])
+def test_failed_submission_releases_its_request(streaming: bool, failure: str) -> None:
+    class FailingSendControlPlane(RecordingCoordinatorControlPlane):
+        def __init__(self) -> None:
+            super().__init__()
+            self.send_started = asyncio.Event()
+
+        async def submit_to_stage(self, stage: str, endpoint: str, msg) -> None:
+            if msg.request_id != "failed":
+                await super().submit_to_stage(stage, endpoint, msg)
+            elif failure == "serialization":
+                raise TypeError("cannot serialize request")
+            else:
+                self.send_started.set()
+                await asyncio.Event().wait()
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            max_in_flight=1,
+        )
+        control_plane = FailingSendControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        operation = (
+            anext(coordinator.stream("failed", "hello"))
+            if streaming
+            else coordinator.submit("failed", "hello")
+        )
+        task = asyncio.create_task(operation)
+        if failure == "serialization":
+            with pytest.raises(TypeError, match="cannot serialize request"):
+                await task
+        else:
+            await control_plane.send_started.wait()
+            future = coordinator.completion_futures["failed"]
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The abort must not leave an exception that nobody retrieves.
+            assert future.cancelled()
+
+        # A send that raised queued nothing, so no abort retires the ID at the
+        # stages. A cancelled send may already be queued for the stage, so that
+        # request is aborted before its ID and admission slot are released.
+        expected_aborts = [] if failure == "serialization" else ["failed"]
+        assert [msg.request_id for msg in control_plane.aborts] == expected_aborts
+        assert not coordinator.request_id_is_reserved("failed")
+        await coordinator.submit_request("healthy", "hello")
+        assert list(coordinator.requests) == ["healthy"]
 
     asyncio.run(run())
 
@@ -705,7 +802,10 @@ def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception()
     asyncio.run(run())
 
 
-def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
+@pytest.mark.parametrize("stopping", [False, True])
+def test_coordinator_stream_fail_pending_requests_cancels_future(
+    stopping: bool,
+) -> None:
     """A coordinator failure reaches the stream without leaving an exception
     on its unused completion future."""
 
@@ -729,10 +829,14 @@ def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
             coordinator, "req-1"
         )
 
-        await coordinator.fail_pending_requests(RuntimeError("stage died"))
+        expected_error = "Coordinator stopped" if stopping else "stage died"
+        if stopping:
+            await coordinator.stop()
+        else:
+            await coordinator.fail_pending_requests(RuntimeError(expected_error))
         await asyncio.wait_for(task, timeout=1)
 
-        assert error_sink == ["stage died"]
+        assert error_sink == [expected_error]
         assert future.cancelled() is True
         assert "req-1" not in coordinator.completion_futures
 
@@ -745,7 +849,8 @@ def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
     asyncio.run(run())
 
 
-def test_coordinator_stream_stage_failure_cancels_future() -> None:
+@pytest.mark.parametrize("abort_fails", [False, True])
+def test_coordinator_stream_stage_failure_cancels_future(abort_fails: bool) -> None:
     """A stage failure on a streaming request cancels the completion future
     (which the stream consumer never awaits) rather than setting an exception
     that would be reported as never retrieved."""
@@ -757,14 +862,26 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
             entry_stage="preprocess",
             terminal_stages=["decode"],
         )
-        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
+        completion_loop = asyncio.create_task(coordinator.run_completion_loop())
 
         task, error_sink, future = await drive_stream_until_registered(
             coordinator, "req-1"
         )
 
-        await coordinator.handle_completion(
+        recording_abort = control_plane.broadcast_abort
+        if abort_fails:
+
+            async def abort_fails_once(msg) -> None:
+                control_plane.broadcast_abort = recording_abort
+                await recording_abort(msg)
+                raise RuntimeError("abort transport unavailable")
+
+            control_plane.broadcast_abort = abort_fails_once
+        control_plane.events.put_nowait(
             CompleteMessage("req-1", "decode", False, error="boom")
         )
         await asyncio.wait_for(task, timeout=1)
@@ -772,6 +889,69 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
         assert error_sink == ["boom"]
         assert future.cancelled() is True
         assert "req-1" not in coordinator.completion_futures
+        assert "req-1" not in coordinator.requests
+
+        # The same completion loop keeps serving other requests.
+        healthy = asyncio.create_task(coordinator.submit("req-2", "hello"))
+        for _ in range(100):
+            if "req-2" in coordinator.requests:
+                break
+            await asyncio.sleep(0)
+        control_plane.events.put_nowait(
+            CompleteMessage("req-2", "decode", True, result={"text": "ok"})
+        )
+        assert await asyncio.wait_for(healthy, timeout=1) == {"text": "ok"}
+        completion_loop.cancel()
+        await asyncio.gather(completion_loop, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_session_operation_keeps_stage_error_when_abort_fails() -> None:
+    """A failed session operation reports the stage error and releases its
+    completion future even when every abort broadcast fails."""
+
+    class FailingOpenControlPlane(RecordingCoordinatorControlPlane):
+        def __init__(self, coordinator: Coordinator) -> None:
+            super().__init__()
+            self.coordinator = coordinator
+            self.completions: list[asyncio.Task] = []
+
+        async def submit_to_stage(self, stage: str, endpoint: str, msg) -> None:
+            await super().submit_to_stage(stage, endpoint, msg)
+            is_open = len(self.submitted) == 1
+            completion = CompleteMessage(
+                msg.request_id,
+                stage,
+                not is_open,
+                result=None if is_open else {},
+                error="open failed" if is_open else None,
+            )
+            self.completions.append(
+                asyncio.create_task(self.coordinator.handle_completion(completion))
+            )
+
+        async def broadcast_abort(self, msg) -> None:
+            await super().broadcast_abort(msg)
+            raise RuntimeError("abort transport unavailable")
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+        )
+        control_plane = FailingOpenControlPlane(coordinator)
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
+
+        with pytest.raises(RuntimeError, match="open failed"):
+            await asyncio.wait_for(
+                coordinator.open_session(OmniRequest(None), stages=["preprocess"]),
+                timeout=1,
+            )
+        assert coordinator.completion_futures == {}
 
     asyncio.run(run())
 
@@ -803,6 +983,27 @@ def test_coordinator_rejects_submit_when_in_flight_cap_is_reached() -> None:
             "req-1",
             "req-2",
         ]
+
+    asyncio.run(run())
+
+
+def test_coordinator_rejects_bounded_stream_queue() -> None:
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        with pytest.raises(ValueError, match="stream_queue must be unbounded"):
+            await coordinator.submit_request(
+                "req-1", "hello", stream_queue=asyncio.Queue(maxsize=1)
+            )
+        assert not coordinator.request_id_is_reserved("req-1")
+        assert control_plane.submitted == []
 
     asyncio.run(run())
 

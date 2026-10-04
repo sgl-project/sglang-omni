@@ -9,7 +9,7 @@ import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
-from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,11 @@ class XPUOmniPlatform(OmniPlatform):
             return None
         return fused_inplace_qknorm_rope
 
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
+        from sgl_kernel.jit.rope import apply_rope_inplace
+
+        return apply_rope_inplace
+
     def enable_talker_graph(self) -> bool:
         return True
 
@@ -88,6 +93,9 @@ class XPUOmniPlatform(OmniPlatform):
         from torch.nn.attention import SDPBackend
 
         return (SDPBackend.FLASH_ATTENTION, SDPBackend.MATH)
+
+    def supports_graph_captured_fft(self) -> bool:
+        return False
 
     def apply_model_worker_backend_policy(
         self,

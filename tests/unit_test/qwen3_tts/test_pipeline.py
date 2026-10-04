@@ -10,6 +10,7 @@ import threading
 import time
 import types
 from collections import deque
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from queue import Empty, Queue
 from types import SimpleNamespace
@@ -54,6 +55,13 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.profiler import event_recorder
+from sglang_omni.profiler.event_recorder import (
+    RequestEventSnapshot,
+    get_recorder,
+    reset_active_stage,
+    set_active_stage,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.message import IncomingMessage
@@ -5224,6 +5232,183 @@ def test_qwen3_tts_async_followup_flushes_before_result() -> None:
     assert payload.request_id not in scheduler.stream_states
 
 
+class TrackedStateLock:
+    """Reentrant lock that knows whether the calling thread holds it."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.depth_by_thread: dict[int, int] = {}
+
+    def __enter__(self) -> TrackedStateLock:
+        self.lock.acquire()
+        thread_id = threading.get_ident()
+        self.depth_by_thread[thread_id] = self.depth_by_thread.get(thread_id, 0) + 1
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: types.TracebackType | None,
+    ) -> None:
+        self.depth_by_thread[threading.get_ident()] -= 1
+        self.lock.release()
+
+    def is_held_by_current_thread(self) -> bool:
+        return self.depth_by_thread.get(threading.get_ident(), 0) > 0
+
+
+@pytest.mark.parametrize("stateful", [False, True])
+@pytest.mark.parametrize("recording", [False, True])
+def test_qwen3_tts_async_decode_records_request_events(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stateful: bool,
+    recording: bool,
+) -> None:
+    state_lock = TrackedStateLock()
+    written_under_state_lock: list[bool] = []
+    recorder = get_recorder()
+    original_emit = event_recorder.emit
+    original_snapshots = qwen3_streaming_vocoder.decode_event_snapshots
+    snapshot_calls: list[bool] = []
+
+    def capture_snapshots(
+        streams: Iterable[tuple[str, Qwen3TTSStreamState]],
+    ) -> Iterator[RequestEventSnapshot]:
+        snapshot_calls.append(True)
+        return original_snapshots(streams)
+
+    monkeypatch.setattr(
+        qwen3_streaming_vocoder, "decode_event_snapshots", capture_snapshots
+    )
+
+    def record_event(
+        *,
+        request_id: str,
+        stage: str | None,
+        event_name: str,
+        metadata: dict[str, int | float | str],
+        timestamp_ns: int | None,
+    ) -> None:
+        written_under_state_lock.append(state_lock.is_held_by_current_thread())
+        original_emit(
+            request_id=request_id,
+            stage=stage,
+            event_name=event_name,
+            metadata=metadata,
+            timestamp_ns=timestamp_ns,
+        )
+
+    monkeypatch.setattr(event_recorder, "emit", record_event)
+    monkeypatch.setattr(
+        qwen3_streaming_vocoder,
+        "Qwen3TTSIncrementalDecoder",
+        FakeIncrementalQwen3TTSDecoder,
+    )
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        stream_stride=1,
+        stream_followup_stride=2,
+        initial_chunk_frames=1,
+        stream_left_context_frames=2,
+        async_decode=True,
+        enable_stateful_codec_decoder=stateful,
+    )
+    scheduler.state_lock = state_lock
+    all_codes = torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.long)
+    payload = make_payload(inputs="target", params={"stream": True})
+    payload.data = Qwen3TTSState(audio_codes=all_codes, completion_tokens=3).to_dict()
+    request_id = payload.request_id
+
+    path = recorder.start(run_id="decode", event_dir=str(tmp_path), stage="thinker")
+    if not recording:
+        recorder.stop()
+    else:
+        pass
+    loop = asyncio.new_event_loop()
+    try:
+        stage_token = set_active_stage("vocoder")
+        try:
+            scheduler.on_serving_start()
+        finally:
+            reset_active_stage(stage_token)
+        scheduler.handle_message(
+            IncomingMessage(request_id=request_id, type="new_request", data=payload),
+            loop,
+        )
+        scheduler.handle_message(
+            IncomingMessage(
+                request_id=request_id,
+                type="stream_chunk",
+                data=qwen3_tts_stream_item(all_codes[:1], chunk_id=0, ref_code_len=0),
+            ),
+            loop,
+        )
+        first = scheduler.outbox.get(timeout=1)
+        assert first.type == "stream"
+        scheduler.handle_message(
+            IncomingMessage(
+                request_id=request_id,
+                type="stream_chunk",
+                data=qwen3_tts_stream_item(all_codes[1:], chunk_id=1),
+            ),
+            loop,
+        )
+        scheduler.handle_message(
+            IncomingMessage(request_id=request_id, type="stream_done"), loop
+        )
+        followup = scheduler.outbox.get(timeout=1)
+        assert followup.type == "stream"
+        assert scheduler.outbox.get(timeout=1).type == "result"
+    finally:
+        scheduler.stop()
+        recorder.stop()
+        loop.close()
+
+    events = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    streamed = np.concatenate(
+        [
+            np.frombuffer(message.data["audio_waveform"], dtype=np.float32)
+            for message in (first, followup)
+        ]
+    )
+    expected = all_codes[:, 0].to(torch.float32).repeat_interleave(4).numpy()
+    np.testing.assert_array_equal(streamed, expected)
+    if not recording:
+        assert events == []
+        assert snapshot_calls == []
+        return
+    else:
+        assert snapshot_calls
+    decode_steps = (
+        "qwen3_tts_vocoder_decode_enqueued",
+        "qwen3_tts_vocoder_decode_dispatched",
+        "qwen3_tts_vocoder_decode_launched",
+        "qwen3_tts_vocoder_decode_resolved",
+        "qwen3_tts_vocoder_decode_committed",
+    )
+    assert {event["request_id"] for event in events} == {request_id}
+    assert {event["stage"] for event in events} == {"vocoder"}
+    assert not any(written_under_state_lock)
+    assert all(event["timestamp_ns"] > 0 for event in events)
+    # note (Haoling Pu): events are written after state_lock is released, so write
+    # order can trail step order; sort by the captured timestamp.
+    ordered = sorted(events, key=lambda event: event["timestamp_ns"])
+    assert [event["event_name"] for event in ordered] == [
+        *decode_steps,
+        *decode_steps,
+    ]
+    committed = [
+        event["metadata"]
+        for event in ordered
+        if event["event_name"] == "qwen3_tts_vocoder_decode_committed"
+    ]
+    assert [metadata["emitted_generated_frames"] for metadata in committed] == [1, 3]
+    assert [metadata["samples"] for metadata in committed] == [4, 8]
+
+
 def test_qwen3_tts_async_initial_batches_ready_requests() -> None:
     tokenizer = FakeQwen3TTSSpeechTokenizer()
     scheduler = Qwen3TTSStreamingVocoderScheduler(
@@ -7709,9 +7894,34 @@ def test_qwen3_tts_incremental_cohorts_group_by_fresh_frames() -> None:
 
 def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """A non-code decode failure degrades the stream, it does not kill it."""
     scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    state_lock = TrackedStateLock()
+    scheduler.state_lock = state_lock
+    written_under_state_lock: list[bool] = []
+    recorder = get_recorder()
+    original_emit = event_recorder.emit
+
+    def record_event(
+        *,
+        request_id: str,
+        stage: str | None,
+        event_name: str,
+        metadata: dict[str, int | float | str],
+        timestamp_ns: int | None,
+    ) -> None:
+        written_under_state_lock.append(state_lock.is_held_by_current_thread())
+        original_emit(
+            request_id=request_id,
+            stage=stage,
+            event_name=event_name,
+            metadata=metadata,
+            timestamp_ns=timestamp_ns,
+        )
+
+    monkeypatch.setattr(event_recorder, "emit", record_event)
     arena = scheduler.codec_arena
     assert arena is not None
     state = scheduler.create_stream_state("request")
@@ -7721,9 +7931,13 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     state.codec_slot = arena.acquire()
     scheduler.followup_worker = object()
 
-    scheduler.fallback_incremental_stream(
-        "request", state, RuntimeError("injected decode failure")
-    )
+    path = recorder.start("fallback", str(tmp_path), "vocoder")
+    try:
+        scheduler.fallback_incremental_stream(
+            "request", state, RuntimeError("injected decode failure")
+        )
+    finally:
+        recorder.stop()
 
     assert state.incremental_codec_fallback is True
     assert state.codec_slot is None
@@ -7732,6 +7946,12 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     assert state.followup_pending is True
     assert scheduler.followup_queue.qsize() == 1
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 1
+    assert written_under_state_lock == [False]
+    events = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    assert [event["event_name"] for event in events] == [
+        "qwen3_tts_vocoder_decode_enqueued"
+    ]
+    assert events[0]["request_id"] == "request"
 
 
 def prepared_request_fixture(*, dtype: torch.dtype) -> Qwen3TTSPreparedRequest:

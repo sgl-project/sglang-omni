@@ -7,12 +7,14 @@ import asyncio
 
 import pytest
 
-from sglang_omni.serve.realtime.control import Closed, Drained, UnitCompleted
+from sglang_omni.serve.realtime.control import Closed, Drained, Failure, UnitCompleted
 from sglang_omni.serve.realtime.output import (
+    AudioDelta,
     OutputEvent,
     ResponseFinished,
     ResponseStarted,
 )
+from sglang_omni.serve.realtime.output_buffer import OutputBuffer
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.types import (
@@ -117,3 +119,38 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
     finished = [event for event in closing if isinstance(event, ResponseFinished)]
     assert [event.response_id for event in finished] == ["seen"]
     assert finished[0].status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_context_exhaustion_closes_session() -> None:
+    message = "context_exhausted: thinker context length 8192 tokens exhausted"
+
+    class FailingAdapter(GatedAdapter):
+        async def process(self, unit: Unit) -> int:
+            raise RuntimeError(message)
+
+    runtime = await open_runtime(FailingAdapter([]))
+    await runtime.append(b"\1" * UNIT_BYTES, 0, None, "append")
+    envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
+    failures = [entry.event for entry in envelopes if isinstance(entry.event, Failure)]
+    assert len(failures) == 1
+    assert failures[0].code == "context_exhausted"
+    assert failures[0].is_fatal
+    assert message in failures[0].message
+
+
+def test_output_budget_counts_outbound_events_only() -> None:
+    buffer = OutputBuffer(RuntimeLimits(max_output_bytes=1024, max_output_events=2))
+    unit = Unit(0, 0, bytes(32000), 16000, images=(bytes(512 * 1024),) * 4)
+    completed = Envelope(event=UnitCompleted(unit.unit_id), unit=unit)
+    buffer.enqueue(completed)
+    with pytest.raises(RuntimeError, match="outbound event budget exhausted"):
+        buffer.enqueue(Envelope(event=AudioDelta("response", "item", bytes(2048))))
+    buffer.enqueue(completed)
+    with pytest.raises(RuntimeError, match="outbound event budget exhausted"):
+        buffer.enqueue(completed)
+    assert [buffer.dequeue(), buffer.dequeue(), buffer.dequeue()] == [
+        completed,
+        completed,
+        None,
+    ]

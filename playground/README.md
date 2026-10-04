@@ -1,9 +1,10 @@
 # Playground
 
-Browser playgrounds for the three models served by SGLang-Omni.
+Browser playgrounds for SGLang-Omni.
 
 | Subdirectory | Model | UI |
 |---|---|---|
+| `realtime/` | Native full-duplex audio/video (MiniCPM-o validated). | HTML / CSS / JS |
 | `qwen-omni/` | Qwen3-Omni — multimodal chat (text / audio / image / video). | HTML / CSS / JS |
 | `s2pro/` | S2 Pro — text-to-speech with voice cloning, streaming and non-streaming. | Gradio |
 | `higgs/` | Higgs Audio v3 — multilingual TTS with inline control tokens (emotion / style / sfx / prosody) and streaming. | HTML / CSS / JS |
@@ -95,3 +96,8 @@ From your local machine:
 ```bash
 ssh -L 8000:localhost:8000 -L 7860:localhost:7860 user@host
 ```
+
+## Native full duplex
+
+See [realtime/README.md](realtime/README.md) to set up microphone and camera
+chat with MiniCPM-o, including remote access from your browser.

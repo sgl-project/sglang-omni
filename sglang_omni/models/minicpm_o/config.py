@@ -14,6 +14,7 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
 
 PKG = "sglang_omni.models.minicpm_o"
 THINKER_STAGE = "thinker"
@@ -118,7 +119,13 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
             max_batch_size=8,
             max_batch_wait_ms=0,
             batch_wait_when_idle=False,
-            enable_flow_variable_length=True,
+            # note (Dayuxiaoshui): flow activations fit the FP16 range, whose
+            # wider mantissa keeps the mel closer to FP32 than BF16 does.
+            dtype="float16",
+            enable_dit_torch_compile=True,
+            # note (Dayuxiaoshui): the compiled dense DiT beats the eager packed
+            # path even on mixed-length, mixed-reference batches.
+            enable_flow_variable_length=False,
             reference_workers=8,
             prompt_cache_capacity=32,
         ),
@@ -200,6 +207,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
 EntryClass = MiniCPMOSpeechPipelineConfig
 
 Variants = {
+    "session": MiniCPMODuplexPipelineConfig,
     "text": MiniCPMOPipelineConfig,
     "speech": MiniCPMOSpeechPipelineConfig,
 }

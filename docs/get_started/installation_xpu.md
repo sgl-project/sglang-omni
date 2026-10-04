@@ -13,7 +13,7 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano,
-MOSS-Transcribe-Diarize and MiniCPM-o) plus the API server;
+MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS and PersonaPlex) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
@@ -86,7 +86,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.20   # the pinned release
+git checkout v0.5.21   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
@@ -206,6 +206,23 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 On XPU, ZONOS2 keeps its MoE experts in bf16 and leaves `torch.compile` off; decode
 graphs stay on by default. All three are applied automatically.
 
+### PersonaPlex (speech-to-speech, single XPU)
+
+Follow the [PersonaPlex prerequisites](../cookbook/personaplex.md#prerequisites)
+to accept the checkpoint license and download the model. PersonaPlex was
+validated on one 24 GB Intel Arc Pro B60 with
+`--lm.engine.mem_fraction_static 0.70`. Pick the XPU with `ZE_AFFINITY_MASK`:
+
+```bash
+ZE_AFFINITY_MASK=0 python examples/run_personaplex.py \
+  --model-path nvidia/personaplex-7b-v1 \
+  --audio /path/to/caller.wav \
+  --voice NATF2 \
+  --text-prompt "You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way." \
+  --out reply.wav \
+  --lm.engine.mem_fraction_static 0.70
+```
+
 ### Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)
 
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
@@ -243,13 +260,36 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output rock_1.wav
 ```
 
+### Ming-Omni-TTS (16.8B-A3B MoE, two XPUs)
+
+The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
+RoPE is sgl-kernel's SYCL JIT kernel, which needs `icpx` on `PATH`; add the compiler directory
+alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.3.0
+wheel that SGLang v0.5.21 pins; older sgl-kernel builds fail with
+`"fused_topk_softmax_kernel" not implemented for 'Float'`.
+```bash
+export PATH="/opt/intel/oneapi/compiler/latest/bin:$PATH" SGLANG_OMNI_STARTUP_TIMEOUT=1800
+sgl-omni serve --model-path /path/to/Ming-omni-tts-16.8B-A3B \
+  --config examples/configs/ming_omni_tts.yaml \
+  --tts_engine.tp_size 2 --tts_engine.gpu "[0, 1]" \
+  --reference_encode.gpu 0 --audio_decode.gpu 0 \
+  --tts_engine.gpu_memory_fraction 0.78 --tts_engine.engine.mem_fraction_static 0.78 \
+  --host 0.0.0.0 --port 8000
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"ming-omni-tts","input":"Hello from Intel XPU.","voice":"default","response_format":"wav"}' \
+  -o out.wav
+```
+The config's AudioVAE streaming graph runs eager on XPU, since oneMKL's FFT cannot be recorded
+in a graph.
+
 Health check for any of the above: `curl http://localhost:8000/v1/models`.
 
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3 and MiniCPM-o all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS and MiniCPM-o single-card;
-> ZONOS2 single-card with decode graphs; MiniMax Music 3 needs two cards; Qwen3-Omni thinker
-> across 8 cards with tensor parallelism).
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS and PersonaPlex all serve end-to-end on Intel XPU**
+> (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o and PersonaPlex single-card;
+> ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
+> Qwen3-Omni thinker across 8 cards with tensor parallelism).
