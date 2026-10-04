@@ -157,10 +157,12 @@ def create_talker_executor(
     device=None,
     gpu_id=None,
     context_length=None,
+    enable_cuda_graph: bool = True,
     server_args_overrides=None,
     **overrides,
 ):
     builder = NemotronVoiceChatTalkerEngineBuilder(
+        enable_cuda_graph=enable_cuda_graph,
         max_running_requests=1,
         context_length=context_length,
     )

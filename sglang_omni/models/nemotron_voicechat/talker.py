@@ -8,6 +8,9 @@ from torch.nn import functional
 from transformers import T5GemmaConfig, T5GemmaEncoderModel, T5GemmaModuleConfig
 
 from sglang_omni.models.nemotron_voicechat.mog_head import MoGHead, RMSNorm
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
+
+GRAPH_WARMUP_STEPS = 3
 
 
 class SubwordFlagEmbedding(nn.Module):
@@ -142,13 +145,31 @@ class EarTtsTalker(nn.Module):
             codes_TQ[:, level] = index_T
         return codes_TQ
 
+    def build_level_schedule(
+        self, num_iter: int, exponent: float, device: torch.device
+    ) -> list[tuple[int, int]]:
+        """(first_level, level_count) per sampling iteration, empty ones dropped."""
+        # Same ops on the runtime device, so ceil lands on the same level counts.
+        rates = torch.linspace(0.0, 1.0, num_iter + 1, device=device)[:-1]
+        masking = (1.0 - rates.pow(exponent)).pow(1.0 / exponent)
+        counts = torch.ceil(masking * self.num_quantizers).long()
+        counts = counts - torch.cat([counts[1:], counts.new_zeros(1)])
+        level_schedule = []
+        first_level = 0
+        for count in counts.tolist():
+            if count > 0:
+                level_schedule.append((first_level, count))
+            else:
+                pass
+            first_level += count
+        return level_schedule
+
     def generate_codes(
         self,
         hidden_TD,
         mog_head,
         *,
-        num_iter: int,
-        exponent: float,
+        level_schedule: list[tuple[int, int]],
         top_p: float | None = None,
         noise_scale: float = 1.0,
         guidance_scale: float = 0.0,
@@ -161,18 +182,8 @@ class EarTtsTalker(nn.Module):
         codes_TQ = torch.zeros(
             frames, self.num_quantizers, dtype=torch.long, device=hidden_TD.device
         )
-        rates = torch.linspace(0.0, 1.0, num_iter + 1, device=hidden_TD.device)[:-1]
-        masking = (1.0 - rates.pow(exponent)).pow(1.0 / exponent)
-        counts = torch.ceil(masking * self.num_quantizers).long()
-        counts = counts - torch.cat([counts[1:], counts.new_zeros(1)])
-
-        assigned = 0
-        for count in counts.tolist():
-            if count == 0:
-                continue
-            else:
-                pass
-            depth_TD = self.embed_code(self.depth_sum(codes_TQ, assigned))
+        for first_level, count in level_schedule:
+            depth_TD = self.embed_code(self.depth_sum(codes_TQ, first_level))
             fed_TD = depth_TD + hidden_TD
             if guidance_scale > 0:
                 fed_TD = torch.cat([fed_TD, depth_TD + uncond_TD])
@@ -185,8 +196,7 @@ class EarTtsTalker(nn.Module):
                 mean_TD
                 + torch.exp(log_std_T1) * torch.randn_like(mean_TD) * noise_scale
             )
-            codes_TQ = self.quantise(sampled_TD, codes_TQ, assigned, count)
-            assigned += count
+            codes_TQ = self.quantise(sampled_TD, codes_TQ, first_level, count)
         return codes_TQ
 
     def depth_sum(self, codes_TQ, levels: int):
@@ -203,6 +213,54 @@ class EarTtsTalker(nn.Module):
         return torch.stack([padded_QCD[q][codes_TQ[:, q]] for q in range(levels)]).sum(
             0
         )
+
+
+class GraphCodeGenerator:
+    """generate_codes for one frame, captured once and replayed per decode step."""
+
+    def __init__(
+        self,
+        talker: EarTtsTalker,
+        mog_head: MoGHead,
+        *,
+        backend: DeviceGraphBackend,
+        level_schedule: list[tuple[int, int]],
+        top_p: float,
+        noise_scale: float,
+    ) -> None:
+        device = talker.rvq_embs.device
+        self.hidden_input = torch.zeros(
+            1, talker.embed_code.out_features, dtype=torch.float32, device=device
+        )
+
+        def generate() -> torch.Tensor:
+            return talker.generate_codes(
+                self.hidden_input,
+                mog_head,
+                level_schedule=level_schedule,
+                top_p=top_p,
+                noise_scale=noise_scale,
+            )
+
+        capture_stream = torch.cuda.Stream(device=device)
+        current_stream = torch.cuda.current_stream(device)
+        capture_stream.wait_stream(current_stream)
+        with torch.inference_mode():
+            with torch.cuda.stream(capture_stream):
+                for iteration in range(GRAPH_WARMUP_STEPS):
+                    generate()
+            current_stream.wait_stream(capture_stream)
+            with backend.capture(
+                stream=capture_stream, thread_local_errors=True
+            ) as graph:
+                self.codes_output = generate()
+        self.graph: ReplayableGraph = graph
+
+    def __call__(self, hidden_TD: torch.Tensor) -> torch.Tensor:
+        with torch.inference_mode():
+            self.hidden_input.copy_(hidden_TD)
+            self.graph.replay()
+        return self.codes_output.clone()
 
 
 TALKER_ARCH = "NemotronVoiceChatTalker"

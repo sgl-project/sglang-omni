@@ -219,10 +219,15 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
     scheduler_class = NemotronTalkerScheduler
 
     def __init__(
-        self, *, max_running_requests: int = 1, context_length: int | None = None
+        self,
+        *,
+        enable_cuda_graph: bool,
+        max_running_requests: int = 1,
+        context_length: int | None = None,
     ) -> None:
         super().__init__(max_running_requests=max_running_requests)
         self.model_arch_override = TALKER_ARCH
+        self.enable_cuda_graph = enable_cuda_graph
         if context_length is not None:
             self.context_length = int(context_length)
         else:
@@ -235,7 +240,9 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
         return str(shim)
 
     def make_model_runner(self, model_worker, output_proc):
-        return NemotronVoiceChatTalkerModelRunner(model_worker, output_proc)
+        return NemotronVoiceChatTalkerModelRunner(
+            model_worker, output_proc, enable_cuda_graph=self.enable_cuda_graph
+        )
 
     def make_adapters(self, model):
         vocab_size = int(model.config.vocab_size)
