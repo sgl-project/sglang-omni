@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Sequence
 
 import numpy as np
+import torch
 
 from sglang_omni.models.parakeet.request_builders import (
     ParakeetASRRequest,
@@ -92,6 +93,20 @@ def make_parakeet_batch_fn(
     return transcribe_batch
 
 
+def make_parakeet_runner(model_path: str, *, device: torch.device, dtype: str):
+    """Native MLX when ``SGLANG_USE_MLX=1``, otherwise Transformers on Torch MPS."""
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+    if use_mlx():
+        from sglang_omni.models.parakeet.mlx.runner import ParakeetMlxModelRunner
+
+        return ParakeetMlxModelRunner(model_path, dtype=dtype)
+    else:
+        from sglang_omni.models.parakeet.model_runner import ParakeetModelRunner
+
+        return ParakeetModelRunner(model_path, device=str(device), dtype=dtype)
+
+
 def create_parakeet_asr_executor(
     model_path: str,
     *,
@@ -102,7 +117,6 @@ def create_parakeet_asr_executor(
     max_batch_wait_ms: float = 5.0,
     max_batch_audio_s: float = 600.0,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    from sglang_omni.models.parakeet.model_runner import ParakeetModelRunner
     from sglang_omni.utils.device import resolve_concrete_device
 
     if not current_platform.is_mps():
@@ -130,7 +144,7 @@ def create_parakeet_asr_executor(
         )
     else:
         pass
-    runner = ParakeetModelRunner(model_path, device=str(concrete_device), dtype=dtype)
+    runner = make_parakeet_runner(model_path, device=concrete_device, dtype=dtype)
     batch_fn = make_parakeet_batch_fn(
         request_builder=make_parakeet_request_builder(sample_rate=runner.sample_rate),
         transcribe=runner.transcribe,
@@ -155,5 +169,6 @@ def create_parakeet_asr_executor(
 __all__ = [
     "create_parakeet_asr_executor",
     "make_parakeet_batch_fn",
+    "make_parakeet_runner",
     "plan_padded_batches",
 ]

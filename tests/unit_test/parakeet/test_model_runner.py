@@ -121,3 +121,47 @@ def test_transcribe_empty_batch_skips_the_model() -> None:
     runner = tiny_runner(SimpleNamespace(eval=lambda: None))
 
     assert runner.transcribe([]) == []
+
+
+def test_batched_transducer_drops_emissions_on_padding_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short clip decoded in a padded batch matches decoding it alone."""
+    import sglang_omni.models.parakeet.model_runner as model_runner
+
+    model = tiny_tdt_model()
+    runner = tiny_runner(model)
+    rng = np.random.default_rng(1)
+    long_clip = rng.standard_normal(32000).astype(np.float32)
+    short_clip = rng.standard_normal(9000).astype(np.float32)
+    spoken = {model.config.pad_token_id, model.config.blank_token_id}
+
+    def short_row(waveforms: list[np.ndarray]) -> list[int]:
+        runner.transcribe(waveforms)
+        return [token for token in runner.processor.decoded[-1] if token not in spoken]
+
+    alone = short_row([short_clip])
+    batched = short_row([long_clip, short_clip])
+    monkeypatch.setattr(
+        model_runner,
+        "drop_tokens_past_valid_frames",
+        lambda sequences, durations, valid_frames, pad_token_id: sequences,
+    )
+    unfiltered = short_row([long_clip, short_clip])
+
+    assert alone and batched == alone
+    # Without the filter, Transformers keeps emitting on the padding frames.
+    assert len(unfiltered) > len(alone)
+
+
+def test_drop_tokens_past_valid_frames_uses_step_start_frames() -> None:
+    from sglang_omni.models.parakeet.model_runner import drop_tokens_past_valid_frames
+
+    sequences = torch.tensor([[11, 8, 8, 8, 8], [11, 8, 8, 8, 8]])
+    durations = torch.tensor([[0, 2, 2, 2, 2], [0, 1, 3, 2, 2]])
+
+    kept = drop_tokens_past_valid_frames(
+        sequences, durations, torch.tensor([10, 4]), pad_token_id=2
+    )
+
+    assert kept.tolist() == [[11, 8, 8, 8, 8], [11, 8, 8, 2, 2]]
