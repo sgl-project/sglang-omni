@@ -1,0 +1,176 @@
+name: Nightly CI
+
+on:
+  schedule:
+    - cron: "30 18 * * *"  # daily, off-peak for the CI host
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ${{ github.event_name == 'issue_comment' && !contains(github.event.comment.body, '/rerun-nightly') && format('omni-ci-nightly-noop-{0}', github.run_id) || 'omni-ci-nightly' }}
+  cancel-in-progress: false
+
+env:
+  OMNI_CI_HOME: /data/omni-ci/run-${{ github.run_id }}
+
+jobs:
+  # Comment commands require effective write/maintain/admin permission and a
+  # Nightly CI tracking issue.
+  authorize-comment:
+    if: >
+      github.event_name == 'issue_comment' &&
+      !github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/rerun-nightly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      command: ${{ steps.parse.outputs.command }}
+    steps:
+      - name: Parse command (first token of first non-empty line)
+        id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          first_token=$(printf "%s" "$COMMENT_BODY" | awk 'NF {print $1; exit}')
+          case "$first_token" in
+            /rerun-nightly) echo "command=rerun" >> "$GITHUB_OUTPUT";;
+            /rerun-nightly-failed) echo "command=rerun-failed" >> "$GITHUB_OUTPUT";;
+            *) echo "::error::comment does not start with a nightly command"; exit 1;;
+          esac
+      - name: Check commenter permission and issue identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          perm=$(gh api "repos/${{ github.repository }}/collaborators/$COMMENTER/permission" --jq .permission)
+          case "$perm" in
+            write|maintain|admin) ;;
+            *) echo "::error::$COMMENTER has '$perm' permission; write/maintain/admin required"; exit 1;;
+          esac
+          case "$ISSUE_TITLE" in
+            "[Nightly CI] stage"*) ;;
+            *) echo "::error::commands only work on a Nightly CI tracking issue"; exit 1;;
+          esac
+
+  # `/rerun-nightly-failed` reruns the last failed nightly run's failed jobs
+  # on its original commit.
+  rerun-failed:
+    needs: authorize-comment
+    if: >
+      github.event_name == 'issue_comment' &&
+      needs.authorize-comment.result == 'success' &&
+      needs.authorize-comment.outputs.command == 'rerun-failed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - name: Rerun failed jobs of the last failed nightly run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh api "repos/${{ github.repository }}/actions/workflows/nightly-ci.yaml/runs?status=failure&per_page=20" --jq 'first(.workflow_runs[] | select(.event == "schedule" or .event == "workflow_dispatch")) | .id')
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "no failed nightly run found"; exit 0
+          fi
+          gh api -X POST "repos/${{ github.repository }}/actions/runs/$run_id/rerun-failed-jobs"
+          echo "reran failed jobs of run $run_id"
+
+  radix-evict-soak:
+    name: stage 1 - Qwen3-ASR-1.7B radix evict soak
+    needs: authorize-comment
+    # cron/dispatch pass with authorize-comment skipped; comments need it green.
+    if: >
+      always() &&
+      ((github.event_name == 'schedule' && needs.authorize-comment.result == 'skipped') ||
+       (github.event_name == 'workflow_dispatch' && needs.authorize-comment.result == 'skipped' &&
+        github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+       (github.event_name == 'issue_comment' &&
+        needs.authorize-comment.result == 'success' &&
+        needs.authorize-comment.outputs.command == 'rerun'))
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 60
+    container:
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run radix evict soak
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_radix_evict_soak_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Close alert on green
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          title="[Nightly CI] stage 1 - Qwen3-ASR-1.7B radix evict soak failed"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --limit 100 --json number,title --jq "[.[] | select(.title == \"$title\")][0].number")
+          if [ -n "$existing" ]; then
+            run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            gh issue close "$existing" --repo "${{ github.repository }}" --comment "Green again **$(date -u '+%Y-%m-%d %H:%M UTC')** | \`$GITHUB_REF_NAME\` @ ${GITHUB_SHA:0:9} | $run_url"
+          fi
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          header="**$(date -u '+%Y-%m-%d %H:%M UTC')** | \`$GITHUB_REF_NAME\` @ ${GITHUB_SHA:0:9} | [run]($run_url)"
+          table=/tmp/radix_evict_soak/results.md
+          [ -f "$table" ] || table=""
+          if [ -n "$table" ]; then
+            body="$header
+
+          $(cat "$table")"
+          else
+            body="$header
+
+          No metrics were written -- the run died before the post window (server startup, dataset, or salting failure), not a gate failure."
+          fi
+          title="[Nightly CI] stage 1 - Qwen3-ASR-1.7B radix evict soak failed"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --limit 100 --json number,title --jq "[.[] | select(.title == \"$title\")][0].number")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$body"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "$body"
+          fi
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Qwen3-ASR-1.7B radix evict soak
+          artifact-path-globs: |
+            */radix_evict_soak/results.json
+            */radix_evict_soak/results.md
