@@ -12,6 +12,7 @@ recovery, and cross-device use.
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 import weakref
@@ -375,7 +376,9 @@ def test_overlap_first_window_sync_second_deferred(monkeypatch) -> None:
     assert snapshot == control
 
 
-def test_overlap_completed_window_leaves_on_next_loop_pass(monkeypatch) -> None:
+def test_overlap_completed_window_leaves_on_next_loop_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     control = run_stream(overlap=False, n_chunks=20)
 
     scheduler = make_scheduler(overlap=True)
@@ -395,7 +398,9 @@ def test_overlap_completed_window_leaves_on_next_loop_pass(monkeypatch) -> None:
     assert drain_snapshot(scheduler) == control
 
 
-def test_overlap_in_flight_window_waits_only_with_empty_inbox(monkeypatch) -> None:
+def test_overlap_in_flight_window_waits_only_with_empty_inbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
     seed(scheduler)
@@ -422,7 +427,9 @@ def test_overlap_in_flight_window_waits_only_with_empty_inbox(monkeypatch) -> No
     assert scheduler.stream_states["req-1"].pending is None
 
 
-def test_overlap_wait_takes_the_earliest_launched_window(monkeypatch) -> None:
+def test_overlap_wait_takes_the_earliest_launched_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
     seed(scheduler, "req-a")
@@ -440,7 +447,10 @@ def test_overlap_wait_takes_the_earliest_launched_window(monkeypatch) -> None:
     assert slot_event(second.slot).synchronize_calls == 0
 
 
-def test_overlap_nonstreaming_window_is_not_waited_on(monkeypatch) -> None:
+@pytest.mark.parametrize("is_copy_complete", [False, True])
+def test_overlap_nonstreaming_window_is_neither_waited_on_nor_sent(
+    monkeypatch: pytest.MonkeyPatch, is_copy_complete: bool
+) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
     seed(scheduler)
@@ -448,17 +458,29 @@ def test_overlap_nonstreaming_window_is_not_waited_on(monkeypatch) -> None:
     pending = scheduler.stream_states["req-1"].pending
     assert pending is not None
     event = slot_event(pending.slot)
-    event.complete = False
+    event.complete = is_copy_complete
+    inbox_waits: list[float | None] = []
 
-    queued = IncomingMessage(request_id="req-2", type="stream_done", data=None)
-    scheduler.inbox.put(queued)
-    assert scheduler.next_message() is queued
+    def get(block: bool = True, timeout: float | None = None) -> IncomingMessage:
+        # An empty inbox that returns at once, so the loop never waits on the clock.
+        if block:
+            inbox_waits.append(timeout)
+        else:
+            pass
+        raise queue.Empty
+
+    monkeypatch.setattr(scheduler.inbox, "get", get)
+
+    assert scheduler.next_message() is None
+    assert len(inbox_waits) == 1
     assert event.synchronize_calls == 0
     assert scheduler.stream_states["req-1"].pending is pending
     assert scheduler.outbox.qsize() == 0
 
 
-def test_overlap_wait_failure_aborts_only_that_request(monkeypatch) -> None:
+def test_overlap_wait_failure_aborts_only_that_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
     seed(scheduler, "req-1")
@@ -484,7 +506,9 @@ def test_overlap_wait_failure_aborts_only_that_request(monkeypatch) -> None:
     assert "req-2" in scheduler.stream_states
 
 
-def test_overlap_send_failure_runs_abort_cleanup_off_state_lock(monkeypatch) -> None:
+def test_overlap_send_failure_runs_abort_cleanup_off_state_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
     seed(scheduler, "req-1")
@@ -527,12 +551,14 @@ def test_overlap_send_failure_runs_abort_cleanup_off_state_lock(monkeypatch) -> 
     assert "req-2" in scheduler.stream_states
 
 
-def test_overlap_slots_sleep_on_their_event(monkeypatch) -> None:
+def test_overlap_slots_sleep_on_their_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
     blocking_flags: list[bool] = []
 
-    def make_event(device, blocking=False) -> FakeEvent:
+    def make_event(device: torch.device, blocking: bool = False) -> FakeEvent:
         blocking_flags.append(blocking)
         return FakeEvent()
 
@@ -768,7 +794,7 @@ def test_overlap_slot_growth_failure_returns_original_free_slot(monkeypatch) -> 
 
 @pytest.mark.parametrize("complete", [True, False])
 def test_overlap_flush_observes_completion_before_releasing_slot(
-    monkeypatch, complete: bool
+    monkeypatch: pytest.MonkeyPatch, complete: bool
 ) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
@@ -782,7 +808,7 @@ def test_overlap_flush_observes_completion_before_releasing_slot(
 
     release_slot = scheduler.release_slot
 
-    def release_after_completion(slot) -> None:
+    def release_after_completion(slot: PinnedTransferSlot) -> None:
         assert slot_event(slot).complete
         assert slot_event(slot).query_calls >= 1
         release_slot(slot)

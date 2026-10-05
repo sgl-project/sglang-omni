@@ -936,7 +936,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             try:
                 pending.slot.synchronize()
             except Exception as exc:
-                logger.exception("Qwen3-Omni code2wav failed waiting on %s", request_id)
+                logger.exception(f"Qwen3-Omni code2wav failed waiting on {request_id}")
                 self.emit_error(request_id, exc)
                 self.abort(request_id)
             return None
@@ -1049,7 +1049,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     else []
                 )
             except Exception as exc:
-                logger.exception("Qwen3-Omni code2wav failed to send %s", request_id)
+                logger.exception(f"Qwen3-Omni code2wav failed to send {request_id}")
                 self.emit_error(request_id, exc)
                 self.abort_state(request_id)
                 failed.append(request_id)
