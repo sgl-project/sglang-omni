@@ -172,7 +172,7 @@ class DotsTTSFlowHead(nn.Module):
             )
 
             device_type = next(self.parameters()).device.type
-            # note (yao-matrix): CUDA already disables rotary autocast in the dependency.
+            # note: CUDA already disables rotary autocast in the dependency.
             if device_type not in ("cpu", "cuda"):
                 keep_rotary_fp32_under_autocast(self, device_type=device_type)
             else:
