@@ -57,6 +57,19 @@ SOAR is a flow-matching checkpoint. It runs the single-request solver with class
 
 If startup fails with `dots.tts acoustic-tail admission failed at startup`, the GPU cannot hold `max_running_requests × max_generate_length` full-length acoustic pools — lower those knobs yourself. The engine never silently shrinks them.
 
+The vocoder can optionally fuse its causal FIR → SnakeBeta → FIR activations:
+
+```bash
+sgl-omni serve --config examples/configs/dots_tts.yaml \
+  --vocoder.factory.enable_alias_free_fusion true
+```
+
+This defaults to false and requires `vocoder.factory.optimize=true`. Fusion uses
+the loaded shared or per-channel filters for FP32 CUDA inference; unsupported
+devices, dtypes, and activation geometry keep the native implementation. Enable
+it before serving requests. Vocoders sharing one cached codec must use the same
+effective fusion setting; conflicting settings fail at setup.
+
 The examples below read local clips from `docs/_static/audio`. To fetch reference audio over HTTP instead, allow the domains you need, e.g. `--allowed-media-domain huggingface.co`.
 
 ## Memory and capacity

@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import importlib.util
 import threading
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.models.dots_tts import alias_free
+from sglang_omni.models.dots_tts.alias_free import FusedAliasFree
+from sglang_omni.models.dots_tts.codec import DotsAudioCodec
+from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.vocoder import (
     DotsTTSBatchVocoder,
@@ -16,6 +24,11 @@ from sglang_omni.models.dots_tts.vocoder import (
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
+
+try:
+    from sglang_omni.models.dots_tts import stages
+except ImportError:
+    stages = None
 
 
 class FakeInference:
@@ -204,7 +217,10 @@ class TestVocoderFactorySignature:
     silently; without it, the typed-kwargs check refuses it."""
 
     def test_an_unknown_factory_key_is_refused(self) -> None:
-        stages = pytest.importorskip("sglang_omni.models.dots_tts.stages")
+        if stages is None:
+            pytest.skip("Requires the SGLang runtime")
+        else:
+            pass
         from sglang_omni.config.runtime import apply_typed_stage_kwargs
 
         with pytest.raises(ValueError, match="stream_slotz"):
@@ -226,3 +242,241 @@ class TestVocoderFactorySignature:
             stage_name="vocoder",
         )
         assert out == {"stream_slots": 8}
+
+
+class TestAliasFreeFusion:
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+    def test_native_fallback_and_checkpoint_keys(self, dtype: torch.dtype) -> None:
+        activation = torch.nn.Module()
+        activation.up_ratio = activation.down_ratio = 2
+        activation.upsample = torch.nn.ConvTranspose1d(3, 3, 1)
+        activation.downsample = torch.nn.Conv1d(3, 3, 1)
+        activation.act = torch.nn.Identity()
+        activation.act.alpha = torch.nn.Parameter(torch.zeros(3))
+        activation.act.beta = torch.nn.Parameter(torch.zeros(3))
+        activation.act.alpha_logscale = True
+        activation.act.no_div_by_zero = 1e-9
+        activation = activation.to(dtype=dtype).eval()
+        candidate = FusedAliasFree(activation)
+        inputs = torch.randn(2, 3, 11, dtype=dtype)
+        expected = activation.downsample(activation.act(activation.upsample(inputs)))
+        actual = candidate(inputs)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert set(candidate.state_dict()) == set(activation.state_dict())
+        actual.sum().backward()
+        assert candidate.upsample.weight.grad is not None
+
+    @pytest.mark.parametrize("first_enabled", [False, True])
+    def test_shared_codec_mode_is_fixed(
+        self, monkeypatch: pytest.MonkeyPatch, first_enabled: bool
+    ) -> None:
+        codec = DotsAudioCodec.__new__(DotsAudioCodec)
+        codec.lock = threading.RLock()
+        codec.alias_free_fusion_enabled = None
+        codec.vocoder = SimpleNamespace(decoder=torch.nn.Identity())
+        installed: list[torch.nn.Module] = []
+        monkeypatch.setattr(
+            "sglang_omni.models.dots_tts.codec.install_alias_free_fusion",
+            lambda decoder: installed.append(decoder),
+        )
+        codec.configure_alias_free_fusion(first_enabled)
+        codec.configure_alias_free_fusion(first_enabled)
+        assert len(installed) == int(first_enabled)
+        with pytest.raises(RuntimeError, match="different.*enable_alias_free_fusion"):
+            codec.configure_alias_free_fusion(not first_enabled)
+        assert codec.alias_free_fusion_enabled == first_enabled
+
+    @pytest.mark.parametrize(
+        ("optimize", "enabled"), [(False, True), (True, False), (True, True)]
+    )
+    def test_factory_configures_codec_before_pool(
+        self, monkeypatch: pytest.MonkeyPatch, optimize: bool, enabled: bool
+    ) -> None:
+        if stages is None:
+            pytest.skip("Requires the SGLang runtime")
+        else:
+            pass
+
+        events: list[str | bool] = []
+
+        class Codec:
+            def configure_alias_free_fusion(self, flag: bool) -> None:
+                events.append(flag)
+
+        class Vocoder:
+            def __init__(self, codec: Codec, **kwargs) -> None:
+                self.merge_steps = 4
+                self.stream_slots = 16
+                self.stream_chunk_batch_max = 4
+                events.append("constructor")
+
+            def ensure_slot_pool(self) -> None:
+                events.append("pool")
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            stages, "load_dots_audio_codec", lambda *args, **kwargs: Codec()
+        )
+        monkeypatch.setattr(stages, "DotsTTSStreamingVocoder", Vocoder)
+        stages.create_vocoder_executor(
+            "model", device="cpu", optimize=optimize, enable_alias_free_fusion=enabled
+        )
+        assert events == [optimize and enabled, "constructor", "pool"]
+
+    def test_fusion_config_is_typed_and_disabled_by_default(self) -> None:
+        config = DotsTTSPipelineConfig(model_path="model")
+        stage = config.stage_named("vocoder")
+        assert resolve_stage_typed_kwargs(stage)["enable_alias_free_fusion"] is False
+        stage.factory.enable_alias_free_fusion = True
+        assert resolve_stage_typed_kwargs(stage)["enable_alias_free_fusion"] is True
+
+
+@pytest.fixture
+def cuda_alias_free_activation(request: pytest.FixtureRequest) -> torch.nn.Module:
+    if (
+        not torch.cuda.is_available()
+        or alias_free.triton is None
+        or torch.version.hip is not None
+    ):
+        pytest.skip("Requires CUDA and Triton")
+    else:
+        pass
+    if importlib.util.find_spec("dots_tts") is None:
+        pytest.skip("Requires dots.tts")
+    else:
+        pass
+    import_dots_tts()
+    from dots_tts.modules.vocoder.alias_free_act import Activation1d, SnakeBeta
+
+    activation = (
+        Activation1d(
+            SnakeBeta(7, alpha_logscale=True), causal=True, fixed_filter=request.param
+        )
+        .cuda()
+        .eval()
+    )
+    with torch.no_grad():
+        activation.act.alpha.uniform_(-2, 2)
+        activation.act.beta.uniform_(-2, 2)
+        activation.upsample.filter.add_(
+            torch.randn_like(activation.upsample.filter) * 0.01
+        )
+        activation.downsample.lowpass.filter.add_(
+            torch.randn_like(activation.downsample.lowpass.filter) * 0.01
+        )
+    return activation
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("cuda_alias_free_activation", [False, True], indirect=True)
+@pytest.mark.parametrize("frames", [1, 2, 3, 11, 17, 257])
+@pytest.mark.parametrize(
+    "input_kind", ["random", "impulse_left", "impulse_right", "noncontiguous"]
+)
+@torch.inference_mode()
+def test_alias_free_cuda_boundaries(
+    cuda_alias_free_activation: torch.nn.Module, frames: int, input_kind: str
+) -> None:
+    activation = cuda_alias_free_activation
+    inputs = torch.randn(2, 7, frames, device="cuda")
+    if input_kind == "noncontiguous":
+        inputs = torch.randn(2, 7, frames * 2, device="cuda")[..., ::2]
+    elif input_kind in ("impulse_left", "impulse_right"):
+        inputs.zero_()
+        inputs[..., 0 if input_kind == "impulse_left" else frames - 1] = 1
+    else:
+        pass
+    expected = activation(inputs)
+    candidate = FusedAliasFree(activation)
+    torch.testing.assert_close(candidate(inputs), expected, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(activation(inputs), expected, rtol=0, atol=0)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("cuda_alias_free_activation", [False, True], indirect=True)
+@torch.inference_mode()
+def test_alias_free_graph_input_replay(
+    cuda_alias_free_activation: torch.nn.Module,
+) -> None:
+    activation = cuda_alias_free_activation
+    candidate = FusedAliasFree(activation)
+    inputs = torch.randn(2, 7, 17, device="cuda")
+    first_inputs = inputs.clone()
+    second_inputs = torch.randn_like(inputs)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for _ in range(3):
+            candidate(inputs)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        output = candidate(inputs)
+    for replay_inputs in (first_inputs, second_inputs, first_inputs):
+        inputs.copy_(replay_inputs)
+        graph.replay()
+        torch.testing.assert_close(output, activation(inputs), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("cuda_alias_free_activation", [False, True], indirect=True)
+def test_alias_free_install_is_atomic(
+    cuda_alias_free_activation: torch.nn.Module,
+) -> None:
+    activation = cuda_alias_free_activation
+    unsupported = copy.deepcopy(activation)
+    unsupported.upsample.pad = 1
+    decoder = torch.nn.Sequential(activation, unsupported)
+    assert alias_free.install_alias_free_fusion(decoder) == 0
+    assert decoder[0] is activation
+    assert decoder[1] is unsupported
+    decoder = torch.nn.Sequential(activation)
+    checkpoint_keys = set(decoder.state_dict())
+    assert alias_free.install_alias_free_fusion(decoder) == 1
+    assert set(decoder.state_dict()) == checkpoint_keys
+    assert decoder[0].upsample.filter is activation.upsample.filter
+    assert decoder[0].downsample.lowpass.filter is activation.downsample.lowpass.filter
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("cuda_alias_free_activation", [False, True], indirect=True)
+@pytest.mark.parametrize("update_kind", ["load_state_dict", "train_then_eval"])
+@torch.inference_mode()
+def test_alias_free_parameter_updates(
+    cuda_alias_free_activation: torch.nn.Module, update_kind: str
+) -> None:
+    activation = cuda_alias_free_activation
+    decoder = torch.nn.Sequential(FusedAliasFree(activation))
+    inputs = torch.randn(2, 7, 17, device="cuda")
+    if update_kind == "load_state_dict":
+        checkpoint = {
+            name: value.clone() for name, value in decoder.state_dict().items()
+        }
+        checkpoint["0.act.alpha"].add_(0.5)
+        checkpoint["0.act.beta"].add_(0.5)
+        decoder.load_state_dict(checkpoint)
+    else:
+        decoder.train()
+        activation.act.alpha.add_(0.5)
+        activation.act.beta.add_(0.5)
+        decoder.eval()
+    torch.testing.assert_close(
+        decoder(inputs), activation(inputs), rtol=1e-4, atol=1e-4
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("cuda_alias_free_activation", [False, True], indirect=True)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@torch.inference_mode()
+def test_alias_free_autocast_falls_back(
+    cuda_alias_free_activation: torch.nn.Module, dtype: torch.dtype
+) -> None:
+    activation = cuda_alias_free_activation
+    candidate = FusedAliasFree(activation)
+    inputs = torch.randn(2, 7, 17, device="cuda")
+    with torch.autocast("cuda", dtype=dtype):
+        expected = activation(inputs)
+        actual = candidate(inputs)
+    assert actual.dtype == expected.dtype == dtype
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
