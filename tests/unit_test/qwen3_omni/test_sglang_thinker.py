@@ -10,6 +10,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 
+from sglang.srt.eplb.expert_location_dispatch import ExpertLocationDispatchInfo
 from sglang.srt.layers.moe.topk import StandardTopKOutput
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
@@ -157,10 +158,17 @@ class FixedTopK(torch.nn.Module):
     def __init__(self, topk_output: StandardTopKOutput) -> None:
         super().__init__()
         self.topk_output = topk_output
+        self.padding_counts: list[torch.Tensor | None] = []
 
     def forward(
-        self, hidden_states: torch.Tensor, router_logits: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        router_logits: torch.Tensor,
+        *,
+        num_token_non_padded: torch.Tensor | None = None,
+        expert_location_dispatch_info: ExpertLocationDispatchInfo | None = None,
     ) -> StandardTopKOutput:
+        self.padding_counts.append(num_token_non_padded)
         return self.topk_output
 
 
@@ -193,6 +201,22 @@ def test_topk_without_a_decode_mask_returns_the_routing_unchanged():
     )
 
     assert routed is topk_output
+
+
+def test_topk_leaves_routing_to_sglang_when_it_counts_padded_rows():
+    topk_output = make_topk_output(4)
+    inner_topk = FixedTopK(topk_output)
+    live_rows = DecodeLiveRows(is_live_row=torch.tensor([True, True, False, False]))
+    padding_count = torch.tensor(2)
+
+    routed = PaddedRowsTopK(inner_topk, live_rows)(
+        torch.zeros(4, 8),
+        topk_output.router_logits,
+        num_token_non_padded=padding_count,
+    )
+
+    assert routed is topk_output
+    assert inner_topk.padding_counts == [padding_count]
 
 
 @pytest.mark.parametrize(

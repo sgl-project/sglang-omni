@@ -15,6 +15,7 @@ from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from sglang.srt.eplb.expert_location_dispatch import ExpertLocationDispatchInfo
 from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.moe.topk import StandardTopKOutput, TopK, TopKOutput
@@ -65,12 +66,27 @@ class PaddedRowsTopK(nn.Module):
         self.live_rows = live_rows
 
     def forward(
-        self, hidden_states: torch.Tensor, router_logits: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        router_logits: torch.Tensor,
+        *,
+        num_token_non_padded: torch.Tensor | None = None,
+        expert_location_dispatch_info: ExpertLocationDispatchInfo | None = None,
     ) -> TopKOutput:
-        topk_output = self.topk(hidden_states, router_logits)
+        topk_output = self.topk(
+            hidden_states,
+            router_logits,
+            num_token_non_padded=num_token_non_padded,
+            expert_location_dispatch_info=expert_location_dispatch_info,
+        )
         is_live_row = self.live_rows.is_live_row
-        # note (ratish): runners that route inside the expert kernel return no ids.
-        if is_live_row is None or not isinstance(topk_output, StandardTopKOutput):
+        # note (ratish): with a padding count (expert parallel) SGLang masks padded
+        # rows itself, and runners that route inside the expert kernel return no ids.
+        if (
+            is_live_row is None
+            or num_token_non_padded is not None
+            or not isinstance(topk_output, StandardTopKOutput)
+        ):
             return topk_output
         else:
             pass
@@ -82,8 +98,10 @@ class PaddedRowsTopK(nn.Module):
             router_logits=topk_output.router_logits,
         )
 
-    def empty_topk_output(self, device: torch.device) -> TopKOutput:
-        return self.topk.empty_topk_output(device)
+    def empty_topk_output(
+        self, device: torch.device, *, layer_id: int | None = None
+    ) -> TopKOutput:
+        return self.topk.empty_topk_output(device, layer_id=layer_id)
 
 
 class Qwen3OmniThinkerForCausalLM(nn.Module):
