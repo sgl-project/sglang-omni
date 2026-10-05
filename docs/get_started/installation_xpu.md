@@ -245,8 +245,8 @@ The `disable_cuda_graph` and `cuda_graph_max_bs` config names also control
 SGLang backbone decode graphs on XPU. The configs enable them; use
 `--latent_engine.engine.disable_cuda_graph true` for eager backbone decode.
 The batched acoustic tail runs eager on XPU. Its memory admission precheck
-currently runs only on CUDA, so oversized XPU pools can fail with an
-out-of-memory error at startup. Lower `max_running_requests` and/or
+queries free XPU memory and rejects oversized pools before allocation.
+Lower `max_running_requests` and/or
 `max_generate_length` explicitly; `mem_fraction_static` only budgets
 the backbone KV cache.
 

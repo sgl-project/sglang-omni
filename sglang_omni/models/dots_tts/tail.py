@@ -101,7 +101,7 @@ class AutocastFusedDiT(FusedAdaLNDiT):
     ) -> torch.Tensor:
         dtype = self.fused_adaln[-1].weight.dtype
         device_type = timesteps.device.type
-        autocast = device_type in ("cuda", "xpu") and dtype in {
+        autocast = device_type != "cpu" and dtype in {
             torch.float16,
             torch.bfloat16,
         }
@@ -326,10 +326,10 @@ def validate_acoustic_pool_memory(
     device: torch.device,
     headroom_ratio: float = 0.15,
 ) -> None:
-    """Raise if free CUDA memory cannot hold the pools plus headroom."""
+    """Raise if free accelerator memory cannot hold the pools plus headroom."""
     # note (guozhihao-224): CPU paths skip this gate so unit tests can allocate
     # tiny pools; never silently lower max_running_requests or patch capacity.
-    if device.type != "cuda":
+    if device.type == "cpu":
         return
     else:
         pass
@@ -337,10 +337,11 @@ def validate_acoustic_pool_memory(
         raise ValueError("dots.tts acoustic pool headroom_ratio must be non-negative")
     else:
         pass
-    with torch.cuda.device(device):
-        torch.cuda.empty_cache()
-    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
-    # note (guozhihao-224): 15% headroom covers CUDA-graph capture and scratch
+    device_module = torch.get_device_module(device)
+    with device_module.device(device):
+        device_module.empty_cache()
+    free_bytes, total_bytes = device_module.mem_get_info(device)
+    # note (guozhihao-224): 15% headroom covers graph capture and scratch
     # beyond the eager pool tensors themselves.
     required = int(estimate.total_bytes * (1.0 + float(headroom_ratio)))
     if free_bytes >= required:
