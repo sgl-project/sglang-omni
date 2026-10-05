@@ -10,16 +10,19 @@ prefill, so this wrapper keeps only the text model and LM head.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+from sglang.srt.layers.moe.topk import StandardTopKOutput, TopK, TopKOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
+from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
 from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel, load_fused_expert_weights
 from sglang.srt.utils import add_prefix, logger
 from transformers import PretrainedConfig
@@ -39,6 +42,48 @@ def config_uses_mrope(config: PretrainedConfig) -> bool:
         else:
             pass
     return False
+
+
+@dataclass(kw_only=True)
+class DecodeLiveRows:
+    """The real rows of the current decode forward, shared by every MoE top-k."""
+
+    is_live_row: torch.Tensor | None = None
+
+
+class PaddedRowsTopK(nn.Module):
+    """Top-k that gives a decode graph's padded rows the experts of row 0.
+
+    A decode graph replays at its bucket size, and the padded rows keep stale
+    token ids, so each would route to its own experts and the fused MoE would
+    load their weights for outputs it drops. Real rows route as before.
+    """
+
+    def __init__(self, topk: TopK, live_rows: DecodeLiveRows) -> None:
+        super().__init__()
+        self.topk = topk
+        self.live_rows = live_rows
+
+    def forward(
+        self, hidden_states: torch.Tensor, router_logits: torch.Tensor
+    ) -> TopKOutput:
+        topk_output = self.topk(hidden_states, router_logits)
+        is_live_row = self.live_rows.is_live_row
+        # note (ratish): runners that route inside the expert kernel return no ids.
+        if is_live_row is None or not isinstance(topk_output, StandardTopKOutput):
+            return topk_output
+        else:
+            pass
+        return StandardTopKOutput(
+            topk_weights=topk_output.topk_weights,
+            topk_ids=torch.where(
+                is_live_row.unsqueeze(1), topk_output.topk_ids, topk_output.topk_ids[:1]
+            ),
+            router_logits=topk_output.router_logits,
+        )
+
+    def empty_topk_output(self, device: torch.device) -> TopKOutput:
+        return self.topk.empty_topk_output(device)
 
 
 class Qwen3OmniThinkerForCausalLM(nn.Module):
@@ -75,6 +120,14 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             )
         self.logits_processor = LogitsProcessor(self.config)
         self.fused_rope_gate = install_thinker_fused_rope(self.model)
+        self.decode_live_rows = DecodeLiveRows()
+        for layer in self.model.layers:
+            if isinstance(layer, Qwen3MoeDecoderLayer) and isinstance(
+                layer.mlp, Qwen3MoeSparseMoeBlock
+            ):
+                layer.mlp.topk = PaddedRowsTopK(layer.mlp.topk, self.decode_live_rows)
+            else:
+                pass
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
@@ -101,6 +154,15 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             self.fused_rope_gate.evaluate(positions, forward_batch)
         else:
             pass
+        # note (ratish): padded decode-graph rows write KV slot 0, which the
+        # allocator never hands out; a one-row decode has no padded rows.
+        if (
+            forward_batch.forward_mode.is_decode()
+            and forward_batch.out_cache_loc.shape[0] > 1
+        ):
+            self.decode_live_rows.is_live_row = forward_batch.out_cache_loc != 0
+        else:
+            self.decode_live_rows.is_live_row = None
 
         hidden_states = self.model(
             input_ids=input_ids,
