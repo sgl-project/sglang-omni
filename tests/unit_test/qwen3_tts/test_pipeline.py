@@ -4326,14 +4326,13 @@ def test_qwen3_tts_unproven_completion_retains_resources_and_disables_cuda_decod
     assert bundle.slot is slot
     assert bundle.decoder_input is not None
     shapes = [tuple(item.shape) for item in bundle.keepalives]
+    assert bundle.keepalives[2].dtype == torch.bool
     if failure_point == "launch":
-        # decoder output, its delta, and the CPU source codes
-        assert shapes == [(1, 1, 8), (8,), (1, 2, 2)], shapes
+        assert shapes == [(1, 1, 8), (8,), (1,), (1, 2, 2)], shapes
     else:
-        # decoder output, its delta, and the pinned view still being written
-        assert shapes == [(1, 1, 8), (8,), (8,)], shapes
+        assert shapes == [(1, 1, 8), (8,), (1,), (8,)], shapes
         assert (
-            bundle.keepalives[2].data_ptr() == slot.output_transfer.view(8).data_ptr()
+            bundle.keepalives[3].data_ptr() == slot.output_transfer.view(8).data_ptr()
         ), "the pinned output view must stay referenced"
 
     stream.sync_error = None
