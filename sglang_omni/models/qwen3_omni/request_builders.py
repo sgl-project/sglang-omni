@@ -959,8 +959,8 @@ def build_sglang_talker_request(
         if suppress_tokens
         else None
     )
-    # note (ratish): without multimodal inputs SGLang builds the same arange
-    # positions on device; attached linear ones cost a blocking copy per decode step.
+    # note (ratish): omit zero-delta metadata so all-linear decode batches avoid
+    # the blocking delta copy.
     if (
         thinker_config is not None
         and talker_model_inputs
