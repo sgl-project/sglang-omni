@@ -29,6 +29,9 @@ cannot contract mul + add across the intermediate bf16 roundings into an
 FMA (which would skip one rounding step and break exact ties). Both were
 validated exhaustively over all 65536 bf16 input encodings per op.
 
+The Intel backend takes enable_fp_fusion and has no reflect-ftz option;
+bitwise identity there was validated over every finite bf16 encoding.
+
 This module must import on hosts without a GPU: Triton usage is guarded
 and every entry point degrades to None / the eager arithmetic.
 """
@@ -56,6 +59,7 @@ except Exception:  # pragma: no cover
 MAX_T = 65535 * 1024
 CHANNELS_LAST_BLOCK_POSITIONS = 32
 CHANNELS_LAST_BLOCK_CHANNELS = 64
+TRITON_DEVICE_TYPES = frozenset({"cuda", "xpu"})
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +160,7 @@ def launch(
     if x.is_contiguous():
         block = block_for(t)
         grid = (batch * channels, triton.cdiv(t, block))
-        with torch.cuda.device_of(x):
+        with torch.get_device_module(x.device).device(x.device):
             snake_beta_kernel[grid](
                 x,
                 out,
@@ -167,15 +171,15 @@ def launch(
                 eps,
                 BLOCK=block,
                 num_warps=4,
-                enable_reflect_ftz=False,
                 enable_fp_fusion=False,
+                **({"enable_reflect_ftz": False} if x.is_cuda else {}),
             )
     else:
         grid = (
             triton.cdiv(batch * t, CHANNELS_LAST_BLOCK_POSITIONS),
             triton.cdiv(channels, CHANNELS_LAST_BLOCK_CHANNELS),
         )
-        with torch.cuda.device_of(x):
+        with torch.get_device_module(x.device).device(x.device):
             snake_beta_channels_last_kernel[grid](
                 x,
                 out,
@@ -187,8 +191,8 @@ def launch(
                 BLOCK_POSITIONS=CHANNELS_LAST_BLOCK_POSITIONS,
                 BLOCK_CHANNELS=CHANNELS_LAST_BLOCK_CHANNELS,
                 num_warps=4,
-                enable_reflect_ftz=False,
                 enable_fp_fusion=False,
+                **({"enable_reflect_ftz": False} if x.is_cuda else {}),
             )
     return out
 
@@ -198,9 +202,9 @@ def fused_snake_beta(
 ) -> torch.Tensor | None:
     """Fused SnakeBeta. Returns None outside the supported envelope.
 
-    Envelope: x [B, C, T] bfloat16 CUDA, contiguous or channels last (its
-    [B, T, C] transpose contiguous), with T <= 65535 * 1024, alpha/beta bfloat16
-    [C] on the same device. Inside the envelope the result has x's layout and is
+    Envelope: x [B, C, T] bfloat16 on a Triton device, contiguous or channels
+    last (its [B, T, C] transpose contiguous), with T <= 65535 * 1024,
+    alpha/beta bfloat16 [C] on the same device. Inside the envelope the result has x's layout and is
     bitwise identical to the eager SnakeBeta.forward with no_div_by_zero eps, and
     the call never synchronizes with the host (safe under CUDA graph capture).
     """
@@ -212,7 +216,11 @@ def fused_snake_beta(
         or beta.dtype is not torch.bfloat16
     ):
         return None
-    elif x.device.type != "cuda" or alpha.device != x.device or beta.device != x.device:
+    elif (
+        x.device.type not in TRITON_DEVICE_TYPES
+        or alpha.device != x.device
+        or beta.device != x.device
+    ):
         return None
     elif x.dim() != 3 or x.numel() == 0:
         return None
@@ -262,11 +270,11 @@ def prewarm(device: torch.device) -> None:
     on a float value, so one binary per BLOCK covers every envelope shape and
     epsilon; a JIT compile can then never happen inside a stream capture.
     """
-    if not HAS_TRITON or device.type != "cuda":
+    if not HAS_TRITON or device.type not in TRITON_DEVICE_TYPES:
         return
     else:
         pass
-    with torch.cuda.device(device):
+    with torch.get_device_module(device).device(device):
         ab = torch.zeros((96,), dtype=torch.bfloat16, device=device)
         for t in (2, 128, 256, 1024):  # one T per BLOCK bucket
             x = torch.zeros((1, 96, t), dtype=torch.bfloat16, device=device)
@@ -281,7 +289,7 @@ def prewarm_replacements(
     devices = {
         getattr(parent, name).alpha.device
         for parent, name in replacements
-        if getattr(parent, name).alpha.device.type == "cuda"
+        if getattr(parent, name).alpha.device.type in TRITON_DEVICE_TYPES
     }
     for device in devices:
         prewarm(device)
@@ -301,7 +309,7 @@ def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
             else:
                 pass
 
-    if replacements and HAS_TRITON and torch.cuda.is_available():
+    if replacements and HAS_TRITON:
         try:
             # Note(Jiaxin): compile before mutating the decoder so a failed
             # prewarm leaves the proven eager implementation intact.

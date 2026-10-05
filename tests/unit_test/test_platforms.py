@@ -453,3 +453,18 @@ def test_only_xpu_names_a_measured_bf16_static_pool_floor() -> None:
     ):
         for device in (torch.device("cpu"), torch.device("cuda", 0)):
             assert platform_type().zonos2_bf16_mem_fraction_static(device) is None
+
+
+def test_cpu_cuda_rocm_xpu_and_musa_implement_the_shared_device_operations() -> None:
+    for platform_type in (
+        CPUOmniPlatform,
+        CUDAOmniPlatform,
+        ROCMOmniPlatform,
+        XPUOmniPlatform,
+        platforms.MUSAOmniPlatform,
+    ):
+        platform = platform_type()
+        assert type(platform).empty_cache is not DeviceMixin.empty_cache, platform_type
+        assert (
+            type(platform).get_available_memory is not DeviceMixin.get_available_memory
+        ), platform_type
