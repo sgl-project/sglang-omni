@@ -29,7 +29,7 @@ class FakeControlClient:
 
     def __init__(self):
         self.daemon_pid = 4242
-        self._next_daemon_pid = 4242
+        self.next_daemon_pid = 4242
         self.daemons: dict[str, int] = {}
         self.alive_pids: set[int] = set()
         self.held_owner_pids: set[int] = set()
@@ -49,8 +49,8 @@ class FakeControlClient:
         del log_dir, gpu_uuid
         if self.start_fails:
             raise MpsControlError("spawn failed")
-        self.daemon_pid = self._next_daemon_pid
-        self._next_daemon_pid += 1
+        self.daemon_pid = self.next_daemon_pid
+        self.next_daemon_pid += 1
         self.daemons[str(pipe_dir)] = self.daemon_pid
         self.alive_pids.add(self.daemon_pid)
         (Path(pipe_dir) / "nvidia-cuda-mps-control.pid").write_text(

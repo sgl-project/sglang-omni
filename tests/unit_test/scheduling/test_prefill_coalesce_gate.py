@@ -25,16 +25,16 @@ from sglang.srt.managers.schedule_batch import NextBatchPlan  # noqa: E402
 from sglang_omni.scheduling import omni_scheduler  # noqa: E402
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler  # noqa: E402
 
-_UPSTREAM_BATCH = object()
+UPSTREAM_BATCH = object()
 
 
-def _req(enqueue_t: float | None):
+def make_req(enqueue_t: float | None):
     if enqueue_t is None:
         return SimpleNamespace()
     return SimpleNamespace(_coalesce_enqueue_t=enqueue_t)
 
 
-class _StubScheduler:
+class StubScheduler:
     """The attribute surface get_new_batch_prefill touches."""
 
     def __init__(
@@ -56,10 +56,10 @@ class _StubScheduler:
         self.chunked_req = None
         self.waiting_queue: list = []
         self.running_batch = SimpleNamespace(is_empty=lambda: False)
-        self._request_admission_lock = threading.RLock()
-        self._pending_request_builds: dict = {}
-        self._pending_request_admissions: dict = {}
-        self._backlogged_request_build_payloads: list = []
+        self.request_admission_lock = threading.RLock()
+        self.pending_request_builds: dict = {}
+        self.pending_request_admissions: dict = {}
+        self.backlogged_request_build_payloads: list = []
 
     def get_new_batch_prefill(self):
         # Upstream takes running_batch in and hands back a NextBatchPlan;
@@ -71,9 +71,9 @@ class _StubScheduler:
 @pytest.fixture()
 def upstream():
     with mock.patch.object(
-        omni_scheduler._Upstream,
+        omni_scheduler._Upstream,  # noqa: leading-underscore  # production name
         "get_new_batch_prefill",
-        return_value=NextBatchPlan(batch_to_run=_UPSTREAM_BATCH, running_batch=None),
+        return_value=NextBatchPlan(batch_to_run=UPSTREAM_BATCH, running_batch=None),
     ) as patched:
         yield patched
 
@@ -86,193 +86,193 @@ def clock():
 
 
 def test_disabled_gate_passes_through(upstream):
-    sched = _StubScheduler(coalesce_requests=0)
-    sched.waiting_queue = [_req(0.0)]
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    sched = StubScheduler(coalesce_requests=0)
+    sched.waiting_queue = [make_req(0.0)]
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_chunked_prefill_bypasses_gate(upstream):
-    sched = _StubScheduler(coalesce_requests=8)
-    sched.waiting_queue = [_req(0.0)]
+    sched = StubScheduler(coalesce_requests=8)
+    sched.waiting_queue = [make_req(0.0)]
     sched.chunked_req = object()
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_empty_queue_passes_through(upstream):
-    sched = _StubScheduler(coalesce_requests=8)
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    sched = StubScheduler(coalesce_requests=8)
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_full_batch_passes_through_immediately(upstream):
-    sched = _StubScheduler(coalesce_requests=4)
-    sched.waiting_queue = [_req(100.0)] * 4
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    sched = StubScheduler(coalesce_requests=4)
+    sched.waiting_queue = [make_req(100.0)] * 4
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_small_queue_is_held_until_oldest_expires(upstream, clock):
-    sched = _StubScheduler(coalesce_requests=8, wait_ms=60.0)
-    sched.waiting_queue = [_req(100.0), _req(100.01)]
+    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
+    sched.waiting_queue = [make_req(100.0), make_req(100.01)]
 
     clock.return_value = 100.03  # oldest has waited 30ms of the 60ms window
     assert sched.get_new_batch_prefill() is None
 
     clock.return_value = 100.07  # oldest past the deadline
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
     upstream.assert_called_once()
 
 
 def test_reaching_target_releases_before_deadline(upstream, clock):
-    sched = _StubScheduler(coalesce_requests=3, wait_ms=60.0)
-    sched.waiting_queue = [_req(100.0)]
+    sched = StubScheduler(coalesce_requests=3, wait_ms=60.0)
+    sched.waiting_queue = [make_req(100.0)]
     assert sched.get_new_batch_prefill() is None
 
-    sched.waiting_queue = [_req(100.0)] * 3  # target reached, clock unchanged
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    sched.waiting_queue = [make_req(100.0)] * 3  # target reached, clock unchanged
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_partial_admission_leftovers_keep_their_deadline(upstream, clock):
     # Note: (maydomine) leftovers of a partially admitted wave keep their old
     # stamps and must not re-wait a fresh window.
-    sched = _StubScheduler(coalesce_requests=8, wait_ms=60.0)
+    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
     clock.return_value = 100.1
-    sched.waiting_queue = [_req(100.0), _req(100.02)]  # both past the deadline
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    sched.waiting_queue = [make_req(100.0), make_req(100.02)]  # both past the deadline
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_abort_does_not_hand_newcomers_an_expired_deadline(upstream, clock):
     # Note: (maydomine) a fresh arrival after an abort waits its own window
     # rather than inheriting the nearly expired one.
-    sched = _StubScheduler(coalesce_requests=8, wait_ms=60.0)
+    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
     clock.return_value = 100.1
-    sched.waiting_queue = [_req(100.09)]  # newcomer, 10ms old
+    sched.waiting_queue = [make_req(100.09)]  # newcomer, 10ms old
     assert sched.get_new_batch_prefill() is None
 
 
 def test_idle_loop_bypasses_gate(upstream):
     # Note: (maydomine) no decode in flight: holding amortizes nothing, only
     # costs TTFB.
-    sched = _StubScheduler(coalesce_requests=8)
-    sched.waiting_queue = [_req(0.0)]
+    sched = StubScheduler(coalesce_requests=8)
+    sched.waiting_queue = [make_req(0.0)]
     sched.running_batch = None
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
     sched.running_batch = SimpleNamespace(is_empty=lambda: True)
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_idle_loop_can_coalesce_when_explicitly_enabled(upstream, clock):
-    sched = _StubScheduler(
+    sched = StubScheduler(
         coalesce_requests=8,
         wait_ms=10.0,
         coalesce_when_idle=True,
     )
     sched.running_batch = None
-    sched.waiting_queue = [_req(100.0)]
+    sched.waiting_queue = [make_req(100.0)]
 
     clock.return_value = 100.005
     assert sched.get_new_batch_prefill() is None
 
     clock.return_value = 100.011
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 @pytest.mark.parametrize("source", ["pending", "backlog"])
 def test_pending_build_work_holds_small_prefill(upstream, clock, source):
-    sched = _StubScheduler(
+    sched = StubScheduler(
         coalesce_requests=8,
         wait_ms=6.0,
         coalesce_when_idle=True,
         requires_pending_builds=True,
     )
     sched.running_batch = None
-    sched.waiting_queue = [_req(100.0)]
+    sched.waiting_queue = [make_req(100.0)]
     if source == "pending":
-        sched._pending_request_builds["building"] = object()
+        sched.pending_request_builds["building"] = object()
     else:
-        sched._backlogged_request_build_payloads.append(object())
+        sched.backlogged_request_build_payloads.append(object())
 
     clock.return_value = 100.005
     assert sched.get_new_batch_prefill() is None
 
 
 def test_pending_build_gate_releases_when_build_work_drains(upstream, clock):
-    sched = _StubScheduler(
+    sched = StubScheduler(
         coalesce_requests=8,
         wait_ms=6.0,
         coalesce_when_idle=True,
         requires_pending_builds=True,
     )
     sched.running_batch = None
-    sched.waiting_queue = [_req(100.0)]
-    sched._pending_request_builds["building"] = object()
+    sched.waiting_queue = [make_req(100.0)]
+    sched.pending_request_builds["building"] = object()
 
     clock.return_value = 100.001
     assert sched.get_new_batch_prefill() is None
 
-    sched._pending_request_builds.clear()
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    sched.pending_request_builds.clear()
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_pending_build_gate_releases_at_target(upstream, clock):
-    sched = _StubScheduler(
+    sched = StubScheduler(
         coalesce_requests=8,
         wait_ms=6.0,
         coalesce_when_idle=True,
         requires_pending_builds=True,
     )
     sched.running_batch = None
-    sched.waiting_queue = [_req(100.0)] * 8
-    sched._pending_request_builds["building"] = object()
+    sched.waiting_queue = [make_req(100.0)] * 8
+    sched.pending_request_builds["building"] = object()
 
     clock.return_value = 100.001
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_pending_build_gate_releases_at_deadline(upstream, clock):
-    sched = _StubScheduler(
+    sched = StubScheduler(
         coalesce_requests=8,
         wait_ms=6.0,
         coalesce_when_idle=True,
         requires_pending_builds=True,
     )
     sched.running_batch = None
-    sched.waiting_queue = [_req(100.0)]
-    sched._pending_request_builds["building"] = object()
+    sched.waiting_queue = [make_req(100.0)]
+    sched.pending_request_builds["building"] = object()
 
     clock.return_value = 100.006
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_pending_build_gate_does_not_wait_without_build_work(upstream, clock):
-    sched = _StubScheduler(
+    sched = StubScheduler(
         coalesce_requests=8,
         wait_ms=6.0,
         coalesce_when_idle=True,
         requires_pending_builds=True,
     )
     sched.running_batch = None
-    sched.waiting_queue = [_req(100.0)]
+    sched.waiting_queue = [make_req(100.0)]
 
     clock.return_value = 100.001
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_decode_can_coalesce_after_build_work_drains(upstream, clock):
-    sched = _StubScheduler(
+    sched = StubScheduler(
         coalesce_requests=8,
         wait_ms=6.0,
         coalesce_when_idle=True,
         requires_pending_builds=True,
         coalesce_after_builds_during_decode=True,
     )
-    sched.waiting_queue = [_req(100.0)]
+    sched.waiting_queue = [make_req(100.0)]
 
     clock.return_value = 100.001
     assert sched.get_new_batch_prefill() is None
 
 
 def test_idle_decode_still_releases_after_build_work_drains(upstream, clock):
-    sched = _StubScheduler(
+    sched = StubScheduler(
         coalesce_requests=8,
         wait_ms=6.0,
         coalesce_when_idle=True,
@@ -280,32 +280,32 @@ def test_idle_decode_still_releases_after_build_work_drains(upstream, clock):
         coalesce_after_builds_during_decode=True,
     )
     sched.running_batch = None
-    sched.waiting_queue = [_req(100.0)]
+    sched.waiting_queue = [make_req(100.0)]
 
     clock.return_value = 100.001
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_real_partial_admission_cycle_releases_leftovers_immediately(clock):
     # Note: (Jiaxin Deng) real admit cycle: upstream pops only the head of an
     # expired wave; the leftover keeps its stamp and releases on the next pass.
-    def _admit_head(self, running_batch):
+    def admit_head(self, running_batch):
         self.waiting_queue.pop(0)
-        return NextBatchPlan(batch_to_run=_UPSTREAM_BATCH, running_batch=running_batch)
+        return NextBatchPlan(batch_to_run=UPSTREAM_BATCH, running_batch=running_batch)
 
-    sched = _StubScheduler(coalesce_requests=8, wait_ms=60.0)
+    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
     clock.return_value = 100.07
-    leftover = _req(100.005)
-    sched.waiting_queue = [_req(100.0), leftover]
+    leftover = make_req(100.005)
+    sched.waiting_queue = [make_req(100.0), leftover]
     with mock.patch.object(
-        omni_scheduler._Upstream,
+        omni_scheduler._Upstream,  # noqa: leading-underscore  # production name
         "get_new_batch_prefill",
         autospec=True,
-        side_effect=_admit_head,
+        side_effect=admit_head,
     ) as patched:
-        assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+        assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
         assert sched.waiting_queue == [leftover]
-        assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+        assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
         assert patched.call_count == 2
         assert sched.waiting_queue == []
 
@@ -313,39 +313,45 @@ def test_real_partial_admission_cycle_releases_leftovers_immediately(clock):
 def test_newcomer_after_queue_drain_waits_its_own_window(upstream, clock):
     # Note: (Jiaxin Deng) once the arming request leaves the queue (abort's
     # queue filtering), a stamp-on-miss newcomer ages from its own arrival.
-    sched = _StubScheduler(coalesce_requests=8, wait_ms=60.0)
+    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
     clock.return_value = 100.0
-    armer = _req(None)
+    armer = make_req(None)
     sched.waiting_queue = [armer]
     assert sched.get_new_batch_prefill() is None
-    assert armer._coalesce_enqueue_t == 100.0
+    assert (
+        armer._coalesce_enqueue_t == 100.0
+    )  # noqa: leading-underscore  # production name
 
     clock.return_value = 100.059  # abort just before the armer's deadline
     sched.waiting_queue.remove(armer)
-    newcomer = _req(None)
+    newcomer = make_req(None)
     sched.waiting_queue.append(newcomer)
     assert sched.get_new_batch_prefill() is None
-    assert newcomer._coalesce_enqueue_t == 100.059
+    assert (
+        newcomer._coalesce_enqueue_t == 100.059
+    )  # noqa: leading-underscore  # production name
 
     clock.return_value = 100.07  # past the armer's window, inside the newcomer's
     assert sched.get_new_batch_prefill() is None
 
     clock.return_value = 100.12  # newcomer's own deadline expires
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_unstamped_request_is_stamped_and_eventually_released(upstream, clock):
     # Note: (maydomine) stamp-on-miss: held at first observation, released
     # within the wait deadline (never a K-only unbounded hold).
-    sched = _StubScheduler(coalesce_requests=8, wait_ms=60.0)
+    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
     clock.return_value = 200.0
-    req = _req(None)
+    req = make_req(None)
     sched.waiting_queue = [req]
     assert sched.get_new_batch_prefill() is None
-    assert req._coalesce_enqueue_t == 200.0
+    assert (
+        req._coalesce_enqueue_t == 200.0
+    )  # noqa: leading-underscore  # production name
 
     clock.return_value = 200.03  # inside the window
     assert sched.get_new_batch_prefill() is None
 
     clock.return_value = 200.07  # past the deadline
-    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH

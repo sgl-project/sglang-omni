@@ -45,7 +45,7 @@ DEFAULT_CONSISTENCY_CONCURRENCY = 16
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
 
 
-def _load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
+def load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
     results_root = os.environ.get(results_root_env)
     assert results_root, f"{results_root_env} must point to downloaded stage artifacts"
 
@@ -58,7 +58,7 @@ def _load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
     return speed_results
 
 
-def _selected_concurrency() -> int:
+def selected_concurrency() -> int:
     option_value = os.environ.get(
         TTS_CONSISTENCY_CONCURRENCY_ENV,
         str(DEFAULT_CONSISTENCY_CONCURRENCY),
@@ -75,12 +75,12 @@ def _selected_concurrency() -> int:
 def test_tts_streaming_consistency_from_artifacts() -> None:
     """Validate stage-1 (non-stream) vs stage-2 (stream) speed_results.json
     artifacts agree on request coverage and audio duration within tolerance."""
-    concurrency = _selected_concurrency()
-    non_stream_results = _load_speed_results(
+    concurrency = selected_concurrency()
+    non_stream_results = load_speed_results(
         TTS_STAGE1_SPEED_RESULTS_DIR_ENV,
         f"vc_nonstream_c{concurrency}",
     )
-    stream_results = _load_speed_results(
+    stream_results = load_speed_results(
         TTS_STAGE2_SPEED_RESULTS_DIR_ENV,
         f"vc_stream_c{concurrency}",
     )

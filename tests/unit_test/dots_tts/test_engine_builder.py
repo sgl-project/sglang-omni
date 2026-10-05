@@ -48,7 +48,7 @@ def test_extra_scheduler_callbacks_wire_tail_shutdown_logging() -> None:
     assert builder.extra_scheduler_callbacks() == {}
 
     calls: list[int] = []
-    builder._acoustic_tail = SimpleNamespace(log_graph_counters=lambda: calls.append(1))
+    builder.acoustic_tail = SimpleNamespace(log_graph_counters=lambda: calls.append(1))
     callback = builder.extra_scheduler_callbacks()["shutdown_callback"]
     callback()
 

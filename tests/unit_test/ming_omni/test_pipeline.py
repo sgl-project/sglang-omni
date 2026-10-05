@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from examples.launchers.ming_omni import (
@@ -334,8 +335,8 @@ def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
         encoding="utf-8"
     )
 
-    assert "audio_feats = audio_feats.to(device=self._device)" in source
-    assert "audio_feats_lengths = audio_feats_lengths.to(device=self._device)" in source
+    assert "audio_feats = audio_feats.to(device=self.device)" in source
+    assert "audio_feats_lengths = audio_feats_lengths.to(device=self.device)" in source
 
 
 def test_ming_preprocessor_computes_mel_feature_tuple(monkeypatch) -> None:
@@ -355,7 +356,7 @@ def test_ming_preprocessor_computes_mel_feature_tuple(monkeypatch) -> None:
     )
 
     mel_tensor, mel_len, audio_token_count = (
-        preprocessor._compute_mel_features_for_waveform(
+        preprocessor.compute_mel_features_for_waveform(
             waveform,
             ds_kernel_size=3,
             ds_stride=2,
@@ -766,7 +767,7 @@ def test_ming_arch_override_uses_composite_llm_config() -> None:
         num_hidden_layers=None,
     )
 
-    ModelWorker._apply_arch_override(model_config, "BailingMoeV2ForCausalLM")
+    ModelWorker.apply_arch_override(model_config, "BailingMoeV2ForCausalLM")
 
     assert model_config.hf_config.architectures == ["BailingMoeV2ForCausalLM"]
     assert model_config.hf_text_config is llm_config
@@ -828,14 +829,14 @@ def test_ming_init_model_config_registers_auto_config_before_loading(
     worker.server_args = SimpleNamespace(model_path="dummy", revision=None)
     worker.model_arch_override = "BailingMoeV2ForCausalLM"
 
-    worker._init_model_config()
+    worker.init_model_config()
 
     assert call_order == ["register", "from_server_args"]
 
 
 def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
     from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
-        _attach_decode_final_metadata,
+        attach_decode_final_metadata,
     )
     from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 
@@ -850,7 +851,7 @@ def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
     }
     result: dict[str, object] = {}
 
-    _attach_decode_final_metadata(result, state, thinker_out)
+    attach_decode_final_metadata(result, state, thinker_out)
 
     assert result["finish_reason"] == "length"
     assert result["usage"] == {
@@ -867,14 +868,14 @@ def test_ming_preprocessor_injects_top_level_videos_as_inline_content() -> None:
     the preprocessor handles top-level and inline video requests identically.
     """
     from sglang_omni.models.ming_omni.components.preprocessor import (
-        _inject_top_level_videos,
+        inject_top_level_videos,
     )
 
     messages = [
         {"role": "system", "content": "你是助手"},
         {"role": "user", "content": "What is happening?"},
     ]
-    out = _inject_top_level_videos(messages, ["/tmp/clip.mp4"])
+    out = inject_top_level_videos(messages, ["/tmp/clip.mp4"])
 
     # System message untouched, only first user message extended.
     assert out[0] == {"role": "system", "content": "你是助手"}
@@ -907,16 +908,16 @@ def test_ming_preprocessor_uses_dedicated_video_processor_contract() -> None:
             }
 
     preprocessor = MingPreprocessor.__new__(MingPreprocessor)
-    preprocessor._video_processor = FakeVideoProcessor()
-    preprocessor._vision_config = SimpleNamespace(spatial_merge_size=2)
+    preprocessor.video_processor = FakeVideoProcessor()
+    preprocessor.vision_config = SimpleNamespace(spatial_merge_size=2)
 
     frames = torch.zeros((4, 3, 8, 8), dtype=torch.float32)
-    pixel_values, grid, token_counts = preprocessor._process_videos([frames])
+    pixel_values, grid, token_counts = preprocessor.process_videos([frames])
 
     assert tuple(pixel_values.shape) == (8, 16)
     assert grid.tolist() == [[2, 4, 4]]
     assert token_counts == [8]
-    videos, return_tensors = preprocessor._video_processor.calls[0]
+    videos, return_tensors = preprocessor.video_processor.calls[0]
     assert return_tensors == "pt"
     assert len(videos) == 1
     assert videos[0].shape == (4, 8, 8, 3)
@@ -987,6 +988,7 @@ def test_ming_merge_extracts_video_embeds_into_thinker_inputs() -> None:
     model_inputs = result.get("model_inputs", {})
     assert "image_embeds" in model_inputs
     assert "video_embeds" in model_inputs
+    assert isinstance(model_inputs["video_embeds"], torch.Tensor)
     assert tuple(model_inputs["video_embeds"].shape) == (12, 8)
     assert result["media_cache_keys"]["image"] == "image:img:abc|vid:def"
     # Video must have its own modality-keyed cache entry; the SGLang adapter
@@ -1092,7 +1094,71 @@ def test_compute_video_cache_key_changes_with_decode_params() -> None:
     assert compute_video_cache_key([], fps=8.0) is None
 
 
-def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
+@pytest.mark.parametrize("changed", ["image", "video", "audio"])
+def test_ming_media_cache_keys_track_decoded_content(
+    monkeypatch, tmp_path, changed
+) -> None:
+    import asyncio
+
+    from PIL import Image
+
+    from sglang_omni.models.ming_omni.components import preprocessor as mod
+    from sglang_omni.proto import OmniRequest, StagePayload
+
+    audio_path = tmp_path / "question.wav"
+    audio_path.write_bytes(b"H" * 8192 + b"a" * 4096 + b"T" * 8192)
+    media = {"image": Image.new("RGB", (2, 2), "red"), "video": torch.zeros(2, 3, 2, 2)}
+
+    async def images(raw):
+        return [media["image"]]
+
+    async def videos(raw, **kwargs):
+        return [media["video"]], [1.0], None
+
+    def load_audio(path, target_sr):
+        return np.frombuffer(Path(path).read_bytes(), dtype=np.uint8).astype(np.float32)
+
+    monkeypatch.setattr(mod, "ensure_image_list_async", images)
+    monkeypatch.setattr(mod, "ensure_video_list_async", videos)
+    monkeypatch.setattr(mod, "load_audio_path", load_audio)
+    monkeypatch.setattr(
+        mod, "compute_mel_features_for_waveform", lambda *_: (torch.zeros(1, 2), 1, 1)
+    )
+    pre = mod.MingPreprocessor.__new__(mod.MingPreprocessor)
+    pre.audio_config = SimpleNamespace()
+    pre.process_images = lambda _: (torch.ones(1, 2), torch.tensor([[1, 2, 2]]), [1])
+    pre.process_videos = lambda _: (torch.ones(1, 2), torch.tensor([[1, 2, 2]]), [1])
+    pre.build_prompt = lambda messages, **counts: ("prompt", [1, 2, 3], [1])
+    stage = mod.AUDIO_STAGE if changed == "audio" else mod.IMAGE_STAGE
+
+    def cache_key(name: str = "same") -> str:
+        inputs = {
+            "messages": [{"role": "user", "content": "Describe this."}],
+            "images": [f"https://media.invalid/{name}.png"],
+            "videos": [f"https://media.invalid/{name}.mp4"],
+            "audios": [str(audio_path)],
+        }
+        payload = StagePayload(
+            request_id="ming-cache", request=OmniRequest(inputs=inputs), data=None
+        )
+        return asyncio.run(pre(payload)).data["encoder_inputs"][stage]["cache_key"]
+
+    before = cache_key()
+    assert cache_key() == before
+    # A new URL body or a same-size file edit must not reuse the previous entry.
+    if changed == "audio":
+        audio_path.write_bytes(b"H" * 8192 + b"b" * 4096 + b"T" * 8192)
+    elif changed == "image":
+        media["image"] = Image.new("RGB", (2, 2), "blue")
+    else:
+        media["video"] = torch.ones(2, 3, 2, 2)
+    after = cache_key()
+    assert after != before
+    # Identical content at another address shares the entry.
+    assert cache_key("other") == after
+
+
+def make_fake_ming_image_encoder(spatial_merge_size: int = 2):
     """Build a MingImageEncoder shell whose ``_encode`` returns synthetic
     tensors with the real shape contract (embeds rows == sum(token_counts)).
 
@@ -1106,7 +1172,7 @@ def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
     enc = object.__new__(MingImageEncoder)
-    enc.__dict__["_spatial_merge_size"] = spatial_merge_size
+    enc.__dict__["spatial_merge_size"] = spatial_merge_size
     enc.__dict__["visual"] = types.SimpleNamespace(device=torch.device("cpu"))
 
     def fake_encode(pixel_values, grid_thw):
@@ -1116,7 +1182,7 @@ def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
         embeds = torch.zeros(total, 8)  # hidden_dim doesn't matter for shape test
         return embeds, token_counts
 
-    enc.__dict__["_encode"] = fake_encode
+    enc.__dict__["encode"] = fake_encode
     return enc
 
 
@@ -1132,7 +1198,7 @@ def test_ming_image_encoder_forward_video_embeds_match_token_counts() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
     # Two videos: (t=2, h=4, w=4) and (t=1, h=6, w=6).
     # With merge_sq=4: tokens = 8 and 9, total = 17.
     video_grid_thw = torch.tensor([[2, 4, 4], [1, 6, 6]], dtype=torch.long)
@@ -1158,7 +1224,7 @@ def test_ming_image_encoder_forward_handles_image_and_video_together() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
     out = MingImageEncoder.forward(
         enc,
         pixel_values=torch.zeros(50, 16),
@@ -1195,7 +1261,7 @@ def test_ming_image_encoder_forward_skips_video_when_grid_thw_missing() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
 
     # pixel_values_videos without video_grid_thw -> skipped.
     out = MingImageEncoder.forward(

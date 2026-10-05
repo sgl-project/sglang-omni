@@ -32,6 +32,7 @@ def test_registered_pipeline_is_connected(architecture):
     assert preprocessing.next == conditioning.name == CONDITIONING_STAGE
     assert conditioning.next == engine.name == ENGINE_STAGE
     assert engine.next == decode.name == DECODE_STAGE
+    assert engine.factory.enable_dit_fused_qk_norm_rope is True
     assert config.terminal_stages == [decode.name]
     for stage in config.stages:
         module, name = stage.factory_path.rsplit(".", 1)

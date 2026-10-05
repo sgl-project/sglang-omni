@@ -80,11 +80,11 @@ SERVING_MIXED_LONG_AUDIO_DURATION_MIN_S_REF: float | None = 3.52
 SERVING_MIXED_LONG_OUTPUT_TOK_PER_REQ_S_REF: float | None = 219.47325440026654
 
 
-def _minimum(reference: float | None) -> float | None:
+def minimum(reference: float | None) -> float | None:
     return None if reference is None else round(reference * THRESHOLD_SLACK_HIGHER, 6)
 
 
-def _maximum(reference: float | None) -> float | None:
+def maximum(reference: float | None) -> float | None:
     return None if reference is None else round(reference * THRESHOLD_SLACK_LOWER, 6)
 
 
@@ -117,7 +117,7 @@ METRIC_GATES = (
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_SPEECH_NORMAL_LATENCY_P95_S_REF),
+        maximum(SERVING_MIXED_SPEECH_NORMAL_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "speech_normal.rtf_p95_max",
@@ -125,7 +125,7 @@ METRIC_GATES = (
         "rtf",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_SPEECH_NORMAL_RTF_P95_REF),
+        maximum(SERVING_MIXED_SPEECH_NORMAL_RTF_P95_REF),
     ),
     MetricGate(
         "rest_stream.ttfa_p95_s_max",
@@ -133,7 +133,7 @@ METRIC_GATES = (
         "ttfa_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_REST_STREAM_TTFA_P95_S_REF),
+        maximum(SERVING_MIXED_REST_STREAM_TTFA_P95_S_REF),
     ),
     MetricGate(
         "rest_stream.inter_chunk_p95_s_max",
@@ -141,7 +141,7 @@ METRIC_GATES = (
         "inter_chunk_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_REST_STREAM_INTER_CHUNK_P95_S_REF),
+        maximum(SERVING_MIXED_REST_STREAM_INTER_CHUNK_P95_S_REF),
     ),
     MetricGate(
         "rest_stream.latency_p95_s_max",
@@ -149,7 +149,7 @@ METRIC_GATES = (
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_REST_STREAM_LATENCY_P95_S_REF),
+        maximum(SERVING_MIXED_REST_STREAM_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "rest_stream.rtf_p95_max",
@@ -157,7 +157,7 @@ METRIC_GATES = (
         "rtf",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_REST_STREAM_RTF_P95_REF),
+        maximum(SERVING_MIXED_REST_STREAM_RTF_P95_REF),
     ),
     MetricGate(
         "batch32.latency_p95_s_max",
@@ -165,7 +165,7 @@ METRIC_GATES = (
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_BATCH32_LATENCY_P95_S_REF),
+        maximum(SERVING_MIXED_BATCH32_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "ws_normal.ttfa_p95_s_max",
@@ -173,7 +173,7 @@ METRIC_GATES = (
         "ttfa_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_WS_NORMAL_TTFA_P95_S_REF),
+        maximum(SERVING_MIXED_WS_NORMAL_TTFA_P95_S_REF),
     ),
     MetricGate(
         "ws_normal.latency_p95_s_max",
@@ -181,7 +181,7 @@ METRIC_GATES = (
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_WS_NORMAL_LATENCY_P95_S_REF),
+        maximum(SERVING_MIXED_WS_NORMAL_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "ws_stream.ttfa_p95_s_max",
@@ -189,7 +189,7 @@ METRIC_GATES = (
         "ttfa_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_WS_STREAM_TTFA_P95_S_REF),
+        maximum(SERVING_MIXED_WS_STREAM_TTFA_P95_S_REF),
     ),
     MetricGate(
         "ws_stream.inter_chunk_p95_s_max",
@@ -197,7 +197,7 @@ METRIC_GATES = (
         "inter_chunk_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_WS_STREAM_INTER_CHUNK_P95_S_REF),
+        maximum(SERVING_MIXED_WS_STREAM_INTER_CHUNK_P95_S_REF),
     ),
     MetricGate(
         "ws_stream.latency_p95_s_max",
@@ -205,7 +205,7 @@ METRIC_GATES = (
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_WS_STREAM_LATENCY_P95_S_REF),
+        maximum(SERVING_MIXED_WS_STREAM_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "ws_stream.rtf_p95_max",
@@ -213,7 +213,7 @@ METRIC_GATES = (
         "rtf",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_WS_STREAM_RTF_P95_REF),
+        maximum(SERVING_MIXED_WS_STREAM_RTF_P95_REF),
     ),
     MetricGate(
         "long.prompt_tokens_min",
@@ -221,7 +221,7 @@ METRIC_GATES = (
         "prompt_tokens",
         "min",
         "min",
-        _minimum(SERVING_MIXED_LONG_PROMPT_TOKENS_MIN_REF),
+        minimum(SERVING_MIXED_LONG_PROMPT_TOKENS_MIN_REF),
     ),
     MetricGate(
         "long.completion_tokens_min",
@@ -229,7 +229,7 @@ METRIC_GATES = (
         "completion_tokens",
         "min",
         "min",
-        _minimum(SERVING_MIXED_LONG_COMPLETION_TOKENS_MIN_REF),
+        minimum(SERVING_MIXED_LONG_COMPLETION_TOKENS_MIN_REF),
     ),
     MetricGate(
         "long.latency_p95_s_max",
@@ -237,7 +237,7 @@ METRIC_GATES = (
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_MIXED_LONG_LATENCY_P95_S_REF),
+        maximum(SERVING_MIXED_LONG_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "long.audio_duration_s_min",
@@ -245,7 +245,7 @@ METRIC_GATES = (
         "audio_duration_s",
         "min",
         "min",
-        _minimum(SERVING_MIXED_LONG_AUDIO_DURATION_MIN_S_REF),
+        minimum(SERVING_MIXED_LONG_AUDIO_DURATION_MIN_S_REF),
     ),
     MetricGate(
         "long.output_tok_per_req_s_min",
@@ -253,12 +253,12 @@ METRIC_GATES = (
         "output_tok_per_req_s",
         "value",
         "min",
-        _minimum(SERVING_MIXED_LONG_OUTPUT_TOK_PER_REQ_S_REF),
+        minimum(SERVING_MIXED_LONG_OUTPUT_TOK_PER_REQ_S_REF),
     ),
 )
 
 
-def _materialize_spec(run_dir: Path, base_url: str) -> Path:
+def materialize_spec(run_dir: Path, base_url: str) -> Path:
     spec = json.loads(SERVING_SPEC.read_text(encoding="utf-8"))
     spec["base_url"] = base_url
     spec["run_id"] = "tts-serving-ci"
@@ -314,11 +314,11 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
             worker_env=worker_env,
         ) as router:
             base_url = f"http://127.0.0.1:{router.port}"
-            spec_path = _materialize_spec(run_dir, base_url)
+            spec_path = materialize_spec(run_dir, base_url)
             request_timeout_s = load_spec(spec_path).params.timeout_s
             assert_router_healthy(router)
             router_before = router_get_json(router.port, "/diagnostics")
-            router_rejections_before = _router_rejections_total(
+            router_rejections_before = router_rejections_total(
                 base_url,
                 request_timeout_s,
             )
@@ -359,7 +359,7 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
             raise cleanup_error
 
 
-def _run_benchmark(run: ServingRun) -> subprocess.CompletedProcess:
+def run_benchmark(run: ServingRun) -> subprocess.CompletedProcess:
     command = [
         sys.executable,
         "-m",
@@ -400,7 +400,7 @@ def _run_benchmark(run: ServingRun) -> subprocess.CompletedProcess:
     return completed
 
 
-def _metric_value(summary: dict, gate: MetricGate) -> float | None:
+def metric_value(summary: dict, gate: MetricGate) -> float | None:
     metric = summary.get(gate.metric)
     if gate.statistic == "value":
         return float(metric) if isinstance(metric, (int, float)) else None
@@ -410,7 +410,7 @@ def _metric_value(summary: dict, gate: MetricGate) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
-def _check_performance(
+def check_performance(
     report: dict,
     measurement_checks: MetricCheckCollector,
     threshold_checks: MetricCheckCollector,
@@ -450,7 +450,7 @@ def _check_performance(
             f"{gate.key} metric samples={metric_samples!r}, "
             f"expected={expected_samples}",
         )
-        value = _metric_value(summary, gate)
+        value = metric_value(summary, gate)
         measurement_checks.check(value is not None, f"{gate.key} is missing")
         if value is None or gate.threshold is None:
             continue
@@ -466,7 +466,7 @@ def _check_performance(
             )
 
 
-def _mixed_result_summary(run: ServingRun) -> dict:
+def mixed_result_summary(run: ServingRun) -> dict:
     events_path = run.benchmark_dir / "raw" / "events.jsonl"
     results = [
         json.loads(line)
@@ -515,7 +515,7 @@ def _mixed_result_summary(run: ServingRun) -> dict:
     }
 
 
-def _measured_worker_minimums(mixed_delta: dict) -> tuple[list[int], list[str]]:
+def collect_measured_worker_minimums(mixed_delta: dict) -> tuple[list[int], list[str]]:
     measured_by_class = {
         "speech_http": (
             EXPECTED_WORKLOAD_SAMPLES["speech_normal"]
@@ -549,7 +549,7 @@ def _measured_worker_minimums(mixed_delta: dict) -> tuple[list[int], list[str]]:
     return minimums, failures
 
 
-def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
+def check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
     try:
         delta = assert_workers_served_requests_since(
             handle=run.router,
@@ -557,7 +557,7 @@ def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
             label="TTS serving",
             min_worker_share=0.0,
         )
-        mixed_summary = _mixed_result_summary(run)
+        mixed_summary = mixed_result_summary(run)
         stage_snapshots = json.loads(
             (run.benchmark_dir / ROUTER_STAGE_SNAPSHOTS).read_text(encoding="utf-8")
         )
@@ -566,10 +566,10 @@ def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
             mixed_snapshots["before"],
             mixed_snapshots["after"],
         )
-        measured_worker_minimums, dispatch_failures = _measured_worker_minimums(
+        measured_worker_minimums, dispatch_failures = collect_measured_worker_minimums(
             mixed_delta
         )
-        router_rejections_after = _router_rejections_total(
+        router_rejections_after = router_rejections_total(
             run.base_url,
             run.request_timeout_s,
         )
@@ -645,7 +645,7 @@ def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
     )
 
 
-def _get_json(url: str, timeout_s: int) -> dict:
+def get_json(url: str, timeout_s: int) -> dict:
     opener = build_opener(ProxyHandler({}))
     with opener.open(url, timeout=timeout_s) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -654,7 +654,7 @@ def _get_json(url: str, timeout_s: int) -> dict:
     return payload
 
 
-def _router_rejections_total(base_url: str, timeout_s: int) -> int:
+def router_rejections_total(base_url: str, timeout_s: int) -> int:
     opener = build_opener(ProxyHandler({}))
     with opener.open(f"{base_url}/metrics", timeout=timeout_s) as response:
         metrics = response.read().decode("utf-8")
@@ -669,7 +669,7 @@ def _router_rejections_total(base_url: str, timeout_s: int) -> int:
     return sum(samples)
 
 
-def _write_benchmark_validation(
+def write_benchmark_validation(
     run_dir: Path,
     benchmark_checks: MetricCheckCollector,
     measurement_checks: MetricCheckCollector,
@@ -692,7 +692,7 @@ def _write_benchmark_validation(
 
 @pytest.mark.benchmark
 def test_tts_serving_stress(serving_run: ServingRun) -> None:
-    completed = _run_benchmark(serving_run)
+    completed = run_benchmark(serving_run)
     benchmark_checks = MetricCheckCollector("TTS serving benchmark")
     measurement_checks = MetricCheckCollector("TTS serving measurements")
     threshold_checks = MetricCheckCollector("TTS serving thresholds")
@@ -776,11 +776,11 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
                 mixed.get("expected_error_request_count") == EXPECTED_COVERAGE_ERRORS,
                 "scheduled expected-error population changed",
             )
-            _check_performance(report, measurement_checks, threshold_checks)
+            check_performance(report, measurement_checks, threshold_checks)
 
-    _check_router(serving_run, benchmark_checks)
+    check_router(serving_run, benchmark_checks)
     try:
-        voices = _get_json(
+        voices = get_json(
             f"{serving_run.base_url}/v1/audio/voices",
             serving_run.request_timeout_s,
         )
@@ -799,7 +799,7 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
             f"benchmark voices leaked: {leaked_voices}",
         )
 
-    _write_benchmark_validation(
+    write_benchmark_validation(
         serving_run.run_dir,
         benchmark_checks,
         measurement_checks,

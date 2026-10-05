@@ -21,7 +21,7 @@ def test_register_omni_model_skips_unimportable(monkeypatch):
 
     monkeypatch.setattr(importlib, "import_module", fake_import)
 
-    runner_mod.SGLModelRunner._register_omni_model(object())
+    runner_mod.SGLModelRunner.register_omni_model(object())
 
     assert "MossTTSDelaySGLangModel" in registry.models
     assert "HiggsMultimodalQwen3ForConditionalGeneration" not in registry.models

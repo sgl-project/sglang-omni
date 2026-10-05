@@ -30,7 +30,7 @@
 ## News
 
 - [2026/09] 🐧 Day-0 support for [AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash): text + voice instructions → 24 kHz speech on `/v1/audio/speech`, audio + editing instructions → edited speech on `/generate`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/auk.html)\]
-- [2026/09] 🚀 SGLang-Omni **v0.1.5** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.5"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
+- [2026/09] 🚀 SGLang-Omni **v0.1.7** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.7"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
 - [2026/08] 🎵 Day-0 support for [MiniMax Music 3](https://huggingface.co/MiniMaxAI/MiniMax-Music3): lyrics + caption → 32 kHz stereo song on `/v1/audio/speech`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html)\]
 - [2026/08] 🚀 TTS architecture refactor: shared pipeline state, engine construction, reference encoding, capability metadata, and vocoder scheduling. \[[Roadmap](https://github.com/sgl-project/sglang-omni/issues/985)\] \[[Blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-refactor.md)\]
 - [2026/06] 🔥 MOSS-TTS Local Transformer v1.5 on SGLang-Omni with native-streaming 48 kHz speech. \[[Blog](https://lmsys.org/blog/2026-06-17-moss-tts-local-v15/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html)\]
@@ -59,7 +59,7 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 |---------|--------|-------|
 | **NVIDIA CUDA** | Supported | Default backend with full model coverage. |
 | **Apple Silicon** | Experimental | Qwen3-ASR runs through native MLX or Torch MPS on macOS arm64. Install with [`install.sh`](./install.sh) and follow the [Qwen3-ASR guide](./docs/cookbook/qwen3_asr.md#apple-silicon-mlx). |
-| **Intel GPU (XPU)** | Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni serve end-to-end** (Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
+| **Intel GPU (XPU)** | Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, ZONOS2, and Qwen3-Omni serve end-to-end** (ZONOS2 with decode graphs; Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
 
 Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/).
 

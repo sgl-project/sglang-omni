@@ -106,6 +106,7 @@ pub(crate) enum HttpRoute {
     Chat,
     Speech,
     SpeechBatch,
+    SpeechOutcome,
     Transcription,
     Translation,
     VoiceCollection,
@@ -116,7 +117,7 @@ pub(crate) enum HttpRoute {
 }
 
 impl HttpRoute {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::Live,
         Self::Ready,
         Self::Models,
@@ -125,6 +126,7 @@ impl HttpRoute {
         Self::Chat,
         Self::Speech,
         Self::SpeechBatch,
+        Self::SpeechOutcome,
         Self::Transcription,
         Self::Translation,
         Self::VoiceCollection,
@@ -150,6 +152,7 @@ impl HttpRoute {
             "/v1/audio/speech/stream" => Self::SpeechWebsocket,
             "/v1/realtime" => Self::RealtimeWebsocket,
             path if voice_item(path) => Self::VoiceItem,
+            path if speech_outcome(path) => Self::SpeechOutcome,
             _ => Self::Unknown,
         }
     }
@@ -164,6 +167,7 @@ impl HttpRoute {
             Self::Chat => "chat",
             Self::Speech => "speech",
             Self::SpeechBatch => "speech_batch",
+            Self::SpeechOutcome => "speech_outcome",
             Self::Transcription => "transcription",
             Self::Translation => "translation",
             Self::VoiceCollection => "voice_collection",
@@ -182,6 +186,11 @@ impl HttpRoute {
 fn voice_item(path: &str) -> bool {
     path.strip_prefix("/v1/audio/voices/")
         .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+}
+
+fn speech_outcome(path: &str) -> bool {
+    path.strip_prefix("/v1/audio/speech/")
+        .is_some_and(|request_id| !request_id.is_empty() && !request_id.contains('/'))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -716,6 +725,18 @@ mod tests {
         );
         assert_eq!(
             HttpRoute::from_path("/v1/audio/voices/alice/extra"),
+            HttpRoute::Unknown
+        );
+        assert_eq!(
+            HttpRoute::from_path("/v1/audio/speech/abc"),
+            HttpRoute::SpeechOutcome
+        );
+        assert_eq!(
+            HttpRoute::from_path("/v1/audio/speech/batch"),
+            HttpRoute::SpeechBatch
+        );
+        assert_eq!(
+            HttpRoute::from_path("/v1/audio/speech/a/b"),
             HttpRoute::Unknown
         );
         assert_eq!(

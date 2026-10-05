@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass
@@ -31,7 +31,7 @@ class AudioEncoderConfig:
     downsample_hidden_size: int = 480
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> AudioEncoderConfig:
+    def from_dict(cls, params: Mapping[str, object]) -> AudioEncoderConfig:
         return cls(
             **{
                 k: v
@@ -60,12 +60,12 @@ class TextConfig:
     use_cache: bool = True
     tie_word_embeddings: bool = True
     rope_theta: float = 1000000.0
-    rope_scaling: dict[str, Any] | None = None
+    rope_scaling: dict[str, object] | None = None
     attention_bias: bool = False
     attention_dropout: float = 0.0
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> TextConfig:
+    def from_dict(cls, params: Mapping[str, object]) -> TextConfig:
         return cls(
             **{
                 k: v
@@ -79,8 +79,8 @@ class TextConfig:
 class ModelConfig:
     """Configuration for Qwen3-ASR model."""
 
-    audio_config: AudioEncoderConfig | dict[str, Any] | None = None
-    text_config: TextConfig | dict[str, Any] | None = None
+    audio_config: AudioEncoderConfig | dict[str, object] | None = None
+    text_config: TextConfig | dict[str, object] | None = None
     model_type: str = "qwen3_asr"
     model_repo: str | None = None
     audio_token_id: int = 151676
@@ -93,28 +93,44 @@ class ModelConfig:
             self.audio_config = AudioEncoderConfig()
         elif isinstance(self.audio_config, dict):
             self.audio_config = AudioEncoderConfig.from_dict(self.audio_config)
+        else:
+            pass
 
         if self.text_config is None:
             self.text_config = TextConfig()
         elif isinstance(self.text_config, dict):
             self.text_config = TextConfig.from_dict(self.text_config)
+        else:
+            pass
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> ModelConfig:
+    def from_dict(cls, params: dict[str, object]) -> ModelConfig:
         params = params.copy()
 
         if "thinker_config" in params:
             thinker = params.pop("thinker_config")
             if "audio_config" in thinker:
                 params["audio_config"] = thinker["audio_config"]
+            else:
+                pass
             if "text_config" in thinker:
                 params["text_config"] = thinker["text_config"]
+            else:
+                pass
             if "audio_token_id" in thinker:
                 params["audio_token_id"] = thinker["audio_token_id"]
+            else:
+                pass
             if "audio_start_token_id" in thinker:
                 params["audio_start_token_id"] = thinker["audio_start_token_id"]
+            else:
+                pass
             if "audio_end_token_id" in thinker:
                 params["audio_end_token_id"] = thinker["audio_end_token_id"]
+            else:
+                pass
+        else:
+            pass
 
         if "audio_config" in params and isinstance(params["audio_config"], dict):
             params["audio_config"] = AudioEncoderConfig.from_dict(
@@ -122,11 +138,15 @@ class ModelConfig:
             )
         elif "audio_config" not in params:
             params["audio_config"] = AudioEncoderConfig()
+        else:
+            pass
 
         if "text_config" in params and isinstance(params["text_config"], dict):
             params["text_config"] = TextConfig.from_dict(params["text_config"])
         elif "text_config" not in params:
             params["text_config"] = TextConfig()
+        else:
+            pass
 
         return cls(
             **{

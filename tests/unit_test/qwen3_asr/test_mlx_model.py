@@ -21,7 +21,7 @@ from sglang_omni.models.qwen3_asr.mlx.runner import (  # noqa: E402
 )
 
 
-def _tiny_model(*, tie_word_embeddings: bool = True) -> Qwen3ASRModel:
+def tiny_model(*, tie_word_embeddings: bool = True) -> Qwen3ASRModel:
     mx.random.seed(0)
     audio = AudioEncoderConfig(
         num_mel_bins=8,
@@ -53,12 +53,12 @@ def _tiny_model(*, tie_word_embeddings: bool = True) -> Qwen3ASRModel:
 
 
 def test_native_mlx_audio_prefill_forward() -> None:
-    model = _tiny_model()
+    model = tiny_model()
     features = mx.zeros((1, 8, 20))
     mask = mx.ones((1, 20))
     audio_features = model.get_audio_features(features, mask)
     input_ids = mx.array([[1, *([10] * audio_features.shape[0]), 2]], dtype=mx.int32)
-    embeddings = model._build_inputs_embeds(
+    embeddings = model.build_inputs_embeds(
         input_ids,
         audio_features,
         audio_start=1,
@@ -75,12 +75,12 @@ def test_native_mlx_audio_prefill_forward() -> None:
 
 
 def test_native_mlx_prefill_only_projects_last_position() -> None:
-    model = _tiny_model()
+    model = tiny_model()
     input_ids = mx.array([[1, 2, 3]], dtype=mx.int32)
     embeddings = model.model.embed_tokens(input_ids)
 
     full_logits = model(input_ids, input_embeddings=embeddings)
-    last_logits = model._forward_last_logits(embeddings)
+    last_logits = model.forward_last_logits(embeddings)
 
     mx.eval(full_logits, last_logits)
     assert last_logits.shape == (1, 1, 64)
@@ -94,7 +94,7 @@ def test_native_mlx_prefill_only_projects_last_position() -> None:
 
 def test_runner_restores_audio_placeholder_before_embedding() -> None:
     runner = object.__new__(Qwen3ASRMlxModelRunner)
-    runner.model = _tiny_model()
+    runner.model = tiny_model()
     item = SimpleNamespace(
         feature=torch.zeros((1, 8, 20)),
         feature_attention_mask=torch.ones((1, 20)),
@@ -108,7 +108,7 @@ def test_runner_restores_audio_placeholder_before_embedding() -> None:
         )
     )
 
-    input_ids, embeddings = runner._audio_prefill_inputs(
+    input_ids, embeddings = runner.audio_prefill_inputs(
         req, [1, 1_000_001, 1_000_001, 1_000_001, 1_000_001, 2]
     )
 
@@ -123,7 +123,7 @@ def test_runner_only_rewrites_the_exact_audio_placeholder() -> None:
         multimodal_inputs=SimpleNamespace(audio_token_id=10, mm_items=[item])
     )
 
-    normalized = Qwen3ASRMlxModelRunner._normalize_audio_token_ids(
+    normalized = Qwen3ASRMlxModelRunner.normalize_audio_token_ids(
         req, [1, 1_000_001, -7, 2]
     )
 
@@ -131,7 +131,7 @@ def test_runner_only_rewrites_the_exact_audio_placeholder() -> None:
 
 
 def test_runner_converts_bfloat16_features_to_numpy() -> None:
-    converted = Qwen3ASRMlxModelRunner._to_numpy(
+    converted = Qwen3ASRMlxModelRunner.to_numpy(
         torch.ones((2, 3), dtype=torch.bfloat16)
     )
 
@@ -144,7 +144,7 @@ def test_runner_rejects_missing_audio_item() -> None:
     )
 
     with pytest.raises(ValueError, match="exactly one audio item"):
-        Qwen3ASRMlxModelRunner._audio_item(req)
+        Qwen3ASRMlxModelRunner.audio_item(req)
 
 
 def test_runner_resolves_revision_and_checks_remote_code(monkeypatch, tmp_path) -> None:
@@ -174,12 +174,12 @@ def test_runner_resolves_revision_and_checks_remote_code(monkeypatch, tmp_path) 
         "load_model",
         lambda model_path, **kwargs: ("loaded-model", {}),
     )
-    runner = object.__new__(Qwen3ASRMlxModelRunner)
+    runner = object.__new__(make_qwen3_asr_mlx_runner_class())
     runner.model_path = "org/model"
     runner.revision = "revision-sha"
     runner.trust_remote_code = True
 
-    runner._load_model()
+    runner._load_model()  # noqa: leading-underscore  # production name
 
     assert observed == {
         "model_path": "org/model",
@@ -191,12 +191,12 @@ def test_runner_resolves_revision_and_checks_remote_code(monkeypatch, tmp_path) 
 
 
 def test_native_mlx_rejects_audio_feature_count_mismatch() -> None:
-    model = _tiny_model()
+    model = tiny_model()
     input_ids = mx.array([[1, 10, 2]], dtype=mx.int32)
     audio_features = mx.zeros((2, 8))
 
     with pytest.raises(ValueError, match="counts differ"):
-        model._build_inputs_embeds(
+        model.build_inputs_embeds(
             input_ids,
             audio_features,
             audio_start=1,
@@ -207,11 +207,11 @@ def test_native_mlx_rejects_audio_feature_count_mismatch() -> None:
 def test_runner_chains_native_single_request_decode() -> None:
     runner_class = make_qwen3_asr_mlx_runner_class()
     runner = object.__new__(runner_class)
-    runner.model = _tiny_model()
-    runner._req_token_ids = {"req": [1]}
-    runner._req_caches = {"req": runner.model.make_cache()}
-    runner._decode_step_ct = 0
-    runner._clear_steps = 0
+    runner.model = tiny_model()
+    runner._req_token_ids = {"req": [1]}  # noqa: leading-underscore
+    runner._req_caches = {"req": runner.model.make_cache()}  # noqa: leading-underscore
+    runner._decode_step_ct = 0  # noqa: leading-underscore  # upstream name
+    runner._clear_steps = 0  # noqa: leading-underscore  # upstream name
 
     first = runner.decode_batch_start(["req"])
     second = runner.decode_batch_start_chained(first)
@@ -221,8 +221,8 @@ def test_runner_chains_native_single_request_decode() -> None:
 
     assert first.lazy_tokens.shape == (1,)
     assert second.lazy_tokens.shape == (1,)
-    assert runner._req_caches["req"][0].offset == 2
-    assert len(runner._req_token_ids["req"]) == 3
+    assert runner._req_caches["req"][0].offset == 2  # noqa: leading-underscore
+    assert len(runner._req_token_ids["req"]) == 3  # noqa: leading-underscore
 
 
 def test_hf_weight_sanitize_is_local_and_transposes_conv2d() -> None:
@@ -232,7 +232,7 @@ def test_hf_weight_sanitize_is_local_and_transposes_conv2d() -> None:
         "thinker.lm_head.weight": mx.zeros((64, 8)),
     }
 
-    sanitized = _tiny_model().sanitize(weights)
+    sanitized = tiny_model().sanitize(weights)
 
     assert sanitized["audio_tower.conv2d1.weight"].shape == (4, 3, 3, 1)
     assert "model.embed_tokens.weight" in sanitized
@@ -240,7 +240,7 @@ def test_hf_weight_sanitize_is_local_and_transposes_conv2d() -> None:
 
 
 def test_hf_weight_sanitize_keeps_untied_lm_head() -> None:
-    model = _tiny_model(tie_word_embeddings=False)
+    model = tiny_model(tie_word_embeddings=False)
 
     sanitized = model.sanitize(
         {
@@ -259,26 +259,28 @@ def test_shared_mlx_runner_honors_subclass_audio_item_hook() -> None:
         model_name = "Other ASR"
 
         @classmethod
-        def _audio_item(cls, req):
+        def audio_item(cls, req):
             return req.audio_item
 
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(audio_token_id=10),
         audio_item=SimpleNamespace(pad_value=999),
     )
-    assert OtherAudioRunner._normalize_audio_token_ids(req, [1, 999, 2]) == [1, 10, 2]
+    assert OtherAudioRunner.normalize_audio_token_ids(req, [1, 999, 2]) == [1, 10, 2]
     req.audio_item.pad_value = None
     with pytest.raises(
         ValueError, match="Other ASR MLX prefill has incomplete audio token metadata"
     ):
-        OtherAudioRunner._normalize_audio_token_ids(req, [1, 999, 2])
+        OtherAudioRunner.normalize_audio_token_ids(req, [1, 999, 2])
 
 
 def test_shared_mlx_prefill_matches_direct_greedy_forward() -> None:
     runner = object.__new__(Qwen3ASRMlxModelRunner)
-    runner.model = _tiny_model()
+    runner.model = tiny_model()
     runner.disable_radix_cache = True
-    runner._acquire_cache = runner.model.make_cache
+    runner._acquire_cache = (
+        runner.model.make_cache
+    )  # noqa: leading-underscore  # upstream name
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(
             audio_token_id=10,
@@ -295,8 +297,8 @@ def test_shared_mlx_prefill_matches_direct_greedy_forward() -> None:
     pending = runner.prefill_start(
         "audio", token_ids, token_ids, [], list(range(6)), 0, req=req
     )
-    ids, embeddings = runner._audio_prefill_inputs(req, token_ids)
-    expected = runner.model._forward_last_logits(
+    ids, embeddings = runner.audio_prefill_inputs(req, token_ids)
+    expected = runner.model.forward_last_logits(
         embeddings, cache=runner.model.make_cache()
     )
     assert pending.lazy_token.tolist() == mx.argmax(expected[:, -1], axis=-1).tolist()

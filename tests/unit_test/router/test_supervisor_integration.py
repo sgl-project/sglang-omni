@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _free_port() -> int:
+def free_port() -> int:
     import socket
 
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -34,7 +34,7 @@ def _free_port() -> int:
     return port
 
 
-def _wait_until(predicate, timeout: float = 20.0, interval: float = 0.25):
+def wait_until(predicate, timeout: float = 20.0, interval: float = 0.25):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
@@ -48,7 +48,7 @@ def _wait_until(predicate, timeout: float = 20.0, interval: float = 0.25):
 def supervisor():
     config = RouterConfig(
         host="127.0.0.1",
-        port=_free_port(),
+        port=free_port(),
         workers=[WorkerConfig(url="http://127.0.0.1:1")],  # never healthy; fine
         health_check_interval_secs=1,
     )
@@ -60,7 +60,7 @@ def supervisor():
         instance.shutdown()
 
 
-def _internal_client(instance: RouterSupervisor) -> httpx.Client:
+def internal_client(instance: RouterSupervisor) -> httpx.Client:
     context = instance.context
     return httpx.Client(
         transport=httpx.HTTPTransport(uds=context.internal_uds),
@@ -70,9 +70,9 @@ def _internal_client(instance: RouterSupervisor) -> httpx.Client:
     )
 
 
-def _data_planes(instance: RouterSupervisor) -> list[dict]:
+def data_planes(instance: RouterSupervisor) -> list[dict]:
     try:
-        with _internal_client(instance) as client:
+        with internal_client(instance) as client:
             return client.get("/internal/data_planes").json()["data_planes"]
     except httpx.HTTPError:
         # Note (Jiaxin Deng): CP still booting (UDS not bound yet) or restarting
@@ -83,17 +83,17 @@ def test_two_dps_share_the_data_socket_and_register(supervisor) -> None:
     instance, config = supervisor
     url = f"http://127.0.0.1:{config.port}/live"
 
-    def _live():
+    def live():
         try:
             return httpx.get(url, timeout=2.0).status_code == 200
         except httpx.HTTPError:
             return False
 
-    _wait_until(_live)
+    wait_until(live)
     # Note (Jiaxin Deng): both DPs register and heartbeat over the UDS channel
-    records = _wait_until(
+    records = wait_until(
         lambda: (lambda planes: planes if len(planes) == 2 else None)(
-            _data_planes(instance)
+            data_planes(instance)
         )
     )
     assert sorted(record["dp_index"] for record in records) == [0, 1]
@@ -107,27 +107,27 @@ def test_two_dps_share_the_data_socket_and_register(supervisor) -> None:
 
 def test_killed_dp_is_respawned_with_a_bumped_generation(supervisor) -> None:
     instance, config = supervisor
-    _wait_until(lambda: len(_data_planes(instance)) == 2)
+    wait_until(lambda: len(data_planes(instance)) == 2)
 
     victim = instance.dp_slots[0].process
     os.kill(victim.pid, signal.SIGKILL)
-    _wait_until(lambda: victim.poll() is not None)
+    wait_until(lambda: victim.poll() is not None)
     instance.poll_once()
 
     assert instance.dp_slots[0].generation == 2
-    records = _wait_until(
+    records = wait_until(
         lambda: (
             lambda planes: (
                 planes
                 if any(r["dp_index"] == 0 and r["generation"] == 2 for r in planes)
                 else None
             )
-        )(_data_planes(instance))
+        )(data_planes(instance))
     )
     assert any(r["generation"] == 2 for r in records)
     # Note (Jiaxin Deng): data port still serves after the respawn
     url = f"http://127.0.0.1:{config.port}/live"
-    _wait_until(lambda: httpx.get(url, timeout=2.0).status_code == 200)
+    wait_until(lambda: httpx.get(url, timeout=2.0).status_code == 200)
 
 
 def test_shutdown_leaves_no_children(supervisor) -> None:
@@ -145,7 +145,7 @@ def test_shutdown_leaves_no_children(supervisor) -> None:
 
 def test_admin_crud_via_the_data_port_reaches_the_cp(supervisor) -> None:
     instance, config = supervisor
-    _wait_until(lambda: len(_data_planes(instance)) == 2)
+    wait_until(lambda: len(data_planes(instance)) == 2)
     base = f"http://127.0.0.1:{config.port}"
 
     created = httpx.post(
@@ -166,17 +166,17 @@ def test_admin_crud_via_the_data_port_reaches_the_cp(supervisor) -> None:
 
 def test_admission_shm_is_wired_end_to_end(supervisor) -> None:
     instance, config = supervisor
-    _wait_until(lambda: len(_data_planes(instance)) == 2)
+    wait_until(lambda: len(data_planes(instance)) == 2)
     base = f"http://127.0.0.1:{config.port}"
 
-    def _health():
+    def health():
         try:
             return httpx.get(f"{base}/health", timeout=5.0).json()
         except httpx.HTTPError:
             return {}
 
-    payload = _wait_until(
-        lambda: (lambda p: p if p.get("admission_slots") else None)(_health())
+    payload = wait_until(
+        lambda: (lambda p: p if p.get("admission_slots") else None)(health())
     )
     assert [slot["generation"] for slot in payload["admission_slots"]] == [1, 1]
     assert payload["admission"]["inflight"] == 0
@@ -186,15 +186,13 @@ def test_admission_shm_is_wired_end_to_end(supervisor) -> None:
     # reap and the respawned generation-2 process claims it again
     victim = instance.dp_slots[0].process
     os.kill(victim.pid, signal.SIGKILL)
-    _wait_until(lambda: victim.poll() is not None)
+    wait_until(lambda: victim.poll() is not None)
     instance.poll_once()
 
-    _wait_until(
-        lambda: _health().get("admission_slots", [{}])[0].get("generation") == 2
-    )
+    wait_until(lambda: health().get("admission_slots", [{}])[0].get("generation") == 2)
 
 
-def _has_exited(pid: int) -> bool:
+def has_exited(pid: int) -> bool:
     """True when the pid is gone or a zombie.
 
     Children orphaned by a dead supervisor are reparented to PID 1, which in a
@@ -222,7 +220,7 @@ def test_children_exit_on_supervisor_death_even_with_a_stuck_relay() -> None:
     held: list[socket.socket] = []
     stop = threading.Event()
 
-    def _accept_and_never_answer() -> None:
+    def accept_and_never_answer() -> None:
         while not stop.is_set():
             try:
                 conn, _ = upstream.accept()
@@ -231,10 +229,10 @@ def test_children_exit_on_supervisor_death_even_with_a_stuck_relay() -> None:
             conn.recv(65536)  # read the request, never reply
             held.append(conn)
 
-    threading.Thread(target=_accept_and_never_answer, daemon=True).start()
+    threading.Thread(target=accept_and_never_answer, daemon=True).start()
     config = RouterConfig(
         host="127.0.0.1",
-        port=_free_port(),
+        port=free_port(),
         workers=[WorkerConfig(url=f"http://127.0.0.1:{upstream.getsockname()[1]}")],
     )
     instance = RouterSupervisor(config, router_processes=1)
@@ -243,7 +241,7 @@ def test_children_exit_on_supervisor_death_even_with_a_stuck_relay() -> None:
     children.append(instance.cp_process.pid)
     base = f"http://127.0.0.1:{config.port}"
     try:
-        _wait_until(lambda: httpx.get(f"{base}/live", timeout=2.0).status_code == 200)
+        wait_until(lambda: httpx.get(f"{base}/live", timeout=2.0).status_code == 200)
         stuck = threading.Thread(
             target=lambda: httpx.post(
                 f"{base}/v1/chat/completions",
@@ -257,10 +255,12 @@ def test_children_exit_on_supervisor_death_even_with_a_stuck_relay() -> None:
 
         # Note (Jiaxin Deng): the supervisor holds the only write end; closing it is
         # exactly what its SIGKILL does to the children
-        os.close(instance._death_pipe_write)
-        instance._death_pipe_write = None
-        _wait_until(
-            lambda: all(_has_exited(pid) for pid in children) or None, timeout=30.0
+        os.close(
+            instance._death_pipe_write
+        )  # noqa: leading-underscore  # production name
+        instance._death_pipe_write = None  # noqa: leading-underscore  # production name
+        wait_until(
+            lambda: all(has_exited(pid) for pid in children) or None, timeout=30.0
         )
     finally:
         stop.set()

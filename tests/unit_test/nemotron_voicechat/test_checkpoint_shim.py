@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 
-def _load_shim_dir():
+def load_shim_dir():
     # Execute the actual helper without importing GPU-dependent engine classes.
     source = (
         Path(__file__).resolve().parents[3]
@@ -19,7 +19,7 @@ def _load_shim_dir():
     function = next(
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_shim_dir"
+        if isinstance(node, ast.FunctionDef) and node.name == "shim_dir"
     )
     namespace = {
         "Path": Path,
@@ -31,13 +31,13 @@ def _load_shim_dir():
         compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"),
         namespace,
     )
-    return namespace["_shim_dir"]
+    return namespace["shim_dir"]
 
 
 class TestCheckpointShim(unittest.TestCase):
     def test_switch_checkpoints_keeps_weights_and_configs_isolated(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        shim_dir = _load_shim_dir()
+        shim_dir = load_shim_dir()
         for name in ("A", "B"):
             source = root / name
             source.mkdir()

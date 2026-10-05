@@ -9,10 +9,15 @@ import sys
 import types
 import wave
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
+from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.dataset import ming_freeform_audio_edit as ming_edit
 from benchmarks.dataset import prepare
 from benchmarks.eval.benchmark_auk_audio_edit import (
@@ -25,7 +30,7 @@ from benchmarks.metrics.speech_edit import (
 )
 
 
-def _write_wav(path: Path, samples: np.ndarray, sample_rate: int = 10) -> None:
+def write_wav(path: Path, samples: np.ndarray, sample_rate: int = 10) -> None:
     pcm = np.asarray(np.clip(samples, -1, 1) * 32767, dtype="<i2")
     with wave.open(str(path), "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -34,7 +39,7 @@ def _write_wav(path: Path, samples: np.ndarray, sample_rate: int = 10) -> None:
         wav_file.writeframes(pcm.tobytes())
 
 
-def _wav_bytes(samples: np.ndarray, sample_rate: int = 10) -> bytes:
+def wav_bytes(samples: np.ndarray, sample_rate: int = 10) -> bytes:
     output = io.BytesIO()
     pcm = np.asarray(np.clip(samples, -1, 1) * 32767, dtype="<i2")
     with wave.open(output, "wb") as wav_file:
@@ -45,7 +50,7 @@ def _wav_bytes(samples: np.ndarray, sample_rate: int = 10) -> bytes:
     return output.getvalue()
 
 
-def _install_hub(
+def install_hub(
     monkeypatch: pytest.MonkeyPatch,
     files: dict[str, Path],
     calls: list[dict],
@@ -71,9 +76,9 @@ def test_load_time_stretch_uses_pinned_revision_and_scale(
         encoding="utf-8",
     )
     audio = tmp_path / "sample-1.wav"
-    _write_wav(audio, np.array([0.1, -0.1], dtype=np.float32))
+    write_wav(audio, np.array([0.1, -0.1], dtype=np.float32))
     calls: list[dict] = []
-    _install_hub(
+    install_hub(
         monkeypatch,
         {
             "meta/time_stretch/meta_en_time_stretch.csv": meta,
@@ -104,8 +109,8 @@ def test_headerless_dialect_metadata_keeps_first_sample(
         encoding="utf-8",
     )
     audio = tmp_path / "sample-1.wav"
-    _write_wav(audio, np.array([0.1], dtype=np.float32))
-    _install_hub(
+    write_wav(audio, np.array([0.1], dtype=np.float32))
+    install_hub(
         monkeypatch,
         {
             "meta/dialect/meta_zh_dialect.csv": meta,
@@ -129,7 +134,7 @@ def test_loader_rejects_audio_path_traversal_before_download(
         encoding="utf-8",
     )
     calls: list[dict] = []
-    _install_hub(
+    install_hub(
         monkeypatch,
         {"meta/del/meta_en_deletion_basic.csv": meta},
         calls,
@@ -158,8 +163,8 @@ def test_metadata_paths_cover_semantic_and_acoustic_variants() -> None:
 def test_time_stretch_signal_metrics_match_published_formula(tmp_path: Path) -> None:
     source = tmp_path / "source.wav"
     generated = tmp_path / "generated.wav"
-    _write_wav(source, np.ones(20, dtype=np.float32) * 0.25)
-    _write_wav(generated, np.ones(12, dtype=np.float32) * 0.25)
+    write_wav(source, np.ones(20, dtype=np.float32) * 0.25)
+    write_wav(generated, np.ones(12, dtype=np.float32) * 0.25)
 
     score = score_signal_edit(source, generated, task="time_stretch", scale=2.0)
 
@@ -172,8 +177,8 @@ def test_time_stretch_signal_metrics_match_published_formula(tmp_path: Path) -> 
 def test_volume_signal_metrics_and_aggregate(tmp_path: Path) -> None:
     source = tmp_path / "source.wav"
     generated = tmp_path / "generated.wav"
-    _write_wav(source, np.array([0.25, -0.25], dtype=np.float32))
-    _write_wav(generated, np.array([0.4, -0.4], dtype=np.float32))
+    write_wav(source, np.array([0.25, -0.25], dtype=np.float32))
+    write_wav(generated, np.array([0.4, -0.4], dtype=np.float32))
 
     score = score_signal_edit(source, generated, task="volume", scale=2.0)
     summary = aggregate_signal_edit_scores([score])
@@ -224,7 +229,7 @@ def test_prepare_uses_snapshot_download_for_raw_dataset(
 
 def test_auk_runner_sends_pinned_source_and_saves_wav(tmp_path: Path) -> None:
     source = tmp_path / "source.wav"
-    _write_wav(source, np.ones(20, dtype=np.float32) * 0.25)
+    write_wav(source, np.ones(20, dtype=np.float32) * 0.25)
     sample = ming_edit.SpeechEditSample(
         sample_id="sample-1",
         task="time_stretch",
@@ -237,7 +242,7 @@ def test_auk_runner_sends_pinned_source_and_saves_wav(tmp_path: Path) -> None:
         edited_text="after",
         scale=2.0,
     )
-    expected_audio = _wav_bytes(np.ones(10, dtype=np.float32) * 0.25)
+    expected_audio = wav_bytes(np.ones(10, dtype=np.float32) * 0.25)
 
     class FakeResponse:
         status = 200
@@ -289,3 +294,77 @@ def test_auk_runner_sends_pinned_source_and_saves_wav(tmp_path: Path) -> None:
     assert session.payload["metadata"] == {
         "tts_params": {"ref_audio": sample.source_audio_url}
     }
+
+
+@pytest.mark.parametrize("http_status", [200, 503])
+def test_audio_edit_benchmark_over_local_http(
+    tmp_path: Path, http_status: Literal[200, 503]
+) -> None:
+    source_audio_path = tmp_path / "source.wav"
+    write_wav(source_audio_path, np.full(20, 0.25, dtype=np.float32))
+    sample = ming_edit.SpeechEditSample(
+        sample_id="http-sample",
+        task="time_stretch",
+        language="en",
+        source_audio=str(source_audio_path),
+        source_audio_repo_path="wavs/http-sample.wav",
+        source_audio_url=source_audio_path.as_uri(),
+        instruction="adjusts the speed to 2.0",
+        original_text="before",
+        edited_text="after",
+        scale=2.0,
+    )
+    expected_audio = wav_bytes(np.full(10, 0.25, dtype=np.float32))
+    generated_audio_directory = tmp_path / "generated"
+
+    async def generate_audio(request: web.Request) -> web.Response:
+        request_payload = await request.json()
+        assert isinstance(request_payload, dict)
+        assert request_payload["prompt"] == sample.instruction
+        assert request_payload["sampling_params"] == {"seed": 1234}
+        assert request_payload["metadata"] == {
+            "tts_params": {"ref_audio": sample.source_audio_url}
+        }
+        if http_status == 503:
+            return web.Response(status=503, text="fixture unavailable")
+        else:
+            return web.json_response(
+                {
+                    "audio": {
+                        "data": base64.b64encode(expected_audio).decode("ascii"),
+                        "format": "wav",
+                    },
+                    "meta_info": {"prompt_tokens": 4, "completion_tokens": 8},
+                }
+            )
+
+    async def run_client() -> list[RequestResult]:
+        application = web.Application()
+        application.router.add_post("/generate", generate_audio)
+        async with TestServer(application) as server:
+            send_function = _make_auk_edit_send_fn(
+                api_url=str(server.make_url("/generate")),
+                model="fixture-model",
+                seed=1234,
+                generated_dir=generated_audio_directory,
+            )
+            runner = BenchmarkRunner(
+                RunConfig(warmup=0, timeout_s=5, disable_tqdm=True)
+            )
+            return await runner.run([sample], send_function)
+
+    results = asyncio.run(run_client())
+    assert len(results) == 1
+    result = results[0]
+    assert result.request_id == sample.sample_id
+    assert result.latency_s > 0
+    if http_status == 200:
+        assert result.is_success
+        assert result.audio_duration_s == pytest.approx(1.0)
+        assert result.prompt_tokens == 4
+        assert result.completion_tokens == 8
+        assert Path(result.wav_path).read_bytes() == expected_audio
+    else:
+        assert not result.is_success
+        assert "HTTP 503: fixture unavailable" in result.error
+        assert not list(generated_audio_directory.glob("*.wav"))

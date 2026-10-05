@@ -75,6 +75,8 @@ JUNK_KEYS = {
 def clean_config_dict(d):
     if not isinstance(d, dict):
         return d
+    else:
+        pass
 
     return {
         k: clean_config_dict(v)
@@ -191,29 +193,39 @@ class FishQwen3Config(PretrainedConfig):
         self.initializer_range = initializer_range
 
         # Post-initialization
-        self._post_init_config()
+        self.post_init_config()
 
-    def _post_init_config(self):
+    def post_init_config(self):
         """Post-initialization to compute derived values."""
         if self.n_local_heads == -1:
             self.n_local_heads = self.n_head
+        else:
+            pass
 
         if self.intermediate_size is None:
             hidden_dim = 4 * self.dim
             n_hidden = int(2 * hidden_dim / 3)
             self.intermediate_size = find_multiple(n_hidden, 256)
+        else:
+            pass
 
         if self.head_dim is None:
             self.head_dim = self.dim // self.n_head
+        else:
+            pass
 
         assert self.dropout == 0.0, "Dropout is not supported in flash-attn-3"
 
         if self.audio_hidden_dim is None:
             self.audio_hidden_dim = self.dim * 2
+        else:
+            pass
 
         if self.initializer_range is None:
             self.initializer_range = self.dim**-0.5
             log.info(f"Using default initializer range: {self.initializer_range}")
+        else:
+            pass
 
     @staticmethod
     def attention_flops_per_token(n_layers, seq_len, dim, causal):
@@ -234,6 +246,8 @@ class FishQwen3Config(PretrainedConfig):
 
         if include_output:
             base += self.dim * self.vocab_size
+        else:
+            pass
 
         return base
 
@@ -421,20 +435,30 @@ class FishQwen3OmniConfig(PretrainedConfig):
                     f"AudioEncoder output_dim ({self.audio_encoder_config.output_dim}) "
                     f"must equal text_config dim ({self.text_config.dim})"
                 )
+            else:
+                pass
 
             if self.audio_decoder_config is not None:
                 assert self.audio_decoder_config.text_dim == self.text_config.dim, (
                     f"AudioDecoder text_dim ({self.audio_decoder_config.text_dim}) "
                     f"must equal text_config dim ({self.text_config.dim})"
                 )
+            else:
+                pass
+        else:
+            pass
 
     def get_num_flop_per_token(self):
         """Calculate total FLOPs per token for the omni model."""
         total_flops = 0
         if self.text_config is not None:
             total_flops += self.text_config.get_num_flop_per_token()
+        else:
+            pass
         if self.audio_decoder_config is not None:
             total_flops += self.audio_decoder_config.get_num_flop_per_token()
+        else:
+            pass
         return total_flops
 
     def to_dict(self):

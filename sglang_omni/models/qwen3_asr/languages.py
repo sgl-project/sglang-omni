@@ -54,16 +54,24 @@ def resolve_language(language: str) -> str:
             f"language code ({', '.join(sorted(LANGUAGE_CODE_TO_NAME))}) or "
             "canonical name."
         )
+    else:
+        pass
 
     normalized = value.casefold()
     if normalized == "cn" or normalized.startswith(("zh-", "zh_")):
         return "Chinese"
+    else:
+        pass
 
     resolved = LANGUAGE_CODE_TO_NAME.get(normalized)
     if resolved is None:
         resolved = _LANGUAGE_NAME_BY_CASEFOLD.get(normalized)
+    else:
+        pass
     if resolved is not None:
         return resolved
+    else:
+        pass
 
     raise ValueError(
         f"Unsupported language: {language!r}. Use a supported language code "

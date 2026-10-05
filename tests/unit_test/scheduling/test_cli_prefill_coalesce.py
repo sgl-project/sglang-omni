@@ -33,7 +33,7 @@ from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.utils.imports import import_string
 
 
-def _ar_stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]:
+def ar_stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]:
     # Compose the resolver sequence the launch path uses -- mp_runner resolves
     # the two kwarg channels in the parent, stage_workers overlays them against
     # the factory signature in the child.
@@ -72,7 +72,7 @@ def test_dotted_flags_set_coalesce_args(config_cls, stage_name):
             (f"{stage_name}.factory.prefill_coalesce_wait_ms", "300.0"),
         ]
     )
-    args = _ar_stage_args(merged, stage_name)
+    args = ar_stage_args(merged, stage_name)
     assert args["prefill_coalesce_requests"] == 32
     assert args["prefill_coalesce_wait_ms"] == 300.0
 
@@ -93,20 +93,20 @@ stages:
     config = ConfigManager.from_file(str(config_path)).config
     assert config is not None
 
-    args = _ar_stage_args(config, "tts_engine")
+    args = ar_stage_args(config, "tts_engine")
     assert args["prefill_coalesce_requests"] == 16
     assert args["prefill_coalesce_wait_ms"] == 200.0
 
 
 def test_a_flag_for_one_stage_leaves_the_other_settings_alone():
     config = MossTTSLocalPipelineConfig(model_path="dummy")
-    before = _ar_stage_args(config, "tts_engine")
+    before = ar_stage_args(config, "tts_engine")
 
     merged = ConfigManager(config).merge_config(
         [("tts_engine.factory.prefill_coalesce_wait_ms", "200.0")]
     )
 
-    after = _ar_stage_args(merged, "tts_engine")
+    after = ar_stage_args(merged, "tts_engine")
     assert after["prefill_coalesce_wait_ms"] == 200.0
     after.pop("prefill_coalesce_wait_ms")
     before.pop("prefill_coalesce_wait_ms", None)
@@ -121,7 +121,7 @@ def test_a_stage_without_the_knob_refuses_the_flag():
         [("vocoder.factory.prefill_coalesce_requests", "32")]
     )
     with pytest.raises(ValueError, match="prefill_coalesce_requests"):
-        _ar_stage_args(merged, "vocoder")
+        ar_stage_args(merged, "vocoder")
 
 
 def test_rejects_invalid_values_eagerly():

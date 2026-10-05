@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TypedDict
 
 ADMIN_MODEL_INFO = "model_info"
 ADMIN_PAUSE_GENERATION = "pause_generation"
@@ -17,17 +18,37 @@ ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP = "destroy_weights_update_group"
 ADMIN_WEIGHTS_CHECKER = "weights_checker"
 
 
+class SerializedAdminResult(TypedDict):
+    op_id: str
+    stage: str
+    action: str
+    success: bool
+    message: str
+    data: dict[str, object]
+    error: str | None
+    rank: int | None
+    role: str | None
+
+
+class AdminResponse(TypedDict):
+    op_id: str
+    action: str
+    success: bool
+    message: str
+    results: list[SerializedAdminResult]
+
+
 @dataclass
 class AdminOperation:
     """One coordinator-to-stage administrative operation."""
 
     op_id: str
     action: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, object] = field(default_factory=dict)
     target_stages: list[str] | None = None
     timeout_s: float | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "op_id": self.op_id,
             "action": self.action,
@@ -37,7 +58,7 @@ class AdminOperation:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AdminOperation":
+    def from_dict(cls, data: Mapping[str, object]) -> "AdminOperation":
         target_stages = data.get("target_stages")
         return cls(
             op_id=str(data["op_id"]),
@@ -57,12 +78,12 @@ class AdminResult:
     action: str
     success: bool
     message: str = ""
-    data: dict[str, Any] = field(default_factory=dict)
+    data: dict[str, object] = field(default_factory=dict)
     error: str | None = None
     rank: int | None = None
     role: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> SerializedAdminResult:
         return {
             "op_id": self.op_id,
             "stage": self.stage,
@@ -76,7 +97,7 @@ class AdminResult:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AdminResult":
+    def from_dict(cls, data: Mapping[str, object]) -> "AdminResult":
         return cls(
             op_id=str(data["op_id"]),
             stage=str(data["stage"]),

@@ -6,7 +6,6 @@ from __future__ import annotations
 import pickle
 import random
 import re
-from typing import List, Optional
 
 import numpy as np
 import torch
@@ -18,6 +17,8 @@ def get_layer_id(weight_name):
     match = re.search(r"layers\.(\d+)\.", weight_name)
     if match:
         return int(match.group(1))
+    else:
+        pass
     return None
 
 
@@ -41,6 +42,8 @@ def set_random_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    else:
+        pass
 
 
 def avail_gpu_mem(gpu_id: int) -> float | None:
@@ -48,6 +51,8 @@ def avail_gpu_mem(gpu_id: int) -> float | None:
     try:
         if not torch.cuda.is_available():
             return None
+        else:
+            pass
         free_bytes, _ = torch.cuda.mem_get_info(gpu_id)
         return free_bytes / (1024**3)
     except Exception:
@@ -55,12 +60,12 @@ def avail_gpu_mem(gpu_id: int) -> float | None:
 
 
 def broadcast_pyobj(
-    data: List[Any],
+    data: list[object],
     rank: int,
-    dist_group: Optional[torch.distributed.ProcessGroup] = None,
+    dist_group: torch.distributed.ProcessGroup | None = None,
     src: int = 0,
     force_cpu_device: bool = True,
-):
+) -> list[object]:
     """Broadcast inputs from rank=0 to all other ranks with torch.dist backend."""
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not force_cpu_device else "cpu"
@@ -88,6 +93,8 @@ def broadcast_pyobj(
 
         if size == 0:
             return []
+        else:
+            pass
 
         tensor_data = torch.empty(size, dtype=torch.uint8, device=device)
         dist.broadcast(tensor_data, src=0, group=dist_group)
@@ -100,6 +107,8 @@ def broadcast_pyobj(
 def normalize_quantization(value: object) -> str | None:
     if value is None:
         return None
+    else:
+        pass
     return str(value).lower()
 
 
