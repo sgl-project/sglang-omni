@@ -53,12 +53,8 @@ class DecodeLiveRows:
 
 
 class PaddedRowsTopK(nn.Module):
-    """Top-k that gives a decode graph's padded rows the experts of row 0.
-
-    A decode graph replays at its bucket size, and the padded rows keep stale
-    token ids, so each would route to its own experts and the fused MoE would
-    load their weights for outputs it drops. Real rows route as before.
-    """
+    """Top-k that gives a padded decode row the experts of row 0, so the fused
+    MoE loads no weights for an output the graph runner drops."""
 
     def __init__(self, topk: TopK, live_rows: DecodeLiveRows) -> None:
         super().__init__()
@@ -140,8 +136,12 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         self.fused_rope_gate = install_thinker_fused_rope(self.model)
         self.decode_live_rows = DecodeLiveRows()
         for layer in self.model.layers:
-            if isinstance(layer, Qwen3MoeDecoderLayer) and isinstance(
-                layer.mlp, Qwen3MoeSparseMoeBlock
+            # note (ratish): a quantized MoE can share one activation scale across
+            # rows, so a padded row's experts could change the live rows' rounding.
+            if (
+                quant_config is None
+                and isinstance(layer, Qwen3MoeDecoderLayer)
+                and isinstance(layer.mlp, Qwen3MoeSparseMoeBlock)
             ):
                 layer.mlp.topk = PaddedRowsTopK(layer.mlp.topk, self.decode_live_rows)
             else:
@@ -173,23 +173,26 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         else:
             pass
         # note (ratish): padded decode-graph rows write KV slot 0, which the
-        # allocator never hands out; a one-row decode has no padded rows.
+        # allocator never hands out; a one-row decode has no padded rows. The mask
+        # lives only for this call: other paths run self.model directly.
         if (
             forward_batch.forward_mode.is_decode()
             and forward_batch.out_cache_loc.shape[0] > 1
         ):
             self.decode_live_rows.is_live_row = forward_batch.out_cache_loc != 0
         else:
+            pass
+        try:
+            hidden_states = self.model(
+                input_ids=input_ids,
+                positions=positions,
+                forward_batch=forward_batch,
+                input_embeds=input_embeds,
+                pp_proxy_tensors=pp_proxy_tensors,
+                input_deepstack_embeds=input_deepstack_embeds,
+            )
+        finally:
             self.decode_live_rows.is_live_row = None
-
-        hidden_states = self.model(
-            input_ids=input_ids,
-            positions=positions,
-            forward_batch=forward_batch,
-            input_embeds=input_embeds,
-            pp_proxy_tensors=pp_proxy_tensors,
-            input_deepstack_embeds=input_deepstack_embeds,
-        )
         return self.logits_processor(
             input_ids,
             hidden_states,
