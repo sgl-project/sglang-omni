@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import dataclass
 from typing import Literal
 
 import torch
@@ -31,6 +33,29 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
     ConformerState,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT, DiTState
+
+# note (Junnan Li): Classifier-free guidance runs the estimator on all conditioned rows, then all unconditioned rows, so a stream's estimator caches hold its two rows on this axis.
+ESTIMATOR_GUIDANCE_AXIS = 2
+
+
+@dataclass(frozen=True, kw_only=True)
+class RaggedLayout:
+    """Each row's real new frames and history frames, right-padded to the longest of each."""
+
+    frame_counts: list[int]
+    history_counts: list[int]
+
+    def attention_mask(self, device: torch.device) -> torch.Tensor:
+        """Keys are [new frames, history] as Attention concatenates them; a row sees only its own real keys."""
+        padded_frames = max(self.frame_counts)
+        keys = torch.arange(padded_frames + max(self.history_counts), device=device)
+        frame_counts = torch.tensor(self.frame_counts, device=device)
+        history_counts = torch.tensor(self.history_counts, device=device)
+        visible = (keys[None, :] < frame_counts[:, None]) | (
+            (keys[None, :] >= padded_frames)
+            & (keys[None, :] < padded_frames + history_counts[:, None])
+        )
+        return visible[:, None, :].expand(-1, padded_frames, -1)
 
 
 class CausalConditionalCFM(torch.nn.Module):
@@ -117,22 +142,29 @@ class CausalConditionalCFM(torch.nn.Module):
         n_timesteps: int = 10,
         temperature: float = 1.0,
         states: list[DiTState] | None = None,
-        offset: int = 0,
+        noise_offsets: list[int] | None = None,
     ) -> tuple[torch.Tensor, list[DiTState] | None]:
         if n_timesteps <= 0:
             raise ValueError("n_timesteps must be positive")
         else:
             pass
-        if offset + mu.size(2) > self.rand_noise.size(2):
+        if noise_offsets is None:
+            noise_offsets = [0] * mu.size(0)
+        else:
+            pass
+        if max(noise_offsets) + mu.size(2) > self.rand_noise.size(2):
             raise ValueError(
                 "Combined reference and generated audio exceed 600 seconds"
             )
         else:
             pass
         z = (
-            self.rand_noise[:, :, offset : offset + mu.size(2)]
-            .expand(mu.size(0), -1, -1)
-            .clone()
+            torch.cat(
+                [
+                    self.rand_noise[:, :, offset : offset + mu.size(2)]
+                    for offset in noise_offsets
+                ]
+            )
             * temperature
         )
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
@@ -150,18 +182,35 @@ class CausalConditionalCFM(torch.nn.Module):
         n_timesteps: int = 10,
         temperature: float = 1.0,
         convolution_cache: torch.Tensor | None = None,
-        attention_cache: torch.Tensor | None = None,
+        attention_window: torch.Tensor | None = None,
+        layout: RaggedLayout | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if attention_cache is None:
-            offset = 0
+        """Return the mel, the next convolution caches and the attention window filled with the new frames.
+
+        attention_window holds [new frames, history] per step, history written; None starts a stream.
+        """
+        if attention_window is None:
+            noise_offsets = [0] * mu.size(0)
             states = [DiTState() for _ in range(n_timesteps)]
         else:
             assert convolution_cache is not None
-            offset = attention_cache.shape[4]
+            if layout is None:
+                noise_offsets = [attention_window.shape[4] - mu.size(2)] * mu.size(0)
+                attention_mask = None
+                valid_frame_counts = None
+            else:
+                # note (Junnan Li): stepaudio2 starts a chunk's noise at its own history length.
+                noise_offsets = layout.history_counts
+                attention_mask = layout.attention_mask(mu.device).repeat(2, 1, 1)
+                valid_frame_counts = torch.tensor(
+                    layout.frame_counts, device=mu.device
+                ).repeat(2)
             states = [
                 DiTState(
                     convolution=convolution_cache[index],
-                    attention=attention_cache[index],
+                    attention=attention_window[index],
+                    attention_mask=attention_mask,
+                    valid_frame_counts=valid_frame_counts,
                 )
                 for index in range(n_timesteps)
             ]
@@ -173,13 +222,19 @@ class CausalConditionalCFM(torch.nn.Module):
             n_timesteps,
             temperature,
             states,
-            offset,
+            noise_offsets,
         )
         assert next_states is not None
+        if attention_window is None:
+            next_attention_window = torch.stack(
+                [state.attention for state in next_states]
+            )
+        else:
+            next_attention_window = attention_window
         return (
             result,
             torch.stack([state.convolution for state in next_states]),
-            torch.stack([state.attention for state in next_states]),
+            next_attention_window,
         )
 
 
@@ -300,7 +355,6 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         _, cache = self.inference_chunk(
             token_ids,
             speaker_embeddings,
-            None,
             n_timesteps=n_timesteps,
             prompt_mel=prompt_mel,
         )
@@ -311,36 +365,17 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         self,
         token_ids: torch.Tensor,
         speaker_embeddings: torch.Tensor,
-        cache: dict[str, torch.Tensor] | None,
         is_last_chunk: bool = False,
         n_timesteps: int = 10,
         prompt_mel: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        conformer_convolution_cache = (
-            cache["conformer_convolution_cache"] if cache is not None else None
-        )
-        conformer_attention_cache = (
-            cache["conformer_attention_cache"] if cache is not None else None
-        )
-        estimator_convolution_cache = (
-            cache["estimator_convolution_cache"] if cache is not None else None
-        )
-        estimator_attention_cache = (
-            cache["estimator_attention_cache"] if cache is not None else None
-        )
+        """Start a stream, conditioned on prompt_mel when one is given."""
         speaker_embeddings = F.normalize(speaker_embeddings, dim=1)
         speaker_embeddings = self.speaker_embedding_projection(speaker_embeddings)
-        embedded_tokens = self.input_embedding(token_ids)
-        conformer_state = ConformerState.from_packed(
-            conformer_convolution_cache,
-            conformer_attention_cache,
-            len(self.encoder.encoders),
-            self.encoder.up_layer.stride,
-        )
         hidden_states, conformer_state = self.encoder.forward_chunk(
-            xs=embedded_tokens,
+            xs=self.input_embedding(token_ids),
             is_last_chunk=is_last_chunk,
-            state=conformer_state,
+            state=ConformerState(),
         )
         conformer_convolution_cache, conformer_attention_cache = (
             conformer_state.to_packed(self.encoder.up_layer.stride)
@@ -356,14 +391,186 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                 mel_conditioning=mel_conditioning.transpose(1, 2).contiguous(),
                 n_timesteps=n_timesteps,
                 temperature=1.0,
-                convolution_cache=estimator_convolution_cache,
-                attention_cache=estimator_attention_cache,
             )
         )
-        new_cache = {
+        return predicted_mel, {
             "conformer_convolution_cache": conformer_convolution_cache,
             "conformer_attention_cache": conformer_attention_cache,
             "estimator_convolution_cache": estimator_convolution_cache,
             "estimator_attention_cache": estimator_attention_cache,
         }
-        return (predicted_mel, new_cache)
+
+    @torch.inference_mode()
+    def inference_chunks(
+        self,
+        token_ids: list[torch.Tensor],
+        speaker_embeddings: torch.Tensor,
+        caches: list[dict[str, torch.Tensor]],
+        is_last_chunk: list[bool],
+        n_timesteps: int = 10,
+    ) -> list[tuple[torch.Tensor, dict[str, torch.Tensor]]]:
+        """Decode one streaming chunk of each of several streams with one estimator pass.
+
+        Pops each stream's estimator attention cache; the returned caches replace it.
+        """
+        speaker_embeddings = F.normalize(speaker_embeddings, dim=1)
+        speaker_embeddings = self.speaker_embedding_projection(speaker_embeddings)
+        encoder_groups: dict[tuple[int, bool, int], list[int]] = defaultdict(list)
+        for row, (stream_token_ids, cache, stream_is_last_chunk) in enumerate(
+            zip(token_ids, caches, is_last_chunk, strict=True)
+        ):
+            encoder_groups[
+                (
+                    stream_token_ids.shape[1],
+                    stream_is_last_chunk,
+                    cache["conformer_attention_cache"].shape[3],
+                )
+            ].append(row)
+        hidden_states_by_row: dict[int, torch.Tensor] = {}
+        conformer_caches: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        for (_, group_is_last_chunk, _), rows in encoder_groups.items():
+            conformer_state = ConformerState.from_packed(
+                torch.cat([caches[row]["conformer_convolution_cache"] for row in rows]),
+                torch.cat(
+                    [caches[row]["conformer_attention_cache"] for row in rows], dim=1
+                ),
+                len(self.encoder.encoders),
+                self.encoder.up_layer.stride,
+            )
+            hidden_states, conformer_state = self.encoder.forward_chunk(
+                xs=self.input_embedding(torch.cat([token_ids[row] for row in rows])),
+                is_last_chunk=group_is_last_chunk,
+                state=conformer_state,
+            )
+            group_convolution_cache, group_attention_cache = conformer_state.to_packed(
+                self.encoder.up_layer.stride
+            )
+            hidden_states = self.encoder_proj(hidden_states)
+            for position, row in enumerate(rows):
+                hidden_states_by_row[row] = hidden_states[position : position + 1]
+                # note (Junnan Li): Clones keep each stream's caches at their own size and free the group tensors.
+                conformer_caches[row] = (
+                    group_convolution_cache[position : position + 1].clone(),
+                    group_attention_cache[:, position : position + 1].clone(),
+                )
+        hidden_states_by_stream = [
+            hidden_states_by_row[row] for row in range(len(caches))
+        ]
+        frame_counts = [
+            hidden_states.shape[1] for hidden_states in hidden_states_by_stream
+        ]
+        history_counts = [
+            cache["estimator_attention_cache"].shape[4] for cache in caches
+        ]
+        padded_frames = max(frame_counts)
+        padded_history = max(history_counts)
+        if len(set(frame_counts)) == 1 and len(set(history_counts)) == 1:
+            layout = None
+        else:
+            layout = RaggedLayout(
+                frame_counts=frame_counts, history_counts=history_counts
+            )
+        mu = (
+            torch.cat(
+                [
+                    F.pad(hidden_states, (0, 0, 0, padded_frames - frame_count))
+                    for hidden_states, frame_count in zip(
+                        hidden_states_by_stream, frame_counts, strict=True
+                    )
+                ]
+            )
+            .transpose(1, 2)
+            .contiguous()
+        )
+        history_shape = caches[0]["estimator_attention_cache"].shape
+        stream_count = len(caches)
+        attention_window = torch.empty(
+            history_shape[0],
+            history_shape[1],
+            2 * stream_count,
+            history_shape[3],
+            padded_frames + padded_history,
+            history_shape[5],
+            dtype=caches[0]["estimator_attention_cache"].dtype,
+            device=mu.device,
+        )
+        for row, (cache, history_count) in enumerate(
+            zip(caches, history_counts, strict=True)
+        ):
+            history = cache.pop("estimator_attention_cache")
+            for guidance_row, window_row in enumerate((row, stream_count + row)):
+                attention_window[
+                    :, :, window_row, :, padded_frames : padded_frames + history_count
+                ] = history[:, :, guidance_row]
+                # note (Junnan Li): Masked keys still multiply their values, so padding must be finite.
+                attention_window[
+                    :, :, window_row, :, padded_frames + history_count :
+                ].zero_()
+        convolution_halves = [
+            cache["estimator_convolution_cache"].chunk(2, dim=ESTIMATOR_GUIDANCE_AXIS)
+            for cache in caches
+        ]
+        predicted_mel, estimator_convolution_cache, attention_window = (
+            self.decoder.forward_chunk(
+                mu=mu,
+                speaker_embeddings=speaker_embeddings,
+                mel_conditioning=torch.zeros_like(mu),
+                n_timesteps=n_timesteps,
+                temperature=1.0,
+                convolution_cache=torch.cat(
+                    [conditioned for conditioned, _ in convolution_halves]
+                    + [unconditioned for _, unconditioned in convolution_halves],
+                    dim=ESTIMATOR_GUIDANCE_AXIS,
+                ),
+                attention_window=attention_window,
+                layout=layout,
+            )
+        )
+        conditioned_convolution, unconditioned_convolution = (
+            estimator_convolution_cache.chunk(2, dim=ESTIMATOR_GUIDANCE_AXIS)
+        )
+        results: list[tuple[torch.Tensor, dict[str, torch.Tensor]]] = []
+        for row, (frame_count, history_count) in enumerate(
+            zip(frame_counts, history_counts, strict=True)
+        ):
+            attention_cache = attention_window.new_empty(
+                attention_window.shape[0],
+                attention_window.shape[1],
+                2,
+                attention_window.shape[3],
+                frame_count + history_count,
+                attention_window.shape[5],
+            )
+            for guidance_row, window_row in enumerate((row, stream_count + row)):
+                attention_cache[:, :, guidance_row, :, :frame_count] = attention_window[
+                    :, :, window_row, :, :frame_count
+                ]
+                attention_cache[:, :, guidance_row, :, frame_count:] = attention_window[
+                    :,
+                    :,
+                    window_row,
+                    :,
+                    padded_frames : padded_frames + history_count,
+                ]
+            results.append(
+                (
+                    predicted_mel[row : row + 1, :, :frame_count],
+                    {
+                        "conformer_convolution_cache": conformer_caches[row][0],
+                        "conformer_attention_cache": conformer_caches[row][1],
+                        "estimator_convolution_cache": torch.cat(
+                            (
+                                conditioned_convolution.narrow(
+                                    ESTIMATOR_GUIDANCE_AXIS, row, 1
+                                ),
+                                unconditioned_convolution.narrow(
+                                    ESTIMATOR_GUIDANCE_AXIS, row, 1
+                                ),
+                            ),
+                            dim=ESTIMATOR_GUIDANCE_AXIS,
+                        ),
+                        "estimator_attention_cache": attention_cache,
+                    },
+                )
+            )
+        return results

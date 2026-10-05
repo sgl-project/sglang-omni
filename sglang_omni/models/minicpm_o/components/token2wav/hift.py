@@ -196,8 +196,14 @@ class HiFTGenerator(nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
         self.reflection_pad = nn.ReflectionPad1d((1, 0))
-        self.stft_window = torch.from_numpy(
-            get_window("hann", istft_params["n_fft"], fftbins=True).astype(np.float32)
+        self.register_buffer(
+            "stft_window",
+            torch.from_numpy(
+                get_window("hann", istft_params["n_fft"], fftbins=True).astype(
+                    np.float32
+                )
+            ),
+            persistent=False,
         )
         self.f0_predictor = (
             ConvRNNF0Predictor() if f0_predictor is None else f0_predictor
@@ -211,7 +217,7 @@ class HiFTGenerator(nn.Module):
                 self.istft_params["n_fft"],
                 self.istft_params["hop_len"],
                 self.istft_params["n_fft"],
-                window=self.stft_window.to(x.device),
+                window=self.stft_window,
                 return_complex=True,
             )
         if caller_stream is not None:
@@ -231,7 +237,7 @@ class HiFTGenerator(nn.Module):
                 self.istft_params["n_fft"],
                 self.istft_params["hop_len"],
                 self.istft_params["n_fft"],
-                window=self.stft_window.to(magnitude.device),
+                window=self.stft_window,
             )
         if caller_stream is not None:
             inverse_transform.record_stream(caller_stream)

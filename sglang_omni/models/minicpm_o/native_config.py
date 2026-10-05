@@ -54,6 +54,8 @@ def stages() -> list[StageConfig]:
             gpu_memory_fraction=0.15,
             factory_path=f"{PKG}.create_speech_scheduler",
             terminal=True,
+            # note (Junnan Li): Ragged vocoder batches fragment the allocator; the thinker and talker share memory over CUDA IPC, so only this process opts in.
+            env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
         ),
     ]
 

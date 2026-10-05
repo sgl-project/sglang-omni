@@ -30,7 +30,10 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     StreamingAudioProcessor,
     audio_feature_batch,
 )
-from sglang_omni.models.minicpm_o.components.tts_runtime import MiniCPMOVocoderRuntime
+from sglang_omni.models.minicpm_o.components.tts_runtime import (
+    MiniCPMOVocoderRuntime,
+    SynthesisRequest,
+)
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.native_config import (
@@ -46,8 +49,6 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import (
     BatchedSessionHooks,
     SessionAppend,
-    SessionContext,
-    SessionHooks,
     SessionScheduler,
 )
 from sglang_omni.utils.device import resolve_concrete_device
@@ -56,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 # note (Junnan Li): A session's first unit and every later unit differ in mel window and encoder history, so warm-up runs one of each.
 WARM_UP_UNITS = 2
+# note (Junnan Li): One vocoder forward costs about this much before its width adds to it.
+FORWARD_FLOOR_MS = 70
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -250,7 +253,10 @@ class SpeechState:
     clock_ms: float = 0
 
 
-class SpeechHooks(SessionHooks):
+class SpeechHooks(BatchedSessionHooks):
+    # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
+    gather_window_ms = FORWARD_FLOOR_MS / 2
+
     def __init__(self, runtime: MiniCPMOVocoderRuntime, reference_audio: bytes) -> None:
         self.runtime, self.reference_audio = runtime, reference_audio
         self.states: dict[SessionIdentity, SpeechState] = {}
@@ -264,54 +270,80 @@ class SpeechHooks(SessionHooks):
         )
         self.states[session_identity] = SpeechState(session_identity.id)
 
-    def append(
-        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
-    ) -> StagePayload:
-        state = self.states[context.session_identity]
-        talker_result = payload.data
-        pcm = b""
-        duration_ms = 0
-        is_turn_end = talker_result["end_of_turn"] or chunk.eos
-        if is_turn_end or (
-            not talker_result["is_listen"] and talker_result["talker_conditions"]
-        ):
-            waveform = self.runtime.synthesize(
-                state.session_id,
-                talker_result["codec_tokens"],
-                is_turn_start=talker_result["speech_turn_start"],
-                end_of_turn=is_turn_end,
+    def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+        is_turn_end = [
+            append.payload.data["end_of_turn"] or append.chunk.eos for append in appends
+        ]
+        speaking_indices = [
+            index
+            for index, append in enumerate(appends)
+            if is_turn_end[index]
+            or (
+                not append.payload.data["is_listen"]
+                and append.payload.data["talker_conditions"]
             )
+        ]
+
+        def emit(index: int, waveform: np.ndarray | None) -> None:
+            chunk, payload, context = (
+                appends[index].chunk,
+                appends[index].payload,
+                appends[index].context,
+            )
+            state = self.states[context.session_identity]
+            talker_result = payload.data
+            pcm = b""
+            duration_ms = 0
             if waveform is not None:
                 samples = np.asarray(waveform, dtype=np.float32).reshape(-1)
                 pcm = np.clip(samples * 32768, -32768, 32767).astype("<i2").tobytes()
                 duration_ms = len(samples) * 1000 / OUTPUT_SAMPLE_RATE
             else:
                 pass
-        else:
-            pass
-        context.emit(
-            TimedChunk(
-                "voice",
-                state.clock_ms,
-                duration_ms,
-                chunk.seq,
-                dict(
-                    text=talker_result["text"],
-                    pcm=pcm,
-                    end_of_turn=is_turn_end,
-                    is_listen=(
-                        None
-                        if chunk.eos and chunk.duration_ms == 0
-                        else talker_result["is_listen"]
+            context.emit(
+                TimedChunk(
+                    "voice",
+                    state.clock_ms,
+                    duration_ms,
+                    chunk.seq,
+                    dict(
+                        text=talker_result["text"],
+                        pcm=pcm,
+                        end_of_turn=is_turn_end[index],
+                        is_listen=(
+                            None
+                            if chunk.eos and chunk.duration_ms == 0
+                            else talker_result["is_listen"]
+                        ),
+                        model_end_of_turn=talker_result["end_of_turn"],
                     ),
-                    model_end_of_turn=talker_result["end_of_turn"],
-                ),
-                eos=chunk.eos,
+                    eos=chunk.eos,
+                )
             )
-        )
-        state.clock_ms += duration_ms
-        payload.data = None
-        return payload
+            state.clock_ms += duration_ms
+            payload.data = None
+
+        speaking = set(speaking_indices)
+        for index in range(len(appends)):
+            if index not in speaking:
+                emit(index, None)
+            else:
+                pass
+        for position, waveform in self.runtime.synthesize_batch(
+            [
+                SynthesisRequest(
+                    session_id=self.states[
+                        appends[index].context.session_identity
+                    ].session_id,
+                    codec_token_ids=appends[index].payload.data["codec_tokens"],
+                    is_turn_start=appends[index].payload.data["speech_turn_start"],
+                    end_of_turn=is_turn_end[index],
+                )
+                for index in speaking_indices
+            ]
+        ):
+            emit(speaking_indices[position], waveform)
+        return [append.payload for append in appends]
 
     def close(self, session_identity: SessionIdentity) -> None:
         state = self.states.pop(session_identity)
@@ -397,10 +429,11 @@ def create_speech_scheduler(
         decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,
         enable_flow_block_compile=False,
     )
-    runtime = MiniCPMOVocoderRuntime(codec)
+    runtime = MiniCPMOVocoderRuntime(
+        codec, max_state_bytes_per_session=max_state_bytes_per_session
+    )
     return SessionScheduler(
         SpeechHooks(runtime, Path(codec.default_prompt_wav).read_bytes()),
         max_open_sessions=max_open_sessions,
-        max_concurrency=1,
         max_state_bytes_per_session=max_state_bytes_per_session,
     )

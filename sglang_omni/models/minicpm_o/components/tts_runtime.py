@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -16,6 +17,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     SILENCE_TOKEN_ID,
     SpeakerPrompt,
     StreamCaches,
+    StreamChunk,
     Token2Wav,
 )
 from sglang_omni.proto.session import ResourceUsage
@@ -23,6 +25,8 @@ from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
 
 SILENCE_PREFIX_LENGTH = 3
 CODEC_CHUNK_SIZE = 25
+# note (Junnan Li): A forward holds its streams' flow caches once more in its batch window and once more in the copies taken out of it.
+FORWARD_CACHE_COPIES = 2
 
 
 def clone_caches(caches: StreamCaches) -> StreamCaches:
@@ -31,6 +35,14 @@ def clone_caches(caches: StreamCaches) -> StreamCaches:
         {name: tensor.clone() for name, tensor in flow_cache.items()},
         {name: tensor.clone() for name, tensor in hift_cache.items()},
     )
+
+
+@dataclass(kw_only=True, frozen=True)
+class SynthesisRequest:
+    session_id: str
+    codec_token_ids: list[int]
+    is_turn_start: bool
+    end_of_turn: bool
 
 
 @dataclass(kw_only=True)
@@ -64,8 +76,14 @@ class MiniCPMOVocoderSessionState:
 class MiniCPMOVocoderRuntime:
     """Own streaming vocoder state independently per session."""
 
-    def __init__(self, code2wav: MiniCPMOCode2Wav) -> None:
+    def __init__(
+        self,
+        code2wav: MiniCPMOCode2Wav,
+        *,
+        max_state_bytes_per_session: int,
+    ) -> None:
         self.code2wav = code2wav
+        self.max_state_bytes_per_session = max_state_bytes_per_session
         self.token2wav: Token2Wav = code2wav.token2wav
         self.sessions: dict[str, MiniCPMOVocoderSessionState] = {}
         self.speakers: dict[str, SharedSpeaker] = {}
@@ -101,33 +119,99 @@ class MiniCPMOVocoderRuntime:
         self.sessions[session_id] = state
         return state
 
-    def synthesize(
-        self,
-        session_id: str,
-        codec_tokens: list[int],
-        *,
-        is_turn_start: bool,
-        end_of_turn: bool = False,
-    ) -> np.ndarray | None:
-        state = self.sessions[session_id]
-        if codec_tokens:
-            state.has_pending_turn = True
+    def synthesize_batch(
+        self, requests: list[SynthesisRequest]
+    ) -> Iterator[tuple[int, np.ndarray | None]]:
+        """Synthesize one unit of each of several distinct sessions, round by round.
+
+        Yields each request's index and waveform as soon as its last chunk is decoded.
+        """
+        states = [self.sessions[request.session_id] for request in requests]
+        plans: list[list[tuple[list[int], bool]]] = []
+        for request, state in zip(requests, states, strict=True):
+            if request.codec_token_ids:
+                state.has_pending_turn = True
+            else:
+                pass
+            if state.has_pending_turn:
+                plans.append(
+                    self.plan_chunks(
+                        state,
+                        request.codec_token_ids,
+                        force_flush=request.is_turn_start,
+                        is_last_chunk=request.end_of_turn,
+                    )
+                )
+            else:
+                plans.append([])
+        pcm_chunks: list[list[bytes]] = [[] for _ in requests]
+
+        def finish(index: int) -> np.ndarray | None:
+            pcm = b"".join(pcm_chunks[index])
+            if not pcm:
+                waveform = None
+            else:
+                waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+                if (
+                    not requests[index].end_of_turn
+                    and waveform.size < OUTPUT_SAMPLE_RATE
+                ):
+                    waveform = np.pad(waveform, (OUTPUT_SAMPLE_RATE - waveform.size, 0))
+                else:
+                    pass
+            if requests[index].end_of_turn:
+                self.reset_turn_state(states[index])
+            else:
+                pass
+            return waveform
+
+        for index, plan in enumerate(plans):
+            if not plan:
+                yield index, finish(index)
+            else:
+                pass
+        speaking_states = [state for state, plan in zip(states, plans) if plan]
+        if speaking_states:
+            width = self.streams_per_forward(speaking_states)
         else:
-            pass
-        if not state.has_pending_turn:
-            waveform = None
+            width = 1
+        for round_index in range(max(map(len, plans), default=0)):
+            round_indices = [
+                index for index, plan in enumerate(plans) if round_index < len(plan)
+            ]
+            for start in range(0, len(round_indices), width):
+                forward_indices = round_indices[start : start + width]
+                decoded = self.token2wav.stream_batch(
+                    [
+                        StreamChunk(
+                            token_ids=plans[index][round_index][0],
+                            prompt=states[index].speaker.prompt,
+                            caches=states[index].caches,
+                            is_last_chunk=plans[index][round_index][1],
+                        )
+                        for index in forward_indices
+                    ]
+                )
+                for index, (pcm, caches) in zip(forward_indices, decoded, strict=True):
+                    pcm_chunks[index].append(pcm)
+                    states[index].caches = caches
+                    if round_index == len(plans[index]) - 1:
+                        yield index, finish(index)
+                    else:
+                        pass
+
+    def streams_per_forward(self, states: list[MiniCPMOVocoderSessionState]) -> int:
+        unheld_bytes = sum(
+            self.max_state_bytes_per_session - self.held(session_id).bytes
+            for session_id in self.sessions
+        )
+        forward_bytes_per_stream = FORWARD_CACHE_COPIES * max(
+            estimate_cache_bytes(state.caches) for state in states
+        )
+        if forward_bytes_per_stream == 0:
+            return len(states)
         else:
-            waveform = self.decode_audio_tokens(
-                state,
-                codec_tokens,
-                force_flush=is_turn_start,
-                is_last_chunk=end_of_turn,
-            )
-        if end_of_turn:
-            self.reset_turn_state(state)
-        else:
-            pass
-        return waveform
+            return max(1, unheld_bytes // forward_bytes_per_stream)
 
     def close_session(self, session_id: str) -> None:
         speaker = self.sessions.pop(session_id).speaker
@@ -140,67 +224,39 @@ class MiniCPMOVocoderRuntime:
     def held(self, session_id: str) -> ResourceUsage:
         return self.sessions[session_id].held()
 
-    def decode_audio_tokens(
+    def plan_chunks(
         self,
         state: MiniCPMOVocoderSessionState,
         token_ids: list[int],
         *,
         force_flush: bool,
         is_last_chunk: bool,
-    ) -> np.ndarray | None:
+    ) -> list[tuple[list[int], bool]]:
+        """Consume pending codec tokens into (token ids, is last chunk) decode steps."""
         state.pending_codec_token_ids.extend(token_ids)
-        pcm_chunks: list[bytes] = []
+        plan: list[tuple[list[int], bool]] = []
         minimum_flush_tokens = state.pre_lookahead_tokens + 5
         window_tokens = CODEC_CHUNK_SIZE + state.pre_lookahead_tokens
 
         if force_flush:
             while len(state.pending_codec_token_ids) >= minimum_flush_tokens:
                 window_length = min(window_tokens, len(state.pending_codec_token_ids))
-                pcm_chunks.append(
-                    self.stream(state, state.pending_codec_token_ids[:window_length])
-                )
+                plan.append((state.pending_codec_token_ids[:window_length], False))
                 consumed_tokens = min(
                     CODEC_CHUNK_SIZE, window_length - state.pre_lookahead_tokens
                 )
                 del state.pending_codec_token_ids[:consumed_tokens]
         else:
             while len(state.pending_codec_token_ids) >= window_tokens:
-                pcm_chunks.append(
-                    self.stream(state, state.pending_codec_token_ids[:window_tokens])
-                )
+                plan.append((state.pending_codec_token_ids[:window_tokens], False))
                 del state.pending_codec_token_ids[:CODEC_CHUNK_SIZE]
 
         if is_last_chunk and state.pending_codec_token_ids:
-            pcm_chunks.append(
-                self.stream(
-                    state, list(state.pending_codec_token_ids), is_last_chunk=True
-                )
-            )
+            plan.append((list(state.pending_codec_token_ids), True))
             state.pending_codec_token_ids.clear()
         else:
             pass
-        pcm = b"".join(pcm_chunks)
-        if not pcm:
-            return None
-        else:
-            waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-            if not is_last_chunk and waveform.size < OUTPUT_SAMPLE_RATE:
-                waveform = np.pad(waveform, (OUTPUT_SAMPLE_RATE - waveform.size, 0))
-            else:
-                pass
-            return waveform
-
-    def stream(
-        self,
-        state: MiniCPMOVocoderSessionState,
-        tokens: list[int],
-        *,
-        is_last_chunk: bool = False,
-    ) -> bytes:
-        pcm, state.caches = self.token2wav.stream(
-            tokens, state.speaker.prompt, state.caches, is_last_chunk=is_last_chunk
-        )
-        return pcm
+        return plan
 
     def reset_turn_state(self, state: MiniCPMOVocoderSessionState) -> None:
         state.has_pending_turn = False
@@ -214,4 +270,5 @@ __all__ = [
     "MiniCPMOVocoderRuntime",
     "MiniCPMOVocoderSessionState",
     "SharedSpeaker",
+    "SynthesisRequest",
 ]
