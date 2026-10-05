@@ -4325,14 +4325,17 @@ def test_qwen3_tts_unproven_completion_retains_resources_and_disables_cuda_decod
     assert bundle.owner is scheduler and bundle.stream is stream
     assert bundle.slot is slot
     assert bundle.decoder_input is not None
-    shapes = [tuple(item.shape) for item in bundle.keepalives]
-    assert bundle.keepalives[2].dtype == torch.bool
+    shapes = sorted(tuple(item.shape) for item in bundle.keepalives)
+    assert any(
+        item.dtype == torch.bool for item in bundle.keepalives
+    ), "the invalid-row mask must stay referenced"
     if failure_point == "launch":
-        assert shapes == [(1, 1, 8), (8,), (1,), (1, 2, 2)], shapes
+        assert shapes == sorted([(1, 1, 8), (8,), (1,), (1, 2, 2)]), shapes
     else:
-        assert shapes == [(1, 1, 8), (8,), (1,), (8,)], shapes
-        assert (
-            bundle.keepalives[3].data_ptr() == slot.output_transfer.view(8).data_ptr()
+        assert shapes == sorted([(1, 1, 8), (8,), (1,), (8,)]), shapes
+        assert any(
+            item.data_ptr() == slot.output_transfer.view(8).data_ptr()
+            for item in bundle.keepalives
         ), "the pinned output view must stay referenced"
 
     stream.sync_error = None
@@ -4401,12 +4404,12 @@ def test_qwen3_tts_decode_slot_reuses_event_on_cuda(
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_qwen3_tts_pending_decode_resolves_before_later_decodes_on_cuda() -> None:
-    """A pending decode resolves from its own event, before later work on its stream."""
+def test_qwen3_tts_pending_decode_resolves_from_its_own_event_on_cuda() -> None:
+    """Resolving a pending decode waits on its own event and synchronizes nothing else."""
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         FakeQwen3TTSSpeechTokenizer(), device="cuda", initial_cuda_graph=False
     )
-    later_decode_done = torch.cuda.Event()
+    sync_debug_mode = torch.cuda.get_sync_debug_mode()
     with torch.cuda.stream(scheduler.decode_stream):
         batches = [
             [
@@ -4426,24 +4429,29 @@ def test_qwen3_tts_pending_decode_resolves_before_later_decodes_on_cuda() -> Non
         first = scheduler.launch_decode_plans(
             batches[0], stream=scheduler.decode_stream
         )
-        torch.cuda._sleep(2_000_000_000)  # noqa: leading-underscore  # upstream name
         second = scheduler.launch_decode_plans(
             batches[1], stream=scheduler.decode_stream
         )
-        later_decode_done.record(scheduler.decode_stream)
-        first_audio, first_invalid = first.resolve_partial()
-        resolved_before_later_decode = not later_decode_done.query()
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            first_audio, first_invalid = first.resolve_partial()
+        finally:
+            torch.cuda.set_sync_debug_mode(sync_debug_mode)
         third = scheduler.launch_decode_plans(
             batches[2], stream=scheduler.decode_stream
         )
-        second_audio, second_invalid = second.resolve_partial()
-        third_audio, third_invalid = third.resolve_partial()
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            second_audio, second_invalid = second.resolve_partial()
+            third_audio, third_invalid = third.resolve_partial()
+            repeated_first_invalid = first.resolve_partial()[1]
+        finally:
+            torch.cuda.set_sync_debug_mode(sync_debug_mode)
 
-    assert resolved_before_later_decode
     assert first_invalid == (0, 2)
     assert second_invalid == (1,)
     assert third_invalid == ()
-    assert first.resolve_partial()[1] == (0, 2)
+    assert repeated_first_invalid == (0, 2)
     for audio, expected in (
         (first_audio[1], 7),
         (second_audio[0], 8),
