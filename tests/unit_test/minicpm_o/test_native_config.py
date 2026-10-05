@@ -29,7 +29,7 @@ from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexVision,
 )
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
-from sglang_omni.scheduling.session import BatchedSessionHooks, SessionHooks
+from sglang_omni.scheduling.session import BatchedSessionHooks
 
 
 class ConfigLoaded(Exception):
@@ -134,8 +134,7 @@ def test_engine_factory_resolves_native_config_before_server_args(
 
 
 @pytest.fixture
-def stub_stage_models(monkeypatch: pytest.MonkeyPatch) -> SessionHooks:
-    hooks = SessionHooks()
+def stub_stage_models(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "AutoTokenizer",
         "AutoProcessor",
@@ -182,7 +181,7 @@ def test_duplex_yaml_builds_session_stages(
     talker: int,
     talker_compile: bool,
     tmp_path: Path,
-    stub_stage_models: SessionHooks,
+    stub_stage_models: None,
 ) -> None:
     reference_path = tmp_path / "reference.wav"
     reference_path.write_bytes(b"reference")

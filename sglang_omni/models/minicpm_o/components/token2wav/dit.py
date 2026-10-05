@@ -95,7 +95,9 @@ class Attention(torch.nn.Module):
         x: torch.Tensor,
         attn_mask: torch.Tensor | None,
         state: AttentionState | None = None,
+        window: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, AttentionState | None]:
+        """A window holds keys and values over [new frames, history] with the history already written; the new keys and values are written into its leading frames in place."""
         b, t, c = x.shape
         q = self.to_q(x)
         k = self.to_k(x)
@@ -105,7 +107,12 @@ class Attention(torch.nn.Module):
         v = self.to_heads(v)
         q = self.q_norm(q)
         k = self.k_norm(k)
-        if state is not None:
+        if window is not None:
+            window[:, :, :t, : self.head_dim].copy_(k)
+            window[:, :, :t, self.head_dim :].copy_(v)
+            k, v = window.chunk(2, dim=-1)
+            next_state = None
+        elif state is not None:
             if state.history is not None:
                 previous_key, previous_value = state.history.chunk(2, dim=-1)
                 k = torch.cat((k, previous_key), dim=2)
@@ -215,10 +222,12 @@ class ConvBlockState:
 
 @dataclass(frozen=True, kw_only=True)
 class DiTState:
-    """Per-block histories stacked along the first axis; empty fields start a stream."""
+    """Per-block states stacked along the first axis; empty fields start a stream."""
 
     convolution: torch.Tensor | None = None
     attention: torch.Tensor | None = None
+    attention_mask: torch.Tensor | None = None
+    valid_frame_counts: torch.Tensor | None = None
 
 
 class CausalConvBlock(nn.Module):
@@ -344,6 +353,7 @@ class DiTBlock(nn.Module):
         attn_mask: torch.Tensor | None,
         convolution_state: ConvBlockState | None = None,
         attention_state: AttentionState | None = None,
+        attention_window: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ConvBlockState | None, AttentionState | None]:
         (
             shift_msa,
@@ -357,7 +367,10 @@ class DiTBlock(nn.Module):
             gate_conv,
         ) = self.adaLN_modulation(timestep_embedding).chunk(9, dim=-1)
         attention, next_attention_state = self.attn(
-            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask, attention_state
+            modulate(self.norm1(x), shift_msa, scale_msa),
+            attn_mask,
+            attention_state,
+            attention_window,
         )
         x = x + gate_msa * attention
         convolution, next_convolution_state = self.conv(
@@ -541,7 +554,7 @@ class DiT(nn.Module):
         mel_conditioning: torch.Tensor,
         state: DiTState,
     ) -> tuple[torch.Tensor, DiTState]:
-        """Run one unmasked chunk against the stream's histories."""
+        """Run one chunk against the streams' histories, masked only for ragged rows."""
         timestep_embedding = self.t_embedder(t).unsqueeze(1)
         x = self.in_proj(self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning))
         next_convolution: list[torch.Tensor] = []
@@ -553,20 +566,36 @@ class DiT(nn.Module):
                     (block.conv.in_channels, block.conv.out_channels), dim=1
                 )
                 convolution_state = ConvBlockState(
-                    first=ConvState(history=first), second=ConvState(history=second)
+                    first=ConvState(
+                        history=first, valid_frame_counts=state.valid_frame_counts
+                    ),
+                    second=ConvState(
+                        history=second, valid_frame_counts=state.valid_frame_counts
+                    ),
                 )
-                attention_state = AttentionState(history=state.attention[index])
+                x, convolution_state, _ = block(
+                    x,
+                    timestep_embedding,
+                    state.attention_mask,
+                    convolution_state,
+                    None,
+                    state.attention[index],
+                )
             else:
-                convolution_state = ConvBlockState()
-                attention_state = AttentionState()
-            x, convolution_state, attention_state = block(
-                x, timestep_embedding, None, convolution_state, attention_state
-            )
-            assert convolution_state is not None and attention_state is not None
+                x, convolution_state, attention_state = block(
+                    x,
+                    timestep_embedding,
+                    state.attention_mask,
+                    ConvBlockState(),
+                    AttentionState(),
+                )
+                assert attention_state is not None
+                assert attention_state.history is not None
+                next_attention.append(attention_state.history)
+            assert convolution_state is not None
             assert (
                 convolution_state.first.history is not None
                 and convolution_state.second.history is not None
-                and attention_state.history is not None
             )
             next_convolution.append(
                 torch.cat(
@@ -574,11 +603,14 @@ class DiT(nn.Module):
                     dim=1,
                 )
             )
-            next_attention.append(attention_state.history)
         x = self.final_layer(x, timestep_embedding).transpose(1, 2)
+        if state.attention is not None:
+            next_attention_window = state.attention
+        else:
+            next_attention_window = torch.stack(next_attention)
         return x, DiTState(
             convolution=torch.stack(next_convolution),
-            attention=torch.stack(next_attention),
+            attention=next_attention_window,
         )
 
     def forward_packed(
