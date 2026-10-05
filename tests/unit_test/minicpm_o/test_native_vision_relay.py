@@ -91,7 +91,9 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
         zip(REQUIRED_SPECIAL_TOKENS, range(100, 116))
     ).__getitem__
     if use_runner:
-        runner = MiniCPMOThinkerModelRunner(Mock(gpu_id=0), Mock(capture_hidden=True))
+        runner = MiniCPMOThinkerModelRunner.__new__(MiniCPMOThinkerModelRunner)
+        runner.special_tokens = None
+        runner.eos_token_ids = []
         special = runner.resolve_special_tokens(
             SimpleNamespace(req=Mock(tokenizer=tokenizer))
         )
