@@ -38,6 +38,15 @@ FLOW_CACHE_TAIL_FRAMES = 100
 SILENCE_TOKEN_ID = 4218
 MEL_CACHE_FRAMES = 8
 SAMPLES_PER_MEL_FRAME = 480
+# note (Junnan Li): cuDNN builds a convolution plan per input shape, so HiFT batches are padded to a few repeating sizes.
+HIFT_BATCH_GRANULE = 8
+
+
+def hift_batch_rows(rows: int) -> int:
+    if rows <= HIFT_BATCH_GRANULE:
+        return 1 << (rows - 1).bit_length()
+    else:
+        return -(-rows // HIFT_BATCH_GRANULE) * HIFT_BATCH_GRANULE
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -281,6 +290,21 @@ class Token2Wav(torch.nn.Module):
         return flow_cache, hift_cache
 
     @torch.inference_mode()
+    def warm_up_vocoder(self, max_rows: int, max_chunk_frames: int) -> None:
+        for rows in sorted({hift_batch_rows(rows) for rows in range(1, max_rows + 1)}):
+            for frames in range(
+                self.flow.up_rate,
+                self.mel_cache_len + max_chunk_frames + 1,
+                self.flow.up_rate,
+            ):
+                self.hift(
+                    torch.zeros(
+                        rows, self.flow.output_size, frames, device=self.device
+                    ),
+                    torch.zeros(rows, 1, 0, device=self.device),
+                )
+
+    @torch.inference_mode()
     def stream_batch(
         self, chunks: list[StreamChunk]
     ) -> list[tuple[bytes, StreamCaches]]:
@@ -361,7 +385,21 @@ class Token2Wav(torch.nn.Module):
             predicted_mel = torch.cat([decoded[index][0] for index in indices])
             hift_cache_speech = hift_cache["speech"]
             mel = torch.concat([hift_cache["mel"], predicted_mel], dim=2)
-            speech, source = self.hift(mel.float(), hift_cache["source"])
+            padding_rows = hift_batch_rows(len(indices)) - len(indices)
+            if padding_rows:
+                # note (Junnan Li): Padding rows repeat the last row; HiFT treats rows independently and their output is dropped.
+                speech, source = self.hift(
+                    torch.cat((mel, mel[-1:].expand(padding_rows, -1, -1))).float(),
+                    torch.cat(
+                        (
+                            hift_cache["source"],
+                            hift_cache["source"][-1:].expand(padding_rows, -1, -1),
+                        )
+                    ),
+                )
+                speech, source = speech[: len(indices)], source[: len(indices)]
+            else:
+                speech, source = self.hift(mel.float(), hift_cache["source"])
             if hift_cache_speech.shape[-1] > 0:
                 overlap = min(
                     self.source_cache_len, speech.shape[-1], hift_cache_speech.shape[-1]

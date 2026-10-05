@@ -2376,6 +2376,9 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.scheduler_thread_id = threading.get_ident()
         self.running = True

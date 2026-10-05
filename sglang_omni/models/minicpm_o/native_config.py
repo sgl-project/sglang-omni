@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage placement and deployment configuration for native duplex inference."""
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -55,7 +55,11 @@ def stages() -> list[StageConfig]:
             factory_path=f"{PKG}.create_speech_scheduler",
             terminal=True,
             # note (Junnan Li): Ragged vocoder batches fragment the allocator; the thinker and talker share memory over CUDA IPC, so only this process opts in.
-            env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
+            # note (Junnan Li): Padded HiFT shapes can exceed cuDNN's default 10000-plan cache at large max_sessions; the set is bounded, so the cache is unbounded.
+            env={
+                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+                "TORCH_CUDNN_V8_API_LRU_CACHE_LIMIT": "0",
+            },
         ),
     ]
 
@@ -100,6 +104,19 @@ class MiniCPMODuplexVision(BaseModel):
             return self
 
 
+class MiniCPMODuplexSpeech(BaseModel):
+    """Vocoder settings of the speech stage; the defaults are the checkpoint's own duplex loop."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dtype: Literal["float32", "float16", "bfloat16"] = "float32"
+    enable_dit_torch_compile: bool = False
+    n_timesteps: int = Field(default=10, ge=1)
+
+
+DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()
+
+
 class MiniCPMODuplexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "MiniCPMO"
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -114,6 +131,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     )
     sampling: MiniCPMODuplexSampling = Field(default_factory=MiniCPMODuplexSampling)
     vision: MiniCPMODuplexVision = Field(default_factory=MiniCPMODuplexVision)
+    speech: MiniCPMODuplexSpeech = Field(default_factory=MiniCPMODuplexSpeech)
     entry_stage: str = "perception"
     stages: list[StageConfig] = Field(default_factory=stages)
 
@@ -131,6 +149,11 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 kwargs["max_state_bytes_per_session"] = (
                     self.speech_state_bytes_per_session
                 )
+                kwargs["dtype"] = self.speech.dtype
+                kwargs["enable_dit_torch_compile"] = (
+                    self.speech.enable_dit_torch_compile
+                )
+                kwargs["n_timesteps"] = self.speech.n_timesteps
             else:
                 pass
             return kwargs

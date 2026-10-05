@@ -5,6 +5,7 @@ import logging
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -38,6 +39,7 @@ from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_MAX_SESSIONS,
+    DEFAULT_SPEECH_SETTINGS,
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
@@ -270,6 +272,9 @@ class SpeechHooks(BatchedSessionHooks):
         )
         self.states[session_identity] = SpeechState(session_identity.id)
 
+    def warm_up_serving_thread(self) -> None:
+        self.runtime.warm_up_vocoder()
+
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
         is_turn_end = [
             append.payload.data["end_of_turn"] or append.chunk.eos for append in appends
@@ -416,13 +421,19 @@ def create_speech_scheduler(
     reference_audio: str | None = None,
     max_open_sessions: int = DEFAULT_MAX_SESSIONS,
     max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+    dtype: Literal["float32", "float16", "bfloat16"] = DEFAULT_SPEECH_SETTINGS.dtype,
+    enable_dit_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_dit_torch_compile,
+    n_timesteps: int = DEFAULT_SPEECH_SETTINGS.n_timesteps,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     # note (Junnan Li): Sessions stream one reference each, so the batched-offline options stay off.
     codec = MiniCPMOCode2Wav(
         model_path,
         device=device,
+        dtype=dtype,
+        n_timesteps=n_timesteps,
         prompt_wav=reference_audio,
+        enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_variable_length=False,
         reference_workers=1,
         prompt_cache_capacity=max_open_sessions,
@@ -430,10 +441,18 @@ def create_speech_scheduler(
         enable_flow_block_compile=False,
     )
     runtime = MiniCPMOVocoderRuntime(
-        codec, max_state_bytes_per_session=max_state_bytes_per_session
+        codec,
+        max_state_bytes_per_session=max_state_bytes_per_session,
+        max_open_sessions=max_open_sessions,
     )
+    reference_audio_bytes = Path(codec.default_prompt_wav).read_bytes()
+    if enable_dit_torch_compile:
+        # note (Junnan Li): Code2Wav warms only the offline flow; streaming chunks reach the compiled blocks with histories and ragged masks, which compile separately.
+        runtime.warm_up(reference_audio_bytes)
+    else:
+        pass
     return SessionScheduler(
-        SpeechHooks(runtime, Path(codec.default_prompt_wav).read_bytes()),
+        SpeechHooks(runtime, reference_audio_bytes),
         max_open_sessions=max_open_sessions,
         max_state_bytes_per_session=max_state_bytes_per_session,
     )

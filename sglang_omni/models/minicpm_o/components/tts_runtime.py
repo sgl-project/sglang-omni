@@ -81,9 +81,11 @@ class MiniCPMOVocoderRuntime:
         code2wav: MiniCPMOCode2Wav,
         *,
         max_state_bytes_per_session: int,
+        max_open_sessions: int,
     ) -> None:
         self.code2wav = code2wav
         self.max_state_bytes_per_session = max_state_bytes_per_session
+        self.max_open_sessions = max_open_sessions
         self.token2wav: Token2Wav = code2wav.token2wav
         self.sessions: dict[str, MiniCPMOVocoderSessionState] = {}
         self.speakers: dict[str, SharedSpeaker] = {}
@@ -212,6 +214,36 @@ class MiniCPMOVocoderRuntime:
             return len(states)
         else:
             return max(1, unheld_bytes // forward_bytes_per_stream)
+
+    def warm_up(self, reference_audio: bytes) -> None:
+        """Decode a stream prefill, an equal-length chunk pair and a ragged chunk pair, then close the streams."""
+        requests = [
+            SynthesisRequest(
+                session_id="warm-up-continuing",
+                codec_token_ids=[SILENCE_TOKEN_ID] * (2 * CODEC_CHUNK_SIZE),
+                is_turn_start=False,
+                end_of_turn=False,
+            ),
+            SynthesisRequest(
+                session_id="warm-up-ending",
+                codec_token_ids=[SILENCE_TOKEN_ID] * CODEC_CHUNK_SIZE,
+                is_turn_start=False,
+                end_of_turn=True,
+            ),
+        ]
+        for request in requests:
+            self.open_session(request.session_id, reference_audio=reference_audio)
+        list(self.synthesize_batch(requests))
+        for request in requests:
+            self.close_session(request.session_id)
+
+    def warm_up_vocoder(self) -> None:
+        # note (Junnan Li): A forward takes at most every open session and a chunk holds at most one window of tokens, and cuDNN keeps its plans per thread.
+        flow = self.token2wav.flow
+        self.token2wav.warm_up_vocoder(
+            self.max_open_sessions,
+            flow.up_rate * (CODEC_CHUNK_SIZE + flow.pre_lookahead_len),
+        )
 
     def close_session(self, session_id: str) -> None:
         speaker = self.sessions.pop(session_id).speaker

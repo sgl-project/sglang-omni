@@ -61,7 +61,9 @@ class FakeCode2Wav:
 
 def test_voice_cache_lifecycle() -> None:
     code2wav = FakeCode2Wav()
-    runtime = MiniCPMOVocoderRuntime(code2wav, max_state_bytes_per_session=1 << 30)
+    runtime = MiniCPMOVocoderRuntime(
+        code2wav, max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
 
     first = runtime.open_session("a", reference_audio=b"voice-1")
     second = runtime.open_session("b", reference_audio=b"voice-1")
@@ -90,7 +92,7 @@ def test_voice_cache_lifecycle() -> None:
 
 def test_turn_reset_restores_untouched_prompt_caches() -> None:
     runtime = MiniCPMOVocoderRuntime(
-        FakeCode2Wav(), max_state_bytes_per_session=1 << 30
+        FakeCode2Wav(), max_state_bytes_per_session=1 << 30, max_open_sessions=2
     )
     state = runtime.open_session("a", reference_audio=b"voice")
     runtime.open_session("b", reference_audio=b"voice")

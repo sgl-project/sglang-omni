@@ -245,6 +245,7 @@ def run_sessions(
     runtime = MiniCPMOVocoderRuntime(
         TinyCode2Wav(token2wav),
         max_state_bytes_per_session=DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+        max_open_sessions=SESSIONS,
     )
     waveforms: dict[str, np.ndarray | None] = {}
 

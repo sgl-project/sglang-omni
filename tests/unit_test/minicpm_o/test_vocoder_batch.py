@@ -19,6 +19,7 @@ from sglang_omni.models.minicpm_o.components.tts_runtime import (
     SynthesisRequest,
 )
 from sglang_omni.models.minicpm_o.native_config import (
+    DEFAULT_MAX_SESSIONS,
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
 from sglang_omni.models.minicpm_o.native_stages import SpeechHooks
@@ -32,9 +33,13 @@ OPENED_HISTORY_FRAMES = 8192
 
 class FakeToken2Wav:
     def __init__(self) -> None:
-        self.flow = SimpleNamespace(pre_lookahead_len=PRE_LOOKAHEAD)
+        self.flow = SimpleNamespace(pre_lookahead_len=PRE_LOOKAHEAD, up_rate=2)
         self.device = torch.device("cpu")
         self.forward_sizes: list[int] = []
+        self.vocoder_warm_ups: list[tuple[int, int]] = []
+
+    def warm_up_vocoder(self, max_rows: int, max_chunk_frames: int) -> None:
+        self.vocoder_warm_ups.append((max_rows, max_chunk_frames))
 
     def open_stream(self, prompt: object) -> StreamCaches:
         return {"history": torch.zeros(1, OPENED_HISTORY_FRAMES)}, {
@@ -75,7 +80,9 @@ def open_runtime(
     max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 ) -> MiniCPMOVocoderRuntime:
     runtime = MiniCPMOVocoderRuntime(
-        FakeCode2Wav(), max_state_bytes_per_session=max_state_bytes_per_session
+        FakeCode2Wav(),
+        max_state_bytes_per_session=max_state_bytes_per_session,
+        max_open_sessions=DEFAULT_MAX_SESSIONS,
     )
     for session_id in session_ids:
         runtime.open_session(session_id, reference_audio=b"voice")
@@ -179,6 +186,23 @@ def test_units_finish_before_later_rounds_in_request_order() -> None:
         ("done", "b"),
         ("forward", 1),
         ("done", "a"),
+    ]
+
+
+def test_warm_up_closes_its_streams_and_leaves_the_vocoder_to_the_serving_thread() -> (
+    None
+):
+    runtime = open_runtime([])
+    runtime.warm_up(b"voice")
+    assert not runtime.sessions and not runtime.speakers
+    assert runtime.token2wav.vocoder_warm_ups == []
+
+
+def test_speech_hooks_warm_the_vocoder_for_every_reachable_batch() -> None:
+    runtime = open_runtime([])
+    SpeechHooks(runtime, b"voice").warm_up_serving_thread()
+    assert runtime.token2wav.vocoder_warm_ups == [
+        (DEFAULT_MAX_SESSIONS, 2 * (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD))
     ]
 
 

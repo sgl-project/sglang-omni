@@ -99,6 +99,9 @@ class SessionHooks:
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         return ResourceUsage()
 
+    def warm_up_serving_thread(self) -> None:
+        """Build per-thread state, such as cuDNN convolution plans, on the scheduler thread before the stage reports ready."""
+
 
 @dataclass(frozen=True, kw_only=True)
 class SessionAppend:
@@ -211,6 +214,9 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         self.gather_window_seconds = gather_window_seconds
         # note (Junnan Li): Operations that arrived while the previous call ran are batched as they are; only a call that starts from an idle stage waits.
         self.is_backlogged = False
+
+    def warm_up_serving_thread(self) -> None:
+        self.session_hooks.warm_up_serving_thread()
 
     def register_operation(self, message: IncomingMessage) -> None:
         try:

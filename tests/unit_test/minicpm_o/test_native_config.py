@@ -324,3 +324,30 @@ def test_duplex_deployment_grants_images_by_slice_count() -> None:
     assert capabilities.input_modalities == ("audio", "image")
     assert capabilities.image_frames_per_unit == (4, 3, 2, 2, 1, 1, 1, 1, 1)
     assert capabilities.default_max_slice_nums == 1
+
+
+def test_duplex_speech_settings_reach_the_vocoder(
+    tmp_path: Path, stub_stage_models: None
+) -> None:
+    reference_path = tmp_path / "reference.wav"
+    reference_path.write_bytes(b"reference")
+    config_path = tmp_path / "duplex.yaml"
+    config_path.write_text(
+        "config_cls: MiniCPMODuplexPipelineConfig\nmodel_path: unused\n"
+        "speech:\n  dtype: float16\n  enable_dit_torch_compile: true\n"
+        "  n_timesteps: 6\n"
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+    native_stages.MiniCPMOCode2Wav.return_value.default_prompt_wav = str(reference_path)
+    native_stages.create_speech_scheduler(
+        config.model_path, device="cpu", **config.stage_factory_kwargs("speech")
+    )
+    codec_kwargs = native_stages.MiniCPMOCode2Wav.call_args.kwargs
+    assert codec_kwargs["dtype"] == "float16"
+    assert codec_kwargs["enable_dit_torch_compile"] is True
+    assert codec_kwargs["n_timesteps"] == 6
+    native_stages.MiniCPMOVocoderRuntime.return_value.warm_up.assert_called_once_with(
+        b"reference"
+    )
+    runtime_kwargs = native_stages.MiniCPMOVocoderRuntime.call_args.kwargs
+    assert runtime_kwargs["max_open_sessions"] == config.max_sessions
