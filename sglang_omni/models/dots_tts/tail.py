@@ -512,8 +512,9 @@ class DotsTtsAcousticTail:
         spec = self.spec
         estimate = self.pool_memory_estimate(mods_width)
         free_bytes = total_bytes = None
-        if self.device.type == "cuda":
-            free_bytes, total_bytes = torch.cuda.mem_get_info(self.device)
+        if self.device.type != "cpu":
+            device_module = torch.get_device_module(self.device)
+            free_bytes, total_bytes = device_module.mem_get_info(self.device)
         else:
             pass
         logger.info(
@@ -533,8 +534,8 @@ class DotsTtsAcousticTail:
                 ""
                 if free_bytes is None or total_bytes is None
                 else (
-                    f" cuda_free={gib(free_bytes):.2f} GiB "
-                    f"cuda_total={gib(total_bytes):.2f} GiB"
+                    f" device_free={gib(free_bytes):.2f} GiB "
+                    f"device_total={gib(total_bytes):.2f} GiB"
                 )
             ),
         )

@@ -26,15 +26,14 @@ else:
     pass
 
 
-def keep_rotary_fp32_under_xpu_autocast(module: nn.Module) -> None:
-    """Extend the upstream CUDA-only RoPE autocast guard to XPU."""
-    # note: XPU autocast lowers the position einsum to bf16 and loses RoPE precision.
+def keep_rotary_fp32_under_autocast(module: nn.Module, *, device_type: str) -> None:
+    """Keep rotary position arithmetic in fp32 under accelerator autocast."""
     import_dots_tts()
     from dots_tts.modules.backbone.layers import RotaryEmbedding
 
     for child in module.modules():
         if isinstance(child, RotaryEmbedding):
-            child.forward = torch.autocast(device_type="xpu", enabled=False)(
+            child.forward = torch.autocast(device_type=device_type, enabled=False)(
                 child.forward
             )
         else:
@@ -172,8 +171,10 @@ class DotsTTSFlowHead(nn.Module):
                 DiTSolver,
             )
 
-            if next(self.parameters()).device.type == "xpu":
-                keep_rotary_fp32_under_xpu_autocast(self)
+            device_type = next(self.parameters()).device.type
+            # note (yao-matrix): CUDA already disables rotary autocast in the dependency.
+            if device_type not in ("cpu", "cuda"):
+                keep_rotary_fp32_under_autocast(self, device_type=device_type)
             else:
                 pass
             self.dit_solver = DiTSolver(

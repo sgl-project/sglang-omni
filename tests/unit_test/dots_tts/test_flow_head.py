@@ -9,11 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sglang_omni.models.dots_tts.compat import import_dots_tts
-from sglang_omni.models.dots_tts.flow_head import (
-    DotsTTSFlowHead,
-    keep_rotary_fp32_under_xpu_autocast,
-)
+from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
 from tests.unit_test.fixtures.accelerator import require_device_streams
 
 LLM_HIDDEN = 48
@@ -671,43 +667,28 @@ def test_batched_replay_feedback_does_not_count_a_tail_step(tmp_path) -> None:
     assert flow.tail.graph_misses["semantic_encoder"] == 2
 
 
-def test_xpu_rotary_guard_turns_xpu_autocast_off_inside_rope_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.accelerator
+def test_rotary_angles_stay_fp32_under_accelerator_autocast(
+    tmp_path: Path,
 ) -> None:
-    import_dots_tts()
-    from dots_tts.modules.backbone.layers import RotaryEmbedding
+    device = require_device_streams()
+    flow = flow_head(tmp_path).to(device=device, dtype=torch.bfloat16)
+    rotary = flow.velocity_field_predictor.blocks[0].attn.rotary
+    positions = torch.tensor(
+        [0, 1, 255, 256, 257, 4095, 4096, 4097],
+        device=device,
+        dtype=torch.float32,
+    )
+    with torch.autocast(device_type=device.type, enabled=False):
+        expected = rotary(positions)
 
-    autocast_seen = []
-    forward = RotaryEmbedding.forward
-
-    def recording_forward(
-        self: RotaryEmbedding, positions: torch.Tensor
-    ) -> torch.Tensor:
-        autocast_seen.append(torch.is_autocast_enabled("xpu"))
-        return forward(self, positions)
-
-    monkeypatch.setattr(RotaryEmbedding, "forward", recording_forward)
-    flow = flow_head(tmp_path)
-    rotaries = [m for m in flow.modules() if isinstance(m, RotaryEmbedding)]
-    assert rotaries
-    positions = torch.arange(4096, dtype=torch.float32)
-
-    # note (anupa): CPU and CUDA solvers keep upstream's own guard untouched.
     flow.solver()
-    assert all("forward" not in vars(rotary) for rotary in rotaries)
-    expected = rotaries[0](positions)
-    with torch.autocast(device_type="xpu", dtype=torch.bfloat16):
-        rotaries[0](positions)
-    assert autocast_seen == [False, True]
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        actual = rotary(positions)
+        assert torch.is_autocast_enabled(device.type)
 
-    autocast_seen.clear()
-    keep_rotary_fp32_under_xpu_autocast(flow)
-    with torch.autocast(device_type="xpu", dtype=torch.bfloat16):
-        actual = rotaries[0](positions)
-        assert torch.is_autocast_enabled("xpu")
-    assert autocast_seen == [False]
+    assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
-    assert all("forward" in vars(rotary) for rotary in rotaries)
 
 
 def test_request_rng_replays_an_xpu_seed_on_the_xpu_generator(
