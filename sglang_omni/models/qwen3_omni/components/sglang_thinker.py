@@ -53,8 +53,8 @@ class DecodeLiveRows:
 
 
 class PaddedRowsTopK(nn.Module):
-    """Top-k that gives a padded decode row the experts of row 0, so the fused
-    MoE loads no weights for an output the graph runner drops."""
+    """Top-k that gives a padded decode row the experts of row 0, so padding adds
+    no experts to the fused MoE."""
 
     def __init__(self, topk: TopK, live_rows: DecodeLiveRows) -> None:
         super().__init__()
@@ -134,18 +134,21 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             )
         self.logits_processor = LogitsProcessor(self.config)
         self.fused_rope_gate = install_thinker_fused_rope(self.model)
-        self.decode_live_rows = DecodeLiveRows()
-        for layer in self.model.layers:
-            # note (ratish): a quantized MoE can share one activation scale across
-            # rows, so a padded row's experts could change the live rows' rounding.
-            if (
-                quant_config is None
-                and isinstance(layer, Qwen3MoeDecoderLayer)
-                and isinstance(layer.mlp, Qwen3MoeSparseMoeBlock)
-            ):
-                layer.mlp.topk = PaddedRowsTopK(layer.mlp.topk, self.decode_live_rows)
-            else:
-                pass
+        # note (ratish): a quantized MoE can share one activation scale across rows,
+        # so a padded row's experts could change the live rows' rounding.
+        self.decode_live_rows: DecodeLiveRows | None = None
+        if quant_config is None:
+            live_rows = DecodeLiveRows()
+            for layer in self.model.layers:
+                if isinstance(layer, Qwen3MoeDecoderLayer) and isinstance(
+                    layer.mlp, Qwen3MoeSparseMoeBlock
+                ):
+                    layer.mlp.topk = PaddedRowsTopK(layer.mlp.topk, live_rows)
+                    self.decode_live_rows = live_rows
+                else:
+                    pass
+        else:
+            pass
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
@@ -175,13 +178,15 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         # note (ratish): padded decode-graph rows write KV slot 0, which the
         # allocator never hands out; a one-row decode has no padded rows. The mask
         # lives only for this call: other paths run self.model directly.
+        marked_live_rows = self.decode_live_rows
         if (
-            forward_batch.forward_mode.is_decode()
+            marked_live_rows is not None
+            and forward_batch.forward_mode.is_decode()
             and forward_batch.out_cache_loc.shape[0] > 1
         ):
-            self.decode_live_rows.is_live_row = forward_batch.out_cache_loc != 0
+            marked_live_rows.is_live_row = forward_batch.out_cache_loc != 0
         else:
-            pass
+            marked_live_rows = None
         try:
             hidden_states = self.model(
                 input_ids=input_ids,
@@ -192,7 +197,10 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 input_deepstack_embeds=input_deepstack_embeds,
             )
         finally:
-            self.decode_live_rows.is_live_row = None
+            if marked_live_rows is not None:
+                marked_live_rows.is_live_row = None
+            else:
+                pass
         return self.logits_processor(
             input_ids,
             hidden_states,

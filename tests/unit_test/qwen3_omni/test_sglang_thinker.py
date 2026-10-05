@@ -220,14 +220,6 @@ def test_topk_leaves_routing_to_sglang_when_it_counts_padded_rows() -> None:
     assert inner_topk.padding_counts == [padding_count]
 
 
-@pytest.mark.parametrize(
-    ("forward_mode", "out_cache_loc", "expected_live_rows"),
-    [
-        (ForwardMode.DECODE, [7, 3, 0, 0], [True, True, False, False]),
-        (ForwardMode.DECODE, [7], None),
-        (ForwardMode.EXTEND, [7, 3, 0, 0], None),
-    ],
-)
 class RecordingTextModel(torch.nn.Module):
     """Returns zero hidden states, or raises, and records the decode mask it sees."""
 
@@ -386,4 +378,6 @@ def test_thinker_routes_every_unquantized_moe_layer_through_the_shared_decode_ma
         assert routed_topk.live_rows is wrapper.decode_live_rows
     else:
         assert routed_topk is moe_topk
+        # No layer reads a decode mask, so the forward builds none.
+        assert wrapper.decode_live_rows is None
     assert wrapper.model.layers[1].mlp is dense_mlp
