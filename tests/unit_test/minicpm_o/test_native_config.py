@@ -28,7 +28,7 @@ from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexVision,
 )
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
-from sglang_omni.scheduling.session import SessionHooks
+from sglang_omni.scheduling.session import BatchedSessionHooks, SessionHooks
 
 
 class ConfigLoaded(Exception):
@@ -138,15 +138,23 @@ def stub_stage_models(monkeypatch: pytest.MonkeyPatch) -> SessionHooks:
     for name in (
         "AutoTokenizer",
         "AutoProcessor",
+        "LogMelFilterBank",
         "MiniCPMOAudioEncoder",
         "MiniCPMOImageEncoder",
         "MiniCPMOCode2Wav",
         "MiniCPMOVocoderRuntime",
     ):
         monkeypatch.setattr(native_stages, name, Mock())
-    for name in ("PerceptionHooks", "SpeechHooks"):
-        monkeypatch.setattr(native_stages, name, Mock(return_value=hooks))
-    return hooks
+    monkeypatch.setattr(
+        native_stages,
+        "PerceptionHooks",
+        Mock(
+            return_value=Mock(spec=native_stages.PerceptionHooks, gather_window_ms=0.0)
+        ),
+    )
+    monkeypatch.setattr(
+        native_stages, "SpeechHooks", Mock(return_value=BatchedSessionHooks())
+    )
 
 
 @pytest.mark.parametrize(
@@ -215,8 +223,7 @@ def test_duplex_yaml_builds_session_stages(
         native_stages.PerceptionHooks.call_args.kwargs["image_encoder"]
         is native_stages.MiniCPMOImageEncoder.return_value
     )
-    processor_factory = native_stages.PerceptionHooks.call_args.args[1]
-    assert processor_factory() is not processor_factory()
+    native_stages.PerceptionHooks.return_value.warm_up.assert_called_once_with(sessions)
     native_stages.AutoProcessor.from_pretrained.assert_called_once()
 
 

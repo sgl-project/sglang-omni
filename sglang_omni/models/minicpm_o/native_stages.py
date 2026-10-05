@@ -1,25 +1,34 @@
 # SPDX-License-Identifier: Apache-2.0
 """Model computations executed by the shared session stage scheduler."""
 
-import copy
 import logging
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import torch
 from PIL import Image
 from pydantic import JsonValue
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase
 
-from sglang_omni.models.minicpm_o.components.audio_encoder import MiniCPMOAudioEncoder
+from sglang_omni.models.minicpm_o.components.audio_encoder import (
+    AudioBatchKey,
+    MiniCPMOAudioEncoder,
+    StreamingAudioChunk,
+)
 from sglang_omni.models.minicpm_o.components.code2wav import (
     OUTPUT_SAMPLE_RATE,
     MiniCPMOCode2Wav,
 )
 from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageEncoder
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
+    SAMPLE_RATE,
+    UNIT_SAMPLES,
+    LogMelFilterBank,
     MiniCPMOPerceptionState,
-    ProcessorFactory,
+    StreamingAudioProcessor,
+    audio_feature_batch,
 )
 from sglang_omni.models.minicpm_o.components.tts_runtime import MiniCPMOVocoderRuntime
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
@@ -29,10 +38,14 @@ from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.preprocessing.audio import AudioMediaIO
+from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import (
+    BatchedSessionHooks,
+    SessionAppend,
     SessionContext,
     SessionHooks,
     SessionScheduler,
@@ -41,60 +54,188 @@ from sglang_omni.utils.device import resolve_concrete_device
 
 logger = logging.getLogger(__name__)
 
+# note (Junnan Li): A session's first unit and every later unit differ in mel window and encoder history, so warm-up runs one of each.
+WARM_UP_UNITS = 2
 
-class PerceptionHooks(SessionHooks):
+
+@dataclass(frozen=True, kw_only=True)
+class PendingMelUnit:
+    payload: StagePayload
+    state: MiniCPMOPerceptionState
+    mel_window: np.ndarray
+    image_embeds: tuple[torch.Tensor, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class PendingAudioUnit:
+    payload: StagePayload
+    state: MiniCPMOPerceptionState
+    audio: StreamingAudioChunk
+    image_embeds: tuple[torch.Tensor, ...]
+
+
+class PerceptionHooks(BatchedSessionHooks):
     def __init__(
         self,
         tokenizer: PreTrainedTokenizerBase,
-        processor_factory: ProcessorFactory,
+        processor: StreamingAudioProcessor,
         audio_encoder: MiniCPMOAudioEncoder,
         reference_audio: bytes,
         image_encoder: MiniCPMOImageEncoder,
+        mel_filter_bank: LogMelFilterBank,
+        reference_cache_capacity: int,
     ) -> None:
         self.tokenizer = tokenizer
-        self.processor_factory = processor_factory
+        self.processor = processor
         self.audio_encoder = audio_encoder
         self.reference_audio = reference_audio
         self.image_encoder = image_encoder
+        self.mel_filter_bank = mel_filter_bank
+        self.reference_cache_capacity = reference_cache_capacity
+        self.reference_embeds_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
         self.states: dict[SessionIdentity, MiniCPMOPerceptionState] = {}
+
+    def reference_embeds(self, reference_audio: bytes) -> torch.Tensor:
+        """The thinker embeddings of one reference audio, encoded once per distinct reference."""
+        reference_key = hash_bytes(reference_audio)
+        if reference_key in self.reference_embeds_cache:
+            self.reference_embeds_cache.move_to_end(reference_key)
+        else:
+            waveform, _ = AudioMediaIO(target_sr=SAMPLE_RATE).load_bytes(
+                reference_audio
+            )
+            batch = audio_feature_batch(
+                self.processor.process_audio(
+                    np.asarray(waveform, dtype=np.float32).reshape(-1),
+                    sampling_rate=SAMPLE_RATE,
+                )
+            )
+            self.reference_embeds_cache[reference_key] = self.audio_encoder(
+                audio_features=batch.audio_features,
+                audio_feature_lens=batch.audio_feature_lens,
+            )["audio_embeds"]
+            # note (Junnan Li): Open sessions hold their own reference to the embeddings, so eviction does not affect them.
+            if len(self.reference_embeds_cache) > self.reference_cache_capacity:
+                self.reference_embeds_cache.popitem(last=False)
+            else:
+                pass
+        return self.reference_embeds_cache[reference_key]
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.states[session_identity] = MiniCPMOPerceptionState.open(
             tokenizer=self.tokenizer,
-            processor=self.processor_factory(),
+            processor=self.processor,
             audio_encoder=self.audio_encoder,
             prompt=request.params["instructions"],
-            reference_audio=request.params.get("reference_audio")
-            or self.reference_audio,
+            reference_embeds=self.reference_embeds(
+                request.params.get("reference_audio") or self.reference_audio
+            ),
             image_encoder=self.image_encoder,
             max_slice_nums=request.params["max_slice_nums"],
+            mel_filter_bank=self.mel_filter_bank,
         )
 
-    def append(
-        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
-    ) -> StagePayload:
-        if chunk.eos and chunk.duration_ms == 0:
-            payload.data = None
-        else:
-            state = self.states[context.session_identity]
-            if isinstance(chunk.payload, dict):
-                pcm, encoded_images = chunk.payload["pcm"], chunk.payload["images"]
+    def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+        """Prepare each session's unit, then compute the mel and encode the audio of equal-shaped chunks together."""
+        pending_mel_units: list[PendingMelUnit] = []
+        for append in appends:
+            chunk, payload = append.chunk, append.payload
+            if chunk.eos and chunk.duration_ms == 0:
+                payload.data = None
             else:
-                pcm, encoded_images = chunk.payload, ()
-            # note (Junnan Li): Frames are acked before decoding, so a bad frame is dropped, not fatal.
-            image_embeds = []
-            for encoded_image in encoded_images:
-                try:
-                    image_embeds.append(state.encode_image(encoded_image))
-                except (OSError, ValueError, Image.DecompressionBombError) as exc:
-                    logger.warning(
-                        f"Dropping undecodable frame of unit {chunk.seq}: {exc}"
+                state = self.states[append.context.session_identity]
+                if isinstance(chunk.payload, dict):
+                    pcm, encoded_images = chunk.payload["pcm"], chunk.payload["images"]
+                else:
+                    pcm, encoded_images = chunk.payload, ()
+                # note (Junnan Li): Frames are acked before decoding, so a bad frame is dropped, not fatal.
+                image_embeds = []
+                for encoded_image in encoded_images:
+                    try:
+                        image_embeds.append(state.encode_image(encoded_image))
+                    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+                        logger.warning(
+                            f"Dropping undecodable frame of unit {chunk.seq}: {exc}"
+                        )
+                waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+                pending_mel_units.append(
+                    PendingMelUnit(
+                        payload=payload,
+                        state=state,
+                        mel_window=state.prepare_audio(waveform),
+                        image_embeds=tuple(image_embeds),
                     )
-            waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-            payload.data = state.build_step_plan(
-                state.encode_audio(waveform), tuple(image_embeds)
+                )
+        windows: dict[int, list[PendingMelUnit]] = defaultdict(list)
+        for unit in pending_mel_units:
+            windows[unit.mel_window.size].append(unit)
+        pending_units: list[PendingAudioUnit] = []
+        for window_units in windows.values():
+            log_mel = self.mel_filter_bank.log_mel(
+                torch.from_numpy(np.stack([unit.mel_window for unit in window_units]))
             )
-        return payload
+            for unit, window_log_mel in zip(window_units, log_mel, strict=True):
+                pending_units.append(
+                    PendingAudioUnit(
+                        payload=unit.payload,
+                        state=unit.state,
+                        audio=unit.state.mel_chunk(window_log_mel),
+                        image_embeds=unit.image_embeds,
+                    )
+                )
+        groups: dict[AudioBatchKey, list[PendingAudioUnit]] = defaultdict(list)
+        for unit in pending_units:
+            groups[unit.audio.batch_key()].append(unit)
+        for group in groups.values():
+            encoded = self.audio_encoder.forward_streaming_batch(
+                [unit.audio for unit in group]
+            )
+            for unit, (audio_embeds, audio_encoder_state) in zip(
+                group, encoded, strict=True
+            ):
+                unit.state.finish_audio(audio_encoder_state)
+                unit.payload.data = unit.state.build_step_plan(
+                    audio_embeds, unit.image_embeds
+                )
+        return [append.payload for append in appends]
+
+    def warm_up(self, max_batch_size: int) -> None:
+        """Run the unit path at every batch size up to max_batch_size, so first-call work happens before serving.
+
+        Covers a first unit, a later unit, and a later unit after the position reset; keeps no session state.
+        """
+        self.reference_embeds(self.reference_audio)
+        silence = np.zeros(UNIT_SAMPLES, dtype=np.float32)
+        for batch_size in range(1, max_batch_size + 1):
+            states = [
+                MiniCPMOPerceptionState(
+                    tokenizer=self.tokenizer,
+                    processor=self.processor,
+                    audio_encoder=self.audio_encoder,
+                    image_encoder=self.image_encoder,
+                    max_slice_nums=1,
+                    mel_filter_bank=self.mel_filter_bank,
+                )
+                for _ in range(batch_size)
+            ]
+            for _ in range(WARM_UP_UNITS):
+                log_mel = self.mel_filter_bank.log_mel(
+                    torch.from_numpy(
+                        np.stack([state.prepare_audio(silence) for state in states])
+                    )
+                )
+                chunks = [
+                    state.mel_chunk(window_log_mel)
+                    for state, window_log_mel in zip(states, log_mel, strict=True)
+                ]
+                for state, (_, audio_encoder_state) in zip(
+                    states,
+                    self.audio_encoder.forward_streaming_batch(chunks),
+                    strict=True,
+                ):
+                    state.finish_audio(audio_encoder_state)
+            # note (Junnan Li): The forward took the histories, so the same chunks now run without one.
+            self.audio_encoder.forward_streaming_batch(chunks)
 
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity).close()
@@ -194,21 +335,25 @@ def create_perception_scheduler(
     encoder = MiniCPMOAudioEncoder(model_path, device=device, dtype=dtype)
     image_encoder = MiniCPMOImageEncoder(model_path, device=device, dtype=dtype)
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    # note (Junnan Li): Loaded once (~0.6 s); each session's shallow copy gets its own streaming mel processor.
     hooks = PerceptionHooks(
         tokenizer,
-        lambda: copy.copy(processor),
+        processor,
         encoder,
         reference_audio=Path(
             reference_audio
             or Path(resolve_model_path(model_path)) / "assets" / "HT_ref_audio.wav"
         ).read_bytes(),
         image_encoder=image_encoder,
+        mel_filter_bank=LogMelFilterBank.from_feature_extractor(
+            processor.audio_processor
+        ),
+        reference_cache_capacity=max_open_sessions,
     )
+    # note (Junnan Li): The scheduler hands one call every ready session, so batches go up to the session limit.
+    hooks.warm_up(max_open_sessions)
     return SessionScheduler(
         hooks,
         max_open_sessions=max_open_sessions,
-        max_concurrency=1,
     )
 
 

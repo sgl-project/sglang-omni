@@ -66,7 +66,7 @@ We provide two demonstrative config files.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503 |
+| `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503. Startup warms up perception at each batch size up to this value |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
 | `sampling` | see the config | Default sampling when a session does not set its own |
