@@ -87,7 +87,10 @@ struct RootView: View {
             }.padding(.top, 35).padding(.horizontal, 18)
             VStack(spacing: 6) {
                 ForEach(Page.allCases, id: \.self) { item in
-                    Button { page = item } label: {
+                    Button {
+                        if page != item { model.notice = "" }
+                        page = item
+                    } label: {
                         HStack(spacing: 12) {
                             Image(systemName: item.icon).frame(width: 20)
                             Text(item.title).font(.system(size: 13, weight: page == item ? .semibold : .regular))

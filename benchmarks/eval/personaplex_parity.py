@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import base64
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -36,6 +37,7 @@ from sglang_omni.models.personaplex.prompts import (
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.proto.request import EXPLICIT_GENERATION_PARAMS_KEY
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 DEFAULT_CHECKPOINT = "nvidia/personaplex-7b-v1"
 # The reference README's seed; irrelevant under --greedy, kept so the command matches.
@@ -301,6 +303,11 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     assets = Path(args.reference_source).expanduser().resolve() / "assets" / "test"
     checkpoint = Path(resolve_checkpoint(args.checkpoint))

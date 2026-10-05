@@ -10,7 +10,7 @@ choice belongs on the platform rather than in a per-model branch.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import Literal, Protocol, TypedDict
 
 import torch
@@ -38,6 +38,11 @@ class XpuCaptureKwargs(TypedDict, total=False):
 class ReplayableGraph(Protocol):
     def replay(self) -> None: ...
 
+    def reset(self) -> None: ...
+
+
+DeviceGraphPool = CudaGraphPoolHandle | XpuGraphPoolHandle | tuple[int, int]
+
 
 class DeviceGraphBackend(Protocol):
     """Records a model-owned graph on one accelerator."""
@@ -45,16 +50,23 @@ class DeviceGraphBackend(Protocol):
     def capture(
         self,
         *,
-        pool: CudaGraphPoolHandle | XpuGraphPoolHandle | tuple[int, int] | None = None,
-        stream: torch.cuda.Stream | torch.xpu.Stream | torch.Stream | None = None,
+        pool: DeviceGraphPool | None = None,
+        stream: torch.Stream | None = None,
         thread_local_errors: bool = False,
     ) -> AbstractContextManager[ReplayableGraph]:
         """Open a capture and yield the graph it records into."""
         ...
 
+    def graph_pool_handle(self) -> DeviceGraphPool:
+        """A pool handle several captures of this backend can share."""
+        ...
+
 
 class CudaDeviceGraphBackend:
     """CUDA, and the backends that present through torch.cuda: HIP and MUSA."""
+
+    def graph_pool_handle(self) -> CudaGraphPoolHandle:
+        return torch.cuda.graph_pool_handle()
 
     @contextmanager
     def capture(
@@ -85,6 +97,9 @@ class CudaDeviceGraphBackend:
 class NpuDeviceGraphBackend:
     """Ascend NPU."""
 
+    def graph_pool_handle(self) -> tuple[int, int]:
+        return torch.npu.graph_pool_handle()
+
     @contextmanager
     def capture(
         self,
@@ -114,6 +129,9 @@ class NpuDeviceGraphBackend:
 class XpuDeviceGraphBackend:
     """Intel XPU."""
 
+    def graph_pool_handle(self) -> XpuGraphPoolHandle:
+        return torch.xpu.graph_pool_handle()
+
     @contextmanager
     def capture(
         self,
@@ -135,13 +153,19 @@ class XpuDeviceGraphBackend:
             kwargs["stream"] = stream
         else:
             pass
-        with torch.xpu.graph(xpu_graph=graph, **kwargs):
+        capture = torch.xpu.graph(xpu_graph=graph, **kwargs)
+        with ExitStack() as stack:
+            # Note (siju): capture_begin registers the generator state in place, so
+            # open it outside inference mode or later captures are refused.
+            with torch.inference_mode(False):
+                stack.enter_context(capture)
             yield graph
 
 
 __all__ = [
     "CudaDeviceGraphBackend",
     "DeviceGraphBackend",
+    "DeviceGraphPool",
     "NpuDeviceGraphBackend",
     "ReplayableGraph",
     "XpuDeviceGraphBackend",

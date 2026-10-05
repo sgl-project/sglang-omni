@@ -122,14 +122,19 @@ def compute_speed_metrics(
     outputs: list[RequestResult], wall_clock_s: float | None = None
 ) -> dict:
     """Compute system performance summary from a list of request results."""
+    # note (Yucheng Hu): generations that ended at their max-token cap, out of
+    # those that reported how they ended; a cap hit is not by itself a runaway.
+    finish_reasons = [
+        o.finish_reason for o in outputs if o.finish_reason is not FinishReason.UNKNOWN
+    ]
     successes = [o for o in outputs if o.is_success]
     if not successes:
         return {
             "total_requests": len(outputs),
             "completed_requests": 0,
             "failed_requests": len(outputs),
-            "max_token_hits": 0,
-            "finish_reason_observed": 0,
+            "max_token_hits": finish_reasons.count(FinishReason.LENGTH),
+            "finish_reason_observed": len(finish_reasons),
         }
 
     latencies = [o.latency_s for o in successes]
@@ -166,13 +171,6 @@ def compute_speed_metrics(
         getattr(o, "max_playback_underrun_s", None)
         for o in successes
         if getattr(o, "chunk_audio_duration_s", None)
-    ]
-    # note (Yucheng Hu): generations that ended at their max-token cap, out of
-    # those that reported how they ended; a cap hit is not by itself a runaway.
-    finish_reasons = [
-        o.finish_reason
-        for o in successes
-        if o.finish_reason is not FinishReason.UNKNOWN
     ]
 
     if wall_clock_s is not None and wall_clock_s > 0:

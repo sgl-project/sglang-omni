@@ -58,6 +58,9 @@ class XPUOmniPlatform(OmniPlatform):
     def enable_talker_graph(self) -> bool:
         return True
 
+    def enable_tts_vocoder_fast_path(self) -> bool:
+        return False
+
     def enable_thinker_decode_graph(self) -> bool:
         # Capture leaves the scheduler thread's stream recording; host reads fail.
         return False
@@ -95,6 +98,11 @@ class XPUOmniPlatform(OmniPlatform):
         return (SDPBackend.FLASH_ATTENTION, SDPBackend.MATH)
 
     def supports_graph_captured_fft(self) -> bool:
+        return False
+
+    def supports_graph_captured_host_read(self) -> bool:
+        # Note (siju): a host read inside a capture raises on XPU, which is what
+        # the Mimi encoder's mask helper does.
         return False
 
     def apply_model_worker_backend_policy(
