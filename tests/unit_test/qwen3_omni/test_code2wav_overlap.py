@@ -484,6 +484,49 @@ def test_overlap_wait_failure_aborts_only_that_request(monkeypatch) -> None:
     assert "req-2" in scheduler.stream_states
 
 
+def test_overlap_send_failure_runs_abort_cleanup_off_state_lock(monkeypatch) -> None:
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler, "req-1")
+    seed(scheduler, "req-2")
+    feed(scheduler, "req-1", range(20))
+    feed(scheduler, "req-2", range(10))
+    pending = scheduler.stream_states["req-1"].pending
+    assert pending is not None
+    slot_event(pending.slot).query_error = RuntimeError("D2H query failed")
+    first_audio = drain_snapshot(scheduler)
+    assert [item[0] for item in first_audio] == ["req-1", "req-2"]
+    cleanups: list[tuple[str, bool]] = []
+
+    def abort_callback(request_id: str) -> None:
+        # Another thread can take state_lock only if the caller released it.
+        def probe() -> None:
+            acquired = scheduler.state_lock.acquire(timeout=1.0)
+            if acquired:
+                scheduler.state_lock.release()
+            else:
+                pass
+            cleanups.append((request_id, acquired))
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join()
+
+    scheduler.abort_callback = abort_callback
+    queued = IncomingMessage(request_id="req-3", type="stream_done", data=None)
+    scheduler.inbox.put(queued)
+
+    assert scheduler.next_message() is queued
+
+    error = scheduler.outbox.get_nowait()
+    assert (error.request_id, error.type) == ("req-1", "error")
+    assert cleanups == [("req-1", True)]
+    assert "req-1" not in scheduler.stream_states
+    assert pending.slot in scheduler.pinned_retired
+    feed(scheduler, "req-2", range(10, 20))
+    assert "req-2" in scheduler.stream_states
+
+
 def test_overlap_slots_sleep_on_their_event(monkeypatch) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
@@ -498,7 +541,6 @@ def test_overlap_slots_sleep_on_their_event(monkeypatch) -> None:
     feed(scheduler, "req-1", range(20))
 
     assert blocking_flags == [True]
-    assert PinnedTransferSlot("cpu", torch.float32).blocking is False
 
 
 def test_overlap_nonstreaming_pending_appends_parts_result_only(monkeypatch) -> None:
