@@ -6,6 +6,7 @@ import threading
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from sglang_omni.models.minicpm_o.components.code2wav import OUTPUT_SAMPLE_RATE
@@ -14,6 +15,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     StreamChunk,
 )
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
+    CHUNK_GRAPH_MAX_STREAMS,
     CODEC_CHUNK_SIZE,
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
@@ -27,16 +29,28 @@ from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import SessionAppend, SessionContext
 
 PRE_LOOKAHEAD = 3
+UP_RATE = 2
 # note (Junnan Li): Large enough that a session's pending-token list is a rounding error next to its caches.
 OPENED_HISTORY_FRAMES = 8192
 
 
 class FakeToken2Wav:
     def __init__(self) -> None:
-        self.flow = SimpleNamespace(pre_lookahead_len=PRE_LOOKAHEAD, up_rate=2)
+        self.flow = SimpleNamespace(pre_lookahead_len=PRE_LOOKAHEAD, up_rate=UP_RATE)
         self.device = torch.device("cpu")
         self.forward_sizes: list[int] = []
+        self.captured_graphs: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         self.vocoder_warm_ups: list[tuple[int, int]] = []
+
+    def capture_chunk_graphs(
+        self,
+        prompt: None,
+        caches: StreamCaches,
+        *,
+        stream_counts: tuple[int, ...],
+        frame_counts: tuple[int, ...],
+    ) -> None:
+        self.captured_graphs.append((stream_counts, frame_counts))
 
     def warm_up_vocoder(self, max_rows: int, max_chunk_frames: int) -> None:
         self.vocoder_warm_ups.append((max_rows, max_chunk_frames))
@@ -189,11 +203,58 @@ def test_units_finish_before_later_rounds_in_request_order() -> None:
     ]
 
 
-def test_warm_up_closes_its_streams_and_leaves_the_vocoder_to_the_serving_thread() -> (
-    None
-):
-    runtime = open_runtime([])
+@pytest.mark.parametrize(
+    ("max_open_sessions", "stream_counts", "forward_widths"),
+    [
+        (1, (1,), (2,)),
+        (2, (1, 2), (2,)),
+        (6, (1, 2, 4, 6), (2,)),
+        (CHUNK_GRAPH_MAX_STREAMS, (1, 2, 4, 8), (2,)),
+        (CHUNK_GRAPH_MAX_STREAMS + 1, (1, 2, 4, 8), (2, CHUNK_GRAPH_MAX_STREAMS + 1)),
+    ],
+)
+def test_warm_up_decodes_equal_and_ragged_forwards_of_every_reachable_width(
+    max_open_sessions: int,
+    stream_counts: tuple[int, ...],
+    forward_widths: tuple[int, ...],
+) -> None:
+    runtime = MiniCPMOVocoderRuntime(
+        FakeCode2Wav(),
+        max_state_bytes_per_session=DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+        max_open_sessions=max_open_sessions,
+    )
+    forwards: list[list[tuple[int, bool, int]]] = []
+    decode = runtime.token2wav.stream_batch
+
+    def recording_stream_batch(
+        chunks: list[StreamChunk],
+    ) -> list[tuple[bytes, StreamCaches]]:
+        forwards.append(
+            [
+                (
+                    len(chunk.token_ids),
+                    chunk.is_last_chunk,
+                    chunk.caches[0]["history"].shape[1],
+                )
+                for chunk in chunks
+            ]
+        )
+        return decode(chunks)
+
+    runtime.token2wav.stream_batch = recording_stream_batch
     runtime.warm_up(b"voice")
+    window = CODEC_CHUNK_SIZE + PRE_LOOKAHEAD
+    assert runtime.token2wav.captured_graphs == [
+        (stream_counts, (CODEC_CHUNK_SIZE * UP_RATE, (window - 1) * UP_RATE))
+    ]
+    expected_forwards = []
+    for width in forward_widths:
+        expected_forwards += [
+            [(window, False, OPENED_HISTORY_FRAMES)] * width,
+            [(window, False, OPENED_HISTORY_FRAMES + 1)] * (width - 1)
+            + [(PRE_LOOKAHEAD, True, OPENED_HISTORY_FRAMES + 1)],
+        ]
+    assert forwards == expected_forwards
     assert not runtime.sessions and not runtime.speakers
     assert runtime.token2wav.vocoder_warm_ups == []
 
@@ -202,7 +263,7 @@ def test_speech_hooks_warm_the_vocoder_for_every_reachable_batch() -> None:
     runtime = open_runtime([])
     SpeechHooks(runtime, b"voice").warm_up_serving_thread()
     assert runtime.token2wav.vocoder_warm_ups == [
-        (DEFAULT_MAX_SESSIONS, 2 * (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD))
+        (DEFAULT_MAX_SESSIONS, (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD) * UP_RATE)
     ]
 
 

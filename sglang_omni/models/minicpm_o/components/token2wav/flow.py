@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Literal
@@ -40,15 +41,17 @@ ESTIMATOR_GUIDANCE_AXIS = 2
 
 @dataclass(frozen=True, kw_only=True)
 class RaggedLayout:
-    """Each row's real new frames and history frames, right-padded to the longest of each."""
+    """Each row's real new frames and history frames, right-padded to padded_frames and padded_history."""
 
     frame_counts: list[int]
     history_counts: list[int]
+    padded_frames: int
+    padded_history: int
 
     def attention_mask(self, device: torch.device) -> torch.Tensor:
         """Keys are [new frames, history] as Attention concatenates them; a row sees only its own real keys."""
-        padded_frames = max(self.frame_counts)
-        keys = torch.arange(padded_frames + max(self.history_counts), device=device)
+        padded_frames = self.padded_frames
+        keys = torch.arange(padded_frames + self.padded_history, device=device)
         frame_counts = torch.tensor(self.frame_counts, device=device)
         history_counts = torch.tensor(self.history_counts, device=device)
         visible = (keys[None, :] < frame_counts[:, None]) | (
@@ -56,6 +59,25 @@ class RaggedLayout:
             & (keys[None, :] < padded_frames + history_counts[:, None])
         )
         return visible[:, None, :].expand(-1, padded_frames, -1)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ChunkGraph:
+    """One captured Euler loop over static inputs for a fixed stream count, chunk length and history capacity."""
+
+    graph: torch.cuda.CUDAGraph
+    stream_count: int
+    frame_count: int
+    history_capacity: int
+    noise: torch.Tensor
+    mu: torch.Tensor
+    speaker_embeddings: torch.Tensor
+    convolution_cache: torch.Tensor
+    attention_window: torch.Tensor
+    attention_mask: torch.Tensor
+    valid_frame_counts: torch.Tensor
+    mel: torch.Tensor
+    next_convolution_cache: torch.Tensor
 
 
 class CausalConditionalCFM(torch.nn.Module):
@@ -70,6 +92,8 @@ class CausalConditionalCFM(torch.nn.Module):
             torch.randn([1, self.out_channels, 50 * 600]),
             persistent=False,
         )
+        # note (Junnan Li): Sorted by stream count, then chunk length, so the first that fits a forward is the smallest.
+        self.chunk_graphs: list[ChunkGraph] = []
 
     def solve_euler(
         self,
@@ -152,26 +176,219 @@ class CausalConditionalCFM(torch.nn.Module):
             noise_offsets = [0] * mu.size(0)
         else:
             pass
-        if max(noise_offsets) + mu.size(2) > self.rand_noise.size(2):
+        return self.solve_euler(
+            self.draw_noise(noise_offsets, mu.size(2), temperature),
+            self.time_span(n_timesteps, mu.device, mu.dtype),
+            mu,
+            mask,
+            speaker_embeddings,
+            mel_conditioning,
+            states,
+        )
+
+    def draw_noise(
+        self, noise_offsets: list[int], frames: int, temperature: float
+    ) -> torch.Tensor:
+        if max(noise_offsets) + frames > self.rand_noise.size(2):
             raise ValueError(
                 "Combined reference and generated audio exceed 600 seconds"
             )
         else:
             pass
-        z = (
+        return (
             torch.cat(
                 [
-                    self.rand_noise[:, :, offset : offset + mu.size(2)]
+                    self.rand_noise[:, :, offset : offset + frames]
                     for offset in noise_offsets
                 ]
             )
             * temperature
         )
-        t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
-        t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-        return self.solve_euler(
-            z, t_span, mu, mask, speaker_embeddings, mel_conditioning, states
+
+    def time_span(
+        self, n_timesteps: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        t_span = torch.linspace(0, 1, n_timesteps + 1, device=device, dtype=dtype)
+        return 1 - torch.cos(t_span * 0.5 * torch.pi)
+
+    def capture_chunk_graphs(
+        self,
+        *,
+        stream_counts: tuple[int, ...],
+        frame_counts: tuple[int, ...],
+        history_capacity: int,
+        convolution_cache: torch.Tensor,
+        attention_cache: torch.Tensor,
+    ) -> None:
+        """Capture a stream continuation's Euler loop for every stream count and chunk length.
+
+        All graphs share one attention window storage and one memory pool, since a forward replays one at a time.
+        """
+        device = attention_cache.device
+        steps, depth, _, heads, _, key_value_width = attention_cache.shape
+        convolution_channels, convolution_history = convolution_cache.shape[3:]
+        activation_dtype = attention_cache.dtype
+        channels = self.out_channels
+        window_storage = torch.empty(
+            steps
+            * depth
+            * 2
+            * max(stream_counts)
+            * heads
+            * (max(frame_counts) + history_capacity)
+            * key_value_width,
+            dtype=activation_dtype,
+            device=device,
         )
+        pool = torch.cuda.graph_pool_handle()
+        for stream_count in sorted(stream_counts, reverse=True):
+            for frame_count in sorted(frame_counts, reverse=True):
+                guided_rows = 2 * stream_count
+                window_shape = (
+                    steps,
+                    depth,
+                    guided_rows,
+                    heads,
+                    frame_count + history_capacity,
+                    key_value_width,
+                )
+                attention_window = (
+                    window_storage[: math.prod(window_shape)].view(window_shape).zero_()
+                )
+                noise = torch.zeros(
+                    stream_count,
+                    channels,
+                    frame_count,
+                    dtype=self.rand_noise.dtype,
+                    device=device,
+                )
+                mu = torch.zeros(
+                    stream_count,
+                    channels,
+                    frame_count,
+                    dtype=activation_dtype,
+                    device=device,
+                )
+                speaker_embeddings = torch.zeros(
+                    stream_count, channels, dtype=activation_dtype, device=device
+                )
+                convolution = torch.zeros(
+                    steps,
+                    depth,
+                    guided_rows,
+                    convolution_channels,
+                    convolution_history,
+                    dtype=convolution_cache.dtype,
+                    device=device,
+                )
+                attention_mask = (
+                    RaggedLayout(
+                        frame_counts=[frame_count] * stream_count,
+                        history_counts=[0] * stream_count,
+                        padded_frames=frame_count,
+                        padded_history=history_capacity,
+                    )
+                    .attention_mask(device)
+                    .repeat(2, 1, 1)
+                )
+                valid_frame_counts = torch.full(
+                    (guided_rows,), frame_count, device=device
+                )
+                states = [
+                    DiTState(
+                        convolution=convolution[step],
+                        attention=attention_window[step],
+                        attention_mask=attention_mask,
+                        valid_frame_counts=valid_frame_counts,
+                    )
+                    for step in range(steps)
+                ]
+
+                def run_chunk() -> tuple[torch.Tensor, torch.Tensor]:
+                    # note (Junnan Li): Constant inputs are made inside the run, so the graph's pool owns them.
+                    mel, next_states = self.solve_euler(
+                        noise,
+                        self.time_span(steps, device, activation_dtype),
+                        mu,
+                        torch.ones_like(mu[:, :1]),
+                        speaker_embeddings,
+                        torch.zeros_like(mu),
+                        states,
+                    )
+                    assert next_states is not None
+                    return mel, torch.stack(
+                        [state.convolution for state in next_states]
+                    )
+
+                current_stream = torch.cuda.current_stream(device)
+                side_stream = torch.cuda.Stream(device)
+                side_stream.wait_stream(current_stream)
+                with torch.cuda.stream(side_stream):
+                    run_chunk()
+                current_stream.wait_stream(side_stream)
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph, pool=pool):
+                    mel, next_convolution_cache = run_chunk()
+                self.chunk_graphs.append(
+                    ChunkGraph(
+                        graph=graph,
+                        stream_count=stream_count,
+                        frame_count=frame_count,
+                        history_capacity=history_capacity,
+                        noise=noise,
+                        mu=mu,
+                        speaker_embeddings=speaker_embeddings,
+                        convolution_cache=convolution,
+                        attention_window=attention_window,
+                        attention_mask=attention_mask,
+                        valid_frame_counts=valid_frame_counts,
+                        mel=mel,
+                        next_convolution_cache=next_convolution_cache,
+                    )
+                )
+        self.chunk_graphs.sort(
+            key=lambda graph: (graph.stream_count, graph.frame_count)
+        )
+
+    def chunk_graph(
+        self, stream_count: int, frame_count: int, history_count: int
+    ) -> ChunkGraph | None:
+        """The smallest captured graph a forward fits in; None runs the forward eagerly."""
+        for graph in self.chunk_graphs:
+            if (
+                graph.stream_count >= stream_count
+                and graph.frame_count >= frame_count
+                and graph.history_capacity >= history_count
+            ):
+                return graph
+            else:
+                pass
+        return None
+
+    def replay_chunk(
+        self,
+        graph: ChunkGraph,
+        mu: torch.Tensor,
+        speaker_embeddings: torch.Tensor,
+        convolution_cache: torch.Tensor,
+        layout: RaggedLayout,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return copies of the mel and the next convolution caches of a graph whose attention window holds the histories.
+
+        Inputs and layout cover the graph's padded rows.
+        """
+        graph.noise.copy_(
+            self.draw_noise(layout.history_counts, graph.frame_count, temperature=1.0)
+        )
+        graph.mu.copy_(mu)
+        graph.speaker_embeddings.copy_(speaker_embeddings)
+        graph.convolution_cache.copy_(convolution_cache)
+        graph.attention_mask.copy_(layout.attention_mask(mu.device).repeat(2, 1, 1))
+        graph.valid_frame_counts.copy_(
+            torch.tensor(layout.frame_counts, device=mu.device).repeat(2)
+        )
+        graph.graph.replay()
+        return graph.mel.clone(), graph.next_convolution_cache.clone()
 
     @torch.inference_mode()
     def forward_chunk(
@@ -409,7 +626,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         is_last_chunk: list[bool],
         n_timesteps: int = 10,
     ) -> list[tuple[torch.Tensor, dict[str, torch.Tensor]]]:
-        """Decode one streaming chunk of each of several streams with one estimator pass.
+        """Decode one streaming chunk of each of several streams with one estimator pass or chunk graph replay.
 
         Pops each stream's estimator attention cache; the returned caches replace it.
         """
@@ -462,43 +679,80 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         history_counts = [
             cache["estimator_attention_cache"].shape[4] for cache in caches
         ]
-        padded_frames = max(frame_counts)
-        padded_history = max(history_counts)
-        if len(set(frame_counts)) == 1 and len(set(history_counts)) == 1:
+        stream_count = len(caches)
+        graph = self.decoder.chunk_graph(
+            stream_count, max(frame_counts), max(history_counts)
+        )
+        if graph is None:
+            window_streams = stream_count
+            padded_frames = max(frame_counts)
+            padded_history = max(history_counts)
+        else:
+            window_streams = graph.stream_count
+            padded_frames = graph.frame_count
+            padded_history = graph.history_capacity
+        # note (Junnan Li): Rows past the real streams only fill a graph's fixed batch; they see their own zero frames and no history.
+        padding_streams = window_streams - stream_count
+        if (
+            graph is None
+            and len(set(frame_counts)) == 1
+            and len(set(history_counts)) == 1
+        ):
             layout = None
         else:
             layout = RaggedLayout(
-                frame_counts=frame_counts, history_counts=history_counts
+                frame_counts=frame_counts + [padded_frames] * padding_streams,
+                history_counts=history_counts + [0] * padding_streams,
+                padded_frames=padded_frames,
+                padded_history=padded_history,
             )
         mu = (
-            torch.cat(
-                [
-                    F.pad(hidden_states, (0, 0, 0, padded_frames - frame_count))
-                    for hidden_states, frame_count in zip(
-                        hidden_states_by_stream, frame_counts, strict=True
-                    )
-                ]
+            F.pad(
+                torch.cat(
+                    [
+                        F.pad(hidden_states, (0, 0, 0, padded_frames - frame_count))
+                        for hidden_states, frame_count in zip(
+                            hidden_states_by_stream, frame_counts, strict=True
+                        )
+                    ]
+                ),
+                (0, 0, 0, 0, 0, padding_streams),
             )
             .transpose(1, 2)
             .contiguous()
         )
-        history_shape = caches[0]["estimator_attention_cache"].shape
-        stream_count = len(caches)
-        attention_window = torch.empty(
-            history_shape[0],
-            history_shape[1],
-            2 * stream_count,
-            history_shape[3],
-            padded_frames + padded_history,
-            history_shape[5],
-            dtype=caches[0]["estimator_attention_cache"].dtype,
-            device=mu.device,
+        speaker_embeddings = F.pad(speaker_embeddings, (0, 0, 0, padding_streams))
+        convolution_halves = [
+            cache["estimator_convolution_cache"].chunk(2, dim=ESTIMATOR_GUIDANCE_AXIS)
+            for cache in caches
+        ]
+        padding_convolution = torch.zeros_like(convolution_halves[0][0])
+        convolution_cache = torch.cat(
+            [conditioned for conditioned, _ in convolution_halves]
+            + [padding_convolution] * padding_streams
+            + [unconditioned for _, unconditioned in convolution_halves]
+            + [padding_convolution] * padding_streams,
+            dim=ESTIMATOR_GUIDANCE_AXIS,
         )
+        history_shape = caches[0]["estimator_attention_cache"].shape
+        if graph is None:
+            attention_window = torch.empty(
+                history_shape[0],
+                history_shape[1],
+                2 * stream_count,
+                history_shape[3],
+                padded_frames + padded_history,
+                history_shape[5],
+                dtype=caches[0]["estimator_attention_cache"].dtype,
+                device=mu.device,
+            )
+        else:
+            attention_window = graph.attention_window
         for row, (cache, history_count) in enumerate(
             zip(caches, history_counts, strict=True)
         ):
             history = cache.pop("estimator_attention_cache")
-            for guidance_row, window_row in enumerate((row, stream_count + row)):
+            for guidance_row, window_row in enumerate((row, window_streams + row)):
                 attention_window[
                     :, :, window_row, :, padded_frames : padded_frames + history_count
                 ] = history[:, :, guidance_row]
@@ -506,26 +760,24 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                 attention_window[
                     :, :, window_row, :, padded_frames + history_count :
                 ].zero_()
-        convolution_halves = [
-            cache["estimator_convolution_cache"].chunk(2, dim=ESTIMATOR_GUIDANCE_AXIS)
-            for cache in caches
-        ]
-        predicted_mel, estimator_convolution_cache, attention_window = (
-            self.decoder.forward_chunk(
-                mu=mu,
-                speaker_embeddings=speaker_embeddings,
-                mel_conditioning=torch.zeros_like(mu),
-                n_timesteps=n_timesteps,
-                temperature=1.0,
-                convolution_cache=torch.cat(
-                    [conditioned for conditioned, _ in convolution_halves]
-                    + [unconditioned for _, unconditioned in convolution_halves],
-                    dim=ESTIMATOR_GUIDANCE_AXIS,
-                ),
-                attention_window=attention_window,
-                layout=layout,
+        if graph is None:
+            predicted_mel, estimator_convolution_cache, attention_window = (
+                self.decoder.forward_chunk(
+                    mu=mu,
+                    speaker_embeddings=speaker_embeddings,
+                    mel_conditioning=torch.zeros_like(mu),
+                    n_timesteps=n_timesteps,
+                    temperature=1.0,
+                    convolution_cache=convolution_cache,
+                    attention_window=attention_window,
+                    layout=layout,
+                )
             )
-        )
+        else:
+            assert layout is not None
+            predicted_mel, estimator_convolution_cache = self.decoder.replay_chunk(
+                graph, mu, speaker_embeddings, convolution_cache, layout
+            )
         conditioned_convolution, unconditioned_convolution = (
             estimator_convolution_cache.chunk(2, dim=ESTIMATOR_GUIDANCE_AXIS)
         )
@@ -541,7 +793,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                 frame_count + history_count,
                 attention_window.shape[5],
             )
-            for guidance_row, window_row in enumerate((row, stream_count + row)):
+            for guidance_row, window_row in enumerate((row, window_streams + row)):
                 attention_cache[:, :, guidance_row, :, :frame_count] = attention_window[
                     :, :, window_row, :, :frame_count
                 ]

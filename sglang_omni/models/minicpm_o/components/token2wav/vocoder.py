@@ -290,6 +290,35 @@ class Token2Wav(torch.nn.Module):
         return flow_cache, hift_cache
 
     @torch.inference_mode()
+    def capture_chunk_graphs(
+        self,
+        prompt: SpeakerPrompt,
+        caches: StreamCaches,
+        *,
+        stream_counts: tuple[int, ...],
+        frame_counts: tuple[int, ...],
+    ) -> None:
+        """Capture the flow's chunk loop for streams that continue this voice, or any voice with a prompt no longer.
+
+        A stream's history never exceeds the prompt plus FLOW_CACHE_TAIL_FRAMES; non-CUDA devices decode eagerly.
+        """
+        flow_cache, _ = caches
+        if self.device.type == "cuda":
+            with torch.amp.autocast(
+                "cuda", dtype=self.dtype, enabled=self.dtype != torch.float32
+            ):
+                self.flow.decoder.capture_chunk_graphs(
+                    stream_counts=stream_counts,
+                    frame_counts=frame_counts,
+                    history_capacity=prompt.prompt_mel.shape[1]
+                    + FLOW_CACHE_TAIL_FRAMES,
+                    convolution_cache=flow_cache["estimator_convolution_cache"],
+                    attention_cache=flow_cache["estimator_attention_cache"],
+                )
+        else:
+            pass
+
+    @torch.inference_mode()
     def warm_up_vocoder(self, max_rows: int, max_chunk_frames: int) -> None:
         for rows in sorted({hift_batch_rows(rows) for rows in range(1, max_rows + 1)}):
             for frames in range(

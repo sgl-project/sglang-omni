@@ -62,8 +62,8 @@ logger = logging.getLogger(__name__)
 
 # note (Junnan Li): A session's first unit and every later unit differ in mel window and encoder history, so warm-up runs one of each.
 WARM_UP_UNITS = 2
-# note (Junnan Li): One vocoder forward costs about this much before its width adds to it.
-FORWARD_FLOOR_MS = 70
+# note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
+FORWARD_FLOOR_MS = 45
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -492,11 +492,8 @@ def create_speech_scheduler(
         max_open_sessions=max_open_sessions,
     )
     reference_audio_bytes = Path(codec.default_prompt_wav).read_bytes()
-    if enable_dit_torch_compile:
-        # note (Junnan Li): Code2Wav warms only the offline flow; streaming chunks reach the compiled blocks with histories and ragged masks, which compile separately.
-        runtime.warm_up(reference_audio_bytes)
-    else:
-        pass
+    # note (Junnan Li): Code2Wav warms only the offline flow, so the streaming chunk graphs and compiled forms are built here.
+    runtime.warm_up(reference_audio_bytes)
     return SessionScheduler(
         SpeechHooks(runtime, reference_audio_bytes),
         max_open_sessions=max_open_sessions,
