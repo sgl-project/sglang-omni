@@ -28,7 +28,7 @@ else:
 
 def keep_rotary_fp32_under_xpu_autocast(module: nn.Module) -> None:
     """Extend the upstream CUDA-only RoPE autocast guard to XPU."""
-    # note (anupa): XPU autocast lowers the position einsum to bf16 and loses RoPE precision.
+    # note: XPU autocast lowers the position einsum to bf16 and loses RoPE precision.
     import_dots_tts()
     from dots_tts.modules.backbone.layers import RotaryEmbedding
 
