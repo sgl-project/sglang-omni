@@ -32,13 +32,18 @@ Registration is automatic (registry scans `models/*/config.py` for `EntryClass`)
 
 ## Pipeline
 `preprocessing` (SimpleScheduler) -> `yue2_synth` (terminal SimpleScheduler, one GPU).
-`yue2_synth` runs `generate_codec_tokens` then `stream_audio` (NAR + `decode_tiled`)
-and emits `audio_waveform_payload`.
+`yue2_synth` (`synth.Yue2Synthesizer`) uses the ported SGLang-YuE2 optimized path:
+one pooled `GraphAR` session with the fused decode+sample step graph for AR
+(`song.generate_song_tokens`), fused NAR on the borrowed KV with the velocity
+graph (`nar_fast.synthesize_from_session`), and tiled VAE decode. It falls back
+to the reference `nar.synthesize` only if the fused NAR rejects the request,
+then emits `audio_waveform_payload`.
 
 ## TODO
 - Batched synthesis: `SimpleScheduler(batch_compute_fn=...)` over the ported
   `batched.run_batched_ar` + `nar_fast.synthesize_batched` + VAE same-frame
   `decode_tiled`, to recover the measured ~3.2x concurrency (`bench_yue2.md`).
+  Today `yue2_synth` is `max_concurrency=1`, so c>=2 serializes.
 - Optional: SGLang AR engine (`OmniScheduler`) if the AR should use paged KV.
 - Streaming stages; `yue2_artifacts_dir` for WSB scoring.
 

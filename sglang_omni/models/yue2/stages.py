@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import torch
 from sglang_omni.platforms import current_platform
@@ -53,10 +54,10 @@ def create_synth_executor(
 
     device = str(resolve_concrete_device(device, gpu_id))
     synthesizer = Yue2Synthesizer(model_path, device=device)
+    max_batch_size = int(os.environ.get("SGLANG_YUE2_BATCH_MAX_SIZE", "4"))
+    max_batch_wait_ms = int(os.environ.get("SGLANG_YUE2_BATCH_WAIT_MS", "25"))
 
-    def _synth(payload: StagePayload) -> StagePayload:
-        state = load_state(payload, Yue2State)
-        waveform, seconds = synthesizer.synthesize(state)
+    def _output(payload, state, waveform, seconds, batch):
         data = dict(
             audio_waveform_payload(
                 waveform,
@@ -69,14 +70,32 @@ def create_synth_executor(
         data["finish_reason"] = state.finish_reason or "stop"
         logger.info(
             f"YuE2 synth done request={payload.request_id} "
-            f"samples={waveform.shape[-1]} duration={waveform.shape[-1] / OUTPUT_SAMPLE_RATE:.2f}s "
-            f"elapsed={seconds:.2f}s"
+            f"samples={waveform.shape[-1]} "
+            f"duration={waveform.shape[-1] / OUTPUT_SAMPLE_RATE:.2f}s "
+            f"elapsed={seconds:.2f}s batch={batch}"
         )
         return StagePayload(
-            request_id=payload.request_id, request=payload.request, data=data
-        )
+            request_id=payload.request_id, request=payload.request, data=data)
 
-    return SimpleScheduler(_synth, max_concurrency=1)
+    def _synth_one(payload: StagePayload) -> StagePayload:
+        state = load_state(payload, Yue2State)
+        waveform, seconds = synthesizer.synthesize(state)
+        return _output(payload, state, waveform, seconds, 1)
+
+    def _synth_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        states = [load_state(payload, Yue2State) for payload in payloads]
+        results = synthesizer.synthesize_batch(states)
+        return [
+            _output(payload, state, waveform, seconds, len(payloads))
+            for payload, state, (waveform, seconds) in zip(payloads, states, results)
+        ]
+
+    return SimpleScheduler(
+        _synth_one,
+        batch_compute_fn=_synth_batch,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+    )
 
 
 __all__ = ["create_preprocessing_executor", "create_synth_executor"]
