@@ -127,10 +127,14 @@ def build_sglang_thinker_request(
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
-    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+    from sglang_omni.scheduling.sglang_backend.request_data import (
+        SGLangARRequestData,
+        validate_prompt_token_ids,
+    )
 
     prompt = state.prompt
     input_ids = prompt["input_ids"]
+    validate_prompt_token_ids(input_ids, vocab_size)
     attention_mask = prompt.get("attention_mask")
 
     thinker_inputs = state.thinker_inputs or {}

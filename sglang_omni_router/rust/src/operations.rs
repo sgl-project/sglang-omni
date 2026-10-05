@@ -940,7 +940,7 @@ mod tests {
             );
             positions.push(rendered.find(&sample).expect("zero rejection sample"));
         }
-        assert_eq!(positions.len(), 340);
+        assert_eq!(positions.len(), 378);
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
         for route in HttpRoute::ALL {
             for sample in [

@@ -54,7 +54,7 @@ from sglang.srt.session.session_controller import SessionController
 from sglang.srt.utils import broadcast_pyobj
 from typing_extensions import TypedDict
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
 from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerPendingStep
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -409,13 +409,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.tp_size = get_parallel().tp_size
         self.pp_rank = 0
         self.pp_size = get_parallel().pp_size
-        self.dp_rank = None
         self.dp_size = get_parallel().dp_size
-        self.moe_ep_rank = 0
-        self.moe_ep_size = 1
-        self.moe_dp_rank = None
-        self.moe_dp_size = get_parallel().moe_dp_size
-        self.attn_cp_rank = 0
         self.attn_cp_size = get_parallel().attn_cp_size
         self.page_size = get_schedule().page_size
         self.enable_overlap = enable_overlap
@@ -480,6 +474,7 @@ class OmniScheduler(Generic[RequestDataT]):
         # kv_cache_builder; no Omni model serves hybrid-SWA, so they stay None.
         self.full_tokens_per_layer = None
         self.swa_tokens_per_layer = None
+        self.sliding_window_size = None
         self.min_free_slots_delayer = None
         self.enable_fpm = False
 
@@ -577,6 +572,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.enable_trace = False
         self.enable_hierarchical_cache = False
         self.enable_hicache_storage = False
+        self.enable_lmcache = False
         self.enable_unified_cache_external_linker = False
         self.enable_kv_cache_events = False
         self.is_generation = True
@@ -648,8 +644,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
         self.init_parallel_state(tp_worker)
         self.ipc_channels: OmniIpcChannels[RequestDataT] = OmniIpcChannels(self)
-        self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
-        self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
+        self.init_metrics_collector()
+        self.init_metrics_reporter()
         self.scheduler_stage_metrics = self.metrics_reporter.scheduler_stage_metrics
         self.init_upstream_scheduler_components()
 
@@ -738,7 +734,7 @@ class OmniScheduler(Generic[RequestDataT]):
         )
 
         self.ngram_embedding_manager = NgramEmbeddingManager(
-            enabled=False, table=None, n=0, k=0
+            enabled=False, table=None, n=0
         )
         from types import SimpleNamespace
 
@@ -776,12 +772,10 @@ class OmniScheduler(Generic[RequestDataT]):
 
         self.dp_attn_adapter = SchedulerDPAttnAdapter(
             model_runner=self.tp_worker.model_runner,
-            tp_group=self.tp_group,
             req_to_token_pool=self.req_to_token_pool,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
             tree_cache=self.tree_cache,
             offload_tags=self.offload_tags,
-            ps=self.ps,
             model_config=self.model_config,
             enable_overlap=self.enable_overlap,
             spec_algorithm=self.spec_algorithm,
@@ -809,11 +803,11 @@ class OmniScheduler(Generic[RequestDataT]):
         self.total_prefill_busy_us = 0
         self.decode_moment_totals: list[float] = [0.0] * 6
         self._prev_step = None  # noqa: leading-underscore
+        self._prev_prefill_end_ts = None  # noqa: leading-underscore
         self._sched_idled = False  # noqa: leading-underscore
         self.init_load_publisher()
         self.load_inquirer = SchedulerLoadInquirer(
             disaggregation_mode=self.disaggregation_mode,
-            ps=self.ps,
             server_args=self.server_args,
             max_total_num_tokens=self.max_total_num_tokens,
             max_running_requests=self.max_running_requests,
@@ -957,34 +951,6 @@ class OmniScheduler(Generic[RequestDataT]):
 
         self.current_scheduler_metrics_enabled = (
             self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
-        )
-        self.refresh_upstream_parallel_state()
-
-    def refresh_upstream_parallel_state(self) -> None:
-        """Build the rank container expected by upstream scheduler methods."""
-        from sglang.srt.distributed.parallel_state_wrapper import ParallelState
-        from sglang.srt.runtime_context import get_parallel
-
-        self.ps = ParallelState(
-            tp_rank=self.tp_rank,
-            tp_size=self.tp_size,
-            pp_rank=self.pp_rank,
-            pp_size=self.pp_size,
-            dp_rank=self.dp_rank,
-            dp_size=self.dp_size,
-            attn_tp_rank=self.attn_tp_rank,
-            attn_tp_size=self.attn_tp_size,
-            attn_cp_rank=self.attn_cp_rank,
-            attn_cp_size=self.attn_cp_size,
-            attn_dcp_rank=self.tp_rank % get_parallel().dcp_size,
-            attn_dcp_size=get_parallel().dcp_size,
-            attn_dp_rank=self.attn_dp_rank,
-            attn_dp_size=self.attn_dp_size,
-            moe_ep_rank=self.moe_ep_rank,
-            moe_ep_size=self.moe_ep_size,
-            moe_dp_rank=self.moe_dp_rank,
-            moe_dp_size=self.moe_dp_size,
-            gpu_id=self.gpu_id,
         )
 
     def poll_request_timeout_aborts(self) -> tuple[RequestTimeoutAbort, ...]:
@@ -1137,13 +1103,28 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             unit = bridge.accept(payload, operation)
             chunk = unit.chunk
+            try:
+                bypass_generation = bridge.prepare_unit(unit, payload)
+            except Exception:
+                bridge.complete(payload.request_id)
+                raise
             is_empty_eos = (
                 chunk.eos
                 and chunk.duration_ms == 0
                 and isinstance(chunk.payload, bytes)
                 and not chunk.payload
             )
-            if not is_empty_eos:
+            if bypass_generation:
+                bridge.complete(payload.request_id)
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=payload.request_id,
+                        type="result",
+                        data=payload,
+                    )
+                )
+                return False
+            elif not is_empty_eos:
                 return True
             else:
                 try:
@@ -1615,10 +1596,31 @@ class OmniScheduler(Generic[RequestDataT]):
         req = req_data.req
         self.normalize_req_token_arrays(req)
         req_id = req.rid
+        # Session appends are checked after history restore, as SGLang does.
+        if not req.origin_input_ids:
+            self.emit_request_error(
+                req_id,
+                ValueError(
+                    "Request has no prompt tokens after preprocessing. "
+                    "Send input that tokenizes to at least one token."
+                ),
+            )
+            self.abort(req_id)
+            return
+        else:
+            pass
         if req_data.enforce_request_limits:
             error_msg = self.prepare_request_limits(req_data)
             if error_msg:
-                self.emit_request_error(req_id, ValueError(error_msg))
+                if session_unit is not None:
+                    error = ContextExhaustedError(
+                        f"{ContextExhaustedError.CODE}: thinker context length "
+                        f"{self.server_args.context_length} tokens exhausted "
+                        f"(effective input limit={self.max_req_input_len}). {error_msg}"
+                    )
+                else:
+                    error = ValueError(error_msg)
+                self.emit_request_error(req_id, error)
                 self.abort(req_id)
                 return
             else:
@@ -2104,6 +2106,19 @@ class OmniScheduler(Generic[RequestDataT]):
         reqs = list(batch.reqs)
         request_ids = [req.rid for req in reqs]
         logger.exception("OmniScheduler batch failed for requests=%s", request_ids)
+        # note (Richard Wang): free possibly unwritten KV uncached, never on a listener thread
+        for req in reqs:
+            req.skip_radix_cache_insert = True
+            req._omni_terminal_claimed = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            # note (Richard Wang): session cancel needs this, and abort skips it once claimed
+            if req.to_finish is None and not req.finished():
+                req.to_finish = FINISH_ABORT()
+            else:
+                pass
+            if req is self.chunked_req:
+                self.chunked_req = None
+            else:
+                pass
         for req in reqs:
             self.emit_request_error(req.rid, error)
             self.emit_model_path_end_once(req.rid, status="error")

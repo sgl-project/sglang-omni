@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.dllm.config import DllmConfig
-from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
@@ -375,6 +375,14 @@ class DllmScheduler:
 
             req.output_ids.extend(req_token_ids)
             req.update_finish_state(new_accepted_len=new_tokens)
+            if (
+                not req.finished()
+                and req.seqlen + block_size > self.model_config.context_len
+            ):
+                # note (ratish): the next block would run past the context.
+                req.finished_reason = FINISH_LENGTH(length=len(req.output_ids))
+            else:
+                pass
 
             if req.finished():
                 req_data = self.rid_to_req_data.pop(req.rid, None)

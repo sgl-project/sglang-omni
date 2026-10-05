@@ -43,6 +43,7 @@ from sglang_omni.utils.gpu_compat import (
 from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,7 @@ class StageWorkerProcessSpec:
     # note (Dayuxiaoshui): root logger level for the spawned process. The
     # launcher passes its own root level so --log-level reaches every stage.
     log_level: int = logging.INFO
+    cpu_threads: int | None = None
 
 
 def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -219,10 +221,25 @@ def patched_spawn_env(
         "SGLANG_OMNI_PLATFORM_SPEC": get_platform_spec(current_platform),
         **(extra_env or {}),
     }
+    if (
+        spec.cpu_threads is not None
+        and "OMP_NUM_THREADS" not in os.environ
+        and "OMP_NUM_THREADS" not in updates
+    ):
+        updates["OMP_NUM_THREADS"] = str(spec.cpu_threads)
+        updates["SGLANG_OMNI_OMP_FROM_CPU_PLAN"] = "1"
+        omp_source = "cpu_plan_fallback"
+    else:
+        omp_source = "environment_or_policy"
     backup = {key: os.environ.get(key) for key in updates}
     try:
         for key, value in updates.items():
             os.environ[key] = value
+        logger.info(
+            f"Worker spawn environment: process={spec.process_name} "
+            f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', 'unset')} "
+            f"source={omp_source} fallback_threads={spec.cpu_threads}"
+        )
         yield
     finally:
         for key, value in backup.items():
@@ -475,8 +492,13 @@ def stage_process_main(
     # importing sglang already installs a root handler at INFO, which turns
     # basicConfig into a no-op. Set the level explicitly so the stage follows
     # the launcher's --log-level.
-    logging.basicConfig(level=spec.log_level, stream=sys.stdout)
+    logging.basicConfig(
+        level=spec.log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
     logging.getLogger().setLevel(spec.log_level)
+    configure_dependency_loggers()
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     else:

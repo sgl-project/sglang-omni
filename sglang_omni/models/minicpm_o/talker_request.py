@@ -85,6 +85,7 @@ class CodecTokenizer:
     """Supply the codec EOS id required by SGLang's minimum-length penalizer."""
 
     eos_token_id: int
+    bos_token_id: int | None = None
     additional_stop_token_ids: set[int] | None = None
 
 

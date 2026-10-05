@@ -83,13 +83,43 @@ def test_ming_hf_config_registration_does_not_import_thinker() -> None:
     from sglang_omni.models.ming_omni import registration
 
     sys.modules.pop("sglang_omni.models.ming_omni.thinker", None)
-    registration._ming_hf_config_registered = (
-        False  # noqa: leading-underscore  # production name
-    )
 
     registration.register_ming_hf_config()
 
     assert "sglang_omni.models.ming_omni.thinker" not in sys.modules
+
+
+def test_sglang_loads_a_ming_checkpoint_with_the_ming_config(tmp_path) -> None:
+    import json
+
+    from sglang.srt.utils.hf_transformers_utils import get_config, get_context_length
+
+    from sglang_omni.models.ming_omni import registration
+    from sglang_omni.models.ming_omni.configuration import (
+        BailingMM2Config,
+        BailingMoeV2Config,
+    )
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "bailingmm_moe_v2_lite",
+                "architectures": ["BailingMM2NativeForConditionalGeneration"],
+                "llm_config": {
+                    "max_position_embeddings": 32768,
+                    "rope_scaling": {"factor": None, "type": "video_rope"},
+                },
+            }
+        )
+    )
+    registration.register_ming_hf_config()
+
+    config = get_config(str(tmp_path), trust_remote_code=False)
+
+    assert isinstance(config, BailingMM2Config)
+    assert isinstance(config.llm_config, BailingMoeV2Config)
+    assert config.llm_config.rope_scaling is None
+    assert get_context_length(config.llm_config) == 32768
 
 
 def test_ming_text_variant_uses_text_image_pipeline(monkeypatch) -> None:

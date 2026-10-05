@@ -280,11 +280,12 @@ def create_mlx_model_worker(
             f"Omni's MLX worker does not support model architecture {model_arch!r}"
         )
 
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.distributed import bootstrap
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-    from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
     from sglang.srt.runtime_context import (
+        SpawnRanks,
         get_device,
         get_exec,
         get_memory,
@@ -292,13 +293,14 @@ def create_mlx_model_worker(
         get_parallel,
         get_schedule,
         publish,
+        spawn_world_rank,
     )
     from sglang.srt.server_args import PortArgs
 
     class OmniMlxWorker(MlxTpModelWorker):
         @property
         def tp_rank(self) -> int:
-            return self.ps.tp_rank
+            return get_parallel().tp_rank
 
         def _init_model_runner(self) -> None:
             MlxModelRunnerStub.validate_startup_weight_load_mode()
@@ -346,7 +348,6 @@ def create_mlx_model_worker(
                 model_config=self.model_config,
                 mem_fraction_static=get_schedule().mem_fraction_static,
                 gpu_id=self.gpu_id,
-                ps=self.ps,
                 nccl_port=self.nccl_port,
                 server_args=self.server_args,
                 is_draft_worker=self.is_draft_worker,
@@ -367,45 +368,27 @@ def create_mlx_model_worker(
         def get_attention_tp_cpu_group(self):
             return self.model_runner.attention_tp_group.cpu_group
 
-    publish(server_args, role="scheduler")
-    attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
-        compute_dp_attention_world_info(
-            get_parallel().enable_dp_attention,
-            tp_rank,
-            get_parallel().tp_size,
-            get_parallel().dp_size,
-            get_parallel().attn_cp_size,
-        )
-    )
-    ps = ParallelState(
-        tp_rank=tp_rank,
-        tp_size=get_parallel().tp_size,
-        pp_rank=0,
-        pp_size=1,
-        dp_rank=None,
-        dp_size=get_parallel().dp_size,
-        attn_tp_rank=attn_tp_rank,
-        attn_tp_size=attn_tp_size,
-        attn_cp_rank=0,
-        attn_cp_size=get_parallel().attn_cp_size,
-        attn_dcp_rank=tp_rank % get_parallel().dcp_size,
-        attn_dcp_size=get_parallel().dcp_size,
-        attn_dp_rank=attn_dp_rank,
-        attn_dp_size=attn_dp_size,
-        moe_ep_rank=0,
-        moe_ep_size=1,
-        moe_dp_rank=None,
-        moe_dp_size=get_parallel().moe_dp_size,
-        gpu_id=gpu_id,
+    publish(
+        server_args,
+        role="scheduler",
+        ranks=SpawnRanks(
+            world_rank=spawn_world_rank(server_args, tp_rank=tp_rank, pp_rank=0),
+            gpu_id=gpu_id,
+        ),
     )
     nccl_port = config.nccl_port
     if nccl_port is None:
         nccl_port = PortArgs.init_new(server_args).nccl_port
     else:
         pass
+    bootstrap.init_parallel_runtime(
+        server_args=server_args,
+        device=get_device().device,
+        dist_port=nccl_port,
+    )
+    bootstrap.init_layer_runtime(model_config=ModelConfig.from_server_args(server_args))
     return OmniMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,
-        ps=ps,
         nccl_port=nccl_port,
     )

@@ -9,10 +9,18 @@ _BAD_REQUEST_MARKERS = (
     "Unsupported language:",
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
+    "Request has no prompt tokens",
     "Request requires more tokens than the thinker KV cache can hold",
+    "out-of-vocabulary token id",
     "accepts audio up to",
     "could not decode the uploaded audio",
+    "use_audio_in_video requires every video in a multi-video request",
+    "Embedded audio stream decoded no samples:",
+    "Invalid media data while extracting embedded audio from",
+    "Invalid media data while decoding video path=",
+    "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
     "max_new_tokens must be",
+    "Fun-ASR Apple currently requires temperature=0",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",
     "multimodal_train_inputs",
@@ -42,8 +50,10 @@ _BAD_REQUEST_PATTERNS = (
     re.compile(
         r"\bAuK (?:nfe|cfg_strength|sway_sampling_coef|max_seconds) is a server-level setting"
     ),
+    re.compile(r"^Could not decode .+ audio input$"),
     re.compile(r"^Request\s+\S+\s+exceeds the maximum number of tokens:"),
     re.compile(r"^Request\s+\S+\s+requires too many SWA KV tokens for"),
+    re.compile(r"^Request .+ already exists$", re.DOTALL),
     re.compile(r"^stop_regex is \d+ bytes, over the \d+-byte limit"),
 )
 

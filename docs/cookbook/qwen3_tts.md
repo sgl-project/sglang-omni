@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.20 stack remains
+dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.21 stack remains
 in place:
 
 ```bash
@@ -42,7 +42,7 @@ factories (`create_causal_mask` and friends), which now spell `input_embeds` as
 `inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
 differences in
 `sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.20
+applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.21
 stack is therefore the supported configuration, not a workaround.
 
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
@@ -152,7 +152,7 @@ graph per token bucket; the codec head and sampling still run outside it.
 them. Each backend is accepted only on models that declare it, so a stage that
 has not adopted `full` still rejects it. `full` also needs a prefill attention
 backend that captures an ordinary prefill batch, `fa3` or `flashinfer` in
-SGLang 0.5.20: with any other backend the CustomVoice default stays
+SGLang 0.5.21: with any other backend the CustomVoice default stays
 `breakable`, and an explicit `full` fails at startup. SGLang logs the full
 prefill backend as experimental and its own compatibility rules never
 auto-disable it, so the generation batch policy's checks are what guard it
@@ -354,6 +354,7 @@ with open("output.wav", "wb") as f:
 Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or
 `X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length`
 response still contains decodable audio, but the utterance may be incomplete.
+Models that do not report how generation ended send `X-Finish-Reason: unknown`.
 Batch responses expose the same value as each item's `finish_reason`.
 
 #### Leading silence in x-vector mode
@@ -464,9 +465,10 @@ first chunk, so their audio arrives complete in a single final flush.
 
 Streaming decodes run on the stateful incremental codec by default: each
 follow-up chunk decodes only its fresh frames against per-stream state held in
-a preallocated arena, steady-state cohorts replay CUDA graphs whose decode step
-is `torch.compile`d, and the follow-up workers collect for 4 ms. Startup spends
-about a minute compiling the steady shapes. The left-context decoder remains
+a preallocated arena, and the follow-up workers collect for 4 ms. On NVIDIA, AMD
+and MUSA GPUs steady-state cohorts also decode asynchronously on a priority stream
+and replay CUDA graphs whose decode step is `torch.compile`d, which costs about
+a minute of startup compiling the steady shapes. The left-context decoder remains
 available as a rollback:
 
 ```yaml
@@ -476,12 +478,16 @@ stages:
       enable_stateful_codec_decoder: false
 ```
 
-`incremental_codec_cuda_graph`, `incremental_codec_compile` and
+`incremental_codec_cuda_graph`, `incremental_codec_compile`, `async_decode` and
 `followup_batch_wait_ms` are the individual switches. Measured on one H100
 80GB at 20 requests per second, three client seeds of roughly 1200 requests
 each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
 for the left-context decoder, with first playable audio at 55 to 58 ms
 against 82 to 89 ms.
+
+Intel XPU, Ascend NPU, CPU and Apple MPS decode synchronously by default. To opt
+in on Intel GPUs, follow the
+[Qwen3-TTS XPU recipe](../get_started/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
 
 #### First-audio chunk ramp
 

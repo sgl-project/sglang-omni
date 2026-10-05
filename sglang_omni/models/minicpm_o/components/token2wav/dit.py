@@ -6,12 +6,21 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import pack, repeat
 from torch.nn.attention.varlen import varlen_attn
+
+from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import (
+    CausalConv1d,
+    ConvState,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
+    AttentionState,
+)
 
 TIMESTEP_MAX_PERIOD = 10000
 MIN_PACKED_BATCH_SIZE = 3
@@ -81,7 +90,12 @@ class Attention(torch.nn.Module):
         ts = ts.transpose(1, 2)
         return ts
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        state: AttentionState | None = None,
+    ) -> tuple[torch.Tensor, AttentionState | None]:
         b, t, c = x.shape
         q = self.to_q(x)
         k = self.to_k(x)
@@ -91,7 +105,20 @@ class Attention(torch.nn.Module):
         v = self.to_heads(v)
         q = self.q_norm(q)
         k = self.k_norm(k)
-        attn_mask = attn_mask.unsqueeze(1)
+        if state is not None:
+            if state.history is not None:
+                previous_key, previous_value = state.history.chunk(2, dim=-1)
+                k = torch.cat((k, previous_key), dim=2)
+                v = torch.cat((v, previous_value), dim=2)
+            else:
+                pass
+            next_state = AttentionState(history=torch.cat((k, v), dim=-1))
+        else:
+            next_state = None
+        if attn_mask is not None:
+            attn_mask = attn_mask.unsqueeze(1)
+        else:
+            pass
         x = F.scaled_dot_product_attention(
             q,
             k,
@@ -102,7 +129,7 @@ class Attention(torch.nn.Module):
         x = x.transpose(1, 2).reshape(b, t, -1)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        return x, next_state
 
     def forward_packed(
         self,
@@ -180,15 +207,18 @@ class Transpose(torch.nn.Module):
         return x
 
 
-class CausalConv1d(torch.nn.Conv1d):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int) -> None:
-        super(CausalConv1d, self).__init__(in_channels, out_channels, kernel_size)
-        self.causal_padding = (kernel_size - 1, 0)
+@dataclass(frozen=True, kw_only=True)
+class ConvBlockState:
+    first: ConvState = field(default_factory=ConvState)
+    second: ConvState = field(default_factory=ConvState)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.pad(x, self.causal_padding)
-        x = super(CausalConv1d, self).forward(x)
-        return x
+
+@dataclass(frozen=True, kw_only=True)
+class DiTState:
+    """Per-block histories stacked along the first axis; empty fields start a stream."""
+
+    convolution: torch.Tensor | None = None
+    attention: torch.Tensor | None = None
 
 
 class CausalConvBlock(nn.Module):
@@ -211,18 +241,38 @@ class CausalConvBlock(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, mask: torch.Tensor | None = None
-    ) -> torch.Tensor:
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        state: ConvBlockState | None = None,
+    ) -> tuple[torch.Tensor, ConvBlockState | None]:
         if mask is not None:
             x = x * mask
         else:
             pass
-        x = self.block(x)
+        previous = iter(
+            (state.first, state.second) if state is not None else (None, None)
+        )
+        histories: list[ConvState] = []
+        for module in self.block:
+            if isinstance(module, CausalConv1d):
+                x, history = module(x, next(previous))
+                if history is not None:
+                    histories.append(history)
+                else:
+                    pass
+            else:
+                x = module(x)
+        next_state = (
+            ConvBlockState(first=histories[0], second=histories[1])
+            if state is not None
+            else None
+        )
         if mask is not None:
             x = x * mask
         else:
             pass
-        return x
+        return x, next_state
 
     def forward_packed(
         self,
@@ -234,7 +284,7 @@ class CausalConvBlock(nn.Module):
             frames: torch.Tensor, convolution: nn.Module
         ) -> torch.Tensor:
             channel_first = frames.transpose(0, 1).unsqueeze(0)
-            convolved = convolution(channel_first)
+            convolved, _ = convolution(channel_first)
             return convolved.squeeze(0).transpose(0, 1)
 
         first_convolution = self.block[1]
@@ -288,8 +338,13 @@ class DiTBlock(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, timestep_embedding: torch.Tensor, attn_mask: torch.Tensor
-    ) -> torch.Tensor:
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        convolution_state: ConvBlockState | None = None,
+        attention_state: AttentionState | None = None,
+    ) -> tuple[torch.Tensor, ConvBlockState | None, AttentionState | None]:
         (
             shift_msa,
             scale_msa,
@@ -301,12 +356,16 @@ class DiTBlock(nn.Module):
             scale_conv,
             gate_conv,
         ) = self.adaLN_modulation(timestep_embedding).chunk(9, dim=-1)
-        x = x + gate_msa * self.attn(
-            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask
+        attention, next_attention_state = self.attn(
+            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask, attention_state
         )
-        x = x + gate_conv * self.conv(modulate(self.norm3(x), shift_conv, scale_conv))
+        x = x + gate_msa * attention
+        convolution, next_convolution_state = self.conv(
+            modulate(self.norm3(x), shift_conv, scale_conv), state=convolution_state
+        )
+        x = x + gate_conv * convolution
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        return x
+        return x, next_convolution_state, next_attention_state
 
     def forward_packed(
         self,
@@ -433,19 +492,7 @@ class DiT(nn.Module):
         mel_conditioning: torch.Tensor | None = None,
     ) -> torch.Tensor:
         t = self.t_embedder(t).unsqueeze(1)
-        x = pack([x, mu], "b * t")[0]
-        if speaker_embeddings is not None:
-            speaker_embeddings = repeat(
-                speaker_embeddings, "b c -> b c t", t=x.shape[-1]
-            )
-            x = pack([x, speaker_embeddings], "b * t")[0]
-        else:
-            pass
-        if mel_conditioning is not None:
-            x = pack([x, mel_conditioning], "b * t")[0]
-        else:
-            pass
-        x = x.transpose(1, 2)
+        x = self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning)
         attn_mask = mask.bool()
         if (
             self.enable_variable_length
@@ -460,9 +507,79 @@ class DiT(nn.Module):
         else:
             x = self.in_proj(x)
             for block in self.blocks:
-                x = block(x, t, attn_mask)
+                x, _, _ = block(x, t, attn_mask)
             x = self.final_layer(x, t).transpose(1, 2)
         return x
+
+    def pack_inputs(
+        self,
+        x: torch.Tensor,
+        mu: torch.Tensor,
+        speaker_embeddings: torch.Tensor | None,
+        mel_conditioning: torch.Tensor | None,
+    ) -> torch.Tensor:
+        x = pack([x, mu], "b * t")[0]
+        if speaker_embeddings is not None:
+            speaker_embeddings = repeat(
+                speaker_embeddings, "b c -> b c t", t=x.shape[-1]
+            )
+            x = pack([x, speaker_embeddings], "b * t")[0]
+        else:
+            pass
+        if mel_conditioning is not None:
+            x = pack([x, mel_conditioning], "b * t")[0]
+        else:
+            pass
+        return x.transpose(1, 2)
+
+    def forward_chunk(
+        self,
+        x: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        speaker_embeddings: torch.Tensor,
+        mel_conditioning: torch.Tensor,
+        state: DiTState,
+    ) -> tuple[torch.Tensor, DiTState]:
+        """Run one unmasked chunk against the stream's histories."""
+        timestep_embedding = self.t_embedder(t).unsqueeze(1)
+        x = self.in_proj(self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning))
+        next_convolution: list[torch.Tensor] = []
+        next_attention: list[torch.Tensor] = []
+        for index, block in enumerate(self.blocks):
+            if state.attention is not None:
+                assert state.convolution is not None
+                first, second = state.convolution[index].split(
+                    (block.conv.in_channels, block.conv.out_channels), dim=1
+                )
+                convolution_state = ConvBlockState(
+                    first=ConvState(history=first), second=ConvState(history=second)
+                )
+                attention_state = AttentionState(history=state.attention[index])
+            else:
+                convolution_state = ConvBlockState()
+                attention_state = AttentionState()
+            x, convolution_state, attention_state = block(
+                x, timestep_embedding, None, convolution_state, attention_state
+            )
+            assert convolution_state is not None and attention_state is not None
+            assert (
+                convolution_state.first.history is not None
+                and convolution_state.second.history is not None
+                and attention_state.history is not None
+            )
+            next_convolution.append(
+                torch.cat(
+                    (convolution_state.first.history, convolution_state.second.history),
+                    dim=1,
+                )
+            )
+            next_attention.append(attention_state.history)
+        x = self.final_layer(x, timestep_embedding).transpose(1, 2)
+        return x, DiTState(
+            convolution=torch.stack(next_convolution),
+            attention=torch.stack(next_attention),
+        )
 
     def forward_packed(
         self,

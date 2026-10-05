@@ -2,10 +2,12 @@
 
 import threading
 from types import SimpleNamespace
+from typing import Protocol
 
 import pytest
 import torch
 
+from sglang_omni.models.qwen3_tts import incremental_codec_cuda_graph
 from sglang_omni.models.qwen3_tts.incremental_codec import Qwen3TTSIncrementalCodecState
 from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     CaptureResourceSet,
@@ -18,6 +20,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     IncrementalDecodePlan,
     Qwen3TTSStreamingVocoderScheduler,
 )
+from tests.unit_test.fixtures.accelerator import require_device_streams
 
 
 class FakeGraph:
@@ -94,17 +97,19 @@ def make_state(
 def async_incremental_scheduler(
     device: torch.device,
 ) -> Qwen3TTSStreamingVocoderScheduler:
+    device_module = torch.get_device_module(device)
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
     scheduler.device = device
+    scheduler.device_module = device_module
     scheduler.cuda_decode_failed = False
     scheduler.deterministic_inference = False
     scheduler.samples_per_frame = 1
     scheduler.pinned_staging_disabled = True
     scheduler.decode_staging = threading.local()
-    scheduler.decode_stream = torch.cuda.Stream(device=device)
-    scheduler.followup_decode_stream = torch.cuda.Stream(device=device)
+    scheduler.decode_stream = device_module.Stream(device=device)
+    scheduler.followup_decode_stream = device_module.Stream(device=device)
     scheduler.followup_decode_streams = (scheduler.followup_decode_stream,)
     scheduler.initial_window_decode_graphs = None
     scheduler.worker_ctx = SimpleNamespace(graphs=None)
@@ -146,6 +151,35 @@ def make_runner(**kwargs) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
     )
     runner.enabled = True
     return runner
+
+
+class DeviceSynchronizer(Protocol):
+    def __call__(self, device: torch.device) -> None: ...
+
+
+def no_op_synchronize(device: torch.device) -> None:
+    """The DeviceSynchronizer a stand-in installs when a test injects no failure.
+    It takes the device the contract passes and has nothing to wait for."""
+
+
+def stub_device_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: Qwen3TTSIncrementalCodecCudaGraphRunner,
+    *,
+    synchronize: DeviceSynchronizer = no_op_synchronize,
+) -> None:
+    """Give a CPU runner the teardown path of a device that has streams."""
+    monkeypatch.setattr(
+        runner,
+        "device_module",
+        SimpleNamespace(synchronize=synchronize, empty_cache=lambda: None),
+    )
+    monkeypatch.setattr(
+        incremental_codec_cuda_graph, "supports_device_streams", lambda device: True
+    )
+    monkeypatch.setattr(
+        incremental_codec_cuda_graph, "device_guard", lambda device: DeviceContext()
+    )
 
 
 def make_entry(bucket: int, graph=None) -> SimpleNamespace:
@@ -264,9 +298,7 @@ def test_incremental_codec_graph_replay_failure_disables_runner(
     key = IncrementalCodecGraphKey(8, 1)
     graph = FailingGraph()
     runner.graphs[key] = make_entry(1, graph=graph)
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: DeviceContext())
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    stub_device_runtime(monkeypatch, runner)
 
     with pytest.raises(RuntimeError, match="injected replay failure"):
         runner.decode_slots(torch.zeros(1, 2, 8, dtype=torch.long), [0])
@@ -297,12 +329,11 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
     temporary = {key: SimpleNamespace()}
     pool = object()
     capture_stream = object()
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: DeviceContext())
 
-    def fail_synchronize(_device) -> None:
+    def fail_synchronize(device: torch.device) -> None:
         raise RuntimeError("injected synchronize failure")
 
-    monkeypatch.setattr(torch.cuda, "synchronize", fail_synchronize)
+    stub_device_runtime(monkeypatch, runner, synchronize=fail_synchronize)
 
     runner.rollback_capture(
         temporary,
@@ -336,9 +367,7 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
     key = IncrementalCodecGraphKey(8, 1)
     temporary = {key: SimpleNamespace(graph=graph)}
 
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: DeviceContext())
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    stub_device_runtime(monkeypatch, runner)
 
     runner.rollback_capture(
         temporary,
@@ -379,9 +408,8 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -> None:
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = require_device_streams()
     traces: list[tuple] = []
     decodes: list[tuple] = []
 
@@ -426,7 +454,9 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
     static_codes = torch.zeros(1, 2, 4, dtype=torch.long, device=device)
     key = IncrementalCodecGraphKey(fresh_frames=4, batch_bucket=1)
     resources = CaptureResourceSet(
-        pool=None, stream=torch.cuda.Stream(device=device), keepalives=[static_codes]
+        pool=None,
+        stream=torch.get_device_module(device).Stream(device=device),
+        keepalives=[static_codes],
     )
 
     runner((4,)).warmup_capture_shape(key, static_codes, resources)
@@ -450,9 +480,8 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = require_device_streams()
     scheduler = async_incremental_scheduler(device)
 
     graph_waveform = torch.tensor([[[10.0, 11.0]]], device=device)
@@ -514,9 +543,8 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = require_device_streams()
     scheduler = async_incremental_scheduler(device)
 
     cohort_state = make_state(1, offset=5, device=device)

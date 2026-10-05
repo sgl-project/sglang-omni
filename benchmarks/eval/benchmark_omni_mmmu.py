@@ -96,11 +96,8 @@ from benchmarks.tasks.visual_understand import (
     build_mmmu_result_records,
     make_mmmu_send_fn,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -262,6 +259,11 @@ async def benchmark(args: argparse.Namespace) -> dict:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     parser = argparse.ArgumentParser(
         description="MMMU benchmark for VLM models served by sglang-omni."
     )

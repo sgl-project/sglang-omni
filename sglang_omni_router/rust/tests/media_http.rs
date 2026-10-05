@@ -62,12 +62,14 @@ const MEDIA_ROUTE_SUBSETS: [&[MediaRoute]; 5] = [
 
 #[derive(Clone, Debug)]
 struct Captured {
+    method: String,
     path: String,
-    content_type: String,
+    content_type: Option<String>,
     body: Vec<u8>,
     request_id: Option<String>,
     route_model: Option<String>,
     route_stream: Option<String>,
+    route_worker: Option<String>,
 }
 
 struct Worker {
@@ -175,14 +177,15 @@ fn handle_connection(
             changed.notify_all();
             return;
         }
-        let path = request_line
-            .split_ascii_whitespace()
-            .nth(1)
-            .expect("request path")
+        let mut request_line_parts = request_line.split_ascii_whitespace();
+        let method = request_line_parts
+            .next()
+            .expect("request method")
             .to_owned();
+        let path = request_line_parts.next().expect("request path").to_owned();
         let expected = header_value(&head, "content-length")
             .and_then(|value| value.parse::<usize>().ok())
-            .expect("router sends canonical content length");
+            .unwrap_or(0);
         while body.len() < expected {
             let mut chunk = [0_u8; 4096];
             let count = stream.read(&mut chunk).expect("read worker request body");
@@ -192,23 +195,22 @@ fn handle_connection(
             body.extend_from_slice(&chunk[..count]);
         }
         body.truncate(expected);
-        let content_type = header_value(&head, "content-type")
-            .expect("router sends content type")
-            .to_owned();
         captured
             .lock()
             .expect("record media request")
             .push(Captured {
+                method,
                 path: path.clone(),
-                content_type,
+                content_type: header_value(&head, "content-type").map(str::to_owned),
                 body: body.clone(),
                 request_id: header_value(&head, "x-request-id").map(str::to_owned),
                 route_model: header_value(&head, "x-sglang-omni-route-model").map(str::to_owned),
                 route_stream: header_value(&head, "x-sglang-omni-route-stream").map(str::to_owned),
+                route_worker: header_value(&head, "x-sglang-omni-route-worker").map(str::to_owned),
             });
         let response: &[u8] = match path.as_str() {
         "/v1/audio/speech" if contains_bytes(&body, b"\"stream\":true") => {
-            b"HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\nContent-Length: 4\r\nX-Sample-Rate: 24000\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n\r\nPCM!"
+            b"HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\nContent-Length: 4\r\nX-Sample-Rate: 24000\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\nX-SGLang-Omni-Speech-Id: speech-resource\r\n\r\nPCM!"
         }
         "/v1/audio/speech" if contains_bytes(&body, b"\"response_format\":\"opus\"") => {
             b"HTTP/1.1 200 OK\r\nContent-Type: audio/opus\r\nContent-Length: 4\r\n\r\nOPUS"
@@ -218,6 +220,9 @@ fn handle_connection(
         }
         "/v1/audio/speech" => b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 4\r\nContent-Disposition: attachment; filename=\"speech.wav\"\r\nX-Prompt-Tokens: 7\r\nX-Completion-Tokens: 9\r\nX-Engine-Time: 0.25\r\nX-Finish-Reason: stop\r\n\r\nWAVE",
         "/v1/audio/speech/batch" => b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 23\r\n\r\n{\"results\":[0,1],\"n\":2}",
+        path if path.starts_with("/v1/audio/speech/") => {
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 39\r\n\r\n{\"finish_reason\":\"length\",\"usage\":null}"
+        }
         "/v1/audio/transcriptions"
             if body
                 .windows(4)
@@ -536,6 +541,74 @@ fn relays_all_media_routes_with_exact_bytes_headers_and_large_direct_uploads() {
     assert_eq!(header(&response, "x-sample-rate"), Some("24000"));
     assert_eq!(response_body(&response), b"PCM!");
     assert_eq!(capture.body, streaming_pcm);
+    assert_eq!(header(&response, "x-sglang-omni-worker"), Some("worker-0"));
+
+    // The stream's terminal state lives on the worker that produced it, which the
+    // caller names by echoing the worker header; the hint itself stays router-only.
+    let prior = worker.captures().len();
+    let response = request_with_extra_headers(
+        router.address,
+        "GET",
+        "/v1/audio/speech/a%25b",
+        None,
+        "x-sglang-omni-route-worker: worker-0\r\nx-request-id: caller-1\r\n",
+        b"",
+    )
+    .expect("pinned outcome response");
+    assert!(
+        response.starts_with(b"HTTP/1.1 200"),
+        "unexpected outcome response: {}",
+        String::from_utf8_lossy(&response)
+    );
+    assert_eq!(header(&response, "x-request-id"), Some("caller-1"));
+    assert_eq!(header(&response, "x-sglang-omni-worker"), Some("worker-0"));
+    assert_eq!(
+        response_body(&response),
+        b"{\"finish_reason\":\"length\",\"usage\":null}"
+    );
+    let capture = worker.captures().remove(prior);
+    assert_eq!(capture.method, "GET");
+    assert_eq!(capture.path, "/v1/audio/speech/a%25b");
+    assert_eq!(capture.request_id.as_deref(), Some("caller-1"));
+    assert!(capture.route_worker.is_none());
+    assert!(capture.content_type.is_none());
+    for (extra_headers, path, status) in [
+        ("", "/v1/audio/speech/abc", "400"),
+        (
+            "x-sglang-omni-route-worker: nope\r\n",
+            "/v1/audio/speech/abc",
+            "404",
+        ),
+        (
+            "x-sglang-omni-route-worker: worker-0\r\n",
+            "/v1/audio/speech/abc%2Fdef",
+            "400",
+        ),
+        (
+            "x-sglang-omni-route-worker: worker-0\r\n",
+            "/v1/audio/speech/abc?x=1",
+            "400",
+        ),
+        (
+            "x-sglang-omni-route-worker: worker-0\r\n",
+            "/v1/audio/speech/batch",
+            "405",
+        ),
+    ] {
+        let response =
+            request_with_extra_headers(router.address, "GET", path, None, extra_headers, b"")
+                .expect("rejected outcome response");
+        assert!(
+            response.starts_with(format!("HTTP/1.1 {status}").as_bytes()),
+            "{path} with {extra_headers:?}: {}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+    let response = request(router.address, "POST", "/v1/audio/speech/abc", None, b"")
+        .expect("wrong-method outcome response");
+    assert!(response.starts_with(b"HTTP/1.1 405"));
+    assert_eq!(header(&response, "allow"), Some("GET"));
+    assert_eq!(worker.captures().len(), prior + 1);
 
     let batch = br#"{"model":"tts","response_format":"wav","items":[{"input":"a"},{"input":"b","response_format":"mp3","task_type":"VoiceDesign","ref_audio":"x"}]}"#;
     let (response, capture) = relay("/v1/audio/speech/batch", "application/json", batch);
@@ -561,8 +634,8 @@ fn relays_all_media_routes_with_exact_bytes_headers_and_large_direct_uploads() {
     assert_eq!(response_body(&response), b"{\"text\":\"hi\"}");
     assert_eq!(capture.body, multipart);
     assert_eq!(
-        capture.content_type,
-        "multipart/form-data; boundary=\"media-boundary\""
+        capture.content_type.as_deref(),
+        Some("multipart/form-data; boundary=\"media-boundary\"")
     );
 
     let streaming_multipart = multipart_body(true, 32);
@@ -908,6 +981,40 @@ fn media_accepts_chunked_uploads_and_standard_continue() {
 }
 
 #[test]
+fn speech_resource_identity_survives_canonical_request_headers() {
+    let _guard = socket_guard();
+    let worker = Worker::start();
+    let router = RouterProcess::start(&[MediaRoute::Speech], &[(&worker, false)]);
+    for caller_id in ["trace/a", "batch", "stream", "a#b", "a?b", "a%2Fb"] {
+        let response = request_with_extra_headers(
+            router.address,
+            "POST",
+            "/v1/audio/speech",
+            Some("application/json"),
+            &format!("x-request-id: {caller_id}\r\n"),
+            br#"{"input":"hello","stream":true}"#,
+        )
+        .expect("speech response");
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert_eq!(header(&response, "x-request-id"), Some(caller_id));
+        let speech_id = header(&response, "x-sglang-omni-speech-id").expect("speech identity");
+        let worker_id = header(&response, "x-sglang-omni-worker").expect("worker identity");
+        let path = format!("/v1/audio/speech/{speech_id}");
+        let outcome = request_with_extra_headers(
+            router.address,
+            "GET",
+            &path,
+            None,
+            &format!("x-sglang-omni-route-worker: {worker_id}\r\n"),
+            b"",
+        )
+        .expect("speech outcome");
+        assert!(outcome.starts_with(b"HTTP/1.1 200"));
+        assert_eq!(worker.captures().last().expect("lookup").path, path);
+    }
+}
+
+#[test]
 fn homogeneous_media_round_robin_reaches_both_workers_over_real_sockets() {
     let _guard = socket_guard();
     let first = Worker::start();
@@ -943,6 +1050,24 @@ fn homogeneous_media_round_robin_reaches_both_workers_over_real_sockets() {
 
     assert_eq!(first.captures().len(), 2);
     assert_eq!(second.captures().len(), 2);
+
+    // Round robin would alternate; the echoed worker id pins both lookups.
+    for _ in 0..2 {
+        let response = request_with_extra_headers(
+            router.address,
+            "GET",
+            "/v1/audio/speech/abc",
+            None,
+            "x-sglang-omni-route-worker: worker-1\r\n",
+            b"",
+        )
+        .expect("pinned outcome response");
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert_eq!(header(&response, "x-sglang-omni-worker"), Some("worker-1"));
+    }
+    assert_eq!(first.captures().len(), 2);
+    assert_eq!(second.captures().len(), 4);
+
     let captures = first
         .captures()
         .into_iter()

@@ -512,7 +512,7 @@ async def run_server(
         if enable_realtime and deployment_factory is not None:
             realtime_deployment: RealtimeDeployment | None = import_string(
                 deployment_factory
-            )(client)
+            )(client, pipeline_config)
         else:
             realtime_deployment = None
         app = create_app(

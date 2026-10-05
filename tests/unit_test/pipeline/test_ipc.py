@@ -20,6 +20,7 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
@@ -246,10 +247,9 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.fail_spawn = fail_spawn
             self.process = FakeProcess() if not fail_spawn else None
             self.channels_closed = False
-
-        @property
-        def process_specs(self) -> list[SimpleNamespace]:
-            return [SimpleNamespace(process_name=self.stage_name)] * len(self.processes)
+            self.process_specs = [
+                StageWorkerProcessSpec(stage_name, [StageLaunchConfig(stage_name)])
+            ]
 
         @property
         def processes(self) -> list[FakeProcess]:
@@ -372,9 +372,15 @@ async def test_mp_runner_stop_cleans_runtime_dir(
 
         def __init__(self) -> None:
             self.shutdown_called = False
+            self.process_specs = [
+                StageWorkerProcessSpec(
+                    self.stage_name, [StageLaunchConfig(self.stage_name)]
+                )
+            ]
 
         def spawn(self, ctx) -> None:
             del ctx
+            assert self.process_specs[0].cpu_threads == 8
 
         async def wait_ready(self, timeout: float) -> None:
             del timeout
@@ -392,9 +398,12 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     group = FakeGroup()
     monkeypatch.setattr(mp_runner, "Coordinator", FakeCoordinator)
     monkeypatch.setattr(mp_runner, "build_stage_groups", lambda *a, **k: [group])
+    capacity = Mock(return_value=8)
+    monkeypatch.setattr(mp_runner, "effective_cpu_count", capacity)
 
     runner = mp_runner.MultiProcessPipelineRunner(make_config(tmp_path))
     await runner.start()
+    capacity.assert_called_once_with()
     assert len([path for path in tmp_path.iterdir() if path.is_dir()]) == 1
 
     await runner.stop()

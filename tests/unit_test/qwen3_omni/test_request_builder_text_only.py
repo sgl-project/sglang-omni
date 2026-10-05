@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     build_thinker_request,
     compute_mrope_positions,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
     make_qwen_payload,
@@ -90,6 +91,24 @@ def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch, entrypoint):
                     audio_token_id=77,
                 ),
             )
+
+
+@pytest.mark.parametrize("token_id", [-1, 256, (1 << 63) - 1])
+def test_out_of_vocabulary_prompt_ids_are_a_bad_request(monkeypatch, token_id):
+    patch_sampling_validation(monkeypatch)
+    state = make_qwen_state(prompt={"input_ids": torch.tensor([255, token_id])})
+
+    with pytest.raises(ValueError, match="out-of-vocabulary token id") as raised:
+        build_sglang_thinker_request(
+            state,
+            params={"max_new_tokens": 3},
+            tokenizer=FakeQwenTokenizer(),
+            vocab_size=256,
+            request_id="out-of-vocabulary",
+        )
+
+    assert f"token id {token_id} at position 1" in str(raised.value)
+    assert is_bad_request_error(RuntimeError(str(raised.value)))
 
 
 def test_legacy_flat_payloads_still_reach_the_model_input_field():

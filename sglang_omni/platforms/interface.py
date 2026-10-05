@@ -130,6 +130,12 @@ class OmniPlatform(DeviceMixin):
     def enable_tts_predictor_graph(self) -> bool:
         return True
 
+    def enable_tts_vocoder_fast_path(self) -> bool:
+        """Whether the Qwen3-TTS vocoder takes its device fast path by default:
+        asynchronous decode on a priority stream, and the codec decode graphs its
+        warmup captures."""
+        return True
+
     def enable_thinker_decode_graph(self) -> bool:
         return True
 
@@ -147,6 +153,13 @@ class OmniPlatform(DeviceMixin):
 
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""
+        return True
+
+    def supports_graph_captured_fft(self) -> bool:
+        return True
+
+    def supports_graph_captured_host_read(self) -> bool:
+        """Whether a capture tolerates a body that reads a tensor on the host."""
         return True
 
     def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
