@@ -24,7 +24,7 @@ from benchmarks.dataset.socialomni import (
 )
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.socialomni import (
-    SOCIALOMNI_JUDGE_NAMES,
+    SOCIALOMNI_JUDGE_COUNT,
     JudgeCompletenessError,
     compute_socialomni_level1_metrics,
     compute_socialomni_level2_metrics,
@@ -87,8 +87,10 @@ def _request_failure(result: RequestResult, phase: str) -> dict[str, str] | None
     }
 
 
-def has_complete_judges(records: list[dict[str, Any]], configured: bool) -> bool:
-    if not configured:
+def has_complete_judges(
+    records: list[dict[str, Any]], judge_names: tuple[str, ...]
+) -> bool:
+    if not judge_names:
         return False
     try:
         for record in records:
@@ -98,7 +100,9 @@ def has_complete_judges(records: list[dict[str, Any]], configured: bool) -> bool
                 record["gold_response"],
             ):
                 validate_judge_scores(
-                    record["gold_judge_scores"], str(record.get("sample_id", ""))
+                    record["gold_judge_scores"],
+                    str(record.get("sample_id", "")),
+                    judge_names=judge_names,
                 )
     except JudgeCompletenessError:
         return False
@@ -116,6 +120,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
         if "level2" in levels and config.judge_config
         else []
     )
+    judge_names = tuple(judge.name for judge in judges)
     validate_judge_credentials(judges)
     warmup = resolve_warmup(config.warmup, config.max_concurrency)
     recorded_rate = (
@@ -278,9 +283,11 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             )
             for record in records
         )
-        judges_complete = has_complete_judges(records, bool(judges))
+        judges_complete = has_complete_judges(records, judge_names)
         complete_metrics = (
-            compute_socialomni_level2_metrics(records) if judges_complete else None
+            compute_socialomni_level2_metrics(records, judge_names=judge_names)
+            if judges_complete
+            else None
         )
         selected = {
             "when": (
@@ -289,6 +296,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                 else compute_socialomni_when_metrics(records)
             ),
             "quality": None,
+            "judge_names": list(judge_names),
             "judge_status": {
                 "configured": bool(judges),
                 "complete": judges_complete,
@@ -296,13 +304,12 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                 "completed_scores": sum(
                     len(record["gold_judge_scores"]) for record in records
                 ),
-                "required_scores": required_judgments * len(SOCIALOMNI_JUDGE_NAMES),
+                "required_scores": required_judgments * SOCIALOMNI_JUDGE_COUNT,
             },
         }
         if complete_metrics:
             selected["quality"] = complete_metrics["quality"]
             selected["bootstrap"] = complete_metrics["bootstrap"]
-            selected["judge_names"] = complete_metrics["judge_names"]
         output["summary"]["level2"] = {
             "metrics": selected,
             "speed": {
@@ -320,12 +327,15 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
         }
         if len(records) >= SOCIALOMNI_PAPER_CORE_SIZE:
             core = records[:SOCIALOMNI_PAPER_CORE_SIZE]
-            core_complete = has_complete_judges(core, bool(judges))
+            core_complete = has_complete_judges(core, judge_names)
             core_metrics = (
-                compute_socialomni_level2_metrics(core) if core_complete else None
+                compute_socialomni_level2_metrics(core, judge_names=judge_names)
+                if core_complete
+                else None
             )
             core_summary: dict[str, Any] = {
                 "sample_count": len(core),
+                "judge_names": list(judge_names),
                 "when": (
                     core_metrics["when"]
                     if core_metrics

@@ -459,11 +459,23 @@ python -m benchmarks.dataset.prepare \
     --dataset socialomni --local-dir /path/to/socialomni
 ```
 
-The judge configuration contains exactly the fixed names `gpt-4o`,
-`gemini-2.5-pro`, and `qwen3-omni`. Each entry declares an OpenAI-compatible
-endpoint, the environment variable holding its API key, and a concurrency
-limit. The output records the environment variable name, never its value. Start
-from [`configs/socialomni_judges.example.json`](configs/socialomni_judges.example.json).
+The judge configuration requires exactly three distinct, non-empty names.
+Each entry declares the actual served `model`, an OpenAI-compatible endpoint,
+the environment variable holding its API key, and a concurrency limit.
+Optional `enable_thinking` and `reasoning_effort` values are sent only when
+configured. The endpoint must support the selected options. Results retain
+the configured names, model IDs and reasoning options; API key values are
+never recorded. Missing scores from any configured judge leave quality
+incomplete, including the first-200 view.
+
+The [example configuration](configs/socialomni_judges.example.json) follows
+the [SocialOmni leaderboard's September 24 panel](https://github.com/MAC-AutoML/SocialOmni/tree/main/evaluation/results/modern-panel-20260924):
+Gemini 3.8 Flash, Qwen3.8-Omni-Flash (`enable_thinking=false`), and
+GPT-5.6-Sol (`reasoning_effort=none`). Existing GPT-4o / Gemini 2.5 Pro /
+Qwen3-Omni configurations remain supported. Keep the same panel and settings
+across comparisons; scores from different panels are not directly comparable.
+This configuration updates judge selection and reasoning controls, not the
+candidate prompts, judge rubric, or other leaderboard evaluation settings.
 
 ```bash
 # Deterministic smoke set: both Level 1 visibility strata and Level 2 YES/NO.

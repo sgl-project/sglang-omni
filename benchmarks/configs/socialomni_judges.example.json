@@ -1,25 +1,27 @@
 {
   "judges": [
     {
-      "name": "gpt-4o",
-      "model": "gpt-4o",
-      "base_url": "https://openai-compatible.example/v1",
-      "api_key_env": "SOCIALOMNI_GPT4O_API_KEY",
-      "max_concurrency": 4
-    },
-    {
-      "name": "gemini-2.5-pro",
-      "model": "gemini-2.5-pro",
+      "name": "gemini-3.8-flash",
+      "model": "gemini-3.8-flash",
       "base_url": "https://openai-compatible.example/v1",
       "api_key_env": "SOCIALOMNI_GEMINI_API_KEY",
-      "max_concurrency": 4
+      "max_concurrency": 2
     },
     {
-      "name": "qwen3-omni",
-      "model": "qwen3-omni",
-      "base_url": "http://localhost:8000/v1",
-      "api_key_env": null,
-      "max_concurrency": 1
+      "name": "qwen3.8-omni",
+      "model": "dashscope/qwen3.8-omni-flash",
+      "base_url": "https://openai-compatible.example/v1",
+      "api_key_env": "SOCIALOMNI_QWEN_API_KEY",
+      "max_concurrency": 2,
+      "enable_thinking": false
+    },
+    {
+      "name": "gpt-5.6-sol",
+      "model": "gpt-5.6-sol",
+      "base_url": "https://openai-compatible.example/v1",
+      "api_key_env": "SOCIALOMNI_GPT_API_KEY",
+      "max_concurrency": 2,
+      "reasoning_effort": "none"
     }
   ]
 }

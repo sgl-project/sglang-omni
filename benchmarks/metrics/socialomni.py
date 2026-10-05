@@ -8,6 +8,7 @@ import random
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+SOCIALOMNI_JUDGE_COUNT = 3
 SOCIALOMNI_JUDGE_NAMES = ("gpt-4o", "gemini-2.5-pro", "qwen3-omni")
 SOCIALOMNI_SCORE_BUCKETS = frozenset({0, 25, 50, 75, 100})
 
@@ -132,14 +133,36 @@ def requires_judge(
     )
 
 
-def validate_judge_scores(value: object, sample_id: str) -> dict[str, int]:
-    """Require one integer score in the allowed buckets from each fixed judge."""
-    if not isinstance(value, Mapping) or set(value) != set(SOCIALOMNI_JUDGE_NAMES):
+def validate_judge_names(judge_names: Sequence[str]) -> None:
+    if (
+        len(judge_names) != SOCIALOMNI_JUDGE_COUNT
+        or any(
+            not isinstance(name, str) or not name.strip() or name != name.strip()
+            for name in judge_names
+        )
+        or len(set(judge_names)) != SOCIALOMNI_JUDGE_COUNT
+    ):
+        raise ValueError(
+            "judge names must contain exactly three distinct non-empty names"
+        )
+    else:
+        pass
+
+
+def validate_judge_scores(
+    value: object,
+    sample_id: str,
+    *,
+    judge_names: Sequence[str] = SOCIALOMNI_JUDGE_NAMES,
+) -> dict[str, int]:
+    """Require one integer score in the allowed buckets from each configured judge."""
+    validate_judge_names(judge_names)
+    if not isinstance(value, Mapping) or set(value) != set(judge_names):
         raise JudgeCompletenessError(
-            f"sample {sample_id!r} requires all judges {SOCIALOMNI_JUDGE_NAMES}"
+            f"sample {sample_id!r} requires all judges {tuple(judge_names)}"
         )
     scores: dict[str, int] = {}
-    for judge in SOCIALOMNI_JUDGE_NAMES:
+    for judge in judge_names:
         score = value[judge]
         if type(score) is not int or score not in SOCIALOMNI_SCORE_BUCKETS:
             raise JudgeCompletenessError(
@@ -178,10 +201,12 @@ def bootstrap_mean_interval(
 def compute_socialomni_level2_metrics(
     records: Iterable[Mapping[str, Any]],
     *,
+    judge_names: Sequence[str] = SOCIALOMNI_JUDGE_NAMES,
     bootstrap_seed: int = 20260902,
     bootstrap_samples: int = 10_000,
 ) -> dict[str, Any]:
     """Compute turn-entry and complete three-judge response metrics."""
+    validate_judge_names(judge_names)
     rows = list(records)
     when_metrics, gold, predicted = _level2_when_metrics(rows)
 
@@ -204,6 +229,7 @@ def compute_socialomni_level2_metrics(
             scores = validate_judge_scores(
                 row.get("gold_judge_scores", {}),
                 str(row.get("sample_id", index)),
+                judge_names=judge_names,
             )
             score = sum(scores.values()) / len(scores)
         gold_scores.append(score)
@@ -235,7 +261,7 @@ def compute_socialomni_level2_metrics(
         ),
     }
     return {
-        "judge_names": list(SOCIALOMNI_JUDGE_NAMES),
+        "judge_names": list(judge_names),
         "bootstrap": {"seed": bootstrap_seed, "samples": bootstrap_samples},
         "when": when_metrics,
         "quality": quality,
