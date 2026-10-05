@@ -356,7 +356,7 @@ def validate_acoustic_pool_memory(
         f"(pools={gib(estimate.total_bytes):.2f} GiB + "
         f"{headroom_ratio:.0%} headroom for graphs/workspace) but only "
         f"{gib(free_bytes):.2f} GiB is free on {device} "
-        f"(GPU total {gib(total_bytes):.2f} GiB). "
+        f"(device total {gib(total_bytes):.2f} GiB). "
         f"Configured slots={estimate.num_slots} patch_capacity={estimate.patch_capacity} "
         f"nfe={estimate.nfe} dtype={estimate.dtype}. "
         "Lower max_running_requests and/or max_generate_length "
