@@ -235,6 +235,7 @@ def test_image_audio_commit_atomically(
         (79, 89),
     ]
     assert request.session_embedding_spans == [history, *unit.embedding_spans]
+    assert request.req.skip_radix_cache_insert is True
     if finish == "complete":
         bridge.complete("unit")
         assert session.embedding_spans == [history, *unit.embedding_spans]

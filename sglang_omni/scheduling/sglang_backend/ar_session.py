@@ -381,6 +381,8 @@ class ARSessionBridge:
             raise ValueError("embedding span precedes the native sequence")
         else:
             pass
+        # note (Junnan Li): Placeholder ids under embedding spans do not identify their rows, so such a unit stays out of the radix tree.
+        session_request.skip_radix_cache_insert = bool(unit.embedding_spans)
         session = self.sessions[unit.session_identity.id]
         request_data.session_embedding_spans = [
             *session.embedding_spans,
