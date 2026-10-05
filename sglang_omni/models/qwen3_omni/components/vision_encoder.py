@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import torch
+from transformers.initialization import no_init_weights
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeVisionEncoderConfig,
 )
@@ -16,7 +17,9 @@ from sglang_omni.models.qwen3_omni.components.vision_compat import (
     VisionRotaryInputs,
     VisionSequenceMetadata,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.interface import JointRopeInplaceKernel
+from sglang_omni.utils.hf import instantiate_module
 
 
 class Qwen3OmniVisionEncoder(Qwen3OmniMoeVisionEncoderCompat):
@@ -73,3 +76,19 @@ class Qwen3OmniVisionEncoder(Qwen3OmniMoeVisionEncoderCompat):
                 max_sequence_patch_count=max(sequence_patch_counts),
             )
         }
+
+
+def instantiate_visual(
+    vision_config: Qwen3OmniMoeVisionEncoderConfig,
+    *,
+    device: str,
+    native_visual_class: type[Qwen3OmniMoeVisionEncoderCompat],
+) -> Qwen3OmniMoeVisionEncoderCompat:
+    if torch.device(device).type != current_platform.device_type:
+        return instantiate_module(native_visual_class, vision_config)
+    else:
+        with no_init_weights():
+            return Qwen3OmniVisionEncoder._from_config(  # noqa: leading-underscore  # Transformers construction API
+                vision_config,
+                joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(),
+            )

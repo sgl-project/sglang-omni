@@ -11,6 +11,7 @@ import torch
 from safetensors.torch import save_file
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
+import sglang_omni.models.qwen3_omni.components.vision_encoder as vision_runtime
 from sglang_omni.models.qwen3_omni.components import image_encoder, vision_compat
 from sglang_omni.models.qwen3_omni.components.vision_encoder import (
     Qwen3OmniVisionEncoder,
@@ -197,7 +198,7 @@ def test_image_encoder_preserves_outputs_with_platform_rotary(
     kernel = Mock(side_effect=apply_cpu_joint_rope)
     provider = Mock(return_value=kernel if has_provider else None)
     monkeypatch.setattr(
-        image_encoder,
+        vision_runtime,
         "current_platform",
         SimpleNamespace(
             device_type=platform_device, get_joint_rope_inplace_kernel=provider
