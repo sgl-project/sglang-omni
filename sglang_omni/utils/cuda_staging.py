@@ -167,10 +167,8 @@ class PinnedTransferSlot:
         else:
             pass
         with self.device_guard():
-            if self.event is None and self.blocking:
-                self.event = new_device_event(self.device, blocking=True)
-            elif self.event is None:
-                self.event = new_device_event(self.device)
+            if self.event is None:
+                self.event = new_device_event(self.device, blocking=self.blocking)
             else:
                 pass
             self.event.record(stream)

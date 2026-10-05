@@ -3120,7 +3120,10 @@ def force_pinned_cpu_decode(
         def __exit__(self, exc_type, exc, traceback):
             return False
 
-    def make_event(device: torch.device | None = None) -> FakeCudaEvent:
+    def make_event(
+        device: torch.device | None = None, *, blocking: bool = False
+    ) -> FakeCudaEvent:
+        del device, blocking
         event = FakeCudaEvent(events)
         created.append(event)
         return event
@@ -3860,7 +3863,10 @@ def test_qwen3_tts_decode_launch_syncs_when_event_record_fails(
     events: list[str] = []
     created = force_pinned_cpu_decode(scheduler, monkeypatch, events)
 
-    def make_exploding_event(device: torch.device | None = None) -> FakeCudaEvent:
+    def make_exploding_event(
+        device: torch.device | None = None, *, blocking: bool = False
+    ) -> FakeCudaEvent:
+        del device, blocking
         event = FakeCudaEvent(events)
         event.record_error = RuntimeError("event init failed")
         created.append(event)
@@ -4297,7 +4303,10 @@ def test_qwen3_tts_unproven_completion_retains_resources_and_disables_cuda_decod
 
     if failure_point == "launch":
 
-        def make_exploding_event(device: torch.device | None = None) -> FakeCudaEvent:
+        def make_exploding_event(
+            device: torch.device | None = None, *, blocking: bool = False
+        ) -> FakeCudaEvent:
+            del device, blocking
             event = FakeCudaEvent(events)
             event.record_error = RuntimeError("record failed")
             created.append(event)

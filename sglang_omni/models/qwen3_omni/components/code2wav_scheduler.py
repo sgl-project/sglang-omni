@@ -704,6 +704,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             pass
         slot = pending.slot
         wait_start = time.monotonic_ns()
+        # note (ratish): synchronize() drops the GIL even for a finished copy, and in
+        # the talker's process the talker thread can then hold it for a switch interval.
         if not slot.query():
             slot.synchronize()
         else:
@@ -877,14 +879,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         with self.state_lock:
             self.reap_retired()
             failed = self.emit_completed_windows()
+            # note (ratish): every window copies on the one decode stream, so the
+            # window launched first completes first.
             in_flight = min(
-                (
-                    (request_id, state.pending)
-                    for request_id, state in self.stream_states.items()
-                    if state.pending is not None
-                    and state.stream_enabled
-                    and not self.is_aborted(request_id)
-                ),
+                self.streaming_pending_windows(),
                 key=lambda item: item[1].launch_index,
                 default=None,
             )
@@ -1026,21 +1024,24 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.drain_mode = True
         super().stop()
 
+    def streaming_pending_windows(self) -> list[tuple[str, PendingWindow]]:
+        """Launched windows of streaming requests that no abort has claimed. A
+        non-streaming request returns its audio in the final result, so sending a
+        window early gains it nothing. Callers hold state_lock."""
+        return [
+            (request_id, state.pending)
+            for request_id, state in self.stream_state_items()
+            if state.pending is not None
+            and state.stream_enabled
+            and not self.is_aborted(request_id)
+        ]
+
     def emit_completed_windows(self) -> list[str]:
         """Send every streaming window whose host copy has finished. Callers hold
         state_lock and run abort cleanup for the returned failed request ids once
         it is released, as pump_due_streams does."""
         failed: list[str] = []
-        for request_id, state in list(self.stream_states.items()):
-            pending = state.pending
-            if (
-                pending is None
-                or not state.stream_enabled
-                or self.is_aborted(request_id)
-            ):
-                continue
-            else:
-                pass
+        for request_id, pending in self.streaming_pending_windows():
             try:
                 messages = (
                     self.drain_pending_window(request_id)

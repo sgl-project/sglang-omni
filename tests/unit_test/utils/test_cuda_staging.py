@@ -57,7 +57,10 @@ def install_fake_events(
 ) -> list[FakeEvent]:
     created: list[FakeEvent] = []
 
-    def factory(device: torch.device | None = None) -> FakeEvent:
+    def factory(
+        device: torch.device | None = None, *, blocking: bool = False
+    ) -> FakeEvent:
+        del device, blocking
         event = FakeEvent()
         if configure is not None:
             configure(event)
@@ -229,7 +232,10 @@ def test_pinned_transfer_slot_event_construction_failure_rejects_completion_read
     init_error = RuntimeError("event init failed")
     factory = cuda_staging.new_device_event
 
-    def exploding_once(device: torch.device | None = None) -> FakeEvent:
+    def exploding_once(
+        device: torch.device | None = None, *, blocking: bool = False
+    ) -> FakeEvent:
+        del device, blocking
         monkeypatch.setattr(cuda_staging, "new_device_event", factory)
         raise init_error
 
