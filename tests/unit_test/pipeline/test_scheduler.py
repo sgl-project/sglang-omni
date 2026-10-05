@@ -249,6 +249,29 @@ def test_simple_scheduler_batch_and_error_contracts() -> None:
     )
 
 
+def test_simple_scheduler_batch_exception_slot_fails_only_that_request() -> None:
+    failure = ValueError("bad item")
+    scheduler = SimpleScheduler(
+        lambda payload: payload,
+        batch_compute_fn=lambda payloads: [
+            failure if payload == "bad" else payload.upper() for payload in payloads
+        ],
+        max_batch_size=2,
+        max_batch_wait_ms=10,
+    )
+    outputs = run_scheduler(
+        scheduler,
+        [
+            IncomingMessage("req-1", "new_request", "good"),
+            IncomingMessage("req-2", "new_request", "bad"),
+        ],
+        output_count=2,
+    )
+    by_id = {out.request_id: out for out in outputs}
+    assert (by_id["req-1"].type, by_id["req-1"].data) == ("result", "GOOD")
+    assert (by_id["req-2"].type, by_id["req-2"].data) == ("error", failure)
+
+
 def test_simple_scheduler_arrival_hook_sees_only_new_requests() -> None:
     arrived_payloads: list[str] = []
     scheduler = SimpleScheduler(

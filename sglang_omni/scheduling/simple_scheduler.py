@@ -34,6 +34,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
     """Process requests one at a time via a callable.
 
     Supports sync and async callables for ``new_request`` messages only.
+    A ``batch_compute_fn`` may return a :class:`BaseException` in an item's
+    result slot to fail only that request while preserving the rest of the batch.
     Streaming stages should provide a dedicated scheduler implementation
     (for example ``Code2WavScheduler``) rather than rely on SimpleScheduler.
     """
@@ -47,8 +49,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         batch_compute_fn: (
             Callable[
                 [list[ComputeInput]],
-                Sequence[ComputeResult]
-                | Coroutine[None, None, Sequence[ComputeResult]],
+                Sequence[ComputeResult | BaseException]
+                | Coroutine[None, None, Sequence[ComputeResult | BaseException]],
             ]
             | None
         ) = None,
@@ -271,9 +273,10 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         for msg, result in zip(batch, results):
             if self.consume_if_aborted(msg.request_id):
                 continue
+            elif isinstance(result, BaseException):
+                self.emit_error(msg.request_id, result, self.outbox)
             else:
-                pass
-            self.emit_result(msg.request_id, result, self.outbox)
+                self.emit_result(msg.request_id, result, self.outbox)
 
     @staticmethod
     async def await_result(result: Awaitable[ComputeResult]) -> ComputeResult:
