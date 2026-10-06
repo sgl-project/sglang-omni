@@ -128,34 +128,38 @@ class MimiAttention(nn.Module):
                 state.end_offset,
             )
             state.end_offset += length
-            k, v = state.keys, state.values
-        else:
-            q, k, v = rearrange(
-                projected, "b t (p h d) -> p b h t d", p=3, h=self.num_heads
+            out = functional.scaled_dot_product_attention(
+                q, state.keys, state.values, attn_mask=mask
             )
-            q, k = apply_interleaved_rope(q, k, pos_q, self.max_period)
-            if state is None:
-                pos_k = pos_q
-                delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
-                # Note (wilsonzheng0327): The reference writes a whole chunk into its ring
-                # before attending, and once the ring is full it labels the slot at the
-                # write cursor as a future position. So a query sees only the keys
-                # newer than cursor - context, the cursor taken after its own chunk:
-                # the plain window until the ring fills, one to two keys fewer after.
-                # A partial last chunk only advances the cursor by what it holds.
-                # As a rule over positions this is one batched attention that matches
-                # the frame-by-frame ring bit for bit.
-                cursor = ((pos_q // self.write_chunk + 1) * self.write_chunk).clamp(
-                    max=offset + length
-                )
-                mask = (delta >= 0) & (
-                    pos_k.view(1, -1) > (cursor - self.context).view(-1, 1)
-                )
-            else:
-                pos_k = self.write_ring(k, v, state)
-                k, v = state.keys, state.values
-                delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
-                mask = (pos_k.view(1, -1) >= 0) & (delta >= 0) & (delta < self.context)
+            return self.out_proj(rearrange(out, "b h t d -> b t (h d)"))
+        else:
+            pass
+        q, k, v = rearrange(
+            projected, "b t (p h d) -> p b h t d", p=3, h=self.num_heads
+        )
+        q, k = apply_interleaved_rope(q, k, pos_q, self.max_period)
+        if state is None:
+            pos_k = pos_q
+            delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
+            # Note (wilsonzheng0327): The reference writes a whole chunk into its ring
+            # before attending, and once the ring is full it labels the slot at the
+            # write cursor as a future position. So a query sees only the keys
+            # newer than cursor - context, the cursor taken after its own chunk:
+            # the plain window until the ring fills, one to two keys fewer after.
+            # A partial last chunk only advances the cursor by what it holds.
+            # As a rule over positions this is one batched attention that matches
+            # the frame-by-frame ring bit for bit.
+            cursor = ((pos_q // self.write_chunk + 1) * self.write_chunk).clamp(
+                max=offset + length
+            )
+            mask = (delta >= 0) & (
+                pos_k.view(1, -1) > (cursor - self.context).view(-1, 1)
+            )
+        else:
+            pos_k = self.write_ring(k, v, state)
+            k, v = state.keys, state.values
+            delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
+            mask = (pos_k.view(1, -1) >= 0) & (delta >= 0) & (delta < self.context)
         out = functional.scaled_dot_product_attention(q, k, v, attn_mask=mask)
         return self.out_proj(rearrange(out, "b h t d -> b t (h d)"))
 

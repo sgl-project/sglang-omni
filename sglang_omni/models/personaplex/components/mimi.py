@@ -409,11 +409,7 @@ def load_mimi_codec(
     codec.load_state_dict(state, strict=True)
     codec = codec.to(device=device).eval()
     weight = codec.downsample.conv.weight
-    if (
-        weight.is_cuda
-        and torch.version.cuda is not None
-        and weight.dtype == torch.float32
-    ):
+    if weight.is_cuda and torch.version.cuda is not None:
         compile_mimi_rope_cache(weight.get_device())
     else:
         pass
