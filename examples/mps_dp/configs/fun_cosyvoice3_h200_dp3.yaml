@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Validated on one 141 GB H200 with three same-GPU Fun-CosyVoice3 replicas.
+# The vocoder runs in its own process, so each replica attaches two processes
+# (AR engine and vocoder) to the launcher's MPS daemon.
+
+config_cls: FunCosyVoice3PipelineConfig
+name: fun-cosyvoice3
+model_path: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+
+stages:
+  vocoder:
+    process: vocoder
+    gpu_memory_fraction: 0.15
+    factory:
+      flow_prefix_cache_gb: 8
+  tts_engine:
+    gpu_memory_fraction: 0.80
+    engine:
+      max_total_tokens: 131072

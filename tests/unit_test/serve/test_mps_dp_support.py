@@ -16,7 +16,9 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.moss_transcribe_diarize.config import (
@@ -96,17 +98,31 @@ def test_every_validated_config_class_has_a_drivable_topology():
         ), f"{name} is not a single-SGLang-engine pipeline: {engine_stages}"
 
 
-def test_every_shipped_example_config_resolves_with_sharing(tmp_path):
+def test_every_shipped_example_config_resolves(tmp_path):
     yamls = sorted((MPS_DP_DIR / "configs").glob("*.yaml"))
     assert yamls, "no example configs shipped"
+    registry = mps_dp_config.WEIGHT_SHARE_VALIDATED_CONFIGS
     for yaml_path in yamls:
+        config_cls = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))["config_cls"]
         stage_name, value = mps_dp_config.resolve_max_total_tokens(
-            yaml_path, require_single_sglang_engine=True, weight_share=True
+            yaml_path,
+            require_single_sglang_engine=True,
+            weight_share=config_cls in registry,
         )
         assert stage_name
         assert (
             isinstance(value, int) and value > 0
         ), f"{yaml_path.name} does not pin a positive max_total_tokens"
+
+
+def test_split_vocoder_process_keeps_one_kv_stage():
+    yaml_path = MPS_DP_DIR / "configs" / "fun_cosyvoice3_h200_dp3.yaml"
+    config = ConfigManager.from_file(str(yaml_path)).config
+    process_of = {stage.name: stage.process for stage in config.stages}
+    assert process_of["vocoder"] != process_of["tts_engine"]
+    assert mps_dp_config.resolve_max_total_tokens(
+        yaml_path, require_single_sglang_engine=True
+    ) == ("tts_engine", 131072)
 
 
 @pytest.mark.parametrize(
