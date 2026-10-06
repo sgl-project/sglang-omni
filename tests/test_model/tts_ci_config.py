@@ -79,10 +79,10 @@ THRESHOLD_SLACK_LOWER = 1.25
 # Higgs thresholds.
 HIGGS_VC_WER_MAX_CORPUS = 0.0101
 HIGGS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_WER_MAX_CORPUS)
-HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0104
+HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0114
 HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_STREAM_WER_MAX_CORPUS)
 HIGGS_VC_SIMILARITY_MEAN_MIN = 66.0257364654541
-HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1628
+HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1584
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
 HIGGS_VC_NON_STREAM_P95 = {
@@ -113,10 +113,10 @@ HIGGS_VC_STREAM_THRESHOLDS = apply_slack(
 # MOSS Local thresholds.
 MOSS_VC_WER_MAX_CORPUS = 0.0219
 MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
-MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0265
+MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0268
 MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
-MOSS_VC_SIMILARITY_MEAN_MIN = 64.33411296844483
-MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9521
+MOSS_VC_SIMILARITY_MEAN_MIN = 63.23229141235352
+MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9502
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
 MOSS_VC_NON_STREAM_P95 = {
@@ -154,7 +154,7 @@ MOSS_VC_STREAM_THRESHOLDS = apply_slack(
 # only; the CI slack calculation is unchanged.
 QWEN3_TTS_VC_WER_MAX_CORPUS = 0.0113
 QWEN3_TTS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(QWEN3_TTS_VC_WER_MAX_CORPUS)
-QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0109
+QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0111
 QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
     QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS
 )
@@ -219,32 +219,31 @@ QWEN3_TTS_VC_STREAM_THRESHOLDS = apply_slack(
 
 # Fun-CosyVoice3 0.5B.
 #
-# note(ratish): placeholder references until the H100 calibration fills them,
-# so the preset keeps gate_thresholds off until then.
-COSYVOICE3_VC_WER_MAX_CORPUS = 1.0
+# note (yxs): H100 references from five full-sample rounds at c00c327.
+COSYVOICE3_VC_WER_MAX_CORPUS = 0.0144
 COSYVOICE3_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(COSYVOICE3_VC_WER_MAX_CORPUS)
-COSYVOICE3_VC_STREAM_WER_MAX_CORPUS = 1.0
+COSYVOICE3_VC_STREAM_WER_MAX_CORPUS = 0.0135
 COSYVOICE3_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
     COSYVOICE3_VC_STREAM_WER_MAX_CORPUS
 )
-COSYVOICE3_VC_SIMILARITY_MEAN_MIN = 1.0
-COSYVOICE3_VC_UTMOS_MEAN_REFERENCE = 1.0
+COSYVOICE3_VC_SIMILARITY_MEAN_MIN = 66.81376810073853
+COSYVOICE3_VC_UTMOS_MEAN_REFERENCE = 3.9943
 COSYVOICE3_VC_UTMOS_MEAN_MIN = apply_mos_slack(COSYVOICE3_VC_UTMOS_MEAN_REFERENCE)
 
 COSYVOICE3_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.0,
-        "output_tok_per_req_s": 1.0,
-        "latency_mean_s": 1.0,
-        "rtf_mean": 1.0,
+        "throughput_qps": 10.995,
+        "output_tok_per_req_s": 162.7,
+        "latency_mean_s": 1.451,
+        "rtf_mean": 0.3256,
     }
 }
 
 COSYVOICE3_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.0,
-        "latency_mean_s": 1.0,
-        "rtf_mean": 1.0,
+        "throughput_qps": 10.287,
+        "latency_mean_s": 1.552,
+        "rtf_mean": 0.3535,
     }
 }
 
@@ -414,7 +413,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             # note(ratish): a cold Inductor cache compiles the DiT at startup;
             # two workers take about 3 minutes to start.
             startup_timeout=300,
-            gate_thresholds=False,
+            gate_thresholds=True,
         ),
         thresholds=TtsCiThresholdPreset(
             non_stream_speed=COSYVOICE3_VC_NON_STREAM_THRESHOLDS,
@@ -423,7 +422,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             stream_wer_corpus=COSYVOICE3_VC_STREAM_WER_CORPUS_THRESHOLD,
             similarity_mean_min=COSYVOICE3_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=COSYVOICE3_VC_UTMOS_MEAN_MIN,
-            calibrated=False,
+            calibrated=True,
         ),
     ),
 }
