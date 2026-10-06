@@ -477,7 +477,7 @@ configured judge leave quality incomplete, including the first-200 view.
 
 The example configuration follows the current panel published in the
 [SocialOmni leaderboard](https://mac-automl.github.io/SocialOmni/) and its
-[modern-panel evaluation record](https://github.com/teeryxie/SocialOmni/tree/main/evaluation/results/modern-panel-20260924):
+[modern-panel evaluation record](https://github.com/teeryxie/SocialOmni/tree/13e5e1f487185d36c38d0b545e558e10c7b11f88/evaluation/results/modern-panel-20260924):
 Gemini 3.8 Flash, Qwen3.8-Omni-Flash (enable_thinking=false), and GPT-5.6-Sol
 (reasoning_effort=none). Those judge results were produced for SocialOmni
 model evaluations using this benchmark protocol. This is a maintained example,
