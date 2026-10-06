@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-import torch
 
 from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
 from sglang_omni.models.dots_tts.stages import (
@@ -32,8 +31,6 @@ def test_accelerator_only_factories_reject_a_cpu_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("sglang_omni.platforms.current_platform", CPUOmniPlatform())
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
     for factory in (create_sglang_latent_engine_executor, create_vocoder_executor):
         for device in (None, "cpu"):
             with pytest.raises(RuntimeError, match="requires an accelerator"):
