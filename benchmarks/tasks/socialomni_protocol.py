@@ -129,8 +129,6 @@ def load_judge_config(path: str | Path) -> list[JudgeSpec]:
         enable_thinking = row.get("enable_thinking")
         if enable_thinking is not None and type(enable_thinking) is not bool:
             raise ValueError(f"judges[{index}].enable_thinking must be boolean or null")
-        else:
-            pass
         reasoning_effort = row.get("reasoning_effort")
         if reasoning_effort is not None and (
             not isinstance(reasoning_effort, str)
@@ -140,8 +138,6 @@ def load_judge_config(path: str | Path) -> list[JudgeSpec]:
             raise ValueError(
                 f"judges[{index}].reasoning_effort must be a non-empty string or null"
             )
-        else:
-            pass
         judges.append(
             JudgeSpec(
                 name=row["name"].strip(),
@@ -454,12 +450,8 @@ def judge_payload(judge: JudgeSpec, prompt: str) -> dict[str, Any]:
 
     if judge.enable_thinking is not None:
         payload["enable_thinking"] = judge.enable_thinking
-    else:
-        pass
     if judge.reasoning_effort is not None:
         payload["reasoning_effort"] = judge.reasoning_effort
-    else:
-        pass
     return payload
 
 
