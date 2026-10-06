@@ -879,13 +879,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         with self.state_lock:
             self.reap_retired()
             failed = self.emit_completed_windows()
-            # note (ratish): every window copies on the one decode stream, so the
-            # window launched first completes first.
-            in_flight = min(
-                self.streaming_pending_windows(),
-                key=lambda item: item[1].launch_index,
-                default=None,
-            )
+            pending_windows = self.streaming_pending_windows()
+            earliest_window = pending_windows[0] if pending_windows else None
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
         if self.can_batch_stream_chunks:
@@ -929,10 +924,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             timeout = min(timeout, max(deadline - time.monotonic(), 0.0))
         else:
             pass
-        if in_flight is not None and self.inbox.empty():
+        if earliest_window is not None and self.inbox.empty():
             # note (ratish): with nothing queued, sleep on the launched window rather
             # than hold its audio until the stream's next codes; the next pass sends it.
-            request_id, pending = in_flight
+            request_id, pending = earliest_window
             try:
                 pending.slot.synchronize()
             except Exception as exc:
@@ -1025,16 +1020,21 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         super().stop()
 
     def streaming_pending_windows(self) -> list[tuple[str, PendingWindow]]:
-        """Launched windows of streaming requests that no abort has claimed. A
-        non-streaming request returns its audio in the final result, so sending a
-        window early gains it nothing. Callers hold state_lock."""
-        return [
-            (request_id, state.pending)
-            for request_id, state in self.stream_state_items()
-            if state.pending is not None
-            and state.stream_enabled
-            and not self.is_aborted(request_id)
-        ]
+        """Launched windows of streaming requests that no abort has claimed, in
+        launch order. A non-streaming request returns its audio in the final result,
+        so sending a window early gains it nothing. Callers hold state_lock."""
+        # note (ratish): every window copies on the serving thread's one stream, so
+        # launch order is completion order.
+        return sorted(
+            (
+                (request_id, state.pending)
+                for request_id, state in self.stream_state_items()
+                if state.pending is not None
+                and state.stream_enabled
+                and not self.is_aborted(request_id)
+            ),
+            key=lambda request_window: request_window[1].launch_index,
+        )
 
     def emit_completed_windows(self) -> list[str]:
         """Send every streaming window whose host copy has finished. Callers hold

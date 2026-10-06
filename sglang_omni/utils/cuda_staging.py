@@ -28,11 +28,9 @@ def allocate_pinned(numel: int, dtype: torch.dtype) -> torch.Tensor:
 
 
 def new_device_event(device: torch.device, *, blocking: bool = False) -> torch.Event:
-    """The device's completion event type, resolved through its torch module.
-
-    A blocking event makes synchronize() sleep until the device signals instead of
-    spinning a host core.
-    """
+    """The device's completion event type, resolved through its torch module. A
+    blocking event makes synchronize() sleep until the device signals instead of
+    spinning a host core."""
     if blocking:
         return torch.get_device_module(device).Event(blocking=True)
     else:

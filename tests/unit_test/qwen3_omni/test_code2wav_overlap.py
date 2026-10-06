@@ -392,7 +392,6 @@ def test_overlap_completed_window_leaves_on_next_loop_pass(
     assert scheduler.next_message() is None
     assert scheduler.outbox.qsize() == 2
     assert scheduler.stream_states["req-1"].pending is None
-    # A window already known complete is read without a second fence.
     assert slot_event(pending.slot).synchronize_calls == 0
     scheduler.handle_stream_done("req-1")
     assert drain_snapshot(scheduler) == control
@@ -427,7 +426,7 @@ def test_overlap_in_flight_window_waits_only_with_empty_inbox(
     assert scheduler.stream_states["req-1"].pending is None
 
 
-def test_overlap_wait_takes_the_earliest_launched_window(
+def test_overlap_windows_wait_and_send_in_launch_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler = make_scheduler(overlap=True)
@@ -446,6 +445,13 @@ def test_overlap_wait_takes_the_earliest_launched_window(
     assert slot_event(first.slot).synchronize_calls == 1
     assert slot_event(second.slot).synchronize_calls == 0
 
+    slot_event(second.slot).complete = True
+    queued = IncomingMessage(request_id="req-c", type="stream_done", data=None)
+    scheduler.inbox.put(queued)
+    assert scheduler.next_message() is queued
+    sent_request_ids = [entry[0] for entry in drain_snapshot(scheduler)]
+    assert sent_request_ids == ["req-b", "req-a", "req-b", "req-a"]
+
 
 @pytest.mark.parametrize("is_copy_complete", [False, True])
 def test_overlap_nonstreaming_window_is_neither_waited_on_nor_sent(
@@ -462,7 +468,6 @@ def test_overlap_nonstreaming_window_is_neither_waited_on_nor_sent(
     inbox_waits: list[float | None] = []
 
     def get(block: bool = True, timeout: float | None = None) -> IncomingMessage:
-        # An empty inbox that returns at once, so the loop never waits on the clock.
         if block:
             inbox_waits.append(timeout)
         else:
@@ -523,7 +528,6 @@ def test_overlap_send_failure_runs_abort_cleanup_off_state_lock(
     cleanups: list[tuple[str, bool]] = []
 
     def abort_callback(request_id: str) -> None:
-        # Another thread can take state_lock only if the caller released it.
         def probe() -> None:
             acquired = scheduler.state_lock.acquire(timeout=1.0)
             if acquired:
