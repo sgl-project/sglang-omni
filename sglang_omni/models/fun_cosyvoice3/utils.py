@@ -55,6 +55,9 @@ class SpeechTokenizerV3:
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         )
         option.intra_op_num_threads = max(1, int(intra_op_threads))
+        # Note (Jiaxin Deng): idle pool threads otherwise spin at full CPU
+        # and take cores from the HiFT launch thread in the same process.
+        option.add_session_config_entry("session.intra_op.allow_spinning", "0")
 
         # note (db-ol): the cuDNN conv plan is rebuilt whenever the input shape differs
         # from the previous call, and the default search setting makes rebuilds slow.
@@ -121,6 +124,9 @@ class SpeakerEncoder:
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         )
         option.intra_op_num_threads = max(1, int(intra_op_threads))
+        # Note (Jiaxin Deng): idle pool threads otherwise spin at full CPU
+        # and take cores from the HiFT launch thread in the same process.
+        option.add_session_config_entry("session.intra_op.allow_spinning", "0")
 
         self.session = onnxruntime.InferenceSession(
             model_path,

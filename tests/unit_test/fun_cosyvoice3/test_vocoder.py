@@ -1118,6 +1118,11 @@ def prepare_vocoder_startup(
         "warmup_packed_dit_compile",
         lambda scheduler: startup_events.append("packed_warmup"),
     )
+    monkeypatch.setattr(
+        stages.CosyVoice3Vocoder,
+        "warmup_hift_step",
+        lambda vocoder: startup_events.append("hift_warmup"),
+    )
     if device_type == "cuda":
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
@@ -1168,6 +1173,9 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     else:
         assert "native_compile" not in startup_events
     assert ("packed_warmup" in startup_events) is enable_dit_torch_compile
+    assert startup_events.index("hift_warmup") < startup_events.index(
+        "scheduler_warmup"
+    )
 
 
 def test_create_vocoder_executor_trt_without_compile_skips_the_compile(
@@ -1415,14 +1423,21 @@ def make_causal_hift(voiced_threshold: float) -> torch.nn.Module:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("compiled", [False, True])
 def test_hift_step_matches_the_whole_history_chain(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, compiled: bool
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     voiced_threshold = 10.0
     hift = make_causal_hift(voiced_threshold)
-    vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
+    vocoder = stages.CosyVoice3Vocoder(
+        HiftFlowStub(), hift, enable_hift_torch_compile=compiled
+    )
+    if compiled:
+        vocoder.warmup_hift_step()
+    else:
+        pass
     torch.manual_seed(1)
     mels = [
         torch.randn(1, 80, frames, device="cuda") * 3 for frames in (180, 240, 240, 300)
