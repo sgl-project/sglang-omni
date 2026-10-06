@@ -408,7 +408,6 @@ def test_talker_mm_prompt_not_equivalent_to_linear() -> None:
 
 
 def test_talker_text_only_can_use_linear_and_matches_full_path() -> None:
-    """No grids → linear short-circuit matches full path."""
     from sglang_omni.models.qwen3_omni.mrope_positions import (
         get_rope_index_qwen3_omni_vectorized,
         talker_can_use_linear_mrope,
@@ -473,6 +472,32 @@ def test_talker_grids_without_mm_markers_can_use_linear() -> None:
     text_only_positions = torch.arange(len(tokens)).unsqueeze(0).expand(3, -1)
     assert torch.equal(full_pos.squeeze(1).float(), text_only_positions.float())
     assert float(full_delta.reshape(-1)[0].item()) == 0.0
+
+
+def test_talker_audio_prompt_walks_to_linear_positions() -> None:
+    from sglang_omni.models.qwen3_omni.mrope_positions import (
+        talker_can_use_linear_mrope,
+    )
+
+    audio_seqlen = 250
+    tokens = [10, 11] + audio_span(audio_seqlen) + [12, 13]
+    ids = torch.tensor([tokens], dtype=torch.long)
+    model_inputs = {
+        "audio_embeds": torch.zeros(feat_extract_output_lengths(audio_seqlen), 8),
+        "audio_feature_lengths": torch.tensor([audio_seqlen], dtype=torch.long),
+    }
+    cfg = thinker_config_ns()
+    assert talker_can_use_linear_mrope(ids.view(-1), model_inputs, cfg) is True
+
+    absent_image_grid = torch.tensor([[1, 4, 4]], dtype=torch.long)
+    (positions, delta), _ = oracle_and_fast(
+        ids,
+        image_grid_thw=absent_image_grid,
+        audio_seqlens=torch.tensor([audio_seqlen], dtype=torch.long),
+    )
+    text_only_positions = torch.arange(len(tokens)).unsqueeze(0).expand(3, -1)
+    assert torch.equal(positions.squeeze(1).float(), text_only_positions.float())
+    assert float(delta.reshape(-1)[0].item()) == 0.0
 
 
 def test_build_talker_request_keeps_mm_mrope_for_image_prompt(monkeypatch) -> None:
@@ -546,7 +571,6 @@ def test_build_talker_request_keeps_mm_mrope_for_image_prompt(monkeypatch) -> No
 def test_build_talker_request_attaches_no_mrope_without_mm_markers(
     monkeypatch,
 ) -> None:
-    """Grids but no mm markers → no multimodal inputs, SGLang's text-only positions."""
     from unittest.mock import MagicMock
 
     from sglang_omni.models.qwen3_omni import request_builders as rb

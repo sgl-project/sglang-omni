@@ -21,12 +21,10 @@ def talker_can_use_linear_mrope(
     model_inputs: Mapping[str, object],
     thinker_config: "PretrainedConfig",
 ) -> bool:
-    """True when linear arange+delta0 matches full mm MRoPE."""
-    # Note (guozhihao): talker uses MRotaryEmbedding; decode is
-    # seq_len + delta - 1. Mm placeholders + grids make positions/delta
-    # diverge from arange+0 (#1149 Part B), so only short-circuit when no
-    # multimodal segment would be emitted (no grids, or grids but no
-    # vision_start/audio_start in input_ids).
+    """True when the prompt's MRoPE positions are the arange with delta 0, so the
+    talker request needs no multimodal inputs."""
+    # Note (guozhihao): vision segments move positions and delta off the arange, so
+    # with grids, any vision_start or audio_start counts as not linear.
     has_image = model_inputs.get("image_grid_thw") is not None
     has_video = model_inputs.get("video_grid_thw") is not None
     if not has_image and not has_video:
