@@ -26,20 +26,6 @@ else:
     pass
 
 
-def keep_rotary_fp32_under_autocast(module: nn.Module, *, device_type: str) -> None:
-    """Keep rotary position arithmetic in fp32 under accelerator autocast."""
-    import_dots_tts()
-    from dots_tts.modules.backbone.layers import RotaryEmbedding
-
-    for child in module.modules():
-        if isinstance(child, RotaryEmbedding):
-            child.forward = torch.autocast(device_type=device_type, enabled=False)(
-                child.forward
-            )
-        else:
-            pass
-
-
 @dataclass
 class DotsFlowState:
     fm_sequence: torch.Tensor
@@ -170,11 +156,18 @@ class DotsTTSFlowHead(nn.Module):
                 DiTInferenceContext,
                 DiTSolver,
             )
+            from dots_tts.modules.backbone.layers import RotaryEmbedding
 
             device_type = next(self.parameters()).device.type
             # note (yao-matrix): CUDA already disables rotary autocast in dots.tts.
             if device_type not in ("cpu", "cuda"):
-                keep_rotary_fp32_under_autocast(self, device_type=device_type)
+                for module in self.modules():
+                    if isinstance(module, RotaryEmbedding):
+                        module.forward = torch.autocast(
+                            device_type=device_type, enabled=False
+                        )(module.forward)
+                    else:
+                        pass
             else:
                 pass
             self.dit_solver = DiTSolver(
