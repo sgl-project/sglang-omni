@@ -12,8 +12,7 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano,
-MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
@@ -148,6 +147,28 @@ curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
 The audio encoder captures a graph per (batch, length) bucket the first time it
 sees one, on XPU as on CUDA. Buckets that fail to capture log a warning and run
 eager, so a transcript is never at stake.
+
+### Nemotron 3.5 ASR (speech-to-text, single XPU)
+
+Complete-file transcription was validated on one 24 GB Intel Arc Pro B60 with the stock `float32` ASR stage, without model source changes. Run from the repository root after the XPU installation above, selecting the device with `ZE_AFFINITY_MASK`:
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path nvidia/nemotron-3.5-asr-streaming-0.6b \
+  --host 0.0.0.0 --port 8000
+```
+
+In another terminal, upload the cookbook's reference recording:
+
+```bash
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@tests/data/query_to_cars.wav" \
+  -F "model=nvidia/nemotron-3.5-asr-streaming-0.6b" \
+  -F "language=auto" \
+  -F "response_format=verbose_json"
+```
+
+The 4.62-second recording returned “How many cars are there in the picture?”. The same recording also passed with `--asr.factory.dtype bfloat16`; validation in both dtypes covers only this recording. Native PCM streaming, concurrent batching, and long recordings have not been validated on XPU. See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request parameters.
 
 ### Qwen3-TTS (text-to-speech, single XPU)
 
@@ -386,8 +407,8 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
+> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR (file transcription), MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
 > Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex and dots.tts single-card;
+> (Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).
