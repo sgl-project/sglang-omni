@@ -56,7 +56,28 @@ The settings panel switches between English and Chinese, changes the voice and a
 
 ## Voice cloning
 
-The chat endpoint follows the OpenAI Chat Completions API. Add `"modalities": ["text", "audio"]` and `"audio": {"format": "wav", "ref_audio": "data:audio/wav;base64,<...>"}` to the request, and the reply is spoken in the voice of the reference recording. The reference must be a base64 data URI; file paths and URLs are not fetched. Without it, the model uses its default voice.
+The chat endpoint follows the OpenAI Chat Completions API. Pass a reference recording in `audio.ref_audio`, and the reply is spoken in that voice:
+
+```python
+import base64
+from pathlib import Path
+
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+reference = base64.b64encode(Path("reference.wav").read_bytes()).decode("ascii")
+response = client.chat.completions.create(
+    model="MiniCPM-o-4_5",
+    messages=[{"role": "user", "content": "Please say hello."}],
+    modalities=["text", "audio"],
+    audio={
+        "format": "wav",
+        "ref_audio": f"data:audio/wav;base64,{reference}",
+    },
+)
+```
+
+The reference must be a base64 data URI; file paths and URLs are not fetched. Without it, the model uses its default voice.
 
 ## Full-duplex protocol
 
