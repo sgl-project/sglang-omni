@@ -242,6 +242,7 @@ These are set in `examples/full_duplex/minicpmo.yaml`:
 |---|---|---|
 | `max_sessions` | 2 | Conversations served at the same time |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
+| `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation; a conversation that needs more is closed and the others keep running |
 | `vision.max_frames_per_unit` | 4 | Frames accepted per unit (1 s of audio) |
 | `vision.max_slice_nums_limit` | 9 | Highest slice count a session may request |
 

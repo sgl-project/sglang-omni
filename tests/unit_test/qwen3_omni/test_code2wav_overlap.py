@@ -12,6 +12,7 @@ recovery, and cross-device use.
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 import weakref
@@ -235,7 +236,9 @@ def force_pipeline(scheduler: Code2WavScheduler, monkeypatch) -> list:
         "allocate_pinned",
         lambda numel, dtype: torch.empty(numel, dtype=dtype),
     )
-    monkeypatch.setattr(cuda_staging, "new_device_event", lambda device: FakeEvent())
+    monkeypatch.setattr(
+        cuda_staging, "new_device_event", lambda device, blocking=False: FakeEvent()
+    )
     stream_devices: list = []
 
     def current_stream(device=None):
@@ -373,6 +376,203 @@ def test_overlap_first_window_sync_second_deferred(monkeypatch) -> None:
     assert snapshot == control
 
 
+def test_overlap_completed_window_leaves_on_next_loop_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control = run_stream(overlap=False, n_chunks=20)
+
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler)
+    feed(scheduler, "req-1", range(20))
+    assert scheduler.outbox.qsize() == 1
+    pending = scheduler.stream_states["req-1"].pending
+    assert pending is not None
+
+    assert scheduler.next_message() is None
+    assert scheduler.outbox.qsize() == 2
+    assert scheduler.stream_states["req-1"].pending is None
+    assert slot_event(pending.slot).synchronize_calls == 0
+    scheduler.handle_stream_done("req-1")
+    assert drain_snapshot(scheduler) == control
+
+
+def test_overlap_in_flight_window_waits_only_with_empty_inbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler)
+    feed(scheduler, "req-1", range(20))
+    pending = scheduler.stream_states["req-1"].pending
+    assert pending is not None
+    event = slot_event(pending.slot)
+    event.complete = False
+
+    queued = IncomingMessage(request_id="req-2", type="stream_done", data=None)
+    scheduler.inbox.put(queued)
+    assert scheduler.next_message() is queued
+    assert event.synchronize_calls == 0
+    assert scheduler.outbox.qsize() == 1
+
+    assert scheduler.next_message() is None
+    assert event.synchronize_calls == 1
+    assert scheduler.outbox.qsize() == 1
+
+    scheduler.inbox.put(queued)
+    assert scheduler.next_message() is queued
+    assert event.synchronize_calls == 1
+    assert scheduler.outbox.qsize() == 2
+    assert scheduler.stream_states["req-1"].pending is None
+
+
+def test_overlap_windows_wait_and_send_in_launch_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler, "req-a")
+    seed(scheduler, "req-b")
+    feed(scheduler, "req-b", range(20))
+    feed(scheduler, "req-a", range(20))
+    first = scheduler.stream_states["req-b"].pending
+    second = scheduler.stream_states["req-a"].pending
+    assert first is not None and second is not None
+    slot_event(first.slot).complete = False
+    slot_event(second.slot).complete = False
+
+    assert scheduler.next_message() is None
+    assert slot_event(first.slot).synchronize_calls == 1
+    assert slot_event(second.slot).synchronize_calls == 0
+
+    slot_event(second.slot).complete = True
+    queued = IncomingMessage(request_id="req-c", type="stream_done", data=None)
+    scheduler.inbox.put(queued)
+    assert scheduler.next_message() is queued
+    sent_request_ids = [entry[0] for entry in drain_snapshot(scheduler)]
+    assert sent_request_ids == ["req-b", "req-a", "req-b", "req-a"]
+
+
+@pytest.mark.parametrize("is_copy_complete", [False, True])
+def test_overlap_nonstreaming_window_is_neither_waited_on_nor_sent(
+    monkeypatch: pytest.MonkeyPatch, is_copy_complete: bool
+) -> None:
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler)
+    feed(scheduler, "req-1", range(20), stream=False)
+    pending = scheduler.stream_states["req-1"].pending
+    assert pending is not None
+    event = slot_event(pending.slot)
+    event.complete = is_copy_complete
+    inbox_waits: list[float | None] = []
+
+    def get(block: bool = True, timeout: float | None = None) -> IncomingMessage:
+        if block:
+            inbox_waits.append(timeout)
+        else:
+            pass
+        raise queue.Empty
+
+    monkeypatch.setattr(scheduler.inbox, "get", get)
+
+    assert scheduler.next_message() is None
+    assert len(inbox_waits) == 1
+    assert event.synchronize_calls == 0
+    assert scheduler.stream_states["req-1"].pending is pending
+    assert scheduler.outbox.qsize() == 0
+
+
+def test_overlap_wait_failure_aborts_only_that_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler, "req-1")
+    seed(scheduler, "req-2")
+    feed(scheduler, "req-1", range(20))
+    feed(scheduler, "req-2", range(10))
+    pending = scheduler.stream_states["req-1"].pending
+    assert pending is not None
+    event = slot_event(pending.slot)
+    event.complete = False
+    event.sync_error = RuntimeError("D2H synchronization failed")
+    first_audio = drain_snapshot(scheduler)
+    assert [item[0] for item in first_audio] == ["req-1", "req-2"]
+
+    assert scheduler.next_message() is None
+
+    error = scheduler.outbox.get_nowait()
+    assert (error.request_id, error.type) == ("req-1", "error")
+    assert scheduler.is_aborted("req-1")
+    assert "req-1" not in scheduler.stream_states
+    assert pending.slot in scheduler.pinned_retired
+    feed(scheduler, "req-2", range(10, 20))
+    assert "req-2" in scheduler.stream_states
+
+
+def test_overlap_send_failure_runs_abort_cleanup_off_state_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    seed(scheduler, "req-1")
+    seed(scheduler, "req-2")
+    feed(scheduler, "req-1", range(20))
+    feed(scheduler, "req-2", range(10))
+    pending = scheduler.stream_states["req-1"].pending
+    assert pending is not None
+    slot_event(pending.slot).query_error = RuntimeError("D2H query failed")
+    first_audio = drain_snapshot(scheduler)
+    assert [item[0] for item in first_audio] == ["req-1", "req-2"]
+    cleanups: list[tuple[str, bool]] = []
+
+    def abort_callback(request_id: str) -> None:
+        def probe() -> None:
+            acquired = scheduler.state_lock.acquire(timeout=1.0)
+            if acquired:
+                scheduler.state_lock.release()
+            else:
+                pass
+            cleanups.append((request_id, acquired))
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join()
+
+    scheduler.abort_callback = abort_callback
+    queued = IncomingMessage(request_id="req-3", type="stream_done", data=None)
+    scheduler.inbox.put(queued)
+
+    assert scheduler.next_message() is queued
+
+    error = scheduler.outbox.get_nowait()
+    assert (error.request_id, error.type) == ("req-1", "error")
+    assert cleanups == [("req-1", True)]
+    assert "req-1" not in scheduler.stream_states
+    assert pending.slot in scheduler.pinned_retired
+    feed(scheduler, "req-2", range(10, 20))
+    assert "req-2" in scheduler.stream_states
+
+
+def test_overlap_slots_sleep_on_their_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = make_scheduler(overlap=True)
+    force_pipeline(scheduler, monkeypatch)
+    blocking_flags: list[bool] = []
+
+    def make_event(device: torch.device, blocking: bool = False) -> FakeEvent:
+        blocking_flags.append(blocking)
+        return FakeEvent()
+
+    monkeypatch.setattr(cuda_staging, "new_device_event", make_event)
+    seed(scheduler)
+    feed(scheduler, "req-1", range(20))
+
+    assert blocking_flags == [True]
+
+
 def test_overlap_nonstreaming_pending_appends_parts_result_only(monkeypatch) -> None:
     control = run_stream(overlap=False, n_chunks=21, stream=False)
     overlap = run_stream(
@@ -506,7 +706,9 @@ def test_overlap_record_failure_quarantines_current_slot(monkeypatch) -> None:
 
     event = FakeEvent()
     event.record_error = RuntimeError("event record failed")
-    monkeypatch.setattr(cuda_staging, "new_device_event", lambda device: event)
+    monkeypatch.setattr(
+        cuda_staging, "new_device_event", lambda device, blocking=False: event
+    )
 
     with pytest.raises(RuntimeError, match="event record failed"):
         feed(scheduler, "req-1", range(10, 20))
@@ -594,7 +796,10 @@ def test_overlap_slot_growth_failure_returns_original_free_slot(monkeypatch) -> 
     assert scheduler.pinned_created == 1
 
 
-def test_overlap_flush_synchronizes_before_releasing_slot(monkeypatch) -> None:
+@pytest.mark.parametrize("complete", [True, False])
+def test_overlap_flush_observes_completion_before_releasing_slot(
+    monkeypatch: pytest.MonkeyPatch, complete: bool
+) -> None:
     scheduler = make_scheduler(overlap=True)
     force_pipeline(scheduler, monkeypatch)
     seed(scheduler)
@@ -603,18 +808,20 @@ def test_overlap_flush_synchronizes_before_releasing_slot(monkeypatch) -> None:
     pending = scheduler.stream_states["req-1"].pending
     assert pending is not None
     event = slot_event(pending.slot)
+    event.complete = complete
 
     release_slot = scheduler.release_slot
 
-    def release_after_synchronize(slot) -> None:
-        assert slot_event(slot).synchronize_calls == 1
+    def release_after_completion(slot: PinnedTransferSlot) -> None:
+        assert slot_event(slot).complete
+        assert slot_event(slot).query_calls >= 1
         release_slot(slot)
 
-    monkeypatch.setattr(scheduler, "release_slot", release_after_synchronize)
+    monkeypatch.setattr(scheduler, "release_slot", release_after_completion)
 
     scheduler.handle_stream_done("req-1")
 
-    assert event.synchronize_calls == 1
+    assert event.synchronize_calls == (0 if complete else 1)
     assert pending.slot in scheduler.pinned_free
 
 

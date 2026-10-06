@@ -61,8 +61,8 @@ class ChatCompletionRequest(BaseModel):
     top_k: int | None = None
     min_p: float | None = None
     repetition_penalty: float | None = None
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_completion_tokens: int | None = Field(default=None, ge=1)
     stop: str | list[str] | None = None
     seed: int | None = None
 
@@ -107,6 +107,16 @@ class ChatCompletionRequest(BaseModel):
     # Misc
     request_id: str | None = None
     user: str | None = None
+
+    @model_validator(mode="after")
+    def validate_input_present(self) -> ChatCompletionRequest:
+        if not self.messages and not (self.audios or self.images or self.videos):
+            raise ValueError(
+                "messages must not be empty without audios, images or videos"
+            )
+        else:
+            pass
+        return self
 
     @property
     def effective_max_tokens(self) -> int | None:

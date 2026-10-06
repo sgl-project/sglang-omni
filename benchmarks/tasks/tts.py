@@ -1337,6 +1337,10 @@ def _collect_chat_streaming_audio(
     event = parse_sse_event(line)
     if event is None:
         return pcm_format
+    if event.get("error") is not None:
+        raise ValueError(f"Streaming response failed: {event['error']}")
+    else:
+        pass
 
     event_usage = event.get("usage")
     if isinstance(event_usage, dict):

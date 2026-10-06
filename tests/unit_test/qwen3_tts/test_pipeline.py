@@ -74,6 +74,7 @@ from sglang_omni.scheduling.speaker_cache import (
     get_speaker_artifact_cache,
 )
 from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
 from tests.unit_test.fakes import FakeExecutionBridge
 
@@ -2260,7 +2261,9 @@ def test_qwen3_tts_custom_voice_rejects_invalid_speaker(
     talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
     talker.config = SimpleNamespace(spk_id={"Vivian": 3065})
 
-    with pytest.raises(ValueError, match="Unsupported Qwen3-TTS CustomVoice speaker"):
+    with pytest.raises(
+        ValueError, match="Unsupported Qwen3-TTS CustomVoice speaker"
+    ) as raised:
         Qwen3TTSTalker.build_custom_voice_inputs(
             talker,
             input_id=torch.arange(8, dtype=torch.long).unsqueeze(0),
@@ -2268,6 +2271,8 @@ def test_qwen3_tts_custom_voice_rejects_invalid_speaker(
             language="auto",
             non_streaming_mode=True,
         )
+
+    assert is_bad_request_error(raised.value)
 
 
 def test_qwen3_tts_vocoder_batches_decode_requests(
@@ -3120,7 +3125,9 @@ def force_pinned_cpu_decode(
         def __exit__(self, exc_type, exc, traceback):
             return False
 
-    def make_event(device: torch.device | None = None) -> FakeCudaEvent:
+    def make_event(
+        device: torch.device | None = None, *, blocking: bool = False
+    ) -> FakeCudaEvent:
         event = FakeCudaEvent(events)
         created.append(event)
         return event
@@ -3860,7 +3867,9 @@ def test_qwen3_tts_decode_launch_syncs_when_event_record_fails(
     events: list[str] = []
     created = force_pinned_cpu_decode(scheduler, monkeypatch, events)
 
-    def make_exploding_event(device: torch.device | None = None) -> FakeCudaEvent:
+    def make_exploding_event(
+        device: torch.device | None = None, *, blocking: bool = False
+    ) -> FakeCudaEvent:
         event = FakeCudaEvent(events)
         event.record_error = RuntimeError("event init failed")
         created.append(event)
@@ -4297,7 +4306,9 @@ def test_qwen3_tts_unproven_completion_retains_resources_and_disables_cuda_decod
 
     if failure_point == "launch":
 
-        def make_exploding_event(device: torch.device | None = None) -> FakeCudaEvent:
+        def make_exploding_event(
+            device: torch.device | None = None, *, blocking: bool = False
+        ) -> FakeCudaEvent:
             event = FakeCudaEvent(events)
             event.record_error = RuntimeError("record failed")
             created.append(event)
@@ -4325,15 +4336,17 @@ def test_qwen3_tts_unproven_completion_retains_resources_and_disables_cuda_decod
     assert bundle.owner is scheduler and bundle.stream is stream
     assert bundle.slot is slot
     assert bundle.decoder_input is not None
-    shapes = [tuple(item.shape) for item in bundle.keepalives]
+    shapes = sorted(tuple(item.shape) for item in bundle.keepalives)
+    assert any(
+        item.dtype == torch.bool for item in bundle.keepalives
+    ), "the invalid-row mask must stay referenced"
     if failure_point == "launch":
-        # decoder output, its delta, and the CPU source codes
-        assert shapes == [(1, 1, 8), (8,), (1, 2, 2)], shapes
+        assert shapes == sorted([(1, 1, 8), (8,), (1,), (1, 2, 2)]), shapes
     else:
-        # decoder output, its delta, and the pinned view still being written
-        assert shapes == [(1, 1, 8), (8,), (8,)], shapes
-        assert (
-            bundle.keepalives[2].data_ptr() == slot.output_transfer.view(8).data_ptr()
+        assert shapes == sorted([(1, 1, 8), (8,), (1,), (8,)]), shapes
+        assert any(
+            item.data_ptr() == slot.output_transfer.view(8).data_ptr()
+            for item in bundle.keepalives
         ), "the pinned output view must stay referenced"
 
     stream.sync_error = None
@@ -4398,6 +4411,65 @@ def test_qwen3_tts_decode_slot_reuses_event_on_cuda(
 
     assert len(created) == 1, "both launches must record the same event"
     assert not slot.busy and not slot.broken
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_qwen3_tts_pending_decode_resolves_from_its_own_event_on_cuda() -> None:
+    """Resolving a pending decode waits on its own event and synchronizes nothing else."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(), device="cuda", initial_cuda_graph=False
+    )
+    sync_debug_mode = torch.cuda.get_sync_debug_mode()
+    with torch.cuda.stream(scheduler.decode_stream):
+        batches = [
+            [
+                Qwen3TTSDecodePlan(
+                    decoder_input=torch.full(
+                        (1, 1, 1), code, dtype=torch.long, device="cuda"
+                    ),
+                    absolute_emitted_frames=0,
+                    generated_frames=1,
+                    window_start=0,
+                    emitted_generated_frames=0,
+                )
+                for code in codes
+            ]
+            for codes in ((-1, 7, 2048), (8, -1, 9), (11,))
+        ]
+        first = scheduler.launch_decode_plans(
+            batches[0], stream=scheduler.decode_stream
+        )
+        second = scheduler.launch_decode_plans(
+            batches[1], stream=scheduler.decode_stream
+        )
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            first_audio, first_invalid = first.resolve_partial()
+        finally:
+            torch.cuda.set_sync_debug_mode(sync_debug_mode)
+        third = scheduler.launch_decode_plans(
+            batches[2], stream=scheduler.decode_stream
+        )
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            second_audio, second_invalid = second.resolve_partial()
+            third_audio, third_invalid = third.resolve_partial()
+            repeated_first_invalid = first.resolve_partial()[1]
+        finally:
+            torch.cuda.set_sync_debug_mode(sync_debug_mode)
+
+    assert first_invalid == (0, 2)
+    assert second_invalid == (1,)
+    assert third_invalid == ()
+    assert repeated_first_invalid == (0, 2)
+    for audio, expected in (
+        (first_audio[1], 7),
+        (second_audio[0], 8),
+        (second_audio[2], 9),
+        (third_audio[0], 11),
+    ):
+        assert torch.equal(audio, torch.full((4,), expected, dtype=torch.float32))
 
 
 def test_qwen3_tts_streaming_vocoder_decodes_initial_chunk_early() -> None:
@@ -6403,21 +6475,52 @@ def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
     assert calls[0]["instruct_id"] is not None
 
 
-def test_qwen3_tts_base_checkpoint_text_only_rejects_custom_voice_default() -> None:
+@pytest.mark.parametrize(
+    ("model_type", "tts_params", "message"),
+    [
+        ("base", {}, "Base requires ref_audio or speaker_embedding"),
+        ("base", {"task_type": "Base"}, "Base requires reference audio"),
+        (
+            "base",
+            {"task_type": "Base", "ref_audio": "ref.wav", "x_vector_only_mode": False},
+            "Base requires non-empty ref_text",
+        ),
+        ("base", {"task_type": "CustomVoice"}, "Base checkpoint does not support"),
+        ("base", {"task_type": "Clone"}, "task_type must be one of"),
+        ("voice_design", {}, "VoiceDesign checkpoint does not support"),
+        (
+            "voice_design",
+            {"task_type": "VoiceDesign"},
+            "VoiceDesign requires instructions",
+        ),
+        (
+            "voice_design",
+            {
+                "task_type": "VoiceDesign",
+                "instructions": "A warm voice.",
+                "ref_text": "hi",
+            },
+            "VoiceDesign does not accept ref_text",
+        ),
+    ],
+)
+def test_qwen3_tts_request_contract_errors_are_bad_requests(
+    model_type: str, tts_params: dict[str, str | bool], message: str
+) -> None:
     class FakeWrapper:
         def _merge_generate_kwargs(self, **kwargs):
             return kwargs
 
-    model = SimpleNamespace(tts_model_type="base")
+    model = SimpleNamespace(tts_model_type=model_type)
 
-    with pytest.raises(
-        ValueError, match="Base requires ref_audio or speaker_embedding"
-    ):
+    with pytest.raises(ValueError, match=message) as raised:
         qwen3_request_builders.prepare_qwen3_tts_request(
-            make_payload(inputs="target"),
+            make_payload(inputs="target", tts_params=tts_params),
             model=model,
             wrapper=FakeWrapper(),
         )
+
+    assert is_bad_request_error(raised.value)
 
 
 def test_qwen3_tts_preprocessing_abort_cleans_prepared_state() -> None:

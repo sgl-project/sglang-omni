@@ -206,7 +206,9 @@ def create_perception_scheduler(
         image_encoder=image_encoder,
     )
     return SessionScheduler(
-        hooks, max_open_sessions=max_open_sessions, max_concurrency=1
+        hooks,
+        max_open_sessions=max_open_sessions,
+        max_concurrency=1,
     )
 
 
@@ -236,8 +238,7 @@ def create_speech_scheduler(
     gpu_id: int | None = None,
     reference_audio: str | None = None,
     max_open_sessions: int = DEFAULT_MAX_SESSIONS,
-    max_state_bytes: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION
-    * DEFAULT_MAX_SESSIONS,
+    max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     # note (Junnan Li): Sessions stream one reference each, so the batched-offline options stay off.
@@ -256,5 +257,5 @@ def create_speech_scheduler(
         SpeechHooks(runtime, Path(codec.default_prompt_wav).read_bytes()),
         max_open_sessions=max_open_sessions,
         max_concurrency=1,
-        max_state_bytes=max_state_bytes,
+        max_state_bytes_per_session=max_state_bytes_per_session,
     )
