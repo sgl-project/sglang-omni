@@ -459,23 +459,32 @@ python -m benchmarks.dataset.prepare \
     --dataset socialomni --local-dir /path/to/socialomni
 ```
 
-The judge configuration requires exactly three distinct, non-empty names.
-Each entry declares the actual served `model`, an OpenAI-compatible endpoint,
-the environment variable holding its API key, and a concurrency limit.
-Optional `enable_thinking` and `reasoning_effort` values are sent only when
-configured. The endpoint must support the selected options. Results retain
-the configured names, model IDs and reasoning options; API key values are
-never recorded. Missing scores from any configured judge leave quality
-incomplete, including the first-200 view.
+The judge configuration requires exactly three distinct, non-empty names
+because the SocialOmni quality protocol uses three scores for each eligible
+response. Each entry declares the actual served model, an OpenAI-compatible
+endpoint, the environment variable holding its API key, and a concurrency
+limit. Optional enable_thinking and reasoning_effort values are sent only when
+configured. The endpoint must support the selected options.
 
-The [example configuration](configs/socialomni_judges.example.json) follows
-the [SocialOmni leaderboard's September 24 panel](https://github.com/MAC-AutoML/SocialOmni/tree/main/evaluation/results/modern-panel-20260924):
-Gemini 3.8 Flash, Qwen3.8-Omni-Flash (`enable_thinking=false`), and
-GPT-5.6-Sol (`reasoning_effort=none`). Existing GPT-4o / Gemini 2.5 Pro /
-Qwen3-Omni configurations remain supported. Keep the same panel and settings
-across comparisons; scores from different panels are not directly comparable.
-This configuration updates judge selection and reasoning controls, not the
-candidate prompts, judge rubric, or other leaderboard evaluation settings.
+The evaluator loads this panel once at startup and uses the same model IDs and
+generation options for the complete run; it does not rotate or silently replace
+a judge between samples. Results retain the configured names, model IDs and
+reasoning options, while API key values are never recorded. The endpoint owner
+must keep the served model and revision stable for the run. If the endpoint
+supports a stable model revision or snapshot identifier, record it in the
+configuration and preserve it with the run artifacts. Missing scores from any
+configured judge leave quality incomplete, including the first-200 view.
+
+The example configuration follows the current SocialOmni leaderboard panel:
+Gemini 3.8 Flash, Qwen3.8-Omni-Flash (enable_thinking=false), and GPT-5.6-Sol
+(reasoning_effort=none). This is a maintained example, not a fixed judge
+allowlist. Existing GPT-4o / Gemini 2.5 Pro / Qwen3-Omni configurations remain
+supported, and users may configure another current multimodal-capable LLM panel
+with the same three-score contract. Keep one panel and its settings fixed when
+comparing runs; scores from different panels or model revisions are not directly
+comparable. Updating the panel as models are retired is part of keeping the
+benchmark executable and auditable, while archived runs preserve their original
+judge metadata.
 
 ```bash
 # Deterministic smoke set: both Level 1 visibility strata and Level 2 YES/NO.
