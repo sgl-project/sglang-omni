@@ -106,6 +106,15 @@ fn oversized_limit(fleet: &Fleet) -> Option<usize> {
         .then_some(limit as usize)
 }
 
+fn realtime_limit(fleet: &Fleet) -> Option<i64> {
+    fleet
+        .document
+        .get("admission")?
+        .get("realtime_websocket")?
+        .as_integer()
+        .filter(|limit| (1..=32).contains(limit))
+}
+
 fn probes(fleet: &Fleet) -> Result<Vec<Probe>> {
     let mut probes = Vec::new();
     let mut seen = HashSet::new();
@@ -336,6 +345,21 @@ async fn send(
     })
 }
 
+async fn reject(
+    client: &reqwest::Client,
+    base: &str,
+    probe: &Probe,
+    request_id: &str,
+) -> Result<Value> {
+    let response = send(client, base, probe, request_id).await?;
+    let status = response.status();
+    response.bytes().await?;
+    if !status.is_client_error() || status.as_u16() == 429 {
+        return Err(format!("expected capability rejection, received {status}").into());
+    }
+    Ok(json!({"status":status.as_u16()}))
+}
+
 async fn measure(
     client: &reqwest::Client,
     base: &str,
@@ -471,7 +495,7 @@ async fn load(
         "worker_distribution":distribution,"errors":samples.iter().filter(|sample|!sample.ok).take(10).collect::<Vec<_>>()})
 }
 
-async fn websocket_probe(base: &str, probe: &Probe, fleet: &Fleet) -> Result<Value> {
+fn websocket_url(base: &str, probe: &Probe) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(&format!(
         "{}{}",
         base.trim_end_matches('/').replacen("http://", "ws://", 1),
@@ -482,6 +506,11 @@ async fn websocket_probe(base: &str, probe: &Probe, fleet: &Fleet) -> Result<Val
     {
         url.query_pairs_mut().append_pair("model", model);
     }
+    Ok(url)
+}
+
+async fn websocket_probe(base: &str, probe: &Probe, fleet: &Fleet) -> Result<Value> {
+    let url = websocket_url(base, probe)?;
     let (mut socket, _) = tokio_tungstenite::connect_async(url.as_str()).await?;
     if probe.service == "speech_websocket" {
         socket
@@ -601,14 +630,7 @@ async fn wait_ready(client: &reqwest::Client, router: &str, status: u16) -> Resu
 
 async fn worker_total(client: &reqwest::Client, urls: &[String]) -> Result<u64> {
     let mut total = 0;
-    for url in urls {
-        let stats: Value = client
-            .get(format!("{}__mock/stats", url))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+    for stats in worker_stats(client, urls).await? {
         total += stats["accepted"]
             .as_u64()
             .ok_or("accepted counter missing")?
@@ -617,6 +639,22 @@ async fn worker_total(client: &reqwest::Client, urls: &[String]) -> Result<u64> 
                 .ok_or("rejected counter missing")?;
     }
     Ok(total)
+}
+
+async fn worker_stats(client: &reqwest::Client, urls: &[String]) -> Result<Vec<Value>> {
+    let mut stats = Vec::new();
+    for url in urls {
+        stats.push(
+            client
+                .get(format!("{url}__mock/stats"))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?,
+        );
+    }
+    Ok(stats)
 }
 
 async fn operational_checks(
@@ -692,68 +730,53 @@ async fn operational_checks(
     if let Some(probe) = probes
         .iter()
         .find(|probe| probe.service == "realtime_websocket")
+        && let Some(limit) = realtime_limit(fleet)
     {
-        let limit = fleet
-            .document
-            .get("admission")
-            .and_then(|value| value.get("realtime_websocket"))
-            .and_then(toml::Value::as_integer)
-            .unwrap_or(0);
-        if (1..=32).contains(&limit) {
-            let result = tokio::time::timeout(Duration::from_secs(15), async {
-                let mut sockets = Vec::new();
-                let mut rejected = false;
-                let mut url = reqwest::Url::parse(&format!(
-                    "{}{}",
-                    router.replacen("http://", "ws://", 1),
-                    probe.path
-                ))?;
-                url.query_pairs_mut()
-                    .append_pair("model", probe.body["model"].as_str().unwrap_or_default());
-                for _attempt in 0..=limit {
-                    match tokio_tungstenite::connect_async(url.as_str()).await {
-                        Ok((mut socket, _)) => {
-                            let event = socket
-                                .next()
-                                .await
-                                .ok_or("missing saturation setup event")??;
-                            let event: Value = serde_json::from_str(event.to_text()?)?;
-                            if event["type"] != "session.created" {
-                                return Err("unexpected saturation setup event".into());
-                            }
-                            sockets.push(socket);
+        let result = tokio::time::timeout(Duration::from_secs(15), async {
+            let mut sockets = Vec::new();
+            let mut rejected = false;
+            let url = websocket_url(router, probe)?;
+            for _attempt in 0..=limit {
+                match tokio_tungstenite::connect_async(url.as_str()).await {
+                    Ok((mut socket, _)) => {
+                        let event = socket
+                            .next()
+                            .await
+                            .ok_or("missing saturation setup event")??;
+                        let event: Value = serde_json::from_str(event.to_text()?)?;
+                        if event["type"] != "session.created" {
+                            return Err("unexpected saturation setup event".into());
                         }
-                        Err(tokio_tungstenite::tungstenite::Error::Http(response))
-                            if response.status().as_u16() == 429 =>
-                        {
-                            rejected = true;
-                            break;
-                        }
-                        Err(error) => return Err(error.into()),
+                        sockets.push(socket);
                     }
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response))
+                        if response.status().as_u16() == 429 =>
+                    {
+                        rejected = true;
+                        break;
+                    }
+                    Err(error) => return Err(error.into()),
                 }
-                let admitted = sockets.len();
-                for mut socket in sockets {
-                    let _closed = socket.close(None).await;
-                }
-                if !rejected {
-                    return Err(
-                        "realtime admission did not return 429 at its configured limit".into(),
-                    );
-                }
-                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                    json!({"admitted_sessions":admitted,"status":429}),
-                )
-            })
-            .await;
-            checks.push(check(
-                "realtime_session_saturation",
-                match result {
-                    Ok(result) => result,
-                    Err(error) => Err(error.into()),
-                },
-            ));
-        }
+            }
+            let admitted = sockets.len();
+            for mut socket in sockets {
+                let _closed = socket.close(None).await;
+            }
+            if !rejected {
+                return Err("realtime admission did not return 429 at its configured limit".into());
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+                json!({"admitted_sessions":admitted,"status":429}),
+            )
+        })
+        .await;
+        checks.push(check(
+            "realtime_session_saturation",
+            match result {
+                Ok(result) => result,
+                Err(error) => Err(error.into()),
+            },
+        ));
     }
     checks
 }
@@ -781,13 +804,7 @@ pub(super) async fn run(
         .any(|probe| probe.service == "realtime_websocket")
     {
         skipped.push("realtime session saturation: no routed realtime profile");
-    } else if !fleet
-        .document
-        .get("admission")
-        .and_then(|value| value.get("realtime_websocket"))
-        .and_then(toml::Value::as_integer)
-        .is_some_and(|limit| (1..=32).contains(&limit))
-    {
+    } else if realtime_limit(fleet).is_none() {
         skipped.push(
             "realtime session saturation: requires explicit session admission limit of 1..=32",
         );
@@ -841,16 +858,7 @@ pub(super) async fn run(
             ("direct_model_rejection", urls[probe.eligible[0]].as_str()),
             ("routed_model_rejection", router),
         ] {
-            let result: Result<Value> = async {
-                let response = send(&client, base, &bad, "mock-negative").await?;
-                let status = response.status();
-                let _body = response.bytes().await?;
-                if !status.is_client_error() || status.as_u16() == 429 {
-                    return Err(format!("expected capability rejection, received {status}").into());
-                }
-                Ok(json!({"status":status.as_u16()}))
-            }
-            .await;
+            let result = reject(&client, base, &bad, "mock-negative").await;
             checks.push(check(&format!("{}/{name}", probe.name), result));
         }
     }
@@ -869,19 +877,7 @@ pub(super) async fn run(
                 ("direct", urls[probe.eligible[0]].as_str()),
                 ("router", router),
             ] {
-                let result: Result<Value> = async {
-                    let response =
-                        send(&client, base, &incompatible, "mock-wrong-modality").await?;
-                    let status = response.status();
-                    response.bytes().await?;
-                    if !status.is_client_error() || status.as_u16() == 429 {
-                        return Err(
-                            format!("unsupported modality was not rejected: {status}").into()
-                        );
-                    }
-                    Ok(json!({"status":status.as_u16()}))
-                }
-                .await;
+                let result = reject(&client, base, &incompatible, "mock-wrong-modality").await;
                 checks.push(check(&format!("{label}_unsupported_modality"), result));
             }
         }
@@ -975,18 +971,7 @@ pub(super) async fn run(
         checks.push(check("voice_owner_crud", result));
     }
     checks.extend(operational_checks(&client, fleet, urls, router, &probes).await);
-    let mut stats = Vec::new();
-    for url in urls {
-        stats.push(
-            client
-                .get(format!("{}__mock/stats", url))
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<Value>()
-                .await?,
-        );
-    }
+    let stats = worker_stats(&client, urls).await?;
     let metrics = client
         .get(format!("{router}/metrics"))
         .send()

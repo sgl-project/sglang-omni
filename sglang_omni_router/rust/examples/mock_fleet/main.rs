@@ -226,10 +226,7 @@ async fn supervise(
     )?;
     println!("Router ready: {router_url}");
     match options.mode {
-        Mode::Serve => {
-            shutdown_signal().await?;
-            Ok(())
-        }
+        Mode::Serve => std::future::pending().await,
         Mode::Run => {
             let report = tokio::time::timeout(
                 Duration::from_secs(options.deadline_secs),

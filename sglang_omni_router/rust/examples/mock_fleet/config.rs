@@ -113,10 +113,11 @@ impl Fleet {
             {
                 return Err(format!("invalid or excessive mock behavior limits for {id}").into());
             }
-            let profiles: Vec<Value> = serde_json::from_value(serde_json::to_value(
-                row.get("service_profiles")
-                    .ok_or("service_profiles required")?,
-            )?)?;
+            let profiles: Vec<Value> = row
+                .get("service_profiles")
+                .ok_or("service_profiles required")?
+                .clone()
+                .try_into()?;
             if profiles.is_empty() {
                 return Err("service_profiles cannot be empty".into());
             }

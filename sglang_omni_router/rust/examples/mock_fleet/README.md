@@ -1,8 +1,8 @@
 # Model-Free Router Fleet
 
-Run independently validated mock workers behind the actual Rust router. No
-Python packages, models, GPUs, downloads of model assets, or external services
-are needed. The mock fleet is a Cargo example, not part of the production binary.
+CPU-only mock worker processes behind the real [Rust router](../../../../docs/basic_usage/omni_router.md).
+This Cargo example needs no models, Python packages, GPUs or external services
+and changes no production router behavior.
 
 ## Run
 
@@ -13,35 +13,16 @@ cargo build --locked --bin sgl-omni-router --example mock_fleet
 target/debug/examples/mock_fleet \
   --config examples/mock_fleet/fleet.toml \
   --requests 8 --concurrency 4
-```
 
-The supplied fleet starts six worker processes: two text replicas, vision,
-omni, TTS/voice/speech-WebSocket, and ASR/translation. Omni also serves realtime
-WebSockets. Text, vision, and omni advertise a shared model ID so requests
-exercise modality filtering independently of model-name selection.
-
-Workers bind ephemeral loopback ports and announce their actual addresses.
-The launcher generates `router.toml`, runs the actual router's `--check-config`,
-starts it, and waits for readiness. It never connects to configured external
-worker URLs; generated loopback URLs replace those values.
-
-The router listener is explicit: edit `server.listen` if port 30000 is occupied.
-Existing listeners are not terminated. The harness refuses non-loopback binds.
-
-`run` is the default mode. It exits nonzero on failed checks, timeout or startup
-failure and stops/reaps its child processes. `--deadline-secs` bounds the run
-(default 300 seconds); individual client requests have 15-second timeouts.
-Each process uses two Tokio runtime threads. SIGINT/SIGTERM clean up the fleet;
-cleanup terminates the children and is not a test of graceful router drain.
-
-## Manual Mode
-
-```bash
+# Keep the fleet running for manual clients:
 target/debug/examples/mock_fleet \
   --config examples/mock_fleet/fleet.toml --mode serve
 ```
 
-Use the router URL printed at startup:
+The sample has six workers: two text replicas, vision, omni (including realtime),
+TTS/voice/speech-WebSocket, and ASR/translation. The `shared` model alias tests
+modality filtering independently of model selection. For manual requests, use
+the printed router URL:
 
 ```bash
 curl http://127.0.0.1:30000/v1/chat/completions \
@@ -49,17 +30,22 @@ curl http://127.0.0.1:30000/v1/chat/completions \
   -d '{"model":"shared","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-Responses include `x-mock-worker`, `x-mock-service`, `x-mock-modalities`, and an
-upstream request-ID echo. JSON and WebSocket setup/events include mock identity
-metadata. These headers originate at the mock, not at the router; they do not
-implement the RFC's missing router-generated worker diagnostic header.
+Workers use ephemeral loopback ports, replacing any configured `base_url`.
+The launcher generates `router.toml`, runs the router's `--check-config` and waits
+for readiness. Change `server.listen` if port 30000 is busy; existing listeners
+are never terminated. All listeners must be loopback-only.
+
+`run` exits nonzero on failed checks, startup failure or timeout. The runner's
+`--deadline-secs` defaults to 300; individual requests time out after 15 seconds.
+Each process uses two Tokio threads. Exit, SIGINT and SIGTERM stop/reap owned
+children; this is not a graceful-drain test.
 
 ## Configure
 
-The fleet file uses the real router TOML schema, plus an optional `mock` table
-inside each worker. `base_url` may be omitted because the launcher supplies it.
-Add workers by adding `[[workers]]` entries with distinct IDs. Keep each supported
-combination in one correlated `[[workers.service_profiles]]` row.
+Use the router TOML schema with 1-64 distinct `[[workers]]` entries and optional
+`[workers.mock]` settings. Omit `base_url`; the launcher supplies it. Keep supported
+combinations in correlated `[[workers.service_profiles]]` rows, as in
+[`fleet.toml`](fleet.toml). Workers validate requests independently of the router.
 
 ```toml
 [workers.mock]
@@ -73,78 +59,50 @@ max_request_bytes = 8388608
 # disconnect_after_chunks = 1
 ```
 
-Unknown mock fields and excessive limits are rejected. Generated audio is
-24 kHz, mono, signed 16-bit silent PCM, optionally in a valid WAV container.
-The mock does not encode MP3, Opus, AAC or FLAC; do not advertise these formats.
-Image/video inputs are classified structurally, not decoded. ASR consumes real
-multipart framing but returns deterministic text rather than transcribing.
-Speech defaults to WAV in this mock; manual clients should specify a supported
-`response_format`. Speech WebSocket setup uses `stream_audio`, not HTTP `stream`.
+Unknown fields and excessive limits are rejected. Audio is silent 24 kHz mono
+16-bit PCM or WAV; do not advertise MP3/Opus/AAC/FLAC. Speech defaults to WAV;
+specify a supported `response_format`. Speech WebSocket setup uses `stream_audio`,
+not HTTP `stream`. Image/video inputs are not decoded; ASR and batch results are
+synthetic. Uploaded voices are bounded, in-memory worker-local state.
 
-The bounded voice registry is in memory and is lost when the worker exits.
-Batch responses are deterministic ordered synthetic results, not a complete
-model-server implementation. Setup/config and audio-flow checks are not a full
-realtime conversation or TTS application-protocol conformance suite.
+Direct worker URLs expose **unauthenticated, local-only** controls:
 
-Direct worker URLs in `endpoints.json` expose local test-only controls:
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /__mock/stats` | Identity, profiles and accepted/rejected/service counts |
+| `POST /__mock/control` | `{"health_status":503}` or `{"response_status":503}` injects failures; set to `200` to recover |
 
-- `GET /__mock/stats`: identity, profiles, accepted/rejected counts, service counts.
-- `POST /__mock/control` with `{"health_status":503}`: fail health probes.
-- `POST /__mock/control` with `{"response_status":503}`: inject upstream failures.
-- Set either status back to `200` to recover.
+Faults intentionally fail positive checks. Responses carry `x-mock-worker`,
+`x-mock-service`, `x-mock-modalities` and a request-ID echo; JSON/WS events also
+carry mock identity. These do not implement router-generated diagnostic headers.
 
-Controls are unauthenticated and workers must remain loopback-only. Faults in
-configuration intentionally make positive checks fail; failures are not hidden.
+## Results and limits
 
-## Results And Coverage
+Artifacts go to a unique `target/` directory, or a new `--output` directory:
+generated config, `endpoints.json`, process/config-check logs and `report.json`.
+Existing output directories are never overwritten.
 
-Artifacts are written to a unique directory under `target/`, or a new directory
-specified by `--output`. Existing output directories are never overwritten.
-Artifacts include the generated manifest, endpoints, config-check log, worker
-logs, router log, and `report.json`.
+`--requests` applies **per generated HTTP workload per path**, direct and routed.
+Both paths use the same eligible pool, honoring enabled routes, trust domains,
+correlated profiles and batch limits. Direct dispatch is round robin; routed
+dispatch uses the configured policy. The report includes successful QPS/byte rate,
+worker distribution, P50/P95/P99 latency and first-body-byte latency, with failures
+recorded separately. There is no warmup, CPU affinity or worker CPU instrumentation.
 
-`--requests` is the number of requests **per generated HTTP workload per path**,
-not a total across the fleet. Direct-worker and routed measurements use the same
-eligible worker pool. Concurrency is bounded; results are grouped by request
-variant and include successful QPS, byte rate, worker distribution, P50/P95/P99
-latency and client-observed first-body-byte latency. There is no warmup phase or
-CPU affinity. Direct workers use round robin; routed traffic uses the configured
-policy. Failure samples are retained separately from successful latency metrics.
+Checks cover capability rejection, identity/request IDs, JSON/SSE/audio/multipart,
+WebSocket setup and audio lengths, voice ownership, upstream `503`, health recovery,
+generation `413` without dispatch (both limits must be at most 2 MiB), and realtime
+`429` saturation (explicit limit of 1-32). Router metrics and worker stats are saved.
 
-Automated checks currently cover:
+Consult the report's actual checks and `skipped`, `not_tested` and
+`unsupported_router_features` lists for custom fleets. This is not full protocol
+conformance or evidence for raw HTTP framing, rejected-media connection resets,
+multipart zero-copy, global/HTTP-class overload or active graceful drain; the
+router's socket-level tests cover those paths.
 
-- Model/modality/format/stream selection and response identity.
-- JSON, SSE completion, synthetic PCM/WAV and multipart transcription/translation.
-- Direct and routed unsupported-model rejection, and an unsupported image case
-  when the configuration contains a suitable text-only model.
-- Request-ID propagation upstream and return downstream.
-- Speech/realtime WebSocket setup, audio and stable session identity.
-- Voice CRUD and named-voice HTTP synthesis on the configured owner.
-- Complete generation `413` with no upstream dispatch, by exceeding both
-  streamed and buffered limits when both are at most 2 MiB (the supplied example
-  uses 64 KiB). Larger limits are explicitly reported as skipped.
-- Upstream `503` propagation, all-workers-unhealthy rejection without dispatch,
-  and readiness recovery.
-- Realtime session saturation returning `429`, for configured limits of 1..=32.
-- Router metrics/diagnostics and worker counters captured in the report.
-
-Workload generation honors enabled routes, correlated profiles, route trust
-domains and batch-size limits. Profiles outside the route's trust domain or for
-disabled services are not included in either the direct or routed workloads.
-Realtime audio byte counts are decoded payload bytes, not base64 character counts.
-WebSocket PCM length and WAV headers/lengths are checked against the worker config.
-
-The report lists skipped, untested and unsupported features. In particular this is not
-proof of raw HTTP framing correctness, the known rejected-media connection-reset
-regression, global/HTTP-class overload bounds, multipart zero-copy behavior,
-graceful drain, or every profile/task/reference combination. The existing Rust
-socket-level tests remain authoritative for those cases. Custom manifests may
-not enable every scenario; inspect the report's actual check list.
-
-Client first-body-byte time includes mock delay and is not first audible audio
-or router-internal TTFP. Direct-worker baselines help expose mock/client limits,
-but worker CPU saturation is not instrumented. Synthetic results do not prove
-real-model quality, RTF, Python/Rust per-core speedup or DP3 x MPS performance.
+First-body-byte latency includes mock delay: it is not first audible audio or
+router-internal TTFP. Synthetic throughput proves neither model quality/RTF nor
+Python/Rust per-core speedup or DP3 x MPS performance.
 
 Use release builds for performance experiments:
 
