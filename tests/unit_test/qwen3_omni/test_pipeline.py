@@ -43,7 +43,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     apply_thinker_result,
     build_sglang_thinker_request,
     merge_for_talker,
-    project_mm_aggregate_to_talker_ar,
+    project_encoder_to_talker_ar,
     project_preprocessing_to_mm_aggregate,
     project_talker_to_code2wav,
     project_thinker_to_decode,
@@ -1651,43 +1651,38 @@ def test_qwen_speech_preprocessing_route_excludes_talker_for_text_output() -> No
     ]
 
 
-def test_qwen_merge_for_talker_matches_projected_thinker_merge() -> None:
-    def payloads() -> dict[str, StagePayload]:
-        state = make_qwen_state(
-            encoder_inputs={
-                "image_encoder": {
-                    "cache_key": "image-cache",
-                    "pixel_values": torch.ones((2, 3)),
-                },
+def test_qwen_talker_merge_carries_mrope_metadata_without_features() -> None:
+    state = make_qwen_state(
+        encoder_inputs={
+            "image_encoder": {
+                "cache_key": "image-cache",
+                "pixel_values": torch.ones((2, 3)),
             },
-        )
-        image_state = Qwen3OmniPipelineState(
-            encoder_outs={
-                "image_encoder": {
-                    "image_embeds": torch.ones((2, 2)),
-                    "deepstack_visual_embeds_image": [torch.ones((2, 2))],
-                }
+        },
+    )
+    image_state = Qwen3OmniPipelineState(
+        encoder_outs={
+            "image_encoder": {
+                "image_embeds": torch.ones((2, 2)),
+                "image_grid_thw": torch.ones((1, 3), dtype=torch.long),
+                "deepstack_visual_embeds_image": [torch.ones((2, 2))],
             }
-        )
-        return {
+        }
+    )
+
+    talker_merged = merge_for_talker(
+        {
             "preprocessing": project_preprocessing_to_mm_aggregate(
                 make_qwen_payload(state)
             ),
-            "image_encoder": make_qwen_payload(image_state),
+            "image_encoder": project_encoder_to_talker_ar(
+                make_qwen_payload(image_state)
+            ),
         }
-
-    talker_merged = merge_for_talker(payloads())
-    expected = project_mm_aggregate_to_talker_ar(merge_for_thinker(payloads()))
+    )
 
     talker_state = Qwen3OmniPipelineState.from_dict(talker_merged.data)
-    expected_state = Qwen3OmniPipelineState.from_dict(expected.data)
-    assert sorted(talker_state.thinker_inputs["model_inputs"]) == sorted(
-        expected_state.thinker_inputs["model_inputs"]
-    )
-    model_inputs = talker_state.thinker_inputs["model_inputs"]
-    assert "image_embeds" in model_inputs
-    assert "deepstack_visual_embeds" not in model_inputs
-    assert "image_deepstack_visual_embeds" not in model_inputs
+    assert list(talker_state.thinker_inputs["model_inputs"]) == ["image_grid_thw"]
     assert talker_state.prompt["input_ids"].tolist() == [11, 12, 13]
     assert talker_state.encoder_outs == {}
     assert talker_state.mm_inputs == {}
