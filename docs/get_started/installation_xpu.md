@@ -150,7 +150,7 @@ eager, so a transcript is never at stake.
 
 ### Nemotron 3.5 ASR (speech-to-text, single XPU)
 
-Complete-file transcription was validated on one 24 GB Intel Arc Pro B60 with the stock `float32` ASR stage, without model source changes. Run from the repository root after the XPU installation above, selecting the device with `ZE_AFFINITY_MASK`:
+Complete-file transcription was validated on one 24 GB Intel Arc Pro B60 with the stock `float32` ASR stage. Run from the repository root after the XPU installation above, selecting the device with `ZE_AFFINITY_MASK`:
 
 ```bash
 ZE_AFFINITY_MASK=0 sgl-omni serve \
@@ -168,7 +168,7 @@ curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "response_format=verbose_json"
 ```
 
-The 4.62-second recording returned “How many cars are there in the picture?”. The same recording also passed with `--asr.factory.dtype bfloat16`; validation in both dtypes covers only this recording. Native PCM streaming, concurrent batching, and long recordings have not been validated on XPU. See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request parameters.
+The 4.62-second recording returned “How many cars are there in the picture?”. The same recording also passed with `--asr.factory.dtype bfloat16`. See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request parameters.
 
 ### Qwen3-TTS (text-to-speech, single XPU)
 
