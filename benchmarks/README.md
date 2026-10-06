@@ -480,9 +480,11 @@ Gemini 3.8 Flash, Qwen3.8-Omni-Flash (enable_thinking=false), and GPT-5.6-Sol
 (reasoning_effort=none). It is an example panel, not a fixed allowlist.
 Existing GPT-4o / Gemini 2.5 Pro / Qwen3-Omni configurations remain supported.
 Users may configure another current multimodal-capable LLM panel with the same
-three-score contract. Keep the panel and its settings fixed when comparing
-runs; scores from different panels or model revisions are not directly
-comparable. Archived results retain their original judge metadata.
+three-score contract. The judge request scores the serialized context,
+reference continuation, and candidate continuation; it does not send the
+source video again. Keep the panel and its settings fixed when comparing runs;
+scores from different panels or model revisions are not directly comparable.
+Archived results retain their original judge metadata.
 
 ```bash
 # Deterministic smoke set: both Level 1 visibility strata and Level 2 YES/NO.
