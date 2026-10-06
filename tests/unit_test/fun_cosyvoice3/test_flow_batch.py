@@ -429,3 +429,18 @@ def test_flow_causal_batch_mixed_prompt_matches_serial() -> None:
     assert batched[1].shape == serial[1].shape
     for actual, expected in zip(batched, serial, strict=True):
         torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("euler_steps", [10, 4])
+def test_flow_solves_run_the_configured_euler_steps(euler_steps: int) -> None:
+    padded = FakeFlow()
+    flow = FunCosyVoice3Flow(padded)
+    flow.euler_steps = euler_steps
+    flow.inference([make_input([1])])
+    assert len(padded.decoder.estimator.calls) == euler_steps
+
+    packed_flow = FakeFlow(max_frames=128)
+    packed = make_packed(packed_flow)
+    packed.euler_steps = euler_steps
+    packed.inference_causal([make_input([1] * 28)])
+    assert len(packed_flow.packed_estimator.calls) == euler_steps

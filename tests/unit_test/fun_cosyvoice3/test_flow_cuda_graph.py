@@ -38,6 +38,7 @@ def make_flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
         pre_lookahead_layer=lambda x, context=None: x,
         pre_lookahead_len=3,
         cuda_graph_runner=None,
+        euler_steps=stages.FLOW_EULER_STEPS,
     )
 
 
@@ -181,6 +182,7 @@ def cuda_flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
         pre_lookahead_layer=lambda x, context=None: x,
         pre_lookahead_len=3,
         cuda_graph_runner=None,
+        euler_steps=stages.FLOW_EULER_STEPS,
     )
 
 
