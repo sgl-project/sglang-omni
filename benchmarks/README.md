@@ -475,10 +475,13 @@ supports a stable model revision or snapshot identifier, record it in the
 configuration and preserve it with the run artifacts. Missing scores from any
 configured judge leave quality incomplete, including the first-200 view.
 
-The example configuration follows the current SocialOmni leaderboard panel:
+The example configuration follows the current panel published in the
+[SocialOmni leaderboard](https://mac-automl.github.io/SocialOmni/) and its
+[modern-panel evaluation record](https://github.com/teeryxie/SocialOmni/tree/main/evaluation/results/modern-panel-20260924):
 Gemini 3.8 Flash, Qwen3.8-Omni-Flash (enable_thinking=false), and GPT-5.6-Sol
-(reasoning_effort=none). This is a maintained example, not a fixed judge
-allowlist. Existing GPT-4o / Gemini 2.5 Pro / Qwen3-Omni configurations remain
+(reasoning_effort=none). Those judge results were produced for SocialOmni
+model evaluations using this benchmark protocol. This is a maintained example,
+not a fixed judge allowlist. Existing GPT-4o / Gemini 2.5 Pro / Qwen3-Omni configurations remain
 supported, and users may configure another current multimodal-capable LLM panel
 with the same three-score contract. Keep one panel and its settings fixed when
 comparing runs; scores from different panels or model revisions are not directly
