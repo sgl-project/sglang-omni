@@ -13,7 +13,8 @@ tests/
 │   ├── test_tts_ci.py
 │   ├── test_tts_latency_ci.py
 │   ├── test_asr_ci_multi_speaker.py
-│   └── test_asr_ci_seedtts.py
+│   ├── test_asr_ci_seedtts.py
+│   └── test_fun_asr_realtime.py
 └── unit_test/
     ├── benchmarks/
     │   ├── test_dataset_regressions.py
@@ -176,6 +177,7 @@ tests/
     │   ├── test_pipeline.py
     │   ├── test_request_builders.py
     │   ├── test_stream_output_builder.py
+    │   ├── test_streaming.py
     │   └── test_streaming_client.py
     ├── fun_cosyvoice3/
     │   ├── test_flow_batch.py
@@ -361,6 +363,10 @@ Relevant model CI ownership:
   threshold calibration (`asr` in the external `calibrate-h100-ci` skill).
   Its stdout uses the same boxed summary style as the other benchmark stages:
   `ASR WER Benchmark Result` followed by `ASR Speed Benchmark Result`.
+- `test_fun_asr_realtime.py`: starts a Fun-ASR server with `--enable-realtime`
+  and drives `/v1/realtime?intent=transcription` over a real WebSocket:
+  manual commit across several rollback refreshes, server-VAD finalization
+  without a commit, and recovery after a mid-decode disconnect.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
   a Qwen3-ASR router. It also owns the WER ASR concurrency constant

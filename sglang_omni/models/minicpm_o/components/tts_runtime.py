@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import torch
 
 from sglang_omni.models.minicpm_o.components.code2wav import (
     OUTPUT_SAMPLE_RATE,
@@ -84,6 +85,9 @@ class MiniCPMOVocoderRuntime:
         speaker = self.speakers.get(reference_key)
         if speaker is None:
             (prompt,) = self.code2wav.prepare_references([reference_audio])
+            # note (Dayuxiaoshui): references are prepared on the codec's decode stream.
+            device_module = torch.get_device_module(self.token2wav.device)
+            device_module.current_stream().wait_stream(self.code2wav.decode_stream)
             speaker = SharedSpeaker(
                 reference_key=reference_key,
                 prompt=prompt,

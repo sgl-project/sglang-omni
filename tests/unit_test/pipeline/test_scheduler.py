@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import gc
 import importlib
+import pickle
 import threading
 import time
 import weakref
@@ -2048,20 +2049,13 @@ def test_completed_request_id_is_cleared_on_explicit_readmission(
     assert scheduler.recv_requests() == []
 
 
-@pytest.mark.parametrize(
-    "timeout_env,placement",
-    [
-        ("SGLANG_REQ_WAITING_TIMEOUT", "waiting"),
-        ("SGLANG_REQ_RUNNING_TIMEOUT", "running"),
-    ],
-)
-def test_request_timeout_fails_only_the_expired_request(
-    timeout_env: str, placement: str
-) -> None:
-    """The entry rank fails an expired request once and leaves its neighbor alone."""
+def tp_rank_scheduler(tp_rank: int, tp_size: int, placement: str) -> OmniScheduler:
+    """One TP rank that owns an expired and a fresh request of its own."""
     scheduler = object.__new__(OmniScheduler)
-    scheduler.tp_size = 1
-    scheduler.is_entry_rank = True
+    scheduler.tp_size = tp_size
+    scheduler.is_entry_rank = tp_rank == 0
+    scheduler.tp_group = SimpleNamespace(rank=tp_rank, ranks=list(range(tp_size)))
+    scheduler.tp_cpu_group = None
     scheduler.outbox = Queue()
     scheduler.inbox = Queue()
     scheduler.idle_wait_message = None
@@ -2097,23 +2091,115 @@ def test_request_timeout_fails_only_the_expired_request(
     scheduler.running_batch = SimpleNamespace(reqs=running, batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = None
+    return scheduler
+
+
+def schedulable_request_ids(scheduler: OmniScheduler) -> list[str]:
+    queued = [request.rid for request in scheduler.waiting_queue]
+    running = [
+        request.rid
+        for request in scheduler.running_batch.reqs
+        if request.to_finish is None
+    ]
+    return queued + running
+
+
+def install_tp_broadcast(monkeypatch: pytest.MonkeyPatch) -> None:
+    published: dict[str, bytes] = {}
+
+    def broadcast_pyobj(
+        messages: list[IncomingMessage], rank: int, dist_group: None, src: int
+    ) -> list[IncomingMessage]:
+        if rank == src:
+            published["messages"] = pickle.dumps(messages)
+            return messages
+        else:
+            return pickle.loads(published["messages"])
+
+    monkeypatch.setattr(omni_scheduler_module, "broadcast_pyobj", broadcast_pyobj)
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize(
+    "timeout_env,placement",
+    [
+        ("SGLANG_REQ_WAITING_TIMEOUT", "waiting"),
+        ("SGLANG_REQ_RUNNING_TIMEOUT", "running"),
+    ],
+)
+def test_request_timeout_fails_only_the_expired_request(
+    monkeypatch: pytest.MonkeyPatch, timeout_env: str, placement: str, tp_size: int
+) -> None:
+    """The entry rank fails an expired request once, and every rank drops it."""
+    install_tp_broadcast(monkeypatch)
+    ranks = [tp_rank_scheduler(rank, tp_size, placement) for rank in range(tp_size)]
 
     with getattr(envs, timeout_env).override(30.0):
-        assert scheduler.recv_requests() == []
-        assert scheduler.recv_requests() == []
+        first_pass = [scheduler.recv_requests() for scheduler in ranks]
+        after_first_pass = [schedulable_request_ids(scheduler) for scheduler in ranks]
+        second_pass = [scheduler.recv_requests() for scheduler in ranks]
 
+    assert first_pass == second_pass == [[]] * tp_size
+    assert after_first_pass == [["req-fresh"]] * tp_size
     failures = []
-    while not scheduler.outbox.empty():
-        failures.append(scheduler.outbox.get_nowait())
+    while not ranks[0].outbox.empty():
+        failures.append(ranks[0].outbox.get_nowait())
     assert [(out.request_id, out.type) for out in failures] == [
         ("req-expired", "error")
     ]
     assert "timeout" in str(failures[0].data)
-    if placement == "waiting":
-        assert scheduler.waiting_queue == [fresh]
-    else:
-        assert expired.to_finish is not None
-        assert fresh.to_finish is None
+    assert all(scheduler.outbox.empty() for scheduler in ranks[1:])
+
+
+@pytest.mark.parametrize(
+    "tp_size,has_session_bridge", [(2, False), (2, True), (1, True)]
+)
+@pytest.mark.parametrize("placement", ["waiting", "running"])
+def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    placement: str,
+    tp_size: int,
+    has_session_bridge: bool,
+) -> None:
+    """Ranks see a stage thread abort at different times but drop it in one pass."""
+    install_tp_broadcast(monkeypatch)
+    ranks = [tp_rank_scheduler(rank, tp_size, placement) for rank in range(tp_size)]
+    for scheduler in ranks:
+        scheduler.scheduler_thread_id = threading.get_ident()
+        if has_session_bridge:
+            scheduler.session_bridge = SimpleNamespace(
+                cancelling_request_id=None, units_by_request_id={}
+            )
+        else:
+            pass
+
+    def abort_from_stage_thread(scheduler: OmniScheduler) -> None:
+        thread_errors: list[BaseException] = []
+
+        def abort_request() -> None:
+            try:
+                scheduler.abort("req-expired")
+            except BaseException as exc:
+                thread_errors.append(exc)
+
+        thread = threading.Thread(target=abort_request)
+        thread.start()
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+        assert thread_errors == []
+
+    for follower in ranks[1:]:
+        abort_from_stage_thread(follower)
+        assert schedulable_request_ids(follower) == ["req-expired", "req-fresh"]
+        assert follower.inbox.empty()
+    abort_from_stage_thread(ranks[0])
+    assert schedulable_request_ids(ranks[0]) == ["req-expired", "req-fresh"]
+    for scheduler in ranks:
+        assert scheduler.recv_requests() == []
+    assert [schedulable_request_ids(scheduler) for scheduler in ranks] == [
+        ["req-fresh"]
+    ] * tp_size
+    assert all(scheduler.inbox.empty() for scheduler in ranks)
 
 
 def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:

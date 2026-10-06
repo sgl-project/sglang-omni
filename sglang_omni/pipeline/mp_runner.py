@@ -821,7 +821,7 @@ class MultiProcessPipelineRunner:
             else:
                 pass
             try:
-                await self.cleanup_on_failure()
+                await finish_despite_cancellation(self.cleanup_on_failure())
             finally:
                 if self.mps is not None:
                     try:

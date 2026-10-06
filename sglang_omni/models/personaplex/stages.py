@@ -153,10 +153,12 @@ def create_mimi_encode_executor(
         state = PersonaPlexState.from_dict(payload.data)
         if state.waveform is not None:
             state.user_codes = encode_waveform(state.waveform)
+            state.waveform = None
         else:
             pass
         if state.voice_waveform is not None:
             state.voice_codes = encode_waveform(state.voice_waveform)
+            state.voice_waveform = None
         else:
             pass
         payload.data = state.to_dict()
