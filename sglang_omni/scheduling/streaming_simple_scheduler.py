@@ -43,6 +43,7 @@ class StreamingSimpleScheduler:
 
     can_batch_stream_chunks: bool = False
     stream_chunk_batch_max: int | None = None
+    ready_work_message_batch_limit: int | None = None
     stream_chunk_batch_distinct_requests: bool = False
 
     def __init__(
@@ -157,23 +158,36 @@ class StreamingSimpleScheduler:
 
     def start(self) -> None:
         self.running = True
+        ready_work_message_batches = 0
         loop = asyncio.new_event_loop()
         try:
             while self.running:
                 if self.has_ready_work():
-                    # note (ratish): drain queued messages into state before a
-                    # step, so ranking never sees a stale inbox
+                    if (
+                        self.ready_work_message_batch_limit is not None
+                        and ready_work_message_batches
+                        >= self.ready_work_message_batch_limit
+                    ):
+                        self.run_ready_step()
+                        ready_work_message_batches = 0
+                        continue
+                    else:
+                        pass
+                    # note (ratish): ingest queued messages before ranking work.
                     try:
                         msg = self.get_batch_message()
                     except queue_mod.Empty:
                         self.run_ready_step()
+                        ready_work_message_batches = 0
                         continue
                 else:
+                    ready_work_message_batches = 0
                     msg = self.next_message()
                     if msg is None:
                         continue
                     else:
                         pass
+                ready_work_message_batches += 1
                 if self.is_aborted(msg.request_id):
                     continue
                 else:

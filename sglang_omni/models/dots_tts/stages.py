@@ -487,6 +487,7 @@ def create_sglang_latent_engine_executor(
     optimize: bool = True,
     max_generate_length: int = 500,
     num_steps: int = 4,
+    enable_acoustic_tail_batch_padding: bool = True,
     device: str | None = None,
     gpu_id: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
@@ -501,6 +502,7 @@ def create_sglang_latent_engine_executor(
         optimize=optimize,
         num_steps=num_steps,
         max_audio_patches=max_generate_length,
+        enable_acoustic_tail_batch_padding=enable_acoustic_tail_batch_padding,
     ).build(
         model_path,
         device=device,
@@ -520,6 +522,7 @@ def create_vocoder_executor(
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
+    enable_buffer_scheduling: bool = False,
 ) -> DotsTTSStreamingVocoder:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -537,6 +540,7 @@ def create_vocoder_executor(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         stream_slots=stream_slots,
+        enable_buffer_scheduling=enable_buffer_scheduling,
     )
     # note (guozhihao-224): allocate the slot pool at setup so OOM / shape
     # mismatch surface before readiness, not on the first live chunk.

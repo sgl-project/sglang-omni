@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 
 import torch
@@ -11,13 +12,18 @@ import torch
 from sglang_omni.models.dots_tts.codec import DotsAudioCodec
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState, load_dots_tts_state
 from sglang_omni.models.dots_tts.vocoder_slot_pool import DotsVocoderSlotPool
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 _LENGTH_BUCKET_FRAMES = 32
+FIRST_AUDIO_TARGET_SECONDS = 0.025
+MAX_READY_WAIT_SECONDS = 0.1
+STEP_MARGIN_SECONDS = 0.003
 logger = logging.getLogger(__name__)
 
 
@@ -154,6 +160,10 @@ class DotsStreamState:
     slot: int | None = None
     pending: list[torch.Tensor] = field(default_factory=list)
     received_patches: int = 0
+    done: bool = False
+    first_ingest_seconds: float | None = None
+    ready_since_seconds: float | None = None
+    playback_end_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -180,6 +190,7 @@ class DotsTTSStreamingVocoder(
         max_batch_wait_ms: int = 2,
         stream_slots: int = 16,
         slot_pool: DotsVocoderSlotPool | None = None,
+        enable_buffer_scheduling: bool = False,
     ) -> None:
         if merge_steps < 1:
             raise ValueError("dots.tts vocoder merge_steps must be positive")
@@ -203,6 +214,10 @@ class DotsTTSStreamingVocoder(
         self.stream_slots = int(stream_slots)
         self.batch_vocoder = DotsTTSBatchVocoder(codec)
         self.slot_pool = slot_pool
+        self.enable_buffer_scheduling = enable_buffer_scheduling
+        self.pump_on_chunk_batch = not enable_buffer_scheduling
+        self.ready_work_message_batch_limit = 16 if enable_buffer_scheduling else None
+        self.step_wall_seconds: dict[tuple[int, int], float] = {}
         # note (guozhihao-224): coalesce width follows max_batch_size only;
         # stream_slots is admission capacity and must not redefine the batch cap.
         self.stream_chunk_batch_max = int(max_batch_size)
@@ -254,7 +269,10 @@ class DotsTTSStreamingVocoder(
     def ingest(
         self, request_id: str, state: DotsStreamState, codes: torch.Tensor
     ) -> None:
-        del request_id
+        if self.enable_buffer_scheduling and state.first_ingest_seconds is None:
+            state.first_ingest_seconds = time.perf_counter()
+        else:
+            pass
         state.pending.append(codes)
         state.received_patches += 1
         self.ensure_slot(state)
@@ -360,10 +378,17 @@ class DotsTTSStreamingVocoder(
         slotted = [
             (request_id, state)
             for request_id, state in self.stream_state_items()
-            if state.slot is not None and self.pending_ready(state)
+            if state.slot is not None
+            and (self.pending_ready(state) or state.done)
+            and not self.is_aborted(request_id)
         ]
         if not slotted:
             return []
+        else:
+            pass
+        completed = [entry for entry in slotted if entry[1].done]
+        if completed and self.has_pending_completion_at_capacity():
+            return completed[:1]
         else:
             pass
         # note (guozhihao-224): exact-T groups only; padding would change AudioVAE
@@ -373,7 +398,160 @@ class DotsTTSStreamingVocoder(
         for entry in slotted:
             frames = self.step_frames(entry[1])
             by_frames.setdefault(frames, []).append(entry)
-        return max(by_frames.values(), key=len)[: self.stream_chunk_batch_max]
+        if not self.enable_buffer_scheduling:
+            return max(by_frames.values(), key=len)[: self.stream_chunk_batch_max]
+        else:
+            pass
+        now_seconds = time.perf_counter()
+        deadlines: dict[str, float] = {}
+        for request_id, state in self.stream_state_items():
+            if state.slot is not None and (self.pending_ready(state) or state.done):
+                if state.ready_since_seconds is None:
+                    state.ready_since_seconds = now_seconds
+                else:
+                    pass
+                assert state.first_ingest_seconds is not None
+                audio_deadline_seconds = (
+                    state.playback_end_seconds
+                    if self.stream_has_emitted(request_id)
+                    else state.first_ingest_seconds + FIRST_AUDIO_TARGET_SECONDS
+                )
+                deadlines[request_id] = min(
+                    audio_deadline_seconds,
+                    state.ready_since_seconds + MAX_READY_WAIT_SECONDS,
+                )
+            else:
+                state.ready_since_seconds = None
+        for group in by_frames.values():
+            group.sort(key=lambda participant: deadlines[participant[0]])
+        largest = max(
+            by_frames.values(),
+            key=lambda group: min(len(group), self.stream_chunk_batch_max),
+        )
+        fallback_wall_seconds = max(self.step_wall_seconds.values(), default=0.0)
+        group_wall_seconds = {
+            frames: self.step_wall_seconds.get(
+                (
+                    frames,
+                    1 if frames == 0 else min(len(group), self.stream_chunk_batch_max),
+                ),
+                fallback_wall_seconds,
+            )
+            for frames, group in by_frames.items()
+        }
+        urgent = min(
+            by_frames.values(),
+            key=lambda group: deadlines[group[0][0]]
+            - group_wall_seconds[self.step_frames(group[0][1])],
+        )
+        if (
+            now_seconds
+            + group_wall_seconds[self.step_frames(largest[0][1])]
+            + group_wall_seconds[self.step_frames(urgent[0][1])]
+            + STEP_MARGIN_SECONDS
+            >= deadlines[urgent[0][0]]
+        ):
+            selected = urgent
+        else:
+            selected = largest
+        return selected[
+            : (
+                1
+                if self.step_frames(selected[0][1]) == 0
+                else self.stream_chunk_batch_max
+            )
+        ]
+
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage] | None:
+        if not self.enable_buffer_scheduling:
+            return super().on_stream_done(request_id)
+        else:
+            state = self.get_or_create_stream_state(request_id)
+            if state is None:
+                return []
+            elif state.slot is None:
+                return self.finish_stream(request_id)
+            else:
+                state.done = True
+                return None
+
+    def has_pending_completion_at_capacity(self) -> bool:
+        states = self.stream_state_items()
+        return (
+            self.enable_buffer_scheduling
+            and self.slot_pool is not None
+            and sum(state.slot is not None for _, state in states)
+            >= self.slot_pool.num_slots
+            and any(state.done and state.slot is not None for _, state in states)
+        )
+
+    def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
+        if not self.enable_buffer_scheduling:
+            super().on_stream_chunk_batch(items)
+        else:
+            for request_id, item in items:
+                state = self.stream_states.get(request_id)
+                # note (0xtoward): drain EOS in bounded steps before reusing its slot.
+                while (
+                    state is None or state.slot is None
+                ) and self.has_pending_completion_at_capacity():
+                    self.run_ready_step()
+                super().on_stream_chunk_batch([(request_id, item)])
+
+    def has_ready_work(self) -> bool:
+        if not self.enable_buffer_scheduling:
+            return super().has_ready_work()
+        else:
+            with self.state_lock:
+                return bool(self.select_step_participants())
+
+    def pump_one_step(self) -> list[str] | None:
+        if not self.enable_buffer_scheduling:
+            return super().pump_one_step()
+        else:
+            participants = self.select_step_participants()
+        if not participants:
+            return None
+        else:
+            frames = self.step_frames(participants[0][1])
+            started_seconds = time.perf_counter()
+        try:
+            if frames == 0:
+                request_id = participants[0][0]
+                self.complete_stream_request(request_id, self.finish_stream(request_id))
+            else:
+                decoded = self.run_step(
+                    participants, self.build_step_plan(participants)
+                )
+                for request_id, _ in participants:
+                    waveform = decoded.get(request_id)
+                    if waveform is not None and not self.is_aborted(request_id):
+                        self.mark_stream_emitted(request_id)
+                        self.outbox.put(self.stream_chunk_message(request_id, waveform))
+                    else:
+                        pass
+        except Exception as error:
+            return list(self.on_step_failure(participants, error))
+        # note (0xtoward): wall cost includes GPU completion and PCM serialization.
+        shape = (frames, len(participants))
+        self.step_wall_seconds[shape] = time.perf_counter() - started_seconds
+        return []
+
+    def stream_chunk_message(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> OutgoingMessage:
+        message = super().stream_chunk_message(request_id, waveform)
+        if self.enable_buffer_scheduling and waveform.numel() > 0:
+            state = self.stream_states[request_id]
+            # note (0xtoward): this is a server-side playback proxy, not a client ACK.
+            state.playback_end_seconds = (
+                max(state.playback_end_seconds, time.perf_counter())
+                + waveform.numel() / self.codec.sample_rate
+            )
+            state.ready_since_seconds = None
+        else:
+            pass
+        return message
 
     def build_step_plan(
         self, participants: list[tuple[str, DotsStreamState]]
@@ -461,14 +639,32 @@ class DotsTTSStreamingVocoder(
             return False
         else:
             pass
-        if state.received_patches <= 2:
+        initial_patches = (
+            state.received_patches - len(state.pending) < 2
+            if self.enable_buffer_scheduling
+            else state.received_patches <= 2
+        )
+        if initial_patches:
             return True
         else:
             pass
         return len(state.pending) >= self.merge_steps
 
     def take_patches(self, state: DotsStreamState) -> int:
-        if state.received_patches <= 2:
+        if (
+            self.enable_buffer_scheduling
+            and state.done
+            and not self.pending_ready(state)
+        ):
+            return 0
+        else:
+            pass
+        initial_patches = (
+            state.received_patches - len(state.pending) < 2
+            if self.enable_buffer_scheduling
+            else state.received_patches <= 2
+        )
+        if initial_patches:
             return 1
         else:
             pass
