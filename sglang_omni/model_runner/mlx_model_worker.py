@@ -270,9 +270,7 @@ def create_mlx_model_worker(
 
         make_runner_class = make_qwen3_asr_mlx_runner_class
     elif model_arch == "ArkasrForConditionalGeneration":
-        from sglang_omni.models.arkasr.mlx.runner import (
-            make_arkasr_mlx_runner_class,
-        )
+        from sglang_omni.models.arkasr.mlx.runner import make_arkasr_mlx_runner_class
 
         make_runner_class = make_arkasr_mlx_runner_class
     elif model_arch == "FunCosyVoice3SGLangModel":

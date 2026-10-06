@@ -131,9 +131,7 @@ def test_runner_chains_native_single_request_decode() -> None:
     runner = object.__new__(runner_class)
     runner.model = tiny_model()
     runner._req_token_ids = {"req": [1]}  # noqa: leading-underscore
-    runner._req_caches = {  # noqa: leading-underscore
-        "req": runner.model.make_cache()
-    }
+    runner._req_caches = {"req": runner.model.make_cache()}  # noqa: leading-underscore
     runner._decode_step_ct = 0  # noqa: leading-underscore  # upstream name
     runner._clear_steps = 0  # noqa: leading-underscore  # upstream name
 
@@ -145,9 +143,7 @@ def test_runner_chains_native_single_request_decode() -> None:
 
     assert first.lazy_tokens.shape == (1,)
     assert second.lazy_tokens.shape == (1,)
-    assert (
-        runner._req_caches["req"][0].offset == 2  # noqa: leading-underscore
-    )
+    assert runner._req_caches["req"][0].offset == 2  # noqa: leading-underscore
     assert len(runner._req_token_ids["req"]) == 3  # noqa: leading-underscore
 
 

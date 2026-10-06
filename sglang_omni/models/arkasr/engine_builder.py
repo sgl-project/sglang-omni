@@ -289,9 +289,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         else:
             pass
 
-    def make_adapters(
-        self, model: object
-    ) -> tuple[
+    def make_adapters(self, model: object) -> tuple[
         Callable[
             [StagePayload], ArkASRRequestData | DeferredAdmission[ArkASRRequestData]
         ],
