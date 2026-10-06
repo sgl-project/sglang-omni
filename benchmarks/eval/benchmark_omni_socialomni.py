@@ -148,6 +148,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             "judge_request_rate": recorded_rate,
             "judge_request_rate_scope": "logical_scores",
             "temperature": 0.0,
+            "judge_top_p": 1.0,
             "use_audio_in_video": True,
             "trust_env": config.trust_env,
         },
@@ -164,6 +165,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             "judge_warmup": 0,
             "generation": {
                 "temperature": 0.0,
+                "judge_top_p": 1.0,
                 "stream": False,
                 "level1_max_tokens": LEVEL1_MAX_TOKENS,
                 "level2_when_max_tokens": LEVEL2_WHEN_MAX_TOKENS,

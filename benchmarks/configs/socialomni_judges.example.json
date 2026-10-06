@@ -8,7 +8,7 @@
       "max_concurrency": 2
     },
     {
-      "name": "qwen3.8-omni",
+      "name": "qwen3.8-omni-flash",
       "model": "dashscope/qwen3.8-omni-flash",
       "base_url": "https://openai-compatible.example/v1",
       "api_key_env": "SOCIALOMNI_QWEN_API_KEY",

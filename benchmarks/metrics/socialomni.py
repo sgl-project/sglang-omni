@@ -145,6 +145,8 @@ def validate_judge_names(judge_names: Sequence[str]) -> None:
         raise ValueError(
             "judge names must contain exactly three distinct non-empty names"
         )
+    else:
+        pass
 
 
 def validate_judge_scores(
