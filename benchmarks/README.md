@@ -461,33 +461,28 @@ python -m benchmarks.dataset.prepare \
 
 The judge configuration requires exactly three distinct, non-empty names
 because the SocialOmni quality protocol uses three scores for each eligible
-response. Each entry declares the actual served model, an OpenAI-compatible
-endpoint, the environment variable holding its API key, and a concurrency
-limit. Optional enable_thinking and reasoning_effort values are sent only when
-configured. The endpoint must support the selected options.
+response. Each entry declares the served model, an OpenAI-compatible endpoint,
+the API-key environment variable, and a concurrency limit. Optional
+enable_thinking and reasoning_effort values are sent only when configured.
 
-The evaluator loads this panel once at startup and uses the same model IDs and
-generation options for the complete run; it does not rotate or silently replace
-a judge between samples. Results retain the configured names, model IDs and
-reasoning options, while API key values are never recorded. The endpoint owner
-must keep the served model and revision stable for the run. If the endpoint
-supports a stable model revision or snapshot identifier, record it in the
-configuration and preserve it with the run artifacts. Missing scores from any
-configured judge leave quality incomplete, including the first-200 view.
+The evaluator reads the panel once at startup and uses the same model IDs and
+generation options for the complete run. It does not rotate judges between
+samples. Results record the configured names, model IDs, and reasoning
+options; API-key values are never recorded. The endpoint owner is responsible
+for keeping the served model revision unchanged during the run. Missing scores
+from any configured judge leave quality incomplete, including the first-200
+view.
 
-The example configuration follows the current panel published in the
-[SocialOmni leaderboard](https://mac-automl.github.io/SocialOmni/) and its
+The example follows the current panel published in the
+[SocialOmni leaderboard](https://mac-automl.github.io/SocialOmni/) and the
 [modern-panel evaluation record](https://github.com/teeryxie/SocialOmni/tree/13e5e1f487185d36c38d0b545e558e10c7b11f88/evaluation/results/modern-panel-20260924):
 Gemini 3.8 Flash, Qwen3.8-Omni-Flash (enable_thinking=false), and GPT-5.6-Sol
-(reasoning_effort=none). Those judge results were produced for SocialOmni
-model evaluations using this benchmark protocol. This is a maintained example,
-not a fixed judge allowlist. Existing GPT-4o / Gemini 2.5 Pro / Qwen3-Omni configurations remain
-supported, and users may configure another current multimodal-capable LLM panel
-with the same three-score contract. Keep one panel and its settings fixed when
-comparing runs; scores from different panels or model revisions are not directly
-comparable. Updating the panel as models are retired is part of keeping the
-benchmark executable and auditable, while archived runs preserve their original
-judge metadata.
+(reasoning_effort=none). It is an example panel, not a fixed allowlist.
+Existing GPT-4o / Gemini 2.5 Pro / Qwen3-Omni configurations remain supported.
+Users may configure another current multimodal-capable LLM panel with the same
+three-score contract. Keep the panel and its settings fixed when comparing
+runs; scores from different panels or model revisions are not directly
+comparable. Archived results retain their original judge metadata.
 
 ```bash
 # Deterministic smoke set: both Level 1 visibility strata and Level 2 YES/NO.
