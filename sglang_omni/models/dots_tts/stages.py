@@ -22,6 +22,7 @@ from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
 from sglang_omni.models.dots_tts.vocoder import DotsTTSStreamingVocoder
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -493,7 +494,7 @@ def create_sglang_latent_engine_executor(
 ) -> OmniScheduler[DotsTTSSGLangRequestData]:
     from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
 
-    if not torch.cuda.is_available():
+    if not (torch.cuda.is_available() or current_platform.is_xpu()):
         raise RuntimeError("dots.tts requires CUDA")
     else:
         pass
@@ -523,7 +524,7 @@ def create_vocoder_executor(
 ) -> DotsTTSStreamingVocoder:
     from sglang_omni.utils.device import resolve_concrete_device
 
-    if not torch.cuda.is_available():
+    if not (torch.cuda.is_available() or current_platform.is_xpu()):
         raise RuntimeError("dots.tts requires CUDA")
     else:
         pass

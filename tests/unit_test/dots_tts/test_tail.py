@@ -325,6 +325,52 @@ def test_validate_acoustic_pool_memory_releases_cached_blocks_before_sampling_fr
     )
 
 
+def test_validate_acoustic_pool_memory_gates_xpu_through_xpu_memory_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    estimate = tail.AcousticPoolMemoryEstimate(
+        dit_kv_bytes=11 << 30,
+        encoder_kv_bytes=2 << 30,
+        scratch_bytes=4 << 30,
+        aux_bytes=0,
+        total_bytes=17 << 30,
+        num_slots=16,
+        patch_capacity=501,
+        nfe=4,
+        dtype=torch.bfloat16,
+    )
+    memory = {"free": 16 << 30, "released": 0}
+
+    def cuda_untouched(*_args: object) -> None:
+        raise AssertionError("the XPU gate must not query CUDA")
+
+    monkeypatch.setattr(torch.cuda, "device", cuda_untouched)
+    monkeypatch.setattr(torch.cuda, "empty_cache", cuda_untouched)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", cuda_untouched)
+    monkeypatch.setattr(torch.xpu, "device", lambda _device: nullcontext())
+    monkeypatch.setattr(
+        torch.xpu,
+        "empty_cache",
+        lambda: memory.update(released=memory["released"] + 1),
+    )
+    monkeypatch.setattr(
+        torch.xpu,
+        "mem_get_info",
+        lambda _device=None: (memory["free"], 24 << 30),
+    )
+    device = torch.device("xpu:0")
+
+    with pytest.raises(ValueError, match="admission failed at startup") as caught:
+        tail.validate_acoustic_pool_memory(estimate, device=device)
+    assert memory["released"] == 1
+    assert "only 16.00 GiB is free on xpu:0" in str(caught.value)
+    assert "Lower max_running_requests" in str(caught.value)
+
+    memory["free"] = 40 << 30
+    tail.validate_acoustic_pool_memory(estimate, device=device)
+    assert memory["released"] == 2
+
+
 def test_permuted_full_pool_matches_fragmented_gather_fallback() -> None:
     torch.manual_seed(1234)
     direct = build_tail(TailModel().eval(), slots=2)

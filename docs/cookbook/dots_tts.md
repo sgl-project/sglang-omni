@@ -82,6 +82,32 @@ On a full GPU the default `16 × 500` layout is intended. On tighter cards, lowe
 
 Incremental / bucketed tail-KV allocation is not implemented yet; capacity is still the eager full-length pool.
 
+## Intel XPU
+
+dots.tts runs on a single Intel XPU (validated on Arc Pro B60, 24 GB, torch 2.13.0+xpu) with all three checkpoints. Set up the environment with [Installation — Intel XPU](../get_started/installation_xpu.md) first.
+
+`dots.tts` is not part of `pyproject_xpu.toml`, so install it on its own. The list below is the runtime set `dots_tts` imports; `--no-deps` skips its declared `gradio` dependency, which no `dots_tts` module imports:
+
+```bash
+pip install --no-deps dots.tts==0.2.1 WeTextProcessing==1.2.0 pynini==2.1.7 \
+  torchdiffeq==0.2.5 lingua-language-detector==2.2.0 langcodes==3.5.1 \
+  language_data==1.4.0 marisa-trie==1.4.1 importlib_resources==7.1.0
+```
+
+The default `16 × 500` layout needs about 19 GiB of acoustic pools and does not fit next to the weights on a 24 GB card; startup stops with the admission error described in [Memory and capacity](#memory-and-capacity). Serve MeanFlow with 8 slots (about 17.4 GiB peak):
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --config examples/configs/dots_tts.yaml \
+  --latent_engine.engine.max_running_requests 8 \
+  --allowed-local-media-path docs/_static/audio \
+  --port 8000
+```
+
+SOAR and base need no override (`max_running_requests: 1`, about 9 GiB peak).
+
+On XPU the backbone decode graph is captured as on CUDA, and the vocoder is eager on every device. Two paths that `optimize: true` accelerates on CUDA stay eager on XPU: the MeanFlow acoustic tail captures its graphs only on CUDA, and upstream dots.tts compiles the SOAR/base DiT step only on CUDA.
+
 ## Synthesizing Speech
 
 dots.tts needs a reference clip and its transcript. The speaker comes entirely from the reference (x-vector plus prompt latents), so there is no zero-shot `voice` preset. Under the default continuous-batching deployment, a request without `references` is rejected.
