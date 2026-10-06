@@ -55,7 +55,31 @@ SOAR is a flow-matching checkpoint. It runs the single-request solver with class
 
 `examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment. It is already tuned; compiled acoustic tail and vocoder (`optimize: true`, on by default); continuous batching at `max_running_requests=16`; and the backbone decode CUDA graph. `--model-path` alone keeps the compiled tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
 
+The config gives reference encode and the vocoder separate processes on one GPU. `mps: auto` allows their kernels to overlap; it does not add replicas. The process memory fractions are 0.05 for reference encode, 0.55 for the latent engine, and 0.25 for the vocoder. Without MPS, separate CUDA contexts can add latency. To use one process, set `mps: off` and remove the two `process:` overrides and all three `gpu_memory_fraction` overrides.
+
 If startup fails with `dots.tts acoustic-tail admission failed at startup`, the GPU cannot hold `max_running_requests × max_generate_length` full-length acoustic pools — lower those knobs yourself. The engine never silently shrinks them.
+
+The vocoder can optionally fuse its causal FIR → SnakeBeta → FIR activations:
+
+```bash
+sgl-omni serve --config examples/configs/dots_tts.yaml \
+  --vocoder.factory.enable_alias_free_fusion true
+```
+
+This defaults to false and requires `vocoder.factory.optimize=true`. Fusion uses
+the loaded shared or per-channel filters for FP32 CUDA inference; unsupported
+devices, dtypes, and activation geometry keep the native implementation. Enable
+it before serving requests. Vocoders sharing one cached codec must use the same
+effective fusion setting; conflicting settings fail at setup.
+
+The config also turns on the streaming optimizations of the latent engine and the vocoder. Each has a switch:
+
+| Setting | Value | Effect |
+|---|---|---|
+| `latent_engine.factory.enable_cached_block_attention` | `true` | The acoustic tail attends to each slot's cached history in place. |
+| `latent_engine.factory.prefill_coalesce_requests`, `prefill_coalesce_wait_ms` | `4`, `60` | A prefill waits until four requests are queued or the oldest waited 60 ms. `0` requests admits every request at once. |
+| `vocoder.factory.enable_stream_latent_graph` | `true` | The vocoder's latent front end replays as CUDA graphs, checked against the eager front end at startup. |
+| `vocoder.factory.vocoder_merge_steps`, `vocoder_initial_merge_steps`, `vocoder_initial_merge_patches` | `8`, `4`, `10` | A stream decodes up to 4 patches per vocoder step until it received 10 patches, then up to 8. |
 
 The examples below read local clips from `docs/_static/audio`. To fetch reference audio over HTTP instead, allow the domains you need, e.g. `--allowed-media-domain huggingface.co`.
 

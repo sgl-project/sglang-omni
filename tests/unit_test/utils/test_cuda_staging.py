@@ -19,7 +19,11 @@ import pytest
 import torch
 
 from sglang_omni.utils import cuda_staging
-from sglang_omni.utils.cuda_staging import GrowablePinnedBuffer, PinnedTransferSlot
+from sglang_omni.utils.cuda_staging import (
+    GrowablePinnedBuffer,
+    PinnedTransferSlot,
+    tensor_to_device,
+)
 from tests.unit_test.fixtures.accelerator import require_cuda
 
 
@@ -427,3 +431,17 @@ def test_pinned_transfer_slot_real_cuda_guards_slot_on_other_device() -> None:
             slot.query()
     finally:
         torch.cuda.set_device(previous_device)
+
+
+@pytest.mark.accelerator
+def test_tensor_to_device_keeps_host_tensors_off_the_stream_wait() -> None:
+    require_cuda()
+    device = torch.device("cuda", torch.cuda.current_device())
+    source = torch.arange(1024, dtype=torch.long)
+    torch.cuda.synchronize(device)
+    # note (0xtoward): queued device work keeps the stream busy while the copy is issued.
+    torch.cuda._sleep(1_000_000_000)  # noqa: leading-underscore  # upstream name
+    copied = tensor_to_device(source, device)
+    assert not torch.cuda.current_stream(device).query()
+    torch.testing.assert_close(copied.cpu(), source)
+    assert tensor_to_device(source, torch.device("cpu")) is source

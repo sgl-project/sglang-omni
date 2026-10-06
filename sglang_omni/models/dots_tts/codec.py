@@ -7,13 +7,16 @@ import json
 import logging
 import math
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
 from safetensors.torch import load_file
 
+from sglang_omni.models.dots_tts.alias_free import install_alias_free_fusion
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import (
     load_dots_tts_state,
@@ -31,7 +34,16 @@ from sglang_omni.scheduling.reference_encoder import (
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
+# note (0xtoward): dots.tts is optional on CPU hosts that only import the codec.
+if TYPE_CHECKING:
+    from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
+else:
+    pass
+
 logger = logging.getLogger(__name__)
+
+# note (0xtoward): Longer references use eager encoding.
+REFERENCE_PATCH_BUCKETS = (8, 12, 16, 20, 24, 32, 40, 48, 64, 80)
 
 
 def load_module(module: torch.nn.Module, path: Path) -> None:
@@ -40,6 +52,87 @@ def load_module(module: torch.nn.Module, path: Path) -> None:
         raise RuntimeError(f"Failed to load {path}: {mismatch}")
     else:
         pass
+
+
+def fold_weight_norm(module: torch.nn.Module) -> None:
+    """Fold weight-norm reparametrizations so forward passes stop rewriting weights."""
+    for submodule in module.modules():
+        if hasattr(submodule, "weight_g"):
+            torch.nn.utils.remove_weight_norm(submodule)
+        else:
+            pass
+
+
+class ReferenceEncoderGraphs:
+    """Replay causal reference encodes whose lookahead fits in the dropped patch."""
+
+    def __init__(
+        self,
+        inference: VocoderInference,
+        *,
+        samples_per_patch: int,
+        hop_size: int,
+        device: torch.device,
+    ) -> None:
+        config = inference.vocoder.h
+        if not config.causal_encoder:
+            raise ValueError("Encoder graphs require a causal reference encoder")
+        else:
+            pass
+        lookahead_frames = int(config.get("num_encoder_lookahead", 2))
+        if samples_per_patch < lookahead_frames * hop_size:
+            raise ValueError(
+                "Encoder graphs need the dropped last patch to cover "
+                f"the {lookahead_frames}-frame lookahead"
+            )
+        else:
+            pass
+        self.inference = inference
+        self.hop_size = hop_size
+        self.lock = threading.Lock()
+        self.graphs: dict[
+            int, tuple[torch.cuda.CUDAGraph, torch.Tensor, torch.Tensor]
+        ] = {}
+        started_seconds = time.perf_counter()
+        capture_stream = torch.cuda.Stream(device=device)
+        with torch.no_grad():
+            for patches in REFERENCE_PATCH_BUCKETS:
+                static_input = torch.zeros(
+                    1, 1, patches * samples_per_patch, device=device
+                )
+                capture_stream.wait_stream(torch.cuda.current_stream(device))
+                with torch.cuda.stream(capture_stream):
+                    for _ in range(2):
+                        inference.extract_latents(static_input)
+                torch.cuda.current_stream(device).wait_stream(capture_stream)
+                torch.cuda.synchronize(device)
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph, stream=capture_stream):
+                    static_output = inference.extract_latents(static_input)
+                self.graphs[int(static_input.shape[-1])] = (
+                    graph,
+                    static_input,
+                    static_output,
+                )
+        logger.info(
+            f"Reference encoder graphs: buckets={sorted(self.graphs)} "
+            f"capture_seconds={time.perf_counter() - started_seconds:.1f}"
+        )
+
+    def extract_latents(self, batch: torch.Tensor) -> torch.Tensor:
+        length = int(batch.shape[-1])
+        bucket = min(
+            (samples for samples in self.graphs if samples >= length), default=None
+        )
+        if batch.shape[0] != 1 or bucket is None:
+            return self.inference.extract_latents(batch)
+        else:
+            graph, static_input, static_output = self.graphs[bucket]
+            with self.lock:
+                static_input[..., :length].copy_(batch)
+                static_input[..., length:].zero_()
+                graph.replay()
+                return static_output[..., : length // self.hop_size].clone()
 
 
 class DotsAudioCodec:
@@ -65,6 +158,9 @@ class DotsAudioCodec:
         ).eval()
         load_module(vocoder, root / "vocoder.safetensors")
         load_module(speaker, root / "speaker_encoder.safetensors")
+        # note (0xtoward): remove_weight_norm above only folds the decoder.
+        fold_weight_norm(vocoder.audio_encoder)
+        fold_weight_norm(speaker)
         self.vocoder = vocoder.to(device=torch.device(device)).eval()
         self.speaker = speaker.to(device=torch.device(device)).eval()
         self.inference = VocoderInference(self.vocoder)
@@ -74,6 +170,27 @@ class DotsAudioCodec:
         self.hop_size = int(vocoder.hop_size)
         self.device = torch.device(device)
         self.lock = threading.RLock()
+        self.alias_free_fusion_enabled: bool | None = None
+        self.encoder_graphs: ReferenceEncoderGraphs | None = None
+        self.speaker_streams = threading.local()
+
+    def configure_alias_free_fusion(self, enabled: bool) -> None:
+        """Fix the shared codec's decoder mode before creating a vocoder."""
+        with self.lock:
+            if self.alias_free_fusion_enabled is not None:
+                if self.alias_free_fusion_enabled != enabled:
+                    raise RuntimeError(
+                        "The shared dots.tts codec already has a different "
+                        "enable_alias_free_fusion setting"
+                    )
+                else:
+                    pass
+            else:
+                if enabled:
+                    install_alias_free_fusion(self.vocoder.decoder)
+                else:
+                    pass
+                self.alias_free_fusion_enabled = enabled
 
     @staticmethod
     def reference_load_workers(count: int) -> int:
@@ -121,9 +238,27 @@ class DotsAudioCodec:
         )
         speaker_batch, speaker_lengths = self.speaker_input(batch, audio_lengths)
 
-        with self.lock:
+        # note (0xtoward): Folded weights let encodes bypass the vocoder state lock.
+        if self.device.type == "cuda":
+            # note (0xtoward): the speaker model and the AudioVAE encoder are
+            # independent. Each encoding thread runs the speaker on its own stream,
+            # so it overlaps the encoder and other references' speaker work instead
+            # of queueing behind them on the shared stream.
+            main_stream = torch.cuda.current_stream(self.device)
+            speaker_stream = self.speaker_stream()
+            speaker_stream.wait_stream(main_stream)
+            with torch.cuda.stream(speaker_stream):
+                speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
+        else:
             speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
+        if self.encoder_graphs is None:
             latent_distribution = self.inference.extract_latents(batch)
+        else:
+            latent_distribution = self.encoder_graphs.extract_latents(batch)
+        if self.device.type == "cuda":
+            main_stream.wait_stream(speaker_stream)
+        else:
+            pass
 
         frames = int(latent_distribution.shape[-1])
         expected_frames = length // self.hop_size
@@ -145,6 +280,16 @@ class DotsAudioCodec:
             }
             for index in range(len(waveforms))
         ]
+
+    def speaker_stream(self) -> torch.cuda.Stream:
+        """The calling thread's stream for the speaker model."""
+        stream = getattr(self.speaker_streams, "stream", None)
+        if stream is None:
+            stream = torch.cuda.Stream(device=self.device)
+            self.speaker_streams.stream = stream
+        else:
+            pass
+        return stream
 
     def speaker_input(
         self, batch: torch.Tensor, audio_lengths: torch.Tensor
@@ -171,6 +316,22 @@ class DotsAudioCodec:
             pass
         rate = int(getattr(self.speaker, "sample_rate", self.sample_rate))
         return round(rate * max_seconds)
+
+    def compile_speaker_model(self, *, warmup_seconds: float = 5.0) -> None:
+        """Compile the CAM++ speaker model with dynamic lengths and warm it before serving."""
+        started_seconds = time.perf_counter()
+        self.speaker.model = torch.compile(self.speaker.model, dynamic=True)
+        samples = int(warmup_seconds * self.sample_rate)
+        audio = torch.zeros(1, 1, samples, device=self.device)
+        with torch.inference_mode():
+            for count in (samples, int(samples * 0.8)):
+                lengths = torch.full((1,), count, dtype=torch.long, device=self.device)
+                batch, batch_lengths = self.speaker_input(audio[..., :count], lengths)
+                self.speaker(batch, audio_lengths=batch_lengths)
+        torch.cuda.synchronize(self.device)
+        logger.info(
+            f"Reference speaker model compiled in {time.perf_counter() - started_seconds:.1f}s"
+        )
 
     def encode_reference(self, path: str) -> dict[str, torch.Tensor]:
         return self.encode_waveforms([self.load_reference_waveform(path)])[0]

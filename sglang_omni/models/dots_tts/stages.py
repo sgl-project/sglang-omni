@@ -16,11 +16,17 @@ from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.dots_tts.codec import (
     DotsReferenceEncoder,
+    ReferenceEncoderGraphs,
     load_dots_audio_codec,
 )
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.models.dots_tts.incremental_codec import DotsIncrementalDecoder
+from sglang_omni.models.dots_tts.incremental_codec_cuda_graph import (
+    DotsIncrementalCodecCudaGraphRunner,
+)
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
+from sglang_omni.models.dots_tts.stream_latent_graphs import StreamLatentGraphs
 from sglang_omni.models.dots_tts.vocoder import DotsTTSStreamingVocoder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -458,6 +464,8 @@ def create_reference_encode_executor(
     max_concurrency: int = 8,
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
+    enable_encoder_graphs: bool = False,
+    compile_speaker_model: bool = False,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -467,6 +475,19 @@ def create_reference_encode_executor(
     else:
         pass
     codec = load_dots_audio_codec(model_path, device=str(concrete_device))
+    if enable_encoder_graphs and concrete_device.type == "cuda":
+        codec.encoder_graphs = ReferenceEncoderGraphs(
+            codec.inference,
+            samples_per_patch=codec.patch_size * codec.hop_size,
+            hop_size=codec.hop_size,
+            device=codec.device,
+        )
+    else:
+        pass
+    if compile_speaker_model and concrete_device.type == "cuda":
+        codec.compile_speaker_model()
+    else:
+        pass
     encoder = DotsReferenceEncoder(
         codec,
         model_id=str(model_path),
@@ -487,6 +508,13 @@ def create_sglang_latent_engine_executor(
     optimize: bool = True,
     max_generate_length: int = 500,
     num_steps: int = 4,
+    enable_acoustic_tail_batch_padding: bool = True,
+    compile_tail_blocks: bool = False,
+    enable_prefill_graphs: bool = False,
+    stream_latents_on_cpu: bool = False,
+    enable_cached_block_attention: bool = False,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 60.0,
     device: str | None = None,
     gpu_id: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
@@ -501,6 +529,13 @@ def create_sglang_latent_engine_executor(
         optimize=optimize,
         num_steps=num_steps,
         max_audio_patches=max_generate_length,
+        enable_acoustic_tail_batch_padding=enable_acoustic_tail_batch_padding,
+        compile_tail_blocks=compile_tail_blocks,
+        enable_prefill_graphs=enable_prefill_graphs,
+        stream_latents_on_cpu=stream_latents_on_cpu,
+        enable_cached_block_attention=enable_cached_block_attention,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
     ).build(
         model_path,
         device=device,
@@ -510,16 +545,26 @@ def create_sglang_latent_engine_executor(
     )
 
 
+# note (0xtoward): cold windows grow by one latent patch per step until the
+# slot is warm. These buckets bound the cold graphs and still pad little.
+COLD_WINDOW_BUCKET_FRAMES = (8, 16, 24, 32)
+
+
 def create_vocoder_executor(
     model_path: str,
     *,
     device: str | None = None,
     gpu_id: int | None = None,
     optimize: bool = True,
+    enable_alias_free_fusion: bool = False,
     vocoder_merge_steps: int = 4,
+    vocoder_initial_merge_steps: int | None = None,
+    vocoder_initial_merge_patches: int = 0,
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
+    enable_stateful_codec_decoder: bool = False,
+    enable_stream_latent_graph: bool = False,
 ) -> DotsTTSStreamingVocoder:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -527,30 +572,59 @@ def create_vocoder_executor(
         raise RuntimeError("dots.tts requires CUDA")
     else:
         pass
-    codec = load_dots_audio_codec(
-        model_path, device=str(resolve_concrete_device(device, gpu_id))
-    )
+    codec_device = resolve_concrete_device(device, gpu_id)
+    codec = load_dots_audio_codec(model_path, device=str(codec_device))
+    codec.configure_alias_free_fusion(optimize and enable_alias_free_fusion)
     vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,
         merge_steps=vocoder_merge_steps,
+        initial_merge_steps=vocoder_initial_merge_steps,
+        initial_merge_patches=vocoder_initial_merge_patches,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         stream_slots=stream_slots,
     )
     # note (guozhihao-224): allocate the slot pool at setup so OOM / shape
     # mismatch surface before readiness, not on the first live chunk.
-    vocoder.ensure_slot_pool()
+    pool = vocoder.ensure_slot_pool()
+    if enable_stateful_codec_decoder:
+        decoder = DotsIncrementalDecoder(codec.inference)
+        pool.incremental_codec = DotsIncrementalCodecCudaGraphRunner(
+            decoder,
+            decoder.new_state_arena(pool.num_slots),
+            max_batch_size=max_batch_size,
+            # note (0xtoward): a final step adds the lookahead frames of the flush.
+            warm_fresh_frames=[
+                codec.patch_size * patches + tail
+                for patches in range(1, vocoder.merge_steps + 1)
+                for tail in (0, decoder.lookahead)
+            ],
+            cold_window_frames=sorted({*COLD_WINDOW_BUCKET_FRAMES, pool.window_size}),
+        )
+    else:
+        pass
+    # note (0xtoward): the front-end graphs are CUDA graphs; a codec on another
+    # device keeps the eager front end, as the codec graph runner does.
+    if enable_stream_latent_graph and codec_device.type == "cuda":
+        codec.inference._decode_stream_latents = (
+            StreamLatentGraphs(  # noqa: leading-underscore  # upstream spelling
+                codec.inference,
+                max_batch_size=max_batch_size,
+                frame_counts=[
+                    codec.patch_size * patches
+                    for patches in range(1, vocoder.merge_steps + 1)
+                ],
+            )
+        )
+    else:
+        pass
     logging.getLogger(__name__).info(
         "dots.tts vocoder backend: slot-pooled eager streaming "
-        "(optimize=%s, merge_steps=%d, stream_slots=%d, batch_size=%d, "
-        "stream_batch_cap=%d, wait_ms=%d)",
-        optimize,
-        vocoder.merge_steps,
-        vocoder.stream_slots,
-        max_batch_size,
-        vocoder.stream_chunk_batch_max,
-        max_batch_wait_ms,
+        f"(optimize={optimize}, merge_steps={vocoder.merge_steps}, "
+        f"stream_slots={vocoder.stream_slots}, batch_size={max_batch_size}, "
+        f"step_batch_cap={vocoder.step_batch_max}, "
+        f"chunk_intake={vocoder.stream_chunk_batch_max}, wait_ms={max_batch_wait_ms})"
     )
     return vocoder
 

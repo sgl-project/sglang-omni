@@ -5,14 +5,20 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING
 
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.dots_tts import CAPABILITIES
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     TtsEngineBuilder,
+)
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
 )
 
 if TYPE_CHECKING:
@@ -36,6 +42,9 @@ logger = logging.getLogger(__name__)
 class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     model_name = "dots.tts"
     context_length = 2048
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
@@ -44,6 +53,13 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         num_steps: int = 4,
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
+        enable_acoustic_tail_batch_padding: bool = True,
+        compile_tail_blocks: bool = False,
+        enable_prefill_graphs: bool = False,
+        stream_latents_on_cpu: bool = False,
+        enable_cached_block_attention: bool = False,
+        prefill_coalesce_requests: int = 0,
+        prefill_coalesce_wait_ms: float = 60.0,
     ) -> None:
         from sglang_omni.models.dots_tts.hf_config import DOTS_TTS_MODEL_ARCH_OVERRIDE
 
@@ -52,6 +68,13 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         self.num_steps = int(num_steps)
         self.max_audio_patches = int(max_audio_patches)
         self.max_running_requests = int(max_running_requests)
+        self.enable_acoustic_tail_batch_padding = enable_acoustic_tail_batch_padding
+        self.compile_tail_blocks = bool(compile_tail_blocks)
+        self.enable_prefill_graphs = bool(enable_prefill_graphs)
+        self.stream_latents_on_cpu = stream_latents_on_cpu
+        self.enable_cached_block_attention = bool(enable_cached_block_attention)
+        self.prefill_coalesce_requests = int(prefill_coalesce_requests)
+        self.prefill_coalesce_wait_ms = float(prefill_coalesce_wait_ms)
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
         else:
@@ -83,6 +106,12 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "disable_cuda_graph": True,
+            "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
+            # note (0xtoward): prefills are never chunked, so the ladder reaches
+            # the context length.
+            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(
+                self.context_length
+            ),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -162,6 +191,10 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
                 nfe=self.num_steps,
                 max_audio_patches=self.max_audio_patches,
                 optimize=self.optimize,
+                pad_to_bucket=self.enable_acoustic_tail_batch_padding,
+                compile_blocks=self.compile_tail_blocks,
+                prefill_graphs=self.enable_prefill_graphs,
+                cached_block_attention=self.enable_cached_block_attention,
             )
             self.acoustic_tail = model.flow.batched_tail
         else:
@@ -198,7 +231,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     ) -> DotsTTSModelRunner:
         from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
-        self.model_runner = DotsTTSModelRunner(model_worker, output_proc)
+        self.model_runner = DotsTTSModelRunner(
+            model_worker,
+            output_proc,
+            stream_latents_on_cpu=self.stream_latents_on_cpu,
+        )
         return self.model_runner
 
     def make_adapters(self, model: DotsTTSSGLangModel | None) -> tuple[
@@ -237,8 +274,12 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         from sglang_omni.models.dots_tts.request_builders import build_stream_output
 
         return {
-            "stream_output_builder": build_stream_output,
+            "stream_output_builder": partial(
+                build_stream_output, stream_latents_on_cpu=self.stream_latents_on_cpu
+            ),
             "enable_async_decode": False,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
 

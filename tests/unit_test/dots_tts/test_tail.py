@@ -6,7 +6,7 @@ import copy
 import logging
 from collections import Counter
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import FunctionType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,11 +21,21 @@ from dots_tts.modules.backbone.dit import DiT
 from dots_tts.modules.backbone.encoder import VAESemanticEncoder
 
 from sglang_omni.models.dots_tts import tail
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 FM_HIDDEN = 32
 LATENT_DIM = 6
 PATCH_SIZE = 2
 NFE = 2
+SLOT_DIMS = {
+    "dit_k": 2,
+    "dit_v": 2,
+    "encoder_k": 1,
+    "encoder_v": 1,
+    "encoder_conv_tail": 0,
+    "window": 0,
+    "all_mods": 1,
+}
 
 
 def test_batched_tail_mask_hides_padding_and_preserves_causality() -> None:
@@ -101,6 +111,10 @@ def build_tail(
     dtype: torch.dtype = torch.float32,
     patch_capacity: int = 8,
     optimize: bool = False,
+    pad_to_bucket: bool = False,
+    compile_blocks: bool = False,
+    prefill_graphs: bool = False,
+    cached_block_attention: bool = False,
 ):
     encoder = patch_encoder().to(device=device, dtype=dtype)
     with torch.no_grad():
@@ -123,7 +137,134 @@ def build_tail(
         device=device,
         dtype=dtype,
         optimize=optimize,
+        pad_to_bucket=pad_to_bucket,
+        compile_blocks=compile_blocks,
+        prefill_graphs=prefill_graphs,
+        cached_block_attention=cached_block_attention,
     )
+
+
+def copy_live_state(source, destination) -> None:
+    slots = source.spec.num_slots
+    for name, slot_dim in SLOT_DIMS.items():
+        source_value = getattr(source, name)
+        source_value.normal_(0, 0.05)
+        destination_value = getattr(destination, name)
+        live = [slice(None)] * source_value.ndim
+        live[slot_dim] = slice(0, slots)
+        destination_value[tuple(live)].copy_(source_value)
+
+
+def assert_no_further_from_fp32(
+    observed: torch.Tensor, eager_value: torch.Tensor, fp32_value: torch.Tensor
+) -> None:
+    """A graph or compiled bf16 result may round differently from eager bf16, but
+    it must stay within a small factor of eager's own distance from the fp32 run,
+    by norm and by the largest element."""
+    fp32_value = fp32_value.float()
+    observed_error = observed.float() - fp32_value
+    eager_error = eager_value.float() - fp32_value
+    scale = fp32_value.norm().clamp_min(1e-12)
+    observed_norm = (observed_error.norm() / scale).item()
+    eager_norm = (eager_error.norm() / scale).item()
+    assert observed_norm <= 1.5 * eager_norm + 1e-4, (observed_norm, eager_norm)
+    observed_max = observed_error.abs().max().item()
+    eager_max = eager_error.abs().max().item()
+    assert observed_max <= 2 * eager_max + 1e-3, (observed_max, eager_max)
+
+
+def fp32_twin(
+    eager: tail.DotsTtsAcousticTail,
+    model: TailModel,
+    *,
+    slots: int,
+    device: torch.device,
+    patch_capacity: int,
+) -> tail.DotsTtsAcousticTail:
+    """The same weights in fp32; sampling replays eager's last noise draw."""
+    reference = build_tail(
+        copy.deepcopy(model).float(),
+        slots=slots,
+        device=device,
+        dtype=torch.float32,
+        patch_capacity=patch_capacity,
+    )
+    reference.encoder.load_state_dict(
+        {key: value.float() for key, value in eager.encoder.state_dict().items()}
+    )
+    draws: list[torch.Tensor] = []
+    eager_sample_noise = eager.sample_noise
+
+    def recorded_noise(slots: list[int]) -> torch.Tensor:
+        draws.append(eager_sample_noise(slots))
+        return draws[-1]
+
+    eager.sample_noise = recorded_noise
+    reference.sample_noise = lambda slots: draws[-1].float()
+    return reference
+
+
+def assert_live_state_close(
+    actual: tail.DotsTtsAcousticTail,
+    expected: tail.DotsTtsAcousticTail,
+    reference: tail.DotsTtsAcousticTail | None = None,
+) -> None:
+    slots = expected.spec.num_slots
+    for name, slot_dim in SLOT_DIMS.items():
+        actual_value = getattr(actual, name)
+        expected_value = getattr(expected, name)
+        live = [slice(None)] * expected_value.ndim
+        live[slot_dim] = slice(0, slots)
+        if reference is None:
+            torch.testing.assert_close(
+                actual_value[tuple(live)],
+                expected_value,
+                rtol=2e-2,
+                atol=2e-2,
+            )
+        else:
+            assert_no_further_from_fp32(
+                actual_value[tuple(live)],
+                expected_value,
+                getattr(reference, name),
+            )
+    for slot in range(slots):
+        assert torch.equal(
+            actual.generators[slot].get_state(),
+            expected.generators[slot].get_state(),
+        )
+    assert (
+        actual._fm_seq_len == expected._fm_seq_len
+    )  # noqa: leading-underscore  # production name
+    assert actual.encoder_seq_len == expected.encoder_seq_len
+
+
+def fill_reserved_state(acoustic_tail, value: float) -> None:
+    slot = acoustic_tail.spec.num_slots
+    for name, slot_dim in SLOT_DIMS.items():
+        tensor = getattr(acoustic_tail, name)
+        if tensor.size(slot_dim) > slot:
+            tensor.select(slot_dim, slot).fill_(value)
+
+
+@pytest.mark.parametrize("optimize", [False, True])
+def test_padding_request_does_not_allocate_on_cpu(optimize: bool) -> None:
+    acoustic_tail = build_tail(
+        TailModel().eval(),
+        slots=12,
+        patch_capacity=33,
+        optimize=optimize,
+        pad_to_bucket=True,
+    )
+
+    assert acoustic_tail.cuda_graph_enabled is False
+    assert acoustic_tail.pad_to_bucket is False
+    assert acoustic_tail.graph_batch_buckets == (1, 4, 8)
+    for name, slot_dim in SLOT_DIMS.items():
+        assert getattr(acoustic_tail, name).shape[slot_dim] == 12
+    estimate = acoustic_tail.pool_memory_estimate(acoustic_tail.mods_width)
+    assert estimate.num_slots == 12
+    assert estimate.total_bytes == acoustic_tail.allocated_pool_bytes()
 
 
 def reference_meanflow(
@@ -386,7 +527,10 @@ def test_fused_dit_builds_modulations_with_bfloat16_weights() -> None:
 
 
 @pytest.mark.accelerator
-def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
+@pytest.mark.parametrize("slots", [1, 8])
+def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order(
+    slots: int,
+) -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
     torch.manual_seed(1234)
@@ -397,7 +541,7 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     torch.manual_seed(9)
     eager = build_tail(
         eager_model,
-        slots=8,
+        slots=slots,
         device=device,
         dtype=dtype,
         patch_capacity=33,
@@ -405,26 +549,15 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     torch.manual_seed(9)
     graph = build_tail(
         graph_model,
-        slots=8,
+        slots=slots,
         device=device,
         dtype=dtype,
         patch_capacity=33,
         optimize=True,
     )
 
-    for name in (
-        "dit_k",
-        "dit_v",
-        "encoder_k",
-        "encoder_v",
-        "encoder_conv_tail",
-        "window",
-        "all_mods",
-    ):
-        eager_value = getattr(eager, name)
-        eager_value.normal_(0, 0.05)
-        getattr(graph, name).copy_(eager_value)
-    for slot in range(8):
+    copy_live_state(eager, graph)
+    for slot in range(slots):
         eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = (
             15  # noqa: leading-underscore  # production name
         )
@@ -432,19 +565,215 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
         eager.initialize_slot_rng(slot, 100 + slot)
         graph.initialize_slot_rng(slot, 100 + slot)
 
-    slots = [7, 2, 5, 0, 6, 1, 4, 3]
-    hidden = torch.randn(8, FM_HIDDEN, device=device, dtype=dtype)
-    eager_latent = eager.sample_patches(slots, fm_hidden_rows=hidden)
-    graph_latent = graph.sample_patches(slots, fm_hidden_rows=hidden)
+    slot_order = [0] if slots == 1 else [7, 2, 5, 0, 6, 1, 4, 3]
+    hidden = torch.randn(slots, FM_HIDDEN, device=device, dtype=dtype)
+    eager_latent = eager.sample_patches(slot_order, fm_hidden_rows=hidden)
+    graph_latent = graph.sample_patches(slot_order, fm_hidden_rows=hidden)
     torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
 
-    latent = torch.randn(8, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
-    eager_feedback = eager.encode_feedback(slots, latent)
-    graph_feedback = graph.encode_feedback(slots, latent)
+    latent = torch.randn(slots, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
+    eager_feedback = eager.encode_feedback(slot_order, latent)
+    graph_feedback = graph.encode_feedback(slot_order, latent)
     torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
     assert graph.graph_replays == {"meanflow": 1, "semantic_encoder": 1}
     assert not graph.graph_misses
     assert graph.dit_contiguous_view_steps == NFE
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(("slots", "first_rows"), [(8, 5), (12, 9), (24, 17)])
+def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
+    slots: int, first_rows: int
+) -> None:
+    """Padded, exact, and uncaptured-context execution preserve request state."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    eager_model = TailModel().eval().to(device=device, dtype=dtype)
+    graph_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = build_tail(
+        eager_model, slots=slots, device=device, dtype=dtype, patch_capacity=40
+    )
+    torch.manual_seed(9)
+    graph = build_tail(
+        graph_model,
+        slots=slots,
+        device=device,
+        dtype=dtype,
+        patch_capacity=40,
+        optimize=True,
+        pad_to_bucket=True,
+    )
+    # note (0xtoward): padding changes GEMM shapes and so bf16 rounding; the
+    # padded replay is judged by its distance from an fp32 run, like eager.
+    reference = fp32_twin(
+        eager, eager_model, slots=slots, device=device, patch_capacity=40
+    )
+
+    copy_live_state(eager, graph)
+    for name in SLOT_DIMS:
+        getattr(reference, name).copy_(getattr(eager, name))
+    assert [eager.acquire_slot() for _ in range(slots)] == list(range(slots))
+    assert [graph.acquire_slot() for _ in range(slots)] == list(range(slots))
+    assert [reference.acquire_slot() for _ in range(slots)] == list(range(slots))
+    for slot in range(slots):
+        fm_length = 52 if slot in {slots - 3, slots - 1} else 15
+        encoder_length = (
+            18 if slot in {slots - 3, slots - 1} else 4
+        ) * graph.encoder_block
+        for acoustic_tail in (eager, graph, reference):
+            acoustic_tail._fm_seq_len[slot] = (
+                fm_length  # noqa: leading-underscore  # production name
+            )
+            acoustic_tail.encoder_seq_len[slot] = encoder_length
+            acoustic_tail.initialize_slot_rng(slot, 100 + slot)
+
+    # note (0xtoward): A uses the maximum-batch gather twin; B changes live
+    # members and uses the largest permitted filler count (2 -> 4).
+    first = list(reversed(range(first_rows)))
+    second = [slots - 1, slots - 2]
+    full = list(reversed(range(slots - 4, slots)))
+    shared_graphs = (
+        graph.meanflow_graphs[(4, 32 * graph.spec.unit_len)],
+        graph.encoder_graphs[(4, 32 * graph.encoder_block)],
+    )
+    schedules = (first, second, first, full, second, [0, 1])
+    for replay_index, slot_order in enumerate(schedules):
+        if replay_index == 5:
+            # note (0xtoward): These histories fit the pool but exceed every
+            # captured context, so even a legal 2 -> 4 batch must run eagerly.
+            for acoustic_tail in (eager, graph, reference):
+                for slot in slot_order:
+                    acoustic_tail._fm_seq_len[slot] = (
+                        32 * acoustic_tail.spec.unit_len + acoustic_tail.spec.window_len
+                    )  # noqa: leading-underscore  # production name
+                    acoustic_tail.encoder_seq_len[slot] = (
+                        32 * acoustic_tail.encoder_block + 1
+                    )
+        fill_reserved_state(graph, 0.25 + replay_index)
+        hidden = torch.randn(len(slot_order), FM_HIDDEN, device=device, dtype=dtype)
+        eager_latent = eager.sample_patches(slot_order, fm_hidden_rows=hidden)
+        graph_latent = graph.sample_patches(slot_order, fm_hidden_rows=hidden)
+        reference_latent = reference.sample_patches(
+            slot_order, fm_hidden_rows=hidden.float()
+        )
+        assert_no_further_from_fp32(graph_latent, eager_latent, reference_latent)
+
+        latent = torch.randn(
+            len(slot_order), PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+        )
+        eager_feedback = eager.encode_feedback(slot_order, latent)
+        graph_feedback = graph.encode_feedback(slot_order, latent)
+        reference_feedback = reference.encode_feedback(slot_order, latent.float())
+        assert_no_further_from_fp32(graph_feedback, eager_feedback, reference_feedback)
+        assert_live_state_close(graph, eager, reference)
+        if replay_index == 3:
+            for captured in shared_graphs:
+                assert captured.inputs["slots"].tolist() == full
+        elif replay_index == 4:
+            # note (0xtoward): Reusing the same full -> partial capture must
+            # replace every stale live suffix before replaying filler rows.
+            for captured in shared_graphs:
+                assert captured.inputs["slots"].tolist() == second + [slots, slots]
+                for name, value in captured.inputs.items():
+                    if name != "slots":
+                        assert torch.count_nonzero(value[2:]).item() == 0
+
+    assert graph.graph_replays == {"meanflow": 5, "semantic_encoder": 5}
+    assert graph.graph_padded_replays == {"meanflow": 4, "semantic_encoder": 4}
+    assert graph.graph_misses == {"meanflow": 1, "semantic_encoder": 1}
+    assert graph.dit_contiguous_view_steps == 0
+
+    # note (0xtoward): Filler writes stay outside every allocatable slot.
+    assert graph.pad_bin_slot == slots
+    for name, slot_dim in SLOT_DIMS.items():
+        expected_rows = (
+            slots if name in {"dit_k", "dit_v", "encoder_k", "encoder_v"} else slots + 1
+        )
+        assert getattr(graph, name).size(slot_dim) == expected_rows
+    assert eager.window.shape[0] == slots
+    estimate = graph.pool_memory_estimate(graph.mods_width)
+    assert estimate.num_slots == slots
+    assert estimate.total_bytes == graph.allocated_pool_bytes()
+    bystander = slots - 1
+    assert bystander not in slot_order
+    hidden_one = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    eager_one = eager.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    graph_one = graph.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    reference_one = reference.sample_patches(
+        [bystander], fm_hidden_rows=hidden_one.float()
+    )
+    assert_no_further_from_fp32(graph_one, eager_one, reference_one)
+
+    # note (0xtoward): Reacquiring a real row must not inherit filler state.
+    for acoustic_tail in (eager, graph, reference):
+        acoustic_tail.release_slot(bystander)
+    assert eager.acquire_slot() == graph.acquire_slot() == bystander
+    assert reference.acquire_slot() == bystander
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = eager.dit.build_mods(grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond)
+    history = torch.randn(
+        2 * eager.spec.unit_len, FM_HIDDEN, device=device, dtype=dtype
+    )
+    for acoustic_tail in (eager, graph):
+        acoustic_tail.seed_fm_history(bystander, fm_rows=history, all_mods=mods)
+        acoustic_tail.initialize_slot_rng(bystander, 999)
+    reference.seed_fm_history(bystander, fm_rows=history.float(), all_mods=mods.float())
+    reference.initialize_slot_rng(bystander, 999)
+    hidden_one = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    eager_one = eager.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    graph_one = graph.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    reference_one = reference.sample_patches(
+        [bystander], fm_hidden_rows=hidden_one.float()
+    )
+    assert_no_further_from_fp32(graph_one, eager_one, reference_one)
+    assert_live_state_close(graph, eager, reference)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    ("slots", "optimize", "pad_to_bucket", "buckets"),
+    [
+        (12, False, True, (1, 4, 8)),
+        (12, True, False, (1, 4, 8)),
+        (1, True, True, (1,)),
+        (2, True, True, (1, 2)),
+    ],
+)
+def test_inactive_padding_preserves_cuda_pool_storage(
+    slots: int, optimize: bool, pad_to_bucket: bool, buckets: tuple[int, ...]
+) -> None:
+    """Disabled padding or buckets without gaps allocate no reserved row."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    model = TailModel().eval().to(device=device, dtype=dtype)
+    graph_model = copy.deepcopy(model)
+    baseline = build_tail(
+        model, slots=slots, device=device, dtype=dtype, patch_capacity=33
+    )
+    actual = build_tail(
+        graph_model,
+        slots=slots,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=optimize,
+        pad_to_bucket=pad_to_bucket,
+    )
+
+    assert not actual.pad_to_bucket
+    assert actual.graph_batch_buckets == buckets
+    assert not actual.meanflow_pad_graphs
+    assert actual.allocated_pool_bytes() == baseline.allocated_pool_bytes()
+    assert [pool.shape for pool in actual.pool_tensors()] == [
+        pool.shape for pool in baseline.pool_tensors()
+    ]
 
 
 def seed_single_slot_tail(patch_capacity: int) -> tuple[Any, int]:
@@ -468,12 +797,14 @@ def counter_records(caplog) -> list[logging.LogRecord]:
     return [r for r in caplog.records if "tail graph counters" in r.getMessage()]
 
 
-def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
+@pytest.mark.parametrize(
+    "graph_kind", ["meanflow_graphs", "meanflow_pad_graphs", "encoder_graphs"]
+)
+def test_tail_logs_graph_counters_every_50_steps(caplog, graph_kind: str) -> None:
     acoustic_tail, slot = seed_single_slot_tail(patch_capacity=60)
     # A captured batch-8 bucket that batch-1 decode can never select: every
     # cycle is a real miss, which is exactly what the counters report.
-    acoustic_tail.meanflow_graphs[(8, 16)] = object()
-    acoustic_tail.encoder_graphs[(8, 16)] = object()
+    getattr(acoustic_tail, graph_kind)[(8, 16)] = object()
 
     with caplog.at_level(logging.DEBUG, logger=tail.logger.name):
         for step in range(50):
@@ -498,6 +829,8 @@ def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
     assert "meanflow_misses=50" in message
     assert "semantic_encoder_replays=0" in message
     assert "semantic_encoder_misses=50" in message
+    assert "meanflow_padded_replays=0" in message
+    assert "semantic_encoder_padded_replays=0" in message
     assert acoustic_tail.graph_misses == Counter(
         {"meanflow": 50, "semantic_encoder": 50}
     )
@@ -522,3 +855,457 @@ def test_tail_without_captured_graphs_logs_no_counters(caplog) -> None:
         {"meanflow": 50, "semantic_encoder": 50}
     )
     assert not counter_records(caplog)
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [(2, ("8x16", 6)), (5, ("8x16", 3)), (8, ("16x16", 8)), (16, (None, 0))],
+)
+def test_select_padded_graph_uses_smallest_batch_then_capacity(
+    rows: int, expected: tuple[str | None, int]
+) -> None:
+    graphs = {(8, 32): "8x32", (8, 16): "8x16", (16, 16): "16x16"}
+
+    assert tail.select_padded_graph(graphs, rows, 12) == expected
+
+
+@pytest.mark.parametrize(
+    ("rows", "extra", "expected"),
+    [
+        (4, None, (None, 0)),
+        (3, {(8, 16): "gather"}, (None, 0)),
+        (4, {(8, 16): "gather"}, ("gather", 4)),
+        (5, {(8, 16): "gather"}, ("gather", 3)),
+    ],
+)
+def test_select_padded_graph_replaces_positional_capture_with_bounded_gather(
+    rows: int,
+    extra: dict[tuple[int, int], str] | None,
+    expected: tuple[str | None, int],
+) -> None:
+    graphs = {(8, 16): "positional"}
+
+    assert (
+        tail.select_padded_graph(
+            graphs, rows, 12, skip_batch=8, extra=extra, max_batch_ratio=2
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("rows", "capacity", "expected"),
+    [
+        (1, 12, (None, 0)),
+        (2, 12, ("4x16", 2)),
+        (3, 12, ("4x16", 1)),
+        (4, 12, ("8x16", 4)),
+        (5, 12, ("8x16", 3)),
+        (4, 24, (None, 0)),
+        (7, 24, (None, 0)),
+        (8, 24, ("16x32", 8)),
+        (8, 33, (None, 0)),
+    ],
+)
+def test_select_padded_graph_bounds_total_batch_expansion(
+    rows: int, capacity: int, expected: tuple[str | None, int]
+) -> None:
+    """The ratio cap covers both exact-boundary and context-driven expansion."""
+    graphs = {(4, 16): "4x16", (8, 16): "8x16", (16, 32): "16x32"}
+
+    assert (
+        tail.select_padded_graph(graphs, rows, capacity, max_batch_ratio=2) == expected
+    )
+
+
+@pytest.mark.parametrize("optimize", [False, True])
+def test_cpu_tail_keeps_eager_when_compile_is_requested(
+    optimize: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def reject_compile(function: FunctionType, *, dynamic: bool) -> None:
+        pytest.fail("CPU acoustic tails must not compile DiT blocks")
+
+    monkeypatch.setattr(torch, "compile", reject_compile)
+    acoustic_tail = build_tail(
+        TailModel().eval(), slots=1, optimize=optimize, compile_blocks=True
+    )
+    unit = acoustic_tail.spec.unit_len
+    grid = torch.linspace(0.0, 1.0, NFE + 1)
+    mods = acoustic_tail.dit.build_mods(
+        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=torch.randn(1, FM_HIDDEN)
+    )
+    slot = acoustic_tail.acquire_slot()
+    acoustic_tail.seed_fm_history(
+        slot, fm_rows=torch.randn(3 * unit, FM_HIDDEN), all_mods=mods
+    )
+    assert torch.isfinite(
+        acoustic_tail.sample_patches([slot], fm_hidden_rows=torch.randn(1, FM_HIDDEN))
+    ).all()
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("compile_blocks", [False, True])
+def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
+    compile_blocks: bool,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    eager_model = TailModel().eval().to(device=device, dtype=dtype)
+    graph_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = build_tail(
+        eager_model, slots=2, device=device, dtype=dtype, patch_capacity=33
+    )
+    torch.manual_seed(9)
+    graph = build_tail(
+        graph_model,
+        slots=2,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+        compile_blocks=compile_blocks,
+        prefill_graphs=True,
+    )
+    # note (0xtoward): a compiled seed rounds its fused block once instead of
+    # per op, so it differs from eager bf16; fp32 is the yardstick for both.
+    reference = fp32_twin(eager, eager_model, slots=2, device=device, patch_capacity=33)
+    noise = torch.randn(1, PATCH_SIZE, LATENT_DIM, device=device).to(dtype)
+    graph.sample_noise = lambda slots: noise.expand(len(slots), -1, -1)
+    eager.sample_noise = lambda slots: noise.expand(len(slots), -1, -1)
+    reference.sample_noise = lambda slots: noise.float().expand(len(slots), -1, -1)
+
+    for prompt_patches in (16, 12, 10):
+        prompt = torch.randn(
+            1, prompt_patches * PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+        )
+        eager_slot = eager.acquire_slot()
+        graph_slot = graph.acquire_slot()
+        reference_slot = reference.acquire_slot()
+        eager.initialize_slot_rng(eager_slot, 31)
+        graph.initialize_slot_rng(graph_slot, 31)
+
+        eager_embeddings = eager.encode_prompt_patches(eager_slot, prompt)
+        graph_embeddings = graph.encode_prompt_patches(graph_slot, prompt)
+        reference.encode_prompt_patches(reference_slot, prompt.float())
+        torch.testing.assert_close(
+            graph_embeddings, eager_embeddings, rtol=2e-2, atol=2e-2
+        )
+        tokens = eager.encoder_seq_len[eager_slot]
+        assert graph.encoder_seq_len[graph_slot] == tokens
+        for name in ("encoder_k", "encoder_v"):
+            torch.testing.assert_close(
+                getattr(graph, name)[:, graph_slot, :, :tokens],
+                getattr(eager, name)[:, eager_slot, :, :tokens],
+                rtol=2e-2,
+                atol=2e-2,
+            )
+
+        grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+        g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+        mods = eager.dit.build_mods(
+            grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
+        )
+        rows = torch.randn(
+            prompt_patches * eager.spec.unit_len, FM_HIDDEN, device=device, dtype=dtype
+        )
+        eager.seed_fm_history(eager_slot, fm_rows=rows, all_mods=mods)
+        graph.seed_fm_history(graph_slot, fm_rows=rows, all_mods=mods)
+        reference.seed_fm_history(
+            reference_slot, fm_rows=rows.float(), all_mods=mods.float()
+        )
+        persistent = rows.size(0) - eager.spec.unit_len
+
+        for name in ("dit_k", "dit_v"):
+            assert_no_further_from_fp32(
+                getattr(graph, name)[:, :, graph_slot, :, :persistent],
+                getattr(eager, name)[:, :, eager_slot, :, :persistent],
+                getattr(reference, name)[:, :, reference_slot, :, :persistent],
+            )
+
+        hidden_rows = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+        eager_latents = eager.sample_patches([eager_slot], fm_hidden_rows=hidden_rows)
+        graph_latents = graph.sample_patches([graph_slot], fm_hidden_rows=hidden_rows)
+        reference_latents = reference.sample_patches(
+            [reference_slot], fm_hidden_rows=hidden_rows.float()
+        )
+        assert_no_further_from_fp32(graph_latents, eager_latents, reference_latents)
+        assert_no_further_from_fp32(
+            graph.encode_feedback([graph_slot], graph_latents),
+            eager.encode_feedback([eager_slot], eager_latents),
+            reference.encode_feedback([reference_slot], reference_latents),
+        )
+        eager.release_slot(eager_slot)
+        graph.release_slot(graph_slot)
+        reference.release_slot(reference_slot)
+
+    assert graph.graph_replays["prompt_encoder"] == 3
+    assert graph.graph_replays["history_seed"] == 3
+    assert graph.graph_replays["meanflow"] == 3
+    assert graph.graph_replays["semantic_encoder"] == 3
+    assert not graph.graph_misses
+
+
+@pytest.mark.accelerator
+@torch.no_grad()
+def test_cached_block_attention_tail_matches_masked_tail() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    masked_model = TailModel().eval().to(device=device, dtype=dtype)
+    cached_model = copy.deepcopy(masked_model)
+    torch.manual_seed(9)
+    masked = build_tail(
+        masked_model, slots=3, device=device, dtype=dtype, patch_capacity=33
+    )
+    torch.manual_seed(9)
+    cached = build_tail(
+        cached_model,
+        slots=3,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        cached_block_attention=True,
+    )
+    unit = masked.spec.unit_len
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = masked.dit.build_mods(
+        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
+    )
+    histories = [
+        torch.randn(units * unit, FM_HIDDEN, device=device, dtype=dtype)
+        for units in (2, 5, 3)
+    ]
+    for acoustic_tail in (masked, cached):
+        for history in histories:
+            slot = acoustic_tail.acquire_slot()
+            acoustic_tail.seed_fm_history(slot, fm_rows=history, all_mods=mods)
+            acoustic_tail.initialize_slot_rng(slot, 100 + slot)
+    order = [2, 0, 1]
+    for _ in range(3):
+        hidden = torch.randn(3, FM_HIDDEN, device=device, dtype=dtype)
+        expected = masked.sample_patches(order, fm_hidden_rows=hidden)
+        observed = cached.sample_patches(order, fm_hidden_rows=hidden)
+        torch.testing.assert_close(observed, expected, rtol=3e-2, atol=3e-2)
+        feedback = torch.randn(3, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
+        torch.testing.assert_close(
+            cached.encode_feedback(order, feedback),
+            masked.encode_feedback(order, feedback),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+    for slot, history in enumerate(histories):
+        seeded = history.size(0) - unit
+        stored = masked.fm_seq_len(slot) - masked.spec.window_len
+        for name in ("dit_k", "dit_v"):
+            cached_pool = getattr(cached, name)[:, :, slot]
+            masked_pool = getattr(masked, name)[:, :, slot]
+            assert torch.equal(
+                cached_pool[..., :seeded, :], masked_pool[..., :seeded, :]
+            )
+            promoted = cached_pool[..., seeded:stored, :].float()
+            reference = masked_pool[..., seeded:stored, :].float()
+            assert (promoted - reference).norm() / reference.norm() < 2e-2
+
+
+@pytest.mark.accelerator
+@torch.no_grad()
+def test_cached_block_attention_graphs_follow_member_changes_and_slot_reuse() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    masked_model = TailModel().eval().to(device=device, dtype=dtype)
+    cached_model = copy.deepcopy(masked_model)
+    torch.manual_seed(9)
+    masked = build_tail(
+        masked_model, slots=4, device=device, dtype=dtype, patch_capacity=33
+    )
+    torch.manual_seed(9)
+    cached = build_tail(
+        cached_model,
+        slots=4,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+        pad_to_bucket=True,
+        cached_block_attention=True,
+    )
+    unit = masked.spec.unit_len
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = masked.dit.build_mods(
+        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
+    )
+
+    def admit(units: int, seed: int) -> int:
+        history = torch.randn(units * unit, FM_HIDDEN, device=device, dtype=dtype)
+        slots = []
+        for acoustic_tail in (masked, cached):
+            slot = acoustic_tail.acquire_slot()
+            acoustic_tail.seed_fm_history(slot, fm_rows=history, all_mods=mods)
+            acoustic_tail.initialize_slot_rng(slot, seed)
+            slots.append(slot)
+        assert slots[0] == slots[1]
+        return slots[0]
+
+    first, second, third = (admit(units, 100 + units) for units in (2, 5, 3))
+    schedule = [
+        [third, first, second],
+        [third, first],
+        [second],
+        [first, second, third],
+    ]
+    for step, members in enumerate(schedule):
+        if step == 2:
+            for acoustic_tail in (masked, cached):
+                acoustic_tail.release_slot(first)
+            assert admit(4, 200) == first
+        else:
+            pass
+        bystanders = {
+            slot: [
+                getattr(cached, name)[:, :, slot].clone() for name in ("dit_k", "dit_v")
+            ]
+            + [
+                getattr(cached, name)[:, slot].clone()
+                for name in ("encoder_k", "encoder_v")
+            ]
+            for slot in range(4)
+            if slot not in members
+        }
+        hidden = torch.randn(len(members), FM_HIDDEN, device=device, dtype=dtype)
+        torch.testing.assert_close(
+            cached.sample_patches(members, fm_hidden_rows=hidden),
+            masked.sample_patches(members, fm_hidden_rows=hidden),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+        feedback = torch.randn(
+            len(members), PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+        )
+        torch.testing.assert_close(
+            cached.encode_feedback(members, feedback),
+            masked.encode_feedback(members, feedback),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+        for slot, saved in bystanders.items():
+            current = [
+                getattr(cached, name)[:, :, slot] for name in ("dit_k", "dit_v")
+            ] + [getattr(cached, name)[:, slot] for name in ("encoder_k", "encoder_v")]
+            assert all(torch.equal(now, before) for now, before in zip(current, saved))
+    assert cached.graph_replays["meanflow"] == len(schedule)
+    assert cached.graph_replays["semantic_encoder"] == len(schedule)
+    assert cached.graph_misses["meanflow"] == 0
+    assert cached.graph_misses["semantic_encoder"] == 0
+
+
+@pytest.mark.accelerator
+@torch.no_grad()
+def test_compiled_tail_steps_match_eager_cached_tail() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    eager_model = TailModel().eval().to(device=device, dtype=dtype)
+    compiled_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = build_tail(
+        eager_model,
+        slots=4,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        cached_block_attention=True,
+    )
+    torch.manual_seed(9)
+    compiled = build_tail(
+        compiled_model,
+        slots=4,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+        pad_to_bucket=True,
+        compile_blocks=True,
+        cached_block_attention=True,
+    )
+    unit = eager.spec.unit_len
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = eager.dit.build_mods(grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond)
+    for units in (2, 5, 3, 4):
+        history = torch.randn(units * unit, FM_HIDDEN, device=device, dtype=dtype)
+        for acoustic_tail in (eager, compiled):
+            slot = acoustic_tail.acquire_slot()
+            acoustic_tail.seed_fm_history(slot, fm_rows=history, all_mods=mods)
+            acoustic_tail.initialize_slot_rng(slot, 100 + units)
+    for members in ([3, 0, 1], [0, 1, 2, 3], [2], [1, 3]):
+        hidden = torch.randn(len(members), FM_HIDDEN, device=device, dtype=dtype)
+        torch.testing.assert_close(
+            compiled.sample_patches(members, fm_hidden_rows=hidden),
+            eager.sample_patches(members, fm_hidden_rows=hidden),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+        feedback = torch.randn(
+            len(members), PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+        )
+        torch.testing.assert_close(
+            compiled.encode_feedback(members, feedback),
+            eager.encode_feedback(members, feedback),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+    for slot in range(4):
+        stored = eager.fm_seq_len(slot) - eager.spec.window_len
+        assert compiled.fm_seq_len(slot) == eager.fm_seq_len(slot)
+        for name in ("dit_k", "dit_v"):
+            observed = getattr(compiled, name)[:, :, slot, :, :stored].float()
+            expected = getattr(eager, name)[:, :, slot, :, :stored].float()
+            assert (observed - expected).norm() / expected.norm() < 2e-2
+    assert compiled.dit_contiguous_view_steps == NFE
+    assert compiled.graph_misses["meanflow"] == 0
+
+
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
+def test_gelu_tanh_linear_matches_linear_then_tanh_gelu(device: str) -> None:
+    if device == "cuda":
+        require_cuda()
+    else:
+        pass
+    generator = torch.Generator().manual_seed(5)
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    value = torch.randn(3, 6, 64, generator=generator).to(device=device, dtype=dtype)
+    weight = (torch.randn(256, 64, generator=generator) * 0.1).to(
+        device=device, dtype=dtype
+    )
+    bias = torch.randn(256, generator=generator).to(device=device, dtype=dtype)
+
+    expected = torch.nn.functional.gelu(
+        torch.nn.functional.linear(value.float(), weight.float(), bias.float()),
+        approximate="tanh",
+    )
+    observed = tail.gelu_tanh_linear(value, weight, bias)
+    compiled = torch.compile(tail.gelu_tanh_linear, fullgraph=True)(value, weight, bias)
+
+    assert observed.shape == (3, 6, 256) and observed.dtype == dtype
+    tolerance = (
+        {"rtol": 2e-2, "atol": 2e-2}
+        if device == "cuda"
+        else {"rtol": 1e-5, "atol": 1e-5}
+    )
+    torch.testing.assert_close(observed.float(), expected, **tolerance)
+    torch.testing.assert_close(compiled, observed, rtol=0, atol=0)

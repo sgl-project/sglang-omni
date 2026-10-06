@@ -15,25 +15,55 @@ shared:
       num_steps: 4
       max_generate_length: 500
 
+# note (0xtoward): isolate the reference and vocoder CPU work. MPS allows
+# kernels from these processes to overlap on one GPU; this adds no replicas.
+mps: auto
+
 stages:
   reference_encode:
+    process: reference
+    gpu_memory_fraction: 0.05
     factory:
       max_concurrency: 8
       max_batch_size: 1
       max_batch_wait_ms: 4
+      enable_encoder_graphs: true
+      compile_speaker_model: true
   latent_engine:
+    gpu_memory_fraction: 0.55
     factory:
       optimize: true
+      compile_tail_blocks: true
+      enable_prefill_graphs: true
+      stream_latents_on_cpu: true
+      enable_cached_block_attention: true
+      # note (0xtoward): every prefill stalls all running decodes, so hold an
+      # admission until four requests wait or the oldest waited 60 ms.
+      prefill_coalesce_requests: 4
+      prefill_coalesce_wait_ms: 60
     engine:
       mem_fraction_static: 0.20
       max_running_requests: 16
+      # Whole-request backbone prefills replay as breakable CUDA graphs.
+      # Set this to disabled to run them eagerly.
+      cuda_graph_backend_prefill: breakable
       # note (luojiaxuan): backbone decode runs through the SGLang CUDA graph
       # with the model-owned feedback buffer; delete these two lines (or set
       # disable_cuda_graph: true) to fall back to eager backbone decode.
       disable_cuda_graph: false
       cuda_graph_max_bs: 16
   vocoder:
+    process: vocoder
+    gpu_memory_fraction: 0.25
     factory:
       optimize: true
+      enable_stateful_codec_decoder: true
+      enable_alias_free_fusion: true
+      enable_stream_latent_graph: true
+      # note (0xtoward): 4-patch warm steps until a stream received 10 patches,
+      # then up to 8, so a request needs fewer vocoder steps.
+      vocoder_merge_steps: 8
+      vocoder_initial_merge_steps: 4
+      vocoder_initial_merge_patches: 10
       max_batch_size: 4
       max_batch_wait_ms: 2

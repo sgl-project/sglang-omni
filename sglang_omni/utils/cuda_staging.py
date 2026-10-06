@@ -32,6 +32,22 @@ def new_device_event(device: torch.device) -> torch.Event:
     return torch.get_device_module(device).Event()
 
 
+def indices_to_device(values: list[int], device: torch.device) -> torch.Tensor:
+    """Copy host indices through pinned memory so the current stream keeps running."""
+    return torch.tensor(values, dtype=torch.long, pin_memory=device.type == "cuda").to(
+        device, non_blocking=True
+    )
+
+
+def tensor_to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Copy a host tensor through pinned memory so the current stream keeps running."""
+    if tensor.device.type != "cpu" or device.type != "cuda":
+        return tensor.to(device)
+    else:
+        pass
+    return tensor.pin_memory().to(device, non_blocking=True)
+
+
 def normalize_device(device: torch.device | str | int) -> torch.device:
     resolved = torch.device(device)
     if supports_device_streams(resolved) and resolved.index is None:

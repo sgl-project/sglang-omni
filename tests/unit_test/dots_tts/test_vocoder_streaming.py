@@ -14,6 +14,7 @@ from sglang_omni.models.dots_tts.vocoder_slot_pool import (
     append_decoder_input_per_row,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 class RecordingSlotPool:
@@ -22,6 +23,7 @@ class RecordingSlotPool:
         self.free = list(reversed(range(num_slots)))
         self.in_use: set[int] = set()
         self.steps: list[dict[int, torch.Tensor]] = []
+        self.finals: list[bool] = []
         self.flushes: list[int] = []
 
     def acquire(self) -> int:
@@ -41,10 +43,13 @@ class RecordingSlotPool:
         self.in_use.remove(slot)
         self.free.append(slot)
 
-    def step(self, slot_latents: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
+    def step(
+        self, slot_latents: dict[int, torch.Tensor], *, final: bool = False
+    ) -> dict[int, torch.Tensor]:
         self.steps.append(
             {slot: latents.clone() for slot, latents in slot_latents.items()}
         )
+        self.finals.append(final)
         return {slot: torch.full((1, 1, 8), float(slot + 1)) for slot in slot_latents}
 
     def flush(self, slot: int) -> torch.Tensor:
@@ -180,7 +185,7 @@ def test_streaming_coalesces_equal_t_requests_into_one_pool_step() -> None:
         slot_pool=pool,
     )
     assert vocoder.can_batch_stream_chunks is True
-    assert vocoder.stream_chunk_batch_max == 4
+    assert vocoder.step_batch_max == 4
 
     for request_id in ("a", "b"):
         state = vocoder.create_stream_state(request_id)
@@ -209,7 +214,7 @@ def test_select_step_participants_respects_max_batch_size() -> None:
         stream_slots=8,
         slot_pool=pool,
     )
-    assert vocoder.stream_chunk_batch_max == 2
+    assert vocoder.step_batch_max == 2
 
     for request_id in ("a", "b", "c", "d"):
         state = vocoder.create_stream_state(request_id)
@@ -227,7 +232,7 @@ def test_select_step_participants_respects_max_batch_size() -> None:
     assert len(remaining) == 2
 
 
-def test_stream_chunk_batch_cap_follows_max_batch_size_not_slots() -> None:
+def test_step_width_follows_max_batch_size_and_intake_follows_slots() -> None:
     vocoder = DotsTTSStreamingVocoder(
         make_codec(),
         optimize=True,
@@ -235,8 +240,26 @@ def test_stream_chunk_batch_cap_follows_max_batch_size_not_slots() -> None:
         stream_slots=1,
         slot_pool=RecordingSlotPool(num_slots=1),
     )
-    assert vocoder.stream_chunk_batch_max == 8
-    assert vocoder.stream_slots == 1
+    assert vocoder.step_batch_max == 8
+    assert vocoder.stream_chunk_batch_max == 1
+
+
+def test_intake_takes_one_chunk_per_live_stream() -> None:
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(),
+        optimize=True,
+        max_batch_size=2,
+        stream_slots=4,
+        slot_pool=RecordingSlotPool(num_slots=4),
+    )
+    for request_id in ("b", "c", "d", "e"):
+        vocoder.inbox.put(IncomingMessage(request_id, "stream_chunk", "chunk"))
+
+    batch = vocoder.collect_stream_chunk_batch(
+        IncomingMessage("a", "stream_chunk", "chunk")
+    )
+
+    assert [message.request_id for message in batch] == ["a", "b", "c", "d"]
 
 
 def test_streaming_groups_by_exact_frame_count() -> None:
@@ -267,6 +290,36 @@ def test_streaming_groups_by_exact_frame_count() -> None:
     assert len({int(t.shape[1]) for t in plan.slot_latents.values()}) == 1
 
 
+def test_initial_merge_steps_hold_until_the_stream_received_enough_patches() -> None:
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(),
+        optimize=True,
+        merge_steps=4,
+        initial_merge_steps=2,
+        initial_merge_patches=6,
+        stream_slots=4,
+        slot_pool=RecordingSlotPool(),
+    )
+    state = vocoder.create_stream_state("request")
+    state.received_patches = 5
+    state.pending = [patch(), patch()]
+    assert vocoder.pending_ready(state)
+    assert vocoder.take_patches(state) == 2
+    state.received_patches = 7
+    assert not vocoder.pending_ready(state)
+    state.pending = [patch() for _ in range(5)]
+    assert vocoder.pending_ready(state)
+    assert vocoder.take_patches(state) == 4
+    with pytest.raises(ValueError, match="initial_merge_steps"):
+        DotsTTSStreamingVocoder(
+            make_codec(),
+            optimize=True,
+            merge_steps=4,
+            initial_merge_steps=5,
+            slot_pool=RecordingSlotPool(),
+        )
+
+
 def test_stream_done_flushes_and_releases_slot() -> None:
     pool = RecordingSlotPool()
     vocoder = DotsTTSStreamingVocoder(
@@ -282,6 +335,7 @@ def test_stream_done_flushes_and_releases_slot() -> None:
     waveform = vocoder.decode_delta("req", state, is_final=True)
     assert waveform is not None
     assert state.slot is None
+    assert pool.finals == [True]
     assert pool.flushes == [slot]
     assert slot not in pool.in_use
 

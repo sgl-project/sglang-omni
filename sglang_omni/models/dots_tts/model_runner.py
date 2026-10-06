@@ -12,6 +12,10 @@ from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, Forw
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.dots_tts.flow_head import DotsFlowStep
 from sglang_omni.models.dots_tts.request_builders import (
     DotsFlowResume,
@@ -19,6 +23,7 @@ from sglang_omni.models.dots_tts.request_builders import (
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.utils.cuda_staging import indices_to_device, tensor_to_device
 
 if TYPE_CHECKING:
     from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -43,10 +48,15 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
     model: DotsTTSSGLangModel
 
     def __init__(
-        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+        self,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+        *,
+        stream_latents_on_cpu: bool = False,
     ) -> None:
         super().__init__(tp_worker, output_processor)
         self.request_data: dict[str, DotsTTSSGLangRequestData] = {}
+        self.stream_latents_on_cpu = stream_latents_on_cpu
 
     def before_prefill(
         self,
@@ -95,7 +105,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                 self.request_data[request.request_id] = data
                 materialized.append((request.request_id, data))
                 device = forward_batch.input_ids.device
-                prefill_ids = schedule[:, : data.prefill_end].to(device=device)
+                prefill_ids = tensor_to_device(schedule[:, : data.prefill_end], device)
                 embeddings = self.model.get_input_embeddings()(prefill_ids).clone()
                 prompt_positions = data.prompt_span_positions
                 if prompt_positions is not None and prompt_positions.numel():
@@ -105,7 +115,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                         )
                     else:
                         pass
-                    embeddings[:, prompt_positions.to(device=device), :] = (
+                    embeddings[:, tensor_to_device(prompt_positions, device), :] = (
                         prompt_embeddings.to(device=device, dtype=embeddings.dtype)
                     )
                 else:
@@ -131,7 +141,10 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                 else:
                     pass
                 rows.append(torch.cat(request_rows, dim=0))
-            forward_batch.input_embeds = torch.cat(rows, dim=0)
+            attach_omni_prefill_inputs(
+                forward_batch,
+                OmniPrefillInputs(input_embeds=torch.cat(rows, dim=0)),
+            )
         except BaseException:
             for request_id, data in materialized:
                 self.request_data.pop(request_id, None)
@@ -240,7 +253,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                 hidden_states=request_hidden,
                 prompt_span_positions=data.prompt_span_positions,
                 audio_span_token_ids=set(data.state.audio_span_token_ids),
-                generation_schedule=data.generation_schedule.to(hidden.device),
+                generation_schedule=data.generation_schedule,
                 prefill_end=data.prefill_end,
                 decoded_latent_patches=data.decoded_latent_patches,
             )
@@ -334,11 +347,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
             else:
                 pass
             next_token_ids.append(data.control_token_id)
-        result.next_token_ids = torch.tensor(
-            next_token_ids,
-            dtype=torch.long,
-            device=hidden.device,
-        )
+        result.next_token_ids = indices_to_device(next_token_ids, hidden.device)
         return DotsFlowLaunchBuf(
             data_rows=data_rows,
             steps=steps,
@@ -366,6 +375,23 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                 data.req.finished_reason = FINISH_MATCHED_TOKEN(data.control_token_id)
             else:
                 pass
+        streaming = [
+            data
+            for data in launch_buf.data_rows
+            if self.stream_latents_on_cpu
+            and data.state.stream
+            and data.latest_latent_patch is not None
+        ]
+        if streaming:
+            # note (0xtoward): one device-to-host copy per step instead of one
+            # synchronizing copy per request; the step's GPU work is already done.
+            host_patches = torch.cat(
+                [data.latest_latent_patch for data in streaming]
+            ).cpu()
+            for row, data in enumerate(streaming):
+                data.latest_latent_patch = host_patches[row : row + 1].clone()
+        else:
+            pass
 
     @staticmethod
     def hidden_states(result: GenerationBatchResult | None) -> torch.Tensor:

@@ -9,6 +9,7 @@ import pytest
 import torch
 from torch import nn
 
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
 
@@ -120,15 +121,23 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
     requests = [request("a", 11.0), request("b", 22.0)]
     runner.request_data = {"a": requests[0].data}
     forward_batch = SimpleNamespace(
-        input_ids=torch.tensor([1, 2, 3, 1, 2, 3]), input_embeds=None
+        input_ids=torch.tensor([1, 2, 3, 3, 1, 2, 3]),
+        input_embeds=None,
+        replace_embeds=None,
+        mm_inputs=None,
     )
 
     runner.before_prefill(forward_batch, object(), requests)
 
-    assert forward_batch.input_embeds.shape == (7, 4)
-    torch.testing.assert_close(forward_batch.input_embeds[1], torch.full((4,), 11.0))
-    torch.testing.assert_close(forward_batch.input_embeds[3], torch.full((4,), 33.0))
-    torch.testing.assert_close(forward_batch.input_embeds[5], torch.full((4,), 22.0))
+    assert forward_batch.input_embeds is None
+    assert forward_batch.mm_inputs is None
+    prefill_inputs = get_omni_prefill_inputs(forward_batch)
+    assert prefill_inputs is not None
+    embeds = prefill_inputs.input_embeds
+    assert embeds.shape == (7, 4)
+    torch.testing.assert_close(embeds[1], torch.full((4,), 11.0))
+    torch.testing.assert_close(embeds[3], torch.full((4,), 33.0))
+    torch.testing.assert_close(embeds[5], torch.full((4,), 22.0))
     assert suspended == [old_flow_state]
     torch.testing.assert_close(restored_rng[0], torch.tensor([7], dtype=torch.uint8))
     assert restored_rng[1] == 42
@@ -272,6 +281,7 @@ def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
 
     runner = object.__new__(DotsTTSModelRunner)
     runner.model = SimpleNamespace(flow=Flow())
+    runner.stream_latents_on_cpu = False
 
     def request(request_id: str, control_token_id: int):
         return SimpleNamespace(
@@ -313,6 +323,67 @@ def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
     assert len(requests[1].data.latent_patches) == 1
 
 
+def test_dots_post_decode_resolve_moves_streaming_latents_to_host() -> None:
+    class Flow:
+        is_batched = True
+
+        def decode_batch(self, *args, **_kwargs):
+            return [
+                SimpleNamespace(
+                    feedback_embedding=torch.zeros(4),
+                    latent_patch=torch.full((1, 2, 2), float(row)),
+                    finished=False,
+                    emit=True,
+                )
+                for row in range(3)
+            ]
+
+        def resolve_batched_eos(self):
+            return [False, False, False]
+
+    runner = object.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(flow=Flow())
+    runner.stream_latents_on_cpu = True
+
+    def request(request_id: str, stream: bool):
+        return SimpleNamespace(
+            request_id=request_id,
+            data=SimpleNamespace(
+                flow_state=object(),
+                pending_feedback_queue=deque(),
+                decoded_latent_patches=[],
+                latent_patches=[],
+                latest_latent_patch=None,
+                control_token_id=1,
+                state=SimpleNamespace(
+                    num_steps=2,
+                    ode_method="euler",
+                    guidance_scale=1.0,
+                    eos_threshold=0.5,
+                    stream=stream,
+                ),
+                req=SimpleNamespace(finished_reason=None),
+            ),
+        )
+
+    requests = [request("a", True), request("b", False), request("c", True)]
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(3, 4)),
+        next_token_ids=None,
+    )
+
+    runner.post_decode(result, object(), object(), requests)
+
+    for row in (0, 2):
+        patch = requests[row].data.latest_latent_patch
+        torch.testing.assert_close(patch, torch.full((1, 2, 2), float(row)))
+        assert patch.untyped_storage().nbytes() == patch.nbytes
+    assert (
+        requests[1].data.latest_latent_patch
+        is requests[1].data.decoded_latent_patches[-1]
+    )
+
+
 def test_dots_post_decode_resolve_uses_step_finished_for_single_request() -> None:
     finished_token = object()
 
@@ -334,6 +405,7 @@ def test_dots_post_decode_resolve_uses_step_finished_for_single_request() -> Non
 
     runner = object.__new__(DotsTTSModelRunner)
     runner.model = SimpleNamespace(flow=Flow())
+    runner.stream_latents_on_cpu = False
     request = SimpleNamespace(
         request_id="a",
         data=SimpleNamespace(

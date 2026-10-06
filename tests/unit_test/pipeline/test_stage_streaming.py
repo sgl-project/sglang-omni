@@ -435,6 +435,49 @@ def test_small_cpu_scheduler_stream_chunk_rides_inline(
     assert sent[0]["bytes"] == 8
 
 
+@pytest.mark.parametrize(
+    "tensor",
+    [
+        torch.randn(1, 4, 64),
+        torch.randn(3, 5).to(torch.bfloat16),
+        torch.tensor(1.5),
+        torch.zeros(0, 4),
+        torch.arange(6).reshape(2, 3)[:, 1:],
+        torch.tensor([True, False, True]),
+        torch.randn(2, 3, dtype=torch.complex64).conj(),
+    ],
+)
+def test_inline_stream_chunk_round_trips_raw_bytes(tensor: torch.Tensor) -> None:
+    data_ref = stage_io.serialize_inline_stream_chunk(tensor, {"chunk_id": 3})
+
+    data, metadata = stage_io.deserialize_inline_stream_chunk(data_ref)
+
+    assert data_ref["version"] == 2
+    assert data.dtype == tensor.dtype
+    assert torch.equal(data, tensor)
+    assert metadata == {"chunk_id": 3}
+
+
+def test_inline_stream_chunk_reads_version_1_payloads() -> None:
+    tensor = torch.tensor([7, 8])
+    data_ref = {
+        "_type": stage_io._INLINE_STREAM_CHUNK_TYPE,  # noqa: leading-underscore  # production name
+        "version": 1,
+        "payload": stage_io.pickle.dumps((tensor, {"chunk_id": 3})),
+    }
+
+    data, metadata = stage_io.deserialize_inline_stream_chunk(data_ref)
+
+    assert torch.equal(data, tensor)
+    assert metadata == {"chunk_id": 3}
+
+
+def test_inline_stream_chunk_leaves_sparse_tensors_to_the_regular_transport() -> None:
+    sparse = torch.eye(3).to_sparse()
+
+    assert stage_io.serialize_inline_stream_chunk(sparse, None) is None
+
+
 def test_inline_stream_chunk_gate() -> None:
     small = torch.zeros(8, dtype=torch.long)
     assert stage_io.serialize_inline_stream_chunk(small, {"token_id": 1}) is not None
@@ -513,23 +556,14 @@ def test_inline_stream_chunk_materializes_small_view_storage() -> None:
     assert restored.untyped_storage().nbytes() == restored.numel()
 
 
-def test_inline_stream_chunk_does_not_clone_small_owning_tensor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_inline_stream_chunk_payload_carries_only_tensor_bytes() -> None:
     tensor = torch.tensor([7], dtype=torch.long)
-    serialized_tensor: torch.Tensor | None = None
 
-    def capture_payload(payload) -> bytes:
-        nonlocal serialized_tensor
-        serialized_tensor = payload[0]
-        return b"payload"
+    data_ref = stage_io.serialize_inline_stream_chunk(tensor, None)
 
-    monkeypatch.setattr(stage_io.pickle, "dumps", capture_payload)
-
-    stage_io.serialize_inline_stream_chunk(tensor, None)
-
-    assert serialized_tensor is not None
-    assert serialized_tensor.data_ptr() == tensor.data_ptr()
+    dtype_name, shape, raw, metadata = stage_io.pickle.loads(data_ref["payload"])
+    assert (dtype_name, shape, metadata) == ("int64", (1,), None)
+    assert raw == tensor.numpy().tobytes()
 
 
 def test_stage_routes_inline_stream_chunk_to_scheduler(

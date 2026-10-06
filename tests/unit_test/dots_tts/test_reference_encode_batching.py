@@ -79,6 +79,7 @@ def make_codec() -> DotsAudioCodec:
     codec.hop_size = HOP_SIZE
     codec.device = torch.device("cpu")
     codec.lock = threading.RLock()
+    codec.encoder_graphs = None
     return codec
 
 
@@ -572,3 +573,54 @@ def test_batched_long_references_are_also_deterministic(
         repeat = codec.encode_reference_batch(list(waveforms))
         for one, two in zip(baseline, repeat):
             assert torch.equal(one["speaker_embedding"], two["speaker_embedding"])
+
+
+def test_encode_does_not_wait_for_the_vocoder_lock() -> None:
+    """A vocoder step holding codec.lock must not stall reference encodes."""
+    codec = make_codec()
+    finished = threading.Event()
+    with codec.lock:
+        worker = threading.Thread(
+            target=lambda: (
+                codec.encode_waveforms([make_waveform(3, seed=31)]),
+                finished.set(),
+            )
+        )
+        worker.start()
+        assert finished.wait(timeout=10.0)
+    worker.join()
+
+
+@pytest.mark.accelerator
+def test_cuda_speaker_runs_on_its_own_stream_with_unchanged_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    else:
+        pass
+    streams = []
+
+    class RecordingSpeaker(PaddingSensitiveSpeaker):
+        def __call__(
+            self, audio: torch.Tensor, audio_lengths: torch.Tensor | None = None
+        ) -> torch.Tensor:
+            streams.append(torch.cuda.current_stream().cuda_stream)
+            return super().__call__(audio, audio_lengths)
+
+    class DeviceLatents(PaddingSensitiveLatents):
+        def extract_latents(self, audio: torch.Tensor) -> torch.Tensor:
+            return super().extract_latents(audio.cpu()).to(audio.device)
+
+    waveform = make_waveform(6, seed=31)
+    expected = make_codec().encode_waveforms([waveform])[0]
+    codec = make_codec()
+    codec.speaker = RecordingSpeaker()
+    codec.inference = DeviceLatents()
+    codec.device = torch.device("cuda", torch.cuda.current_device())
+    codec.speaker_streams = threading.local()
+    observed = codec.encode_waveforms([waveform])[0]
+
+    assert streams and streams[0] != torch.cuda.current_stream().cuda_stream
+    for key in ("speaker_embedding", "latent_distribution"):
+        torch.testing.assert_close(observed[key], expected[key])
