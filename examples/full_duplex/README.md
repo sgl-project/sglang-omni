@@ -13,7 +13,7 @@ sgl-omni serve --config examples/full_duplex/minicpmo.yaml \
   --model-path models/MiniCPM-o-4_5 --enable-realtime
 ```
 
-The server accepts live voice and video conversations on `/v1/realtime`. See [docs/cookbook/minicpm_o.md](../../docs/cookbook/minicpm_o.md) for a client example and the per-session settings, and [playground/realtime](../../playground/realtime/README.md) for a browser page.
+The server accepts live voice and video conversations on `/v1/realtime`. See the [MiniCPM-o cookbook](../../docs/cookbook/minicpm_o.md) for the protocol, the per-session settings and the browser demo.
 
 Two configs are provided:
 
