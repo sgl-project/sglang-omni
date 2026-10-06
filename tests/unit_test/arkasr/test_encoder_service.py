@@ -18,26 +18,26 @@ from sglang_omni.models.arkasr.encoder_service import (
     expected_audio_tokens,
 )
 
-_HIDDEN_SIZE = 4
-_NAMESPACE = "testns"
-_SERVICES: list[ArkasrPreLMEncoderService] = []
+HIDDEN_SIZE = 4
+NAMESPACE = "testns"
+SERVICES: list[ArkasrPreLMEncoderService] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_services() -> Iterator[None]:
+def close_services() -> Iterator[None]:
     yield
-    for service in _SERVICES:
+    for service in SERVICES:
         service.close()
-    _SERVICES.clear()
+    SERVICES.clear()
 
 
-class _StubModel(torch.nn.Module):
+class StubModel(torch.nn.Module):
     def __init__(self, dtype: torch.dtype = torch.float32) -> None:
         super().__init__()
         # ARK's model exposes the tower + adapter as ``audio_encoder``.
         self.audio_encoder = torch.nn.Linear(2, 2).to(dtype)
         # ArkasrConfig subclasses Qwen2Config: hidden_size is top level.
-        self.config = SimpleNamespace(hidden_size=_HIDDEN_SIZE)
+        self.config = SimpleNamespace(hidden_size=HIDDEN_SIZE)
         self.dtype = dtype
         self.encode_calls = 0
         self.encode_batch_sizes: list[int] = []
@@ -73,7 +73,7 @@ class _StubModel(torch.nn.Module):
         for item in items:
             rows = expected_audio_tokens(item) + self.row_offset
             fill = float((getattr(item, "hash", None) or 0) % 97 + 1)
-            parts.append(torch.full((rows, _HIDDEN_SIZE), fill, dtype=self.dtype))
+            parts.append(torch.full((rows, HIDDEN_SIZE), fill, dtype=self.dtype))
         # ARK's get_audio_feature concatenates each item's [tokens_i, hidden]
         # block in item order across its encoder microbatches, so the result is
         # already flat (A-PR4 #1411).
@@ -83,8 +83,8 @@ class _StubModel(torch.nn.Module):
         return packed
 
 
-def _make_service(
-    model: _StubModel | None = None,
+def make_service(
+    model: StubModel | None = None,
     *,
     cache_max_entries: int = 16,
     cache_max_bytes: int = 1 << 20,
@@ -92,18 +92,18 @@ def _make_service(
     max_queue_size: int = 0,
 ) -> ArkasrPreLMEncoderService:
     service = ArkasrPreLMEncoderService(
-        model or _StubModel(),
-        cache_namespace=_NAMESPACE,
+        model or StubModel(),
+        cache_namespace=NAMESPACE,
         cache_max_entries=cache_max_entries,
         cache_max_bytes=cache_max_bytes,
         max_batch_size=max_batch_size,
         max_queue_size=max_queue_size,
     )
-    _SERVICES.append(service)
+    SERVICES.append(service)
     return service
 
 
-def _item(
+def make_item(
     audio_hash: int | None,
     num_audio_tokens: int,
     *,
@@ -121,13 +121,13 @@ def _item(
 
 
 def test_encode_attaches_lm_ready_embedding_and_clears_feature() -> None:
-    model = _StubModel()
-    service = _make_service(model)
-    item = _item(7, 3)
+    model = StubModel()
+    service = make_service(model)
+    item = make_item(7, 3)
 
     service.encode_item(item)
 
-    assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+    assert item.precomputed_embeddings.shape == (3, HIDDEN_SIZE)
     assert item.precomputed_embeddings.dtype == model.dtype
     assert (
         item.precomputed_embeddings.device
@@ -141,11 +141,11 @@ def test_encode_attaches_lm_ready_embedding_and_clears_feature() -> None:
 
 
 def test_submit_returns_before_encoding_completes() -> None:
-    model = _StubModel()
+    model = StubModel()
     gate = threading.Event()
     model.encode_gate = gate
-    service = _make_service(model)
-    item = _item(7, 3)
+    service = make_service(model)
+    item = make_item(7, 3)
 
     future = service.submit_item(item)
 
@@ -153,18 +153,18 @@ def test_submit_returns_before_encoding_completes() -> None:
     assert item.precomputed_embeddings is None
     gate.set()
     future.result(timeout=2)
-    assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+    assert item.precomputed_embeddings.shape == (3, HIDDEN_SIZE)
     assert service.stats()["pending"] == 0
 
 
 def test_async_submissions_form_full_batch_without_blocked_callers() -> None:
-    model = _StubModel()
+    model = StubModel()
     gate = threading.Event()
     encode_started = threading.Event()
     model.encode_gate = gate
     model.encode_started = encode_started
-    service = _make_service(model, max_batch_size=8)
-    items = [_item(audio_hash, 3) for audio_hash in range(9)]
+    service = make_service(model, max_batch_size=8)
+    items = [make_item(audio_hash, 3) for audio_hash in range(9)]
 
     futures = [service.submit_item(items[0])]
     assert encode_started.wait(timeout=2)
@@ -178,11 +178,11 @@ def test_async_submissions_form_full_batch_without_blocked_callers() -> None:
 
 
 def test_async_single_flight_completes_each_item_future() -> None:
-    model = _StubModel()
+    model = StubModel()
     gate = threading.Event()
     model.encode_gate = gate
-    service = _make_service(model)
-    items = [_item(123, 3) for _ in range(3)]
+    service = make_service(model)
+    items = [make_item(123, 3) for _ in range(3)]
 
     futures = [service.submit_item(item) for item in items]
     assert all(not future.done() for future in futures)
@@ -196,20 +196,20 @@ def test_async_single_flight_completes_each_item_future() -> None:
 
 
 def test_bounded_queue_applies_backpressure_and_records_saturation() -> None:
-    model = _StubModel()
+    model = StubModel()
     gate = threading.Event()
     model.encode_gate = gate
-    service = _make_service(model, max_queue_size=1)
-    futures = [service.submit_item(_item(1, 3))]
+    service = make_service(model, max_queue_size=1)
+    futures = [service.submit_item(make_item(1, 3))]
     deadline = time.monotonic() + 2
     while model.encode_calls == 0 and time.monotonic() < deadline:
         time.sleep(0.005)
     assert model.encode_calls == 1
-    futures.append(service.submit_item(_item(2, 3)))
+    futures.append(service.submit_item(make_item(2, 3)))
     submitted: list[concurrent.futures.Future[torch.Tensor]] = []
 
     thread = threading.Thread(
-        target=lambda: submitted.append(service.submit_item(_item(3, 3)))
+        target=lambda: submitted.append(service.submit_item(make_item(3, 3)))
     )
     thread.start()
     time.sleep(0.02)
@@ -226,20 +226,20 @@ def test_bounded_queue_applies_backpressure_and_records_saturation() -> None:
 
 
 def test_close_stops_worker() -> None:
-    service = _make_service()
+    service = make_service()
 
     service.close()
 
-    assert not service._thread.is_alive()
+    assert not service.thread.is_alive()
 
 
 def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(ArkasrPreLMEncoderService)
-    service._stream = object()
+    service.stream = object()
 
-    def fail_stream(_stream):  # noqa: ANN001, ANN202
+    def fail_stream(stream):  # noqa: ANN001, ANN202
         raise RuntimeError("stream context failed")
 
     monkeypatch.setattr(torch.cuda, "stream", fail_stream)
@@ -252,11 +252,11 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
 
 
 def test_cache_hit_skips_reencode() -> None:
-    model = _StubModel()
-    service = _make_service(model)
+    model = StubModel()
+    service = make_service(model)
 
-    first = _item(11, 3)
-    second = _item(11, 3)
+    first = make_item(11, 3)
+    second = make_item(11, 3)
     service.encode_item(first)
     service.encode_item(second)
 
@@ -267,27 +267,27 @@ def test_cache_hit_skips_reencode() -> None:
 
 
 def test_extended_audio_never_reuses_prefix_embedding() -> None:
-    model = _StubModel()
-    service = _make_service(model)
+    model = StubModel()
+    service = make_service(model)
 
-    short = _item(111, 3)
-    extended = _item(222, 5)
+    short = make_item(111, 3)
+    extended = make_item(222, 5)
     service.encode_item(short)
     service.encode_item(extended)
 
     assert model.encode_calls == 2
-    assert extended.precomputed_embeddings.shape == (5, _HIDDEN_SIZE)
-    assert len(service._cache) == 2
+    assert extended.precomputed_embeddings.shape == (5, HIDDEN_SIZE)
+    assert len(service.cache) == 2
     assert not torch.equal(
         short.precomputed_embeddings[0], extended.precomputed_embeddings[0]
     )
 
 
 def test_cache_key_prefers_full_waveform_fingerprint() -> None:
-    model = _StubModel()
-    service = _make_service(model)
-    first = _item(7, 3)
-    second = _item(7, 3)
+    model = StubModel()
+    service = make_service(model)
+    first = make_item(7, 3)
+    second = make_item(7, 3)
     first.audio_fingerprint = "full-hash-a"
     second.audio_fingerprint = "full-hash-b"
 
@@ -295,16 +295,16 @@ def test_cache_key_prefers_full_waveform_fingerprint() -> None:
     service.encode_item(second)
 
     assert model.encode_calls == 2
-    assert len(service._cache) == 2
+    assert len(service.cache) == 2
 
 
 def test_concurrent_identical_requests_encode_once() -> None:
-    model = _StubModel()
+    model = StubModel()
     model.encode_delay_s = 0.05
-    service = _make_service(model)
+    service = make_service(model)
     n_threads = 8
     barrier = threading.Barrier(n_threads)
-    items = [_item(123, 3) for _ in range(n_threads)]
+    items = [make_item(123, 3) for _ in range(n_threads)]
     errors: list[Exception] = []
 
     def worker(item: MultimodalDataItem) -> None:
@@ -323,7 +323,7 @@ def test_concurrent_identical_requests_encode_once() -> None:
     assert not errors, errors
     assert model.encode_calls == 1
     for item in items:
-        assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+        assert item.precomputed_embeddings.shape == (3, HIDDEN_SIZE)
         assert torch.equal(item.precomputed_embeddings, items[0].precomputed_embeddings)
     stats = service.stats()
     assert stats["merged"] + stats["hits"] == n_threads - 1
@@ -332,11 +332,11 @@ def test_concurrent_identical_requests_encode_once() -> None:
 def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    model = _StubModel()
-    service = _make_service(model)
+    model = StubModel()
+    service = make_service(model)
     stale_miss = threading.Event()
     release_stale_reader = threading.Event()
-    original_get = service._cache.get
+    original_get = service.cache.get
 
     def controlled_get(key: str | None):  # noqa: ANN202
         cached = original_get(key)
@@ -349,8 +349,8 @@ def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
             assert release_stale_reader.wait(timeout=10)
         return cached
 
-    monkeypatch.setattr(service._cache, "get", controlled_get)
-    follower_item = _item(123, 3)
+    monkeypatch.setattr(service.cache, "get", controlled_get)
+    follower_item = make_item(123, 3)
     errors: list[Exception] = []
 
     def follower() -> None:
@@ -363,7 +363,7 @@ def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
     thread.start()
     assert stale_miss.wait(timeout=10)
 
-    leader_item = _item(123, 3)
+    leader_item = make_item(123, 3)
     service.encode_item(leader_item)
     release_stale_reader.set()
     thread.join(timeout=30)
@@ -379,11 +379,11 @@ def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
 
 
 def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
-    model = _StubModel()
+    model = StubModel()
     model.encode_delay_s = 0.05
-    service = _make_service(model, cache_max_entries=0)
+    service = make_service(model, cache_max_entries=0)
     barrier = threading.Barrier(2)
-    items = [_item(123, 3) for _ in range(2)]
+    items = [make_item(123, 3) for _ in range(2)]
     errors: list[Exception] = []
 
     def worker(item: MultimodalDataItem) -> None:
@@ -401,22 +401,22 @@ def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
 
     assert not errors, errors
     assert model.encode_calls == 1
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
     assert torch.equal(items[0].precomputed_embeddings, items[1].precomputed_embeddings)
 
 
 def test_encode_failure_propagates_without_poisoning_cache() -> None:
-    model = _StubModel()
+    model = StubModel()
     model.fail = True
     model.encode_delay_s = 0.05
-    service = _make_service(model)
+    service = make_service(model)
     barrier = threading.Barrier(2)
     errors: list[Exception] = []
 
     def worker() -> None:
         try:
             barrier.wait(timeout=10)
-            service.encode_item(_item(55, 3))
+            service.encode_item(make_item(55, 3))
         except Exception as exc:
             errors.append(exc)
 
@@ -428,28 +428,28 @@ def test_encode_failure_propagates_without_poisoning_cache() -> None:
 
     assert len(errors) == 2
     assert all(isinstance(exc, RuntimeError) and "boom" in str(exc) for exc in errors)
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
     assert service.stats()["failed"] == 2
 
     model.fail = False
-    item = _item(55, 3)
+    item = make_item(55, 3)
     service.encode_item(item)
-    assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+    assert item.precomputed_embeddings.shape == (3, HIDDEN_SIZE)
 
 
 def test_oom_failure_detaches_traceback_and_recovers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    model = _StubModel()
+    model = StubModel()
     model.fail_oom = True
-    service = _make_service(model)
+    service = make_service(model)
     empty_cache_calls: list[bool] = []
     monkeypatch.setattr(
         torch.cuda, "empty_cache", lambda: empty_cache_calls.append(True)
     )
 
     with pytest.raises(torch.OutOfMemoryError, match="encoder OOM") as excinfo:
-        service.encode_item(_item(77, 3))
+        service.encode_item(make_item(77, 3))
 
     # the propagated exception must not pin encoder frames.
     assert excinfo.value.__traceback__ is not None  # pytest's own raise site
@@ -458,17 +458,17 @@ def test_oom_failure_detaches_traceback_and_recovers(
     assert service.stats()["failed"] == 1
 
     model.fail_oom = False
-    item = _item(77, 3)
+    item = make_item(77, 3)
     service.encode_item(item)
-    assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+    assert item.precomputed_embeddings.shape == (3, HIDDEN_SIZE)
 
 
 def test_merged_follower_token_mismatch_raises_and_counts_failed() -> None:
-    model = _StubModel()
+    model = StubModel()
     model.encode_delay_s = 0.2
-    service = _make_service(model)
-    leader_item = _item(321, 3)
-    follower_item = _item(321, 5)
+    service = make_service(model)
+    leader_item = make_item(321, 3)
+    follower_item = make_item(321, 5)
     errors: list[Exception] = []
 
     def leader() -> None:
@@ -480,16 +480,16 @@ def test_merged_follower_token_mismatch_raises_and_counts_failed() -> None:
     thread = threading.Thread(target=leader)
     thread.start()
     deadline = time.monotonic() + 5
-    while not service._inflight and time.monotonic() < deadline:
+    while not service.inflight and time.monotonic() < deadline:
         time.sleep(0.005)
-    assert service._inflight, "leader never registered in-flight"
+    assert service.inflight, "leader never registered in-flight"
 
     with pytest.raises(RuntimeError, match="returned an invalid"):
         service.encode_item(follower_item)
     thread.join(timeout=30)
 
     assert not errors, errors
-    assert leader_item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+    assert leader_item.precomputed_embeddings.shape == (3, HIDDEN_SIZE)
     assert follower_item.precomputed_embeddings is None
     stats = service.stats()
     assert stats["merged"] == 1
@@ -497,12 +497,12 @@ def test_merged_follower_token_mismatch_raises_and_counts_failed() -> None:
 
 
 def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
-    model = _StubModel()
+    model = StubModel()
     model.fail_multi_item = True
     gate = threading.Event()
     model.encode_gate = gate
-    service = _make_service(model)
-    items = [_item(31, 3), _item(32, 3), _item(33, 4)]
+    service = make_service(model)
+    items = [make_item(31, 3), make_item(32, 3), make_item(33, 4)]
     errors: list[Exception] = []
 
     def worker(item: MultimodalDataItem) -> None:
@@ -517,9 +517,9 @@ def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
     # queue every leader before releasing the gate so the next drain exercises
     # the multi-item retry path.
     deadline = time.monotonic() + 5
-    while len(service._inflight) < 3 and time.monotonic() < deadline:
+    while len(service.inflight) < 3 and time.monotonic() < deadline:
         time.sleep(0.005)
-    assert len(service._inflight) == 3, "items never queued"
+    assert len(service.inflight) == 3, "items never queued"
     gate.set()
     for thread in threads:
         thread.join(timeout=30)
@@ -528,63 +528,63 @@ def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
     for item in items:
         assert item.precomputed_embeddings.shape == (
             item.num_audio_tokens,
-            _HIDDEN_SIZE,
+            HIDDEN_SIZE,
         )
     stats = service.stats()
     assert stats["failed"] == 0
     assert stats["items"] == 3
     assert stats["batches"] == 3
     assert model.encode_calls == 4
-    assert len(service._cache) == 3
+    assert len(service.cache) == 3
 
 
 def test_eviction_under_byte_budget_triggers_reencode() -> None:
-    model = _StubModel()
-    service = _make_service(model, cache_max_bytes=100)
+    model = StubModel()
+    service = make_service(model, cache_max_bytes=100)
 
     for audio_hash in (1, 2, 3):
-        service.encode_item(_item(audio_hash, 3))
+        service.encode_item(make_item(audio_hash, 3))
     assert model.encode_calls == 3
-    assert service._cache.eviction_count >= 1
-    assert len(service._cache) == 2
+    assert service.cache.eviction_count >= 1
+    assert len(service.cache) == 2
 
-    service.encode_item(_item(1, 3))
+    service.encode_item(make_item(1, 3))
     assert model.encode_calls == 4
 
 
 def test_invalid_cache_entry_is_evicted_and_reencoded() -> None:
-    model = _StubModel()
-    service = _make_service(model)
-    probe = _item(42, 3)
+    model = StubModel()
+    service = make_service(model)
+    probe = make_item(42, 3)
     service.encode_item(probe)
     assert model.encode_calls == 1
     key = service.cache_key(probe)
 
     for poison in (
-        torch.zeros(5, _HIDDEN_SIZE),
-        torch.zeros(3, _HIDDEN_SIZE + 1),
-        torch.zeros(3, _HIDDEN_SIZE, dtype=torch.float64),
+        torch.zeros(5, HIDDEN_SIZE),
+        torch.zeros(3, HIDDEN_SIZE + 1),
+        torch.zeros(3, HIDDEN_SIZE, dtype=torch.float64),
     ):
-        service._cache.put(key, poison)
-        item = _item(42, 3)
+        service.cache.put(key, poison)
+        item = make_item(42, 3)
         service.encode_item(item)
         assert model.encode_calls == 2
-        assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+        assert item.precomputed_embeddings.shape == (3, HIDDEN_SIZE)
         assert torch.equal(item.precomputed_embeddings, probe.precomputed_embeddings)
         model.encode_calls = 1
 
 
 def test_token_count_mismatch_fails_loudly() -> None:
-    model = _StubModel()
+    model = StubModel()
     model.row_offset = 1
-    service = _make_service(model)
-    item = _item(9, 3)
+    service = make_service(model)
+    item = make_item(9, 3)
 
     with pytest.raises(RuntimeError, match="!= expected rows"):
         service.encode_item(item)
 
     assert item.precomputed_embeddings is None
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
 
 
 def test_packed_3d_encoder_output_is_rejected() -> None:
@@ -596,20 +596,20 @@ def test_packed_3d_encoder_output_is_rejected() -> None:
     order. A 3-D result means the encoder contract changed and the split would
     be wrong, so fail loudly rather than mis-scatter rows into the LM.
     """
-    model = _StubModel()
+    model = StubModel()
     model.packed_3d_output = True
-    service = _make_service(model)
-    item = _item(8, 3)
+    service = make_service(model)
+    item = make_item(8, 3)
 
     with pytest.raises(RuntimeError, match="!= expected rows"):
         service.encode_item(item)
 
     assert item.precomputed_embeddings is None
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
 
 
 def test_missing_token_count_raises() -> None:
-    service = _make_service()
+    service = make_service()
     item = MultimodalDataItem(modality=Modality.AUDIO, hash=1)
 
     with pytest.raises(RuntimeError, match="num_audio_tokens"):
@@ -617,11 +617,11 @@ def test_missing_token_count_raises() -> None:
 
 
 def test_item_without_fingerprint_encodes_without_caching() -> None:
-    model = _StubModel()
-    service = _make_service(model)
+    model = StubModel()
+    service = make_service(model)
 
-    first = _item(1, 2)
-    second = _item(1, 2)
+    first = make_item(1, 2)
+    second = make_item(1, 2)
     first.audio_fingerprint = None
     second.audio_fingerprint = None
     service.encode_item(first)
@@ -629,8 +629,8 @@ def test_item_without_fingerprint_encodes_without_caching() -> None:
 
     assert model.encode_calls == 2
     assert first.feature is None
-    assert first.precomputed_embeddings.shape == (2, _HIDDEN_SIZE)
-    assert len(service._cache) == 0
+    assert first.precomputed_embeddings.shape == (2, HIDDEN_SIZE)
+    assert len(service.cache) == 0
 
 
 def test_expected_audio_tokens_uses_request_metadata() -> None:
@@ -644,7 +644,7 @@ def test_expected_audio_tokens_uses_request_metadata() -> None:
 
 
 def test_build_cache_namespace_is_stable_and_scoped() -> None:
-    model = _StubModel()
+    model = StubModel()
     frontend = SimpleNamespace(
         feature_size=128,
         sampling_rate=16000,
@@ -668,13 +668,13 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
     assert namespace != build_cache_namespace(
         model, **{**base, "mm_attention_backend": "triton_attn"}
     )
-    assert namespace != build_cache_namespace(_StubModel(dtype=torch.bfloat16), **base)
+    assert namespace != build_cache_namespace(StubModel(dtype=torch.bfloat16), **base)
     changed_frontend = SimpleNamespace(**{**vars(frontend), "hop_length": 320})
     assert namespace != build_cache_namespace(
         model, **{**base, "feature_extractor": changed_frontend}
     )
-    changed_config = _StubModel()
-    changed_config.config = SimpleNamespace(hidden_size=_HIDDEN_SIZE, marker="other")
+    changed_config = StubModel()
+    changed_config.config = SimpleNamespace(hidden_size=HIDDEN_SIZE, marker="other")
     assert namespace != build_cache_namespace(changed_config, **base)
 
 
@@ -688,16 +688,16 @@ def test_build_cache_namespace_tracks_merge_factor() -> None:
         mm_attention_backend=None,
     )
 
-    def _model(merge_factor: int) -> _StubModel:
-        model = _StubModel()
+    def make_model(merge_factor: int) -> StubModel:
+        model = StubModel()
         model.config = SimpleNamespace(
             to_dict=lambda mf=merge_factor: {
-                "hidden_size": _HIDDEN_SIZE,
+                "hidden_size": HIDDEN_SIZE,
                 "merge_factor": mf,
             }
         )
         return model
 
-    assert build_cache_namespace(_model(4), **base) != build_cache_namespace(
-        _model(2), **base
+    assert build_cache_namespace(make_model(4), **base) != build_cache_namespace(
+        make_model(2), **base
     )

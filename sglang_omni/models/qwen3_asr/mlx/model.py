@@ -4,17 +4,30 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Union
+from collections.abc import Sequence
+from typing import Dict, List, Optional, Protocol, TypeAlias, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
+from mlx_lm.models.cache import KVCache
 
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
 
+MlxQuantizedTensor: TypeAlias = tuple[mx.array, mx.array, mx.array]
 
-def rope_safe(rope, x: mx.array, offset: int) -> mx.array:
+
+class MlxAttentionCache(Protocol):
+    @property
+    def offset(self) -> int | mx.array: ...
+
+    def update_and_fetch(
+        self, keys: mx.array, values: mx.array, /
+    ) -> tuple[mx.array, mx.array] | tuple[MlxQuantizedTensor, MlxQuantizedTensor]: ...
+
+
+def rope_safe(rope, x: mx.array, offset: int | mx.array) -> mx.array:
     """Apply RoPE, working around an mx.fast.rope bug.
 
     For a 4D tensor (B, heads, L, dim) with L == 1 and B > 1, mx.fast.rope
@@ -26,6 +39,8 @@ def rope_safe(rope, x: mx.array, offset: int) -> mx.array:
     if x.ndim == 4 and x.shape[0] > 1 and x.shape[2] == 1:
         x = mx.concatenate([x, mx.zeros_like(x)], axis=2)
         return rope(x, offset=offset)[:, :, :1, :]
+    else:
+        pass
     return rope(x, offset=offset)
 
 
@@ -53,6 +68,8 @@ class SinusoidalPositionEmbedding(nn.Module):
         super().__init__()
         if channels % 2 != 0:
             raise ValueError("SinusoidalPositionEmbedding needs even channels input")
+        else:
+            pass
 
         log_timescale_increment = math.log(max_timescale) / (channels // 2 - 1)
         inv_timescales = mx.exp(
@@ -60,13 +77,13 @@ class SinusoidalPositionEmbedding(nn.Module):
         )
         positions = mx.arange(length, dtype=mx.float32)[:, None]
         scaled_time = positions * inv_timescales[None, :]
-        self._positional_embedding = mx.concatenate(
+        self._positional_embedding = mx.concatenate(  # noqa: leading-underscore
             [mx.sin(scaled_time), mx.cos(scaled_time)], axis=1
         )
-        mx.eval(self._positional_embedding)
+        mx.eval(self._positional_embedding)  # noqa: leading-underscore
 
     def __call__(self, seqlen: int) -> mx.array:
-        return self._positional_embedding[:seqlen, :]
+        return self._positional_embedding[:seqlen, :]  # noqa: leading-underscore
 
 
 class AudioAttention(nn.Module):
@@ -84,6 +101,8 @@ class AudioAttention(nn.Module):
                 f"embed_dim must be divisible by num_heads (got embed_dim={self.embed_dim}"
                 f" and num_heads={self.num_heads})."
             )
+        else:
+            pass
 
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
@@ -260,6 +279,8 @@ class AudioEncoder(nn.Module):
             if clen < max_chunk_len:
                 pad_width = max_chunk_len - clen
                 chunk = mx.pad(chunk, [(0, 0), (0, pad_width)])
+            else:
+                pass
             padded_chunks.append(chunk)
 
         padded_feature = mx.stack(padded_chunks, axis=0)
@@ -303,6 +324,8 @@ class AudioEncoder(nn.Module):
             remainder = cnn_len % window_aftercnn
             if remainder != 0:
                 cu_chunk_lens.append(remainder)
+            else:
+                pass
 
         cu_seqlens = np.cumsum(cu_chunk_lens).tolist()
 
@@ -359,7 +382,7 @@ class TextAttention(nn.Module):
         self,
         hidden_states: mx.array,
         mask: Optional[Union[str, mx.array]] = None,
-        cache: Optional[Any] = None,
+        cache: MlxAttentionCache | None = None,
     ) -> mx.array:
         B, L, _ = hidden_states.shape
 
@@ -389,6 +412,8 @@ class TextAttention(nn.Module):
 
         if cache is not None:
             keys, values = cache.update_and_fetch(keys, values)
+        else:
+            pass
 
         query_len = queries.shape[2]
         output = scaled_dot_product_attention(
@@ -442,7 +467,7 @@ class TextDecoderLayer(nn.Module):
         self,
         hidden_states: mx.array,
         mask: Optional[Union[str, mx.array]] = None,
-        cache: Optional[Any] = None,
+        cache: MlxAttentionCache | None = None,
     ) -> mx.array:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -475,19 +500,24 @@ class TextModel(nn.Module):
         self,
         input_ids: Optional[mx.array] = None,
         inputs_embeds: Optional[mx.array] = None,
-        cache: Optional[List[Any]] = None,
+        cache: Sequence[MlxAttentionCache | None] | None = None,
     ) -> mx.array:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+        else:
+            pass
 
         hidden_states = inputs_embeds
 
-        if cache is None:
-            cache = [None] * len(self.layers)
-        mask = create_attention_mask(hidden_states, cache[0])
+        layer_caches = cache
+        if layer_caches is None:
+            layer_caches = [None] * len(self.layers)
+        else:
+            pass
+        mask = create_attention_mask(hidden_states, layer_caches[0])
 
         for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states, mask=mask, cache=cache[i])
+            hidden_states = layer(hidden_states, mask=mask, cache=layer_caches[i])
 
         return self.norm(hidden_states)
 
@@ -535,13 +565,19 @@ class Qwen3ASRModel(nn.Module):
                 "Qwen3-ASR audio placeholder and feature counts differ: "
                 f"{num_audio_tokens} placeholders, {audio_features.shape[0]} features"
             )
+        else:
+            pass
         if input_ids.shape[0] != 1:
             raise ValueError("Qwen3-ASR MLX audio prefill supports one request")
+        else:
+            pass
         audio_end = audio_start + num_audio_tokens
         if audio_start < 0 or audio_end > input_ids.shape[1]:
             raise ValueError(
                 f"Qwen3-ASR audio span [{audio_start}, {audio_end}) is out of bounds"
             )
+        else:
+            pass
 
         inputs_embeds[0, audio_start:audio_end, :] = audio_features
         return inputs_embeds
@@ -549,7 +585,7 @@ class Qwen3ASRModel(nn.Module):
     def forward_last_logits(
         self,
         inputs_embeds: mx.array,
-        cache: Optional[List[Any]] = None,
+        cache: Sequence[MlxAttentionCache | None] | None = None,
     ) -> mx.array:
         hidden_states = self.model(inputs_embeds=inputs_embeds, cache=cache)[:, -1:, :]
 
@@ -564,7 +600,7 @@ class Qwen3ASRModel(nn.Module):
         self,
         input_ids: mx.array,
         input_embeddings: Optional[mx.array] = None,
-        cache: Optional[List[Any]] = None,
+        cache: Sequence[MlxAttentionCache | None] | None = None,
     ) -> mx.array:
         if input_embeddings is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
@@ -580,7 +616,7 @@ class Qwen3ASRModel(nn.Module):
 
         return logits
 
-    def make_cache(self) -> List[Any]:
+    def make_cache(self) -> list[KVCache]:
         """Create KV cache for generation."""
         from mlx_lm.models.cache import KVCache
 
@@ -594,9 +630,13 @@ class Qwen3ASRModel(nn.Module):
         for k, v in weights.items():
             if k.startswith("thinker."):
                 k = k[len("thinker.") :]
+            else:
+                pass
 
             if k == "lm_head.weight" and self.config.text_config.tie_word_embeddings:
                 continue
+            else:
+                pass
 
             if (
                 not is_formatted
@@ -605,6 +645,8 @@ class Qwen3ASRModel(nn.Module):
                 and len(v.shape) == 4
             ):
                 v = v.transpose(0, 2, 3, 1)
+            else:
+                pass
 
             sanitized[k] = v
 

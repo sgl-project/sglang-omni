@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Lint and optionally rename leading-underscore class/function names.
+"""Lint and optionally rename leading-underscore names.
 
-Every Python file under sglang_omni/ is in scope, including files added later
-(new model packages under sglang_omni/models/, new runners, etc.). There is no
-per-directory allowlist: a new path is checked as soon as it exists.
+Every Python file under sglang_omni/ and tests/ is in scope, including files
+added later (new model packages under sglang_omni/models/, new test suites,
+etc.). There is no per-directory allowlist: a new path is checked as soon as it
+exists.
+
+Checked names:
+- class and function definitions at module or class scope
+- every attribute read or write, including another object's attribute
+- string literals passed to getattr
 
 Nested functions, and classes defined inside functions, may keep a leading
-underscore. Dunder names, a lone "_", and vendor copies are ignored. A
-definition may opt out with "# noqa: leading-underscore" on its def/class
-line. ALLOWED_DEFS is only the existing third-party/collision exceptions.
+underscore. Dunder names, a lone "_", and vendor copies are ignored. A line
+may opt out with "# noqa: leading-underscore". On a class, def, with, if,
+or other block, the noqa covers the header, not the body. ALLOWED_DEFS is only
+the existing third-party method exceptions; those names are also ignored as
+attributes in the same file.
 
---fix rewrites one file at a time, like isort: the definition and its
-in-file references. Same-scope public-name collisions are left for the
-human to resolve. It does not rewrite other files or dotted names repo-wide.
+--fix renames class and function definitions and their references, one file at
+a time. It never renames attributes. Same-scope public-name collisions are left
+for the human to resolve.
 """
 
 from __future__ import annotations
@@ -27,6 +35,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "sglang_omni"
+TESTS_ROOT = REPO_ROOT / "tests"
+LINTED_ROOTS = (SOURCE_ROOT, TESTS_ROOT)
 VENDOR_ROOT = SOURCE_ROOT / "vendor"
 NOQA_CODE = "leading-underscore"
 
@@ -70,6 +80,9 @@ ALLOWED_DEFS: frozenset[tuple[str, str]] = frozenset(
             "sglang_omni/models/fun_cosyvoice3/mlx/runner.py",
             "_select_tokens_with_logprobs",
         ),
+        ("sglang_omni/models/fun_cosyvoice3/mlx/runner.py", "_load_model"),
+        ("sglang_omni/models/qwen3_asr/mlx/runner.py", "_load_model"),
+        ("sglang_omni/models/arkasr/mlx/runner.py", "_load_model"),
         # OmniPlatform hook kept to avoid infinite recursion
         ("sglang_omni/platforms/interface.py", "_get_device_graph_backend"),
         ("sglang_omni/platforms/cuda.py", "_get_device_graph_backend"),
@@ -133,6 +146,15 @@ class RenamePlan:
     def is_empty(self) -> bool:
         return not self.module_renames and not self.method_renames
 
+    def without_methods(self, names: set[str]) -> RenamePlan:
+        kept = {
+            owner: {old: new for old, new in mapping.items() if old not in names}
+            for owner, mapping in self.method_renames.items()
+        }
+        return RenamePlan(
+            self.module_renames, {owner: m for owner, m in kept.items() if m}
+        )
+
 
 def is_leading_underscore_name(name: str) -> bool:
     if name == "_" or name.startswith("__"):
@@ -160,11 +182,15 @@ def repo_relative(path: Path) -> str:
 
 def is_in_scope(path: Path) -> bool:
     resolved = path.resolve()
-    if not resolved.is_relative_to(SOURCE_ROOT):
+    if not any(resolved.is_relative_to(root) for root in LINTED_ROOTS):
         return False
     if resolved.is_relative_to(VENDOR_ROOT):
         return False
     return resolved.suffix == ".py"
+
+
+def is_self_or_cls(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id in {"self", "cls"}
 
 
 class LeadingUnderscoreVisitor(ast.NodeVisitor):
@@ -172,7 +198,17 @@ class LeadingUnderscoreVisitor(ast.NodeVisitor):
         self.path = path
         self.source_lines = source_lines
         self.function_depth = 0
+        self.noqa_defs: set[str] = set()
+        self.parents_linked = False
         self.violations: list[Violation] = []
+
+    def visit(self, node: ast.AST) -> None:
+        if not self.parents_linked:
+            for parent in ast.walk(node):
+                for child in ast.iter_child_nodes(parent):
+                    child.parent = parent  # type: ignore[attr-defined]
+            self.parents_linked = True
+        super().visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         if self.function_depth == 0:
@@ -194,31 +230,110 @@ class LeadingUnderscoreVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self.function_depth -= 1
 
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        column = (node.end_col_offset or 0) - len(node.attr)
+        self._record_name(node.attr, node.lineno, column, "attribute", node)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self._record_getattr(node)
+        self.generic_visit(node)
+
+    def _record_getattr(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Name) or node.func.id != "getattr":
+            return
+        if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant):
+            return
+        attr_name = node.args[1].value
+        if not isinstance(attr_name, str):
+            return
+        self._record_name(
+            attr_name,
+            node.args[1].lineno,
+            node.args[1].col_offset,
+            "attribute",
+            node.args[1],
+        )
+
     def _record(self, node: ast.AST, kind: str) -> None:
-        name = node.name  # type: ignore[attr-defined]
+        self._record_name(
+            node.name,  # type: ignore[attr-defined]
+            node.lineno,
+            node.col_offset,
+            kind,
+            node,
+        )
+
+    def statement_has_noqa(self, node: ast.AST) -> bool:
+        current: ast.AST | None = node
+        while current is not None and not isinstance(
+            current, (ast.stmt, ast.excepthandler)
+        ):
+            current = getattr(current, "parent", None)
+        if current is None:
+            return False
+        start = current.lineno
+        body = getattr(current, "body", None)
+        if isinstance(body, list) and body:
+            first = body[0]
+            if self.source_lines[first.lineno - 1][: first.col_offset].strip():
+                end = first.lineno
+            else:
+                end = max(first.lineno - 1, start)
+        else:
+            end = current.end_lineno or start
+        return any(
+            has_noqa(self.source_lines[index]) for index in range(start - 1, end)
+        )
+
+    def _record_name(
+        self, name: str, lineno: int, column: int, kind: str, node: ast.AST
+    ) -> None:
         if not is_leading_underscore_name(name):
             return
-        line = self.source_lines[node.lineno - 1]
-        if has_noqa(line):
+        if lineno < 1 or lineno > len(self.source_lines):
             return
-        rel = repo_relative(self.path)
-        if (rel, name) in ALLOWED_DEFS:
+        if has_noqa(self.source_lines[lineno - 1]) or self.statement_has_noqa(node):
             return
-        self.violations.append(
-            Violation(self.path, node.lineno, node.col_offset, name, kind)
-        )
+        if (repo_relative(self.path), name) in ALLOWED_DEFS:
+            return
+        if kind == "attribute" and name in self.noqa_defs:
+            return
+        self.violations.append(Violation(self.path, lineno, column, name, kind))
+
+
+def noqa_definition_names(
+    tree: ast.AST, source_lines: list[str], path: Path
+) -> set[str]:
+    names: set[str] = set()
+    relative = repo_relative(path)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if (relative, node.name) in ALLOWED_DEFS or has_noqa(
+            source_lines[node.lineno - 1]
+        ):
+            names.add(node.name)
+    return names
 
 
 def check_file(path: Path) -> list[Violation]:
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
-    visitor = LeadingUnderscoreVisitor(path, source.splitlines())
+    lines = source.splitlines()
+    visitor = LeadingUnderscoreVisitor(path, lines)
+    visitor.noqa_defs = noqa_definition_names(tree, lines, path)
     visitor.visit(tree)
     return visitor.violations
 
 
 def iter_default_files() -> list[Path]:
-    return sorted(path for path in SOURCE_ROOT.rglob("*.py") if is_in_scope(path))
+    return sorted(
+        path
+        for root in LINTED_ROOTS
+        for path in root.rglob("*.py")
+        if is_in_scope(path)
+    )
 
 
 def resolve_targets(raw_paths: list[str]) -> list[Path]:
@@ -229,10 +344,14 @@ def resolve_targets(raw_paths: list[str]) -> list[Path]:
 
 def format_violation(violation: Violation) -> str:
     rel = repo_relative(violation.path)
+    if violation.kind == "attribute":
+        hint = "rename it (--fix renames only class and function names)"
+    else:
+        hint = "run with --fix"
     return (
         f"{rel}:{violation.lineno}:{violation.col}: "
         f"leading-underscore {violation.kind} {violation.name!r}; "
-        f"nested functions may keep '_'; run with --fix, or use a public "
+        f"nested functions may keep '_'; {hint}, or use a public "
         f"name / '# noqa: {NOQA_CODE}'"
     )
 
@@ -275,9 +394,16 @@ class ScopeIndex(ast.NodeVisitor):
         self.class_stack: list[str] = []
         self.module_names: set[str] = set()
         self.class_names: dict[str, set[str]] = defaultdict(set)
+        self.class_bases: dict[str, list[str]] = {}
+        self.class_owners: dict[str, list[str]] = defaultdict(list)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.add_name(node.name)
+        owner = ".".join([*self.class_stack, node.name])
+        self.class_owners[node.name].append(owner)
+        self.class_bases[owner] = [
+            base.id for base in node.bases if isinstance(base, ast.Name)
+        ]
         self.class_stack.append(node.name)
         self.generic_visit(node)
         self.class_stack.pop()
@@ -295,6 +421,11 @@ class ScopeIndex(ast.NodeVisitor):
         self.generic_visit(node)
         self.function_depth -= 1
 
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if self.class_stack and is_self_or_cls(node.value):
+            self.class_names[".".join(self.class_stack)].add(node.attr)
+        self.generic_visit(node)
+
     def add_name(self, name: str) -> None:
         if self.function_depth > 0:
             return
@@ -305,10 +436,42 @@ class ScopeIndex(ast.NodeVisitor):
             self.module_names.add(name)
 
 
+def bound_names(tree: ast.AST) -> set[str]:
+    """Every name the file binds in any scope: locals, parameters, imports."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.alias):
+            names.add(node.asname or node.name.split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            if node.name:
+                names.add(node.name)
+            else:
+                pass
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest:
+                names.add(node.rest)
+            else:
+                pass
+        else:
+            pass
+    return names
+
+
 class RenamePlanner(ast.NodeVisitor):
-    def __init__(self, wanted: set[tuple[int, str]], index: ScopeIndex) -> None:
+    def __init__(
+        self, wanted: set[tuple[int, str]], index: ScopeIndex, bound: set[str]
+    ) -> None:
         self.wanted = wanted
         self.index = index
+        self.bound = bound
         self.function_depth = 0
         self.class_stack: list[str] = []
         self.module_renames: dict[str, str] = {}
@@ -346,7 +509,7 @@ class RenamePlanner(ast.NodeVisitor):
             if not owner
             else self.index.class_names.get(owner, set())
         )
-        if new in existing:
+        if new in existing or (not owner and new in self.bound):
             return
         if owner:
             self.method_renames[owner][name] = new
@@ -354,18 +517,27 @@ class RenamePlanner(ast.NodeVisitor):
             self.module_renames[name] = new
 
 
-def plan_renames(tree: ast.AST, violations: list[Violation]) -> RenamePlan:
-    index = ScopeIndex()
-    index.visit(tree)
-    planner = RenamePlanner({(item.lineno, item.name) for item in violations}, index)
+def plan_renames(
+    tree: ast.AST, violations: list[Violation], index: ScopeIndex
+) -> RenamePlan:
+    planner = RenamePlanner(
+        {(item.lineno, item.name) for item in violations}, index, bound_names(tree)
+    )
     planner.visit(tree)
     return RenamePlan(planner.module_renames, dict(planner.method_renames))
 
 
 class FixVisitor(ast.NodeVisitor):
-    def __init__(self, source_lines: list[str], plan: RenamePlan) -> None:
+    def __init__(
+        self, source_lines: list[str], plan: RenamePlan, index: ScopeIndex
+    ) -> None:
         self.source_lines = source_lines
         self.plan = plan
+        self.index = index
+        self.method_names = {
+            old for mapping in plan.method_renames.values() for old in mapping
+        }
+        self.unresolved: set[str] = set()
         self.function_depth = 0
         self.class_stack: list[str] = []
         self.sites: list[Site] = []
@@ -415,14 +587,18 @@ class FixVisitor(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         new = self.attribute_rename(node)
-        if new:
-            lineno = node.end_lineno or node.lineno
+        lineno = node.end_lineno or node.lineno
+        if new and not has_noqa(self.source_lines[lineno - 1]):
             col = (node.end_col_offset or 0) - len(node.attr)
             self.add_site(lineno, col, node.attr, new)
+        elif node.attr in self.method_names:
+            self.unresolved.add(node.attr)
+        else:
+            pass
         self.generic_visit(node)
 
     def attribute_rename(self, node: ast.Attribute) -> str | None:
-        if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
+        if is_self_or_cls(node.value):
             return self.method_rename(node.attr)
         if isinstance(node.value, ast.Name):
             return self.class_attr_rename(node.value.id, node.attr)
@@ -437,6 +613,21 @@ class FixVisitor(ast.NodeVisitor):
             if "." not in current:
                 break
             current = current.rsplit(".", 1)[0]
+        return self.inherited_method_rename(".".join(self.class_stack), name)
+
+    def inherited_method_rename(self, owner: str, name: str) -> str | None:
+        pending = list(self.index.class_bases.get(owner, []))
+        seen: set[str] = set()
+        while pending:
+            base = pending.pop()
+            owners = self.index.class_owners.get(base, [])
+            if base in seen or len(owners) != 1:
+                continue
+            seen.add(base)
+            mapping = self.plan.method_renames.get(owners[0], {})
+            if name in mapping:
+                return mapping[name]
+            pending.extend(self.index.class_bases.get(owners[0], []))
         return None
 
     def class_attr_rename(self, class_name: str, attr: str) -> str | None:
@@ -449,15 +640,25 @@ class FixVisitor(ast.NodeVisitor):
 def fix_file(path: Path) -> tuple[int, list[Violation]]:
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
-    before = LeadingUnderscoreVisitor(path, source.splitlines())
+    lines = source.splitlines()
+    before = LeadingUnderscoreVisitor(path, lines)
+    before.noqa_defs = noqa_definition_names(tree, lines, path)
     before.visit(tree)
     if not before.violations:
         return 0, []
-    plan = plan_renames(tree, before.violations)
+    index = ScopeIndex()
+    index.visit(tree)
+    plan = plan_renames(tree, before.violations, index)
+    visitor = FixVisitor(lines, plan, index)
+    visitor.visit(tree)
+    if visitor.unresolved:
+        plan = plan.without_methods(visitor.unresolved)
+        visitor = FixVisitor(lines, plan, index)
+        visitor.visit(tree)
+    else:
+        pass
     if plan.is_empty():
         return 0, before.violations
-    visitor = FixVisitor(source.splitlines(), plan)
-    visitor.visit(tree)
     rewritten = apply_sites(source, visitor.sites)
     if rewritten != source:
         path.write_text(rewritten, encoding="utf-8")
@@ -471,7 +672,8 @@ def report_violations(violations: list[Violation]) -> int:
     for violation in violations:
         print(format_violation(violation), file=sys.stderr)
     print(
-        f"{len(violations)} leading-underscore class/function name(s) in sglang_omni/",
+        f"{len(violations)} leading-underscore class/function/attribute name(s) "
+        f"in sglang_omni/ and tests/",
         file=sys.stderr,
     )
     return 1
@@ -510,12 +712,12 @@ def run_fix(paths: list[Path]) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "paths", nargs="*", help="Python files (defaults to sglang_omni/)"
+        "paths", nargs="*", help="Python files (defaults to sglang_omni/ and tests/)"
     )
     parser.add_argument(
         "--fix",
         action="store_true",
-        help="Rename violating names in-place (current file only)",
+        help="Rename violating class and function names in place (current file only)",
     )
     args = parser.parse_args(argv)
     targets = resolve_targets(args.paths)

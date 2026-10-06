@@ -155,9 +155,9 @@ def test_moss_tts_batch_wait_uses_one_deadline(
 
     fake_queue = FakeQueue()
     encoder = object.__new__(stages.BatchedReferenceEncoder)
-    encoder._max_batch_size = 8
-    encoder._max_wait_s = 0.004
-    encoder._queue = fake_queue
+    encoder.max_batch_size = 8
+    encoder.max_wait_s = 0.004
+    encoder.queue = fake_queue
     clock = iter((10.0, 10.001, 10.003))
     monkeypatch.setattr(stages.time, "monotonic", lambda: next(clock))
 
@@ -174,7 +174,7 @@ def test_moss_tts_batched_reference_encoder_close_is_idempotent() -> None:
 
     codec = SimpleNamespace(sample_rate=24000)
     encoder = stages.BatchedReferenceEncoder(codec, n_vq=2)
-    worker = encoder._thread
+    worker = encoder.thread
 
     encoder.close()
     encoder.close()
@@ -204,15 +204,15 @@ def test_moss_tts_preprocessing_context_closes_replaced_encoder() -> None:
         rb.set_moss_tts_preprocessing_context(
             processor=object(), reference_encoder=second
         )
-        assert not first._thread.is_alive()
-        assert second_batcher._thread.is_alive()
+        assert not first.thread.is_alive()
+        assert second_batcher.thread.is_alive()
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
-    assert not second_batcher._thread.is_alive()
+    assert not second_batcher.thread.is_alive()
 
 
-def _make_moss_tts_wav_data_uri(
+def make_moss_tts_wav_data_uri(
     n_samples: int = 100,
     sample_rate: int = 16000,
 ) -> tuple[str, bytes]:
@@ -243,7 +243,7 @@ def test_moss_tts_path_file_uri_and_data_uri_use_shared_audio_loader(
 ) -> None:
     from sglang_omni.models.moss_tts import stages
 
-    data_uri, raw = _make_moss_tts_wav_data_uri()
+    data_uri, raw = make_moss_tts_wav_data_uri()
     reference_path = tmp_path / "reference.wav"
     reference_path.write_bytes(raw)
     encoded_waveforms: list[tuple[torch.Tensor, int]] = []
@@ -518,7 +518,7 @@ def test_moss_tts_cached_reference_encoder_uses_loaded_waveform_identity(
 ) -> None:
     from sglang_omni.models.moss_tts import stages
 
-    data_uri, raw = _make_moss_tts_wav_data_uri()
+    data_uri, raw = make_moss_tts_wav_data_uri()
     ref = tmp_path / "ref.wav"
     ref.write_bytes(raw)
     load_calls: list[str] = []
@@ -591,7 +591,7 @@ def test_moss_tts_cached_reference_encoder_merges_inflight(tmp_path: Path) -> No
             device = "cuda:0"
             model = None
 
-        _audio_encoder = AudioTokenizer()
+        audio_encoder = AudioTokenizer()
 
         @staticmethod
         def load(source):

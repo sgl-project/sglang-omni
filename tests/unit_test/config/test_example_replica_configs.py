@@ -10,17 +10,17 @@ import pytest
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.topology import compile_logical_processes
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
-_REPLICA_EXAMPLES = [
+REPLICA_EXAMPLES = [
     "examples/configs/qwen3_omni_speech_replica2.yaml",
     "examples/configs/qwen3_omni_speech_code2wav_replica2_ci.yaml",
 ]
 
 
-@pytest.mark.parametrize("relative_path", _REPLICA_EXAMPLES)
+@pytest.mark.parametrize("relative_path", REPLICA_EXAMPLES)
 def test_replica_example_loads_and_declares_its_placement(relative_path: str) -> None:
-    config = ConfigManager.from_file(str(_REPO_ROOT / relative_path)).config
+    config = ConfigManager.from_file(str(REPO_ROOT / relative_path)).config
 
     plan, _ = compile_logical_processes(config)
     replicated = [process for process in plan.processes if process.is_replicated]

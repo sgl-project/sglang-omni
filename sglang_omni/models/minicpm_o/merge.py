@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.payload_types import (
+    MiniCPMOPipelineState,
+    ThinkerOutput,
+)
 from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.streaming_detokenizer import Tokenizer
@@ -16,12 +17,14 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     base = payloads.get("preprocessing") or next(iter(payloads.values()))
     state = MiniCPMOPipelineState.from_dict(base.data)
 
-    model_inputs: dict[str, Any] = {}
+    model_inputs: dict[str, object] = {}
     for payload in payloads.values():
         branch = MiniCPMOPipelineState.from_dict(payload.data)
         for encoder_out in branch.encoder_outs.values():
             if isinstance(encoder_out, dict):
                 model_inputs.update(encoder_out)
+            else:
+                pass
 
     state.thinker_inputs = {"model_inputs": model_inputs}
     state.encoder_inputs = {}
@@ -33,10 +36,12 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     )
 
 
-def thinker_output(state: MiniCPMOPipelineState) -> dict:
+def thinker_output(state: MiniCPMOPipelineState) -> ThinkerOutput:
     thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
     if isinstance(thinker_out, dict):
         return thinker_out
+    else:
+        pass
     return {
         "output_ids": [],
         "step": 0,
@@ -48,11 +53,17 @@ def thinker_output(state: MiniCPMOPipelineState) -> dict:
 def prompt_token_count(state: MiniCPMOPipelineState) -> int:
     if not isinstance(state.prompt, dict):
         return 0
+    else:
+        pass
     input_ids = state.prompt.get("input_ids")
     if input_ids is None:
         return 0
+    else:
+        pass
     if isinstance(input_ids, list):
         return len(input_ids)
+    else:
+        pass
     return int(input_ids.numel())
 
 
@@ -88,11 +99,17 @@ def build_decode_result(
     if events:
         result.update(events[-1]["payload"])
         result.setdefault("modality", "text")
+    else:
+        pass
     if is_streaming:
         result.pop("text", None)
+    else:
+        pass
     finish_reason = thinker_out.get("finish_reason")
     if finish_reason is not None:
         result.setdefault("finish_reason", finish_reason)
+    else:
+        pass
     prompt_tokens = prompt_token_count(state)
     completion_tokens = len(output_ids)
     result.setdefault(

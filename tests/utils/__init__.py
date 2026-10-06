@@ -110,14 +110,14 @@ def qwen3_asr_wer_router(
         yield router
 
 
-def _metric_collector(
+def metric_collector(
     collector: MetricCheckCollector | None,
     label: str,
 ) -> MetricCheckCollector:
     return collector if collector is not None else MetricCheckCollector(label)
 
 
-def _assert_metric_collector_if_local(
+def assert_metric_collector_if_local(
     collector_arg: MetricCheckCollector | None,
     collector: MetricCheckCollector,
 ) -> None:
@@ -132,7 +132,7 @@ def assert_summary_metrics(
     collector: MetricCheckCollector | None = None,
 ) -> None:
     """Verify summary-level sanity invariants that must hold for every run."""
-    checks = _metric_collector(collector, "summary metrics")
+    checks = metric_collector(collector, "summary metrics")
     failed_requests = summary.get("failed_requests")
     checks.check(
         failed_requests == 0,
@@ -154,7 +154,7 @@ def assert_summary_metrics(
             prompt_tokens_mean > 0,
             f"Expected positive prompt_tokens_mean, got {prompt_tokens_mean}",
         )
-    _assert_metric_collector_if_local(collector, checks)
+    assert_metric_collector_if_local(collector, checks)
 
 
 def assert_per_request_fields(
@@ -164,7 +164,7 @@ def assert_per_request_fields(
     collector: MetricCheckCollector | None = None,
 ) -> None:
     """Verify every request has valid audio, prompt_tokens, and completion_tokens."""
-    checks = _metric_collector(collector, "per-request fields")
+    checks = metric_collector(collector, "per-request fields")
     for req in per_request:
         rid = req.get("id", "<missing id>")
         checks.check(
@@ -186,7 +186,7 @@ def assert_per_request_fields(
                 completion_tokens is not None and completion_tokens > 0,
                 f"Request {rid}: completion_tokens={completion_tokens}, expected > 0",
             )
-    _assert_metric_collector_if_local(collector, checks)
+    assert_metric_collector_if_local(collector, checks)
 
 
 def apply_slack(
@@ -251,11 +251,11 @@ def assert_speed_thresholds(
     ``rtf_mean`` or ``output_tok_per_req_s`` the corresponding threshold is
     present here and enforced.
     """
-    checks = _metric_collector(collector, "speed thresholds")
+    checks = metric_collector(collector, "speed thresholds")
     level_thresholds = thresholds.get(concurrency)
     if level_thresholds is None:
         checks.fail(f"No speed thresholds configured for concurrency {concurrency}")
-        _assert_metric_collector_if_local(collector, checks)
+        assert_metric_collector_if_local(collector, checks)
         return
 
     throughput_qps = summary.get("throughput_qps")
@@ -288,20 +288,20 @@ def assert_speed_thresholds(
             f"rtf_mean {rtf_mean} > "
             f"{level_thresholds['rtf_mean_max']:.6g} at concurrency {concurrency}",
         )
-    _assert_metric_collector_if_local(collector, checks)
+    assert_metric_collector_if_local(collector, checks)
 
 
 DEFAULT_TOTAL_AUDIO_DURATION_RTOL = 0.12
 
 
-def _request_by_id(requests: list[dict]) -> dict:
+def request_by_id(requests: list[dict]) -> dict:
     return {
         request.get("id", f"<missing id {idx}>"): request
         for idx, request in enumerate(requests)
     }
 
 
-def _assert_request_sets(
+def assert_request_sets(
     non_stream_by_id: dict,
     stream_by_id: dict,
     expected_stream_count: int | None,
@@ -326,7 +326,7 @@ def _assert_request_sets(
     return common_ids
 
 
-def _assert_relative_difference(
+def assert_relative_difference(
     metric_name: str,
     non_stream_value: float,
     stream_value: float,
@@ -354,10 +354,10 @@ def assert_streaming_consistency(
     """Assert request coverage, failure budget, and audio duration consistency
     between non-streaming and streaming runs.
     """
-    checks = _metric_collector(collector, "streaming consistency")
-    non_stream_by_id = _request_by_id(non_stream_requests)
-    stream_by_id = _request_by_id(stream_requests)
-    common_ids = _assert_request_sets(
+    checks = metric_collector(collector, "streaming consistency")
+    non_stream_by_id = request_by_id(non_stream_requests)
+    stream_by_id = request_by_id(stream_requests)
+    common_ids = assert_request_sets(
         non_stream_by_id, stream_by_id, expected_stream_count, checks
     )
     non_stream_failed = {
@@ -407,24 +407,24 @@ def assert_streaming_consistency(
             stream_audio_duration_total += stream_audio
 
     if common_ids:
-        _assert_relative_difference(
+        assert_relative_difference(
             "Total audio_duration_s",
             non_stream_audio_duration_total,
             stream_audio_duration_total,
             total_audio_duration_rtol,
             checks,
         )
-    _assert_metric_collector_if_local(collector, checks)
+    assert_metric_collector_if_local(collector, checks)
 
 
-def _wer_sample_label(sample: dict, index: int) -> str:
+def wer_sample_label(sample: dict, index: int) -> str:
     sample_id = sample.get("id")
     if sample_id is None:
         return f"per_sample[{index}]"
     return f"sample {sample_id}"
 
 
-def _wer_result_sections(
+def wer_result_sections(
     results: dict,
     checks: MetricCheckCollector,
 ) -> tuple[dict, list[dict]]:
@@ -462,12 +462,12 @@ def _wer_result_sections(
     return summary, valid_samples
 
 
-def _check_wer_per_sample_schema(
+def check_wer_per_sample_schema(
     per_sample: list[dict],
     checks: MetricCheckCollector,
 ) -> None:
     for index, sample in enumerate(per_sample):
-        label = _wer_sample_label(sample, index)
+        label = wer_sample_label(sample, index)
         if "wer" not in sample:
             checks.fail(f"WER results schema: {label} missing required 'wer' field")
             continue
@@ -508,9 +508,9 @@ def assert_wer_partitioned(
     tail of wildly-wrong outputs, without the length-sensitivity of a
     single corpus-wide WER.
     """
-    checks = _metric_collector(collector, "partitioned WER")
-    summary, per_sample = _wer_result_sections(results, checks)
-    _check_wer_per_sample_schema(per_sample, checks)
+    checks = metric_collector(collector, "partitioned WER")
+    summary, per_sample = wer_result_sections(results, checks)
+    check_wer_per_sample_schema(per_sample, checks)
 
     failed_details = [
         f"  sample {s.get('id')}: {s.get('error')}"
@@ -546,7 +546,7 @@ def assert_wer_partitioned(
             n_above_50 <= max_n_above_50,
             f"{n_above_50} samples have WER>50% > threshold {max_n_above_50}",
         )
-    _assert_metric_collector_if_local(collector, checks)
+    assert_metric_collector_if_local(collector, checks)
 
 
 def assert_cer_partitioned(
@@ -558,7 +558,7 @@ def assert_cer_partitioned(
     collector: MetricCheckCollector | None = None,
 ) -> None:
     """Verify partitioned CER metrics from transcribe-diarize eval output."""
-    checks = _metric_collector(collector, "partitioned CER")
+    checks = metric_collector(collector, "partitioned CER")
     if max_cer_no_spk_below_50_percent is not None:
         cer_below_50 = diarization_metrics_percent.get("cer_no_spk_below_50_corpus")
         if cer_below_50 is None:
@@ -597,7 +597,7 @@ def assert_cer_partitioned(
                     f"{n_above_50} samples have CER>50% > threshold "
                     f"{max_n_above_50_cer}",
                 )
-    _assert_metric_collector_if_local(collector, checks)
+    assert_metric_collector_if_local(collector, checks)
 
 
 def assert_wer_results(
@@ -608,9 +608,9 @@ def assert_wer_results(
     collector: MetricCheckCollector | None = None,
 ) -> None:
     """Verify WER results are within thresholds."""
-    checks = _metric_collector(collector, "WER results")
-    summary, per_sample = _wer_result_sections(results, checks)
-    _check_wer_per_sample_schema(per_sample, checks)
+    checks = metric_collector(collector, "WER results")
+    summary, per_sample = wer_result_sections(results, checks)
+    check_wer_per_sample_schema(per_sample, checks)
 
     if max_per_sample_wer is not None:
         failed_details = [
@@ -639,7 +639,7 @@ def assert_wer_results(
         )
 
     if max_per_sample_wer is None:
-        _assert_metric_collector_if_local(collector, checks)
+        assert_metric_collector_if_local(collector, checks)
         return
 
     for sample in per_sample:
@@ -664,4 +664,4 @@ def assert_wer_results(
                 wer <= max_per_sample_wer,
                 f"Sample {sample.get('id')} WER {wer:.4f} > {max_per_sample_wer}",
             )
-    _assert_metric_collector_if_local(collector, checks)
+    assert_metric_collector_if_local(collector, checks)

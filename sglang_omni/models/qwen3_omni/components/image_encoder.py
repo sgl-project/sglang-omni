@@ -5,16 +5,19 @@ from __future__ import annotations
 
 import logging
 import types
+from typing import TypedDict
 
 import torch
 import torch.nn as nn
+from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+    Qwen3OmniMoeThinkerConfig,
+)
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
 from sglang_omni.models.qwen3_omni.components.vision_compat import (
     Qwen3OmniMoeVisionEncoderCompat,
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
-from sglang_omni.utils import instantiate_module
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +42,13 @@ def optimize_patch_embed(visual: nn.Module) -> None:
     patch_embed = getattr(visual, "patch_embed", None)
     if patch_embed is None:
         return
+    else:
+        pass
     conv = getattr(patch_embed, "proj", None)
     if conv is None or not isinstance(conv, nn.Conv3d):
         return
+    else:
+        pass
 
     if list(conv.kernel_size) != list(conv.stride):
         logger.debug(
@@ -50,12 +57,16 @@ def optimize_patch_embed(visual: nn.Module) -> None:
             conv.stride,
         )
         return
+    else:
+        pass
 
     if conv.padding != (0, 0, 0) or conv.dilation != (1, 1, 1) or conv.groups != 1:
         logger.debug(
             "PatchEmbed Conv3d has non-trivial padding/dilation/groups, skipping"
         )
         return
+    else:
+        pass
 
     embed_dim = conv.out_channels
     in_features = (
@@ -88,6 +99,17 @@ def optimize_patch_embed(visual: nn.Module) -> None:
     )
 
 
+class ImageEncoderOutput(TypedDict, total=False):
+    image_embeds: torch.Tensor | None
+    image_grid_thw: torch.Tensor
+    image_token_counts: torch.Tensor
+    deepstack_visual_embeds_image: list[torch.Tensor] | None
+    video_embeds: torch.Tensor | None
+    video_grid_thw: torch.Tensor
+    video_token_counts: torch.Tensor
+    deepstack_visual_embeds_video: list[torch.Tensor] | None
+
+
 def unpack_visual_output(visual_out):
     """Unpack visual forward output regardless of return type.
 
@@ -97,18 +119,28 @@ def unpack_visual_output(visual_out):
     """
     if isinstance(visual_out, tuple):
         return visual_out[0], visual_out[1]
+    else:
+        pass
     return visual_out.pooler_output, visual_out.deepstack_features
 
 
 def build_visual(
     model_path: str,
     *,
-    thinker_cfg: object,
+    thinker_cfg: Qwen3OmniMoeThinkerConfig,
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:
-    vision_cfg = thinker_cfg.vision_config
-    visual = instantiate_module(VISUAL_CLASS, vision_cfg)
+    # note (yzxiao): Stage imports must not initialize the platform layer.
+    from sglang_omni.models.qwen3_omni.components.vision_encoder import (
+        instantiate_visual,
+    )
+
+    visual = instantiate_visual(
+        thinker_cfg.vision_config,
+        device=device,
+        native_visual_class=VISUAL_CLASS,
+    )
     visual = load_module(
         visual,
         model_path,
@@ -135,7 +167,7 @@ class Qwen3OmniImageEncoder(nn.Module):
         torch_dtype = resolve_dtype(dtype)
         thinker_cfg = load_thinker_config(model_path)
         vision_cfg = thinker_cfg.vision_config
-        self._device = torch.device(device)
+        self.device = torch.device(device)
         self.visual = build_visual(
             model_path,
             thinker_cfg=thinker_cfg,
@@ -157,15 +189,15 @@ class Qwen3OmniImageEncoder(nn.Module):
         pixel_values_videos: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
         **_: object,
-    ) -> dict[str, torch.Tensor]:
-        outputs: dict[str, torch.Tensor] = {}
+    ) -> ImageEncoderOutput:
+        outputs: ImageEncoderOutput = {}
         merge = self.spatial_merge_size**2
 
         if isinstance(pixel_values, torch.Tensor) and isinstance(
             image_grid_thw, torch.Tensor
         ):
-            image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
-            pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
+            image_grid_thw = image_grid_thw.to(self.device, dtype=torch.long)
+            pixel_values = pixel_values.to(device=self.device, dtype=self.visual.dtype)
             image_embeds, image_embeds_multiscale = unpack_visual_output(
                 self.visual(pixel_values, grid_thw=image_grid_thw)
             )
@@ -174,17 +206,19 @@ class Qwen3OmniImageEncoder(nn.Module):
                 {
                     "image_embeds": image_embeds,
                     "image_grid_thw": image_grid_thw,
-                    "image_token_counts": image_token_counts.to(device=self._device),
+                    "image_token_counts": image_token_counts.to(device=self.device),
                     "deepstack_visual_embeds_image": image_embeds_multiscale,
                 }
             )
+        else:
+            pass
 
         if isinstance(pixel_values_videos, torch.Tensor) and isinstance(
             video_grid_thw, torch.Tensor
         ):
-            video_grid_thw = video_grid_thw.to(self._device, dtype=torch.long)
+            video_grid_thw = video_grid_thw.to(self.device, dtype=torch.long)
             pixel_values_videos = pixel_values_videos.to(
-                device=self._device, dtype=self.visual.dtype
+                device=self.device, dtype=self.visual.dtype
             )
             video_embeds, video_embeds_multiscale = unpack_visual_output(
                 self.visual(pixel_values_videos, grid_thw=video_grid_thw)
@@ -194,9 +228,11 @@ class Qwen3OmniImageEncoder(nn.Module):
                 {
                     "video_embeds": video_embeds,
                     "video_grid_thw": video_grid_thw,
-                    "video_token_counts": video_token_counts.to(device=self._device),
+                    "video_token_counts": video_token_counts.to(device=self.device),
                     "deepstack_visual_embeds_video": video_embeds_multiscale,
                 }
             )
+        else:
+            pass
 
         return outputs

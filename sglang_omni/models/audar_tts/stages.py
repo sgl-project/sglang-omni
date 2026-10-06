@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -33,6 +33,11 @@ from sglang_omni.scheduling.reference_encoder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
+if TYPE_CHECKING:
+    from neucodec import NeuCodec
+else:
+    pass
+
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
 DEFAULT_CODEC_MODEL = "neuphonic/neucodec"
 REFERENCE_SAMPLE_RATE = 16000
@@ -44,12 +49,12 @@ MAX_REFERENCE_SECONDS = 15.0
 @dataclass(frozen=True)
 class ReferenceInput:
     source_kind: str
-    source: Any
+    source: str | bytes
     media_type: str | None = None
 
 
 @lru_cache(maxsize=None)
-def load_codec(model: str, revision: str, device: str) -> Any:
+def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
     try:
         from neucodec import NeuCodec
     except ImportError as exc:
@@ -64,29 +69,43 @@ def codec_lock(model: str, revision: str, device: str) -> threading.Lock:
     return threading.Lock()
 
 
-def normalize_reference(raw_input: Any) -> ReferenceInput:
+def normalize_reference(raw_input: object) -> ReferenceInput:
     if not isinstance(raw_input, dict):
         raise TypeError("Audar-TTS reference input must be a dict")
+    else:
+        pass
     if raw_input.get("audio_path") is not None:
         return ReferenceInput("path", str(raw_input["audio_path"]))
+    else:
+        pass
     if raw_input.get("bytes") is not None:
         return ReferenceInput("bytes", bytes(raw_input["bytes"]))
+    else:
+        pass
     data = raw_input.get("base64") or raw_input.get("data")
     if data is not None:
         return ReferenceInput(
             "base64", str(data), str(raw_input.get("media_type") or "audio/wav")
         )
+    else:
+        pass
     raise ValueError("Audar-TTS reference input has no audio payload")
 
 
 def reference_key(item: ReferenceInput) -> str | None:
     if item.source_kind == "path":
         return reference_path_cache_key(item.source, trust_stat=False)
+    else:
+        pass
     if item.source_kind == "bytes":
         return f"bytes:{hash_bytes(item.source)}"
+    else:
+        pass
     if item.source_kind == "base64":
         payload = str(item.source).encode("utf-8")
         return f"base64:{item.media_type}:{hash_bytes(payload)}"
+    else:
+        pass
     return None
 
 
@@ -107,10 +126,14 @@ def load_reference_waveform(item: ReferenceInput) -> torch.Tensor:
             "Audar-TTS reference audio must be 5-15 seconds; "
             f"got {duration:.2f} seconds"
         )
+    else:
+        pass
     return torch.from_numpy(audio).float().reshape(1, 1, -1)
 
 
-def encode_reference(codec: Any, device: str, item: ReferenceInput) -> torch.Tensor:
+def encode_reference(
+    codec: "NeuCodec", device: str, item: ReferenceInput
+) -> torch.Tensor:
     waveform = load_reference_waveform(item).to(device)
     with torch.inference_mode():
         codes = torch.as_tensor(codec.encode_code(waveform)).squeeze()
@@ -118,6 +141,8 @@ def encode_reference(codec: Any, device: str, item: ReferenceInput) -> torch.Ten
         raise RuntimeError(
             f"Audar-TTS codec returned invalid reference codes: {tuple(codes.shape)}"
         )
+    else:
+        pass
     return codes.detach().to(device="cpu", dtype=torch.long)
 
 
@@ -130,36 +155,36 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
     def __init__(
         self,
         *,
-        codec: Any,
+        codec: "NeuCodec",
         device: str,
         codec_model: str,
         codec_revision: str,
         codec_lock: threading.Lock | None = None,
     ) -> None:
-        self._codec = codec
-        self._device = device
+        self.codec = codec
+        self.device = device
         self.model_id = codec_model
         self.model_revision = codec_revision
-        self._codec_lock = codec_lock or threading.Lock()
+        self.codec_lock = codec_lock or threading.Lock()
         self.encoder_config_hash = hash_bytes(
             f"sample_rate:{REFERENCE_SAMPLE_RATE}".encode("utf-8")
         )
 
-    def normalize_input(self, raw_input: Any) -> ReferenceInput:
+    def normalize_input(self, raw_input: object) -> ReferenceInput:
         return normalize_reference(raw_input)
 
     def input_key(self, item: ReferenceInput) -> str | None:
         return reference_key(item)
 
     def encode_one(self, item: ReferenceInput) -> torch.Tensor:
-        with self._codec_lock:
-            return encode_reference(self._codec, self._device, item)
+        with self.codec_lock:
+            return encode_reference(self.codec, self.device, item)
 
     def revalidate(self, item: ReferenceInput, key: ReferenceEncodeKey) -> bool:
         return item.source_kind != "path" or reference_key(item) == key.input_key
 
 
-def create_preprocessing_executor() -> SimpleScheduler:
+def create_preprocessing_executor() -> SimpleScheduler[StagePayload, StagePayload]:
     return SimpleScheduler(
         lambda payload: store_state(payload, build_audar_state(payload))
     )
@@ -174,7 +199,7 @@ def create_reference_encoder_executor(
     cache_max_items: int = 256,
     cache_max_bytes: int = 64 * 1024 * 1024,
     max_concurrency: int = 8,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
@@ -212,11 +237,17 @@ def resolve_gguf(model_path: str, filename: str, revision: str) -> str:
     path = Path(model_path).expanduser()
     if path.is_file():
         return str(path)
+    else:
+        pass
     if path.is_dir():
         candidate = path / filename
         if not candidate.is_file():
             raise FileNotFoundError(f"Audar-TTS GGUF not found: {candidate}")
+        else:
+            pass
         return str(candidate)
+    else:
+        pass
     from huggingface_hub import hf_hub_download
 
     return hf_hub_download(repo_id=model_path, filename=filename, revision=revision)
@@ -231,7 +262,7 @@ def create_tts_engine_executor(
     model_revision: str = "main",
     n_ctx: int = 4096,
     n_gpu_layers: int = -1,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     try:
         from llama_cpp import LLAMA_SPLIT_MODE_NONE, Llama
     except ImportError as exc:
@@ -247,11 +278,15 @@ def create_tts_engine_executor(
             "Audar-TTS llama.cpp engine runs on cuda or cpu only; resolved "
             f"device={concrete_device}"
         )
+    else:
+        pass
     main_gpu = concrete_device.index if concrete_device.type == "cuda" else 0
     if concrete_device.type == "cpu":
         # note (lennox): the n_gpu_layers default of -1 offloads every layer, so
         # a cpu resolution would still run on GPU 0 without this.
         n_gpu_layers = 0
+    else:
+        pass
     model_file = resolve_gguf(model_path, gguf_filename, model_revision)
     llm = Llama(
         model_path=model_file,
@@ -268,12 +303,16 @@ def create_tts_engine_executor(
         raise RuntimeError(
             "Audar-TTS GGUF must encode <|TARGET_CODES_END|> as one token"
         )
+    else:
+        pass
     stop_token = stop_tokens[0]
 
     def _generate(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
         if not state.prompt:
             raise RuntimeError("Audar-TTS generation requires an encoded prompt")
+        else:
+            pass
         prompt_tokens = llm.tokenize(
             state.prompt.encode("utf-8"), add_bos=False, special=True
         )
@@ -283,10 +322,14 @@ def create_tts_engine_executor(
         )
         if max_new_tokens <= 0:
             raise ValueError("Audar-TTS prompt exceeds the llama.cpp context window")
+        else:
+            pass
         llm.reset()
         seed = state.generation_kwargs.get("seed")
         if seed is not None:
             llm.set_seed(int(seed))
+        else:
+            pass
 
         generated: list[int] = []
         pieces: list[str] = []
@@ -300,6 +343,8 @@ def create_tts_engine_executor(
         ):
             if token == stop_token or len(generated) >= max_new_tokens:
                 break
+            else:
+                pass
             generated.append(int(token))
             pieces.append(
                 llm.detokenize([token], special=True).decode("utf-8", "ignore")
@@ -310,6 +355,8 @@ def create_tts_engine_executor(
         state.audio_codes = parse_speech_codes("".join(pieces))
         if not state.audio_codes:
             raise RuntimeError("Audar-TTS model emitted no speech tokens")
+        else:
+            pass
         state.prompt = None
         return store_state(payload, state)
 
@@ -322,7 +369,7 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
@@ -334,6 +381,8 @@ def create_vocoder_executor(
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
         if codes.ndim != 1 or codes.numel() == 0:
             raise RuntimeError("Audar-TTS vocoder requires non-empty audio codes")
+        else:
+            pass
         with lock, torch.inference_mode():
             waveform = codec.decode_code(codes.to(device)[None, None, :])
         waveform = torch.as_tensor(waveform).detach().cpu().reshape(-1)
@@ -351,9 +400,11 @@ def create_vocoder_executor(
         usage = build_usage(state)
         if usage is not None:
             payload.data["usage"] = usage
+        else:
+            pass
         return payload
 
-    return SimpleScheduler(_decode)
+    return SimpleScheduler[StagePayload, StagePayload](_decode)
 
 
 def load_state(payload: StagePayload) -> AudarTTSState:

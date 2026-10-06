@@ -1,20 +1,40 @@
 # SPDX-License-Identifier: Apache-2.0
 """SeedTTS benchmark entry-point: model profiles, server lifecycle, WER filter."""
 
+import asyncio
 import json
+import socket
 import sys
 import threading
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
+from unittest.mock import MagicMock
 
 import pytest
 import requests
+from aiohttp import web
 
+from benchmarks.benchmarker.data import FinishReason
+from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
+from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.eval import benchmark_tts_seedtts as tts
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.tasks import asr
+from benchmarks.tasks.tts import (
+    _build_tts_payload,
+    make_tts_send_fn,
+    stream_outcome_collector,
+)
 from tests.utils import QWEN3_ASR_WER_CONCURRENCY, assert_wer_partitioned
+
+SEEDTTS_SAMPLE = SampleInput(
+    sample_id="sample-1",
+    ref_text="reference",
+    ref_audio="ref.wav",
+    target_text="hello world",
+)
 
 
 @pytest.mark.parametrize(
@@ -29,8 +49,10 @@ from tests.utils import QWEN3_ASR_WER_CONCURRENCY, assert_wer_partitioned
 )
 def test_cli_defaults_follow_checkpoint_name(monkeypatch, model, is_auk):
     monkeypatch.setattr(sys, "argv", ["benchmark", "--model", model])
-    args, profile = tts._parse_args(tts._build_arg_parser())
-    config = tts._config_from_args(args)
+    args, profile = tts._parse_args(
+        tts._build_arg_parser()
+    )  # noqa: leading-underscore  # production name
+    config = tts._config_from_args(args)  # noqa: leading-underscore  # production name
     assert profile.forward_sglang_engine is not is_auk
     if is_auk:
         assert config.concurrency == config.warmup == 1
@@ -127,16 +149,165 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
             "custom-results",
             "--server-config",
             "custom.yaml",
+            "--max-new-tokens",
+            "512",
         ],
     )
 
-    args, _ = tts._parse_args(tts._build_arg_parser())
-    config = tts._config_from_args(args)
+    args, _ = tts._parse_args(
+        tts._build_arg_parser()
+    )  # noqa: leading-underscore  # production name
+    config = tts._config_from_args(args)  # noqa: leading-underscore  # production name
     assert config.concurrency == 3
     assert config.warmup == 0
     assert config.seed == 7
     assert config.output_dir == "custom-results"
     assert config.server_config == "custom.yaml"
+    assert tts.resolve_max_new_tokens(config) == 512
+
+
+@pytest.mark.parametrize(
+    "model, max_new_tokens",
+    [
+        ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", 2048),
+    ],
+)
+def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
+    # note (Yucheng Hu): TTS CI builds the config directly, so the per-model
+    # default has to resolve at request-build time, not only in _parse_args.
+    config = tts.TtsSeedttsBenchmarkConfig(model=model, meta="meta.lst")
+    payload = _build_tts_payload(
+        SEEDTTS_SAMPLE,
+        model,
+        **tts._build_generation_kwargs(
+            config
+        ),  # noqa: leading-underscore  # production name
+    )
+    assert payload.get("max_new_tokens") == max_new_tokens
+
+
+def test_stream_send_fn_records_the_ids_the_outcome_collector_needs():
+    async def iter_pcm_chunks() -> AsyncIterator[tuple[bytes, bool]]:
+        yield bytes(8), True
+
+    session = MagicMock()
+    session.post.return_value.__aenter__.return_value = MagicMock(
+        status=200,
+        headers={
+            "Content-Type": "audio/pcm",
+            "X-Request-Id": "correlation-1",
+            "X-SGLang-Omni-Speech-Id": "speech-1",
+            "X-SGLang-Omni-Worker": "worker-b",
+            "x-sample-rate": "4",
+            "x-channels": "1",
+            "x-bit-depth": "16",
+        },
+        content=MagicMock(iter_chunks=iter_pcm_chunks),
+    )
+    send_fn = make_tts_send_fn(
+        "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        "http://host/v1/audio/speech",
+        stream=True,
+    )
+
+    result = asyncio.run(send_fn(session, SEEDTTS_SAMPLE))
+
+    assert result.is_success
+    assert result.speech_outcome_id == "speech-1"
+    assert result.server_worker_id == "worker-b"
+
+    session.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_slow_outcomes_do_not_occupy_generation_connections() -> None:
+    lookup_started = asyncio.Event()
+    generations_finished = asyncio.Event()
+    release_lookups = asyncio.Event()
+    completed = 0
+    request_count = 120
+    lookup_ids: list[str] = []
+
+    async def speech(request: web.Request) -> web.Response:
+        nonlocal completed
+        if completed:
+            await lookup_started.wait()
+        else:
+            pass
+        completed += 1
+        if completed == request_count:
+            generations_finished.set()
+        else:
+            pass
+        return web.Response(
+            body=bytes(8),
+            content_type="audio/pcm",
+            headers={
+                "X-SGLang-Omni-Speech-Id": f"speech#{completed}?%",
+                "X-SGLang-Omni-Worker": "worker-b",
+                "X-Sample-Rate": "4",
+                "X-Channels": "1",
+                "X-Bit-Depth": "16",
+            },
+        )
+
+    async def outcome(request: web.Request) -> web.Response:
+        lookup_ids.append(request.match_info["speech_id"])
+        assert request.headers["x-sglang-omni-route-worker"] == "worker-b"
+        lookup_started.set()
+        await release_lookups.wait()
+        return web.json_response(
+            {
+                "finish_reason": "length",
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 120,
+                    "engine_time_s": 4.8,
+                },
+            }
+        )
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    application.router.add_get("/v1/audio/speech/{speech_id}", outcome)
+    server = web.AppRunner(application)
+    await server.setup()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        api_url = f"http://127.0.0.1:{listener.getsockname()[1]}/v1/audio/speech"
+        await web.SockSite(server, listener).start()
+        try:
+            runner = BenchmarkRunner(
+                RunConfig(max_concurrency=1, warmup=0, disable_tqdm=True)
+            )
+            send = make_tts_send_fn(
+                "tts", api_url, stream=True, no_ref_audio=True, no_ref_text=True
+            )
+            async with stream_outcome_collector(api_url) as collect:
+                task = asyncio.create_task(
+                    runner.run(
+                        [SEEDTTS_SAMPLE] * request_count, send, after_send=collect
+                    )
+                )
+                try:
+                    await asyncio.wait_for(generations_finished.wait(), timeout=3)
+                    assert not task.done()
+                finally:
+                    release_lookups.set()
+                    results = await asyncio.wait_for(task, timeout=5)
+            assert all(result.is_success for result in results)
+            assert all(
+                result.finish_reason is FinishReason.LENGTH for result in results
+            )
+            assert all(result.completion_tokens == 120 for result in results)
+            assert all(result.tok_per_s == pytest.approx(25.0) for result in results)
+            assert set(lookup_ids) == {
+                f"speech#{index}?%" for index in range(1, request_count + 1)
+            }
+        finally:
+            await server.cleanup()
 
 
 def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(
@@ -158,7 +329,7 @@ def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(
             response = requests.Response()
             response.url = url
             response.status_code = 200 if admitted else 503
-            response._content = json.dumps(
+            response._content = json.dumps(  # noqa: leading-underscore  # upstream name
                 {"text": "hello world"}
                 if admitted
                 else {

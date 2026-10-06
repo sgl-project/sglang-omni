@@ -20,12 +20,12 @@ from sglang_omni.models.moss_tts.sampling_cuda_graph import (
 )
 from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
 
-_INT64_MAX = torch.iinfo(torch.int64).max
-_MOSS_DELAY_N_VQ = 32
-_MOSS_DELAY_AUDIO_VOCAB = 1025
+INT64_MAX = torch.iinfo(torch.int64).max
+MOSS_DELAY_N_VQ = 32
+MOSS_DELAY_AUDIO_VOCAB = 1025
 
 
-def _config(*, n_vq: int = 2, audio_vocab: int = 5) -> SimpleNamespace:
+def make_config(*, n_vq: int = 2, audio_vocab: int = 5) -> SimpleNamespace:
     return SimpleNamespace(
         n_vq=n_vq,
         channels=n_vq + 1,
@@ -40,7 +40,7 @@ def _config(*, n_vq: int = 2, audio_vocab: int = 5) -> SimpleNamespace:
     )
 
 
-def _sampling_data(
+def sampling_data(
     *,
     profile: str,
     repetition_penalty: float = 1.0,
@@ -66,16 +66,16 @@ def _sampling_data(
 
 def test_sampling_graph_accepts_only_checkpoint_default_profile() -> None:
     assert MossTTSDelaySGLangModel.is_sampling_cuda_graph_compatible(
-        _sampling_data(profile="default")
+        sampling_data(profile="default")
     )
     assert not MossTTSDelaySGLangModel.is_sampling_cuda_graph_compatible(
-        _sampling_data(profile="greedy")
+        sampling_data(profile="greedy")
     )
     assert not MossTTSDelaySGLangModel.is_sampling_cuda_graph_compatible(
-        _sampling_data(profile="custom")
+        sampling_data(profile="custom")
     )
     assert not MossTTSDelaySGLangModel.is_sampling_cuda_graph_compatible(
-        _sampling_data(profile="default", repetition_penalty=1.1)
+        sampling_data(profile="default", repetition_penalty=1.1)
     )
 
 
@@ -89,13 +89,13 @@ def test_model_runner_rejects_greedy_sampling_graph_batch() -> None:
     )
 
     assert runner.can_use_sampling_cuda_graph(
-        [_sampling_data(profile="default")], is_audio=True
+        [sampling_data(profile="default")], is_audio=True
     )
     assert not runner.can_use_sampling_cuda_graph(
-        [_sampling_data(profile="greedy")], is_audio=True
+        [sampling_data(profile="greedy")], is_audio=True
     )
     assert not runner.can_use_sampling_cuda_graph(
-        [_sampling_data(profile="default"), _sampling_data(profile="greedy")],
+        [sampling_data(profile="default"), sampling_data(profile="greedy")],
         is_audio=True,
     )
 
@@ -171,7 +171,7 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
             calls.append((control_logits.clone(), audio_logits.clone(), batch))
             return SimpleNamespace(
                 rows=torch.tensor([[12, 2, 4]], dtype=torch.long),
-                next_delay_state=torch.tensor([[2, _INT64_MAX, 1]], dtype=torch.long),
+                next_delay_state=torch.tensor([[2, INT64_MAX, 1]], dtype=torch.long),
             )
 
         @staticmethod
@@ -180,12 +180,12 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
 
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
     runner.model = FakeModel()
-    runner._pending_rows = None
-    runner._pending_embeds = None
-    profile = _sampling_data(profile="default")
+    runner.pending_rows = None
+    runner.pending_embeds = None
+    profile = sampling_data(profile="default")
     data = SimpleNamespace(
         is_audio=True,
-        delay_state=torch.tensor([1, _INT64_MAX, 1]),
+        delay_state=torch.tensor([1, INT64_MAX, 1]),
         sampling_seed=123,
         generation_steps=1,
         text_temperature=profile.text_temperature,
@@ -214,8 +214,8 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
 
     assert len(calls) == 1
     assert result.next_token_ids.tolist() == [12]
-    assert runner._pending_rows.tolist() == [[12, 2, 4]]
-    assert data.delay_state.tolist() == [2, _INT64_MAX, 1]
+    assert runner.pending_rows.tolist() == [[12, 2, 4]]
+    assert data.delay_state.tolist() == [2, INT64_MAX, 1]
 
 
 def test_sampling_cuda_graph_setup_failure_uses_eager(
@@ -242,15 +242,15 @@ def test_sampling_cuda_graph_setup_failure_uses_eager(
     )
 
     assert runner.graphs == {}
-    assert runner._inputs is None
+    assert runner.inputs is None
     assert not runner.can_replay(1)
 
 
-class _CudaGraphModel:
+class CudaGraphModel:
     def __init__(self, device: torch.device) -> None:
-        self.config = _config(
-            n_vq=_MOSS_DELAY_N_VQ,
-            audio_vocab=_MOSS_DELAY_AUDIO_VOCAB,
+        self.config = make_config(
+            n_vq=MOSS_DELAY_N_VQ,
+            audio_vocab=MOSS_DELAY_AUDIO_VOCAB,
         )
         self.device = device
         self.delay_graph_sampler = MossTTSDelayAudioGraphSampler(self.config).to(device)
@@ -271,13 +271,13 @@ class _CudaGraphModel:
         )
 
 
-def _request_data(
+def request_data(
     delay_state: torch.Tensor,
     *,
     seed: int,
     generation_steps: int,
 ) -> SimpleNamespace:
-    profile = _sampling_data(profile="default")
+    profile = sampling_data(profile="default")
     return SimpleNamespace(
         delay_state=delay_state,
         audio_length=int(delay_state[0]),
@@ -301,9 +301,9 @@ def _request_data(
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     device = torch.device("cuda")
-    config = _config(
-        n_vq=_MOSS_DELAY_N_VQ,
-        audio_vocab=_MOSS_DELAY_AUDIO_VOCAB,
+    config = make_config(
+        n_vq=MOSS_DELAY_N_VQ,
+        audio_vocab=MOSS_DELAY_AUDIO_VOCAB,
     )
     sampler = MossTTSDelayAudioGraphSampler(config).to(device)
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
@@ -313,12 +313,12 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     )
     initial_states = torch.tensor(
         [
-            [1, _INT64_MAX, 1],
-            [17, _INT64_MAX, 1],
-            [_MOSS_DELAY_N_VQ + 1, _INT64_MAX, 1],
-            [_MOSS_DELAY_N_VQ + 1, 0, 1],
-            [_MOSS_DELAY_N_VQ + 1, _MOSS_DELAY_N_VQ - 1, 1],
-            [_MOSS_DELAY_N_VQ + 1, _MOSS_DELAY_N_VQ, 1],
+            [1, INT64_MAX, 1],
+            [17, INT64_MAX, 1],
+            [MOSS_DELAY_N_VQ + 1, INT64_MAX, 1],
+            [MOSS_DELAY_N_VQ + 1, 0, 1],
+            [MOSS_DELAY_N_VQ + 1, MOSS_DELAY_N_VQ - 1, 1],
+            [MOSS_DELAY_N_VQ + 1, MOSS_DELAY_N_VQ, 1],
         ],
         dtype=torch.long,
         device=device,
@@ -328,7 +328,7 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     )
     steps = torch.tensor([1, 7, 8, 9, 10, 11], dtype=torch.long, device=device)
     datas = [
-        _request_data(
+        request_data(
             initial_states[index].clone(),
             seed=int(seeds[index]),
             generation_steps=int(steps[index]),
@@ -342,18 +342,18 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
         *[
             torch.randn(
                 batch_size,
-                _MOSS_DELAY_AUDIO_VOCAB,
+                MOSS_DELAY_AUDIO_VOCAB,
                 device=device,
                 generator=generator,
             )
-            for _ in range(_MOSS_DELAY_N_VQ)
+            for _ in range(MOSS_DELAY_N_VQ)
         ],
     ]
 
     eager_rows = runner.sample_rows(
         [logits.clone() for logits in channel_logits],
         datas,
-        n_vq=_MOSS_DELAY_N_VQ,
+        n_vq=MOSS_DELAY_N_VQ,
         is_audio=True,
     )
     eager_state = torch.stack([data.delay_state for data in datas])
@@ -377,7 +377,7 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
     device = torch.device("cuda")
-    model = _CudaGraphModel(device)
+    model = CudaGraphModel(device)
     runner = MossTTSDelaySamplingCudaGraphRunner.capture(
         model=model,
         capture_bs=(2,),
@@ -397,15 +397,15 @@ def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
         )
         audio_logits = torch.randn(
             batch_size,
-            _MOSS_DELAY_N_VQ,
-            _MOSS_DELAY_AUDIO_VOCAB,
+            MOSS_DELAY_N_VQ,
+            MOSS_DELAY_AUDIO_VOCAB,
             device=device,
             dtype=torch.float32,
             generator=generator,
         )
         batch = DelayGraphBatch(
             delay_state=torch.tensor(
-                [[_MOSS_DELAY_N_VQ + 1, _INT64_MAX, 1]] * batch_size,
+                [[MOSS_DELAY_N_VQ + 1, INT64_MAX, 1]] * batch_size,
                 device=device,
             ),
             seeds=torch.arange(batch_size, device=device, dtype=torch.long)

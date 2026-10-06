@@ -24,6 +24,7 @@ from sglang_omni_router.python.launcher.utils import (
 
 logger = logging.getLogger("sglang_omni_router.python.launcher")
 _CLEANUP_MANIFEST_ENV = "SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"
+GROUP_EXIT_POLL_INTERVAL_S = 0.05
 
 
 @dataclass
@@ -163,29 +164,63 @@ class LocalLauncher:
     def shutdown(self) -> None:
         if not self.workers:
             return
-        terminate_worker_process_groups(self.workers)
+        stop_managed_workers(self.workers)
         self.workers.clear()
 
 
-def terminate_worker_process_groups(workers: list[ManagedWorkerProcess]) -> None:
+def stop_managed_workers(workers: list[ManagedWorkerProcess]) -> None:
     for worker in workers:
-        signal_process_group(worker.process_group_id, signal.SIGINT)
+        worker.process.send_signal(signal.SIGINT)
 
     deadline = time.monotonic() + 30
+    remaining: list[ManagedWorkerProcess] = []
     for worker in workers:
         timeout = max(0.0, deadline - time.monotonic())
         try:
             worker.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            signal_process_group(worker.process_group_id, signal.SIGKILL)
-            worker.process.wait(timeout=10)
+            remaining.append(worker)
+        else:
+            try:
+                os.killpg(worker.process_group_id, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                remaining.append(worker)
+
+    for worker in remaining:
+        logger.warning(
+            f"Managed Omni worker group {worker.process_group_id} "
+            "remained after shutdown; killing"
+        )
+        try:
+            os.killpg(worker.process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    for worker in remaining:
+        worker.process.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while process_group_has_live_members(worker.process_group_id):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Managed Omni worker group {worker.process_group_id} did not exit"
+                )
+            time.sleep(GROUP_EXIT_POLL_INTERVAL_S)
 
 
-def signal_process_group(process_group_id: int, sig: signal.Signals) -> None:
-    try:
-        os.killpg(process_group_id, sig)
-    except ProcessLookupError:
-        pass
+def process_group_has_live_members(process_group_id: int) -> bool:
+    result = subprocess.run(
+        ["ps", "-A", "-o", "pgid=,stat="],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    for line in result.stdout.splitlines():
+        group_id, status = line.split()
+        if group_id == str(process_group_id) and not status.startswith(("Z", "X")):
+            return True
+    return False
 
 
 def record_cleanup_process_group(process_group_id: int | None) -> None:

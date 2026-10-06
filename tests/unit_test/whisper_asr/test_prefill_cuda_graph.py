@@ -132,7 +132,7 @@ def test_model_runner_selects_whisper_prefill_adapter_only_when_needed(
     expected: type[WhisperPrefillCudaGraphRunner] | None,
 ) -> None:
     runner = object.__new__(SGLModelRunner)
-    runner._model_arch_override = architecture
+    runner.model_arch_override = architecture
 
     with get_context().override_server_args(
         cuda_graph_config=CudaGraphConfig(
@@ -142,7 +142,7 @@ def test_model_runner_selects_whisper_prefill_adapter_only_when_needed(
         assert runner.prefill_cuda_graph_runner_cls() is expected
 
 
-def _install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
+def install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
     from sglang.srt.model_executor.model_runner_components import cuda_graph_setup
     from sglang.srt.model_executor.runner import PrefillCudaGraphRunner as stock_cls
 
@@ -158,7 +158,7 @@ def _install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
 def test_prefill_runner_dispatch_selects_by_instance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cuda_graph_setup, stock_cls = _install_dispatch_for_test(monkeypatch)
+    cuda_graph_setup, stock_cls = install_dispatch_for_test(monkeypatch)
 
     constructed: list[tuple[type, object]] = []
     monkeypatch.setattr(
@@ -175,7 +175,7 @@ def test_prefill_runner_dispatch_selects_by_instance(
     )
 
     runner = object.__new__(SGLModelRunner)
-    runner._model_arch_override = "WhisperForConditionalGeneration"
+    runner.model_arch_override = "WhisperForConditionalGeneration"
 
     with get_context().override_server_args(
         cuda_graph_config=CudaGraphConfig(
@@ -190,7 +190,7 @@ def test_prefill_runner_dispatch_selects_by_instance(
 def test_prefill_runner_dispatch_routes_selectorless_runner_to_stock_class(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cuda_graph_setup, stock_cls = _install_dispatch_for_test(monkeypatch)
+    cuda_graph_setup, stock_cls = install_dispatch_for_test(monkeypatch)
 
     constructed: list[object] = []
     monkeypatch.setattr(

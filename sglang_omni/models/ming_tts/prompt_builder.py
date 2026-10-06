@@ -46,22 +46,34 @@ def build_ming_tts_prompt(
     effective_prompt = state.prompt or DEFAULT_TTS_PROMPT
     if instruction_text is None:
         instruction_text = state.instructions
+    else:
+        pass
     if prompt_text is None:
         prompt_text = state.ref_text
+    else:
+        pass
     if prompt_latent_token_count is None:
         prompt_latent_token_count = state.prompt_latent_token_count
+    else:
+        pass
 
     speaker_count = int(speaker_count)
     prompt_latent_token_count = int(prompt_latent_token_count)
     if speaker_count < 0:
         raise ValueError("speaker_count must be non-negative")
+    else:
+        pass
     if prompt_latent_token_count < 0:
         raise ValueError("prompt_latent_token_count must be non-negative")
+    else:
+        pass
     if speaker_labels is not None and len(speaker_labels) != speaker_count:
         raise ValueError(
             "speaker_labels length must match speaker_count: "
             f"{len(speaker_labels)} != {speaker_count}"
         )
+    else:
+        pass
 
     input_ids: list[int] = []
     spk_injection_positions: list[int] = []
@@ -85,15 +97,21 @@ def build_ming_tts_prompt(
     text_input_prefix_included = not all(marker in text for marker in BGM_TTA_MARKERS)
     if text_input_prefix_included:
         input_ids.extend(tokenizer.encode_no_special(TEXT_INPUT_PREFIX))
+    else:
+        pass
 
     if prompt_text:
         input_ids.extend(tokenizer.encode_no_special(prompt_text))
+    else:
+        pass
     input_ids.extend(tokenizer.encode_no_special(text))
     input_ids.extend(tokenizer.encode_no_special(ASSISTANT_ROLE_PROMPT))
 
     if instruction_text:
         input_ids.extend(tokenizer.encode_no_special(instruction_text))
         input_ids.append(tokenizer.special.eos)
+    else:
+        pass
 
     audio_token_position = len(input_ids)
     input_ids.extend(tokenizer.encode_no_special(AUDIO_START_TOKEN))
@@ -102,14 +120,20 @@ def build_ming_tts_prompt(
             "Ming-Omni-TTS prompt audio anchor is not "
             f"{AUDIO_START_TOKEN}: {input_ids[audio_token_position]}"
         )
+    else:
+        pass
 
     prompt_latent_start_position = None
     if prompt_latent_token_count:
         prompt_latent_start_position = audio_token_position + 1
         input_ids.extend([tokenizer.special.audio_patch] * prompt_latent_token_count)
+    else:
+        pass
 
     if input_ids[0] != tokenizer.special.role_start:
         raise ValueError("Ming-Omni-TTS MoE prompt must start with role tokens")
+    else:
+        pass
 
     return MingTTSPromptPlan(
         input_ids=input_ids,

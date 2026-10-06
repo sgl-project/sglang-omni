@@ -11,14 +11,21 @@ import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, TypeVar
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, Awaitable, TypeVar
+from urllib.parse import ParseResult, urlparse
 from urllib.request import url2pathname
 
 import httpx
+import numpy as np
 import numpy.typing as npt
 
 from .base import MediaIO
+
+if TYPE_CHECKING:
+    import torch
+    from PIL import Image
+else:
+    pass
 
 _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
@@ -28,37 +35,61 @@ global_thread_pool = ThreadPoolExecutor(max_workers=8)
 atexit.register(global_thread_pool.shutdown)
 
 
+async def await_media_cleanup(awaitable: Awaitable[None]) -> None:
+    """Finish cleanup before propagating cancellation of its caller."""
+    cleanup = asyncio.ensure_future(awaitable)
+    cancellation = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    cleanup.result()
+    if cancellation is not None:
+        raise cancellation
+    else:
+        pass
+
+
 class ResourceHTTPConnection:
     """Manages persistent HTTP clients for connection pooling."""
 
-    def __init__(self, timeout: float = 30.0):
-        self._client: httpx.Client | None = None
-        self._async_client: httpx.AsyncClient | None = None
-        self._timeout = timeout
+    def __init__(self, timeout: float = 30.0) -> None:
+        self.client: httpx.Client | None = None
+        self.async_client: httpx.AsyncClient | None = None
+        self.timeout = timeout
 
     def get_sync_client(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(timeout=self._timeout, follow_redirects=True)
-        return self._client
+        if self.client is None:
+            self.client = httpx.Client(timeout=self.timeout, follow_redirects=True)
+        else:
+            pass
+        return self.client
 
     async def get_async_client(self) -> httpx.AsyncClient:
-        if self._async_client is None:
+        if self.async_client is None:
             timeout_config = httpx.Timeout(
                 connect=30.0,
-                read=self._timeout,
+                read=self.timeout,
                 write=30.0,
                 pool=30.0,
             )
-            self._async_client = httpx.AsyncClient(
+            self.async_client = httpx.AsyncClient(
                 timeout=timeout_config, follow_redirects=True
             )
-        return self._async_client
+        else:
+            pass
+        return self.async_client
 
-    async def close(self):
-        if self._async_client:
-            await self._async_client.aclose()
-        if self._client:
-            self._client.close()
+    async def close(self) -> None:
+        if self.async_client:
+            await self.async_client.aclose()
+        else:
+            pass
+        if self.client:
+            self.client.close()
+        else:
+            pass
 
 
 global_http_connection = ResourceHTTPConnection()
@@ -68,6 +99,8 @@ def resolve_allowed_local_media_path(path: str | Path) -> Path:
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists() or not resolved.is_dir():
         raise ValueError(f"allowed local media path must be a directory: {path}")
+    else:
+        pass
     return resolved
 
 
@@ -84,6 +117,8 @@ def resolve_local_file(
         allowed_local_media_path
     ):
         raise ValueError(f"File path {resolved} is not within allowed directory.")
+    else:
+        pass
     return resolved
 
 
@@ -91,6 +126,8 @@ def next_redirect_url(response: httpx.Response) -> str:
     location = response.headers.get("location")
     if not location:
         raise ValueError("Redirect response is missing a Location header.")
+    else:
+        pass
     return str(response.url.join(location))
 
 
@@ -98,6 +135,8 @@ def response_media_type(response: httpx.Response) -> str | None:
     content_type = response.headers.get("content-type")
     if not content_type:
         return None
+    else:
+        pass
     return content_type.split(";", 1)[0].strip().lower() or None
 
 
@@ -106,20 +145,28 @@ def validate_response_length(
 ) -> None:
     if max_bytes is None:
         return
+    else:
+        pass
     content_length = response.headers.get("content-length")
     if content_length is None:
         return
+    else:
+        pass
     try:
         size = int(content_length)
     except ValueError:
         return
     if size > max_bytes:
         raise ValueError(f"Media URL response exceeds {max_bytes} bytes.")
+    else:
+        pass
 
 
 def validate_downloaded_size(size: int, *, max_bytes: int | None) -> None:
     if max_bytes is not None and size > max_bytes:
         raise ValueError(f"Media URL response exceeds {max_bytes} bytes.")
+    else:
+        pass
 
 
 def resolve_remote_addresses(
@@ -142,8 +189,12 @@ def resolve_remote_addresses(
         sockaddr = addr_info[4]
         if sockaddr:
             addresses.add(ipaddress.ip_address(sockaddr[0]))
+        else:
+            pass
     if not addresses:
         raise ValueError(f"Could not resolve media URL hostname: {hostname}")
+    else:
+        pass
     return tuple(addresses)
 
 
@@ -152,16 +203,28 @@ def unsafe_remote_address_category(
 ) -> str | None:
     if address.is_loopback:
         return "loopback"
+    else:
+        pass
     if address.is_private:
         return "private"
+    else:
+        pass
     if address.is_link_local:
         return "link-local"
+    else:
+        pass
     if address.is_reserved:
         return "reserved"
+    else:
+        pass
     if address.is_multicast:
         return "multicast"
+    else:
+        pass
     if address.is_unspecified:
         return "unspecified"
+    else:
+        pass
     return None
 
 
@@ -170,6 +233,8 @@ def is_allowed_remote_domain(hostname: str, allowed_domain: str) -> bool:
     if allowed_domain.startswith("."):
         suffix = allowed_domain[1:]
         return hostname == suffix or hostname.endswith(allowed_domain)
+    else:
+        pass
     return hostname == allowed_domain
 
 
@@ -182,6 +247,8 @@ def read_limited_response_bytes(
     for chunk in response.iter_bytes():
         if not chunk:
             continue
+        else:
+            pass
         total += len(chunk)
         validate_downloaded_size(total, max_bytes=max_bytes)
         chunks.append(chunk)
@@ -192,8 +259,12 @@ def media_http_error(exc: httpx.HTTPError, url: str) -> ValueError:
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = exc.response.status_code
         return ValueError(f"Media URL returned HTTP {status_code}: {url}")
+    else:
+        pass
     if isinstance(exc, httpx.TimeoutException):
         return ValueError(f"Timed out loading media URL: {url}")
+    else:
+        pass
     return ValueError(f"Failed to load media URL {url}: {exc}")
 
 
@@ -206,6 +277,8 @@ async def read_limited_response_bytes_async(
     async for chunk in response.aiter_bytes():
         if not chunk:
             continue
+        else:
+            pass
         total += len(chunk)
         validate_downloaded_size(total, max_bytes=max_bytes)
         chunks.append(chunk)
@@ -217,7 +290,7 @@ class MultiModalResourceConnector:
 
     def __init__(
         self,
-        media_io_kwargs: dict[str, dict[str, Any]] | None = None,
+        media_io_kwargs: dict[str, dict[str, object]] | None = None,
         *,
         connection: ResourceHTTPConnection = global_http_connection,
         allowed_local_media_path: str | Path | None = None,
@@ -245,6 +318,8 @@ class MultiModalResourceConnector:
             self.allowed_local_media_path = resolve_allowed_local_media_path(
                 allowed_local_media_path
             )
+        else:
+            pass
 
         self.allowed_media_domains = [
             domain.strip().rstrip(".").lower()
@@ -254,11 +329,13 @@ class MultiModalResourceConnector:
         self.allow_remote_media_without_domains = allow_remote_media_without_domains
         self.reject_unsafe_remote_addresses = reject_unsafe_remote_addresses
 
-    def _assert_url_allowed(self, url_spec: Any) -> None:
+    def _assert_url_allowed(self, url_spec: ParseResult) -> None:
         """Check whether a remote media URL is allowed to be fetched."""
         hostname = url_spec.hostname
         if not hostname:
             raise ValueError("Remote media URL must include a hostname.")
+        else:
+            pass
         normalized_hostname = hostname.rstrip(".").lower()
         if (
             not self.allowed_media_domains
@@ -267,11 +344,15 @@ class MultiModalResourceConnector:
             raise ValueError(
                 "Remote media URLs require --allowed-media-domain to be configured."
             )
+        else:
+            pass
         if self.allowed_media_domains and not any(
             is_allowed_remote_domain(normalized_hostname, domain)
             for domain in self.allowed_media_domains
         ):
             raise ValueError(f"Domain {hostname} is not allowed.")
+        else:
+            pass
 
         if self.reject_unsafe_remote_addresses:
             for address in resolve_remote_addresses(normalized_hostname):
@@ -280,33 +361,45 @@ class MultiModalResourceConnector:
                     raise ValueError(
                         f"Remote media URL resolves to a {category} address: {address}"
                     )
+                else:
+                    pass
+        else:
+            pass
 
     def assert_url_allowed(self, url: str) -> None:
         """Validate URL policy without loading the resource."""
         self._assert_url_allowed(urlparse(url))
 
-    async def assert_url_allowed_async(self, url_spec: Any) -> None:
+    async def assert_url_allowed_async(self, url_spec: ParseResult) -> None:
         await asyncio.to_thread(self._assert_url_allowed, url_spec)
 
-    def load_data_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
+    def load_data_url(self, url_spec: ParseResult, media_io: MediaIO[_M]) -> _M:
         """Load media from a data URL (base64 encoded)."""
         path = url_spec.path or ""
         if "," not in path:
             raise ValueError("Invalid data URL format")
+        else:
+            pass
         spec, data = path.split(",", 1)
         if ";base64" not in spec.lower():
             raise ValueError("Data URL must use base64 encoding")
+        else:
+            pass
         media_type = spec.split(";")[0].lstrip("/")
         return media_io.load_base64(media_type, data)
 
-    def load_file_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
+    def load_file_url(self, url_spec: ParseResult, media_io: MediaIO[_M]) -> _M:
         """Load media from a file URL."""
         if not self.allowed_local_media_path:
             raise RuntimeError("Local file loading is disabled.")
+        else:
+            pass
 
         netloc = url_spec.netloc or ""
         if netloc and netloc != "localhost":
             raise ValueError(f"File URL netloc is not supported: {netloc}")
+        else:
+            pass
         filepath = resolve_local_file(
             url2pathname(url_spec.path),
             allowed_local_media_path=self.allowed_local_media_path,
@@ -351,12 +444,18 @@ class MultiModalResourceConnector:
                 url, timeout=timeout, max_bytes=max_bytes
             )
             return media_io.load_http_bytes(data, media_type)
+        else:
+            pass
 
         if url_spec.scheme == "data":
             return self.load_data_url(url_spec, media_io)
+        else:
+            pass
 
         if url_spec.scheme == "file":
             return self.load_file_url(url_spec, media_io)
+        else:
+            pass
 
         raise ValueError(f"Unsupported URL scheme: {url_spec.scheme}")
 
@@ -379,7 +478,6 @@ class MultiModalResourceConnector:
             Loaded media object.
         """
         url_spec = urlparse(url)
-        loop = asyncio.get_running_loop()
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
             download_start = time.time()
@@ -394,11 +492,21 @@ class MultiModalResourceConnector:
                     f"Downloaded {len(data) / 1024 / 1024:.2f}MB in "
                     f"{download_time:.2f}s"
                 )
+            else:
+                pass
 
             decode_start = time.time()
-            result = await loop.run_in_executor(
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 global_thread_pool, media_io.load_http_bytes, data, media_type
             )
+
+            async def cleanup_http_decoder() -> None:
+                await asyncio.gather(decode_future, return_exceptions=True)
+
+            try:
+                result = await asyncio.shield(decode_future)
+            finally:
+                await await_media_cleanup(cleanup_http_decoder())
             decode_time = time.time() - decode_start
 
             if len(data) > 1024 * 1024:
@@ -407,16 +515,30 @@ class MultiModalResourceConnector:
                     f"Decoded in {decode_time:.2f}s "
                     f"(total: {download_time + decode_time:.2f}s)"
                 )
+            else:
+                pass
 
             return result
+        else:
+            pass
 
         if url_spec.scheme in ["data", "file"]:
             method = (
                 self.load_data_url if url_spec.scheme == "data" else self.load_file_url
             )
-            return await loop.run_in_executor(
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 global_thread_pool, method, url_spec, media_io
             )
+
+            async def cleanup_url_decoder() -> None:
+                await asyncio.gather(decode_future, return_exceptions=True)
+
+            try:
+                return await asyncio.shield(decode_future)
+            finally:
+                await await_media_cleanup(cleanup_url_decoder())
+        else:
+            pass
 
         raise ValueError(f"Unsupported URL scheme: {url_spec.scheme}")
 
@@ -441,6 +563,8 @@ class MultiModalResourceConnector:
                     if response.is_redirect:
                         current_url = next_redirect_url(response)
                         continue
+                    else:
+                        pass
                     response.raise_for_status()
                     return (
                         read_limited_response_bytes(response, max_bytes=max_bytes),
@@ -471,6 +595,8 @@ class MultiModalResourceConnector:
                     if response.is_redirect:
                         current_url = next_redirect_url(response)
                         continue
+                    else:
+                        pass
                     response.raise_for_status()
                     return (
                         await read_limited_response_bytes_async(
@@ -488,7 +614,7 @@ class MultiModalResourceConnector:
         *,
         target_sr: int = 16000,
         timeout: float = 30.0,
-    ) -> tuple[npt.NDArray, float]:
+    ) -> tuple[npt.NDArray[np.float32], float]:
         """Asynchronously fetch audio from a URL.
 
         Args:
@@ -513,7 +639,7 @@ class MultiModalResourceConnector:
         *,
         image_mode: str = "RGB",
         timeout: float = 30.0,
-    ) -> Any:
+    ) -> Image.Image:
         """Asynchronously load image from a URL.
 
         Args:
@@ -545,7 +671,7 @@ class MultiModalResourceConnector:
         timeout: float = 30.0,
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
-    ) -> tuple[Any, float, Any | None]:
+    ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
         Args:
@@ -588,4 +714,6 @@ def get_global_resource_connector() -> MultiModalResourceConnector:
     global _global_connector
     if _global_connector is None:
         _global_connector = MultiModalResourceConnector()
+    else:
+        pass
     return _global_connector

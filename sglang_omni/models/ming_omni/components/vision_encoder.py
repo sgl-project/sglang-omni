@@ -150,7 +150,7 @@ class MingOmniVisionEncoder(nn.Module):
         from sglang.srt.utils import add_prefix
 
         # Store mixin method as a static helper
-        self._rot_pos_ids = RotaryPosMixin.rot_pos_ids
+        self.rot_pos_ids = RotaryPosMixin.rot_pos_ids
 
         # --- config ---
         self.hidden_size = vision_config.hidden_size
@@ -252,7 +252,7 @@ class MingOmniVisionEncoder(nn.Module):
         """Compute rotary position embeddings for vision blocks."""
         pos_ids = []
         for t, h, w in grid_thw:
-            base = self._rot_pos_ids(h, w, self.spatial_merge_size)
+            base = self.rot_pos_ids(h, w, self.spatial_merge_size)
             pos_ids.append(base if t == 1 else base.repeat(t, 1))
 
         pos_ids = torch.cat(pos_ids, dim=0).to(self.device, non_blocking=True)
@@ -388,6 +388,8 @@ class MingOmniVisionEncoder(nn.Module):
                 deepstack_feature = self.merger_list[num_deepstack_captured](x)
                 deepstack_feature_lists.append(deepstack_feature)
                 num_deepstack_captured += 1
+            else:
+                pass
 
         # Final merger
         x = self.merger(x)
@@ -412,6 +414,8 @@ class MingOmniVisionEncoder(nn.Module):
             if name not in params_dict:
                 logger.debug("Skipping unknown vision weight: %s", name)
                 continue
+            else:
+                pass
 
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)

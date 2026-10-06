@@ -128,10 +128,14 @@ def apply_exact_interleaved_rope_inplace(
         or not cos_sin_cache.is_contiguous()
     ):
         return False
+    else:
+        pass
 
     tokens, num_heads, head_dim = map(int, q.shape)
     if tokens == 0 or num_heads <= 0 or head_dim <= 0 or head_dim % 2 != 0:
         return False
+    else:
+        pass
     total_pairs = tokens * num_heads * (head_dim // 2)
     block_size = _EXACT_ROPE_BLOCK_SIZE
     with torch.cuda.device(q.device):
@@ -310,6 +314,8 @@ if triton is not None:
         if tl.program_id(1) == 0:
             offset = tl.load(offsets + slot, valid, other=0)
             tl.store(offsets + slot, offset + chunk_length, valid)
+        else:
+            pass
 
 else:
     streaming_kv_gather_kernel = None
@@ -340,6 +346,8 @@ def can_fuse_streaming_kv(
         or slots.numel() == 0
     ):
         return False
+    else:
+        pass
     capacity, _, context, _ = cached_k.shape
     return (
         all(

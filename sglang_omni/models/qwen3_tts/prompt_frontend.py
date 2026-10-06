@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable, Iterator
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
@@ -20,6 +20,17 @@ from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
 from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptBuilderMixin
+from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
+    Qwen3TTSSpeakerEncoderCudaGraphRunner,
+)
+
+if TYPE_CHECKING:
+    from qwen_tts.core.models.configuration_qwen3_tts import (
+        Qwen3TTSConfig,
+        Qwen3TTSTalkerConfig,
+    )
+else:
+    pass
 
 _TALKER_PREFIX = "talker."
 _SPEAKER_ENCODER_PREFIX = "speaker_encoder."
@@ -39,7 +50,9 @@ class PromptProjection(nn.Module):
 
 
 class PromptEmbeddings(nn.Module):
-    def __init__(self, config: Any) -> None:
+    feedback_buffer: torch.Tensor
+
+    def __init__(self, config: "Qwen3TTSTalkerConfig") -> None:
         super().__init__()
         self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.text_embedding = nn.Embedding(
@@ -48,7 +61,7 @@ class PromptEmbeddings(nn.Module):
         # Note (Jiaxin Deng): the prompt builders only read this buffer's device
         # and dtype; the talker's real feedback buffer lives in the engine.
         self.register_buffer(
-            "_feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
+            "feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
         )
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -59,7 +72,7 @@ class PromptEmbeddings(nn.Module):
 
 
 class PromptPredictorEmbeddings(nn.Module):
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: "Qwen3TTSTalkerConfig") -> None:
         super().__init__()
         cp_config = config.code_predictor_config
         self.model = nn.Module()
@@ -74,7 +87,13 @@ class PromptPredictorEmbeddings(nn.Module):
 class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
     """Talker-compatible prompt builder without the transformer stacks."""
 
-    def __init__(self, root_config: Any, *, device: Any, dtype: torch.dtype) -> None:
+    def __init__(
+        self,
+        root_config: "Qwen3TTSConfig",
+        *,
+        device: str | torch.device | int | None,
+        dtype: torch.dtype,
+    ) -> None:
         nn.Module.__init__(self)
         config = root_config.talker_config
         self.root_config = root_config
@@ -98,8 +117,12 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
             self.speaker_encoder = Qwen3TTSSpeakerEncoder(
                 root_config.speaker_encoder_config
             )
+            self.speaker_encoder_graph_runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(
+                self.speaker_encoder, sample_rate=self.speaker_encoder_sample_rate
+            )
         else:
             self.speaker_encoder = None
+            self.speaker_encoder_graph_runner = None
         self.speech_tokenizer = None
         self.to(device=device, dtype=dtype)
         self.requires_grad_(False)
@@ -126,6 +149,8 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
             param = params.get(target)
             if param is None:
                 continue
+            else:
+                pass
             param.data.copy_(tensor.to(device=param.device, dtype=param.dtype))
             loaded.add(target)
         missing = sorted(set(params) - loaded)
@@ -134,6 +159,8 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
                 f"Qwen3-TTS prompt frontend is missing {len(missing)} weights "
                 f"(e.g. {missing[:3]})"
             )
+        else:
+            pass
 
 
 def iter_checkpoint_tensors(
@@ -160,10 +187,15 @@ def iter_checkpoint_tensors(
             for name in handle.keys():
                 if name in names:
                     yield name, handle.get_tensor(name)
+                else:
+                    pass
 
 
 def load_qwen3_tts_prompt_frontend(
-    checkpoint_dir: str, *, device: Any, dtype: torch.dtype
+    checkpoint_dir: str,
+    *,
+    device: str | torch.device | int | None,
+    dtype: torch.dtype,
 ) -> Qwen3TTSPromptFrontend:
     from transformers import AutoConfig
 

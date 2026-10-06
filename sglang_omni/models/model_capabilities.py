@@ -32,6 +32,9 @@ class ModelCapabilities:
       breakable prefill CUDA graph contract through upstream-compatible inputs
       or model-specific adaptation; enabling it per deployment stays with the
       engine builder policy.
+    - supports_full_prefill_cuda_graph: the architecture also replays its
+      prefill as one full CUDA graph per token bucket, attention included, on
+      the same input-embeds transport the breakable contract uses.
     """
 
     supports_reference_audio: bool
@@ -40,6 +43,7 @@ class ModelCapabilities:
     supports_cuda_graph: bool
     supports_torch_compile: bool
     supports_breakable_prefill_cuda_graph: bool
+    supports_full_prefill_cuda_graph: bool
 
 
 def get_model_capabilities(architecture: str) -> ModelCapabilities | None:
@@ -47,6 +51,8 @@ def get_model_capabilities(architecture: str) -> ModelCapabilities | None:
     module = model_package_for_architecture(architecture)
     if module is None:
         return None
+    else:
+        pass
     return module_model_capabilities(module)
 
 
@@ -56,6 +62,8 @@ def model_package_for_architecture(architecture: str) -> ModuleType | None:
     config_cls = PIPELINE_CONFIG_REGISTRY.configs.get(architecture)
     if config_cls is None:
         return None
+    else:
+        pass
     package = config_cls.__module__.rsplit(".", 1)[0]
     return importlib.import_module(package)
 
@@ -64,12 +72,16 @@ def module_model_capabilities(module: ModuleType) -> ModelCapabilities | None:
     capabilities = getattr(module, "CAPABILITIES", None)
     if capabilities is None:
         return None
+    else:
+        pass
     return ensure_model_capabilities(capabilities, f"{module.__name__}.CAPABILITIES")
 
 
 def ensure_model_capabilities(capabilities: object, source: str) -> ModelCapabilities:
     if not isinstance(capabilities, ModelCapabilities):
         raise TypeError(f"{source} must be a ModelCapabilities instance")
+    else:
+        pass
     return capabilities
 
 

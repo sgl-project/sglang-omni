@@ -20,7 +20,7 @@ from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
 
-def _same_gpu_frontend_replica_config(tmp_path) -> HiggsTtsPipelineConfig:
+def same_gpu_frontend_replica_config(tmp_path) -> HiggsTtsPipelineConfig:
     base = HiggsTtsPipelineConfig(model_path="model")
     stages_cfg = [stage.model_copy(deep=True) for stage in base.stages]
     tts_engine_idx = next(
@@ -43,7 +43,7 @@ def _same_gpu_frontend_replica_config(tmp_path) -> HiggsTtsPipelineConfig:
 
 
 def test_higgs_frontend_replicas_inject_same_gpu_id(tmp_path) -> None:
-    config = _same_gpu_frontend_replica_config(tmp_path)
+    config = same_gpu_frontend_replica_config(tmp_path)
     prep = prepare_pipeline_runtime(config)
     try:
         groups = build_stage_groups(
@@ -100,7 +100,7 @@ def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
         return f"{device}:{gpu_id}"
 
     class FakeAdapter:
-        def __init__(self, _tokenizer) -> None:
+        def __init__(self, tokenizer) -> None:
             pass
 
     class FakeCodec:
@@ -109,7 +109,7 @@ def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
         def __init__(self) -> None:
             self.model = SimpleNamespace(acoustic_encoder=object())
 
-        def encode_reference(self, _waveform, *, sample_rate: int) -> torch.Tensor:
+        def encode_reference(self, waveform, *, sample_rate: int) -> torch.Tensor:
             assert sample_rate == self.SAMPLE_RATE
             return torch.zeros((1, 8), dtype=torch.long)
 
@@ -123,7 +123,7 @@ def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
 
     monkeypatch.setattr(device_mod, "resolve_device_spec", resolve)
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
-    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda path: object())
     monkeypatch.setattr(
         stages,
         "PreTrainedTokenizerFast",

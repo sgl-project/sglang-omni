@@ -24,7 +24,7 @@ from sglang_omni.models.zonos2.components.speaker_encoder import (  # noqa: E402
 )
 
 
-class _CountingEmbedder:
+class CountingEmbedder:
     """Stand-in for Qwen3SpeakerEmbedding: returns a distinct constant [1, 2048]
     per call so callers can tell which forward produced a cached value."""
 
@@ -36,16 +36,16 @@ class _CountingEmbedder:
         return torch.full((1, SPEAKER_EMBEDDING_DIM), float(self.calls))
 
 
-def _make_encoder(max_items: int = 256):
+def make_encoder(max_items: int = 256):
     enc = SpeakerEncoder(device="cpu", cache_max_items=max_items)
-    fake = _CountingEmbedder()
+    fake = CountingEmbedder()
     # Shadow the lazy loader so encode() never touches the real model / GPU.
     enc.get_embedder = lambda: fake  # type: ignore[assignment]
     return enc, fake
 
 
 def test_repeated_reference_hits_cache() -> None:
-    enc, fake = _make_encoder()
+    enc, fake = make_encoder()
     ref = (torch.zeros(1, 100), 16000)
     first, fp1 = enc.encode_with_fingerprint(ref)
     second, fp2 = enc.encode_with_fingerprint(ref)
@@ -60,7 +60,7 @@ def test_concurrent_references_keep_their_own_fingerprints() -> None:
     release_first = threading.Event()
     enc = SpeakerEncoder(device="cpu")
 
-    class _InterleavingEmbedder:
+    class InterleavingEmbedder:
         def __call__(self, wav: torch.Tensor, sr: int) -> torch.Tensor:
             marker = int(wav.reshape(-1)[0].item())
             if marker == 0:
@@ -71,7 +71,7 @@ def test_concurrent_references_keep_their_own_fingerprints() -> None:
                 release_first.set()
             return torch.full((1, SPEAKER_EMBEDDING_DIM), float(marker + 1))
 
-    enc.get_embedder = lambda: _InterleavingEmbedder()  # type: ignore[assignment]
+    enc.get_embedder = lambda: InterleavingEmbedder()  # type: ignore[assignment]
     first_ref = (torch.zeros(1, 100), 16000)
     second_ref = (torch.ones(1, 100), 16000)
 
@@ -90,7 +90,7 @@ def test_concurrent_references_keep_their_own_fingerprints() -> None:
 
 
 def test_distinct_references_miss() -> None:
-    enc, fake = _make_encoder()
+    enc, fake = make_encoder()
     enc.encode((torch.zeros(1, 100), 16000))
     enc.encode((torch.ones(1, 100), 16000))
     assert fake.calls == 2  # different content -> different key -> recompute
@@ -99,7 +99,7 @@ def test_distinct_references_miss() -> None:
 def test_eviction_is_recency_ordered() -> None:
     # Distinguishes LRU recency from FIFO: a read of `a` before inserting `c`
     # must keep `a` and evict the truly-least-recently-used `b`.
-    enc, fake = _make_encoder(max_items=2)
+    enc, fake = make_encoder(max_items=2)
     a = (torch.zeros(1, 100), 16000)
     b = (torch.ones(1, 100), 16000)
     c = (torch.full((1, 100), 2.0), 16000)
@@ -116,7 +116,7 @@ def test_eviction_is_recency_ordered() -> None:
 
 
 def test_returned_embedding_is_isolated_clone() -> None:
-    enc, _ = _make_encoder()
+    enc, _ = make_encoder()
     ref = (torch.zeros(1, 100), 16000)
     cold = enc.encode(ref)  # store-path return
     cold.add_(123.0)  # mutate the store-path copy

@@ -11,13 +11,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from benchmarks.benchmarker import fingerprint
+from benchmarks.benchmarker.fingerprint import (
+    collect_environment_fingerprint,
+    collect_server_identity,
+)
 from benchmarks.eval import asr_profiling
 from benchmarks.eval import benchmark_asr_seedtts as seedtts_benchmark
 from benchmarks.eval.asr_profiling import (
     UtilizationSampler,
     build_stage_breakdown,
-    collect_environment_fingerprint,
-    collect_server_identity,
     run_profiled_pass,
     start_request_profile,
     stop_request_profile,
@@ -25,15 +28,15 @@ from benchmarks.eval.asr_profiling import (
 from benchmarks.eval.benchmark_asr_seedtts import _aggregate, _print_table
 
 
-class _FakeResponse:
+class FakeResponse:
     def __init__(self, payload: dict) -> None:
-        self._payload = payload
+        self.payload = payload
 
     def raise_for_status(self) -> None:
         pass
 
     def json(self) -> dict:
-        return self._payload
+        return self.payload
 
 
 def test_profile_control_posts_run_id_and_event_dir(
@@ -44,7 +47,7 @@ def test_profile_control_posts_run_id_and_event_dir(
     def fake_post(url, *, json, timeout, proxies):
         del timeout, proxies
         calls.append((url, json))
-        return _FakeResponse({"run_id": json.get("run_id"), "event_dir": "/tmp/e"})
+        return FakeResponse({"run_id": json.get("run_id"), "event_dir": "/tmp/e"})
 
     monkeypatch.setattr(asr_profiling.requests, "post", fake_post)
 
@@ -191,7 +194,9 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
 
     samples = [object()]
     profile = asyncio.run(
-        seedtts_benchmark._run_profiled_pass(args, samples, concurrency=4)
+        seedtts_benchmark._run_profiled_pass(
+            args, samples, concurrency=4
+        )  # noqa: leading-underscore  # production name
     )
 
     assert lifecycle["run_id"] == "asrbench-c4-123"
@@ -284,19 +289,19 @@ def test_utilization_sampler_summarizes_cpu_and_gpu(
 def test_environment_fingerprint_is_best_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(asr_profiling, "_run_command", lambda command: None)
+    monkeypatch.setattr(fingerprint, "_run_command", lambda command: None)
 
-    fingerprint = collect_environment_fingerprint("Qwen/Qwen3-ASR-1.7B")
+    environment = collect_environment_fingerprint("Qwen/Qwen3-ASR-1.7B")
 
-    assert fingerprint["git"]["sha"] is None
-    assert fingerprint["dependency_freeze_sha256"] is None
-    assert fingerprint["gpus"] is None
-    assert fingerprint["model_path"] == "Qwen/Qwen3-ASR-1.7B"
-    assert "torch" in fingerprint["packages"]
-    assert "CUDA_VISIBLE_DEVICES" in fingerprint["env"]
+    assert environment["git"]["sha"] is None
+    assert environment["dependency_freeze_sha256"] is None
+    assert environment["gpus"] is None
+    assert environment["model_path"] == "Qwen/Qwen3-ASR-1.7B"
+    assert "torch" in environment["packages"]
+    assert "CUDA_VISIBLE_DEVICES" in environment["env"]
 
 
-def _repeat(concurrency: int, repeat: int, median: float) -> dict:
+def make_repeat_result(concurrency: int, repeat: int, median: float) -> dict:
     return {
         "concurrency": concurrency,
         "repeat": repeat,
@@ -319,7 +324,9 @@ def _repeat(concurrency: int, repeat: int, median: float) -> dict:
 
 
 def test_aggregate_and_table_surface_latency_median() -> None:
-    aggregate = _aggregate([_repeat(8, 1, 0.4), _repeat(8, 2, 0.6)])
+    aggregate = _aggregate(
+        [make_repeat_result(8, 1, 0.4), make_repeat_result(8, 2, 0.6)]
+    )
 
     assert aggregate["latency_median_s"]["mean"] == pytest.approx(0.5)
     assert aggregate["latency_median_s"]["n"] == 2
@@ -332,7 +339,7 @@ def test_aggregate_and_table_surface_latency_median() -> None:
 def test_server_identity_reports_models_best_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _ModelsResponse:
+    class ModelsResponse:
         def raise_for_status(self) -> None:
             pass
 
@@ -340,9 +347,9 @@ def test_server_identity_reports_models_best_effort(
             return {"data": [{"id": "Qwen/Qwen3-ASR-1.7B"}]}
 
     monkeypatch.setattr(
-        asr_profiling.requests,
+        fingerprint.requests,
         "get",
-        lambda url, *, timeout, proxies: _ModelsResponse(),
+        lambda url, *, timeout, proxies: ModelsResponse(),
     )
     identity = collect_server_identity("http://127.0.0.1:8000/")
     assert identity == {
@@ -350,10 +357,10 @@ def test_server_identity_reports_models_best_effort(
         "models": ["Qwen/Qwen3-ASR-1.7B"],
     }
 
-    def _down(url, *, timeout, proxies):
-        raise asr_profiling.requests.ConnectionError("down")
+    def down(url, *, timeout, proxies):
+        raise fingerprint.requests.ConnectionError("down")
 
-    monkeypatch.setattr(asr_profiling.requests, "get", _down)
+    monkeypatch.setattr(fingerprint.requests, "get", down)
     identity = collect_server_identity("http://127.0.0.1:8000")
     assert identity["url"] == "http://127.0.0.1:8000"
     assert identity["models"] is None
@@ -373,10 +380,10 @@ def test_prefill_end_emission_skips_when_no_request_is_pending(
         lambda **kwargs: emitted.append(kwargs["request_id"]),
     )
     scheduler = object.__new__(omni_scheduler.OmniScheduler)
-    scheduler._prefill_start_done = {"r1"}
-    scheduler._prefill_end_done = {"r1"}
+    scheduler.prefill_start_done = {"r1"}
+    scheduler.prefill_end_done = {"r1"}
 
-    class _ExplodingBatch:
+    class ExplodingBatch:
         # note (luojiaxuan): the O(1) fast path must return before touching
         # the batch at all -- steady-state decode pays this on every step.
         @property
@@ -387,11 +394,11 @@ def test_prefill_end_emission_skips_when_no_request_is_pending(
         def is_extend_in_batch(self):
             raise AssertionError("fast path must not build metadata")
 
-    scheduler.emit_prefill_end_for_batch(_ExplodingBatch())
+    scheduler.emit_prefill_end_for_batch(ExplodingBatch())
     assert emitted == []
 
-    scheduler._prefill_start_done = {"r1", "r2"}
+    scheduler.prefill_start_done = {"r1", "r2"}
     batch = SimpleNamespace(reqs=[SimpleNamespace(rid="r2")], is_extend_in_batch=True)
     scheduler.emit_prefill_end_for_batch(batch)
     assert emitted == ["r2"]
-    assert scheduler._prefill_end_done == {"r1", "r2"}
+    assert scheduler.prefill_end_done == {"r1", "r2"}

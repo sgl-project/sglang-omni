@@ -15,10 +15,10 @@ from sglang_omni.models.dots_tts.vocoder import (
     DotsTTSStreamingVocoder,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 
-class _FakeInference:
+class FakeInference:
     def __init__(self, hop_size: int) -> None:
         self.hop_size = hop_size
         self.inputs: list[torch.Tensor] = []
@@ -34,7 +34,7 @@ class _FakeInference:
         return torch.stack(rows)
 
 
-def _codec(*, latent_dim: int = 3, hop_size: int = 2) -> SimpleNamespace:
+def make_codec(*, latent_dim: int = 3, hop_size: int = 2) -> SimpleNamespace:
     return SimpleNamespace(
         device=torch.device("cpu"),
         latent_dim=latent_dim,
@@ -42,25 +42,25 @@ def _codec(*, latent_dim: int = 3, hop_size: int = 2) -> SimpleNamespace:
         sample_rate=48000,
         patch_size=4,
         lock=threading.RLock(),
-        inference=_FakeInference(hop_size),
+        inference=FakeInference(hop_size),
     )
 
 
-def _latents(frames: int, value: float, *, latent_dim: int = 3) -> torch.Tensor:
+def make_latents(frames: int, value: float, *, latent_dim: int = 3) -> torch.Tensor:
     return torch.full((1, frames, latent_dim), value)
 
 
-def _decode(
+def decode(
     vocoder: DotsTTSBatchVocoder, latents: list[torch.Tensor]
 ) -> list[tuple[torch.Tensor, int]]:
     items = [(DotsTTSState(), item) for item in latents]
     return asyncio.run(vocoder.decode_batch(items))
 
 
-def _payload(
+def payload(
     request_id: str, frames: int, value: float, *, stream: bool = False
 ) -> StagePayload:
-    state = DotsTTSState(generated_latents=_latents(frames, value))
+    state = DotsTTSState(generated_latents=make_latents(frames, value))
     return StagePayload(
         request_id=request_id,
         request=OmniRequest(inputs="hello", params={"stream": stream}),
@@ -69,24 +69,24 @@ def _payload(
 
 
 def test_equal_length_inputs_use_one_audiovae_forward() -> None:
-    codec = _codec()
+    codec = make_codec()
     vocoder = DotsTTSBatchVocoder(codec)
-    outputs = _decode(
+    outputs = decode(
         vocoder,
-        [_latents(16, 1), _latents(16, 2), _latents(16, 3)],
+        [make_latents(16, 1), make_latents(16, 2), make_latents(16, 3)],
     )
 
-    assert vocoder._logged_batch
+    assert vocoder.logged_batch
     assert len(codec.inference.inputs) == 1
     assert codec.inference.inputs[0].shape == (3, 16, 3)
     assert [waveform.shape for waveform, _ in outputs] == [(1, 1, 32)] * 3
 
 
 def test_mixed_length_bucket_pads_and_crops_each_output() -> None:
-    codec = _codec()
-    outputs = _decode(
+    codec = make_codec()
+    outputs = decode(
         DotsTTSBatchVocoder(codec),
-        [_latents(17, 1), _latents(31, 2)],
+        [make_latents(17, 1), make_latents(31, 2)],
     )
 
     [padded] = codec.inference.inputs
@@ -98,10 +98,15 @@ def test_mixed_length_bucket_pads_and_crops_each_output() -> None:
 
 
 def test_multiple_buckets_restore_original_request_order() -> None:
-    codec = _codec()
-    outputs = _decode(
+    codec = make_codec()
+    outputs = decode(
         DotsTTSBatchVocoder(codec),
-        [_latents(33, 1), _latents(16, 2), _latents(40, 3), _latents(8, 4)],
+        [
+            make_latents(33, 1),
+            make_latents(16, 2),
+            make_latents(40, 3),
+            make_latents(8, 4),
+        ],
     )
 
     assert [batch.shape[0] for batch in codec.inference.inputs] == [2, 2]
@@ -109,12 +114,12 @@ def test_multiple_buckets_restore_original_request_order() -> None:
 
 
 def test_single_input_preserves_batch_and_waveform_shapes() -> None:
-    codec = _codec()
+    codec = make_codec()
     vocoder = DotsTTSBatchVocoder(codec)
-    latents = _latents(12, 5)
-    [output] = _decode(vocoder, [latents])
+    latents = make_latents(12, 5)
+    [output] = decode(vocoder, [latents])
 
-    assert not vocoder._logged_batch
+    assert not vocoder.logged_batch
     assert codec.inference.input_data_ptrs == [latents.data_ptr()]
     assert codec.inference.inputs[0].shape == (1, 12, 3)
     assert output[0].shape == (1, 1, 24)
@@ -132,11 +137,11 @@ def test_single_input_preserves_batch_and_waveform_shapes() -> None:
 )
 def test_invalid_latents_are_rejected(latents: torch.Tensor, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        _decode(DotsTTSBatchVocoder(_codec()), [latents])
+        decode(DotsTTSBatchVocoder(make_codec()), [latents])
 
 
 def test_streaming_vocoder_enables_payload_and_chunk_batching() -> None:
-    codec = _codec()
+    codec = make_codec()
     scheduler = DotsTTSStreamingVocoder(
         codec,
         optimize=False,
@@ -148,24 +153,24 @@ def test_streaming_vocoder_enables_payload_and_chunk_batching() -> None:
     assert scheduler.max_batch_wait_s == 0.002
     assert scheduler.can_batch_stream_chunks
     results = asyncio.run(
-        scheduler.batch_fn([_payload("a", 16, 1), _payload("b", 16, 2)])
+        scheduler.batch_fn([payload("a", 16, 1), payload("b", 16, 2)])
     )
     assert len(codec.inference.inputs) == 1
     assert [result.request_id for result in results] == ["a", "b"]
-    assert scheduler.is_streaming_payload(_payload("stream", 16, 1, stream=True))
+    assert scheduler.is_streaming_payload(payload("stream", 16, 1, stream=True))
 
 
 def test_non_streaming_batch_isolates_invalid_payload() -> None:
-    codec = _codec()
+    codec = make_codec()
     scheduler = DotsTTSStreamingVocoder(codec, optimize=False)
-    invalid = _payload("bad", 16, 2)
+    invalid = payload("bad", 16, 2)
     invalid.data["generated_latents"] = torch.zeros(2, 4, 3)
 
     scheduler.handle_new_request_batch(
         [
-            IncomingMessage("good-a", "new_request", _payload("good-a", 16, 1)),
+            IncomingMessage("good-a", "new_request", payload("good-a", 16, 1)),
             IncomingMessage("bad", "new_request", invalid),
-            IncomingMessage("good-b", "new_request", _payload("good-b", 16, 3)),
+            IncomingMessage("good-b", "new_request", payload("good-b", 16, 3)),
         ]
     )
 
@@ -188,7 +193,7 @@ def test_non_streaming_batch_isolates_invalid_payload() -> None:
 )
 def test_invalid_batch_config_is_rejected(kwargs: dict, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        DotsTTSStreamingVocoder(_codec(), optimize=False, **kwargs)
+        DotsTTSStreamingVocoder(make_codec(), optimize=False, **kwargs)
 
 
 class TestVocoderFactorySignature:

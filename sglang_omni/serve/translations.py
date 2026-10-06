@@ -66,6 +66,8 @@ def register_translations(app: FastAPI) -> None:
                 status_code=404,
                 code="model_not_found",
             )
+        else:
+            pass
 
         if not app.state.supports_audio_translation:
             return invalid_request(
@@ -73,6 +75,8 @@ def register_translations(app: FastAPI) -> None:
                 "use /v1/audio/transcriptions instead.",
                 param="model",
             )
+        else:
+            pass
 
         try:
             response_format = speech_to_text.validate_speech_to_text_response_format(
@@ -97,6 +101,8 @@ def register_translations(app: FastAPI) -> None:
                 "segment-timestamp capability",
                 param="response_format",
             )
+        else:
+            pass
 
         try:
             audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
@@ -121,6 +127,8 @@ def register_translations(app: FastAPI) -> None:
                 model=model,
                 request_id=request_id,
             )
+        else:
+            pass
 
         gen_req = speech_to_text.build_speech_to_text_generate_request(
             audio_bytes=audio_bytes,
@@ -149,6 +157,8 @@ def register_translations(app: FastAPI) -> None:
                 )
             except HTTPException as exc:
                 return http_exception_response(exc, param=None)
+        else:
+            pass
 
         try:
             result = await speech_to_text.complete_speech_to_text_request(

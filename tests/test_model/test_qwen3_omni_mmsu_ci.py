@@ -33,7 +33,7 @@ from tests.utils import MetricCheckCollector, assert_speed_thresholds
 CONCURRENCY = 16
 
 
-def _build_args(
+def build_args(
     omni_ci_model: OmniCiModelPreset, port: int, output_dir: str
 ) -> argparse.Namespace:
     return argparse.Namespace(
@@ -56,6 +56,7 @@ def _build_args(
         save_audio=False,
         disable_tqdm=False,
         seed=None,
+        fingerprint=False,
         repo_id=DATASETS["mmsu-ci-2000"],
         # Unused by this text-output benchmark (modalities="text"); kept for API consistency with run().
         lang="en",
@@ -70,7 +71,7 @@ def test_mmsu_accuracy_and_speed(
     tmp_path: Path,
 ) -> None:
     """Run MMSU eval and assert accuracy and speed meet thresholds."""
-    args = _build_args(omni_ci_model, omni_ci_server.port, str(tmp_path / "mmsu"))
+    args = build_args(omni_ci_model, omni_ci_server.port, str(tmp_path / "mmsu"))
     with router_worker_traffic_guard(
         omni_ci_server,
         label=f"{omni_ci_model.name} MMSU",

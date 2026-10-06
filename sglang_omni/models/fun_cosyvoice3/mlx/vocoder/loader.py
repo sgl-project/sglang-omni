@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import mlx.core as mx
 import numpy as np
@@ -26,13 +25,15 @@ _MLX_DTYPES = {
 }
 
 
-def normalize_dtype_name(value: Any) -> str:
+def normalize_dtype_name(value: object) -> str:
     name = str(value).lower().removeprefix("torch.").removeprefix("mlx.core.")
     if name not in _MLX_DTYPES:
         raise ValueError(
             f"unsupported Fun-CosyVoice3 MLX artifact dtype {value!r}; "
             f"expected one of {sorted(_MLX_DTYPES)}"
         )
+    else:
+        pass
     return name
 
 
@@ -40,6 +41,8 @@ def resolve_model_directory(model_path: str, revision: str | None) -> Path:
     local_path = Path(model_path).expanduser()
     if local_path.is_dir():
         return local_path.resolve()
+    else:
+        pass
     from sglang.srt.hardware_backend.mlx.remote_code_gate import resolve_model_directory
 
     return Path(resolve_model_directory(model_path, revision=revision))
@@ -73,7 +76,7 @@ def map_hift_weight(name: str) -> str:
 
 
 def as_batch(
-    value: Any,
+    value: object,
     *,
     name: str,
     dtype: mx.Dtype,
@@ -83,20 +86,30 @@ def as_batch(
     if feature_size is None:
         if array.ndim == 1:
             array = array[None, :]
+        else:
+            pass
         if array.ndim != 2 or array.shape[0] != 1:
             raise ValueError(f"{name} must have shape [T] or [1, T], got {array.shape}")
+        else:
+            pass
     else:
         expected_rank = 2 if name == "embedding" else 3
         if name == "embedding" and array.ndim == 1:
             array = array[None, :]
         elif name != "embedding" and array.ndim == 2:
             array = array[None, :, :]
+        else:
+            pass
         if array.ndim != expected_rank or array.shape[0] != 1:
             raise ValueError(f"{name} must have batch size 1, got {array.shape}")
+        else:
+            pass
         if array.shape[-1] != feature_size:
             raise ValueError(
                 f"{name} must have feature size {feature_size}, got {array.shape}"
             )
+        else:
+            pass
     return array.astype(dtype)
 
 
@@ -147,6 +160,8 @@ class FunCosyVoice3MlxVocoder:
                 "Fun-CosyVoice3 native MLX vocoder requires a converted artifact "
                 f"with config.json and model.safetensors: {model_dir}"
             )
+        else:
+            pass
 
         raw_config = json.loads(config_path.read_text(encoding="utf-8"))
         dtype_name = normalize_dtype_name(raw_config.get("dtype", "float16"))
@@ -158,6 +173,10 @@ class FunCosyVoice3MlxVocoder:
                     f"converted artifact ({dtype_name}), but factory dtype "
                     f"requested {requested_dtype}"
                 )
+            else:
+                pass
+        else:
+            pass
         dtype = _MLX_DTYPES[dtype_name]
         config = VocoderConfig.from_dict(raw_config)
         all_weights = mx.load(str(weights_path))
@@ -183,6 +202,8 @@ class FunCosyVoice3MlxVocoder:
                 "Fun-CosyVoice3 MLX vocoder does not accept raw unsanitized "
                 "HiFT weights; convert/fold weight normalization first"
             )
+        else:
+            pass
         hift_weights = {
             map_hift_weight(name): value
             for name, value in all_weights.items()
@@ -193,6 +214,8 @@ class FunCosyVoice3MlxVocoder:
                 "Fun-CosyVoice3 MLX artifact must contain flow.* and sanitized "
                 "hifigan.* or hift.* weights"
             )
+        else:
+            pass
 
         flow = CausalMaskedDiffWithDiT(config.flow)
         hift = CausalHiFTGenerator(config.hift)
@@ -205,19 +228,19 @@ class FunCosyVoice3MlxVocoder:
         mx.eval(
             flow.parameters(),
             hift.parameters(),
-            flow.decoder._rand_noise,
-            hift._stft_window,
-            hift.m_source.l_sin_gen._rand_ini,
+            flow.decoder._rand_noise,  # noqa: leading-underscore
+            hift._stft_window,  # noqa: leading-underscore
+            hift.m_source.l_sin_gen._rand_ini,  # noqa: leading-underscore
         )
         return cls(flow=flow, hift=hift, config=config, dtype=dtype)
 
     def decode_mx(
         self,
         *,
-        token: Any,
-        prompt_token: Any,
-        prompt_feat: Any,
-        embedding: Any,
+        token: object,
+        prompt_token: object,
+        prompt_feat: object,
+        embedding: object,
     ) -> mx.array:
         """Decode one request to a rank-one MLX waveform."""
         token = as_batch(token, name="token", dtype=mx.int32)
@@ -240,12 +263,16 @@ class FunCosyVoice3MlxVocoder:
         )
         if token.shape[1] == 0:
             raise ValueError("token must contain at least one generated speech token")
+        else:
+            pass
         expected_prompt_frames = prompt_token.shape[1] * self.token_mel_ratio
         if prompt_feat.shape[1] != expected_prompt_frames:
             raise ValueError(
                 "prompt_feat must contain token_mel_ratio frames per prompt token "
                 f"({prompt_feat.shape[1]} != {expected_prompt_frames})"
             )
+        else:
+            pass
 
         token_len = mx.array([token.shape[1]], dtype=mx.int32)
         prompt_token_len = mx.array([prompt_token.shape[1]], dtype=mx.int32)
@@ -268,11 +295,11 @@ class FunCosyVoice3MlxVocoder:
     def decode(
         self,
         *,
-        token: Any,
-        prompt_token: Any,
-        prompt_feat: Any,
-        embedding: Any,
-    ) -> np.ndarray:
+        token: object,
+        prompt_token: object,
+        prompt_feat: object,
+        embedding: object,
+    ) -> np.ndarray[tuple[int, ...], np.dtype[np.float32]]:
         """Decode one request and return a contiguous float32 NumPy waveform."""
         waveform = np.asarray(
             self.decode_mx(

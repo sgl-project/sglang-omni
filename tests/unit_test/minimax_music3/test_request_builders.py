@@ -8,7 +8,7 @@ from sglang_omni.models.minimax_music3.request_builders import build_ttm_state
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-def _payload(
+def payload(
     *,
     params: dict | None = None,
     tts_params: dict | None = None,
@@ -31,7 +31,7 @@ def _payload(
 
 def test_build_ttm_state_accepts_the_supported_contract() -> None:
     state = build_ttm_state(
-        _payload(params={"max_new_tokens": 250}, tts_params={"seed": 7})
+        payload(params={"max_new_tokens": 250}, tts_params={"seed": 7})
     )
 
     assert state.seed == 7
@@ -42,13 +42,13 @@ def test_build_ttm_state_accepts_the_supported_contract() -> None:
 @pytest.mark.parametrize("value", [0, 9001, 1.5, "250", True])
 def test_build_ttm_state_rejects_invalid_frame_limits(value: object) -> None:
     with pytest.raises(ValueError, match="max_new_tokens"):
-        build_ttm_state(_payload(params={"max_new_tokens": value}))
+        build_ttm_state(payload(params={"max_new_tokens": value}))
 
 
 @pytest.mark.parametrize("value", [-1, 2**64, 1.5, "7", True])
 def test_build_ttm_state_rejects_invalid_seeds(value: object) -> None:
     with pytest.raises(ValueError, match="seed"):
-        build_ttm_state(_payload(tts_params={"seed": value}))
+        build_ttm_state(payload(tts_params={"seed": value}))
 
 
 @pytest.mark.parametrize(
@@ -65,14 +65,14 @@ def test_build_ttm_state_rejects_ignored_speech_controls(
     tts_params: dict,
 ) -> None:
     with pytest.raises(ValueError, match="does not support|only supports"):
-        build_ttm_state(_payload(tts_params=tts_params))
+        build_ttm_state(payload(tts_params=tts_params))
 
 
 @pytest.mark.parametrize("name", ["temperature", "top_p", "top_k"])
 def test_build_ttm_state_rejects_explicit_sampling_controls(name: str) -> None:
     with pytest.raises(ValueError, match="sampling parameters"):
         build_ttm_state(
-            _payload(
+            payload(
                 tts_params={
                     name: 0.5,
                     "explicit_generation_params": [name],

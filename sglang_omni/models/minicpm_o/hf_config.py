@@ -15,6 +15,8 @@ class MiniCPMOConfig(PretrainedConfig):
         # note (MayDomine): HF validates token ids before loading backbone fields.
         if getattr(self, "attention_bias", None) is not False:
             return self
+        else:
+            pass
         return derive_text_config(self)
 
 
@@ -25,6 +27,8 @@ def derive_text_config(config: PretrainedConfig) -> Qwen3Config:
             "MiniCPM-o backbone dispatch: only attention_bias=false (Qwen3 "
             "dense, version 4.5) is supported"
         )
+    else:
+        pass
     data = config.to_dict()
     for key in ("vision_config", "audio_config", "tts_config", "slice_config"):
         data.pop(key, None)

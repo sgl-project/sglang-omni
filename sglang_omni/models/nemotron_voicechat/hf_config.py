@@ -39,6 +39,8 @@ class NemotronVoiceChatConfig(NemotronHConfig):
         # Already a voice chat config
         if "perception" in config_dict:
             return super().from_dict(config_dict, **kwargs)
+        else:
+            pass
 
         stt_config = config_dict["model"]["stt"]["model"]
         backbone_path = stt_config["pretrained_llm"]
@@ -64,6 +66,8 @@ def register_voicechat_hf_config():
     global _voicechat_hf_config_registered
     if _voicechat_hf_config_registered:
         return
+    else:
+        pass
     AutoConfig.register("nemotron_voicechat", NemotronVoiceChatConfig, exist_ok=True)
     _voicechat_hf_config_registered = True
 

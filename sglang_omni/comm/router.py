@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from contextlib import suppress
-from typing import Any
 
 import torch
 
@@ -12,6 +12,7 @@ from sglang_omni.comm.data_ref import TransportKind
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.comm_trace import enabled as _comm_trace_enabled
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.relay.base import Relay, create_relay
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class CommRouter:
         gpu_stage_names: set[str] | None,
         stage_gpu_ids: dict[str, tuple[int, ...]] | None = None,
         remote_stage_names: set[str] | None = None,
-        comm_config: dict[str, Any] | None = None,
+        comm_config: Mapping[str, int | float | str | None] | None = None,
         injected_relay: Relay | None = None,
     ) -> None:
         self.stage_name = stage_name
@@ -49,7 +50,7 @@ class CommRouter:
             for name, gpu_ids in (stage_gpu_ids or {}).items()
         }
         self.remote_stage_names = set(remote_stage_names or ())
-        self._direct_cuda_ipc_targets = frozenset(
+        self.direct_cuda_ipc_targets = frozenset(
             name
             for name, gpu_ids in self.stage_gpu_ids.items()
             if self.gpu_id == self.placement_gpu_id
@@ -59,33 +60,43 @@ class CommRouter:
         )
         self.comm_config = dict(comm_config or {})
         self.injected_relay = injected_relay
-        self._relays: dict[TransportKind, Relay] = {}
-        self._traced_transports: dict[tuple[str, str], str] = {}
-        self._cuda_ipc_peer_cache: dict[str, bool] = {}
+        self.relays: dict[TransportKind, Relay] = {}
+        self.traced_transports: dict[tuple[str, str], str] = {}
+        self.cuda_ipc_peer_cache: dict[str, bool] = {}
 
     def cuda_ipc_peer_available(self, target: str) -> bool:
         """Return whether a GPU edge can use CUDA IPC peer copies."""
-        cached = self._cuda_ipc_peer_cache.get(target)
+        cached = self.cuda_ipc_peer_cache.get(target)
         if cached is not None:
             return cached
+        else:
+            pass
         if target not in self.stage_gpu_ids:
             return True
+        else:
+            pass
         target_gpu_ids = self.stage_gpu_ids[target]
         if not target_gpu_ids or self.placement_gpu_id is None:
             return True
+        else:
+            pass
 
         source_gpu = int(self.placement_gpu_id)
         target_gpu = int(target_gpu_ids[0])
         if source_gpu == target_gpu:
-            self._cuda_ipc_peer_cache[target] = True
+            self.cuda_ipc_peer_cache[target] = True
             return True
+        else:
+            pass
 
         if self.gpu_id is None or int(self.gpu_id) != source_gpu:
             self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, "source process uses a remapped GPU"
             )
-            self._cuda_ipc_peer_cache[target] = False
+            self.cuda_ipc_peer_cache[target] = False
             return False
+        else:
+            pass
         try:
             source_local = int(self.gpu_id)
             target_local = target_gpu
@@ -94,6 +105,8 @@ class CommRouter:
                 or target_local >= torch.cuda.device_count()
             ):
                 raise RuntimeError("GPU is outside this process's visible CUDA range")
+            else:
+                pass
             available = bool(
                 torch.cuda.can_device_access_peer(target_local, source_local)
             )
@@ -101,13 +114,15 @@ class CommRouter:
             self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, f"peer query failed: {exc}"
             )
-            self._cuda_ipc_peer_cache[target] = False
+            self.cuda_ipc_peer_cache[target] = False
             return False
         if not available:
             self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, "peer access is unsupported"
             )
-        self._cuda_ipc_peer_cache[target] = available
+        else:
+            pass
+        self.cuda_ipc_peer_cache[target] = available
         return available
 
     def warn_cuda_ipc_fallback(
@@ -116,6 +131,8 @@ class CommRouter:
         key = (self.stage_name, target, source_gpu, target_gpu, reason)
         if key in _CUDA_IPC_FALLBACK_WARNED:
             return
+        else:
+            pass
         _CUDA_IPC_FALLBACK_WARNED.add(key)
         logger.warning(
             "CommRouter: using SHM for CUDA edge %s(gpu=%d) -> %s(gpu=%d): %s",
@@ -135,7 +152,7 @@ class CommRouter:
 
     def can_use_direct_cuda_ipc(self, target: str) -> bool:
         return (
-            target in self._direct_cuda_ipc_targets
+            target in self.direct_cuda_ipc_targets
             and current_platform.get_intra_node_transport() == TransportKind.CUDA_IPC
         )
 
@@ -147,6 +164,8 @@ class CommRouter:
             target
         ):
             return TransportKind.SHM
+        else:
+            pass
         return transport
 
     def note_transport_choice(
@@ -166,11 +185,15 @@ class CommRouter:
         """
         if not _comm_trace_enabled():
             return
+        else:
+            pass
         key = (direction, target)
-        previous = self._traced_transports.get(key)
+        previous = self.traced_transports.get(key)
         if previous == transport:
             return
-        self._traced_transports[key] = transport
+        else:
+            pass
+        self.traced_transports[key] = transport
         _comm_trace(
             "comm_transport_selected",
             stage=self.stage_name,
@@ -199,8 +222,12 @@ class CommRouter:
     def physical_outbound(self, target: str) -> TransportKind:
         if target in self.remote_stage_names:
             return TransportKind.MOONCAKE
+        else:
+            pass
         if self.self_is_gpu and target in self.gpu_stage_names:
             return self.intra_node_transport(target)
+        else:
+            pass
         return TransportKind.SHM
 
     def outbound_stream(self, target: str, data: torch.Tensor) -> TransportKind:
@@ -209,6 +236,8 @@ class CommRouter:
                 "relay-backed stream chunks must be torch.Tensor, got "
                 f"{type(data).__name__}"
             )
+        else:
+            pass
         if target in self.remote_stage_names:
             kind = TransportKind.MOONCAKE
         elif data.device.type != current_platform.device_type:
@@ -234,12 +263,18 @@ class CommRouter:
     def relay(self, kind: TransportKind) -> Relay:
         if kind is TransportKind.LOCAL_OBJECT:
             raise ValueError("local_object has no relay")
+        else:
+            pass
         if self.injected_relay is not None:
             return self.injected_relay
-        relay = self._relays.get(kind)
+        else:
+            pass
+        relay = self.relays.get(kind)
         if relay is None:
             relay = self.build_relay(kind)
-            self._relays[kind] = relay
+            self.relays[kind] = relay
+        else:
+            pass
         return relay
 
     def relay_for(self, target: str) -> tuple[TransportKind, Relay]:
@@ -249,17 +284,21 @@ class CommRouter:
                 f"same-process target {target!r} has no relay transport; "
                 "use local-object dispatch"
             )
+        else:
+            pass
         return kind, self.relay(kind)
 
     def relay_for_payload(
-        self, target: str, payload: Any
+        self, target: str, payload: StagePayload
     ) -> tuple[TransportKind, Relay]:
         kind = self.outbound_payload(target, payload)
         if kind is TransportKind.LOCAL_OBJECT:
             raise ValueError("local_object has no relay")
+        else:
+            pass
         return kind, self.relay(kind)
 
-    def outbound_payload(self, target: str, payload: Any) -> TransportKind:
+    def outbound_payload(self, target: str, payload: object) -> TransportKind:
         if target in self.remote_stage_names:
             kind = TransportKind.MOONCAKE
         else:
@@ -289,6 +328,8 @@ class CommRouter:
                 f"same-process stream target {target!r} has no relay transport; "
                 "use local-object dispatch"
             )
+        else:
+            pass
         return kind, self.relay(kind)
 
     def inbound_relay(self, from_stage: str) -> Relay:
@@ -312,6 +353,8 @@ class CommRouter:
                 raise ValueError(
                     f"cuda_ipc relay requested for non-GPU stage {self.stage_name!r}"
                 )
+            else:
+                pass
             return create_relay(
                 "cuda_ipc",
                 engine_id=engine_id,
@@ -321,6 +364,8 @@ class CommRouter:
                 slot_size_kb=cuda_ipc_slot_size_kb,
                 pool_size_mb=cuda_ipc_pool_size_mb,
             )
+        else:
+            pass
         if kind is TransportKind.MOONCAKE:
             if self.gpu_id is not None and not current_platform.is_cuda_alike():
                 raise NotImplementedError(
@@ -328,6 +373,8 @@ class CommRouter:
                     f"relay, which is built on a literal cuda device; "
                     f"{current_platform.device_type} is not supported yet"
                 )
+            else:
+                pass
             device = f"cuda:{self.gpu_id}" if self.gpu_id is not None else "cpu"
             return create_relay(
                 "mooncake",
@@ -345,6 +392,8 @@ class CommRouter:
                     cfg["mooncake_device_name"] if "mooncake_device_name" in cfg else ""
                 ),
             )
+        else:
+            pass
         if kind is TransportKind.SHM:
             return create_relay(
                 "shm",
@@ -353,6 +402,8 @@ class CommRouter:
                 slot_size_mb=slot_size_mb,
                 credits=credits,
             )
+        else:
+            pass
         raise ValueError(f"CommRouter cannot build a relay for {kind}")
 
     def cleanup(self, request_id: str) -> None:
@@ -364,36 +415,52 @@ class CommRouter:
         for relay in self.active_relays():
             with suppress(Exception):
                 relay.close()
-        self._relays.clear()
+        self.relays.clear()
 
     def active_relays(self) -> list[Relay]:
         if self.injected_relay is not None:
             return [self.injected_relay]
-        return list(self._relays.values())
+        else:
+            pass
+        return list(self.relays.values())
 
 
-def tensor_devices(obj: Any, seen: set[int] | None = None) -> set[str]:
+def tensor_devices(obj: object, seen: set[int] | None = None) -> set[str]:
     if obj is None:
         return set()
+    else:
+        pass
     seen = set() if seen is None else seen
     obj_id = id(obj)
     if obj_id in seen:
         return set()
+    else:
+        pass
     seen.add(obj_id)
     if isinstance(obj, torch.Tensor):
         if obj.device.type in ("cpu", "musa"):
             return {obj.device.type}
+        else:
+            pass
         if obj.is_cuda:
             return {"cuda"}
+        else:
+            pass
         return {obj.device.type}
+    else:
+        pass
     if isinstance(obj, dict):
         devices: set[str] = set()
         for value in obj.values():
             devices.update(tensor_devices(value, seen))
         return devices
+    else:
+        pass
     if isinstance(obj, (list, tuple, set, frozenset)):
         devices = set()
         for value in obj:
             devices.update(tensor_devices(value, seen))
         return devices
+    else:
+        pass
     return set()

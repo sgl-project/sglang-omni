@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.scheduling.types import (
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
 
 if TYPE_CHECKING:
     import torch
@@ -18,11 +25,8 @@ if TYPE_CHECKING:
         SGLangOutputProcessor,
     )
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-    from sglang_omni.scheduling.types import (
-        RequestOutput,
-        SchedulerOutput,
-        SchedulerRequest,
-    )
+else:
+    pass
 
 
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
@@ -41,19 +45,19 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
         # note (MayDomine): parent embedding injection reads these names.
         model = self.model
-        self._outer_model = model.thinker
-        self._text_model = self._outer_model.model
-        self._embed_tokens = self._text_model.embed_tokens
-        self._th_host_bufs = None
-        self._th_slot = 0
+        self.outer_model = model.thinker
+        self.text_model = self.outer_model.model
+        self.embed_tokens = self.text_model.embed_tokens
+        self.th_host_bufs = None
+        self.th_slot = 0
         # note (MayDomine): bound-based injection needs no modality token ids.
-        self._image_token_id = -1
-        self._video_token_id = -1
-        self._audio_token_id = -1
+        self.image_token_id = -1
+        self.video_token_id = -1
+        self.audio_token_id = -1
 
         self.capture_hidden_mode = (
             CaptureHiddenMode.FULL
-            if output_processor._capture_hidden
+            if output_processor.capture_hidden
             else get_server_return_hidden_states_mode()
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
@@ -72,7 +76,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
     def post_process_outputs(
         self,
-        result: Any,
+        result: GenerationBatchResult,
         scheduler_output: SchedulerOutput,
         outputs: dict[str, RequestOutput],
     ) -> None:
@@ -81,11 +85,17 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             req_output = outputs.get(sched_req.request_id)
             if req_output is None or req_output.extra is None:
                 continue
+            else:
+                pass
             hidden = req_output.extra.pop("hidden_states", None)
             if hidden is None:
                 continue
+            else:
+                pass
             if sched_req.data.req.inflight_middle_chunks > 0:
                 continue
+            else:
+                pass
             hidden = hidden.reshape(-1, hidden.shape[-1])[-1]
             seq = self.pending_hidden.setdefault(sched_req.request_id, [])
             # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
@@ -108,6 +118,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
+        else:
+            pass
         stacked = torch.stack(seq).to("cpu")
         req_data.extra_model_outputs["hidden_states_seq"] = list(stacked.unbind(0))
 

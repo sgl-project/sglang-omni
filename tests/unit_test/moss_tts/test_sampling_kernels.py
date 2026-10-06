@@ -15,7 +15,7 @@ from sglang_omni.models.moss_tts.sampling_kernels import (
 
 pytestmark = pytest.mark.accelerator
 
-_UINT32_MAX_HASH_POSITION = 1_707_985_137
+UINT32_MAX_HASH_POSITION = 1_707_985_137
 
 
 @pytest.mark.parametrize("equal_scores", [False, True], ids=["random", "tied"])
@@ -49,7 +49,7 @@ def test_seeded_gumbel_argmax_matches_uint32_max_hash() -> None:
     seeds = torch.tensor([0], device=device, dtype=torch.long)
     # This position makes MurmurHash(seed=0, position, token_id=0) UINT32_MAX.
     positions = torch.tensor(
-        [_UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
+        [UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
     )
     output = torch.empty(1, device=device, dtype=torch.long)
 
@@ -73,7 +73,7 @@ def test_token_id_sampler_matches_sglang_at_the_uint32_max_hash() -> None:
     scores = torch.tensor([[-100.0, 0.0]], device=device)
     seeds = torch.tensor([0], device=device, dtype=torch.long)
     positions = torch.tensor(
-        [_UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
+        [UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
     )
     token_ids = torch.arange(scores.shape[1], device=device)
 
@@ -100,7 +100,7 @@ def test_seeded_gumbel_argmax_rejects_strided_output() -> None:
         seeded_gumbel_argmax(scores, seeds, positions, output)
 
 
-def _fused_case(vocab: int, temp: float, top_p: float, top_k: int, tie: bool):
+def fused_case(vocab: int, temp: float, top_p: float, top_k: int, tie: bool):
     return pytest.param(
         vocab,
         temp,
@@ -114,20 +114,20 @@ def _fused_case(vocab: int, temp: float, top_p: float, top_k: int, tie: bool):
 @pytest.mark.parametrize(
     "vocab,temp,top_p,top_k,tie",
     [
-        _fused_case(1025, 1.7, 0.8, 25, False),
-        _fused_case(1025, 1.7, 0.8, 25, True),
-        _fused_case(1025, 1.0, 0.9, 64, True),
-        _fused_case(1025, 1.2, 0.5, 1, False),
-        _fused_case(1025, 1.7, 0.001, 25, False),
-        _fused_case(1025, 1.7, 0.999, 25, False),
-        _fused_case(1025, 0.0, 0.8, 25, False),
-        _fused_case(1024, 1.7, 0.8, 25, False),
-        _fused_case(1024, 1.7, 0.8, 25, True),
-        _fused_case(1024, 1.0, 0.9, 64, True),
-        _fused_case(1024, 1.2, 0.5, 1, False),
-        _fused_case(1024, 0.0, 0.8, 25, False),
-        _fused_case(2, 1.0, 1.0, 50, False),
-        _fused_case(2, 1.3, 0.7, 0, False),
+        fused_case(1025, 1.7, 0.8, 25, False),
+        fused_case(1025, 1.7, 0.8, 25, True),
+        fused_case(1025, 1.0, 0.9, 64, True),
+        fused_case(1025, 1.2, 0.5, 1, False),
+        fused_case(1025, 1.7, 0.001, 25, False),
+        fused_case(1025, 1.7, 0.999, 25, False),
+        fused_case(1025, 0.0, 0.8, 25, False),
+        fused_case(1024, 1.7, 0.8, 25, False),
+        fused_case(1024, 1.7, 0.8, 25, True),
+        fused_case(1024, 1.0, 0.9, 64, True),
+        fused_case(1024, 1.2, 0.5, 1, False),
+        fused_case(1024, 0.0, 0.8, 25, False),
+        fused_case(2, 1.0, 1.0, 50, False),
+        fused_case(2, 1.3, 0.7, 0, False),
     ],
 )
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
@@ -301,7 +301,7 @@ def test_sample_seeded_fused_hash_endpoint() -> None:
         seeds=torch.zeros(1, device=device, dtype=torch.long),
         # MurmurHash(seed=0, position, token_id=0) == UINT32_MAX here.
         positions=torch.tensor(
-            [_UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
+            [UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
         ),
     )
     a = sample_seeded_branchless(logits, **params)
@@ -376,7 +376,7 @@ def test_sample_seeded_fused_masked_lane_hash_endpoint() -> None:
         top_k=torch.full((1,), 8, device=device, dtype=torch.long),
         seeds=torch.zeros(1, device=device, dtype=torch.long),
         positions=torch.tensor(
-            [_UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
+            [UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
         ),
     )
     a = sample_seeded_branchless(logits, **params)

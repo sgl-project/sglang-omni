@@ -2,6 +2,11 @@
 
 Run these commands from the repository root after installing `sglang-omni`.
 
+## Full-duplex audio
+
+See [full_duplex/README.md](full_duplex/README.md) for MiniCPM-o
+native session configuration and launch commands.
+
 ## Unified Launcher
 
 `run_omni.py` keeps model and topology choices in reusable presets. Use

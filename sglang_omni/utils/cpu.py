@@ -24,17 +24,23 @@ def read_self_cgroup_paths(proc_self_cgroup: Path) -> tuple[str | None, str | No
         parts = line.split(":", 2)
         if len(parts) != 3:
             continue
+        else:
+            pass
         _hierarchy_id, controllers, relative_path = parts
         if not controllers:
             v2_path = relative_path
         elif "cpu" in controllers.split(","):
             v1_cpu_path = relative_path
+        else:
+            pass
     return v2_path, v1_cpu_path
 
 
 def relative_cgroup_path(path: str | None) -> Path:
     if not path:
         return Path()
+    else:
+        pass
     return Path(path.lstrip("/"))
 
 
@@ -43,12 +49,16 @@ def read_v2_quota(path: Path) -> int | None:
         quota_text, period_text = path.read_text(encoding="utf-8").split()[:2]
         if quota_text == "max":
             return None
+        else:
+            pass
         quota = int(quota_text)
         period = int(period_text)
     except (OSError, ValueError):
         return None
     if quota <= 0 or period <= 0:
         return None
+    else:
+        pass
     return max(math.ceil(quota / period), 1)
 
 
@@ -64,6 +74,8 @@ def read_v1_quota(directory: Path) -> int | None:
         return None
     if quota <= 0 or period <= 0:
         return None
+    else:
+        pass
     return max(math.ceil(quota / period), 1)
 
 
@@ -86,13 +98,21 @@ def cgroup_cpu_quota_count(
         candidate = directory / "cpu.max"
         if candidate in seen:
             continue
+        else:
+            pass
         seen.add(candidate)
         if candidate.is_file():
             quota_count = read_v2_quota(candidate)
             if quota_count is not None:
                 quota_counts.append(quota_count)
+            else:
+                pass
+        else:
+            pass
     if quota_counts:
         return min(quota_counts)
+    else:
+        pass
 
     v1_relative = relative_cgroup_path(v1_cpu_path)
     v1_roots = [cgroup_root / "cpu", cgroup_root]
@@ -105,11 +125,17 @@ def cgroup_cpu_quota_count(
         for directory in directories:
             if directory in seen:
                 continue
+            else:
+                pass
             seen.add(directory)
             if (directory / "cpu.cfs_quota_us").is_file():
                 quota_count = read_v1_quota(directory)
                 if quota_count is not None:
                     quota_counts.append(quota_count)
+                else:
+                    pass
+            else:
+                pass
     return min(quota_counts) if quota_counts else None
 
 
@@ -123,6 +149,8 @@ def effective_cpu_count() -> int:
     quota_count = cgroup_cpu_quota_count()
     if quota_count is None:
         return max(int(affinity_count), 1)
+    else:
+        pass
     return max(min(int(affinity_count), quota_count), 1)
 
 
@@ -130,6 +158,10 @@ def bounded_intraop_threads(*, worker_count: int, max_threads: int) -> int:
     """Size a shared intra-op pool after accounting for outer request workers."""
     if worker_count < 1:
         raise ValueError("worker_count must be >= 1")
+    else:
+        pass
     if max_threads < 1:
         raise ValueError("max_threads must be >= 1")
+    else:
+        pass
     return min(max(effective_cpu_count() // worker_count, 1), max_threads)

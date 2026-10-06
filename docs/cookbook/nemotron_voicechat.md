@@ -2,7 +2,7 @@
 
 [NVIDIA-NemotronLabs-VoiceChat-11B](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B) is an 11B end-to-end full-duplex speech-to-speech model. It is frame-locked at 12.5 Hz: every 80 ms of caller audio advances a Fast Conformer perception encoder, a Nemotron-H thinker that emits one text token and one function token per frame, an EAR-TTS talker that turns each text token into 31 RVQ codes, and an RVQ-VAE codec that renders the codes to 22.05 kHz audio. The model decides when to speak; there is no external VAD.
 
-SGLang-Omni currently serves it as an **offline** pipeline: one recording in, the agent's reply text and audio out. Live duplex sessions over `/v1/realtime` are tracked in [#1909](https://github.com/sgl-project/sglang-omni/issues/1909) and are not part of this page.
+SGLang-Omni supports offline recordings and live duplex conversations over `/v1/realtime`.
 
 ## Prerequisites
 
@@ -40,7 +40,21 @@ Two input conventions matter:
 
 The reply text is the thinker's spoken tokens only; frames where the model is listening carry a marker token and are dropped from the text.
 
-## Request parameters
+## Realtime conversation
+
+```bash
+python examples/run_nemotron_voicechat_duplex.py \
+  --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B \
+  --serve --port 8097
+```
+
+Open http://localhost:8097, click **Start**, and allow microphone access.
+If the server runs on a remote GPU host, forward port 8097 to your local machine first.
+Headphones help avoid acoustic feedback. The example uses the shared realtime
+playground and supports one session on one GPU, with a four-minute browser limit.
+It uses the checkpoint's default prompt and voice.
+
+## Offline request parameters
 
 | Parameter | Effect |
 |---|---|
@@ -51,7 +65,7 @@ Audio randomness is governed by the checkpoint's own settings, read from `config
 
 ## Known limitations
 
-- Offline, single request at a time (`max_running_requests=1` for both engines). No barge-in or interrupt API.
+- The offline pipeline handles one request at a time (`max_running_requests=1` for both engines), without a barge-in or interrupt API.
 - Single speaker (`Aria`, the checkpoint's baked-in prompt latents).
 - The `function_head` tool-call channel is decoded and carried through but nothing acts on it.
 - Classifier-free guidance is off (`guidance_scale=0`) although the checkpoint config enables it at 0.2.

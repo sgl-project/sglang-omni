@@ -18,6 +18,8 @@ def is_url(path: str | Path) -> bool:
     """
     if not isinstance(path, str):
         return False
+    else:
+        pass
     parsed = urlparse(path)
     return bool(parsed.scheme and parsed.scheme in ("http", "https", "data", "file"))
 

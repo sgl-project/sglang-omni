@@ -21,6 +21,8 @@ def build_cfm_timesteps(
 ) -> torch.Tensor:
     if use_epss:
         return get_epss_timesteps(int(steps), device=device, dtype=dtype)
+    else:
+        pass
     return torch.linspace(0, 1, int(steps) + 1, device=device, dtype=dtype)
 
 
@@ -54,6 +56,8 @@ def expand_batch_param(
 
     if tensor.ndim == 0 or int(tensor.numel()) == 1:
         return tensor.reshape(1, 1, 1).expand(int(batch_size), 1, 1)
+    else:
+        pass
     return tensor.reshape(int(batch_size), 1, 1)
 
 
@@ -90,6 +94,8 @@ class Solver:
                 noise = sde_random[step]
                 shift = self.sigma * (self.temperature**0.5) * (abs(dt) ** 0.5) * noise
                 y0 = y1 + shift
+            else:
+                pass
 
         return sampled
 
@@ -203,6 +209,8 @@ class CFM(nn.Module):
         t = timesteps
         if sway_sampling_coef is not None:
             t = t + sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
+        else:
+            pass
 
         return fn, y0, t, sigma_tensor, temperature_tensor
 

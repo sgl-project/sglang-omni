@@ -14,6 +14,8 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     chunk_causal_mask,
     gather_rows,
     pack_rows,
+    rotate_in_place,
+    rotated,
     scatter_rows,
     solve_flow_euler_packed,
 )
@@ -29,7 +31,7 @@ CHUNK = 4
 CPU = torch.device("cpu")
 
 
-def _tiny_dit() -> torch.nn.Module:
+def tiny_dit() -> torch.nn.Module:
     torch.manual_seed(0)
     dit = cosyvoice_dit.DiT(
         dim=32,
@@ -51,7 +53,7 @@ def _tiny_dit() -> torch.nn.Module:
     return dit.eval()
 
 
-def _padded_inputs() -> dict[str, torch.Tensor]:
+def padded_inputs() -> dict[str, torch.Tensor]:
     torch.manual_seed(1)
     rows, width = len(LENGTHS), max(LENGTHS)
     mask = torch.arange(width).unsqueeze(0) < torch.tensor(LENGTHS).unsqueeze(1)
@@ -65,7 +67,7 @@ def _padded_inputs() -> dict[str, torch.Tensor]:
     }
 
 
-def _packed_inputs(padded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def packed_inputs(padded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     rows = pack_rows(LENGTHS, CPU)
     return {
         "x": gather_rows(padded["x"].transpose(1, 2), rows),
@@ -77,7 +79,7 @@ def _packed_inputs(padded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     }
 
 
-def _valid(padded: torch.Tensor) -> list[torch.Tensor]:
+def valid(padded: torch.Tensor) -> list[torch.Tensor]:
     return [padded[index, :, :length] for index, length in enumerate(LENGTHS)]
 
 
@@ -104,6 +106,24 @@ def test_gather_then_scatter_keeps_the_valid_frames_and_zeroes_the_pad() -> None
     for index, length in enumerate(LENGTHS):
         torch.testing.assert_close(restored[index, :length], padded[index, :length])
         assert torch.count_nonzero(restored[index, length:]) == 0
+
+
+@pytest.mark.parametrize(
+    "dtype, bits", [(torch.bfloat16, torch.int16), (torch.float32, torch.int32)]
+)
+def test_rotated_matches_rotate_in_place_bit_for_bit(
+    dtype: torch.dtype, bits: torch.dtype
+) -> None:
+    torch.manual_seed(4)
+    x = torch.randn(1, 41, 2 * 16, dtype=dtype)
+    x[0, 0, 20] = -0.0
+    angles = torch.randn(1, 41, 8)
+    expected = x.clone()
+    rotate_in_place(expected, angles.cos(), angles.sin())
+
+    actual = rotated(x, angles.cos(), angles.sin())
+
+    assert torch.equal(actual.view(bits), expected.view(bits))
 
 
 def test_chunk_causal_mask_matches_cosyvoice() -> None:
@@ -141,9 +161,9 @@ def test_row_attention_matches_dense_attention_per_row(chunk_size: int | None) -
 
 @pytest.mark.parametrize("streaming", [True, False])
 def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
-    dit = _tiny_dit()
-    padded = _padded_inputs()
-    packed = _packed_inputs(padded)
+    dit = tiny_dit()
+    padded = padded_inputs()
+    packed = packed_inputs(padded)
     estimator = PackedDiT(dit, device=CPU)
 
     with torch.inference_mode():
@@ -167,18 +187,57 @@ def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
             packed["t"],
             packed["rows"],
             attention,
+            estimator.rope(packed["rows"]),
         )
     out = scatter_rows(out, packed["rows"], 19).transpose(1, 2)
 
-    for actual, reference in zip(_valid(out), _valid(expected), strict=True):
+    for actual, reference in zip(valid(out), valid(expected), strict=True):
         torch.testing.assert_close(actual, reference, rtol=1e-9, atol=1e-9)
+
+
+def test_packed_dit_shares_the_projection_weights_and_keeps_the_dit_forward() -> None:
+    dit = tiny_dit()
+    padded = padded_inputs()
+
+    def native_forward() -> torch.Tensor:
+        with torch.inference_mode():
+            return dit(
+                padded["x"],
+                padded["mask"],
+                padded["mu"],
+                padded["t"],
+                padded["spks"],
+                padded["cond"],
+                streaming=True,
+            )
+
+    before = native_forward()
+    estimator = PackedDiT(dit, device=CPU)
+
+    assert torch.equal(native_forward(), before)
+    for block, qkv_weight, qkv_bias in zip(
+        dit.transformer_blocks,
+        estimator.qkv_weights,
+        estimator.qkv_biases,
+        strict=True,
+    ):
+        attention = block.attn
+        for projection in (attention.to_q, attention.to_k, attention.to_v):
+            assert (
+                projection.weight.untyped_storage().data_ptr()
+                == qkv_weight.untyped_storage().data_ptr()
+            )
+            assert (
+                projection.bias.untyped_storage().data_ptr()
+                == qkv_bias.untyped_storage().data_ptr()
+            )
 
 
 @pytest.mark.parametrize("streaming", [True, False])
 def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
-    dit = _tiny_dit()
-    padded = _padded_inputs()
-    packed = _packed_inputs(padded)
+    dit = tiny_dit()
+    padded = padded_inputs()
+    packed = packed_inputs(padded)
     decoder = SimpleNamespace(
         estimator=dit,
         inference_cfg_rate=0.7,
@@ -214,14 +273,43 @@ def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
         )
     out = scatter_rows(out, packed["rows"], 19).transpose(1, 2)
 
-    for actual, reference in zip(_valid(out), _valid(expected), strict=True):
+    for actual, reference in zip(valid(out), valid(expected), strict=True):
         torch.testing.assert_close(actual, reference, rtol=1e-9, atol=1e-9)
 
 
+def test_packed_compile_requires_ragged_half_precision(monkeypatch) -> None:
+    estimator = PackedDiT(tiny_dit(), device=CPU)
+    compile_options: list[dict[str, object]] = []
+
+    def fake_compile(function, **kwargs):
+        compile_options.append(kwargs)
+        return function
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    assert not estimator.compile(torch.float32)
+    assert compile_options == []
+
+    estimator.is_ragged = True
+    assert not estimator.compile(torch.float32)
+    assert compile_options == []
+    assert estimator.compile(torch.bfloat16)
+    assert estimator.is_compiled
+    assert compile_options == [
+        {
+            "backend": "inductor",
+            "fullgraph": True,
+            "options": {
+                "triton.autotune_pointwise": False,
+                "emulate_precision_casts": True,
+            },
+        }
+    ]
+
+
 def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
-    dit = _tiny_dit()
-    padded = _padded_inputs()
-    packed = _packed_inputs(padded)
+    dit = tiny_dit()
+    padded = padded_inputs()
+    packed = packed_inputs(padded)
     estimator = PackedDiT(dit, device=CPU)
 
     with torch.inference_mode():
@@ -235,6 +323,7 @@ def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
             estimator.row_attention(
                 packed["rows"], streaming=True, dtype=packed["x"].dtype
             ),
+            estimator.rope(packed["rows"]),
         )
         for index, length in enumerate(LENGTHS):
             rows = pack_rows((length,), CPU)
@@ -246,6 +335,7 @@ def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
                 padded["t"],
                 rows,
                 estimator.row_attention(rows, streaming=True, dtype=packed["x"].dtype),
+                estimator.rope(rows),
             )
             start = int(packed["rows"].starts_host[index])
             torch.testing.assert_close(

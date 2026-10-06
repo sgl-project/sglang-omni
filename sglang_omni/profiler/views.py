@@ -13,9 +13,20 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Iterable, Iterator
+
+from typing_extensions import NotRequired, TypedDict
+
+from sglang_omni.utils.json import JsonValue
 
 logger = logging.getLogger(__name__)
+
+
+class ProfilerReport(TypedDict):
+    timelines: NotRequired[dict[str, list[dict[str, JsonValue]]]]
+    stage_breakdown: list[dict[str, str | int | float]]
+    hop_breakdown: list[dict[str, str | int | float]]
+    request_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[dict[str, Any]]:
+def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[JsonValue]:
     """Yield every JSON event from a file, directory, or list of either."""
     paths: list[Path] = []
     if isinstance(source, (str, Path)):
@@ -44,6 +55,8 @@ def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[dict[str,
                 line = line.strip()
                 if not line:
                     continue
+                else:
+                    pass
                 try:
                     yield json.loads(line)
                 except json.JSONDecodeError:
@@ -54,7 +67,9 @@ def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[dict[str,
                     )
 
 
-def load_events(source: str | Path | Iterable[str | Path]) -> list[dict[str, Any]]:
+def load_events(
+    source: str | Path | Iterable[str | Path],
+) -> list[dict[str, JsonValue]]:
     """Return all events sorted by ``timestamp_ns`` (stable)."""
     events = list(iter_events(source))
     events.sort(key=lambda e: e.get("timestamp_ns", 0))
@@ -71,36 +86,44 @@ class RequestTimeline:
     """All events for a single request, sorted by time."""
 
     request_id: str
-    events: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, JsonValue]] = field(default_factory=list)
 
     @property
     def t0_ns(self) -> int | None:
         if not self.events:
             return None
+        else:
+            pass
         return self.events[0]["timestamp_ns"]
 
     @property
     def t_end_ns(self) -> int | None:
         if not self.events:
             return None
+        else:
+            pass
         return self.events[-1]["timestamp_ns"]
 
     @property
     def total_ms(self) -> float:
         if not self.events:
             return 0.0
+        else:
+            pass
         t0 = self.t0_ns
         t1 = self.t_end_ns
         assert t0 is not None and t1 is not None
         return (t1 - t0) / 1e6
 
-    def to_relative(self) -> list[dict[str, Any]]:
+    def to_relative(self) -> list[dict[str, JsonValue]]:
         """Return events with an added ``t_rel_ms`` field anchored at t0."""
         if not self.events:
             return []
+        else:
+            pass
         t0 = self.t0_ns
         assert t0 is not None
-        result = []
+        result: list[dict[str, JsonValue]] = []
         for ev in self.events:
             out = dict(ev)
             out["t_rel_ms"] = (ev["timestamp_ns"] - t0) / 1e6
@@ -113,11 +136,13 @@ def reconstruct_timelines(
 ) -> dict[str, RequestTimeline]:
     """Group every event by ``request_id`` into a per-request timeline."""
     events = load_events(source)
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[str, list[dict[str, JsonValue]]] = defaultdict(list)
     for ev in events:
         rid = ev.get("request_id")
         if not rid:
             continue
+        else:
+            pass
         grouped[rid].append(ev)
     return {
         rid: RequestTimeline(request_id=rid, events=evts)
@@ -175,7 +200,7 @@ class StageBreakdownRow:
     p95_ms: float
     max_ms: float
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | float]:
         return {
             "stage": self.stage,
             "interval": self.interval_name,
@@ -192,13 +217,19 @@ def percentile(values: list[float], q: float) -> float:
     """Linear-interpolation percentile. q in [0, 1]. ``values`` is sorted."""
     if not values:
         return 0.0
+    else:
+        pass
     if len(values) == 1:
         return values[0]
+    else:
+        pass
     k = (len(values) - 1) * q
     f = int(k)
     c = min(f + 1, len(values) - 1)
     if f == c:
         return values[f]
+    else:
+        pass
     return values[f] + (values[c] - values[f]) * (k - f)
 
 
@@ -212,7 +243,11 @@ def compute_stage_intervals(
     if timelines is None:
         if source is None:
             raise ValueError("compute_stage_intervals requires timelines or source")
+        else:
+            pass
         timelines = reconstruct_timelines(source)
+    else:
+        pass
 
     # Per-pair lookup: one opener event seeds every pair it's in; each
     # closer consumes only its own pair's stack.
@@ -233,11 +268,15 @@ def compute_stage_intervals(
             if name in opens_to_pairs:
                 for opener, closer in opens_to_pairs[name]:
                     pending[(stage, opener, closer)].append(ts)
+            else:
+                pass
             if name in closes_to_pairs:
                 for opener, closer in closes_to_pairs[name]:
                     stack = pending.get((stage, opener, closer))
                     if not stack:
                         continue
+                    else:
+                        pass
                     open_ns = stack.pop(0)
                     out.append(
                         StageInterval(
@@ -249,6 +288,8 @@ def compute_stage_intervals(
                             close_ns=ts,
                         )
                     )
+            else:
+                pass
     return out
 
 
@@ -299,7 +340,7 @@ class HopBreakdownRow:
     p95_ms: float
     max_ms: float
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | float]:
         return {
             "src": self.src_stage,
             "dst": self.dst_stage,
@@ -326,7 +367,11 @@ def hop_breakdown(
     if timelines is None:
         if source is None:
             raise ValueError("hop_breakdown requires timelines or source")
+        else:
+            pass
         timelines = reconstruct_timelines(source)
+    else:
+        pass
 
     # Pending sends keyed by (rid, src, dst, kind, chunk_id_or_None) -> list of ts.
     pending: dict[tuple[str, str, str, str, int | None], list[int]] = defaultdict(list)
@@ -349,21 +394,31 @@ def hop_breakdown(
                 src = md.get("from_stage")
                 if not src or src == "coordinator":
                     continue
+                else:
+                    pass
                 key = (rid, src, stage, "payload", None)
                 stack = pending.get(key)
                 if stack:
                     open_ns = stack.pop(0)
                     durations[(src, stage, "payload")].append((ts - open_ns) / 1e6)
+                else:
+                    pass
             elif name == "stage_stream_chunk_received":
                 src = md.get("from_stage")
                 chunk_id = md.get("chunk_id")
                 if not src:
                     continue
+                else:
+                    pass
                 key = (rid, src, stage, "stream_chunk", chunk_id)
                 stack = pending.get(key)
                 if stack:
                     open_ns = stack.pop(0)
                     durations[(src, stage, "stream_chunk")].append((ts - open_ns) / 1e6)
+                else:
+                    pass
+            else:
+                pass
 
     rows: list[HopBreakdownRow] = []
     for (src, dst, kind), values in durations.items():
@@ -390,7 +445,7 @@ def hop_breakdown(
 # ---------------------------------------------------------------------------
 
 
-def build_report(source: str | Path | Iterable[str | Path]) -> dict[str, Any]:
+def build_report(source: str | Path | Iterable[str | Path]) -> ProfilerReport:
     """Return all three views as a single dict for JSON serialization."""
     timelines = reconstruct_timelines(source)
     return {
@@ -401,10 +456,12 @@ def build_report(source: str | Path | Iterable[str | Path]) -> dict[str, Any]:
     }
 
 
-def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
+def format_table(rows: list[dict[str, str | int | float]], columns: list[str]) -> str:
     """Pretty-print a list of dicts as a fixed-width table."""
     if not rows:
         return "(empty)\n"
+    else:
+        pass
     widths = {
         c: max(len(c), max(len(str(r.get(c, ""))) for r in rows)) for c in columns
     }

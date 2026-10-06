@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import torch
-import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -15,18 +14,10 @@ from sglang.srt.models.llama import LlamaForCausalLM
 from torch import nn
 from transformers import LlamaConfig, PretrainedConfig
 
-
-class MiniCPMTTSProjector(nn.Module):
-    """Checkpoint-compatible thinker-hidden → talker-hidden projector."""
-
-    def __init__(self, input_size: int, hidden_size: int) -> None:
-        super().__init__()
-        self.linear1 = nn.Linear(input_size, hidden_size, bias=True)
-        self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(hidden_size, hidden_size, bias=True)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.linear2(self.relu(self.linear1(hidden_states)))
+from sglang_omni.models.minicpm_o.components.talker import (
+    MiniCPMTTSProjector,
+    build_tts_condition,
+)
 
 
 class MiniCPMOTalkerForCausalLM(nn.Module):
@@ -42,14 +33,20 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
         tts_config = config.tts_config
         if tts_config is None:
             raise ValueError("MiniCPM-o talker requires config.tts_config")
+        else:
+            pass
         if not isinstance(tts_config, dict):
             tts_config = tts_config.to_dict()
+        else:
+            pass
         cfg = tts_config
         if int(cfg.get("num_vq", 1)) != 1:
             raise ValueError(
                 f"MiniCPM-o talker requires num_vq=1, checkpoint reports "
                 f"{cfg.get('num_vq')}"
             )
+        else:
+            pass
         self.config = config
         self.num_audio_tokens = int(cfg["num_audio_tokens"])
         self.codec_eos_id = self.num_audio_tokens - 1
@@ -88,29 +85,14 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
         self, tts_token_ids: torch.Tensor, tts_hidden: torch.Tensor
     ) -> torch.Tensor:
         """Return (T+2, hidden) condition embeddings, including boundary tokens."""
-        device = self.emb_text.weight.device
-        dtype = self.emb_text.weight.dtype
-        boundary = self.emb_text(
-            torch.tensor(
-                [self.text_eos_token_id, self.audio_bos_token_id],
-                device=device,
-                dtype=torch.long,
-            )
+        return build_tts_condition(
+            tts_token_ids,
+            tts_hidden,
+            text_embedding=self.emb_text,
+            semantic_projector=self.projector_semantic,
+            boundary_tokens=(self.text_eos_token_id, self.audio_bos_token_id),
+            normalize_projected_hidden=self.normalize_projected_hidden,
         )
-        if tts_token_ids.numel() == 0:
-            return boundary
-        tokens = tts_token_ids.to(device=device, dtype=torch.long).reshape(-1)
-        hidden = tts_hidden.to(device=device, dtype=dtype)
-        if hidden.shape[0] != tokens.shape[0]:
-            raise ValueError(
-                f"talker condition length mismatch: token_ids={tokens.shape[0]} "
-                f"hidden_states={hidden.shape[0]}"
-            )
-        hidden_embeds = self.projector_semantic(hidden)
-        if self.normalize_projected_hidden:
-            hidden_embeds = F.normalize(hidden_embeds, p=2, dim=-1)
-        condition = self.emb_text(tokens) + hidden_embeds
-        return torch.cat([condition, boundary], dim=0)
 
     def forward(
         self,
@@ -126,6 +108,8 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
             input_embeds = self.emb_code(input_ids)
         elif input_embeds is None:
             input_embeds = forward_batch.input_embeds
+        else:
+            pass
 
         hidden_states = self.llama.model(
             input_ids=input_ids,
@@ -146,6 +130,8 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
                     [hidden_states.shape[0] - 1], device=hidden_states.device
                 )
             hidden_states = hidden_states[last_indices]
+        else:
+            pass
 
         logits = self.head_code(hidden_states)
         return LogitsProcessorOutput(
@@ -162,13 +148,19 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
         for name, tensor in weights:
             if not name.startswith("tts."):
                 continue
+            else:
+                pass
             stripped = name.removeprefix("tts.")
             if stripped.startswith("model."):
                 backbone_weights.append((stripped, tensor))
                 continue
+            else:
+                pass
             # note (MayDomine): the speaker projector is only used for streaming TTS.
             if stripped.startswith("projector_spk."):
                 continue
+            else:
+                pass
             if stripped == "emb_code.0.weight":
                 stripped = "emb_code.weight"
             elif stripped == "head_code.0.parametrizations.weight.original0":
@@ -177,6 +169,8 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
             elif stripped == "head_code.0.parametrizations.weight.original1":
                 head_v = tensor
                 continue
+            else:
+                pass
             parameter = direct_params.get(stripped)
             assert (
                 parameter is not None
@@ -193,7 +187,11 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
                 "MiniCPM-o checkpoint is missing weight-norm talker head "
                 "parameters (tts.head_code.0.parametrizations.weight.*)"
             )
-        restored = torch._weight_norm(head_v, head_g, dim=0)
+        else:
+            pass
+        restored = torch._weight_norm(
+            head_v, head_g, dim=0
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.head_code.weight.data.copy_(
             restored.to(
                 device=self.head_code.weight.device,

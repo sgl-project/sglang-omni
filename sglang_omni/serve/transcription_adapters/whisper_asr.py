@@ -41,6 +41,8 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         segments = self.parse_segments(text)
         if not segments:
             segments = self.build_fallback_segments(clean_text, audio_duration_s)
+        else:
+            pass
         return self.build_response(clean_text, language, audio_duration_s, segments)
 
     def build_timestamped_response(
@@ -81,6 +83,8 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
             segment_text = match.group("text").strip()
             if not segment_text:
                 continue
+            else:
+                pass
             segments.append(
                 TranscriptionSegment(
                     id=len(segments),
@@ -99,11 +103,15 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         for match in _SEGMENT_RE.finditer(text):
             if text[cursor : match.start()].strip():
                 raise ValueError("model did not produce segment timestamps")
+            else:
+                pass
 
             start = float(match.group("start"))
             end = float(match.group("end"))
             if start < previous_end or end < start:
                 raise ValueError("model did not produce segment timestamps")
+            else:
+                pass
 
             segment_text = match.group("text").strip()
             if segment_text:
@@ -115,11 +123,15 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
                         text=segment_text,
                     )
                 )
+            else:
+                pass
             previous_end = end
             cursor = match.end()
 
         if text[cursor:].strip() or not segments:
             raise ValueError("model did not produce segment timestamps")
+        else:
+            pass
         return segments
 
     @staticmethod
@@ -128,6 +140,8 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
     ) -> list[TranscriptionSegment]:
         if audio_duration_s <= 0:
             return segments
+        else:
+            pass
         limit = round(float(audio_duration_s), 2)
         repaired = 0
         for segment in segments:
@@ -137,12 +151,16 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
                 repaired += 1
                 segment.start = start
                 segment.end = end
+            else:
+                pass
         if repaired:
             logger.warning(
                 "Clamped %d Whisper transcription segments with timestamps "
                 "outside the audio duration",
                 repaired,
             )
+        else:
+            pass
         return segments
 
     @staticmethod
@@ -152,6 +170,8 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         text = text.strip()
         if not text:
             return []
+        else:
+            pass
         return [
             TranscriptionSegment(
                 id=0,

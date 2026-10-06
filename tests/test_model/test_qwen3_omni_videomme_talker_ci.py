@@ -71,7 +71,7 @@ VIDEOMME_TALKER_WER_DATASET_LABEL = format_benchmark_dataset_label(
 )
 
 
-def _load_short_answer_samples() -> list[VideoMMESample]:
+def load_short_answer_samples() -> list[VideoMMESample]:
     samples = load_videomme_samples(
         max_samples=MAX_SAMPLES,
         repo_id=DATASETS["videomme-ci-50"],
@@ -82,7 +82,7 @@ def _load_short_answer_samples() -> list[VideoMMESample]:
 
 
 @dataclass
-class _TalkerEvalArtifacts:
+class TalkerEvalArtifacts:
     summary: dict
     speed: dict
     per_sample: list
@@ -95,7 +95,7 @@ def talker_eval_artifacts(
     omni_ci_model: OmniCiModelPreset,
     omni_ci_server: ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
-) -> _TalkerEvalArtifacts:
+) -> TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("videomme_audio"))
     config = VideoEvalConfig(
         model=omni_ci_model.name,
@@ -121,7 +121,7 @@ def talker_eval_artifacts(
         results = asyncio.run(
             run_video_eval(
                 config,
-                samples=_load_short_answer_samples(),
+                samples=load_short_answer_samples(),
                 task_label="Video-MME",
                 output_filename="videomme_results.json",
                 audio_output_dir_default="results/videomme_audio",
@@ -131,7 +131,7 @@ def talker_eval_artifacts(
         router_guard.assert_served(
             min_total_requests=results["summary"].get("total_samples", 0)
         )
-    return _TalkerEvalArtifacts(
+    return TalkerEvalArtifacts(
         summary=results["summary"],
         speed=results["speed"],
         per_sample=results["per_sample"],
@@ -143,8 +143,8 @@ def talker_eval_artifacts(
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
     omni_ci_server: ManagedRouterHandle,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
-) -> _TalkerEvalArtifacts:
+    talker_eval_artifacts: TalkerEvalArtifacts,
+) -> TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
     omni_ci_server.stop()
     wait_for_gpu_memory_release()
@@ -154,7 +154,7 @@ def wer_eval_artifacts(
 @pytest.mark.benchmark
 def test_videomme_talker_accuracy_and_speed(
     omni_ci_model: OmniCiModelPreset,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
+    talker_eval_artifacts: TalkerEvalArtifacts,
 ) -> None:
     """Run Video-MME with Talker enabled and assert accuracy + speed."""
     summary = talker_eval_artifacts.summary
@@ -201,7 +201,7 @@ def test_videomme_talker_accuracy_and_speed(
 @pytest.mark.benchmark
 def test_videomme_talker_wer(
     omni_ci_model: OmniCiModelPreset,
-    wer_eval_artifacts: _TalkerEvalArtifacts,
+    wer_eval_artifacts: TalkerEvalArtifacts,
     qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""

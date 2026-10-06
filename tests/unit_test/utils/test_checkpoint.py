@@ -9,7 +9,7 @@ import yaml
 
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_resolve_checkpoint_returns_local_directory(tmp_path) -> None:
@@ -121,7 +121,7 @@ def test_local_model_path_skips_snapshot_resolution(monkeypatch, tmp_path) -> No
 
 def test_dots_tts_canonical_config_pins_snapshot_revision() -> None:
     config = yaml.safe_load(
-        (_REPO_ROOT / "examples" / "configs" / "dots_tts.yaml").read_text()
+        (REPO_ROOT / "examples" / "configs" / "dots_tts.yaml").read_text()
     )
     repo_id, _, revision = str(config["model_path"]).partition("@")
 

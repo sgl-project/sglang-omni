@@ -33,6 +33,8 @@ class Snake(nn.Module):
         alpha = self.alpha.reshape(1, -1, 1)
         if self.alpha_logscale:
             alpha = mx.exp(alpha)
+        else:
+            pass
         abs_alpha = mx.abs(alpha)
         clamped = mx.sign(alpha) * mx.maximum(abs_alpha, 1e-4)
         clamped = mx.where(abs_alpha < 1e-9, 1e-4, clamped)

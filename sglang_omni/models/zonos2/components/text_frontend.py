@@ -170,15 +170,17 @@ class TTSTextNormalizer:
 
     def __init__(self, cache_root: str | None = None):
         self.cache_root = cache_root or default_cache_root()
-        self._normalizers: dict[str, object] = {}
-        self._locks: dict[str, threading.Lock] = {}
-        self._global_lock = threading.Lock()
+        self.normalizers: dict[str, object] = {}
+        self.locks: dict[str, threading.Lock] = {}
+        self.global_lock = threading.Lock()
 
     def lang_lock(self, lang: str) -> threading.Lock:
-        with self._global_lock:
-            if lang not in self._locks:
-                self._locks[lang] = threading.Lock()
-            return self._locks[lang]
+        with self.global_lock:
+            if lang not in self.locks:
+                self.locks[lang] = threading.Lock()
+            else:
+                pass
+            return self.locks[lang]
 
     def build(self, lang: str):
         from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -208,13 +210,19 @@ class TTSTextNormalizer:
                 )
 
                 generator_main(far_path, {"verbalize": normalizer.verbalizer.fst})
+            else:
+                pass
+        else:
+            pass
         return normalizer
 
     def get(self, lang: str):
         with self.lang_lock(lang):
-            if lang not in self._normalizers:
-                self._normalizers[lang] = self.build(lang)
-            return self._normalizers[lang]
+            if lang not in self.normalizers:
+                self.normalizers[lang] = self.build(lang)
+            else:
+                pass
+            return self.normalizers[lang]
 
     def warmup(self, languages: list[str] | None = None) -> None:
         """Construct normalizers ahead of time (server codes or NeMo codes)."""
@@ -235,6 +243,8 @@ class TTSTextNormalizer:
         lang = _SERVER_TO_NEMO_LANG.get(language)
         if lang is None or not text.strip():
             return text
+        else:
+            pass
         text_in = _DIGIT_PUNCT_RE.sub(r"\1 \2", text)
         use_moses = lang in _MOSES_POSTPROCESS_LANGS
         try:
@@ -248,8 +258,12 @@ class TTSTextNormalizer:
             return text
         if isinstance(result, str):
             result = _SPACE_PUNCT_RE.sub(r"\1", result)
+        else:
+            pass
         if not isinstance(result, str) or not result.strip():
             return text
+        else:
+            pass
         logger.debug("TTS norm [%s]: %r -> %r", language, text, result)
         return result
 
@@ -259,6 +273,8 @@ def get_normalizer():
     global _NORMALIZER
     if _NORMALIZER is not None:
         return _NORMALIZER
+    else:
+        pass
     try:
         normalizer = TTSTextNormalizer()
         # note (Yue Yin): probe-import so a missing nemo_text_processing /
@@ -282,20 +298,28 @@ def normalize_text(text: str, language: str | None) -> str:
     # bypass normalization so model-side language inference still receives raw text.
     if not language or language not in _SERVER_TO_NEMO_LANG:
         return text
+    else:
+        pass
     key = (text, language)
     with _NORMALIZE_CACHE_LOCK:
         cached = _NORMALIZE_CACHE.get(key)
         if cached is not None:
             return cached
+        else:
+            pass
     normalizer = get_normalizer()
     if normalizer is None:
         return text
+    else:
+        pass
     try:
         result = normalizer.normalize(text, language)
     except Exception:  # noqa: BLE001 - normalization must never fail a request
         result = text
     if not (isinstance(result, str) and result.strip()):
         result = text
+    else:
+        pass
     with _NORMALIZE_CACHE_LOCK:
         _NORMALIZE_CACHE.put(key, result)
     return result
@@ -316,6 +340,8 @@ def speaking_rate_token_id(bucket: int) -> int:
             f"speaking_rate_bucket must be in [0, {SPEAKING_RATE_NUM_BUCKETS - 1}], "
             f"got {bucket}."
         )
+    else:
+        pass
     return _CONDITIONING_BASE + int(bucket)
 
 
@@ -325,12 +351,16 @@ def quality_token_id(feature_idx: int, bucket: int) -> int:
             f"quality feature index must be in [0, {len(QUALITY_BUCKET_COUNTS) - 1}], "
             f"got {feature_idx}."
         )
+    else:
+        pass
     num_buckets = QUALITY_BUCKET_COUNTS[feature_idx]
     if bucket < 0 or bucket >= num_buckets:
         raise ValueError(
             f"quality bucket for feature {feature_idx} must be in "
             f"[0, {num_buckets - 1}], got {bucket}."
         )
+    else:
+        pass
     return (
         _CONDITIONING_BASE
         + SPEAKING_RATE_NUM_BUCKETS
@@ -352,11 +382,17 @@ def text_rows(
     rows: list[list[int]] = []
     if speaking_rate_bucket is not None:
         rows.append(audio_pad_row(speaking_rate_token_id(speaking_rate_bucket)))
+    else:
+        pass
     if quality_buckets is not None:
         for feature_idx, bucket in enumerate(quality_buckets):
             if bucket is None:
                 continue
+            else:
+                pass
             rows.append(audio_pad_row(quality_token_id(feature_idx, bucket)))
+    else:
+        pass
     rows.extend(audio_pad_row(token) for token in tokens)
     return rows
 
@@ -407,6 +443,8 @@ def build_prompt_rows(
     """
     if normalize:
         text = normalize_text(text, language)
+    else:
+        pass
     tokens = text_to_byte_ids(text)
     rows = text_rows(
         tokens,

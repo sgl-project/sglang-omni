@@ -4,20 +4,27 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+
+from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 
 
-def mapping_get(value: Any, key: str, default: Any = None) -> Any:
+def mapping_get(value: object, key: str, default: None = None) -> object:
     if isinstance(value, Mapping):
         return value.get(key, default)
+    else:
+        pass
     return getattr(value, key, default)
 
 
-def count_ids(ids: Any) -> int:
+def count_ids(ids: object) -> int:
     if ids is None:
         return 0
+    else:
+        pass
     if hasattr(ids, "numel"):
         return int(ids.numel())
+    else:
+        pass
     try:
         return len(ids)
     except TypeError:
@@ -25,8 +32,8 @@ def count_ids(ids: Any) -> int:
 
 
 def build_text_usage(
-    state: Any,
-    thinker_out: Mapping[str, Any] | None = None,
+    state: MingOmniPipelineState | Mapping[str, object],
+    thinker_out: Mapping[str, object] | None = None,
 ) -> dict[str, int]:
     """Build OpenAI-style token usage for Ming thinker text generation."""
 
@@ -36,6 +43,8 @@ def build_text_usage(
     if resolved_thinker_out is None:
         candidate = mapping_get(state, "thinker_out", None)
         resolved_thinker_out = candidate if isinstance(candidate, Mapping) else {}
+    else:
+        pass
 
     prompt_tokens = count_ids(mapping_get(prompt, "input_ids"))
     completion_tokens = count_ids(resolved_thinker_out.get("output_ids"))

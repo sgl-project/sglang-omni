@@ -19,7 +19,7 @@ from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 
 
-class _MockHTTPConnection:
+class MockHTTPConnection:
     def __init__(self, handler) -> None:
         self.client = httpx.Client(transport=httpx.MockTransport(handler))
 
@@ -27,7 +27,7 @@ class _MockHTTPConnection:
         return self.client
 
 
-def _public_test_addresses(hostname: str) -> tuple[ipaddress.IPv4Address, ...]:
+def public_test_addresses(hostname: str) -> tuple[ipaddress.IPv4Address, ...]:
     del hostname
     return (ipaddress.ip_address("93.184.216.34"),)
 
@@ -50,6 +50,7 @@ def test_speech_generation_uses_served_model_and_default_voice() -> None:
     assert prepared.request.model is None
     assert prepared.request.voice == "default"
     assert generate_request.model == "tts"
+    assert isinstance(generate_request.metadata["tts_params"], dict)
     assert generate_request.metadata["tts_params"]["voice"] == "default"
 
 
@@ -137,6 +138,7 @@ def test_custom_voice_config_preserves_model_owned_defaults(
         reference_descriptors=prepared.reference_descriptors,
     )
     params = generated.metadata["tts_params"]
+    assert isinstance(params, dict)
     assert service.custom_voice_config is config
     assert service.requires_uploaded_voice_for_named_voice is False
     assert service.supports_uploaded_voice_references is False
@@ -205,7 +207,9 @@ def test_speech_generation_accepts_seedtts_reference_payload_without_voice(
 
     assert generate_request.model == "seedtts"
     assert generate_request.stream is stream
+    assert isinstance(generate_request.metadata["tts_params"], dict)
     assert generate_request.metadata["tts_params"]["voice"] == "default"
+    assert isinstance(generate_request.prompt, dict)
     assert generate_request.prompt["references"] == [
         {"data": ref_audio, "media_type": "audio/wav", "text": "reference transcript"}
     ]
@@ -267,6 +271,16 @@ def test_speech_service_requires_pcm_for_http_streaming(
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "response_format"
     assert "stream=true" in exc_info.value.message
+
+
+def test_speech_service_sse_enables_streaming() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    request = service.parse_request(
+        {"input": "hello", "response_format": "pcm", "stream_format": "sse"}
+    )
+
+    assert request.stream
 
 
 def test_speech_service_reports_missing_encoder_dependency_as_capability_error(
@@ -393,6 +407,7 @@ def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> Non
     gen_req = service.build_generate_request(request)
     tts_params = gen_req.metadata["tts_params"]
 
+    assert isinstance(tts_params, dict)
     assert gen_req.model == "tts"
     assert tts_params["voice"] == "alloy"
     assert tts_params["response_format"] == "wav"
@@ -466,9 +481,9 @@ def test_reference_audio_accepts_allowed_https(
     monkeypatch.setattr(
         resource_connector,
         "resolve_remote_addresses",
-        _public_test_addresses,
+        public_test_addresses,
     )
-    service.reference_connector.connection = _MockHTTPConnection(
+    service.reference_connector.connection = MockHTTPConnection(
         lambda request: httpx.Response(
             200,
             headers={"content-type": "audio/wav"},
@@ -505,9 +520,9 @@ def test_reference_audio_accepts_public_https_by_default(
     monkeypatch.setattr(
         resource_connector,
         "resolve_remote_addresses",
-        _public_test_addresses,
+        public_test_addresses,
     )
-    service.reference_connector.connection = _MockHTTPConnection(
+    service.reference_connector.connection = MockHTTPConnection(
         lambda request: httpx.Response(
             200,
             headers={"content-type": "audio/wav"},
@@ -597,9 +612,9 @@ def test_reference_audio_rejects_http_status_with_speech_error(
     monkeypatch.setattr(
         resource_connector,
         "resolve_remote_addresses",
-        _public_test_addresses,
+        public_test_addresses,
     )
-    service.reference_connector.connection = _MockHTTPConnection(
+    service.reference_connector.connection = MockHTTPConnection(
         lambda request: httpx.Response(404)
     )
 
@@ -656,9 +671,9 @@ def test_reference_audio_revalidates_redirect_domains(
     monkeypatch.setattr(
         resource_connector,
         "resolve_remote_addresses",
-        _public_test_addresses,
+        public_test_addresses,
     )
-    service.reference_connector.connection = _MockHTTPConnection(
+    service.reference_connector.connection = MockHTTPConnection(
         lambda request: httpx.Response(
             302,
             headers={"location": "https://blocked.example/reference.wav"},
@@ -684,9 +699,9 @@ def test_reference_audio_allows_configured_domain_suffix_redirect(
     monkeypatch.setattr(
         resource_connector,
         "resolve_remote_addresses",
-        _public_test_addresses,
+        public_test_addresses,
     )
-    service.reference_connector.connection = _MockHTTPConnection(
+    service.reference_connector.connection = MockHTTPConnection(
         lambda request: (
             httpx.Response(
                 302,
@@ -717,7 +732,7 @@ def test_reference_audio_revalidates_redirect_addresses(
     ) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
         if hostname == "private.example":
             return (ipaddress.ip_address("10.0.0.1"),)
-        return _public_test_addresses(hostname)
+        return public_test_addresses(hostname)
 
     service = SpeechRequestValidator(
         default_model="tts",
@@ -728,7 +743,7 @@ def test_reference_audio_revalidates_redirect_addresses(
         "resolve_remote_addresses",
         resolve_addresses,
     )
-    service.reference_connector.connection = _MockHTTPConnection(
+    service.reference_connector.connection = MockHTTPConnection(
         lambda request: httpx.Response(
             302,
             headers={"location": "https://private.example/reference.wav"},
@@ -755,9 +770,9 @@ def test_reference_audio_rejects_oversized_https_response(
     monkeypatch.setattr(
         resource_connector,
         "resolve_remote_addresses",
-        _public_test_addresses,
+        public_test_addresses,
     )
-    service.reference_connector.connection = _MockHTTPConnection(
+    service.reference_connector.connection = MockHTTPConnection(
         lambda request: httpx.Response(
             200,
             headers={"content-type": "audio/wav"},

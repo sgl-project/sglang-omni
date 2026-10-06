@@ -13,6 +13,8 @@ from sglang_omni.platforms.interface import OmniPlatform
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+else:
+    pass
 
 
 class AppleOmniPlatform(OmniPlatform):
@@ -39,6 +41,8 @@ class AppleOmniPlatform(OmniPlatform):
             raise ValueError(
                 f"Apple Silicon exposes one Metal device, got device_id={device_id}"
             )
+        else:
+            pass
 
     def get_device(self, device_id: int = 0) -> torch.device:
         self.validate_device_id(device_id)
@@ -48,6 +52,8 @@ class AppleOmniPlatform(OmniPlatform):
         if isinstance(device, torch.device):
             if device.type != "mps":
                 raise ValueError(f"Expected an MPS device, got {device}")
+            else:
+                pass
             index = 0 if device.index is None else device.index
         else:
             index = int(device)
@@ -67,17 +73,23 @@ class AppleOmniPlatform(OmniPlatform):
             import mlx.core as mx
 
             return int(mx.device_info()["max_recommended_working_set_size"])
+        else:
+            pass
         return int(torch.mps.recommended_max_memory())
 
     def get_current_memory_usage(self, device: torch.device | None = None) -> float:
         if device is not None and device.type != "mps":
             raise ValueError(f"Expected an MPS device, got {device}")
+        else:
+            pass
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx
 
             return float(mx.get_active_memory())
+        else:
+            pass
         return float(torch.mps.current_allocated_memory())
 
     def get_stage_process_env(
@@ -91,8 +103,12 @@ class AppleOmniPlatform(OmniPlatform):
                 f"Apple Silicon stage {spec.stage_name!r} requires tp_size=1; "
                 f"got tp_size={spec.tp_size}"
             )
+        else:
+            pass
         if spec.gpu_id is not None:
             self.validate_device_id(spec.gpu_id)
+        else:
+            pass
         return {}
 
     def get_intra_node_transport(self):

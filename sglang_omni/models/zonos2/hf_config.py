@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
 
 from transformers import PretrainedConfig
 
@@ -70,7 +69,7 @@ class Zonos2Config(PretrainedConfig):
         moe_start_from_layer: int = 3,
         moe_end_from_layer: int = 1,
         moe_balancing_strategy: str | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         # Native field names are kept verbatim for the weight loader.
         self.n_layers = n_layers
@@ -149,8 +148,12 @@ def resolve_params_json(model_path: str) -> str:
     local = os.path.join(model_path, "params.json")
     if os.path.isfile(local):
         return local
+    else:
+        pass
     if os.path.isfile(model_path) and model_path.endswith(".json"):
         return model_path
+    else:
+        pass
     from huggingface_hub import hf_hub_download
 
     return hf_hub_download(repo_id=model_path, filename="params.json")

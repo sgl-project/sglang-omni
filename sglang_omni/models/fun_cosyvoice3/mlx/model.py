@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
+import torch
 from mlx_lm.models.qwen2 import ModelArgs, Qwen2Model
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ _MLX_QUANTIZATION_PRESETS: dict[str, tuple[int, int]] = {
 }
 
 
-def qwen2_args(config: dict[str, Any]) -> ModelArgs:
+def qwen2_args(config: Mapping[str, object]) -> ModelArgs:
     """Build the fixed 0.5B Qwen2 shape used by Fun-CosyVoice3."""
     # Note (yexiaodong): The converted artifact has Flow/HiFT config at its
     # root, so validate the nested Qwen2 architecture before loading weights.
@@ -48,6 +49,8 @@ def qwen2_args(config: dict[str, Any]) -> ModelArgs:
                 f"Fun-CosyVoice3 MLX checkpoint has unsupported {name}={supplied}; "
                 f"expected {value} for the 0.5B model"
             )
+        else:
+            pass
     return ModelArgs(
         model_type="qwen2",
         hidden_size=expected["hidden_size"],
@@ -112,6 +115,8 @@ class CosyVoice3MlxModel(nn.Module):
         if prompt_speech_token_ids:
             speech_ids = mx.array([prompt_speech_token_ids], dtype=mx.int32)
             pieces.append(self.speech_embedding(speech_ids))
+        else:
+            pass
         return mx.concatenate(pieces, axis=1)
 
     def forward_embeddings(self, embeddings: mx.array, cache=None) -> mx.array:
@@ -133,12 +138,14 @@ def find_weight(weights: dict[str, mx.array], *names: str) -> mx.array:
     for name in names:
         if name in weights:
             return weights[name]
+        else:
+            pass
     raise ValueError(f"Fun-CosyVoice3 MLX checkpoint is missing {names[0]!r}")
 
 
 def load_converted_backbone(
     args: ModelArgs,
-    config: dict[str, Any],
+    config: dict[str, object],
     weights: dict[str, mx.array],
 ) -> Qwen2Model:
     backbone = Qwen2Model(args)
@@ -148,8 +155,10 @@ def load_converted_backbone(
         group_size = int(quantization.get("group_size", 64))
         if bits not in (2, 3, 4, 6, 8):
             raise ValueError(f"unsupported MLX quantization bits: {bits}")
+        else:
+            pass
 
-        def quantize_layers(path: str, module: Any) -> bool:
+        def quantize_layers(path: str, module: nn.Module) -> bool:
             return (
                 isinstance(module, nn.Linear)
                 and "layers" in path
@@ -162,6 +171,8 @@ def load_converted_backbone(
             group_size=group_size,
             class_predicate=quantize_layers,
         )
+    else:
+        pass
     backbone_weights = {
         strip_qwen2_prefix(name): value
         for name, value in weights.items()
@@ -169,6 +180,8 @@ def load_converted_backbone(
     }
     if not backbone_weights:
         raise ValueError("Fun-CosyVoice3 MLX checkpoint has no qwen2 weights")
+    else:
+        pass
     backbone.load_weights(list(backbone_weights.items()))
     return backbone
 
@@ -179,6 +192,8 @@ def quantize_loaded_backbone(
 ) -> None:
     if quantization is None:
         return
+    else:
+        pass
     try:
         bits, group_size = _MLX_QUANTIZATION_PRESETS[quantization]
     except KeyError as exc:
@@ -187,7 +202,7 @@ def quantize_loaded_backbone(
             f"{sorted(_MLX_QUANTIZATION_PRESETS)}, got {quantization!r}"
         ) from exc
 
-    def quantize_layers(path: str, module: Any) -> bool:
+    def quantize_layers(path: str, module: nn.Module) -> bool:
         return (
             isinstance(module, nn.Linear)
             and "layers" in path
@@ -202,15 +217,18 @@ def quantize_loaded_backbone(
     )
 
 
-def to_mlx_float(tensor: Any, dtype: mx.Dtype) -> mx.array:
+def to_mlx_float(tensor: torch.Tensor, dtype: mx.Dtype) -> mx.array:
     import numpy as np
 
     # Note (yexiaodong): NumPy has no bfloat16 representation for this export.
     import torch
 
+    value = tensor
     if isinstance(tensor, torch.Tensor):
-        tensor = tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
-    return mx.array(np.asarray(tensor, dtype=np.float32)).astype(dtype)
+        value = tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
+    else:
+        pass
+    return mx.array(np.asarray(value, dtype=np.float32)).astype(dtype)
 
 
 def load_raw_backbone(
@@ -224,9 +242,13 @@ def load_raw_backbone(
     nested_dir = checkpoint_root / "CosyVoice-BlankEN"
     if not nested_dir.is_dir():
         raise FileNotFoundError(f"Fun-CosyVoice3 checkpoint is missing {nested_dir}")
+    else:
+        pass
     llm_path = checkpoint_root / "llm.pt"
     if not llm_path.is_file():
         raise FileNotFoundError(f"Fun-CosyVoice3 checkpoint is missing {llm_path}")
+    else:
+        pass
 
     nested_config = json.loads((nested_dir / "config.json").read_text(encoding="utf-8"))
     args = qwen2_args({"llm": nested_config})
@@ -239,6 +261,8 @@ def load_raw_backbone(
     }
     if not backbone_weights:
         raise ValueError("Fun-CosyVoice3 llm.pt has no fine-tuned Qwen2 weights")
+    else:
+        pass
     backbone.load_weights(list(backbone_weights.items()))
     try:
         speech_embedding = to_mlx_float(state["speech_embedding.weight"], dtype)
@@ -288,6 +312,8 @@ def load_cosyvoice3_mlx_model(
                 "Fun-CosyVoice3 MLX artifact is already quantized; ignoring %s",
                 quantization,
             )
+        else:
+            pass
     else:
         args, backbone, speech_embedding, llm_decoder = load_raw_backbone(
             model_dir,
@@ -299,10 +325,14 @@ def load_cosyvoice3_mlx_model(
             "unexpected Fun-CosyVoice3 speech embedding shape: "
             f"{tuple(speech_embedding.shape)}"
         )
+    else:
+        pass
     if tuple(llm_decoder.shape) != (TOTAL_VOCAB_SIZE, args.hidden_size):
         raise ValueError(
             "unexpected Fun-CosyVoice3 decoder shape: " f"{tuple(llm_decoder.shape)}"
         )
+    else:
+        pass
 
     speech_embedding = speech_embedding.astype(dtype)
     llm_decoder = llm_decoder.astype(dtype)

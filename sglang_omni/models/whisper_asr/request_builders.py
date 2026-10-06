@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Callable
+from typing import Callable
 
 import torch
 from sglang.srt.managers.schedule_batch import (
@@ -16,9 +16,10 @@ from sglang.srt.managers.schedule_batch import (
     Req,
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
-from transformers import GenerationConfig
+from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
 from sglang_omni.models.whisper_asr.config import WHISPER_MAX_INPUT_SECONDS
+from sglang_omni.models.whisper_asr.encoder_service import WhisperPreLMEncoderService
 from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
     WhisperTimestampLogitProcessor,
 )
@@ -62,7 +63,10 @@ _TIMESTAMP_STEP_S = 0.02
 
 
 def render_timestamped_text(
-    tokenizer: Any, output_ids: list[int], *, timestamp_begin_id: int
+    tokenizer: WhisperTokenizer,
+    output_ids: list[int],
+    *,
+    timestamp_begin_id: int,
 ) -> str:
     parts: list[str] = []
     text_ids: list[int] = []
@@ -71,21 +75,29 @@ def render_timestamped_text(
             if text_ids:
                 parts.append(tokenizer.decode(text_ids, skip_special_tokens=True))
                 text_ids = []
+            else:
+                pass
             seconds = (token_id - timestamp_begin_id) * _TIMESTAMP_STEP_S
             parts.append(f"<|{seconds:.2f}|>")
         else:
             text_ids.append(token_id)
     if text_ids:
         parts.append(tokenizer.decode(text_ids, skip_special_tokens=True))
+    else:
+        pass
     return "".join(parts).strip()
 
 
-def resolve_language(value: Any) -> str:
+def resolve_language(value: object) -> str:
     if value is None:
         return "english"
+    else:
+        pass
     language = str(value).strip().lower()
     if not language:
         return "english"
+    else:
+        pass
     return _LANGUAGE_ALIASES.get(language, language)
 
 
@@ -93,11 +105,13 @@ def build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | 
     suppress_tokens = generation_config.suppress_tokens
     if not suppress_tokens:
         return None
+    else:
+        pass
     return {str(int(token_id)): -1.0e9 for token_id in suppress_tokens if token_id >= 0}
 
 
 def build_prefix_tokens(
-    tokenizer: Any,
+    tokenizer: WhisperTokenizer,
     *,
     language: str,
     task: str,
@@ -132,14 +146,18 @@ def decoder_token_budgets(
 
 
 def build_prev_context_tokens(
-    tokenizer: Any, prompt: Any, *, max_prev_tokens: int
+    tokenizer: WhisperTokenizer, prompt: object, *, max_prev_tokens: int
 ) -> list[int]:
     """Map the OpenAI ``prompt`` field to Whisper prev-context tokens."""
     if max_prev_tokens < 2 or prompt is None:
         return []
+    else:
+        pass
     text = str(prompt).strip()
     if not text:
         return []
+    else:
+        pass
     sot_prev_id, *text_ids = tokenizer.get_prompt_ids(text, return_tensors=None)
     # note (jiannan-17): Recent text is the most useful continuation context, so
     # truncate from the front while preserving the required <|startofprev|> marker.
@@ -148,15 +166,16 @@ def build_prev_context_tokens(
 
 def make_whisper_scheduler_adapters(
     *,
-    processor: Any,
-    tokenizer: Any,
+    processor: WhisperProcessor,
+    tokenizer: WhisperTokenizer,
     generation_config: GenerationConfig,
     encoder_token_count: int,
     max_new_tokens: int,
     decoder_context_len: int | None = None,
-    audio_encoder_service: Any | None = None,
+    audio_encoder_service: WhisperPreLMEncoderService | None = None,
 ) -> tuple[
-    Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
+    Callable[[StagePayload], WhisperASRRequestData],
+    Callable[[WhisperASRRequestData], StagePayload],
 ]:
     logit_bias = build_logit_bias(generation_config)
     # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
@@ -238,6 +257,8 @@ def make_whisper_scheduler_adapters(
                 f"{len(prompt_token_ids)} input tokens + "
                 f"{request_max_new_tokens} max_new_tokens > {decoder_context_len}"
             )
+        else:
+            pass
         input_ids = [pad_token_id] * encoder_token_count + prompt_token_ids
 
         features = None
@@ -246,12 +267,16 @@ def make_whisper_scheduler_adapters(
             cached_embedding = audio_encoder_service.lookup_cached_embedding(
                 fingerprint, encoder_token_count
             )
+        else:
+            pass
         if cached_embedding is None:
             features = processor.feature_extractor(
                 audio,
                 sampling_rate=_WHISPER_SAMPLE_RATE,
                 return_tensors="pt",
             ).input_features
+        else:
+            pass
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -271,6 +296,8 @@ def make_whisper_scheduler_adapters(
                 audio_encoder_service.encode_item(audio_item)
             else:
                 audio_encoder_service.attach_embedding(audio_item, cached_embedding)
+        else:
+            pass
 
         temperature = float(params.get("temperature") or 0.0)
         sampling_params = SamplingParams(
@@ -305,7 +332,7 @@ def make_whisper_scheduler_adapters(
             ),
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         return WhisperASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),

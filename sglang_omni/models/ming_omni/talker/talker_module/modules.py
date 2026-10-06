@@ -1,10 +1,9 @@
-from typing import Optional
-
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .rotary import apply_rotary_embedding
+from .execution import NormLayerFactory, QKVProjectionConstructor
+from .rotary import RotaryInputs, apply_rotary_embedding
 
 _FLASH_ATTN_IMPORT_ERROR: Exception | None = None
 flash_attn_func = None
@@ -49,6 +48,8 @@ class RMSNorm(nn.Module):
         if self.native_rms_norm:
             if self.weight.dtype in [torch.float16, torch.bfloat16]:
                 x = x.to(self.weight.dtype)
+            else:
+                pass
             x = F.rms_norm(
                 x, normalized_shape=(x.shape[-1],), weight=self.weight, eps=self.eps
             )
@@ -57,6 +58,8 @@ class RMSNorm(nn.Module):
             x = x * torch.rsqrt(variance + self.eps)
             if self.weight.dtype in [torch.float16, torch.bfloat16]:
                 x = x.to(self.weight.dtype)
+            else:
+                pass
             x = x * self.weight
 
         return x
@@ -87,12 +90,13 @@ class Attention(nn.Module):
         heads: int = 8,
         dim_head: int = 64,
         dropout: float = 0.0,
-        qk_norm: Optional[str] = None,
+        qk_norm: str | None = None,
         pe_attn_head: (
             int | None
         ) = None,  # number of attention head to apply rope, None for all
         attn_backend: str = "torch",  # "torch" or "flash_attn"
         attn_mask_enabled: bool = True,
+        qkv_layer: QKVProjectionConstructor | None = None,
     ):
         super().__init__()
 
@@ -100,15 +104,21 @@ class Attention(nn.Module):
             raise ImportError(
                 "Attention equires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
+        else:
+            pass
 
         self.dim = dim
         self.heads = heads
         self.inner_dim = dim_head * heads
         self.dropout = dropout
 
-        self.to_q = nn.Linear(dim, self.inner_dim)
-        self.to_k = nn.Linear(dim, self.inner_dim)
-        self.to_v = nn.Linear(dim, self.inner_dim)
+        self.to_qkv = qkv_layer(dim, self.inner_dim) if qkv_layer is not None else None
+        if self.to_qkv is None:
+            self.to_q = nn.Linear(dim, self.inner_dim)
+            self.to_k = nn.Linear(dim, self.inner_dim)
+            self.to_v = nn.Linear(dim, self.inner_dim)
+        else:
+            pass
         if qk_norm is None:
             self.q_norm = None
             self.k_norm = None
@@ -125,6 +135,10 @@ class Attention(nn.Module):
         if attn_backend == "flash_attn":
             if not is_flash_attn_available():
                 raise_flash_attn_unavailable()
+            else:
+                pass
+        else:
+            pass
 
         self.pe_attn_head = pe_attn_head
         self.attn_backend = attn_backend
@@ -132,17 +146,22 @@ class Attention(nn.Module):
 
     def forward(
         self,
-        x: float,  # noised input x
-        mask=None,
-        rope=None,  # rotary position embedding for x
+        x: torch.Tensor,  # noised input x
+        mask: torch.Tensor | None = None,
+        rope: (
+            RotaryInputs | tuple[torch.Tensor, float | torch.Tensor | None] | None
+        ) = None,  # rotary position embedding for x
     ) -> torch.Tensor:
 
         batch_size = x.shape[0]
 
         # `sample` projections
-        query = self.to_q(x)
-        key = self.to_k(x)
-        value = self.to_v(x)
+        if self.to_qkv is None:
+            query = self.to_q(x)
+            key = self.to_k(x)
+            value = self.to_v(x)
+        else:
+            query, key, value = self.to_qkv(x).chunk(3, dim=-1)
 
         # attention
         inner_dim = key.shape[-1]
@@ -154,8 +173,12 @@ class Attention(nn.Module):
         # qk norm
         if self.q_norm is not None:
             query = self.q_norm(query)
+        else:
+            pass
         if self.k_norm is not None:
             key = self.k_norm(key)
+        else:
+            pass
 
         query, key = apply_rotary_embedding(
             query, key, rope, pe_attn_head=self.pe_attn_head
@@ -187,12 +210,16 @@ class Attention(nn.Module):
             if self.attn_mask_enabled and mask is not None:
                 final_output[valid_sample_indices] = x
                 x = final_output
+            else:
+                pass
 
             x = x.transpose(1, 2).reshape(batch_size, -1, self.heads * head_dim)
 
         elif self.attn_backend == "flash_attn":
             if not is_flash_attn_available():
                 raise_flash_attn_unavailable()
+            else:
+                pass
             query = query.transpose(1, 2)  # [b, h, n, d] -> [b, n, h, d]
             key = key.transpose(1, 2)
             value = value.transpose(1, 2)
@@ -216,6 +243,8 @@ class Attention(nn.Module):
             else:
                 x = flash_attn_func(query, key, value, dropout_p=0.0, causal=False)
                 x = x.reshape(batch_size, -1, self.heads * head_dim)
+        else:
+            pass
 
         x = x.to(query.dtype)
 
@@ -227,6 +256,8 @@ class Attention(nn.Module):
         if mask is not None:
             mask = mask.unsqueeze(-1)
             x = x.masked_fill(~mask, 0.0)
+        else:
+            pass
 
         return x
 
@@ -246,10 +277,12 @@ class DiTBlock(nn.Module):
         pe_attn_head=None,
         attn_backend="flash_attn",  # "torch" or "flash_attn"
         attn_mask_enabled=True,
+        norm_layer: NormLayerFactory = RMSNorm,
+        qkv_layer: QKVProjectionConstructor | None = None,
         **kwargs,
     ):
         super().__init__()
-        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm1 = norm_layer(hidden_size, 1e-6)
         self.attn = Attention(
             dim=hidden_size,
             heads=num_heads,
@@ -259,8 +292,9 @@ class DiTBlock(nn.Module):
             pe_attn_head=pe_attn_head,
             attn_backend=attn_backend,
             attn_mask_enabled=attn_mask_enabled,
+            qkv_layer=qkv_layer,
         )
-        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm2 = norm_layer(hidden_size, 1e-6)
         self.mlp = FeedForward(
             dim=hidden_size, mult=mlp_ratio, dropout=dropout, approximate="tanh"
         )
@@ -276,9 +310,14 @@ class FinalLayer(nn.Module):
     The final layer of DiT.
     """
 
-    def __init__(self, hidden_size, out_channels):
+    def __init__(
+        self,
+        hidden_size,
+        out_channels,
+        norm_layer: NormLayerFactory = RMSNorm,
+    ):
         super().__init__()
-        self.norm_final = RMSNorm(hidden_size, eps=1e-6)
+        self.norm_final = norm_layer(hidden_size, 1e-6)
         self.linear = nn.Linear(hidden_size, out_channels, bias=True)
 
     def forward(self, x):

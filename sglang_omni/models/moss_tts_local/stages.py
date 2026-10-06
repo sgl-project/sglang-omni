@@ -10,18 +10,23 @@ import logging
 import os
 import queue
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 import torch
 
 from sglang_omni.models.moss_tts.audio_tokenizer import (
     DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
+    MossAudioEncoder,
     load_moss_audio_encoder,
     load_moss_audio_vocoder,
     resolve_moss_audio_dtype,
 )
 from sglang_omni.models.moss_tts.hf_loading import (
+    MossLoadedProcessor,
+    MossLocalReferences,
+    MossProcessorConfigSource,
     load_moss_processor_class,
     moss_transformers_processor_compat,
 )
@@ -31,6 +36,7 @@ from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.request_builders import (
+    MossTTSLocalSGLangRequestData,
     cleanup_prepared_moss_tts_local_request,
     preprocess_moss_tts_local_payload,
     set_moss_tts_local_preprocessing_context,
@@ -42,6 +48,7 @@ from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.reference_encoder import (
     ReferenceEncodeKey,
     ReferenceEncodeService,
@@ -49,6 +56,11 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.cpu import bounded_intraop_threads
+
+if TYPE_CHECKING:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +104,8 @@ def configure_pipeline_threads(worker_count: int) -> int:
         requested = int(override)
         torch.set_num_threads(requested)
         return requested
+    else:
+        pass
 
     intraop_threads = bounded_intraop_threads(
         worker_count=max(int(worker_count), 1),
@@ -102,7 +116,7 @@ def configure_pipeline_threads(worker_count: int) -> int:
 
 
 def apply_colocated_ar_memory_budget(
-    overrides: dict[str, Any],
+    overrides: dict[str, object],
     *,
     total_gpu_memory_fraction: float | None,
     codec_mem_reserve: float,
@@ -112,8 +126,12 @@ def apply_colocated_ar_memory_budget(
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
         )
+    else:
+        pass
     if not 0.0 <= codec_mem_reserve < 1.0:
         raise ValueError("codec_mem_reserve must be in [0, 1)")
+    else:
+        pass
 
     effective_total_gpu_memory_fraction = round(
         total_gpu_memory_fraction - codec_mem_reserve,
@@ -126,6 +144,8 @@ def apply_colocated_ar_memory_budget(
             f"{effective_total_gpu_memory_fraction:.3f} is below the safe floor "
             f"0.1; lower codec_mem_reserve or increase the tts_engine stage budget."
         )
+    else:
+        pass
 
     explicit_mem_fraction = overrides.get("mem_fraction_static")
     applied_codec_mem_reserve = codec_mem_reserve
@@ -139,6 +159,8 @@ def apply_colocated_ar_memory_budget(
                 f"runtime.resources.total_gpu_memory_fraction: "
                 f"{explicit_mem_fraction:.3f} > {total_gpu_memory_fraction:.3f}"
             )
+        else:
+            pass
         effective_total_gpu_memory_fraction = explicit_mem_fraction
         applied_codec_mem_reserve = round(
             total_gpu_memory_fraction - effective_total_gpu_memory_fraction,
@@ -161,6 +183,8 @@ def validate_loaded_process_memory_budget(
 ) -> None:
     if total_gpu_memory_fraction is None:
         return
+    else:
+        pass
 
     from sglang_omni.utils.gpu_memory import (
         format_bytes_gib,
@@ -176,6 +200,8 @@ def validate_loaded_process_memory_budget(
             f"gpu_id={gpu_id} fraction={total_gpu_memory_fraction:.3f}"
         )
         return
+    else:
+        pass
 
     budget_bytes = int(total_bytes * total_gpu_memory_fraction)
     if process_bytes > budget_bytes:
@@ -185,6 +211,8 @@ def validate_loaded_process_memory_budget(
             f"budget={format_bytes_gib(budget_bytes)}, "
             f"fraction={total_gpu_memory_fraction:.3f}"
         )
+    else:
+        pass
     logger.info(
         f"{stage_name} process GPU memory: "
         f"used={format_bytes_gib(process_bytes)} "
@@ -193,17 +221,23 @@ def validate_loaded_process_memory_budget(
     )
 
 
-def normalize_processor_config(processor: Any) -> None:
+def normalize_processor_config(processor: MossProcessorConfigSource) -> None:
     model_config = getattr(processor, "model_config", None)
     if model_config is None:
         return
+    else:
+        pass
     audio_vocab_size = int(getattr(model_config, "audio_vocab_size", 1024) or 1024)
     for attr, default in moss_tts_local_special_token_defaults(audio_vocab_size):
         if getattr(model_config, attr, None) is None:
             setattr(model_config, attr, default)
+        else:
+            pass
 
 
-def load_moss_tts_local_processor(model_path: str) -> Any:
+def load_moss_tts_local_processor(
+    model_path: str,
+) -> MossLoadedProcessor[MossLocalReferences]:
     logger.info(f"Loading MOSS-TTS Local processor from {model_path} without codec")
     try:
         from transformers import AutoConfig, AutoTokenizer
@@ -231,11 +265,13 @@ def load_moss_tts_local_processor(model_path: str) -> Any:
 
 
 def resolve_audio_tokenizer_model_path(
-    processor: Any,
+    processor: MossProcessorConfigSource,
     codec_model_path: str | None,
 ) -> str:
     if codec_model_path is not None:
         return codec_model_path
+    else:
+        pass
     return str(
         getattr(
             processor.model_config,
@@ -265,28 +301,30 @@ class BatchedReferenceEncoder:
 
     def __init__(
         self,
-        audio_tokenizer: Any,
+        audio_tokenizer: MossAudioEncoder,
         *,
         n_vq: int,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 4,
     ) -> None:
-        self._audio_tokenizer = audio_tokenizer
-        self._stream = None
+        self.audio_tokenizer = audio_tokenizer
+        self.stream = None
         device = torch.device(audio_tokenizer.device)
         if device.type == "cuda":
-            self._stream = torch.cuda.Stream(device=device)
-            self._stream.wait_stream(torch.cuda.current_stream(device))
-        self._n_vq = int(n_vq)
-        self._max_batch_size = max(int(max_batch_size), 1)
-        self._max_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self._queue: queue.Queue[
-            tuple[_ReferenceEncodeJob, concurrent.futures.Future]
+            self.stream = torch.cuda.Stream(device=device)
+            self.stream.wait_stream(torch.cuda.current_stream(device))
+        else:
+            pass
+        self.n_vq = int(n_vq)
+        self.max_batch_size = max(int(max_batch_size), 1)
+        self.max_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self.queue: queue.Queue[
+            tuple[_ReferenceEncodeJob, concurrent.futures.Future[torch.Tensor]]
         ] = queue.Queue()
-        self._thread = threading.Thread(
+        self.thread = threading.Thread(
             target=self.worker, name="moss-local-ref-encode", daemon=True
         )
-        self._thread.start()
+        self.thread.start()
 
     @classmethod
     def check_reference_duration(cls, path: str) -> None:
@@ -302,12 +340,16 @@ class BatchedReferenceEncoder:
                 f"reference audio is {duration:.1f}s long, limit is "
                 f"{cls.MAX_REFERENCE_SECONDS:.0f}s"
             )
+        else:
+            pass
 
     @staticmethod
     def data_uri_audio_bytes(ref_audio: str) -> bytes:
         match = _DATA_URI_RE.match(ref_audio)
         if match is None:
             raise ValueError(f"encode_data_uri: not a data URI ({ref_audio[:40]!r}...)")
+        else:
+            pass
         return base64.b64decode(match.group("data"))
 
     @staticmethod
@@ -321,19 +363,21 @@ class BatchedReferenceEncoder:
                 f"reference audio is {duration:.1f}s long, limit is "
                 f"{BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
             )
+        else:
+            pass
         return torch.from_numpy(audio.T), int(sample_rate)
 
     def encode(self, path: str) -> torch.Tensor:
         """Encode one reference file; blocks until its batch completes."""
         path = str(path)
         self.check_reference_duration(path)
-        future: concurrent.futures.Future = concurrent.futures.Future()
-        self._queue.put((PathReferenceJob(path), future))
+        future: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+        self.queue.put((PathReferenceJob(path), future))
         return future.result(timeout=self.ENCODE_TIMEOUT_S)
 
     def encode_wav(self, wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
-        future: concurrent.futures.Future = concurrent.futures.Future()
-        self._queue.put((WaveformReferenceJob(wav, int(sample_rate)), future))
+        future: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+        self.queue.put((WaveformReferenceJob(wav, int(sample_rate)), future))
         return future.result(timeout=self.ENCODE_TIMEOUT_S)
 
     def encode_data_uri(self, ref_audio: str) -> torch.Tensor:
@@ -343,14 +387,14 @@ class BatchedReferenceEncoder:
 
     def drain_batch(
         self,
-    ) -> list[tuple[_ReferenceEncodeJob, concurrent.futures.Future]]:
-        batch = [self._queue.get()]
-        while len(batch) < self._max_batch_size:
+    ) -> list[tuple[_ReferenceEncodeJob, concurrent.futures.Future[torch.Tensor]]]:
+        batch = [self.queue.get()]
+        while len(batch) < self.max_batch_size:
             try:
-                if self._max_wait_s > 0:
-                    batch.append(self._queue.get(timeout=self._max_wait_s))
+                if self.max_wait_s > 0:
+                    batch.append(self.queue.get(timeout=self.max_wait_s))
                 else:
-                    batch.append(self._queue.get_nowait())
+                    batch.append(self.queue.get_nowait())
             except queue.Empty:
                 break
         return batch
@@ -358,7 +402,7 @@ class BatchedReferenceEncoder:
     def worker(self) -> None:
         while True:
             batch = self.drain_batch()
-            with torch.cuda.stream(self._stream):
+            with torch.cuda.stream(self.stream):
                 results = self.encode_batch(batch)
             for index, (_, future) in enumerate(batch):
                 outcome = results.get(index)
@@ -376,9 +420,12 @@ class BatchedReferenceEncoder:
                     future.set_result(outcome)
 
     def encode_batch(
-        self, batch: list[tuple[_ReferenceEncodeJob, concurrent.futures.Future]]
-    ) -> dict[int, Any]:
-        results: dict[int, Any] = {}
+        self,
+        batch: list[
+            tuple[_ReferenceEncodeJob, concurrent.futures.Future[torch.Tensor]]
+        ],
+    ) -> dict[int, torch.Tensor | Exception]:
+        results: dict[int, torch.Tensor | Exception] = {}
         path_to_indices: dict[str, list[int]] = {}
         waveforms: list[tuple[torch.Tensor, int]] = []
         waveform_indices: list[int] = []
@@ -394,11 +441,11 @@ class BatchedReferenceEncoder:
         unique_paths = list(path_to_indices)
         try:
             path_waveforms = (
-                self._audio_tokenizer.load_paths(unique_paths) if unique_paths else []
+                self.audio_tokenizer.load_paths(unique_paths) if unique_paths else []
             )
-            encoded = self._audio_tokenizer.encode_waveforms(
+            encoded = self.audio_tokenizer.encode_waveforms(
                 path_waveforms + waveforms,
-                num_quantizers=self._n_vq,
+                num_quantizers=self.n_vq,
             )
             path_count = len(unique_paths)
             for path, codes in zip(unique_paths, encoded[:path_count]):
@@ -412,9 +459,9 @@ class BatchedReferenceEncoder:
             )
             for path, indices in path_to_indices.items():
                 try:
-                    codes = self._audio_tokenizer.encode_paths(
+                    codes = self.audio_tokenizer.encode_paths(
                         [path],
-                        num_quantizers=self._n_vq,
+                        num_quantizers=self.n_vq,
                     )[0]
                 except Exception as exc:
                     codes = exc
@@ -422,9 +469,9 @@ class BatchedReferenceEncoder:
                     results[index] = codes
             for index, waveform in zip(waveform_indices, waveforms):
                 try:
-                    results[index] = self._audio_tokenizer.encode_waveforms(
+                    results[index] = self.audio_tokenizer.encode_waveforms(
                         [waveform],
-                        num_quantizers=self._n_vq,
+                        num_quantizers=self.n_vq,
                     )[0]
                 except Exception as exc:
                     results[index] = exc
@@ -452,24 +499,32 @@ class MossLocalReferenceEncodeHook(TensorReferenceEncodeHook[MossLocalReferenceI
         *,
         n_vq: int,
     ) -> None:
-        self._encoder = encoder
-        self._n_vq = int(n_vq)
-        self.encoder_config_hash = _hash_bytes(f"n_vq:{self._n_vq}".encode("utf-8"))
+        self.encoder = encoder
+        self.n_vq = int(n_vq)
+        self.encoder_config_hash = _hash_bytes(f"n_vq:{self.n_vq}".encode("utf-8"))
 
-    def normalize_input(self, raw_input: Any) -> MossLocalReferenceInput:
+    def normalize_input(self, raw_input: object) -> MossLocalReferenceInput:
         if isinstance(raw_input, MossLocalReferenceInput):
             return raw_input
+        else:
+            pass
         return MossLocalReferenceInput("path", str(raw_input))
 
     def encode_one(self, item: MossLocalReferenceInput) -> torch.Tensor:
         if item.source_kind == "path":
-            return self._encoder.encode(item.source)
+            return self.encoder.encode(item.source)
+        else:
+            pass
         if item.source_kind == "data_uri":
             raw = item.raw
             if raw is None:
                 raw = BatchedReferenceEncoder.data_uri_audio_bytes(item.source)
+            else:
+                pass
             wav, sample_rate = BatchedReferenceEncoder.decode_data_uri_audio(raw)
-            return self._encoder.encode_wav(wav, sample_rate)
+            return self.encoder.encode_wav(wav, sample_rate)
+        else:
+            pass
         raise TypeError(f"unknown MOSS-local reference source: {item.source_kind}")
 
     def revalidate(
@@ -484,11 +539,17 @@ class MossLocalReferenceEncodeHook(TensorReferenceEncodeHook[MossLocalReferenceI
         if item.source_kind == "path":
             BatchedReferenceEncoder.check_reference_duration(item.source)
             return _reference_path_cache_key(item.source)
+        else:
+            pass
         if item.source_kind == "data_uri":
             raw = item.raw
             if raw is None:
                 raw = BatchedReferenceEncoder.data_uri_audio_bytes(item.source)
+            else:
+                pass
             return f"bytes:{_hash_bytes(raw)}"
+        else:
+            pass
         return None
 
 
@@ -501,7 +562,7 @@ class MossLocalReferenceEncoder:
         max_items: int | None = 256,
         max_bytes: int | None = 64 * 1024 * 1024,
     ) -> None:
-        self._service = ReferenceEncodeService(
+        self.service = ReferenceEncodeService(
             MossLocalReferenceEncodeHook(encoder, n_vq=n_vq),
             max_items=max_items,
             max_bytes=max_bytes,
@@ -510,20 +571,20 @@ class MossLocalReferenceEncoder:
         )
 
     def encode(self, path: str) -> torch.Tensor:
-        return self._service.get_or_encode(
+        return self.service.get_or_encode(
             MossLocalReferenceInput("path", str(path)),
             desc=repr(str(path)),
         )
 
     def encode_data_uri(self, ref_audio: str) -> torch.Tensor:
         raw = BatchedReferenceEncoder.data_uri_audio_bytes(ref_audio)
-        return self._service.get_or_encode(
+        return self.service.get_or_encode(
             MossLocalReferenceInput("data_uri", str(ref_audio), raw),
             desc="data-URI",
         )
 
     def stats(self) -> dict[str, int]:
-        return self._service.stats()
+        return self.service.stats()
 
 
 def create_preprocessing_executor(
@@ -540,7 +601,7 @@ def create_preprocessing_executor(
     ref_audio_cache: bool = True,
     ref_audio_cache_max_items: int = 8192,
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     worker_count = max(int(max_concurrency), 1)
     intraop_threads = configure_pipeline_threads(worker_count)
     logger.info(
@@ -558,6 +619,8 @@ def create_preprocessing_executor(
             "off",
             "",
         )
+    else:
+        pass
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
@@ -573,7 +636,8 @@ def create_preprocessing_executor(
         compute_dtype=resolved_compute_dtype,
         attention_backend=attention_backend,
     )
-    reference_encoder: Any = BatchedReferenceEncoder(
+    reference_encoder: BatchedReferenceEncoder | MossLocalReferenceEncoder
+    reference_encoder = BatchedReferenceEncoder(
         audio_tokenizer,
         n_vq=int(processor.model_config.n_vq),
         max_batch_size=encode_batch_size,
@@ -586,6 +650,8 @@ def create_preprocessing_executor(
             max_items=ref_audio_cache_max_items,
             max_bytes=ref_audio_cache_max_bytes,
         )
+    else:
+        pass
     set_moss_tts_local_preprocessing_context(
         processor=processor, reference_encoder=reference_encoder
     )
@@ -605,7 +671,7 @@ def create_sglang_tts_engine_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
     prefill_coalesce_requests: int = 0,
@@ -613,7 +679,7 @@ def create_sglang_tts_engine_executor(
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
     codec_mem_reserve: float = 0.0,
-) -> Any:
+) -> OmniScheduler[MossTTSLocalSGLangRequestData]:
     from sglang_omni.models.moss_tts_local.engine_builder import (
         MossTtsLocalEngineBuilder,
     )

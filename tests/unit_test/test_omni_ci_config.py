@@ -163,7 +163,7 @@ def test_seedtts_uses_model_specific_reference_audio(
         return {"summary": {}, "per_request": []}
 
     monkeypatch.setattr(tts_ci, "run_omni_seedtts_benchmark", benchmark)
-    tts_ci._run_benchmark(OMNI_CI_PRESETS[model_name], 8000, "dataset", "results")
+    tts_ci.run_benchmark(OMNI_CI_PRESETS[model_name], 8000, "dataset", "results")
     assert configs[0].model == model_name
     assert configs[0].reference_audio_field == reference_field
     assert configs[0].voice_clone is True

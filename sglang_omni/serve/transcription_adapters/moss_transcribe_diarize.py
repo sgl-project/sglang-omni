@@ -55,6 +55,8 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
         segments = self.parse_segments(text)
         if not segments:
             segments = self.build_fallback_segments(text, audio_duration_s)
+        else:
+            pass
         return self.build_response(text, language, audio_duration_s, segments)
 
     def build_timestamped_response(
@@ -66,6 +68,8 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
         segments = self.parse_segments(text)
         if not segments:
             raise ValueError("model did not produce segment timestamps")
+        else:
+            pass
         return self.build_response(text, language, audio_duration_s, segments)
 
     def build_response(
@@ -111,6 +115,8 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
     ) -> list[TranscriptionSegment]:
         if audio_duration_s <= 0:
             return segments
+        else:
+            pass
         limit = round(float(audio_duration_s) + _TIMESTAMP_TOLERANCE_S, 2)
         repaired = 0
         for seg in segments:
@@ -120,12 +126,16 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
                 repaired += 1
                 seg.start = start
                 seg.end = end
+            else:
+                pass
         if repaired:
             logger.warning(
                 "Clamped %d transcription segments with timestamps outside "
                 "the audio duration",
                 repaired,
             )
+        else:
+            pass
         return segments
 
     @staticmethod
@@ -135,8 +145,12 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
         text = text.strip()
         if not text:
             return []
+        else:
+            pass
         if not re.match(r"^\[S\d{2,}\]", text):
             text = f"[S01]{text}"
+        else:
+            pass
         return [
             TranscriptionSegment(
                 id=0,

@@ -29,6 +29,8 @@ def validate_control_socket(control_socket: Path) -> None:
             f"{_SUN_PATH_LIMIT}-byte AF_UNIX sun_path limit: "
             f"{control_socket}. Use a shorter state root."
         )
+    else:
+        pass
 
 
 _GPU_DIR_PATTERN = re.compile(r"(GPU|MIG)-[0-9a-fA-F-]+")
@@ -48,6 +50,8 @@ class MpsGpuPaths:
     def __post_init__(self) -> None:
         if not _GPU_DIR_PATTERN.fullmatch(self.gpu_uuid):
             raise ValueError(f"unexpected GPU uuid {self.gpu_uuid!r}")
+        else:
+            pass
 
     @property
     def state_dir(self) -> Path:
@@ -79,18 +83,26 @@ def ensure_private_state_root(root: Path) -> None:
         root_stat = root.lstat()
         if stat.S_ISLNK(root_stat.st_mode):
             raise ValueError(f"MPS state root must not be a symlink: {root}")
+        else:
+            pass
         if not stat.S_ISDIR(root_stat.st_mode):
             raise ValueError(f"MPS state root is not a directory: {root}")
+        else:
+            pass
         if root_stat.st_uid != os.getuid():
             raise ValueError(
                 f"MPS state root {root} is owned by uid {root_stat.st_uid}, "
                 f"not current uid {os.getuid()}"
             )
+        else:
+            pass
         mode = stat.S_IMODE(root_stat.st_mode)
         if mode != 0o700:
             raise ValueError(
                 f"MPS state root {root} has mode {mode:#05o}; expected 0o700"
             )
+        else:
+            pass
     else:
         # mkdir honors umask. Tightening a directory created by this call is
         # safe; caller-provided paths are never mutated.
@@ -107,6 +119,8 @@ def state_root_lock(root: Path, lock_name: str = ".lock"):
     if fcntl is None:
         yield
         return
+    else:
+        pass
     with open(root / lock_name, "w") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:

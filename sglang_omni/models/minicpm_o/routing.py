@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -21,6 +21,8 @@ def output_modalities(request: OmniRequest) -> set[str] | None:
     modalities = metadata.get("output_modalities")
     if modalities is None:
         return None
+    else:
+        pass
     if isinstance(modalities, str):
         values = (modalities,)
     elif isinstance(modalities, (list, tuple, set)):
@@ -61,15 +63,25 @@ def code2wav_reference_audio(payload: StagePayload) -> bytes | None:
             reference = source.get(key)
             if reference is None:
                 continue
+            else:
+                pass
             if isinstance(reference, dict):
                 reference = audio_data_uri_from_reference(reference)
+            else:
+                pass
             if isinstance(reference, bytes):
                 if reference:
                     return reference
+                else:
+                    pass
             elif isinstance(reference, str):
                 decoded = decode_audio_data_uri(reference)
                 if decoded:
                     return decoded
+                else:
+                    pass
+            else:
+                pass
             raise ValueError(
                 "MiniCPM-o ref_audio must be inline audio bytes or a base64 data "
                 "URI; encode local files before sending"
@@ -96,6 +108,8 @@ def resolve_thinker_wait_sources(
     """Select fan-in sources; request_id is required by the wait-source interface."""
     if from_stage != "preprocessing":
         return None
+    else:
+        pass
     state = MiniCPMOPipelineState.from_dict(payload.data)
     return [
         "preprocessing",
@@ -129,6 +143,8 @@ def project_encoder_to_thinker(payload: StagePayload) -> StagePayload:
             "Expected exactly one encoder output in payload, got "
             f"{sorted(state.encoder_outs)}"
         )
+    else:
+        pass
     stage_name = next(iter(state.encoder_outs))
     projected = MiniCPMOPipelineState(
         encoder_outs={stage_name: state.encoder_outs[stage_name]}
@@ -140,12 +156,16 @@ def resolve_thinker_next_stages(request_id: str, output: StagePayload) -> list[s
     """Select output branches; request_id is required by the routing interface."""
     if should_generate_audio_output(output):
         return [DECODE_STAGE, TALKER_STAGE]
+    else:
+        pass
     return [DECODE_STAGE]
 
 
 def resolve_terminal_stages(request: OmniRequest) -> list[str]:
     if should_generate_audio_output(request):
         return [DECODE_STAGE, CODE2WAV_STAGE]
+    else:
+        pass
     return [DECODE_STAGE]
 
 
@@ -183,6 +203,8 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
         thinker_out = dict(state.thinker_out)
         thinker_out.pop("extra_model_outputs", None)
         state.thinker_out = thinker_out
+    else:
+        pass
 
     if state.engine_outputs:
         engine_outputs = dict(state.engine_outputs)
@@ -191,7 +213,11 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
             thinker_engine_out = dict(thinker_engine_out)
             thinker_engine_out.pop("extra_model_outputs", None)
             engine_outputs[THINKER_STAGE] = thinker_engine_out
+        else:
+            pass
         state.engine_outputs = engine_outputs
+    else:
+        pass
 
     return payload_with_state(payload, state)
 
@@ -221,25 +247,33 @@ def payload_with_state(
 
 
 def project_encoder_input_metadata(
-    encoder_inputs: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    projected: dict[str, dict[str, Any]] = {}
+    encoder_inputs: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    projected: dict[str, dict[str, object]] = {}
     for stage_name, stage_inputs in encoder_inputs.items():
         if not isinstance(stage_inputs, dict):
             continue
-        stage_metadata: dict[str, Any] = {}
+        else:
+            pass
+        stage_metadata: dict[str, object] = {}
         cache_key = stage_inputs.get("cache_key")
         if cache_key is not None:
             stage_metadata["cache_key"] = cache_key
+        else:
+            pass
         if has_encoder_model_input(stage_name, stage_inputs):
             stage_metadata["_active"] = True
+        else:
+            pass
         if stage_metadata:
             projected[stage_name] = stage_metadata
+        else:
+            pass
     return projected
 
 
 def encoder_stages_with_model_inputs(
-    encoder_inputs: dict[str, dict[str, Any]],
+    encoder_inputs: Mapping[str, object],
 ) -> list[str]:
     return [
         stage_name
@@ -248,13 +282,21 @@ def encoder_stages_with_model_inputs(
     ]
 
 
-def has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
+def has_encoder_model_input(stage_name: str, stage_inputs: object) -> bool:
     if not isinstance(stage_inputs, dict):
         return False
+    else:
+        pass
     if stage_inputs.get("_active") is not None:
         return stage_inputs.get("_active") is True
+    else:
+        pass
     if stage_name == IMAGE_STAGE:
         return stage_inputs.get("pixel_values") is not None
+    else:
+        pass
     if stage_name == AUDIO_STAGE:
         return stage_inputs.get("audio_features") is not None
+    else:
+        pass
     return False

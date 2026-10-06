@@ -10,7 +10,7 @@ import torch
 from sglang_omni.scheduling.stage_cache import StageOutputCache, value_size_bytes
 
 
-def _fixed_size(_value: object) -> int:
+def fixed_size(_value: object) -> int:
     return 8
 
 
@@ -60,7 +60,7 @@ def test_remove_if_same_preserves_a_replacement() -> None:
 
 def test_concurrent_get_put_keeps_byte_accounting_consistent() -> None:
     # Mirrors the moss-td encoder: many reader threads racing one writer.
-    cache = StageOutputCache(max_size=64, size_fn=_fixed_size)
+    cache = StageOutputCache(max_size=64, size_fn=fixed_size)
     stop = threading.Event()
     errors: list[BaseException] = []
 
@@ -96,7 +96,7 @@ def test_concurrent_get_put_keeps_byte_accounting_consistent() -> None:
 def test_remove_if_predicate_may_reenter_cache_without_deadlock() -> None:
     # Regression: a predicate that re-acquires the (non-reentrant) lock used to
     # deadlock remove_if. It must now evaluate lock-free.
-    cache = StageOutputCache(size_fn=_fixed_size)
+    cache = StageOutputCache(size_fn=fixed_size)
     for i in range(10):
         cache.put(str(i), i)
 
@@ -119,7 +119,7 @@ def test_remove_if_predicate_may_reenter_cache_without_deadlock() -> None:
 
 
 def test_concurrent_remove_if_and_put_do_not_corrupt_state() -> None:
-    cache = StageOutputCache(size_fn=_fixed_size)
+    cache = StageOutputCache(size_fn=fixed_size)
     errors: list[BaseException] = []
 
     def putter() -> None:
@@ -147,7 +147,7 @@ def test_concurrent_remove_if_and_put_do_not_corrupt_state() -> None:
     assert cache.current_bytes == len(cache) * 8
 
 
-_requires_cuda = pytest.mark.skipif(
+requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="pinned host memory needs a CUDA context"
 )
 
@@ -169,7 +169,7 @@ def test_pin_memory_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.accelerator
-@_requires_cuda
+@requires_cuda
 def test_pinned_cache_stores_device_tensors_in_page_locked_memory() -> None:
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
     src = torch.arange(16, dtype=torch.float16, device="cuda").reshape(4, 4)
@@ -186,7 +186,7 @@ def test_pinned_cache_stores_device_tensors_in_page_locked_memory() -> None:
 
 
 @pytest.mark.accelerator
-@_requires_cuda
+@requires_cuda
 def test_pinned_cache_reuses_already_pinned_host_tensor() -> None:
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
     host = torch.zeros(8, pin_memory=True)
@@ -198,16 +198,16 @@ def test_pinned_cache_reuses_already_pinned_host_tensor() -> None:
 
 
 @pytest.mark.accelerator
-@_requires_cuda
+@requires_cuda
 def test_pinned_cache_falls_back_to_pageable_on_alloc_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sglang_omni.scheduling import stage_cache
 
-    def _boom(_value: torch.Tensor) -> torch.Tensor:
+    def boom(_value: torch.Tensor) -> torch.Tensor:
         raise RuntimeError("cudaHostAlloc failed")
 
-    monkeypatch.setattr(stage_cache, "to_pinned_host", _boom)
+    monkeypatch.setattr(stage_cache, "to_pinned_host", boom)
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
     src = torch.ones(4, device="cuda")
     cache.put("k", src)

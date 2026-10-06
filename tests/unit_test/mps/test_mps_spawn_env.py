@@ -24,10 +24,10 @@ from sglang_omni.pipeline.stage_workers import (
 )
 from tests.unit_test.mps.test_mps_manager import FakeControlClient
 
-_FACTORY = f"{__name__}.unused_factory"
+FACTORY = f"{__name__}.unused_factory"
 
 
-def _launch_stage(
+def launch_stage(
     stage_name: str = "thinker",
     *,
     gpu_id: int | None = 0,
@@ -35,19 +35,19 @@ def _launch_stage(
 ) -> StageLaunchConfig:
     return StageLaunchConfig(
         stage_name=stage_name,
-        factory=_FACTORY,
+        factory=FACTORY,
         gpu_id=gpu_id,
         placement_gpu_id=gpu_id,
         env_defaults=env_defaults or {},
     )
 
 
-def _process_spec(stage: StageLaunchConfig) -> StageWorkerProcessSpec:
+def make_process_spec(stage: StageLaunchConfig) -> StageWorkerProcessSpec:
     return StageWorkerProcessSpec(process_name=stage.stage_name, stage_specs=[stage])
 
 
 @pytest.fixture(autouse=True)
-def _no_gpu_compat_probe(monkeypatch):
+def no_gpu_compat_probe(monkeypatch):
     from sglang_omni.pipeline import stage_workers
 
     monkeypatch.setattr(stage_workers, "get_gpu_compat_env_defaults", lambda _env: {})
@@ -61,7 +61,7 @@ def short_root():
 
 
 def test_mps_overlay_is_visible_only_during_spawn(monkeypatch):
-    spec = _process_spec(_launch_stage())
+    spec = make_process_spec(launch_stage())
     monkeypatch.delenv("CUDA_MPS_PIPE_DIRECTORY", raising=False)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
@@ -80,7 +80,9 @@ def test_mps_overlay_is_visible_only_during_spawn(monkeypatch):
 
 
 def test_no_mps_overlay_keeps_existing_stage_default_behavior(monkeypatch):
-    spec = _process_spec(_launch_stage(env_defaults={"WORKER_DEFAULT": "stage-value"}))
+    spec = make_process_spec(
+        launch_stage(env_defaults={"WORKER_DEFAULT": "stage-value"})
+    )
     monkeypatch.delenv("WORKER_DEFAULT", raising=False)
 
     with patched_spawn_env(spec):
@@ -89,7 +91,7 @@ def test_no_mps_overlay_keeps_existing_stage_default_behavior(monkeypatch):
     assert "WORKER_DEFAULT" not in os.environ
 
 
-def _resolved_config_process(*, pipeline_env: dict, stage_env: dict):
+def resolved_config_process(*, pipeline_env: dict, stage_env: dict):
     with tempfile.TemporaryDirectory(prefix="mps-env-", dir="/tmp") as base_path:
         config = PipelineConfig(
             model_path="model",
@@ -122,7 +124,7 @@ def _resolved_config_process(*, pipeline_env: dict, stage_env: dict):
             prep.runtime_dir.close()
 
 
-class _DeviceInfoMustNotRun:
+class DeviceInfoMustNotRun:
     def inspect(self, _gpu_ids):  # pragma: no cover - contract assertion
         raise AssertionError("process env conflicts must fail before device inspection")
 
@@ -145,7 +147,7 @@ def test_mps_rejects_worker_gpu_environment_overrides_before_acquire(
     name,
     value,
 ):
-    process_spec = _resolved_config_process(
+    process_spec = resolved_config_process(
         pipeline_env={name: value} if source == "pipeline" else {},
         stage_env={name: value} if source == "stage" else {},
     )
@@ -154,7 +156,7 @@ def test_mps_rejects_worker_gpu_environment_overrides_before_acquire(
         MpsPipelineRuntime.create(
             mode=mode,
             process_specs=[process_spec],
-            device_info=_DeviceInfoMustNotRun(),
+            device_info=DeviceInfoMustNotRun(),
             client=FakeControlClient(),
             state_root=short_root,
         )
@@ -168,7 +170,7 @@ def test_mps_rejects_worker_gpu_environment_overrides_before_acquire(
 
 
 def test_cpu_stage_keeps_none_gpu_id_under_single_device_marker(monkeypatch):
-    spec = _launch_stage("preprocessing", gpu_id=None)
+    spec = launch_stage("preprocessing", gpu_id=None)
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-abc")
 

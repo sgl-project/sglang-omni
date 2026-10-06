@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Strict gate for reusing an existing OMNI_CI_HOME venv across workflow runs.
 #
-# Checks path safety, pyproject.toml fingerprint (when recorded), import probe,
+# Checks path safety, dependency fingerprint (when recorded), import probe,
 # and exact == pins. Missing .deps-hash is allowed when the venv itself matches
 # pyproject.toml (e.g. prior setup installed packages but failed a post-install gate).
 # Does not require .omni-env-complete (downstream jobs use this gate; setup writes marker).
@@ -61,7 +61,7 @@ then
   exit 1
 fi
 
-if ! "${PYTHON}" "${SCRIPT_DIR}/omni_missing_dependencies.py" --check --extra minicpm-o pyproject.toml; then
+if ! "${PYTHON}" "${SCRIPT_DIR}/omni_missing_dependencies.py" --check --extra minicpm-o --extra fun-cosyvoice3 pyproject.toml; then
   exit 1
 fi
 
@@ -69,7 +69,7 @@ if [ -f "${DEPS_HASH_FILE}" ]; then
   STORED_HASH="$(tr -d '[:space:]' < "${DEPS_HASH_FILE}")"
   if [ "${STORED_HASH}" != "${DEPS_HASH}" ]; then
     echo "deps-hash mismatch: stored=${STORED_HASH} current=${DEPS_HASH}" >&2
-    echo "pyproject.toml changed; full environment rebuild required" >&2
+    echo "CI dependencies or preparation script changed; full environment rebuild required" >&2
     exit 1
   fi
 else

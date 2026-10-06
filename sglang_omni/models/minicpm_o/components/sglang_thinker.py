@@ -61,8 +61,10 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor | None = None,
+        omni_prefill_rids: list[str] | tuple[str, ...] | None = None,
         **kwargs: object,
     ) -> LogitsProcessorOutput:
+        # note (Junnan Li): Request ids are part of the prefill interface; text-only prefill ignores them.
         return self.language_model(
             input_ids,
             positions,
@@ -76,8 +78,12 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
             for name, loaded_weight in weights:
                 if name.startswith(NON_TEXT_PREFIXES):
                     continue
+                else:
+                    pass
                 if name.startswith("llm."):
                     yield name[len("llm.") :], loaded_weight
+                else:
+                    pass
 
         self.language_model.load_weights(_text_weights())
 

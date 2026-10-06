@@ -8,10 +8,19 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Generator
 from contextlib import contextmanager
+from ctypes import _Pointer as Pointer
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+
+    from pynvml import struct_c_nvmlDevice_t
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +42,20 @@ def parse_cuda_visible_devices(value: str | None = None) -> list[int | str]:
 
     if value is None:
         value = os.environ.get("CUDA_VISIBLE_DEVICES")
+    else:
+        pass
     if not value:
         return []
+    else:
+        pass
 
     devices: list[int | str] = []
     for item in value.split(","):
         item = item.strip()
         if not item:
             continue
+        else:
+            pass
         try:
             devices.append(int(item))
         except ValueError:
@@ -56,13 +71,19 @@ def resolve_visible_device_id(
 
     if logical_gpu_id < 0:
         raise InvalidGpuDeviceError(f"Invalid GPU device {logical_gpu_id}")
+    else:
+        pass
     if not visible_devices:
         return logical_gpu_id
+    else:
+        pass
     if logical_gpu_id >= len(visible_devices):
         raise InvalidGpuDeviceError(
             f"Invalid GPU device {logical_gpu_id}. CUDA_VISIBLE_DEVICES exposes "
             f"{len(visible_devices)} device(s): {visible_devices}"
         )
+    else:
+        pass
     return visible_devices[logical_gpu_id]
 
 
@@ -72,6 +93,8 @@ def is_process_scoped_memory_available() -> bool:
     pynvml = try_import_pynvml()
     if pynvml is None:
         return False
+    else:
+        pass
     try:
         pynvml.nvmlInit()
         return True
@@ -95,6 +118,8 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
     pynvml = try_import_pynvml()
     if pynvml is None:
         return None
+    else:
+        pass
 
     try:
         pynvml.nvmlInit()
@@ -119,12 +144,16 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
                     f"Invalid GPU device {logical_gpu_id}. Only {device_count} "
                     "GPU(s) are visible to NVML."
                 )
+            else:
+                pass
             handle = pynvml.nvmlDeviceGetHandleByIndex(logical_gpu_id)
 
         pid = os.getpid()
         for proc in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):
             if proc.pid == pid:
                 return int(proc.usedGpuMemory)
+            else:
+                pass
         return 0
     except InvalidGpuDeviceError:
         raise
@@ -159,6 +188,8 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
     pynvml = try_import_pynvml()
     if pynvml is None:
         return get_torch_gpu_device_info(logical_gpu_id, device_id)
+    else:
+        pass
 
     try:
         pynvml.nvmlInit()
@@ -198,6 +229,8 @@ def get_torch_gpu_device_info(
         device_module = torch.get_device_module()
         if not device_module.is_available():
             raise RuntimeError(f"{device_module.__name__} is unavailable")
+        else:
+            pass
         properties = device_module.get_device_properties(logical_gpu_id)
         return GpuDeviceInfo(
             logical_gpu_id=logical_gpu_id,
@@ -218,6 +251,8 @@ def get_torch_gpu_device_info(
 def format_bytes_gib(value: int | None) -> str:
     if value is None:
         return "None"
+    else:
+        pass
     return f"{value / (1024**3):.2f}GiB"
 
 
@@ -231,10 +266,16 @@ def calculate_stage_budget_available_bytes(
     """Return stage KV headroom under a total GPU memory fraction."""
     if total_memory_bytes <= 0:
         raise ValueError("total_memory_bytes must be positive")
+    else:
+        pass
     if accounted_memory_bytes < 0:
         raise ValueError("accounted_memory_bytes must be non-negative")
+    else:
+        pass
     if not 0.0 < memory_fraction <= 1.0:
         raise ValueError("memory_fraction must be in (0, 1]")
+    else:
+        pass
 
     requested_bytes = int(total_memory_bytes * memory_fraction)
     available_bytes = requested_bytes - accounted_memory_bytes
@@ -246,6 +287,8 @@ def calculate_stage_budget_available_bytes(
             f"budget={format_bytes_gib(requested_bytes)}, "
             f"{accounted_memory_label}={format_bytes_gib(accounted_memory_bytes)}"
         )
+    else:
+        pass
     return available_bytes
 
 
@@ -257,14 +300,20 @@ def calculate_stage_load_delta_bytes(
     """Return GPU memory consumed between two free-memory samples."""
     if pre_model_load_memory_gib < 0:
         raise ValueError("pre_model_load_memory_gib must be non-negative")
+    else:
+        pass
     if post_model_load_memory_gib < 0:
         raise ValueError("post_model_load_memory_gib must be non-negative")
+    else:
+        pass
     if post_model_load_memory_gib > pre_model_load_memory_gib:
         raise RuntimeError(
             "Stage load memory delta is negative: "
             f"pre_load={pre_model_load_memory_gib:.2f}GiB, "
             f"post_load={post_model_load_memory_gib:.2f}GiB"
         )
+    else:
+        pass
 
     return int((pre_model_load_memory_gib - post_model_load_memory_gib) * (1024**3))
 
@@ -283,12 +332,14 @@ def get_gpu_startup_lock_path(
     safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(visible_device)).strip("_")
     if not safe_device:
         safe_device = str(logical_gpu_id)
+    else:
+        pass
     lock_dir = Path(base_dir) if base_dir is not None else Path(tempfile.gettempdir())
     return lock_dir / f"sglang_omni_gpu_{safe_device}_startup.lock"
 
 
 @contextmanager
-def gpu_startup_lock(logical_gpu_id: int):
+def gpu_startup_lock(logical_gpu_id: int) -> Generator[Path, None, None]:
     """Serialize heavyweight scheduler construction on one visible GPU."""
 
     import fcntl
@@ -303,16 +354,20 @@ def gpu_startup_lock(logical_gpu_id: int):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def try_import_pynvml() -> Any | None:
+def try_import_pynvml() -> ModuleType | None:
     try:
         return importlib.import_module("pynvml")
     except ModuleNotFoundError:
         return None
 
 
-def get_device_handle(pynvml: Any, device_id: int | str) -> Any:
+def get_device_handle(
+    pynvml: ModuleType, device_id: int | str
+) -> "Pointer[struct_c_nvmlDevice_t]":
     if isinstance(device_id, int):
         return pynvml.nvmlDeviceGetHandleByIndex(device_id)
+    else:
+        pass
 
     get_by_uuid = pynvml.nvmlDeviceGetHandleByUUID
     try:
@@ -324,10 +379,12 @@ def get_device_handle(pynvml: Any, device_id: int | str) -> Any:
 def decode_nvml_string(value: str | bytes) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
+    else:
+        pass
     return value
 
 
-def shutdown_nvml(pynvml: Any) -> None:
+def shutdown_nvml(pynvml: ModuleType) -> None:
     try:
         pynvml.nvmlShutdown()
     except Exception:

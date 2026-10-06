@@ -29,12 +29,31 @@ def test_predictor_gqa_attention_cpu_matches_sdpa() -> None:
     key = torch.randn(2, 2, 5, 8)
     value = torch.randn(2, 2, 5, 8)
 
-    actual = predictor_gqa_attention(q, key, value, num_heads=4, num_key_value_heads=2)
+    actual = predictor_gqa_attention(
+        q, key, value, num_heads=4, num_key_value_heads=2, is_causal=False
+    )
     expected = F.scaled_dot_product_attention(
         q, key, value, is_causal=False, enable_gqa=True
     )
 
     torch.testing.assert_close(actual, expected)
+
+
+def test_predictor_gqa_attention_pair_attends_causally() -> None:
+    torch.manual_seed(0)
+    q = torch.randn(2, 4, 2, 8)
+    key = torch.randn(2, 2, 2, 8)
+    value = torch.randn(2, 2, 2, 8)
+
+    actual = predictor_gqa_attention(
+        q, key, value, num_heads=4, num_key_value_heads=2, is_causal=True
+    )
+    first = F.scaled_dot_product_attention(
+        q[:, :, :1], key[:, :, :1], value[:, :, :1], enable_gqa=True
+    )
+    second = F.scaled_dot_product_attention(q[:, :, 1:], key, value, enable_gqa=True)
+
+    torch.testing.assert_close(actual, torch.cat((first, second), dim=2))
 
 
 @pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
@@ -44,7 +63,9 @@ def test_predictor_npu_fused_attention_matches_sdpa() -> None:
     key = torch.randn(2, 2, 5, 128, device=device, dtype=torch.bfloat16)
     value = torch.randn(2, 2, 5, 128, device=device, dtype=torch.bfloat16)
 
-    actual = predictor_gqa_attention(q, key, value, num_heads=4, num_key_value_heads=2)
+    actual = predictor_gqa_attention(
+        q, key, value, num_heads=4, num_key_value_heads=2, is_causal=False
+    )
     expected = F.scaled_dot_product_attention(
         q, key, value, is_causal=False, enable_gqa=True
     )
@@ -107,12 +128,13 @@ def test_gather_codec_embedding_and_add_rejects_unsafe_input_without_writes(
 
 @pytest.mark.accelerator
 @pytest.mark.parametrize(
-    ("batch_size", "hidden_size"),
-    [(1, 8), (4, 8), (8, 2048)],
+    ("batch_size", "hidden_size", "projected_size"),
+    [(1, 8, 0), (4, 8, 0), (8, 2048, 0), (1, 8, 4), (8, 2048, 1024)],
 )
 def test_gather_codec_embedding_and_add_matches_bf16_reference(
     batch_size: int,
     hidden_size: int,
+    projected_size: int,
 ):
     if not torch.cuda.is_available():
         pytest.skip("Triton predictor kernel needs CUDA")
@@ -146,14 +168,56 @@ def test_gather_codec_embedding_and_add_matches_bf16_reference(
     expected_accumulated = accumulated.clone()
     expected_accumulated.add_(expected_gathered)
     gathered = torch.empty_like(expected_gathered)
+    if projected_size:
+        projected_weight = torch.randn(
+            vocab_size,
+            projected_size,
+            generator=generator,
+            dtype=torch.float32,
+        ).to(device=device, dtype=torch.bfloat16)
+        projected = torch.empty(
+            batch_size, projected_size, device=device, dtype=torch.bfloat16
+        )
+    else:
+        projected_weight = None
+        projected = None
 
     assert gather_codec_embedding_and_add(
         token_ids,
         embedding_weight,
         gathered,
         accumulated,
+        projected_weight=projected_weight,
+        projected=projected,
     )
     torch.cuda.synchronize()
 
     assert torch.equal(gathered, expected_gathered)
     assert torch.equal(accumulated, expected_accumulated)
+    if projected_size:
+        assert torch.equal(projected, F.embedding(token_ids, projected_weight))
+    else:
+        pass
+
+
+@pytest.mark.accelerator
+def test_gather_codec_embedding_and_add_rejects_an_overlapping_projection():
+    if not torch.cuda.is_available():
+        pytest.skip("Triton predictor kernel needs CUDA")
+    device = torch.device("cuda")
+    token_ids = torch.tensor([1, 3], dtype=torch.long, device=device)
+    embedding_weight = torch.randn(8, 8, dtype=torch.bfloat16, device=device)
+    accumulated = torch.full((2, 8), -3.0, dtype=torch.bfloat16, device=device)
+    gathered = torch.full((2, 8), 2.0, dtype=torch.bfloat16, device=device)
+    projected_weight = torch.randn(8, 4, dtype=torch.bfloat16, device=device)
+    expected_gathered = gathered.clone()
+
+    assert not gather_codec_embedding_and_add(
+        token_ids,
+        embedding_weight,
+        gathered,
+        accumulated,
+        projected_weight=projected_weight,
+        projected=gathered.view(4, 4)[:2],
+    )
+    assert torch.equal(gathered, expected_gathered)
