@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU tests for the Qwen3-Omni thinker wrapper: M-RoPE plumbing and padded decode-row routing."""
+"""CPU tests for the Qwen3-Omni thinker's M-RoPE plumbing and padded-row routing."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 
-from sglang.srt.eplb.expert_location_dispatch import ExpertLocationDispatchInfo
 from sglang.srt.layers.moe.topk import StandardTopKOutput
 from sglang.srt.layers.quantization.fp8 import Fp8Config
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
@@ -159,17 +158,10 @@ class FixedTopK(torch.nn.Module):
     def __init__(self, topk_output: StandardTopKOutput) -> None:
         super().__init__()
         self.topk_output = topk_output
-        self.padding_counts: list[torch.Tensor | None] = []
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        router_logits: torch.Tensor,
-        *,
-        num_token_non_padded: torch.Tensor | None = None,
-        expert_location_dispatch_info: ExpertLocationDispatchInfo | None = None,
+        self, hidden_states: torch.Tensor, router_logits: torch.Tensor
     ) -> StandardTopKOutput:
-        self.padding_counts.append(num_token_non_padded)
         return self.topk_output
 
 
@@ -204,25 +196,7 @@ def test_topk_without_a_decode_mask_returns_the_routing_unchanged() -> None:
     assert routed is topk_output
 
 
-def test_topk_leaves_routing_to_sglang_when_it_counts_padded_rows() -> None:
-    topk_output = make_topk_output(4)
-    inner_topk = FixedTopK(topk_output)
-    live_rows = DecodeLiveRows(is_live_row=torch.tensor([True, True, False, False]))
-    padding_count = torch.tensor(2)
-
-    routed = PaddedRowsTopK(inner_topk, live_rows)(
-        torch.zeros(4, 8),
-        topk_output.router_logits,
-        num_token_non_padded=padding_count,
-    )
-
-    assert routed is topk_output
-    assert inner_topk.padding_counts == [padding_count]
-
-
 class RecordingTextModel(torch.nn.Module):
-    """Returns zero hidden states, or raises, and records the decode mask it sees."""
-
     def __init__(
         self, live_rows: DecodeLiveRows, error: RuntimeError | None = None
     ) -> None:
@@ -308,7 +282,6 @@ def test_decode_mask_ends_with_its_forward_so_a_direct_prefill_routes_as_before(
     run_forward(wrapper, ForwardMode.DECODE, [7, 3])
     prefill_routing = make_topk_output(5)
 
-    # The deepstack prefill runs the inner model directly, not the outer forward.
     routed = PaddedRowsTopK(FixedTopK(prefill_routing), wrapper.decode_live_rows)(
         torch.zeros(5, 8), prefill_routing.router_logits
     )
@@ -378,6 +351,5 @@ def test_thinker_routes_every_unquantized_moe_layer_through_the_shared_decode_ma
         assert routed_topk.live_rows is wrapper.decode_live_rows
     else:
         assert routed_topk is moe_topk
-        # No layer reads a decode mask, so the forward builds none.
         assert wrapper.decode_live_rows is None
     assert wrapper.model.layers[1].mlp is dense_mlp
