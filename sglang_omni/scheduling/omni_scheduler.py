@@ -292,6 +292,7 @@ class OmniScheduler(Generic[RequestDataT]):
     """
 
     session_bridge: ARSessionBridge | None = None
+    scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
 
     def __init__(
@@ -1000,9 +1001,9 @@ class OmniScheduler(Generic[RequestDataT]):
     def recv_requests(self) -> list[StagePayload]:
         """Drain inbox on rank 0 and broadcast scheduler inputs to TP followers."""
         if self.is_entry_rank:
-            # note (ratish): only this rank reads the clock. The failed request
-            # makes the coordinator broadcast an abort, which reaches followers
-            # the way every other abort does.
+            # note (ratish): only this rank reads the clock.
+            # note (Richard Wang): TP above 1 broadcasts the abort in this pass. TP1
+            # applies it now because an off-thread abort can drain it past this pass.
             for timeout_abort in self.poll_request_timeout_aborts():
                 if timeout_abort.rid in self.aborted_request_ids:
                     continue
@@ -1011,7 +1012,12 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.emit_request_error(
                     timeout_abort.rid, RuntimeError(timeout_abort.abort_message)
                 )
-                self.abort(timeout_abort.rid)
+                if self.tp_size > 1:
+                    self.inbox.put(
+                        IncomingMessage(request_id=timeout_abort.rid, type="abort")
+                    )
+                else:
+                    self.abort(timeout_abort.rid)
         else:
             pass
         recv_msgs = self.recv_scheduler_messages()
@@ -2440,15 +2446,21 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         bridge = self.session_bridge
-        if bridge is not None:
-            if (
-                self.scheduler_thread_id is not None
-                and self.scheduler_thread_id != threading.get_ident()
-            ):
+        if (
+            self.scheduler_thread_id is not None
+            and self.scheduler_thread_id != threading.get_ident()
+            and (bridge is not None or self.tp_size > 1)
+        ):
+            # note (Richard Wang): every TP rank must drop a request in the same
+            # pass, so the entry rank broadcast carries it and followers skip theirs.
+            if self.is_entry_rank:
                 self.inbox.put(IncomingMessage(request_id=request_id, type="abort"))
-                return
             else:
                 pass
+            return
+        else:
+            pass
+        if bridge is not None:
             if (
                 request_id != bridge.cancelling_request_id
                 and self.active_session_unit(request_id) is not None

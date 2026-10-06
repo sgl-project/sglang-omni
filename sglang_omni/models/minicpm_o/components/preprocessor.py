@@ -124,7 +124,9 @@ class MiniCPMOPreprocessor:
         language = str(params.get("language") or "").lower()
         prompt = ASR_PROMPT_ZH if language.startswith("zh") else ASR_PROMPT_EN
         audio, _ = AudioMediaIO(target_sr=16000).load_bytes(inputs["audio_bytes"])
-        return [{"role": "user", "content": prompt}], [audio]
+        # note (Tianyao Wu): the recipe puts a blank line between prompt and audio.
+        message = {"role": "user", "content": f"{prompt}\n\n{AUDIO_PLACEHOLDER}"}
+        return [message], [audio]
 
     def should_use_tts_template(self, payload: StagePayload) -> bool:
         return self.speech_enabled and should_generate_audio_output(payload)
@@ -146,8 +148,10 @@ class MiniCPMOPreprocessor:
         raw_videos = None
         use_audio_in_video = False
         video_params: dict[str, object] = {}
+        media_placeholders_placed = False
         if isinstance(inputs, dict) and inputs.get("audio_bytes") is not None:
             messages, raw_audios = self.speech_to_text_inputs(payload, inputs)
+            media_placeholders_placed = True
         elif isinstance(inputs, dict):
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
@@ -177,6 +181,7 @@ class MiniCPMOPreprocessor:
                 raw_videos=raw_videos,
                 use_audio_in_video=use_audio_in_video,
                 video_params=video_params,
+                media_placeholders_placed=media_placeholders_placed,
             )
         else:
             pass
@@ -284,6 +289,7 @@ class MiniCPMOPreprocessor:
         raw_videos: object,
         use_audio_in_video: bool,
         video_params: Mapping[str, object],
+        media_placeholders_placed: bool,
     ) -> StagePayload:
         video_kwargs = {
             key.removeprefix("video_"): value for key, value in video_params.items()
@@ -314,8 +320,10 @@ class MiniCPMOPreprocessor:
         cache_keys = [key for key in (image_cache_key, video_cache_key) if key]
         image_cache_key = "|".join(cache_keys) if cache_keys else None
 
-        if isinstance(messages, list) and not (
-            messages and all(isinstance(token, int) for token in messages)
+        if (
+            not media_placeholders_placed
+            and isinstance(messages, list)
+            and not (messages and all(isinstance(token, int) for token in messages))
         ):
             messages = self.messages_with_media_placeholders(
                 messages, num_images=len(images), num_audios=len(audios)

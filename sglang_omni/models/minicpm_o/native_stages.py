@@ -22,6 +22,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     ProcessorFactory,
 )
 from sglang_omni.models.minicpm_o.components.tts_runtime import MiniCPMOVocoderRuntime
+from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_MAX_SESSIONS,
@@ -247,6 +248,8 @@ def create_speech_scheduler(
         enable_flow_variable_length=False,
         reference_workers=1,
         prompt_cache_capacity=max_open_sessions,
+        decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,
+        enable_flow_block_compile=False,
     )
     runtime = MiniCPMOVocoderRuntime(codec)
     return SessionScheduler(

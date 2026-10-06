@@ -6,7 +6,7 @@ import { Settings } from "./settings.js";
 
 const JITTER_MS = 300;
 const STATUS_POLL_MS = 5000;
-const SESSION_CAP_S = 600;
+const SESSION_CAP_S = window.DEMO_SESSION_CAP_S || 600;
 // RMS below the floor reads as silence; above it the level rises to 1 at about -14 dBFS.
 const LEVEL_FLOOR = 0.008;
 const LEVEL_GAIN = 5;
@@ -75,7 +75,7 @@ let startingCamera = false;
 const orb = new Orb(ui.orbCanvas);
 // /v1/realtime/capabilities next to the WebSocket endpoint, unless config.js names it.
 const capabilitiesUrl = window.DEMO_CAPABILITIES_URL || (window.DEMO_WS_URL || "").replace(/^ws/, "http").replace(/\/v1\/realtime.*$/, "/v1/realtime/capabilities");
-const settings = new Settings(ui, { capabilitiesUrl, defaultInstructions: window.DEMO_INSTRUCTIONS || "" });
+const settings = new Settings(ui, { capabilitiesUrl, defaultInstructions: window.DEMO_INSTRUCTIONS || "", editableInstructions: window.DEMO_EDITABLE_INSTRUCTIONS !== false });
 const darkQuery = matchMedia("(prefers-color-scheme: dark)");
 
 // Deployment-specific text comes from config.js, so one page serves any duplex model.
@@ -185,6 +185,11 @@ function tick() {
     const left = Math.max(0, SESSION_CAP_S - Math.floor((performance.now() - sessionStart) / 1000));
     label = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
     pill = "live";
+    if (window.DEMO_SESSION_CAP_S && left === 0) {
+      sessionStart = null;
+      closeNow().catch((error) => warn(error.message));
+      warn("Session time limit reached. Start a new conversation to continue.");
+    }
   } else if (inCall()) {
     label = "connecting";
     pill = "connecting";
