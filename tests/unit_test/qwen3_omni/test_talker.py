@@ -1184,6 +1184,25 @@ def test_chunk_gate_holds_the_decode_step_until_the_next_chunk_lands() -> None:
     assert ready.chunk_wait_steps == 0
 
 
+def test_skipped_decode_step_frees_only_the_pages_it_opened() -> None:
+    freed: list[list[int]] = []
+    scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(
+        page_size=4, free=lambda indices: freed.append(indices.tolist())
+    )
+    batch = make_decode_batch(rows=0)
+    batch.out_cache_loc = torch.tensor([16, 22])
+    batch.seq_lens = torch.tensor([5, 7])
+    batch.seq_lens_cpu = torch.tensor([5, 7])
+    batch.orig_seq_lens = torch.tensor([5, 7])
+    batch.req_pool_indices = torch.tensor([0, 1])
+    batch.req_to_token_pool = SimpleNamespace(req_to_token=torch.ones(2, 8))
+
+    scheduler.rollback_decode_prep_after_skip(batch)
+
+    assert freed == [[16]]
+
+
 def test_chunk_gate_ignores_prefill_batches() -> None:
     scheduler = chunk_gate_scheduler(decode_ready=False)
     prefill = SimpleNamespace(
@@ -1686,6 +1705,8 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     freed: list[Any] = []
 
     class FakeAllocator:
+        page_size = 1
+
         def free(self, slot: Any) -> None:
             freed.append(slot)
 
@@ -1855,7 +1876,9 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     allocated = batch.out_cache_loc
     freed: list[Any] = []
     scheduler = object.__new__(QwenTalkerScheduler)
-    scheduler.token_to_kv_pool_allocator = SimpleNamespace(free=freed.append)
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(
+        page_size=1, free=freed.append
+    )
     scheduler.rollback_decode_prep_after_skip(batch)
 
     assert batch.seq_lens_sum is None
