@@ -15,6 +15,51 @@ else:
     pass
 
 
+def register_llada2_uni_cfg() -> None:
+    """Call before build_server_args for the omni LowConfidenceCFG variant.
+
+    The text-only LowConfidence variant does not need this registration.
+    """
+    from sglang.srt.dllm.algorithm import algo_name_to_cls
+
+    from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+        register_llada2_cfg_flashinfer_backend,
+    )
+    from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
+
+    algo_name_to_cls["LowConfidenceCFG"] = LowConfidenceCFG
+    register_llada2_cfg_flashinfer_backend()
+
+
+def validate_cfg(server_args: ServerArgs) -> None:
+    from sglang.srt.arg_groups.model_override_base import (
+        attention_backends_of,
+        resolved_view,
+    )
+
+    cfg = resolved_view(server_args)
+    if cfg.dllm_algorithm != "LowConfidenceCFG":
+        return
+    else:
+        pass
+    register_llada2_uni_cfg()
+    from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+        CFG_ATTENTION_BACKEND,
+    )
+
+    if any(backend != CFG_ATTENTION_BACKEND for backend in attention_backends_of(cfg)):
+        raise ValueError(
+            "LowConfidenceCFG requires llada2_uni_cfg_flashinfer (DLLM pad masking), "
+            "not the upstream llada2_cfg_flashinfer text-condition mask backend"
+        )
+    else:
+        pass
+    if cfg.dllm_fdfo:
+        raise ValueError("LowConfidenceCFG requires synchronous DLLM, not FDFO")
+    else:
+        pass
+
+
 def create_dllm_thinker_scheduler(
     server_args: "ServerArgs",
     gpu_id: int = 0,
@@ -36,6 +81,7 @@ def create_dllm_thinker_scheduler(
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
     from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 
+    validate_cfg(server_args)
     dllm_config = DllmConfig.from_server_args(server_args)
 
     # sglang supports radix cache with dLLM, but Omni's dLLM staging

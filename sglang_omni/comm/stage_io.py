@@ -513,6 +513,7 @@ async def write_payload(
     transport: TransportKind,
     from_stage: str | None = None,
     to_stage: str | None = None,
+    object_id: str | None = None,
 ) -> tuple[DataRef, RelayOperation]:
     data_without_tensors, tensors = extract_tensors(payload.data)
     packed, entries = pack_tensors(tensors, device=relay_device(relay))
@@ -528,7 +529,9 @@ async def write_payload(
     )
     data_ref = DataRef(
         version=1,
-        object_id=f"{request_id}:payload:{from_stage or ''}:{to_stage or ''}",
+        object_id=(
+            object_id or f"{request_id}:payload:{from_stage or ''}:{to_stage or ''}"
+        ),
         kind=DataKind.STAGE_PAYLOAD,
         transport=transport,
         layout=DataLayout.PACKED_TENSORS,
