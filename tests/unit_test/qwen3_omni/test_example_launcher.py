@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from examples._omni_launcher import parse_preset_args
 from examples.launchers.qwen3_omni import _parse_thinker_tp_gpu_list
 from examples.launchers.qwen3_omni import (
     launch_qwen_speech_server as _launch_speech_server,
@@ -275,6 +276,7 @@ def make_args(**overrides) -> argparse.Namespace:
         thinker_tp_size=1,
         gpu_thinker_tp=None,
         thinker_max_seq_len=8192,
+        thinker_enable_deterministic_inference=False,
         talker_max_seq_len=None,
         mem_fraction_static=None,
         thinker_mem_fraction_static=None,
@@ -302,6 +304,46 @@ def mock_launch_server():
     fake_serve.launch_server = mock_fn
     with patch.dict(sys.modules, {"sglang_omni.serve": fake_serve}):
         yield mock_fn
+
+
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_speech_determinism_preserves_tp2_placement_and_memory(
+    deterministic: bool,
+    mock_launch_server: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.utils.gpu_compat.should_disable_custom_all_reduce_for_gpus",
+        lambda gpu_ids: False,
+    )
+    flags = [
+        "--thinker-tp-size",
+        "2",
+        "--gpu-thinker-tp",
+        "0,1",
+        "--thinker-mem-fraction-static",
+        "0.40",
+        "--talker-mem-fraction-static",
+        "0.21",
+    ]
+    if deterministic:
+        flags.append("--thinker-enable-deterministic-inference")
+    else:
+        pass
+    args = parse_preset_args("qwen3-speech-server", flags)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    thinker = make_stage(config, "thinker")
+    talker = make_stage(config, "talker_ar")
+    assert thinker.tp_size == 2
+    assert thinker.gpu == [0, 1]
+    assert thinker.engine.mem_fraction_static == 0.40
+    assert talker.engine.mem_fraction_static == 0.21
+    assert (
+        thinker.engine.overrides().get("enable_deterministic_inference") is True
+    ) == deterministic
+    assert "enable_deterministic_inference" not in talker.engine.overrides()
 
 
 def test_tp2_config_contract(mock_launch_server):

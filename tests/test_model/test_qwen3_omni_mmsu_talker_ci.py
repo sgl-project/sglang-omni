@@ -50,6 +50,7 @@ from tests.utils import (
 MAX_SAMPLES = 40
 MAX_TOKENS = 256
 CONCURRENCY = 16
+MMSU_TALKER_SEED = 123
 ASR_DEVICE = "cuda:0"
 
 MMSU_TTS_PROMPT = (
@@ -92,7 +93,7 @@ def build_args(
         request_rate=float("inf"),
         save_audio=True,
         disable_tqdm=False,
-        seed=None,
+        seed=MMSU_TALKER_SEED if omni_ci_model.name == "qwen3-omni" else None,
         fingerprint=False,
         lang="en",
         asr_device=ASR_DEVICE,

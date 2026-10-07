@@ -281,6 +281,11 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
             "default when omitted."
         ),
     )
+    target.add_argument(
+        "--thinker-enable-deterministic-inference",
+        action="store_true",
+        help="Use batch-invariant Thinker inference for reproducible text output.",
+    )
     _add_qwen_speech_mem_args(target)
     target.add_argument(
         "--enable-partial-start",
@@ -426,6 +431,14 @@ def launch_qwen_speech_server(args: argparse.Namespace) -> None:
 
     set_stage_gpu(config, "talker_ar", gpu_talker)
     set_stage_gpu(config, "code2wav", gpu_code2wav)
+    if args.thinker_enable_deterministic_inference:
+        apply_stage_factory_updates(
+            config,
+            stage_name="thinker",
+            server_arg_updates={"enable_deterministic_inference": True},
+        )
+    else:
+        pass
     _resolve_speech_mem_fractions(
         config,
         global_mem_fraction_static=args.mem_fraction_static,
