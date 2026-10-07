@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import uuid
 from collections.abc import Mapping
 from contextlib import aclosing
@@ -36,6 +38,12 @@ from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.proto.request import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
+from sglang_omni.proto.segments import (
+    InterleavedGenerationParams,
+    UMMSegment,
+    normalize_interleaved_content,
+    validate_interleaved_inputs,
+)
 from sglang_omni.proto.session import (
     OutputChunk,
     SessionIdentity,
@@ -99,6 +107,10 @@ class Client:
         request: GenerateRequest,
         request_id: str | None = None,
     ) -> AsyncIterator[GenerateChunk]:
+        if request.stream:
+            validate_image_streaming(request)
+        else:
+            pass
         req_id = request_id or str(uuid.uuid4())
         omni_request = self.build_omni_request(request)
         if request.stream:
@@ -145,6 +157,10 @@ class Client:
         omni_rollout: dict[str, object] | None = None
         weight_version: str | None = None
         language: str | None = None
+        image_b64: str | None = None
+        content: list[dict[str, object]] | None = None
+        images: list[dict[str, object]] = []
+        segments: list[UMMSegment] | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
@@ -158,6 +174,19 @@ class Client:
                 pass
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
+            else:
+                pass
+            if chunk.image is not None:
+                image_b64 = chunk.image
+            else:
+                pass
+            if chunk.content is not None:
+                content = chunk.content
+                images = chunk.images
+            else:
+                pass
+            if chunk.segments is not None:
+                segments = chunk.segments
             else:
                 pass
             if chunk.finish_reason is not None:
@@ -222,6 +251,10 @@ class Client:
             omni_rollout=omni_rollout,
             weight_version=weight_version,
             language=language,
+            image=image_b64,
+            content=content,
+            images=images,
+            segments=segments,
         )
 
     # ------------------------------------------------------------------
@@ -240,6 +273,7 @@ class Client:
         Audio data is base64-encoded before yielding so that callers never
         need to touch numpy / raw bytes.
         """
+        validate_image_streaming(request)
         streamed_text = ""
         generate_stream = self.generate(request, request_id=request_id)
         async with aclosing(generate_stream):
@@ -582,8 +616,31 @@ class Client:
             metadata.setdefault("model", request.model)
         else:
             pass
-        if request.output_modalities:
+        if request.output_modalities is not None:
             metadata["output_modalities"] = request.output_modalities
+        else:
+            pass
+        image_generation = metadata.get("image_generation")
+        if (
+            isinstance(image_generation, dict)
+            and image_generation.get("mode") == "interleaved"
+        ):
+            config = InterleavedGenerationParams.model_validate(image_generation)
+            metadata["image_generation"] = config.model_dump(exclude_none=True)
+            if isinstance(inputs, list):
+                messages = inputs
+                has_media = False
+            elif isinstance(inputs, dict):
+                messages = inputs.get("messages", [])
+                has_media = bool(
+                    inputs.get("images") or inputs.get("audios") or inputs.get("videos")
+                )
+            else:
+                raise ValueError("interleaved generation requires chat messages")
+            validate_interleaved_inputs(
+                messages, metadata.get("output_modalities"), has_media=has_media
+            )
+            metadata["output_modalities"] = ["text", "image"]
         else:
             pass
         return OmniRequest(inputs=inputs, params=params, metadata=metadata)
@@ -600,8 +657,9 @@ class Client:
             pass
         if isinstance(result, dict):
             # Multi-terminal merged result, e.g. decode + code2wav/talker/
-            # talker_stream.
+            # talker_stream, or decode + image_decode.
             audio_result = None
+            image_result = None
             if "decode" in result:
                 for audio_stage in ("code2wav", "talker", "talker_stream"):
                     if audio_stage in result:
@@ -609,42 +667,26 @@ class Client:
                         break
                     else:
                         pass
+                if "image_decode" in result:
+                    image_result = result["image_decode"] or {}
+                else:
+                    pass
             else:
                 pass
-            if audio_result is not None:
-                decode_result = result["decode"] or {}
-                text = decode_result.get("text")
-                if isinstance(text, str):
-                    chunk.text = text
+            if audio_result is not None or image_result is not None:
+                chunk = Client.default_result_builder(
+                    request_id, result["decode"] or {}
+                )
+                if audio_result is not None:
+                    Client.set_audio_data(chunk, audio_result)
+                    chunk.usage = chunk.usage or Client.build_usage_info(audio_result)
                 else:
                     pass
-                finish_reason = decode_result.get("finish_reason")
-                if finish_reason is not None:
-                    chunk.finish_reason = finish_reason
-                    chunk.model_finish_reason = decode_result.get(
-                        "model_finish_reason", finish_reason
-                    )
+                if image_result is not None and image_result.get("image") is not None:
+                    chunk.image = image_result["image"]
+                    chunk.modality = "image"
                 else:
                     pass
-                output_token_logprobs = decode_result.get("output_token_logprobs")
-                if output_token_logprobs is not None:
-                    chunk.output_token_logprobs = output_token_logprobs
-                else:
-                    pass
-                omni_rollout = decode_result.get("omni_rollout")
-                if omni_rollout is not None:
-                    chunk.omni_rollout = omni_rollout
-                else:
-                    pass
-                weight_version = decode_result.get("weight_version")
-                if weight_version is not None:
-                    chunk.weight_version = weight_version
-                else:
-                    pass
-                Client.set_audio_data(chunk, audio_result)
-                chunk.usage = Client.build_usage_info(
-                    decode_result
-                ) or Client.build_usage_info(audio_result)
                 return chunk
             else:
                 pass
@@ -703,6 +745,45 @@ class Client:
             else:
                 pass
             Client.set_audio_data(chunk, result)
+            if result.get("modality") == "interleaved":
+                chunk.images = list(result.get("images", []))
+                chunk.content = normalize_interleaved_content(
+                    result["content"], chunk.images
+                )
+                chunk.text = "".join(
+                    part["text"] for part in chunk.content if part["type"] == "text"
+                )
+                images_by_id = {image["id"]: image for image in chunk.images}
+                chunk.segments = []
+                for index, part in enumerate(chunk.content):
+                    segment: UMMSegment = {
+                        "type": "segment",
+                        "session_id": request_id,
+                        "segment_index": index,
+                        "kind": "text",
+                        "data": "",
+                    }
+                    if part["type"] == "text":
+                        segment["data"] = part["text"]
+                    else:
+                        image = images_by_id[part["image_id"]]
+                        image_bytes = base64.b64decode(image["data"], validate=True)
+                        segment["kind"] = "image"
+                        segment["data"] = {
+                            "kind": "image",
+                            "mime_type": "image/png",
+                            "url": f"data:image/png;base64,{image['data']}",
+                            "sha256": hashlib.sha256(image_bytes).hexdigest(),
+                            "size_bytes": len(image_bytes),
+                        }
+                    chunk.segments.append(segment)
+            else:
+                pass
+            if result.get("image") is not None:
+                chunk.image = result["image"]
+                chunk.modality = "image"
+            else:
+                pass
             chunk.usage = Client.build_usage_info(result)
             return chunk
         else:
@@ -818,6 +899,22 @@ class Client:
             pass
         chunk.text = str(data)
         return chunk
+
+
+def validate_image_streaming(request: GenerateRequest) -> None:
+    modalities = (
+        request.output_modalities
+        if request.output_modalities is not None
+        else request.metadata.get("output_modalities")
+    )
+    if request.metadata.get("image_generation") is not None or "image" in (
+        modalities or []
+    ):
+        raise ClientError(
+            "Image generation does not support streaming; set stream=false"
+        )
+    else:
+        pass
 
 
 def extract_inputs(request: GenerateRequest) -> object:

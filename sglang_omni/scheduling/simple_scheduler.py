@@ -63,6 +63,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         abort_callback: Callable[[str], None] | None = None,
         shutdown_callback: Callable[[], None] | None = None,
         request_arrival_hook: RequestArrivalHook | None = None,
+        allow_multiple_inflight_per_request: bool = False,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -91,6 +92,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.abort_callback = abort_callback
         self.shutdown_callback = shutdown_callback
         self.request_arrival_hook = request_arrival_hook
+        self.allow_multiple_inflight_per_request = allow_multiple_inflight_per_request
         self.shutdown_lock = threading.Lock()
         self.aborted: set[str] = set()
         self.abort_lock = threading.Lock()
@@ -112,14 +114,12 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             return request_id in self.aborted
 
     def consume_if_aborted(self, request_id: str) -> bool:
-        with self.abort_lock:
-            if request_id not in self.aborted:
-                return False
-            else:
-                pass
-            self.aborted.discard(request_id)
-        self.cleanup_aborted_request(request_id)
-        return True
+        """Skip aborted work at admission while retaining its cancellation marker.
+
+        Subclasses may retire skipped operations or admit required cleanup work.
+        The marker remains set so later work for the same request is suppressed.
+        """
+        return self.is_aborted(request_id)
 
     def enqueue(self, message: IncomingMessage) -> None:
         """Runs on the stage event loop, so the arrival hook must not block."""
@@ -235,12 +235,17 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             else:
                 pass
         except Exception:
-            if self.consume_if_aborted(msg.request_id):
+            if self.is_aborted(msg.request_id):
                 return
             else:
                 pass
             raise
-        if self.consume_if_aborted(msg.request_id):
+        finally:
+            if self.is_aborted(msg.request_id):
+                self.cleanup_aborted_request(msg.request_id)
+            else:
+                pass
+        if self.is_aborted(msg.request_id):
             return
         else:
             pass
@@ -251,27 +256,42 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop,
     ) -> None:
-        if self.batch_fn is None or len(batch) <= 1:
-            for msg in batch:
+        active_batch = [
+            msg for msg in batch if not self.consume_if_aborted(msg.request_id)
+        ]
+        if not active_batch:
+            return
+        else:
+            pass
+        if self.batch_fn is None or len(active_batch) <= 1:
+            for msg in active_batch:
                 self.run_single(msg, loop)
             return
         else:
             pass
 
-        payloads = [msg.data for msg in batch]
-        results = self.batch_fn(payloads)
-        if asyncio.iscoroutine(results):
-            results = loop.run_until_complete(results)
-        else:
-            pass
-        if len(results) != len(batch):
+        payloads = [msg.data for msg in active_batch]
+        try:
+            results = self.batch_fn(payloads)
+            if asyncio.iscoroutine(results):
+                results = loop.run_until_complete(results)
+            else:
+                pass
+        finally:
+            for request_id in {message.request_id for message in active_batch}:
+                if self.is_aborted(request_id):
+                    self.cleanup_aborted_request(request_id)
+                else:
+                    pass
+        if len(results) != len(active_batch):
             raise ValueError(
-                f"batch_compute_fn returned {len(results)} results for {len(batch)} requests"
+                "batch_compute_fn returned "
+                f"{len(results)} results for {len(active_batch)} requests"
             )
         else:
             pass
-        for msg, result in zip(batch, results):
-            if self.consume_if_aborted(msg.request_id):
+        for msg, result in zip(active_batch, results):
+            if self.is_aborted(msg.request_id):
                 continue
             else:
                 pass
@@ -324,7 +344,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                             "SimpleScheduler: compute_fn failed for %s", msg.request_id
                         )
                         for failed_msg in batch:
-                            if self.consume_if_aborted(failed_msg.request_id):
+                            if self.is_aborted(failed_msg.request_id):
                                 continue
                             else:
                                 pass
@@ -376,13 +396,13 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     result = await asyncio.to_thread(
                         self.run_compute_in_thread, msg.data
                     )
-                    if self.consume_if_aborted(msg.request_id):
+                    if self.is_aborted(msg.request_id):
                         continue
                     else:
                         pass
                     self.emit_result(msg.request_id, result, self.outbox)
                 except Exception as exc:
-                    if self.consume_if_aborted(msg.request_id):
+                    if self.is_aborted(msg.request_id):
                         continue
                     else:
                         pass
@@ -390,6 +410,11 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                         "SimpleScheduler: compute_fn failed for %s", msg.request_id
                     )
                     self.emit_error(msg.request_id, exc, self.outbox)
+                finally:
+                    if self.is_aborted(msg.request_id):
+                        self.cleanup_aborted_request(msg.request_id)
+                    else:
+                        pass
 
         bridge_task = asyncio.create_task(bridge_inbox())
         worker_tasks = [
@@ -413,6 +438,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
 
     def abort(self, request_id: str) -> None:
         with self.abort_lock:
+            is_new_abort = request_id not in self.aborted
             self.aborted.add(request_id)
             if len(self.aborted) > 10000:
                 excess = len(self.aborted) - 5000
@@ -420,4 +446,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     self.aborted.discard(stale_request_id)
             else:
                 pass
-        self.cleanup_aborted_request(request_id)
+        if is_new_abort:
+            self.cleanup_aborted_request(request_id)
+        else:
+            pass

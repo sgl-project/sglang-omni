@@ -1,0 +1,7 @@
+config_cls: LLaDA2UniOmniPipelineConfig
+model_path: inclusionAI/LLaDA2.0-Uni
+relay_backend: shm
+stages:
+  thinker:
+    engine:
+      enable_torch_compile: false
