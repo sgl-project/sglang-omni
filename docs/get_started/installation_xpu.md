@@ -262,23 +262,19 @@ defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
 ### AuK (speech generation and editing)
 
-`tencent/AuK` and `tencent/AuK-Flash` use the same pipeline and also download the separate `Qwen/Qwen2.5-Omni-3B` conditioning encoder. The commands below use eager DiT sampling, disabling block compilation and step-graph capture at startup. These recipes have not yet been validated end-to-end on Intel XPU.
+`tencent/AuK` and `tencent/AuK-Flash` use the same pipeline and also download the separate `Qwen/Qwen2.5-Omni-3B` conditioning encoder. The commands below keep block compilation and step-graph capture enabled by default, as on CUDA. These recipes have not yet been validated end-to-end on Intel XPU.
 
 Run one checkpoint at a time:
 
 ```bash
 ZE_AFFINITY_MASK=0 sgl-omni serve \
   --model-path tencent/AuK \
-  --auk_engine.factory.enable_dit_torch_compile false \
-  --auk_engine.factory.enable_dit_cuda_graph false \
   --host 0.0.0.0 --port 8000
 ```
 
 ```bash
 ZE_AFFINITY_MASK=0 sgl-omni serve \
   --model-path tencent/AuK-Flash \
-  --auk_engine.factory.enable_dit_torch_compile false \
-  --auk_engine.factory.enable_dit_cuda_graph false \
   --host 0.0.0.0 --port 8000
 ```
 
