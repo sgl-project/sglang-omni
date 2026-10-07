@@ -196,9 +196,14 @@ def create_thinker_scheduler(
         capture_hidden=speech_enabled,
         should_emit_hidden=_should_emit_hidden if speech_enabled else None,
     )
-    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc)
-
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
+    # note (ruinique): thinker chunks terminate on any of these tokens.
+    eos_token_ids = [
+        int(tokenizer.convert_tokens_to_ids(token))
+        for token in ("<|tts_eos|>", "<|im_end|>", "</s>")
+    ]
+    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc, eos_token_ids)
+
     request_builder, result_adapter = make_thinker_scheduler_adapters(
         tokenizer=tokenizer,
         vocab_size=model_config.vocab_size,

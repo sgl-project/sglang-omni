@@ -247,11 +247,9 @@ def test_fun_asr_strategy_waits_for_unfixed_chunks_before_using_prefix() -> None
     assert third.sampling.repetition_penalty == 1.3
 
 
-def test_fun_asr_strategy_skips_rollback_on_final_decode() -> None:
-    # Past the cold-start gate, a final decode still uses the accumulated
-    # transcript as a prefix (rollback isn't needed to justify the prefix),
-    # but skips the rollback margin itself: no more audio is coming, so
-    # rolling back only risks re-generating text that may already be right.
+def test_fun_asr_strategy_final_decode_rolls_back_like_a_partial() -> None:
+    # The previous hypothesis's tail was decoded from truncated audio; the
+    # final decode has the full segment, so it must re-decode that tail too.
     strategy = FunASRStreamingStrategy()
     state = strategy.create_state(model_name="fun-asr-nano", language="English")
     for _ in range(2):
@@ -262,32 +260,15 @@ def test_fun_asr_strategy_skips_rollback_on_final_decode() -> None:
             generated_text="hello world", language="English", state=state
         )
 
+    partial_request = strategy.build_decode_request(
+        audio=b"wav", state=state, is_final=False, request_id="r-partial"
+    )
     final_request = strategy.build_decode_request(
         audio=b"wav", state=state, is_final=True, request_id="r-final"
     )
 
-    assert final_request.extra_params["_asr_streaming_prefix_text"] == "hello world"
-    assert final_request.extra_params["_asr_streaming_rollback_chars"] == 0
-    assert final_request.sampling.repetition_penalty == 1.3
-
-
-def test_fun_asr_strategy_final_decode_still_respects_cold_start_gate() -> None:
-    # is_final only changes the rollback amount, not the _UNFIXED_CHUNK_NUM
-    # cold-start gate: a final decode arriving before that gate is met still
-    # gets no forced prefix at all.
-    strategy = FunASRStreamingStrategy()
-    state = strategy.create_state(model_name="fun-asr-nano", language="English")
-    strategy.update_hypothesis(
-        generated_text="hello wor", language="English", state=state
-    )
-
-    final_request = strategy.build_decode_request(
-        audio=b"wav", state=state, is_final=True, request_id="r-final"
-    )
-
-    assert final_request.extra_params["_asr_streaming_prefix_text"] is None
-    assert final_request.extra_params["_asr_streaming_rollback_chars"] == 0
-    assert final_request.sampling.repetition_penalty == 1.0
+    assert final_request.extra_params == partial_request.extra_params
+    assert final_request.extra_params["_asr_streaming_rollback_chars"] == 8
 
 
 def test_fun_asr_strategy_updates_transcript_and_language() -> None:

@@ -154,6 +154,7 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "flow_merge_pad_budget_percent": 25.0,
         "flow_cuda_graph_capture_shapes": FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
         "enable_flow_cuda_graph": True,
+        "enable_flow_prefix_cuda_graph": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
@@ -191,6 +192,7 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         "flow_merge_pad_budget_percent": 3,
         "flow_cuda_graph_capture_shapes": [[1, 496], [5, 544], [7, 576]],
         "enable_flow_cuda_graph": True,
+        "enable_flow_prefix_cuda_graph": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
@@ -274,5 +276,10 @@ def test_fun_cosyvoice3_state_round_trip_preserves_wire_contract() -> None:
     assert restored.seed == 7
     assert restored.generation_kwargs == {"max_new_tokens": 32}
     assert restored.flow_prompt_speech_token == [[10, 11]]
-    assert restored.flow_prompt_speech_feat[0][0] == [1.0] * 80
+    torch.testing.assert_close(
+        torch.as_tensor(restored.flow_prompt_speech_feat),
+        torch.ones(1, 2, 80),
+        rtol=0,
+        atol=0,
+    )
     assert restored.audio_codes == [[20], [21]]

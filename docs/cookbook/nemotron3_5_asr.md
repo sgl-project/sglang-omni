@@ -12,6 +12,8 @@ Follow [Installation](../get_started/installation.md), then run the examples
 from the repository root. Use the repository's pinned Transformers version;
 the Nemotron compatibility implementation is included.
 
+For Intel GPUs, follow the [Nemotron 3.5 ASR XPU recipe](../get_started/installation_xpu.md#nemotron-35-asr-speech-to-text-single-xpu).
+
 ## Server Configuration
 
 The default pipeline runs one ASR stage on one GPU in `float32`:

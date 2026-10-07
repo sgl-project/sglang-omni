@@ -605,6 +605,42 @@ def test_start_profile_request_only_mode_does_not_require_trace_template(
             rec.stop()
 
 
+class RecordingProfilerControl:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def broadcast_start(self, **kwargs: object) -> None:
+        self.calls.append("start")
+
+    async def broadcast_stop(self, **kwargs: object) -> None:
+        self.calls.append("stop")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/start_profile",
+        "/stop_profile",
+        "/start_request_profile",
+        "/stop_request_profile",
+    ],
+)
+def test_profiler_routes_take_the_admin_key(
+    path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni.serve import launcher
+
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "admin-key")
+    app = FastAPI()
+    control = RecordingProfilerControl()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    body = {"enable_torch": False, "event_dir": str(tmp_path / "events")}
+
+    with TestClient(app) as client:
+        assert client.post(path, json=body).status_code == 401
+    assert control.calls == []
+
+
 def test_start_profile_torch_mode_still_requires_trace_template() -> None:
     from sglang_omni.serve import launcher
 

@@ -298,7 +298,11 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             dtype=weight.dtype,
         )
         for idx, embed_layer in enumerate(self.embedding_list):
-            embeds = embeds + embed_layer(input_ids_2d[:, idx])
+            channel_embeddings = embed_layer(input_ids_2d[:, idx])
+            if embeds.dtype == channel_embeddings.dtype:
+                embeds.add_(channel_embeddings)
+            else:
+                embeds = embeds + channel_embeddings
         return embeds
 
     @torch.no_grad()

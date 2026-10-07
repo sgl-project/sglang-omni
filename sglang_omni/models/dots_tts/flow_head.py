@@ -156,7 +156,20 @@ class DotsTTSFlowHead(nn.Module):
                 DiTInferenceContext,
                 DiTSolver,
             )
+            from dots_tts.modules.backbone.layers import RotaryEmbedding
 
+            device_type = next(self.parameters()).device.type
+            # note (yao-matrix): CUDA already disables rotary autocast in dots.tts.
+            if device_type not in ("cpu", "cuda"):
+                for module in self.modules():
+                    if isinstance(module, RotaryEmbedding):
+                        module.forward = torch.autocast(
+                            device_type=device_type, enabled=False
+                        )(module.forward)
+                    else:
+                        pass
+            else:
+                pass
             self.dit_solver = DiTSolver(
                 DiTInferenceContext.from_core(self),
                 optimize=self.optimize,
@@ -587,7 +600,7 @@ class DotsTTSFlowHead(nn.Module):
             torch.autocast(
                 device_type=device_type,
                 dtype=dtype,
-                enabled=device_type == "cuda"
+                enabled=device_type != "cpu"
                 and dtype in {torch.float16, torch.bfloat16},
             ),
         ):
@@ -817,30 +830,28 @@ class DotsTTSFlowHead(nn.Module):
         else:
             pass
         device = state.fm_sequence.device
-        cuda_device = None
-        if device.type == "cuda":
-            cuda_device = (
-                device.index
-                if device.index is not None
-                else torch.cuda.current_device()
-            )
+        if device.type == "cpu":
+            with torch.random.fork_rng(devices=[]):
+                torch.set_rng_state(state.rng_state)
+                try:
+                    yield
+                finally:
+                    state.rng_state = torch.get_rng_state()
+            return
         else:
             pass
-        with torch.random.fork_rng(
-            devices=[] if cuda_device is None else [cuda_device]
-        ):
-            if cuda_device is None:
-                torch.set_rng_state(state.rng_state)
-            else:
-                torch.cuda.set_rng_state(state.rng_state, cuda_device)
+        # Accelerator generators (CUDA, XPU, ...) keep their own Philox state;
+        # route through the device module so the state lands on that generator.
+        device_module = torch.get_device_module(device)
+        device_index = (
+            device.index if device.index is not None else device_module.current_device()
+        )
+        with torch.random.fork_rng(devices=[device_index], device_type=device.type):
+            device_module.set_rng_state(state.rng_state, device_index)
             try:
                 yield
             finally:
-                state.rng_state = (
-                    torch.get_rng_state()
-                    if cuda_device is None
-                    else torch.cuda.get_rng_state(cuda_device)
-                )
+                state.rng_state = device_module.get_rng_state(device_index)
 
     def patch_encoder_input(
         self, latents: torch.Tensor, *, already_normalized: bool = False

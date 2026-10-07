@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import ClassVar
 
+import msgpack
 import numpy as np
 import pytest
 import torch
@@ -89,6 +90,7 @@ class RunnableFakeFlow(_PackedFlow):
     def __init__(self):
         super().__init__(channels=80, max_frames=8192)
         self.spk_embed_affine_layer = torch.nn.Linear(192, 80)
+        self.prefix_pool: stages.PrefixKVPool | None = None
 
 
 class GraphRunnableFakeFlow(RunnableFakeFlow):
@@ -348,12 +350,13 @@ class FakeFlow(torch.nn.Module):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1))
         self.calls = []
+        self.token_mel_ratio = 2
         self.decoder = SimpleNamespace(estimator=FakeEstimator())
 
     def inference(self, **kwargs):
         self.calls.append(kwargs)
         token_count = kwargs["token"].shape[1]
-        return torch.ones(1, 80, token_count * 2), None
+        return torch.ones(1, 80, token_count * self.token_mel_ratio), None
 
 
 def make_payload(state: FunCosyVoice3State) -> StagePayload:
@@ -450,13 +453,19 @@ def test_cosyvoice3_token2wav_chunk_slices_mel_and_hift_delta() -> None:
     assert tail.shape[-1] == 6 * 480
 
 
-def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
+@pytest.mark.parametrize("strided", [False, True])
+def test_cosyvoice3_vocoder_prepare_and_store_audio_payload(strided: bool) -> None:
+    """Completion preserves audio and reference features over MessagePack."""
     vocoder = stages.CosyVoice3Vocoder(BatchCapableFakeFlow(), FakeHiFT())
+    reference_features = torch.arange(640, dtype=torch.float32).reshape(1, 8, 80)
+    if strided:
+        reference_features = reference_features[:, ::2, :]
     state = FunCosyVoice3State(
         text="hello",
         audio_codes=torch.tensor([[1, 2], [3, 4]]),
         flow_prompt_speech_token=torch.tensor([[5]], dtype=torch.int32),
         flow_embedding=torch.ones(1, 192),
+        flow_prompt_speech_feat=reference_features,
     )
     payload = make_payload(state)
 
@@ -472,6 +481,19 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
     assert stored.data["sample_rate"] == 24000
     assert stored.data["modality"] == "audio"
     assert "audio_codes" not in stored.data
+    completion = msgpack.unpackb(
+        msgpack.packb(stored.data, use_bin_type=True), raw=False
+    )
+    decoded_state = FunCosyVoice3State.from_dict(completion)
+    torch.testing.assert_close(
+        decoded_state.flow_prompt_speech_feat, reference_features, rtol=0, atol=0
+    )
+    result = Client.default_result_builder(stored.request_id, completion)
+    np.testing.assert_array_equal(
+        result.audio_data, np.array([0.1, 0.2], dtype=np.float32)
+    )
+    assert result.sample_rate == 24000
+    assert result.modality == "audio"
 
 
 def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
@@ -482,19 +504,32 @@ def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
         vocoder.prepare_item(payload)
 
 
-def test_mlx_vocoder_audio_payload_survives_state_storage() -> None:
+@pytest.mark.parametrize("strided", [False, True])
+def test_mlx_vocoder_audio_payload_survives_state_storage(strided: bool) -> None:
+    """The MLX completion adapter also serializes reference features and usage."""
+    reference_features = torch.arange(640, dtype=torch.float32).reshape(1, 8, 80)
+    if strided:
+        reference_features = reference_features[:, ::2, :]
     state = FunCosyVoice3State(
         text="hello",
         audio_codes=torch.tensor([[1], [2]]),
         audio_samples=[9.0],
         prompt_tokens=3,
         completion_tokens=2,
+        flow_prompt_speech_feat=reference_features,
     )
     waveform = np.array([[0.1, -0.2]], dtype=np.float32)
 
     mlx_vocoder = object.__new__(stages.CosyVoice3MlxVocoderAdapter)
     stored = mlx_vocoder.store_result(make_payload(state), state, waveform, 24000)
-    result = Client.default_result_builder(stored.request_id, stored.data)
+    completion = msgpack.unpackb(
+        msgpack.packb(stored.data, use_bin_type=True), raw=False
+    )
+    decoded_state = FunCosyVoice3State.from_dict(completion)
+    torch.testing.assert_close(
+        decoded_state.flow_prompt_speech_feat, reference_features, rtol=0, atol=0
+    )
+    result = Client.default_result_builder(stored.request_id, completion)
 
     np.testing.assert_array_equal(result.audio_data, waveform.reshape(-1))
     assert result.sample_rate == 24000
@@ -887,6 +922,7 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     scheduler = stages.create_vocoder_executor(
         "model",
         flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
         device="cpu",
         flow_batch_admission_frames=2000,
         enable_dit_torch_compile=False,
@@ -919,7 +955,11 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         ),
     )
     scheduler = stages.create_vocoder_executor(
-        "model", device="cpu", enable_dit_torch_compile=False, flow_prefix_cache_gb=0.0
+        "model",
+        device="cpu",
+        enable_dit_torch_compile=False,
+        flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
     )
 
     assert scheduler.max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
@@ -961,6 +1001,7 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     scheduler = stages.create_vocoder_executor(
         "model",
         flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
         device="cpu",
         enable_dit_torch_compile=False,
         dtype="float16",
@@ -1010,6 +1051,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
     stages.create_vocoder_executor(
         "model",
         flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
         device="cpu",
         max_batch_size=4,
         enable_dit_torch_compile=False,
@@ -1046,7 +1088,11 @@ def create_scheduler_recording_native_compile(
 
     monkeypatch.setattr(stages, "compile_dit_backbone", fake_compile)
     scheduler = stages.create_vocoder_executor(
-        "model", device="cpu", flow_prefix_cache_gb=0.0, **kwargs
+        "model",
+        device="cpu",
+        flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        **kwargs,
     )
     return compiled, scheduler
 
@@ -1154,6 +1200,7 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     _scheduler = stages.create_vocoder_executor(
         "model",
         flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
         device="cuda",
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_cuda_graph=True,
@@ -1186,6 +1233,7 @@ def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
         stages.create_vocoder_executor(
             "model",
             flow_prefix_cache_gb=0.0,
+            enable_flow_prefix_cuda_graph=True,
             enable_dit_torch_compile=True,
             enable_flow_estimator_trt=True,
         )
@@ -1323,6 +1371,7 @@ def test_create_vocoder_executor_rejects_non_positive_admission_budget(
         stages.create_vocoder_executor(
             "model",
             flow_prefix_cache_gb=0.0,
+            enable_flow_prefix_cuda_graph=True,
             device="cpu",
             flow_batch_admission_frames=0,
             enable_dit_torch_compile=False,
@@ -1344,6 +1393,7 @@ def test_pipeline_config_sets_flow_batch_admission_by_default() -> None:
         "max_batch_size": 16,
         "max_batch_wait_ms": 30,
         "enable_flow_cuda_graph": True,
+        "enable_flow_prefix_cuda_graph": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
@@ -1560,7 +1610,7 @@ def prefix_pool_scheduler(
         return [torch.full((1, 1, 1), -1.0) for _ in items]
 
     vocoder = SimpleNamespace(
-        flow=SimpleNamespace(prefix_pool=object()),
+        flow=SimpleNamespace(prefix_pool=object(), token_mel_ratio=2),
         prefix_cache_rows=prefix_cache_rows,
         grow_prefix_cache=grow_prefix_cache,
         release_prefix_cache=released.append,

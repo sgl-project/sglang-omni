@@ -53,7 +53,7 @@ Two configs are provided. Pass either with `--config`:
 |---|---|---|
 | `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503 |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
-| `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation |
+| `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
 | `sampling` | see the config | Default sampling when a session does not set its own |
 | `vision` | see the config | Camera-frame limits per unit (1 s of audio) |
 
@@ -82,7 +82,7 @@ from pathlib import Path
 from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
-reference = base64.b64encode(Path("reference.wav").read_bytes()).decode("ascii")
+reference = base64.b64encode(Path("docs/_static/audio/male-voice.wav").read_bytes()).decode("ascii")
 response = client.chat.completions.create(
     model="MiniCPM-o-4_5",
     messages=[{"role": "user", "content": "Please say hello."}],

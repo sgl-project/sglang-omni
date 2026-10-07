@@ -23,6 +23,8 @@ from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     release_rows,
     solve_flow_euler_prefix,
 )
+from sglang_omni.models.fun_cosyvoice3.prefix_cuda_graph import PrefixCudaGraphRunner
+from sglang_omni.platforms import current_platform
 
 pytestmark = pytest.mark.accelerator
 
@@ -282,3 +284,157 @@ def test_grow_rows_takes_nothing_on_a_shortfall() -> None:
     assert pool.free_blocks == []
     release_rows(pool, rows)
     assert sorted(pool.free_blocks) == [0, 1, 2] and rows[0].committed_frames == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("compile_prefix", [False, True], ids=["eager", "compiled"])
+def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> None:
+    """Replays with padding frames and unused row slots equal the eager solve,
+    also when they resume from a step above the largest tier that ran eagerly."""
+    estimator = make_estimator()
+    device = torch.device("cuda", torch.cuda.current_device())
+    dtype = torch.bfloat16
+    pools = [
+        PrefixKVPool(
+            layer_num=LAYERS,
+            euler_steps=10,
+            head_num=HEADS,
+            head_dim=HEAD_DIM,
+            capacity_frames=64 * BLOCK_FRAMES,
+            device=device,
+            dtype=dtype,
+        )
+        for _ in range(2)
+    ]
+    graph_pool, eager_pool = pools
+    if compile_prefix:
+        assert estimator.compile(dtype)
+        for pool in pools:
+            pool.forward = compile_forward_prefix()
+    else:
+        pass
+    backend = current_platform.get_device_graph_backend(device)
+    assert backend is not None
+    runner = PrefixCudaGraphRunner(
+        estimator,
+        graph_pool,
+        backend=backend,
+        autocast_dtype=dtype,
+        frame_dtype=torch.float32,
+        speaker_dtype=dtype,
+        cfg_rate=0.7,
+        mel_channels=CHANNELS,
+        speaker_channels=CHANNELS,
+        max_rows=4,
+        hop_frames=2 * CHUNK,
+        min_hop_frames=CHUNK,
+        max_frames=1024,
+    )
+    runner.capture()
+    torch.manual_seed(3)
+    streams = {}
+    for name, prompt_frames in (("a", 100), ("b", 50), ("c", 50)):
+        mel_conditioning = torch.zeros(CHANNELS, 650, device=device, dtype=dtype)
+        mel_conditioning[:, :prompt_frames] = torch.randn(
+            CHANNELS, prompt_frames, device=device, dtype=dtype
+        )
+        streams[name] = {
+            "noise": torch.randn(CHANNELS, 650, device=device, dtype=dtype),
+            "mu": torch.randn(CHANNELS, 650, device=device, dtype=dtype),
+            "mel_conditioning": mel_conditioning,
+            "speaker_embeddings": torch.randn(CHANNELS, device=device, dtype=dtype),
+        }
+    caches = {
+        name: [(PrefixCacheRow(), PrefixCacheRow()) for _ in pools] for name in streams
+    }
+    unit = torch.linspace(0, 1, 11, device=device, dtype=dtype)
+    time_span = 1 - torch.cos(unit * 0.5 * torch.pi)
+    steps = [
+        [("a", 150)],
+        [("b", 100), ("a", 250)],
+        [("a", 450), ("c", 70), ("b", 200)],
+        [("c", 150), ("b", 400)],
+        [("a", 600), ("b", 600), ("c", 300)],
+        [("a", 650)],
+    ]
+    with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        for step in steps:
+            names = [name for name, _ in step]
+            totals = [total for _, total in step]
+            starts = [caches[name][0][0].committed_frames for name in names]
+            new_frames = [total - start for start, total in zip(starts, totals)]
+
+            def take(key: str) -> torch.Tensor:
+                return (
+                    torch.cat(
+                        [
+                            streams[name][key][:, start:total].transpose(0, 1)
+                            for name, start, total in zip(names, starts, totals)
+                        ]
+                    )
+                    .unsqueeze(0)
+                    .float()
+                )
+
+            outputs = []
+            for pool_index, pool in enumerate(pools):
+                pairs = [caches[name][pool_index] for name in names]
+                for pair, total in zip(pairs, totals):
+                    assert grow_rows(pool, list(pair), [total, total])
+                inputs = dict(
+                    noise=take("noise"),
+                    time_span=time_span.float(),
+                    mu=take("mu"),
+                    speaker_embeddings=torch.stack(
+                        [streams[name]["speaker_embeddings"] for name in names]
+                    ),
+                    mel_conditioning=take("mel_conditioning"),
+                )
+                if pool is graph_pool and sum(new_frames) <= runner.tier_frames[-1]:
+                    generated = runner.run(
+                        **inputs, new_frames=new_frames, caches=pairs
+                    )
+                elif pool is graph_pool:
+                    assert (
+                        runner.run(**inputs, new_frames=new_frames, caches=pairs)
+                        is None
+                    )
+                    generated = solve_flow_euler_prefix(
+                        estimator,
+                        pool,
+                        **inputs,
+                        new_frames=new_frames,
+                        caches=pairs,
+                        cfg_rate=0.7,
+                    )
+                else:
+                    generated = solve_flow_euler_prefix(
+                        estimator,
+                        pool,
+                        **inputs,
+                        new_frames=new_frames,
+                        caches=pairs,
+                        cfg_rate=0.7,
+                    )
+                outputs.append(generated)
+            assert torch.equal(outputs[0], outputs[1]), step
+            for name in names:
+                for graph_row, eager_row in zip(*caches[name]):
+                    assert graph_row.committed_frames == eager_row.committed_frames
+                    assert torch.equal(graph_row.conv_context, eager_row.conv_context)
+                    graph_pages = graph_row.pages(device)[: graph_row.committed_frames]
+                    eager_pages = eager_row.pages(device)[: eager_row.committed_frames]
+                    for euler_step in range(10):
+                        for layer in range(LAYERS):
+                            assert torch.equal(
+                                graph_pool.keys[euler_step][layer][graph_pages],
+                                eager_pool.keys[euler_step][layer][eager_pages],
+                            )
+                            assert torch.equal(
+                                graph_pool.values[euler_step][layer][graph_pages],
+                                eager_pool.values[euler_step][layer][eager_pages],
+                            )
+    for pair_per_pool in caches.values():
+        for pool, pair in zip(pools, pair_per_pool):
+            release_rows(pool, list(pair))
+    assert all(len(pool.free_blocks) == 64 for pool in pools)

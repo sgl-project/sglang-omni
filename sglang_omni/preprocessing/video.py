@@ -278,7 +278,7 @@ async def ensure_video_list_async(
                         )  # note (Teery): Placeholder for audio
                     else:
                         pass
-                elif Path(video_item).exists():
+                elif Path(resource_connector.local_media_path(video_item)).exists():
                     # note (Teery): Load from local path with optional audio extraction
                     coro = _load_video_with_audio(video_item, is_url=False)
                     task = asyncio.create_task(coro)

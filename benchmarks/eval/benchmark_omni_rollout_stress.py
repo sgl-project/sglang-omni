@@ -49,6 +49,7 @@ from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.mmmu import MMMUSample, load_mmmu_samples
 from benchmarks.metrics.performance import compute_speed_metrics, print_speed_summary
 from benchmarks.tasks.tts import TalkerSamplingParams, talker_sampling_params
+from sglang_omni.http.admin_auth import admin_auth_headers
 from sglang_omni.utils.logging import configure_dependency_loggers
 
 logger = logging.getLogger(__name__)
@@ -169,8 +170,9 @@ async def _post_json(
     session: aiohttp.ClientSession,
     url: str,
     payload: dict[str, Any],
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    async with session.post(url, json=payload) as response:
+    async with session.post(url, json=payload, headers=headers) as response:
         body = await response.json()
         response.raise_for_status()
         return body
@@ -187,6 +189,7 @@ async def _start_request_profile(
         session,
         f"{base_url}/start_request_profile",
         {"run_id": run_id, "event_dir": event_dir},
+        headers=admin_auth_headers(),
     )
 
 
@@ -200,6 +203,7 @@ async def _stop_request_profile(
         session,
         f"{base_url}/stop_request_profile",
         {"run_id": run_id},
+        headers=admin_auth_headers(),
     )
 
 

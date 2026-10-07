@@ -80,7 +80,7 @@ def test_open_usage_failure_releases_state():
         compute_registered(scheduler, StagePayload("one-open-again", request, {}))
 
 
-def test_stage_capacity_is_aggregate():
+def test_state_budget_is_per_session():
 
     class SizedHooks(Hooks):
         def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
@@ -88,24 +88,39 @@ def test_stage_capacity_is_aggregate():
                 session_identity.id, byte_count=2
             )
 
+        def append(
+            self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+        ) -> StagePayload:
+            self.states[context.session_identity].byte_count += 1
+            return payload
+
         def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
             return ResourceUsage(bytes=self.states[session_identity].byte_count)
 
     events = queue.Queue()
-    scheduler = SessionScheduler(SizedHooks("source", events), max_state_bytes=3)
+    scheduler = SessionScheduler(
+        SizedHooks("source", events), max_state_bytes_per_session=3
+    )
 
     def invoke(sid, operation):
         request = OmniRequest(
-            None, metadata=operation_metadata(operation, SessionIdentity(sid))
+            None,
+            metadata=operation_metadata(
+                operation, SessionIdentity(sid), TimedChunk("audio", 0, 20, 0, b"x")
+            ),
         )
         return compute_registered(scheduler, StagePayload(sid + operation, request, {}))
 
     invoke("one", "open")
-    with pytest.raises(QueueFullError):
-        invoke("two", "open")
-    assert events.get_nowait() == ("close", "source", "two")
-    invoke("one", "close")
     invoke("two", "open")
+    invoke("one", "append")
+    with pytest.raises(QueueFullError):
+        invoke("one", "append")
+    # note (Junnan Li): The failed session is released at once, so a unit queued behind it cannot run.
+    with pytest.raises(ValueError, match="unknown session"):
+        invoke("one", "append")
+    # note (Junnan Li): Session two stays within its own budget while session one outgrows it.
+    invoke("two", "append")
     scheduler.stop()
     closed = sorted(events.get_nowait()[2] for _ in range(events.qsize()))
     assert closed == ["one", "two"]

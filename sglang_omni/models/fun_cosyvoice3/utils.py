@@ -121,6 +121,7 @@ class SpeakerEncoder:
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         )
         option.intra_op_num_threads = max(1, int(intra_op_threads))
+        option.add_session_config_entry("session.intra_op.allow_spinning", "0")
 
         self.session = onnxruntime.InferenceSession(
             model_path,

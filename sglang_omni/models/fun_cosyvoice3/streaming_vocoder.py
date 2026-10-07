@@ -34,7 +34,6 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     PRE_LOOKAHEAD_LEN,
     TOKEN_HOP_LEN,
     TOKEN_MAX_HOP_LEN,
-    TOKEN_MEL_RATIO,
     as_flow_embedding,
     as_flow_prompt_feat,
     as_flow_prompt_token,
@@ -54,11 +53,11 @@ SAMPLE_RATE = 24000
 NextDecode = Literal["causal_window", "leftover", "fallback", "wait"]
 
 
-def causal_hop_frames(item: FlowBatchInput) -> int:
+def causal_hop_frames(item: FlowBatchInput, *, token_mel_ratio: int) -> int:
     """Mel frames a causal hop over item solves, prompt included."""
     return (
         int(item.prompt_token.shape[1]) + int(item.token.shape[1]) - PRE_LOOKAHEAD_LEN
-    ) * TOKEN_MEL_RATIO
+    ) * token_mel_ratio
 
 
 @dataclass
@@ -219,7 +218,10 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def warmup_prefix_hops(self, item: FlowBatchInput) -> None:
         """A first hop and a follow-up hop through the prefix cache, so both
         an empty and a filled prefix are materialized before serving."""
-        cache = self.vocoder.prefix_cache_rows(causal_hop_frames(item))
+        token_mel_ratio = self.vocoder.flow.token_mel_ratio
+        cache = self.vocoder.prefix_cache_rows(
+            causal_hop_frames(item, token_mel_ratio=token_mel_ratio)
+        )
         if cache is None:
             return
         else:
@@ -232,7 +234,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 prompt_feat=item.prompt_feat,
                 embedding=item.embedding,
             )
-            if self.vocoder.grow_prefix_cache(cache, causal_hop_frames(longer)):
+            if self.vocoder.grow_prefix_cache(
+                cache, causal_hop_frames(longer, token_mel_ratio=token_mel_ratio)
+            ):
                 self.vocoder.hop_batch_prefix([longer], [cache])
             else:
                 pass
@@ -245,7 +249,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
             token=torch.zeros(1, token_count, dtype=torch.int32),
             prompt_token=torch.zeros(1, self.token_hop_len, dtype=torch.int32),
             prompt_feat=torch.zeros(
-                1, self.token_hop_len * TOKEN_MEL_RATIO, flow.output_size
+                1, self.token_hop_len * flow.token_mel_ratio, flow.output_size
             ),
             embedding=torch.zeros(1, flow.spk_embed_affine_layer.in_features),
         )
@@ -309,7 +313,12 @@ class FunCosyVoice3StreamingVocoderScheduler(
         # note (guozhihao-224): pad prompt to a hop multiple here so the
         # first generated hop stays hop+lookahead instead of waiting for
         # prompt_pad extra AR tokens.
-        token, feat = pad_flow_prompt_to_hop(token, feat, hop_len=self.token_hop_len)
+        token, feat = pad_flow_prompt_to_hop(
+            token,
+            feat,
+            hop_len=self.token_hop_len,
+            token_mel_ratio=self.vocoder.flow.token_mel_ratio,
+        )
         if state.prompt_token is None:
             state.prompt_token = token
             state.prompt_feat = feat
@@ -525,10 +534,11 @@ class FunCosyVoice3StreamingVocoderScheduler(
         cached: list[int] = []
         caches: list[tuple[PrefixCacheRow, PrefixCacheRow]] = []
         plain: list[int] = []
+        token_mel_ratio = self.vocoder.flow.token_mel_ratio
         for index, ((_, state), item) in enumerate(
             zip(participants, items, strict=True)
         ):
-            total_frames = causal_hop_frames(item)
+            total_frames = causal_hop_frames(item, token_mel_ratio=token_mel_ratio)
             cache = state.flow_cache
             if cache is None:
                 cache = self.vocoder.prefix_cache_rows(total_frames)
@@ -572,8 +582,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
         """Append each participant's new mel frames to its history and run one
         HiFT call over the step."""
         rows: list[HiftStepRow] = []
+        token_mel_ratio = self.vocoder.flow.token_mel_ratio
         for (_, state), mel in zip(participants, mels, strict=True):
-            new_frames = mel[:, :, state.token_offset * TOKEN_MEL_RATIO :].detach()
+            new_frames = mel[:, :, state.token_offset * token_mel_ratio :].detach()
             if state.hift_mel is None:
                 state.hift_mel = new_frames
             else:
