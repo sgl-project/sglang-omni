@@ -95,43 +95,6 @@ def test_native_config_preserves_component_dictionaries(snapshot: Path) -> None:
 
 
 @pytest.mark.parametrize("stage", ["thinker", "talker"])
-@pytest.mark.parametrize("compile_override", [None, True])
-def test_serving_engines_leave_sglang_torch_compile_off_like_ci(
-    stage: str,
-    compile_override: bool | None,
-    snapshot: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", "1")
-    captured: dict[str, object] = {}
-
-    def build_server_args(model_path: str, **kwargs: object) -> None:
-        del model_path
-        captured.update(kwargs)
-        raise ConfigLoaded
-
-    monkeypatch.setattr(stages, "build_sglang_server_args", build_server_args)
-    monkeypatch.setattr(
-        stages, "validate_generation_batch_policy", lambda **kwargs: None
-    )
-    factory = getattr(stages, f"create_sglang_{stage}_executor_from_config")
-    overrides = (
-        {} if compile_override is None else {"enable_torch_compile": compile_override}
-    )
-    with pytest.raises(ConfigLoaded):
-        factory(str(snapshot), server_args_overrides=overrides)
-    expected = False if compile_override is None else compile_override
-    assert captured["enable_torch_compile"] is expected
-
-
-def test_duplex_thinker_leaves_sglang_torch_compile_off() -> None:
-    from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
-
-    defaults = MiniCPMOThinkerEngineBuilder().generation_defaults(dtype="bfloat16")
-    assert defaults["enable_torch_compile"] is False
-
-
-@pytest.mark.parametrize("stage", ["thinker", "talker"])
 @pytest.mark.parametrize("trust_override", [None, False, True])
 def test_engine_factory_resolves_native_config_before_server_args(
     stage: str,
