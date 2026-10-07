@@ -36,9 +36,9 @@ from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import (
-    TPFollowerControlPlane,
     ParallelAbortMessage,
     RequestDispatchTracker,
+    TPFollowerControlPlane,
     TPLeaderFanout,
     TPWorkMessage,
 )
