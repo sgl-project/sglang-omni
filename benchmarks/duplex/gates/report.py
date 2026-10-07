@@ -186,14 +186,23 @@ def workload_stats(run, units, t0, t1):
     calls = [r for r in perception if r["kind"].startswith("hooks:")]
     if calls:
         total = sum(r["dt"] for r in calls)
-        image = sum(r["dt"] for r in perception if r["kind"] == "perc:image")
+        # encode_image calls the encoder itself, so a tree with encode_image counts only that
+        image_kinds = (
+            ("perc:image",)
+            if any(r["kind"] == "perc:image" for r in perception)
+            else ("perc:image_prepare", "perc:image_encode")
+        )
+        image = sum(r["dt"] for r in perception if r["kind"] in image_kinds)
         audio = sum(r["dt"] for r in perception if r["kind"] == "perc:audio")
         stats["perception_calls"] = len(calls)
         stats["perception_call_ms"] = 1000 * total / len(calls)
         stats["perception_image_ms"] = 1000 * image / len(calls)
         stats["perception_audio_ms"] = 1000 * audio / len(calls)
         stats["images_encoded"] = sum(
-            1 for r in perception if r["kind"] == "perc:image"
+            1 for r in perception if r["kind"] in ("perc:image", "perc:image_prepare")
+        )
+        stats["image_encoder_calls"] = sum(
+            1 for r in perception if r["kind"] == "perc:image_encode"
         )
     else:
         pass

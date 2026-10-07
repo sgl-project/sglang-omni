@@ -13,6 +13,8 @@ Recorded kinds:
   open:<Hooks>           SessionScheduler.open_session
   perc:append[_batch]    PerceptionHooks.append / append_batch
   perc:image, perc:audio one frame's image encoding / one batched streaming audio encoder call
+  perc:image_prepare     one frame's decoding and slicing when the encoder runs once per batch
+  perc:image_encode      one image encoder call over the frames of a batch, n = slices
   omni:next_batch:<mode> also carries "tokens" (new prompt tokens of an extend batch) and "max_seq" / "sum_seq" (context lengths)
   omni:run_batch:<mode>  OmniScheduler (thinker, talker) batch, plus omni:next_batch / launch / resolve
   engine:<method>        SGLang Scheduler.run_batch / process_batch_result
@@ -287,6 +289,7 @@ def patch_native_stages(recorder, module):
 
 
 def patch_streaming_perception(recorder, module):
+    patch_streaming_perception_prepare(recorder, module)
     for cls in vars(module).values():
         if isinstance(cls, type) and "encode_image" in cls.__dict__:
             wrap_method(
@@ -299,6 +302,32 @@ def patch_streaming_perception(recorder, module):
             )
         else:
             pass
+
+
+def patch_streaming_perception_prepare(recorder, module):
+    for cls in vars(module).values():
+        if isinstance(cls, type) and "prepare_image" in cls.__dict__:
+            wrap_method(
+                recorder,
+                cls,
+                "prepare_image",
+                lambda self, *a, **k: "perc:image_prepare",
+                lambda self, *a, **k: 1,
+                sync=True,
+            )
+        else:
+            pass
+
+
+def patch_image_encoder(recorder, module):
+    wrap_method(
+        recorder,
+        module.MiniCPMOImageEncoder,
+        "forward",
+        lambda self, *a, **k: "perc:image_encode",
+        lambda self, *a, **k: len(k.get("pixel_values") or ()),
+        sync=True,
+    )
 
 
 def patch_audio_encoder(recorder, module):
@@ -315,6 +344,7 @@ def patch_audio_encoder(recorder, module):
 TARGETS = {
     "sglang_omni.models.minicpm_o.components.streaming_perception": patch_streaming_perception,
     "sglang_omni.models.minicpm_o.components.audio_encoder": patch_audio_encoder,
+    "sglang_omni.models.minicpm_o.components.image_encoder": patch_image_encoder,
     "sglang_omni.scheduling.session": patch_session,
     "sglang.srt.managers.scheduler": patch_engine,
     "sglang_omni.scheduling.omni_scheduler": patch_omni,
