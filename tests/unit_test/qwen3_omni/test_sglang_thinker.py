@@ -11,7 +11,9 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 
 from sglang.srt.layers.moe.topk import StandardTopKOutput
+from sglang.srt.layers.moe.utils import MoeRunnerBackend
 from sglang.srt.layers.quantization.fp8 import Fp8Config
+from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
@@ -353,3 +355,56 @@ def test_thinker_routes_every_unquantized_moe_layer_through_the_shared_decode_ma
         assert routed_topk is moe_topk
         assert wrapper.decode_live_rows is None
     assert wrapper.model.layers[1].mlp is dense_mlp
+
+
+@pytest.mark.parametrize(
+    ("runner_backend", "expected_token_counts"),
+    [
+        (MoeRunnerBackend.TRITON, [1, 2, 17, 18, 65, 66, 101, 102, 513, 514]),
+        (MoeRunnerBackend.FLASHINFER_CUTLASS, []),
+    ],
+)
+def test_precompile_runs_the_moe_once_per_kernel_variant_up_to_the_prefill_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_backend: MoeRunnerBackend,
+    expected_token_counts: list[int],
+) -> None:
+    def table_config(
+        w1_shape: torch.Size,
+        w2_shape: torch.Size,
+        top_k: int,
+        dtype: str | None,
+        num_tokens: int,
+        return_down_config: bool,
+    ) -> tuple[dict[str, int], tuple[None, None]]:
+        block_columns = 64 if num_tokens <= 100 else 128
+        return {"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": block_columns}, (None, None)
+
+    monkeypatch.setattr(
+        sglang_thinker_module, "try_get_optimal_moe_config", table_config
+    )
+    monkeypatch.setattr(
+        sglang_thinker_module, "max_prefill_buffer_tokens", lambda: 1000
+    )
+    quant_method = object.__new__(UnquantizedFusedMoEMethod)
+    quant_method.runner = SimpleNamespace(runner_backend=runner_backend)
+    moe_block = object.__new__(Qwen3MoeSparseMoeBlock)
+    torch.nn.Module.__init__(moe_block)
+    moe_block.experts = SimpleNamespace(
+        quant_method=quant_method,
+        w13_weight=torch.zeros(128, 16, 8, dtype=torch.bfloat16),
+        w2_weight=torch.zeros(128, 8, 8, dtype=torch.bfloat16),
+    )
+    token_counts = []
+    moe_block.forward_normal = lambda hidden: token_counts.append(hidden.shape[0])
+    layer = object.__new__(Qwen3MoeDecoderLayer)
+    torch.nn.Module.__init__(layer)
+    layer.mlp = moe_block
+    wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.model = SimpleNamespace(layers=[layer])
+    wrapper.config = SimpleNamespace(num_experts_per_tok=8, hidden_size=8)
+
+    wrapper.precompile_kernels_after_loading()
+
+    assert token_counts == expected_token_counts

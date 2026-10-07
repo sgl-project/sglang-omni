@@ -14,6 +14,7 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.runner_utils.capture_mode import get_is_capture_mode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.runtime_context import get_context, get_schedule
+from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import add_prefix
@@ -1912,6 +1913,27 @@ class Qwen3OmniTalker(nn.Module):
             talker_hidden=talker_hidden,
         )
         return result_codes, summed_embeddings
+
+    @torch.no_grad()
+    def precompile_kernels_after_loading(self) -> None:
+        """Compile the repetition penalty a request's first sample would compile: one row
+        and several rows are two graphs, as a dimension of 1 specializes."""
+        activations = self.model.codec_embedding.weight
+        for rows in (1, 2):
+            apply_scaling_penalties(
+                torch.zeros(
+                    rows,
+                    self.config.text_config.vocab_size,
+                    device=activations.device,
+                    dtype=activations.dtype,
+                ),
+                torch.ones(
+                    rows,
+                    self.config.text_config.vocab_size,
+                    device=activations.device,
+                    dtype=torch.float32,
+                ),
+            )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         """Load weights from HuggingFace checkpoint."""
