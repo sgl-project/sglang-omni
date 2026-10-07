@@ -137,6 +137,8 @@ def create_sglang_talker_executor_from_config(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+        enable_torch_compile=False,
         sampling_backend="pytorch",
     )
     overrides.setdefault("trust_remote_code", False)
@@ -343,6 +345,8 @@ def create_sglang_thinker_executor_from_config(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+        enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
         sampling_backend="pytorch",
