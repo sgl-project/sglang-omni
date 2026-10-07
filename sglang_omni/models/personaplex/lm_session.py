@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import torch
 from sglang.srt.managers.schedule_batch import Req
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.request_builders import (
     LMInputs,
@@ -105,10 +106,10 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         num_forwards = timeline.num_frames + int(caller_codes.shape[0]) + 1
         positions = timeline.num_prompt_positions + num_forwards
         if positions > self.context_length - 1:
-            raise ValueError(
-                f"PersonaPlex call needs {positions} positions but the LM context "
-                f"holds {self.context_length - 1}; raise the lm stage's "
-                "context_length for longer calls"
+            raise ContextExhaustedError(
+                f"{ContextExhaustedError.CODE}: PersonaPlex call needs {positions} "
+                f"positions but the LM context holds {self.context_length - 1}; "
+                "raise the lm stage's context_length for longer calls"
             )
         else:
             pass

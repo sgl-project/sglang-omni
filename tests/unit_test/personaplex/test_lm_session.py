@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
@@ -191,9 +192,11 @@ def test_only_the_first_unit_sends_ids():
     assert later.req.sampling_params.max_new_tokens == 2
 
 
-def test_a_unit_past_the_context_is_rejected():
-    with pytest.raises(ValueError, match="context"):
+def test_a_unit_past_the_context_fails_as_context_exhausted():
+    with pytest.raises(ContextExhaustedError) as error:
         CallDriver(open_adapter(context_length=0)).build(caller_codes(1))
+    # Note (wilsonzheng0327): Stage IPC carries only the message to the client.
+    assert ContextExhaustedError.matches(RuntimeError(str(error.value)))
 
 
 def test_a_call_without_its_prompt_is_rejected():
