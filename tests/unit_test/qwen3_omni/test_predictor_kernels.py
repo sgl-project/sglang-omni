@@ -30,9 +30,11 @@ from sglang_omni.utils.predictor_layers import (
     HIDDEN_SIZE,
     MAX_FUSED_ROWS,
     add_rmsnorm_rounded,
+    codebook_step,
     resolve_fused_predictor_layers,
     resolve_predictor_layer_shape,
     split_count,
+    supports_codebook_step,
     supports_exact_add_rmsnorm,
 )
 from tests.unit_test.fixtures.qwen_predictor import TupleLinear
@@ -588,3 +590,45 @@ def test_exact_add_rmsnorm_applies_to_the_predictor_shape_only(
     assert not supports_exact_add_rmsnorm(
         HIDDEN_SIZE, torch.bfloat16, torch.device("cpu")
     )
+
+
+@accelerator
+@pytest.mark.accelerator
+def test_codebook_step_matches_argmax_gather_and_add() -> None:
+    device = torch.device("cuda")
+    vocab, rows, column = 2048, 8, 5
+    generator = torch.Generator(device=device).manual_seed(7)
+    logits = torch.randn(rows, vocab, device=device, generator=generator).to(DTYPE)
+    logits[0, 9] = logits[0, 1700] = logits[0].max() + 1
+    logits[1, 30] = logits[1, 4] = float("nan")
+    logits[2] = float("-inf")
+    logits[3, 11] = logits[3, 2047] = float("inf")
+    weight = torch.randn(vocab, HIDDEN, device=device, generator=generator).to(DTYPE)
+    summed = torch.randn(rows, HIDDEN, device=device, generator=generator).to(DTYPE)
+    codes = torch.full((rows, NUM_CODE_GROUPS), -1, device=device, dtype=torch.long)
+    expected_codes = torch.argmax(logits, dim=-1)
+    expected_summed = summed.clone()
+    expected_summed.add_(weight[expected_codes])
+    codebook_input = codebook_step(logits, weight, codes[:, column], summed)
+    assert expected_codes[:4].tolist() == [9, 4, 0, 11]
+    assert torch.equal(codes[:, column], expected_codes)
+    assert torch.equal(codes[:, :column], torch.full_like(codes[:, :column], -1))
+    assert torch.equal(codebook_input[:, 0], weight[expected_codes])
+    assert torch.equal(summed, expected_summed)
+
+
+def test_codebook_step_applies_to_bf16_power_of_two_tables_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(predictor_layers, "current_platform", CUDAOmniPlatform())
+
+    def table(rows: int, dtype: torch.dtype, device: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            shape=(rows, HIDDEN), dtype=dtype, device=torch.device(device)
+        )
+
+    assert supports_codebook_step(table(2048, DTYPE, "cuda"), torch.bfloat16)
+    assert not supports_codebook_step(table(2048, DTYPE, "cuda"), torch.float32)
+    assert not supports_codebook_step(table(2048, torch.float16, "cuda"), DTYPE)
+    assert not supports_codebook_step(table(3000, DTYPE, "cuda"), DTYPE)
+    assert not supports_codebook_step(table(2048, DTYPE, "cpu"), DTYPE)

@@ -594,6 +594,7 @@ def build_fake_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
     talker.predictor_decode_graphs = {}
     talker.predictor_decode_graph_disabled = set()
     talker.predictor_decode_graph_batch_sizes = (1, 2, 4)
+    talker.predictor_fused_codebook_step = False
     layer0_embedding = nn.Embedding(16, 8).to(device)
     talker.get_input_embeddings = lambda: layer0_embedding
     talker.code_predictor = SimpleNamespace(
