@@ -40,7 +40,9 @@ from tests.unit_test.fixtures.pipeline_fakes import make_stage_payload
     ],
 )
 def test_talker_edge_drops_encoder_features(
-    stage_name: str, encoder_out: dict[str, torch.Tensor], kept: set[str]
+    stage_name: str,
+    encoder_out: dict[str, torch.Tensor | list[torch.Tensor]],
+    kept: set[str],
 ) -> None:
     state = Qwen3OmniPipelineState(encoder_outs={stage_name: encoder_out})
     projected = project_encoder_to_talker_ar(
