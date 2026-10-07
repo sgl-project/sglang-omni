@@ -350,7 +350,11 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         else:
             pass
         # note (guozhihao-224): one batched D2H instead of per-request .item() syncs.
-        token_ids_cpu = token_ids.tolist()
+        # note (Yucheng Hu): a .tolist() on the device tensor is a pageable D2H on the
+        # default stream, which stalls the vocoder thread's kernel launches for the
+        # whole step; the pinned copy waits on an event instead.
+        self.stage_token_ids(result, token_ids)
+        token_ids_cpu = self.resolve_host_token_ids(result).tolist()
         for idx, sched_req in enumerate(requests):
             token_id = int(token_ids_cpu[idx])
             if token_id >= VOCAB_SIZE:
