@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import torch
@@ -9,9 +10,13 @@ from torch import nn
 from transformers import AutoTokenizer
 
 from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
+    DECODE_WINDOW_FRAMES,
     NemotronCode2WavScheduler,
 )
 from sglang_omni.models.nemotron_voicechat.codec import RVQVAEDecoder
+from sglang_omni.models.nemotron_voicechat.codec_cuda_graph import (
+    CodecDecodeGraphRunner,
+)
 from sglang_omni.models.nemotron_voicechat.conformer import (
     AudioPerception,
     GraphPerception,
@@ -31,12 +36,15 @@ from sglang_omni.models.weight_loader import (
     resolve_dtype,
     resolve_model_path,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.transcription import resolve_audio_source
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
+
+logger = logging.getLogger(__name__)
 
 PERCEPTION_PREFIX = "stt_model.perception."
 SAMPLES_PER_FRAME = 1_280
@@ -173,7 +181,14 @@ def create_talker_executor(
     )
 
 
-def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None):
+def create_code2wav_executor(
+    model_path: str,
+    *,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    enable_cuda_graph: bool = True,
+) -> NemotronCode2WavScheduler:
     device = resolve_concrete_device(device, gpu_id)
     generation = speech_generation_config(model_path)
     weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
@@ -193,6 +208,19 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None
     decoder.control_codes.copy_(markers["_control_codes"].reshape(-1))
     decoder.silence_codes.copy_(markers["codec_silence_tokens"].reshape(-1))
     decoder = decoder.to(device=device, dtype=resolve_dtype(dtype)).eval()
+    graph_backend = current_platform.get_device_graph_backend(device)
+    stream_decoder: RVQVAEDecoder | CodecDecodeGraphRunner
+    if (
+        enable_cuda_graph
+        and graph_backend is not None
+        and current_platform.supports_graph_captured_fft()
+    ):
+        stream_decoder = CodecDecodeGraphRunner(
+            decoder, graph_backend, device, DECODE_WINDOW_FRAMES
+        )
+    else:
+        logger.info(f"Nemotron codec decode runs eagerly on {device}")
+        stream_decoder = decoder
 
     @torch.inference_mode()
     def decode(payload: StagePayload) -> StagePayload:
@@ -207,7 +235,7 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None
         )
         return payload
 
-    return NemotronCode2WavScheduler(decoder, device, compute_fn=decode)
+    return NemotronCode2WavScheduler(stream_decoder, device, compute_fn=decode)
 
 
 def create_decode_executor(model_path, **_):
