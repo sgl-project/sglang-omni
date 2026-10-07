@@ -110,11 +110,14 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
 
 @pytest.fixture
 def asr_server_args():
-    from sglang.srt.runtime_context import get_context
+    from sglang.srt.runtime_context import get_context, get_parallel
 
     mm_attention_backend = "aiter_attn" if current_platform.is_rocm() else "triton_attn"
-    with get_context().override_server_args(
-        model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend
+    with (
+        get_context().override_server_args(
+            model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend
+        ),
+        get_parallel().override(tp_rank=0, attn_tp_rank=0),
     ):
         yield
 
@@ -150,7 +153,7 @@ def test_graph_matches_eager_tower(asr_server_args):
             local_rank=0,
             distributed_init_method="tcp://127.0.0.1:29601",
         )
-        initialize_model_parallel(tensor_model_parallel_size=1)
+        initialize_model_parallel()
     from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 
     cfg = Qwen3OmniMoeAudioEncoderConfig(

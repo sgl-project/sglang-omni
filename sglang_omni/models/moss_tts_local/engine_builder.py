@@ -92,6 +92,8 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
+            # note (Zhang Yiyang): Tests showed costly startup with no consistent throughput gain from compile.
+            "enable_torch_compile": False,
             "max_prefill_tokens": min(self.context_length, 8192),
             "sampling_backend": "pytorch",
             "trust_remote_code": True,

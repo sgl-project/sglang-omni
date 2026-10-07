@@ -105,10 +105,10 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
 | `use_audio_in_video` | bool | `null` | Set to `true` to process embedded audio. Requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported. |
 
-Non-streaming chat requests return HTTP 400 for invalid media and HTTP 500 for
+Non-streaming chat requests return HTTP 400 for invalid media, HTTP 503 when the request queue is full, and HTTP 500 for other
 server failures. With `stream=true`, errors detected after the event stream
 starts are sent as `data: {"error": {"message": "...", "type": "invalid_request_error", "code": 400}}`,
-followed by `data: [DONE]`. Server failures use `type: "server_error"` and
+followed by `data: [DONE]`. A full request queue uses `type: "server_error"` and `code: 503`. Other server failures use `type: "server_error"` and
 `code: 500`. The HTTP status remains 200 once streaming has started; clients
 must check for an `error` event, including after partial output.
 

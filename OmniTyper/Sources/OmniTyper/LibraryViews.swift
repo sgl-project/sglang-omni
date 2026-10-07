@@ -54,7 +54,7 @@ struct HistoryView: View {
                                         Button(L("history.exportAudio")) { if let url = store.audioURL(for: entry) { FileActions.exportAudio(url) } }
                                     }
                                     Button(L("action.delete"), role: .destructive) { store.delete([entry.id]) }
-                                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 20)
+                                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                             }.controlSize(.small)
                             if entry.rawText != entry.text {
                                 DisclosureGroup(L("home.originalTranscript")) { Text(entry.rawText).textSelection(.enabled).padding(.top, 6) }.font(.system(size: 11)).foregroundStyle(.secondary)

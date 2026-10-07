@@ -28,7 +28,7 @@ Settings you may want to change in the config:
 |---|---|---|
 | `max_sessions` | 2 | Conversations served at the same time |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
-| `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation |
+| `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation; a conversation that needs more is closed and the others keep running |
 | `sampling.*` | see file | Default sampling for sessions that do not set their own |
 | `vision.*` | see file | Limits on camera frames per unit (1 s of audio) |
 

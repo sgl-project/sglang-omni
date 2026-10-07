@@ -16,6 +16,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -29,6 +32,24 @@ from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
     SourceModuleHnNSF2,
     init_weights,
 )
+
+
+@contextmanager
+def default_stream_for_cufft(
+    device: torch.device,
+) -> Iterator[torch.cuda.Stream | None]:
+    """Run cuFFT on the default stream and yield the caller's stream."""
+    if device.type == "cuda":
+        caller_stream = torch.cuda.current_stream(device)
+        default_stream = torch.cuda.default_stream(device)
+        # note (zhaochenyang20): new cuFFT plans upload their tables on the
+        # default stream, which a non-blocking caller stream does not wait for.
+        default_stream.wait_stream(caller_stream)
+        with torch.cuda.stream(default_stream):
+            yield caller_stream
+        caller_stream.wait_stream(default_stream)
+    else:
+        yield None
 
 
 class ConvRNNF0Predictor(nn.Module):
@@ -181,16 +202,22 @@ class HiFTGenerator(nn.Module):
         self.f0_predictor = (
             ConvRNNF0Predictor() if f0_predictor is None else f0_predictor
         )
+        self.noise_generator: torch.Generator | None = None
 
     def stft(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        spec = torch.stft(
-            x,
-            self.istft_params["n_fft"],
-            self.istft_params["hop_len"],
-            self.istft_params["n_fft"],
-            window=self.stft_window.to(x.device),
-            return_complex=True,
-        )
+        with default_stream_for_cufft(x.device) as caller_stream:
+            spec = torch.stft(
+                x,
+                self.istft_params["n_fft"],
+                self.istft_params["hop_len"],
+                self.istft_params["n_fft"],
+                window=self.stft_window.to(x.device),
+                return_complex=True,
+            )
+        if caller_stream is not None:
+            spec.record_stream(caller_stream)
+        else:
+            pass
         spec = torch.view_as_real(spec)
         return (spec[..., 0], spec[..., 1])
 
@@ -198,13 +225,18 @@ class HiFTGenerator(nn.Module):
         magnitude = torch.clip(magnitude, max=100.0)
         real = magnitude * torch.cos(phase)
         img = magnitude * torch.sin(phase)
-        inverse_transform = torch.istft(
-            torch.complex(real, img),
-            self.istft_params["n_fft"],
-            self.istft_params["hop_len"],
-            self.istft_params["n_fft"],
-            window=self.stft_window.to(magnitude.device),
-        )
+        with default_stream_for_cufft(magnitude.device) as caller_stream:
+            inverse_transform = torch.istft(
+                torch.complex(real, img),
+                self.istft_params["n_fft"],
+                self.istft_params["hop_len"],
+                self.istft_params["n_fft"],
+                window=self.stft_window.to(magnitude.device),
+            )
+        if caller_stream is not None:
+            inverse_transform.record_stream(caller_stream)
+        else:
+            pass
         return inverse_transform
 
     def decode(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
@@ -240,13 +272,20 @@ class HiFTGenerator(nn.Module):
     def forward(
         self, speech_feat: torch.Tensor, cache_source: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        f0 = self.f0_predictor(speech_feat)
-        s = self.f0_upsamp(f0[:, None]).transpose(1, 2)
-        s, _, _ = self.m_source(s)
-        s = s.transpose(1, 2)
+        if self.noise_generator is None:
+            # note (zhaochenyang20): vocoder noise must not advance a colocated sampler's RNG.
+            noise_generator = torch.Generator(device=speech_feat.device)
+            noise_generator.manual_seed(torch.initial_seed())
+            self.noise_generator = noise_generator
+        else:
+            noise_generator = self.noise_generator
+        fundamental_frequency = self.f0_predictor(speech_feat)
+        source_signal = self.f0_upsamp(fundamental_frequency[:, None]).transpose(1, 2)
+        source_signal, _, _ = self.m_source(source_signal, noise_generator)
+        source_signal = source_signal.transpose(1, 2)
         if cache_source is not None and cache_source.shape[2]:
-            s[:, :, : cache_source.shape[2]] = cache_source
+            source_signal[:, :, : cache_source.shape[2]] = cache_source
         else:
             pass
-        generated_speech = self.decode(x=speech_feat, s=s)
-        return (generated_speech, s)
+        generated_speech = self.decode(x=speech_feat, s=source_signal)
+        return (generated_speech, source_signal)

@@ -152,12 +152,12 @@ def stub_stage_models(monkeypatch: pytest.MonkeyPatch) -> SessionHooks:
 @pytest.mark.parametrize(
     ("settings", "sessions", "state_bytes", "thinker", "talker"),
     [
-        ("", 2, 4 << 30, 3, 3),
+        ("", 2, 2 << 30, 3, 3),
         (
             "max_sessions: 64\nspeech_state_bytes_per_session: 1024\nstages:\n"
             "  talker:\n    engine:\n      max_running_requests: 3\n",
             64,
-            65536,
+            1024,
             65,
             3,
         ),
@@ -193,7 +193,7 @@ def test_duplex_yaml_builds_session_stages(
     for scheduler in (perception, speech):
         assert scheduler.max_open_sessions == sessions
         assert scheduler.max_concurrency == 1
-    assert speech.max_state_bytes == state_bytes
+    assert speech.max_state_bytes_per_session == state_bytes
     assert build_realtime_deployment(Mock(), config).max_connections == sessions
     for stage_name, factory, expected in (
         ("thinker", native_stages.create_thinker_scheduler, thinker),

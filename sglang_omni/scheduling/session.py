@@ -53,7 +53,7 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 DEFAULT_MAX_OPEN_SESSIONS = 64
 DEFAULT_MAX_CONCURRENCY = 4
-DEFAULT_MAX_STATE_BYTES = 1 << 30
+DEFAULT_MAX_STATE_BYTES_PER_SESSION = 1 << 30
 
 
 class ChunkEmitter(Protocol):
@@ -100,7 +100,6 @@ class SessionHooks:
 class StageSession:
     is_open: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
-    usage: ResourceUsage = field(default_factory=ResourceUsage)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -149,12 +148,12 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         compute_fn: StageCompute | None = None,
         max_open_sessions: int = DEFAULT_MAX_OPEN_SESSIONS,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
-        max_state_bytes: int = DEFAULT_MAX_STATE_BYTES,
+        max_state_bytes_per_session: int = DEFAULT_MAX_STATE_BYTES_PER_SESSION,
     ) -> None:
         self.session_hooks = session_hooks
         self.request_compute = compute_fn
         self.max_open_sessions = max_open_sessions
-        self.max_state_bytes = max_state_bytes
+        self.max_state_bytes_per_session = max_state_bytes_per_session
         self.open_sessions: dict[SessionIdentity, StageSession] = {}
         self.append_cancel_events: dict[str, threading.Event] = {}
         self.session_table_lock = threading.Lock()
@@ -329,22 +328,20 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         with self.session_table_lock:
             self.open_sessions.pop(session_identity, None)
 
-    def update_usage(
-        self, session: StageSession, session_identity: SessionIdentity
-    ) -> None:
-        usage = self.session_hooks.usage(session_identity)
-        with self.session_table_lock:
-            session.usage = usage
-            if (
-                sum(
-                    stage_session.usage.bytes
-                    for stage_session in self.open_sessions.values()
-                )
-                > self.max_state_bytes
-            ):
-                raise QueueFullError()
-            else:
-                pass
+    def check_usage(self, session_identity: SessionIdentity) -> None:
+        """Fail only the session whose state outgrew its own budget.
+
+        The check runs after the open or append that grew the state, so a
+        session may exceed its budget by that one step before it fails; other
+        sessions are not affected.
+        """
+        if (
+            self.session_hooks.usage(session_identity).bytes
+            > self.max_state_bytes_per_session
+        ):
+            raise QueueFullError()
+        else:
+            pass
 
     def open_session(
         self, session_identity: SessionIdentity, request: OmniRequest
@@ -366,7 +363,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         try:
             self.session_hooks.open(session_identity, request)
             session.is_open = True
-            self.update_usage(session, session_identity)
+            self.check_usage(session_identity)
             if self.is_shutting_down:
                 raise RuntimeError("session scheduler is stopping")
             else:
@@ -439,7 +436,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                                     emit=emit_chunk,
                                 ),
                             )
-                            self.update_usage(session, session_identity)
+                            self.check_usage(session_identity)
                             return updated_payload
                         finally:
                             with self.session_table_lock:

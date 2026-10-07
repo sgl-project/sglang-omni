@@ -90,6 +90,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import statistics
 import time
@@ -110,6 +111,7 @@ from benchmarks.tasks.asr import (
     build_asr_eval_results,
     run_asr_transcription,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
 
@@ -772,6 +774,11 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     concurrencies = args.concurrencies
     max_samples = args.max_samples if args.max_samples > 0 else None

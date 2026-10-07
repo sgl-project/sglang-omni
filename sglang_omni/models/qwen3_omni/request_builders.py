@@ -14,6 +14,7 @@ from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.mrope_positions import talker_can_use_linear_mrope
 from sglang_omni.models.qwen3_omni.payload_types import (
     EncoderInputs,
     Qwen3OmniPipelineState,
@@ -958,22 +959,18 @@ def build_sglang_talker_request(
         if suppress_tokens
         else None
     )
-    if thinker_config is not None and talker_model_inputs:
-        from sglang_omni.models.qwen3_omni.mrope_positions import (
-            linear_mrope_positions,
-            talker_can_use_linear_mrope,
+    # note (ratish): omit zero-delta metadata so all-linear decode batches avoid
+    # the blocking delta copy.
+    if (
+        thinker_config is not None
+        and talker_model_inputs
+        and not talker_can_use_linear_mrope(
+            input_ids_tensor, talker_model_inputs, thinker_config
         )
-
-        ids = input_ids_tensor.to(dtype=torch.long)
-        mm_model_inputs = talker_model_inputs or {}
-        if talker_can_use_linear_mrope(ids, mm_model_inputs, thinker_config):
-            mrope_positions, mrope_position_delta = linear_mrope_positions(
-                int(ids.numel())
-            )
-        else:
-            mrope_positions, mrope_position_delta = compute_mrope_positions(
-                ids, mm_model_inputs, thinker_config
-            )
+    ):
+        mrope_positions, mrope_position_delta = compute_mrope_positions(
+            input_ids_tensor, talker_model_inputs, thinker_config
+        )
         mm_inputs = MultimodalInputs(mm_items=[])
         mm_inputs.mrope_positions = mrope_positions
         mm_inputs.mrope_position_delta = mrope_position_delta

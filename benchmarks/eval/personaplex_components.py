@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -39,6 +40,7 @@ from sglang_omni.models.personaplex.components.mimi import (
 )
 from sglang_omni.models.personaplex.sglang_model import PersonaPlexForCausalLM
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 DUMP_SCRIPT = Path(__file__).with_name("personaplex_reference_dump.py")
 MIMI_ATOL = 1e-5  # float32 codec through two cuDNN builds, TF32 off on both
@@ -271,6 +273,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     source = Path(args.reference_source).expanduser().resolve()
     checkpoint = Path(resolve_checkpoint(args.checkpoint))

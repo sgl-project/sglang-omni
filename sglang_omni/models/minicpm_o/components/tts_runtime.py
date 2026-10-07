@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import torch
 
 from sglang_omni.models.minicpm_o.components.code2wav import (
     OUTPUT_SAMPLE_RATE,
@@ -45,7 +46,6 @@ class SharedSpeaker:
 
 @dataclass(kw_only=True)
 class MiniCPMOVocoderSessionState:
-    session_id: str
     speaker: SharedSpeaker
     caches: StreamCaches
     pre_lookahead_tokens: int
@@ -55,12 +55,9 @@ class MiniCPMOVocoderSessionState:
     has_pending_turn: bool = False
 
     def held(self) -> ResourceUsage:
-        size = estimate_cache_bytes((self.caches, self.pending_codec_token_ids))
-        # note (Junnan Li): Shared caches are charged once, to the voice's earliest open session.
-        if self.speaker.session_ids[0] == self.session_id:
-            size += estimate_cache_bytes(self.speaker.base_caches)
-        else:
-            pass
+        size = estimate_cache_bytes(
+            (self.caches, self.pending_codec_token_ids)
+        ) + estimate_cache_bytes(self.speaker.base_caches)
         return ResourceUsage(slots={"tts": 1}, bytes=size)
 
 
@@ -84,6 +81,9 @@ class MiniCPMOVocoderRuntime:
         speaker = self.speakers.get(reference_key)
         if speaker is None:
             (prompt,) = self.code2wav.prepare_references([reference_audio])
+            # note (Dayuxiaoshui): references are prepared on the codec's decode stream.
+            device_module = torch.get_device_module(self.token2wav.device)
+            device_module.current_stream().wait_stream(self.code2wav.decode_stream)
             speaker = SharedSpeaker(
                 reference_key=reference_key,
                 prompt=prompt,
@@ -94,7 +94,6 @@ class MiniCPMOVocoderRuntime:
             pass
         speaker.session_ids.append(session_id)
         state = MiniCPMOVocoderSessionState(
-            session_id=session_id,
             speaker=speaker,
             caches=clone_caches(speaker.base_caches),
             pre_lookahead_tokens=self.token2wav.flow.pre_lookahead_len,

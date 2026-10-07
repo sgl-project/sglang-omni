@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import struct
 import sys
 import types
@@ -227,6 +228,79 @@ def test_local_transformer_rejects_out_of_range_position():
 def test_rotate_half_interleaved_matches_upstream():
     x = torch.randn(5, 4, 8)
     torch.testing.assert_close(rotate_half_interleaved(x), hf_rotate_half(x))
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("batch_size,head_dim", [(1, 8), (3, 80), (16, 80)])
+@torch.no_grad()
+def test_local_transformer_fused_rotary_matches_eager(
+    monkeypatch, dtype, batch_size, head_dim
+):
+    pytest.importorskip("triton")
+    torch.manual_seed(42)
+    hidden_size = 4 * head_dim
+    module = MossTTSLocalTransformer(
+        hidden_size=hidden_size,
+        num_heads=4,
+        inner_size=2 * hidden_size,
+        num_layers=2,
+        max_positions=N_VQ + 1,
+        rope_base=1_000_000.0,
+    ).to(device="cuda", dtype=dtype)
+    reference = copy.deepcopy(module)
+    for decoder in (module, reference):
+        decoder.ensure_kv_cache(batch_size + 2, torch.device("cuda"), dtype)
+        for key, value in decoder.kv_cache:
+            key.fill_(7)
+            value.fill_(7)
+    for position in range(N_VQ + 1):
+        inputs = torch.randn(batch_size, hidden_size, device="cuda", dtype=dtype)
+        actual = module.step(inputs, position)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "sglang_omni.models.moss_tts_local.local_transformer.triton", None
+            )
+            expected = reference.step(inputs, position)
+        assert torch.equal(actual, expected)
+        for actual_cache, expected_cache in zip(module.kv_cache, reference.kv_cache):
+            for actual_tensor, expected_tensor in zip(actual_cache, expected_cache):
+                assert torch.equal(actual_tensor, expected_tensor)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@torch.no_grad()
+def test_local_transformer_fused_rotary_graph_replay(monkeypatch):
+    pytest.importorskip("triton")
+    module = MossTTSLocalTransformer(
+        hidden_size=320,
+        num_heads=4,
+        inner_size=640,
+        num_layers=1,
+        max_positions=N_VQ + 1,
+        rope_base=1_000_000.0,
+    ).to(device="cuda", dtype=torch.bfloat16)
+    reference = copy.deepcopy(module)
+    inputs = torch.randn(N_VQ + 1, 3, 320, device="cuda", dtype=torch.bfloat16)
+    for position in range(N_VQ + 1):
+        module.step(inputs[position], position)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        outputs = [
+            module.step(inputs[position], position) for position in range(N_VQ + 1)
+        ]
+    for _ in range(2):
+        inputs.normal_()
+        graph.replay()
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "sglang_omni.models.moss_tts_local.local_transformer.triton", None
+            )
+            for position, output in enumerate(outputs):
+                assert torch.equal(output, reference.step(inputs[position], position))
 
 
 # Shared MOSS-Audio-Tokenizer encoder
@@ -736,7 +810,7 @@ def test_moss_local_engine_uses_text_backbone_context(
     )
 
 
-def test_moss_tts_local_generation_defaults_defer_torch_compile_to_builder() -> None:
+def test_moss_tts_local_generation_defaults_disable_torch_compile() -> None:
     builder = MossTtsLocalEngineBuilder(
         enable_async_decode=True,
         async_decode_min_batch_size=1,
@@ -744,7 +818,9 @@ def test_moss_tts_local_generation_defaults_defer_torch_compile_to_builder() -> 
         codec_mem_reserve=0.0,
     )
 
-    assert "enable_torch_compile" not in builder.generation_defaults(dtype="bfloat16")
+    assert (
+        builder.generation_defaults(dtype="bfloat16")["enable_torch_compile"] is False
+    )
 
 
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(

@@ -18,7 +18,6 @@ from sglang_omni.models.qwen3_omni.components.vision_compat import (
     Qwen3OmniMoeVisionEncoderCompat,
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
-from sglang_omni.utils import instantiate_module
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +131,16 @@ def build_visual(
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:
-    vision_cfg = thinker_cfg.vision_config
-    visual = instantiate_module(VISUAL_CLASS, vision_cfg)
+    # note (yzxiao): Stage imports must not initialize the platform layer.
+    from sglang_omni.models.qwen3_omni.components.vision_encoder import (
+        instantiate_visual,
+    )
+
+    visual = instantiate_visual(
+        thinker_cfg.vision_config,
+        device=device,
+        native_visual_class=VISUAL_CLASS,
+    )
     visual = load_module(
         visual,
         model_path,

@@ -20,6 +20,7 @@ class FakeToken2Wav:
 
     def __init__(self) -> None:
         self.flow = SimpleNamespace(pre_lookahead_len=PRE_LOOKAHEAD)
+        self.device = torch.device("cpu")
         self.opened = 0
 
     def open_stream(self, prompt: tuple[torch.Tensor, ...]) -> tuple[dict, dict]:
@@ -44,6 +45,7 @@ class FakeCode2Wav:
 
     def __init__(self) -> None:
         self.token2wav = FakeToken2Wav()
+        self.decode_stream = torch.cpu.current_stream()
         self.prepared: list[bytes] = []
 
     def resolve_reference_key(self, reference: bytes) -> tuple[str, bytes]:
@@ -76,7 +78,7 @@ def test_voice_cache_lifecycle() -> None:
     shared = estimate_cache_bytes(first.speaker.base_caches)
     own = estimate_cache_bytes((first.caches, first.pending_codec_token_ids))
     assert runtime.held("a").bytes == own + shared
-    assert runtime.held("b").bytes == own
+    assert runtime.held("b").bytes == own + shared
 
     runtime.close_session("a")
     assert runtime.held("b").bytes == own + shared

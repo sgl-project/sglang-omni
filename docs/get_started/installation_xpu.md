@@ -13,7 +13,7 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano,
-MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS and PersonaPlex) plus the API server;
+MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
@@ -86,7 +86,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.20   # the pinned release
+git checkout v0.5.21   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
@@ -173,6 +173,104 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "voice":"default","ref_audio":"/path/to/ref.wav","ref_text":"reference transcript",
        "response_format":"wav"}' -o out.wav
 ```
+
+#### Codec decoding on XPU
+
+The stateful incremental codec decoder runs, but the pipeline starts it with
+`async_decode: false`, and the vocoder captures its decode graphs during the
+asynchronous decode warmup, so none are captured. Capturing the shape set the CUDA
+defaults imply has not been shown to pay here yet: on one Arc Pro B60 it ran past
+the 600 s stage startup budget, and the engine then ran out of memory on a 24 GB
+card once the graphs were resident.
+
+The speaker encoder graphs do capture, on the default bucket ladder, for about 2 s of
+extra startup. The reference encoder stays eager whatever the ladder says: its
+transformers Mimi encoder reads a mask tensor on the host mid-forward, which a capture
+cannot record, so the platform declines that one capability and the batcher logs
+`qwen3_tts_reference_encoder_graph resolved=eager`.
+
+To try the fast path, turn the asynchronous path back on; `incremental_codec_compile`
+is worth dropping with it, since compiling the codec kernels is what dominated that
+startup:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      async_decode: true
+      incremental_codec_compile: false
+```
+
+An explicit stage value wins over the pipeline default. See the platform-neutral
+defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
+
+### dots.tts (text-to-speech, single XPU)
+
+The XPU installation includes `dots.tts==0.2.1`.
+All three checkpoints were validated on one 24 GB Intel Arc Pro B60 with bf16,
+`mem_fraction_static=0.20`, and `max_generate_length=500`:
+
+| Checkpoint | Config | `num_steps` | `max_running_requests` tested |
+|---|---|---|---|
+| `dots-studio/dots.tts-mf` | `examples/configs/dots_tts.yaml` | 4 | 4 |
+| `dots-studio/dots.tts-soar` | `examples/configs/dots_tts_soar.yaml` | 10 | 1 |
+| `dots-studio/dots.tts-base` | `examples/configs/dots_tts_soar.yaml` | 10 | 1 |
+
+For MF on B60, lower the config's default 16 request slots to the 4 slots used in validation. Keep the checkpoint revision pinned by the config:
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --config examples/configs/dots_tts.yaml \
+  --latent_engine.engine.max_running_requests 4 \
+  --latent_engine.engine.cuda_graph_max_bs 4 \
+  --allowed-local-media-path docs/_static/audio \
+  --host 0.0.0.0 --port 8000
+```
+
+For SOAR, use its single-request config:
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path dots-studio/dots.tts-soar \
+  --config examples/configs/dots_tts_soar.yaml \
+  --allowed-local-media-path docs/_static/audio \
+  --host 0.0.0.0 --port 8000
+```
+
+For base, use the same command with
+`--model-path dots-studio/dots.tts-base`. Base and SOAR require
+`max_running_requests=1`; continuous batching is MF-only.
+
+The `disable_cuda_graph` and `cuda_graph_max_bs` config names also control
+SGLang backbone decode graphs on XPU. The configs enable them; use
+`--latent_engine.engine.disable_cuda_graph true` for eager backbone decode.
+The batched acoustic tail runs eager on XPU. Its memory admission precheck
+queries free XPU memory and rejects oversized pools before allocation.
+Lower `max_running_requests` and/or
+`max_generate_length` explicitly; `mem_fraction_static` only budgets
+the backbone KV cache.
+
+Each request needs one reference clip and its matching transcript:
+
+```bash
+curl -sS -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dots-studio/dots.tts-mf",
+    "input": "Have a nice day and enjoy south california sunshine.",
+    "references": [{
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
+    }],
+    "seed": 42
+  }' \
+  --output output.wav
+```
+
+Set `model` to the checkpoint being served. The validation runs produced
+48 kHz mono audio and passed ASR checks against the requested text.
+See the [dots.tts cookbook](../cookbook/dots_tts.md) for streaming and
+solver parameters.
 
 ### ZONOS2 (MoE TTS, single XPU)
 
@@ -264,8 +362,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
 RoPE is sgl-kernel's SYCL JIT kernel, which needs `icpx` on `PATH`; add the compiler directory
-alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.2.0
-wheel that SGLang v0.5.20 pins; older sgl-kernel builds fail with
+alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.3.0
+wheel that SGLang v0.5.21 pins; older sgl-kernel builds fail with
 `"fused_topk_softmax_kernel" not implemented for 'Float'`.
 ```bash
 export PATH="/opt/intel/oneapi/compiler/latest/bin:$PATH" SGLANG_OMNI_STARTUP_TIMEOUT=1800
@@ -289,7 +387,7 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS and PersonaPlex all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o and PersonaPlex single-card;
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts all serve end-to-end on Intel XPU**
+> (Qwen3-ASR, Fun-ASR-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).

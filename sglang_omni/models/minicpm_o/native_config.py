@@ -125,8 +125,8 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 "max_open_sessions": self.max_sessions,
             }
             if stage_name == "speech":
-                kwargs["max_state_bytes"] = (
-                    self.speech_state_bytes_per_session * self.max_sessions
+                kwargs["max_state_bytes_per_session"] = (
+                    self.speech_state_bytes_per_session
                 )
             else:
                 pass

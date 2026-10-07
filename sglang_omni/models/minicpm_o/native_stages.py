@@ -22,6 +22,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     ProcessorFactory,
 )
 from sglang_omni.models.minicpm_o.components.tts_runtime import MiniCPMOVocoderRuntime
+from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_MAX_SESSIONS,
@@ -205,7 +206,9 @@ def create_perception_scheduler(
         image_encoder=image_encoder,
     )
     return SessionScheduler(
-        hooks, max_open_sessions=max_open_sessions, max_concurrency=1
+        hooks,
+        max_open_sessions=max_open_sessions,
+        max_concurrency=1,
     )
 
 
@@ -235,8 +238,7 @@ def create_speech_scheduler(
     gpu_id: int | None = None,
     reference_audio: str | None = None,
     max_open_sessions: int = DEFAULT_MAX_SESSIONS,
-    max_state_bytes: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION
-    * DEFAULT_MAX_SESSIONS,
+    max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     # note (Junnan Li): Sessions stream one reference each, so the batched-offline options stay off.
@@ -247,11 +249,13 @@ def create_speech_scheduler(
         enable_flow_variable_length=False,
         reference_workers=1,
         prompt_cache_capacity=max_open_sessions,
+        decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,
+        enable_flow_block_compile=False,
     )
     runtime = MiniCPMOVocoderRuntime(codec)
     return SessionScheduler(
         SpeechHooks(runtime, Path(codec.default_prompt_wav).read_bytes()),
         max_open_sessions=max_open_sessions,
         max_concurrency=1,
-        max_state_bytes=max_state_bytes,
+        max_state_bytes_per_session=max_state_bytes_per_session,
     )
