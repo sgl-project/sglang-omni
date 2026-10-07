@@ -185,6 +185,8 @@ pip install --no-deps sox
 pip install --no-deps qwen-tts==0.1.1
 ```
 
+#### Base
+
 ```bash
 sgl-omni serve --model-path /path/to/Qwen3-TTS-12Hz-1.7B-Base --host 0.0.0.0 --port 8000
 # Base checkpoint clones a reference voice — pass ref_audio (+ ref_text):
@@ -195,9 +197,9 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "response_format":"wav"}' -o out.wav
 ```
 
-#### CustomVoice checkpoint
+#### CustomVoice
 
-`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` synthesizes speech with built-in speakers and needs no reference audio. Use its matching config and select a speaker in the request. This example uses `mem_fraction_static=0.60` to reduce KV-cache allocation:
+`CustomVoice` checkpoints synthesize speech with built-in speakers and needs no reference audio. Use its matching config and select a speaker in the request. This example uses `mem_fraction_static=0.60` to reduce KV-cache allocation:
 
 ```bash
 sgl-omni serve \
@@ -212,9 +214,9 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "instructions":"Speak clearly and calmly.","response_format":"wav"}' -o out.wav
 ```
 
-#### VoiceDesign checkpoint
+#### VoiceDesign
 
-`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config. The tested XPU launch lowered `mem_fraction_static` from the default 0.85 to 0.60:
+`VoiceDesign` checkpoint synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config. This example uses `mem_fraction_static=0.60` to reduce KV-cache allocation:
 
 ```bash
 sgl-omni serve \
