@@ -49,4 +49,22 @@ struct GlobalShortcutTests {
             }
         }
     }
+
+    @Test func escapeFromAnotherAppCancelsOnlyCapture() {
+        for active in [false, true] {
+            #expect(AppModel.escapeCancels(.starting, appIsActive: active))
+            #expect(AppModel.escapeCancels(.recording, appIsActive: active))
+            #expect(!AppModel.escapeCancels(.idle, appIsActive: active))
+            #expect(AppModel.escapeCancels(.processing, appIsActive: active) == active)
+            #expect(AppModel.escapeCancels(.preparing, appIsActive: active) == active)
+        }
+    }
+
+    @Test func cancelKeepsTheModelUnlessAWorkerRequestMustBeAborted() {
+        #expect(!AppModel.cancelReleasesWorker(.idle))
+        #expect(!AppModel.cancelReleasesWorker(.starting))
+        #expect(!AppModel.cancelReleasesWorker(.recording))
+        #expect(AppModel.cancelReleasesWorker(.processing))
+        #expect(AppModel.cancelReleasesWorker(.preparing))
+    }
 }

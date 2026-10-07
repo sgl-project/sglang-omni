@@ -15,7 +15,7 @@ Fish Audio requires its model-specific DAC dependencies. Complete the
 before starting the server.
 
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.12 / SGLang 0.5.20 stack remains in place:
+so the SGLang-Omni Transformers 5.12 / SGLang 0.5.21 stack remains in place:
 
 ```bash
 apt-get update && apt-get install -y sox
@@ -317,7 +317,32 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 
 Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
 in response headers. It does not include in-band JSON events, final usage, or a
-terminal sentinel. When the client does not set `initial_codec_chunk_frames`,
+terminal sentinel. Set `"stream_format": "sse"` to receive the same PCM as
+Server-Sent Events instead; `sse` streams even when `stream` is omitted. Each
+`speech.audio.delta` event carries base64 PCM in `audio`, and the stream ends
+with one `speech.audio.done` event carrying `usage` and `finish_reason`, or with an `error` event if
+generation fails mid-stream. The sample-rate headers are the same for both
+formats. `usage` reports the model's own token counts, so what `input_tokens`
+covers depends on the model: Qwen3-TTS counts reference-audio codec frames, not
+text tokens.
+
+
+For raw PCM, use the response's `X-SGLang-Omni-Speech-Id` with
+`GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its
+`finish_reason` and `usage`. This generated speech ID is independent of the
+`X-Request-Id` correlation header. Behind a router, also echo the response's
+`X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET.
+Only the most recent outcomes are retained; missing outcomes do not establish
+a natural stop or a cap hit.
+
+The SeedTTS benchmark collects raw PCM outcomes over a separate connection pool.
+Collection still consumes server resources during generation. Use
+`--no-collect-stream-outcomes` for an instrumentation control, and keep the setting
+identical between performance arms. The setting is saved with the results.
+Missing reasons remain unknown and are excluded from the observed-reason count;
+a cap hit does not by itself establish poor audio quality.
+
+When the client does not set `initial_codec_chunk_frames`,
 the model selects a continuity-safe first vocoder chunk. Set the field explicitly
 to override that default, or set it to `0` to use the model's steady chunk size
 from the start. Ming-Omni-TTS is the only model that rejects the field: its
@@ -330,6 +355,10 @@ Use `/v1/audio/speech/batch` when one request should synthesize several
 independent utterances. Batch defaults are merged with each item. Item fields
 override the defaults, and each item runs through the normal `/v1/audio/speech`
 path.
+
+Batch speech does not support streaming, including `stream_format="sse"`.
+It returns a single JSON response containing the completed results. For streaming
+output, use `/v1/audio/speech`.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech/batch \
@@ -614,6 +643,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
+| `stream_format` | string | `"audio"` | Streaming transport: `audio` for raw PCM bytes, `sse` for `speech.audio.delta` / `speech.audio.done` events. `sse` streams without `stream=true` and requires `response_format="pcm"` |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA / playback-continuity tuning. When omitted, each model applies its own default: Qwen3-TTS ramps `1 -> 2 -> 4` into the steady stride, Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start. Ming-Omni-TTS rejects the field entirely |
 | `stream_codec_output` | bool | `true` | Qwen3-TTS only. Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice / VoiceDesign |
 | `suppress_bootstrap_silence` | bool | `true` | Qwen3-TTS only. Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output on validated voice/language pairs; an audible first frame is always emitted unchanged. Set `false` to keep the leading silence |

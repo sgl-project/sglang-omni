@@ -52,7 +52,9 @@ until the two stacks move with it: the `-xeon` image digest, the XPU tag, and
 the verified tag in the provider pyprojects, install scripts and install docs.
 The XPU image builds SGLang from source, so diff upstream's
 `python/pyproject_xpu.toml` and `docker/xpu.Dockerfile` between the tags for
-new build requirements: one release moved the SYCL kernel from a git
+new build requirements, and diff `python/pyproject_cpu.toml` for its own
+torch and torchvision pins, which move independently of the CUDA manifest:
+one release moved the SYCL kernel from a git
 requirement to a pinned wheel and added `setuptools-rust` to the build
 requirements, which the image avoids by building without isolation.
 
@@ -83,7 +85,7 @@ back to SDPA without a word.
 `Scheduler` methods it does not override through `__getattr__` and runs them
 with itself as `self`, and builds the scheduler components those methods
 expect (`SchedulerDPAttnAdapter`, `SchedulerLoadInquirer`, the logprob
-processor, `ParallelState`, `NewTokenRatioTracker`) with upstream's own
+processor, `NewTokenRatioTracker`) with upstream's own
 kwargs; `SGLModelRunner` subclasses `ModelRunner`. Diff the body of every
 method Omni overrides and every borrowed method it calls, and look for
 `self.<attr>` reads the new upstream bodies make that `OmniScheduler.__init__`
@@ -95,6 +97,29 @@ method Omni's event loops never call, which disables them without an error.
 When a constructor gains or loses fields, pass the new shape;
 a helper that filters kwargs by signature or branches on field layout keeps
 two versions alive.
+
+**The boot sequence.** `ModelWorker` and the MLX worker run upstream's worker
+boot themselves: publish the resolved config together with the process
+placement, run the parallel runtime phase, run the layer runtime phase, then
+build the runner. The order and the arguments of each step are upstream's, and
+a step that upstream adds in front of the runner is not an import change. One
+release moved the ranks from a record passed to the runner into the published
+context, and every rank read made before the placement was published raised.
+The image encoders that build model parallel groups outside a worker publish
+their own placement first, and follow the same contract.
+
+**Decoder layers.** The Qwen3-Omni talker, the Ming-Omni thinker and the
+Ming-TTS model define their own decoder layers on upstream's layer boundary
+API (`sglang_omni/vendor/sglang/layers.py` re-exports it). The Qwen3-Omni
+talker's layer lives in `qwen3_omni/components/thinker_model.py`; the
+Qwen3-Omni thinker itself runs upstream's `Qwen3MoeLLMModel`, and Qwen3-TTS
+keeps its own decoder layer with an explicit residual and reuses only the
+attention class. A layer written against the boundary API is a copy of
+upstream's layer forward with Omni's hooks in it. Diff upstream's layer for
+the same architecture between the tags and mirror the change in order: which
+boundary prepares, which finishes, what the exit scope publishes for the MoE
+reduction. Outputs of a boundary are modified in place or through its
+accessors; the boundary checks the stream identity.
 
 **The vendor layer.** `sglang_omni/vendor/sglang/layers.py` patches
 `RMSNorm.forward_cuda` and `models.py` patches `apply_qk_norm`; the module
@@ -136,7 +161,9 @@ order), mirror it in every copy and pin the boundary with a test per copy.
 test-local fakes model resolved upstream shapes. A test that patches an
 upstream name fails loudly when the name is gone; a fake that still accepts
 a field upstream removed does not, so the test passes and the code does
-not.
+not. A test that builds an upstream parallel layer under
+`override_server_args()` gets a context with no process placement, so it
+also overrides the ranks on the parallel context.
 
 **Defensive access.** `getattr`, `hasattr` and `except AttributeError`
 against state the pinned release defines statically are a second version
@@ -212,9 +239,12 @@ checks every exact pin in `pyproject.toml` against what is installed.
 
 The image also installs Qwen-TTS without its conflicting dependencies, system
 SoX, the Descript DAC packages, and the Audar/CosyVoice extras. Apply the
-project's dependency overrides when resolving these packages. The CI import
-gate checks Qwen-TTS after the compatibility patch, DAC and NeuCodec imports,
-and the SoX executable. It imports llama.cpp before Torch to catch system NCCL
+project's dependency overrides when resolving these packages. CosyVoice itself
+has no package release, so the CI venv setup clones it at the commit the
+Fun-CosyVoice3 cookbook pins, with its Matcha-TTS submodule, and adds both to
+the venv through a `.pth` file. The CI import gate checks Qwen-TTS after the
+compatibility patch, DAC, NeuCodec, CosyVoice and Matcha-TTS imports, and the
+SoX executable. It imports llama.cpp before Torch to catch system NCCL
 conflicts; the image prioritizes Torch's NCCL library. A package listing alone
 does not prove a usable runtime.
 
@@ -293,9 +323,13 @@ commits and image digests, sample counts and the profiler attribution for
 any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
-GPU CI needs the `run-ci` label plus one selector per family (`run-higgs`,
-`run-moss`, `run-qwen3-tts`, `run-cosyvoice3`; `run-fun-asr`, `run-qwen3-asr`,
-`run-whisper-asr`), applied with `/tag-and-rerun-ci <selectors>`. The
+GPU CI needs the `run-ci` label. Model selectors choose presets within each
+family: TTS (`run-higgs`, `run-moss`, `run-qwen3-tts`, `run-cosyvoice3`,
+`run-qwen3-tts-custom-voice`), ASR (`run-fun-asr`, `run-qwen3-asr`,
+`run-whisper-asr`), and Omni (`run-qwen3-omni`, `run-minicpmo`). Apply them
+with `/tag-and-rerun-ci <selectors>`, for example
+`/tag-and-rerun-ci moss fun-asr minicpmo`. The Omni model defaults to
+Qwen3-Omni. The
 selectors within a family are exclusive, so each preset gets its own run on
 the new image before merge.
 

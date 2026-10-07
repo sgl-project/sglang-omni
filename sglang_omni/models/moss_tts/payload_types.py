@@ -3,14 +3,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.pipeline_state import wire
+
+if TYPE_CHECKING:
+    import torch
+    from transformers import PretrainedConfig
+
+    from sglang_omni.models.moss_tts.hf_loading import MossAudioConfig
+else:
+    pass
 
 
 @dataclass(frozen=True)
@@ -44,7 +53,9 @@ def moss_tts_special_token_defaults(
     )
 
 
-def resolve_moss_audio_pad_code(config: Any) -> int:
+def resolve_moss_audio_pad_code(
+    config: MossAudioConfig | PretrainedConfig | None,
+) -> int:
     value = getattr(config, "audio_pad_code", None)
     if value is not None:
         return int(value)
@@ -60,13 +71,15 @@ class MossTTSState(DeclarativeStateBase):
 
     sample_rate: int = wire(24000, codec="int_or")
     text: str = wire("", codec="str")
-    ref_audio: Any | None = None
+    ref_audio: object = None
     ref_text: str | None = None
     language: str | None = None
     instructions: str | None = None
     token_count: int | None = wire(None, codec="opt_int")
-    generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
-    delayed_audio_codes: Any | None = wire(None, codec="tensor_cpu")
+    generation_kwargs: Mapping[str, int | float] = wire(
+        default_factory=dict, codec="dict"
+    )
+    delayed_audio_codes: torch.Tensor | None = wire(None, codec="tensor_cpu")
     assistant_start_length: int = wire(0, emit="truthy", codec="int")
 
 

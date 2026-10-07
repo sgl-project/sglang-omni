@@ -194,6 +194,27 @@ audio's duration cannot be probed, `duration` and the segment end time are `0.0`
   activations under fp16 (matching the reference `modeling_audio.py`) so large
   activations stay finite; this clamp is a no-op under `bfloat16`.
 
+## Apple Silicon
+
+On macOS arm64, ARK-ASR-3B runs through the existing Torch/MPS compatibility
+path without a converted checkpoint or model-specific code changes. Leave
+`SGLANG_USE_MLX` unset:
+
+```bash
+unset SGLANG_USE_MLX
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --model-name AutoArk-AI/ARK-ASR-3B \
+  --asr.engine.max_running_requests 1 \
+  --port 8000
+```
+
+This path was validated on a MacBook Air with an M4 and 16 GB of unified
+memory using the official checkpoint and `tests/data/query_to_cars.wav`. The
+server returned the expected transcript through `/v1/audio/transcriptions`.
+Set `SGLANG_USE_MLX=1` to select the native MLX path.
+
 ## Marker-Token Suppression
 
 The stock checkpoint ships no `bad_words_ids`, so plain `skip_special_tokens=True`

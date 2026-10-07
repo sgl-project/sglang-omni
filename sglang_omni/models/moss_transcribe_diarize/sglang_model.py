@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -31,6 +31,7 @@ from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
 from sglang_omni.models.moss_transcribe_diarize.hf_config import (
     MossTranscribeDiarizeConfig,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
@@ -114,9 +115,9 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
 
     def init_encoder_graphs(self, chunk_buckets, input_feature_len: int) -> None:
-        """Capture per-chunk-count CUDA graphs for the Whisper encoder.
+        """Capture per-chunk-count device graphs for the Whisper encoder.
 
-        Called from the stage factory after the model is on-device and CUDA
+        Called from the stage factory after the model is on-device and device
         graphs are enabled. input_feature_len is the fixed length of the
         encoder's input_features time axis for one 30s window
         (WhisperFeatureExtractor.nb_max_frames).
@@ -126,10 +127,17 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             return
         else:
             pass
+        device = next(self.whisper_encoder.parameters()).device
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            return
+        else:
+            pass
         runner = WhisperEncoderCudaGraphRunner(
             self.whisper_encoder,
             num_mel_bins=int(self.config.audio_config.num_mel_bins),
             input_feature_len=int(input_feature_len),
+            graph_backend=graph_backend,
         )
         runner.capture(buckets)
         self.encoder_graph_runner = runner
@@ -211,7 +219,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
     def get_audio_feature_uncached(
         self,
         items: List[MultimodalDataItem],
-        forward_batch: ForwardBatch,
+        forward_batch: ForwardBatch | None,
     ) -> torch.Tensor:
         merge_size = int(self.config.audio_merge_size)
         device = next(self.whisper_encoder.parameters()).device
@@ -323,7 +331,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> torch.Tensor:
         return general_mm_embed_routine(
             input_ids=input_ids,

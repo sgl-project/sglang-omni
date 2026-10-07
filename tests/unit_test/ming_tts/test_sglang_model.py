@@ -36,6 +36,9 @@ def test_ming_tts_owns_tail_execution_geometry(
     from sglang_omni.models.ming_omni.talker.talker_module.execution import (
         TalkerExecutionConfig,
     )
+    from sglang_omni.models.ming_omni.talker.talker_module.packed_qkv import (
+        PackedQKVLinear,
+    )
     from sglang_omni.models.ming_tts import sglang_model
 
     stale_execution_config = TalkerExecutionConfig(
@@ -55,7 +58,7 @@ def test_ming_tts_owns_tail_execution_geometry(
     captured: dict[str, dict[str, object]] = {}
 
     class Backbone(torch.nn.Module):
-        def __init__(self, *_args, **_kwargs) -> None:
+        def __init__(self, *args, **_kwargs) -> None:
             super().__init__()
             self.word_embeddings = torch.nn.Embedding(
                 16,
@@ -120,6 +123,7 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_seq_len=3,
         rope_max_batch_size=expected_aggregator_capacity,
         norm_layer=norm_layer,
+        qkv_layer=PackedQKVLinear,
     )
     assert dit_execution == TalkerExecutionConfig(
         attn_backend=sglang_model.MING_TTS_TAIL_ATTN_BACKEND,
@@ -127,6 +131,7 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_seq_len=6,
         rope_max_batch_size=2 * expected_tail_capacity,
         norm_layer=norm_layer,
+        qkv_layer=PackedQKVLinear,
     )
     assert model.decode_input_embedding.num_embeddings == expected_tail_capacity
     assert config.aggregator_config["execution_config"] is stale_execution_config
@@ -345,81 +350,86 @@ def test_ming_sparse_moe_tp_collective_uses_forward_flags(monkeypatch) -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("fuse_mlp_allreduce", "mlp_reduce_scatter", "postprocess_calls"),
-    [(True, False, 0), (False, True, 1)],
-)
-def test_ming_decoder_scopes_mlp_collective_flags(
-    fuse_mlp_allreduce: bool,
-    mlp_reduce_scatter: bool,
-    postprocess_calls: int,
-) -> None:
-    from sglang.srt.runtime_context import get_forward
+class TinyTailModel:
+    hidden_size = 8
+    history_patch_size = 2
+    latent_dim = 4
 
-    from sglang_omni.models.ming_tts.sglang_model import MingBailingMoeDecoderLayer
-
-    class FakeCommunicator:
-        def __init__(self) -> None:
-            self.postprocess_calls = 0
-
-        def prepare_attn_and_capture_last_layer_outputs(
-            self,
-            hidden_states,
-            residual,
-            forward_batch,
-        ):
-            del forward_batch
-            return hidden_states, residual
-
-        def prepare_mlp(self, *, hidden_states, residual, forward_batch):
-            del forward_batch
-            return hidden_states, residual
-
-        def should_fuse_mlp_allreduce_with_next_layer(self, forward_batch):
-            del forward_batch
-            return fuse_mlp_allreduce
-
-        def should_use_reduce_scatter(self, forward_batch):
-            del forward_batch
-            return mlp_reduce_scatter
-
-        def postprocess_layer(self, hidden_states, residual, forward_batch):
-            del forward_batch
-            self.postprocess_calls += 1
-            return hidden_states, residual
-
-    seen_flags: list[tuple[bool, bool]] = []
-
-    def mlp(hidden_states, forward_batch):
-        del forward_batch
-        forward = get_forward()
-        seen_flags.append((forward.fuse_mlp_allreduce, forward.mlp_reduce_scatter))
-        return hidden_states.clone()
-
-    communicator = FakeCommunicator()
-    layer = SimpleNamespace(
-        layer_communicator=communicator,
-        attention=lambda _positions, hidden_states, _forward_batch: hidden_states,
-        mlp=mlp,
-    )
-    hidden_states = torch.ones((1, 2))
-
-    with get_forward().scoped(
-        fuse_mlp_allreduce=False,
-        mlp_reduce_scatter=False,
-    ):
-        output, _ = MingBailingMoeDecoderLayer.forward(
-            layer,
-            positions=torch.tensor([0]),
-            hidden_states=hidden_states,
-            forward_batch=object(),
-            residual=None,
+    def __init__(self, device: torch.device) -> None:
+        self.decode_input_embedding = torch.nn.Embedding(
+            1, 8, device=device, dtype=torch.bfloat16
         )
-        assert get_forward().fuse_mlp_allreduce is False
-        assert get_forward().mlp_reduce_scatter is False
 
-    assert seen_flags == [(fuse_mlp_allreduce, mlp_reduce_scatter)]
-    assert communicator.postprocess_calls == postprocess_calls
-    assert getattr(output, "_sglang_needs_allreduce_fusion", False) is (
-        fuse_mlp_allreduce
+    def make_tail_sampling_inputs(self, *, batch_size: int, device: torch.device):
+        return (
+            torch.randn(batch_size, 1, 4, device=device),
+            torch.linspace(0.0, 1.0, 3, device=device),
+            torch.randn(2, batch_size, 1, 4, device=device),
+        )
+
+    def compute_tail_step(self, inputs, *, noise, timesteps, sde_random):
+        from sglang_omni.models.ming_tts.sglang_model import MingTTSTailOutputs
+
+        hidden = inputs.hidden_states.unsqueeze(1)
+        attended = torch.nn.functional.scaled_dot_product_attention(
+            hidden, hidden, hidden
+        ).squeeze(1)
+        sampled = (
+            attended[..., :4].float() * inputs.cfg[:, None, None]
+            + noise * inputs.sigma[:, None, None] * timesteps[-1]
+            + sde_random.sum(0)
+            + inputs.latent_history.mean(1, keepdim=True)
+        )
+        feedback = self.decode_input_embedding.weight[0] * sampled.sum(
+            -1, keepdim=True
+        ).to(torch.bfloat16)
+        return MingTTSTailOutputs(
+            sampled=sampled,
+            feedback_embeddings=feedback,
+            stop_prob=torch.sigmoid(sampled.mean((1, 2))),
+        )
+
+
+@pytest.mark.accelerator
+def test_ming_tts_tail_graph_replay_matches_eager_on_the_platform_accelerator() -> None:
+    from sglang_omni.models.ming_tts.sglang_model import (
+        MingTTSTailGraph,
+        MingTTSTailInputs,
     )
+    from sglang_omni.platforms import current_platform
+
+    if current_platform.device_type == "cpu":
+        pytest.skip("requires an accelerator")
+    else:
+        pass
+    device = torch.device(current_platform.device_type, 0)
+    model = TinyTailModel(device)
+    graph = MingTTSTailGraph(model, batch_size=2)
+    graph.capture()
+    inputs = MingTTSTailInputs(
+        hidden_states=torch.randn(1, 1, 8, device=device, dtype=torch.bfloat16),
+        latent_history=torch.randn(1, 2, 4, device=device),
+        cfg=torch.full((1,), 2.0, device=device),
+        sigma=torch.full((1,), 0.25, device=device),
+        temperature=torch.zeros(1, device=device),
+    )
+    noise = torch.randn(1, 1, 4, device=device)
+    sde_random = torch.randn(2, 1, 1, 4, device=device)
+
+    replayed = graph.replay(inputs, noise=noise, sde_random=sde_random)
+    eager = model.compute_tail_step(
+        inputs, noise=noise, timesteps=graph.timesteps, sde_random=sde_random
+    )
+
+    torch.testing.assert_close(replayed.sampled, eager.sampled)
+    torch.testing.assert_close(replayed.feedback_embeddings, eager.feedback_embeddings)
+    torch.testing.assert_close(replayed.stop_prob, eager.stop_prob)
+
+
+def test_ming_tts_tail_graph_rejects_a_device_without_a_graph_backend() -> None:
+    from sglang_omni.models.ming_tts.sglang_model import MingTTSTailGraph
+
+    graph = MingTTSTailGraph(TinyTailModel(torch.device("cpu")), batch_size=1)
+
+    with pytest.raises(RuntimeError, match="no device graph backend for cpu"):
+        graph.capture()

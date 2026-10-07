@@ -17,7 +17,7 @@ requires_cuda = pytest.mark.skipif(
 )
 
 
-def _assert_bytes_equal(actual: torch.Tensor, expected: torch.Tensor) -> None:
+def assert_bytes_equal(actual: torch.Tensor, expected: torch.Tensor) -> None:
     assert actual.shape == expected.shape
     assert actual.dtype == expected.dtype
     assert torch.equal(
@@ -26,7 +26,7 @@ def _assert_bytes_equal(actual: torch.Tensor, expected: torch.Tensor) -> None:
     )
 
 
-def _inputs(batch, heads, context, length, dim, dtype, *, device="cuda"):
+def make_inputs(batch, heads, context, length, dim, dtype, *, device="cuda"):
     capacity = batch + 4
     # note (Zhang Yiyang): Exercise sliced cache rows and packed-QKV layout.
     cached_k = torch.randn(
@@ -61,7 +61,7 @@ def _inputs(batch, heads, context, length, dim, dtype, *, device="cuda"):
     )
 
 
-def _reference(inputs):
+def make_reference(inputs):
     ck, cv, cp, offsets, slots, valid, k, v, qp = inputs
     context = ck.shape[2]
     all_k = torch.cat((ck.index_select(0, slots), k), dim=2)
@@ -77,7 +77,7 @@ def _reference(inputs):
     return (all_k, all_v, positions), next_state
 
 
-def _fused(inputs):
+def fused(inputs):
     ck, cv, cp, offsets, slots, valid, k, v, qp = inputs
     all_k, all_v, positions = kernels.gather_streaming_kv(ck, cv, cp, k, v, qp, slots)
     kernels.commit_streaming_kv_(
@@ -103,30 +103,30 @@ def _fused(inputs):
 )
 @torch.no_grad()
 def test_streaming_kv_matches_chronological_reference(shape, dtype):
-    inputs = _inputs(*shape, dtype)
+    inputs = make_inputs(*shape, dtype)
     assert kernels.can_fuse_streaming_kv(*inputs[:6])
-    expected, expected_state = _reference(inputs)
-    actual = _fused(inputs)
+    expected, expected_state = make_reference(inputs)
+    actual = fused(inputs)
     for got, want in zip(actual, expected):
-        _assert_bytes_equal(got, want)
+        assert_bytes_equal(got, want)
     for got, want in zip(inputs[:4], expected_state):
-        _assert_bytes_equal(got, want)
+        assert_bytes_equal(got, want)
 
 
 @pytest.mark.accelerator
 @requires_cuda
 @torch.no_grad()
 def test_streaming_kv_graph_replays_dynamic_slots_and_valid_rows():
-    inputs = _inputs(4, 3, 17, 5, 8, torch.bfloat16)
+    inputs = make_inputs(4, 3, 17, 5, 8, torch.bfloat16)
     initial = [t.clone() for t in inputs[:4]]
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):
-        _fused(inputs)
+        fused(inputs)
     torch.cuda.current_stream().wait_stream(stream)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        actual = _fused(inputs)
+        actual = fused(inputs)
     for tensor, value in zip(inputs[:4], initial):
         tensor.copy_(value)
     for step in range(6):
@@ -135,31 +135,31 @@ def test_streaming_kv_graph_replays_dynamic_slots_and_valid_rows():
             torch.tensor([step % 2 == 0, False, True, step % 3 == 0], device="cuda")
         )
         inputs[8].copy_(inputs[3][inputs[4], None] + torch.arange(5, device="cuda"))
-        expected, expected_state = _reference(inputs)
+        expected, expected_state = make_reference(inputs)
         graph.replay()
         for got, want in zip(actual, expected):
-            _assert_bytes_equal(got, want)
+            assert_bytes_equal(got, want)
         for got, want in zip(inputs[:4], expected_state):
-            _assert_bytes_equal(got, want)
+            assert_bytes_equal(got, want)
 
 
 @pytest.mark.accelerator
 @requires_cuda
 @torch.no_grad()
 def test_streaming_kv_preserves_inactive_nan_and_signed_zero_bytes():
-    inputs = _inputs(3, 2, 4, 5, 8, torch.bfloat16)
+    inputs = make_inputs(3, 2, 4, 5, 8, torch.bfloat16)
     # note (Zhang Yiyang): Invalid real slots retain stale/nonfinite bytes.
     # Cached values need no arithmetic, even when their positions are invalid.
     inputs[0].fill_(float("nan"))
     inputs[1].fill_(-0.0)
     inputs[2].fill_(-1)
     inputs[5].zero_()
-    expected, expected_state = _reference(inputs)
-    actual = _fused(inputs)
+    expected, expected_state = make_reference(inputs)
+    actual = fused(inputs)
     for got, want in zip(actual, expected):
-        _assert_bytes_equal(got, want)
+        assert_bytes_equal(got, want)
     for got, want in zip(inputs[:4], expected_state):
-        _assert_bytes_equal(got, want)
+        assert_bytes_equal(got, want)
 
 
 @pytest.mark.accelerator
@@ -169,7 +169,7 @@ def test_streaming_kv_preserves_inactive_nan_and_signed_zero_bytes():
 )
 @torch.no_grad()
 def test_streaming_kv_rejects_unsupported_metadata_or_writable_layout(layout):
-    inputs = list(_inputs(3, 2, 4, 5, 8, torch.bfloat16))
+    inputs = list(make_inputs(3, 2, 4, 5, 8, torch.bfloat16))
     assert kernels.can_fuse_streaming_kv(*inputs[:6])
     index = {"slots": 4, "valid": 5, "offsets": 3, "positions": 2}.get(layout)
     if layout == "broadcast_cache":
@@ -184,14 +184,14 @@ def test_streaming_kv_rejects_unsupported_metadata_or_writable_layout(layout):
 
 @torch.no_grad()
 def test_streaming_kv_cpu_uses_torch_fallback():
-    inputs = _inputs(3, 2, 4, 5, 8, torch.float32, device="cpu")
+    inputs = make_inputs(3, 2, 4, 5, 8, torch.float32, device="cpu")
     assert not kernels.can_fuse_streaming_kv(*inputs[:6])
 
 
 @pytest.mark.accelerator
 @requires_cuda
 def test_streaming_kv_grad_and_missing_triton_use_fallback(monkeypatch):
-    inputs = _inputs(3, 2, 4, 5, 8, torch.bfloat16)
+    inputs = make_inputs(3, 2, 4, 5, 8, torch.bfloat16)
     assert not kernels.can_fuse_streaming_kv(*inputs[:6])
     with torch.no_grad():
         assert kernels.can_fuse_streaming_kv(*inputs[:6])
@@ -251,7 +251,7 @@ def test_indexed_attention_fusion_and_fallback_match_torch(
                 expected = reference(chunk, execution_context=execution)
             assert attention_impl.can_fuse_streaming_kv is can_fuse
             actual = model(chunk, execution_context=execution)
-            _assert_bytes_equal(actual, expected)
+            assert_bytes_equal(actual, expected)
             for name in [
                 "offset",
                 "cached_keys",
@@ -259,13 +259,13 @@ def test_indexed_attention_fusion_and_fallback_match_torch(
                 "cached_positions",
                 "exec_mask",
             ]:
-                _assert_bytes_equal(
+                assert_bytes_equal(
                     getattr(model.streaming_state, name),
                     getattr(reference.streaming_state, name),
                 )
         # note (Zhang Yiyang): Empty chunks retain output and state behavior.
         empty = chunk[:, :0]
-        _assert_bytes_equal(
+        assert_bytes_equal(
             model(empty, execution_context=execution),
             reference(empty, execution_context=execution),
         )
@@ -308,19 +308,19 @@ def test_indexed_attention_commits_only_after_output_projection(monkeypatch):
                 ),
             )
         for name in names:
-            _assert_bytes_equal(getattr(state, name), before[name])
+            assert_bytes_equal(getattr(state, name), before[name])
 
 
 @pytest.mark.accelerator
 @requires_cuda
 @torch.no_grad()
 def test_streaming_kv_fullgraph_tracks_cache_mutations():
-    inputs = _inputs(3, 2, 17, 5, 8, torch.bfloat16)
-    compiled = torch.compile(_fused, fullgraph=True)
+    inputs = make_inputs(3, 2, 17, 5, 8, torch.bfloat16)
+    compiled = torch.compile(fused, fullgraph=True)
     for _ in range(3):
-        expected, expected_state = _reference(inputs)
+        expected, expected_state = make_reference(inputs)
         actual = compiled(inputs)
         for got, want in zip(actual, expected):
-            _assert_bytes_equal(got, want)
+            assert_bytes_equal(got, want)
         for got, want in zip(inputs[:4], expected_state):
-            _assert_bytes_equal(got, want)
+            assert_bytes_equal(got, want)

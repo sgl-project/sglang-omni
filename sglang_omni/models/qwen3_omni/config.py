@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -15,6 +15,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.utils.cpu import effective_cpu_count
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
@@ -36,7 +37,7 @@ ENABLE_TALKER_START_TOPOLOGY = False
 # policy once that exists outside import-time environment globals.
 _DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
 
-# A colocated worker launches seven stage processes. Letting every PyTorch
+# A colocated worker launches six stage processes. Letting every PyTorch
 # process size its OpenMP pool to the full host oversubscribes launch-side CPU
 # work when multiple workers share a node. Preprocessing handles one prompt per
 # scheduler call, so a host-wide tokenizer Rayon pool only adds contention.
@@ -197,17 +198,13 @@ def decode_stage(*, process: str) -> StageConfig:
 
 
 def talker_stage_env() -> dict[str, str]:
-    # Note (jeffro): FlashInfer CUTLASS fused finalize uses BF16 atomic-add;
-    # accumulation order is not fixed and can flip Talker codec tokens.
-    env = {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}
     if current_platform.is_rocm():
         # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
         # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
         # greedy Talker request would corrupt its first codec token.
-        env["SGLANG_DISABLE_AITER_GREEDY_SAMPLE"] = "1"
+        return {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}
     else:
-        pass
-    return env
+        return {}
 
 
 def talker_stage(
@@ -311,7 +308,7 @@ def speech_stages(
     ]
 
 
-_SPEECH_DEFAULT_PROCESSES = {
+SPEECH_DEFAULT_PROCESSES = {
     "preprocessing": "preprocessing",
     "image_encoder": "image_encoder",
     "audio_encoder": "audio_encoder",
@@ -320,6 +317,11 @@ _SPEECH_DEFAULT_PROCESSES = {
     "talker_ar": "talker_ar",
     "code2wav": "code2wav",
 }
+
+# note (ratish): on one card the GPU time-slices between the stage processes,
+# so code2wav decodes inside the talker's process on a priority stream instead
+# of waiting for its own turn.
+COLOCATED_SPEECH_PROCESSES = {**SPEECH_DEFAULT_PROCESSES, "code2wav": "talker_ar"}
 
 
 class Qwen3OmniBasePipelineConfig(PipelineConfig):
@@ -334,11 +336,20 @@ class Qwen3OmniBasePipelineConfig(PipelineConfig):
         default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
     )
 
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        """Keep CPU-sensitive preprocessing parallel unless OMP is configured."""
+        env_defaults = super().resolved_stage_env_defaults(stage_name)
+        if stage_name == "preprocessing" and "OMP_NUM_THREADS" not in env_defaults:
+            env_defaults["OMP_NUM_THREADS"] = str(effective_cpu_count())
+        else:
+            pass
+        return env_defaults
+
     @classmethod
     def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
         return {THINKER_STAGE}
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
         speech_enabled = any(stage.name == "talker_ar" for stage in self.stages)
         if stage_name in ("image_encoder", "audio_encoder"):
             # Device selection is deferred to the worker; the encoders read
@@ -390,22 +401,28 @@ class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
         default_factory=lambda: speech_stages(
             thinker_gpu=0,
             talker_gpu=1,
-            process_by_stage=_SPEECH_DEFAULT_PROCESSES,
+            process_by_stage=SPEECH_DEFAULT_PROCESSES,
             enable_partial_start=True,
         )
     )
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
+        process_by_stage = {stage.name: stage.process for stage in self.stages}
+        code2wav_shares_talker_process = (
+            process_by_stage["code2wav"] == process_by_stage["talker_ar"]
+        )
         if stage_name == "talker_ar":
             return {
                 "speech_enabled": True,
                 "feedback_enabled": True,
+                "code2wav_in_process": code2wav_shares_talker_process,
             }
         else:
             pass
         if stage_name == "code2wav":
             return {
                 "enable_cuda_graph": current_platform.enable_code2wav_graph(),
+                "talker_in_process": code2wav_shares_talker_process,
             }
         else:
             pass
@@ -416,10 +433,10 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
     """7-stage speech pipeline for single-GPU stage colocation.
 
     The topology places image_encoder, audio_encoder, thinker, talker_ar, and
-    code2wav on the same GPU while keeping preprocessing and decode as CPU
-    stages. Per-stage memory budgets are supplied by the selected config
-    file so deployments can use hardware-appropriate stage fractions and
-    SGLang AR cache fractions.
+    code2wav on the same GPU, with code2wav inside the talker's process, while
+    keeping preprocessing and decode as CPU stages. Per-stage memory budgets
+    are supplied by the selected config file so deployments can use
+    hardware-appropriate stage fractions and SGLang AR cache fractions.
     """
 
     env_defaults: dict[str, str] = Field(
@@ -430,7 +447,7 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
         default_factory=lambda: speech_stages(
             thinker_gpu=0,
             talker_gpu=0,
-            process_by_stage=_SPEECH_DEFAULT_PROCESSES,
+            process_by_stage=COLOCATED_SPEECH_PROCESSES,
             enable_partial_start=False,
         )
     )

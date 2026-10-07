@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "sglang_omni"
 VENDOR_ROOT = SOURCE_ROOT / "vendor"
 PASS_INDENT = "    "
+
+
+class InvalidRewriteError(Exception):
+    """The rewritten source is not valid Python."""
 
 
 @dataclass(frozen=True)
@@ -92,15 +97,17 @@ def check_file(path: Path) -> list[Violation]:
 def line_newline(line: str) -> str:
     if line.endswith("\r\n"):
         return "\r\n"
+    elif line.endswith("\r"):
+        return "\r"
     else:
         return "\n"
 
 
-def terminated_line(line: str) -> tuple[str, str]:
-    if line.endswith("\r\n") or line.endswith("\n"):
+def terminated_line(line: str, default_newline: str) -> tuple[str, str]:
+    if line.endswith(("\r", "\n")):
         return line, line_newline(line)
     else:
-        return line + "\n", "\n"
+        return line + default_newline, default_newline
 
 
 def if_indent(lines: list[str], node: ast.If) -> str:
@@ -109,13 +116,12 @@ def if_indent(lines: list[str], node: ast.If) -> str:
 
 
 def pass_indent(lines: list[str], node: ast.If, indent: str) -> str:
-    for statement in node.body:
-        if statement.lineno > node.lineno:
-            body_line = lines[statement.lineno - 1]
-            return body_line[: statement.col_offset]
-        else:
-            pass
-    return indent + PASS_INDENT
+    first = node.body[0]
+    body_indent = lines[first.lineno - 1][: first.col_offset]
+    if first.lineno > node.lineno and not body_indent.strip(" \t\f"):
+        return body_indent
+    else:
+        return indent + PASS_INDENT
 
 
 def else_block(indent: str, body_indent: str, newline: str) -> list[str]:
@@ -127,7 +133,7 @@ def apply_else_blocks(source: str, nodes: list[ast.If]) -> str:
         return source
     else:
         pass
-    lines = source.splitlines(keepends=True)
+    lines = io.StringIO(source, newline="").readlines()
     ordered = sorted(
         nodes,
         key=lambda node: (-(node.end_lineno or node.lineno), node.col_offset),
@@ -137,14 +143,15 @@ def apply_else_blocks(source: str, nodes: list[ast.If]) -> str:
         indent = if_indent(lines, node)
         body_indent = pass_indent(lines, node, indent)
         index = end_lineno - 1
-        lines[index], newline = terminated_line(lines[index])
+        lines[index], newline = terminated_line(lines[index], line_newline(lines[0]))
         insert_at = index + 1
         lines[insert_at:insert_at] = else_block(indent, body_indent, newline)
     return "".join(lines)
 
 
 def fix_file(path: Path) -> tuple[int, list[Violation]]:
-    source = path.read_text(encoding="utf-8")
+    with path.open(encoding="utf-8", newline="") as source_file:
+        source = source_file.read()
     tree = ast.parse(source, filename=str(path))
     nodes = missing_else_nodes(tree)
     if not nodes:
@@ -155,8 +162,14 @@ def fix_file(path: Path) -> tuple[int, list[Violation]]:
     if rewritten == source:
         return 0, check_source(path, source)
     else:
-        path.write_text(rewritten, encoding="utf-8")
-    leftover = check_file(path)
+        try:
+            leftover = check_source(path, rewritten)
+        except SyntaxError as exc:
+            raise InvalidRewriteError(str(exc)) from exc
+        else:
+            pass
+        with path.open("w", encoding="utf-8", newline="") as source_file:
+            source_file.write(rewritten)
     return max(len(nodes) - len(leftover), 0), leftover
 
 
@@ -208,6 +221,12 @@ def run_fix(paths: list[Path]) -> int:
     for path in paths:
         try:
             count, leftover = fix_file(path)
+        except InvalidRewriteError as exc:
+            print(
+                f"{path}: --fix would produce invalid code ({exc}); left unchanged",
+                file=sys.stderr,
+            )
+            count, leftover = 0, check_file(path)
         except SyntaxError as exc:
             return parse_error(path, exc)
         else:

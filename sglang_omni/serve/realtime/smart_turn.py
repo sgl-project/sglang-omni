@@ -7,12 +7,17 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 from transformers import WhisperFeatureExtractor
 
 from .semantic_vad import SemanticEOUModel
+
+if TYPE_CHECKING:
+    from onnxruntime import InferenceSession
+else:
+    pass
 
 SMART_TURN_MODEL_ENV = "SGLANG_OMNI_SMART_TURN_MODEL_PATH"
 SMART_TURN_MODEL_FILENAME = "smart-turn-v3.2-gpu.onnx"
@@ -23,7 +28,7 @@ SMART_TURN_MODEL_SHA256 = (
 
 @dataclass(frozen=True)
 class SmartTurnEOU(SemanticEOUModel):
-    session: Any
+    session: "InferenceSession"
     feature_extractor: WhisperFeatureExtractor
 
     @classmethod
@@ -106,7 +111,7 @@ def verify_checksum(path: Path) -> None:
         pass
 
 
-def load_model(model_path: Path) -> Any:
+def load_model(model_path: Path) -> "InferenceSession":
     import onnxruntime as ort
 
     options = ort.SessionOptions()

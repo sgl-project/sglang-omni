@@ -67,7 +67,7 @@ PROMPTS = [
 ]
 
 
-def _start_server(
+def start_server(
     tmp_path_factory: pytest.TempPathFactory,
     *,
     name: str,
@@ -97,7 +97,7 @@ def _start_server(
     return proc
 
 
-def _single_instance_config(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def single_instance_config(tmp_path_factory: pytest.TempPathFactory) -> Path:
     config = yaml.safe_load((PROJECT_ROOT / REPLICA_CONFIG).read_text())
     config["name"] = "qwen3-omni-speech-code2wav-single-ci"
     config["processes"] = {}
@@ -108,14 +108,14 @@ def _single_instance_config(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="module")
 def baseline_pcm(tmp_path_factory: pytest.TempPathFactory) -> np.ndarray:
-    proc = _start_server(
+    proc = start_server(
         tmp_path_factory,
         name="single_instance_logs",
-        config_path=_single_instance_config(tmp_path_factory),
+        config_path=single_instance_config(tmp_path_factory),
     )
     try:
-        body = _post_audio_request(proc.port, EQUIVALENCE_PROMPT)
-        return _decode_wav_pcm(_audio_bytes(body, request_index=0))
+        body = post_audio_request(proc.port, EQUIVALENCE_PROMPT)
+        return decode_wav_pcm(make_audio_bytes(body, request_index=0))
     finally:
         stop_server(proc)
 
@@ -125,7 +125,7 @@ def replica_server(
     tmp_path_factory: pytest.TempPathFactory,
     baseline_pcm: np.ndarray,
 ):
-    proc = _start_server(
+    proc = start_server(
         tmp_path_factory,
         name="stage_replica_logs",
         config_path=PROJECT_ROOT / REPLICA_CONFIG,
@@ -134,7 +134,7 @@ def replica_server(
     stop_server(proc)
 
 
-def _post_audio_request(port: int, prompt: str) -> dict:
+def post_audio_request(port: int, prompt: str) -> dict:
     payload = {
         "model": MODEL_PATH,
         "messages": [{"role": "user", "content": prompt}],
@@ -155,7 +155,7 @@ def _post_audio_request(port: int, prompt: str) -> dict:
     return response.json()
 
 
-def _audio_bytes(body: dict, *, request_index: int) -> bytes:
+def make_audio_bytes(body: dict, *, request_index: int) -> bytes:
     choice = body["choices"][0]
     audio = choice["message"].get("audio") or {}
     audio_b64 = audio.get("data")
@@ -168,7 +168,7 @@ def _audio_bytes(body: dict, *, request_index: int) -> bytes:
     return audio_bytes
 
 
-def _decode_wav_pcm(audio_bytes: bytes) -> np.ndarray:
+def decode_wav_pcm(audio_bytes: bytes) -> np.ndarray:
     with wave.open(io.BytesIO(audio_bytes), "rb") as wav:
         assert wav.getnchannels() == 1
         assert wav.getsampwidth() == 2
@@ -177,7 +177,7 @@ def _decode_wav_pcm(audio_bytes: bytes) -> np.ndarray:
     return pcm
 
 
-def _assert_pcm_equivalent(baseline: np.ndarray, replica: np.ndarray) -> None:
+def assert_pcm_equivalent(baseline: np.ndarray, replica: np.ndarray) -> None:
     assert (
         replica.shape == baseline.shape
     ), f"PCM length differs: baseline={baseline.size}, replica={replica.size}"
@@ -192,7 +192,7 @@ def test_pcm_equivalence_accepts_samples_within_tolerance() -> None:
     baseline = np.array([0, 10, -10], dtype=np.int16)
     replica = np.array([2, 8, -8], dtype=np.int16)
 
-    _assert_pcm_equivalent(baseline, replica)
+    assert_pcm_equivalent(baseline, replica)
 
 
 def test_pcm_equivalence_rejects_samples_outside_tolerance() -> None:
@@ -200,7 +200,7 @@ def test_pcm_equivalence_rejects_samples_outside_tolerance() -> None:
     replica = np.array([3, 10, -10], dtype=np.int16)
 
     with pytest.raises(AssertionError, match="PCM differs"):
-        _assert_pcm_equivalent(baseline, replica)
+        assert_pcm_equivalent(baseline, replica)
 
 
 @pytest.mark.benchmark
@@ -210,10 +210,10 @@ def test_every_replica_serves_audio(replica_server, baseline_pcm: np.ndarray):
     log_file: Path = replica_server.log_file
 
     for index in range(NUM_REQUESTS):
-        body = _post_audio_request(port, PROMPTS[index % len(PROMPTS)])
-        audio_bytes = _audio_bytes(body, request_index=index)
+        body = post_audio_request(port, PROMPTS[index % len(PROMPTS)])
+        audio_bytes = make_audio_bytes(body, request_index=index)
         if index < 2:
-            _assert_pcm_equivalent(baseline_pcm, _decode_wav_pcm(audio_bytes))
+            assert_pcm_equivalent(baseline_pcm, decode_wav_pcm(audio_bytes))
 
     log_text = log_file.read_text()
     missing = [name for name in REPLICA_INSTANCES if name not in log_text]

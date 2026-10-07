@@ -6,11 +6,17 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
+from sglang.srt.server_args import ServerArgs
 
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.fun_cosyvoice3 import request_builders
+from sglang_omni.models.fun_cosyvoice3.request_builders import (
+    CosyVoice3SGLangRequestData,
+)
 from sglang_omni.models.fun_cosyvoice3.streaming import TOKEN_HOP_LEN
 from sglang_omni.models.fun_cosyvoice3.utils import (
     CosyVoice3Tokenizer,
@@ -18,13 +24,34 @@ from sglang_omni.models.fun_cosyvoice3.utils import (
     SpeechTokenizerV3,
 )
 from sglang_omni.platforms import current_platform
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.model_runner_stub import (
+        _DummyModel as MlxStubModel,
+    )
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+
+    from sglang_omni.models.fun_cosyvoice3.model_runner import (
+        FunCosyVoice3MlxSchedulerModelRunner,
+        FunCosyVoice3ModelRunner,
+    )
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
-class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
+class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
     model_name = "Fun-CosyVoice3"
     context_length = 4096
     model_arch_override = "FunCosyVoice3SGLangModel"
@@ -78,7 +105,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         self,
         *,
         dtype: str,
-    ) -> dict[str, Any]:
+    ) -> GenerationDefaults:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
@@ -133,14 +160,25 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             "trust_remote_code": True,
         }
 
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        # Note (Jiaxin Deng): the fraction alone sized a 62 GB pool on an
+        # H100 that the running requests can never fill; the vocoder shares
+        # the GPU and was left about 10 GB of dynamic-shape headroom.
+        if overrides.get("max_total_tokens") is None:
+            overrides["max_total_tokens"] = (
+                overrides["max_running_requests"] * self.context_length
+            )
+        else:
+            pass
+
     def before_memory_pool(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: ServerArgs,
     ) -> None:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
@@ -192,15 +230,19 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: ServerArgs,
     ) -> None:
         del model_worker, checkpoint_dir, device, gpu_id, server_args
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> FunCosyVoice3ModelRunner | FunCosyVoice3MlxSchedulerModelRunner:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
@@ -224,14 +266,13 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             token_hop_len=self.token_hop_len,
         )
 
-    def validate_before_infrastructure(self, server_args: Any) -> None:
+    def validate_before_infrastructure(self, server_args: ServerArgs | None) -> None:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():
             if self.uses_torch_mps() and server_args.max_running_requests != 1:
                 raise ValueError(
-                    "Fun-CosyVoice3 Torch MPS currently requires "
-                    "max_running_requests=1"
+                    "Fun-CosyVoice3 Torch MPS currently requires max_running_requests=1"
                 )
             else:
                 pass
@@ -267,10 +308,13 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         else:
             pass
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: torch.nn.Module | MlxStubModel) -> tuple[
+        Callable[[StagePayload], CosyVoice3SGLangRequestData],
+        Callable[[CosyVoice3SGLangRequestData], StagePayload],
+    ]:
         return request_builders.make_cosyvoice3_scheduler_adapters(model=model)
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[CosyVoice3SGLangRequestData]:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():
@@ -282,7 +326,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             "async_decode_min_batch_size": 1,
         }
 
-    def infra_kwargs(self) -> dict[str, Any]:
+    def infra_kwargs(self) -> InfrastructureOptions:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():
@@ -297,8 +341,12 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             "mlx_model_revision": self.mlx_model_revision,
         }
 
-    def make_abort_callback(self) -> Any | None:
+    def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_cosyvoice3_request
 
-    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+    def post_scheduler_setup(
+        self,
+        scheduler: OmniScheduler[CosyVoice3SGLangRequestData],
+        model_runner: FunCosyVoice3ModelRunner | FunCosyVoice3MlxSchedulerModelRunner,
+    ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

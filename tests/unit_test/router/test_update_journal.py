@@ -20,7 +20,7 @@ from sglang_omni_router.python.update_journal import (
 )
 
 
-def _isolate_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+def isolate_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
     monkeypatch.setattr(
         os.path, "expanduser", lambda path: path.replace("~", str(home), 1)
     )
@@ -93,10 +93,10 @@ def test_begin_fails_closed_when_the_write_is_not_durable(
     # recovery record
     journal = UpdateJournal(str(tmp_path / "j.json"))
 
-    def _fail(fd: int) -> None:
+    def fail(fd: int) -> None:
         raise OSError("fsync failed")
 
-    monkeypatch.setattr(os, "fsync", _fail)
+    monkeypatch.setattr(os, "fsync", fail)
     with pytest.raises(JournalUnwritableError):
         journal.begin("/update_weights_from_disk", ["w0"])
 
@@ -110,12 +110,12 @@ def test_begin_fails_closed_when_the_directory_fsync_fails(
     journal = UpdateJournal(str(tmp_path / "j.json"))
     real_fsync = os.fsync
 
-    def _fail_on_directory(fd: int) -> None:
+    def fail_on_directory(fd: int) -> None:
         if stat.S_ISDIR(os.fstat(fd).st_mode):
             raise OSError("directory fsync failed")
         real_fsync(fd)
 
-    monkeypatch.setattr(os, "fsync", _fail_on_directory)
+    monkeypatch.setattr(os, "fsync", fail_on_directory)
     with pytest.raises(JournalUnwritableError):
         journal.begin("/update_weights_from_disk", ["w0"])
 
@@ -126,10 +126,10 @@ def test_discard_reports_failure_when_the_rewrite_is_not_durable(
     journal = UpdateJournal(str(tmp_path / "j.json"))
     journal.begin("/x", ["w0", "w1"])
 
-    def _fail(fd: int) -> None:
+    def fail(fd: int) -> None:
         raise OSError("fsync failed")
 
-    monkeypatch.setattr(os, "fsync", _fail)
+    monkeypatch.setattr(os, "fsync", fail)
     assert journal.discard("w0") is False
 
 
@@ -138,10 +138,10 @@ def test_begin_fails_closed_when_the_rename_fails(
 ) -> None:
     journal = UpdateJournal(str(tmp_path / "j.json"))
 
-    def _fail(src: str, dst: str) -> None:
+    def fail(src: str, dst: str) -> None:
         raise OSError("rename failed")
 
-    monkeypatch.setattr(os, "replace", _fail)
+    monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(JournalUnwritableError):
         journal.begin("/update_weights_from_disk", ["w0"])
 
@@ -177,7 +177,7 @@ def test_state_dir_resolution_priority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "home"
-    _isolate_home(monkeypatch, home)
+    isolate_home(monkeypatch, home)
     monkeypatch.setenv(STATE_DIR_ENV, str(tmp_path / "env"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
 
@@ -240,13 +240,13 @@ def test_a_newly_created_endpoint_directory_is_made_durable(
     synced: list[int] = []
     real_fsync = os.fsync
 
-    def _record(fd: int) -> None:
+    def record(fd: int) -> None:
         info = os.fstat(fd)
         if stat.S_ISDIR(info.st_mode):
             synced.append(info.st_ino)
         real_fsync(fd)
 
-    monkeypatch.setattr(os, "fsync", _record)
+    monkeypatch.setattr(os, "fsync", record)
     journal.begin("/update_weights_from_disk", ["w0"])
 
     assert state_dir.stat().st_ino in synced
@@ -294,10 +294,10 @@ def test_ensure_state_dir_survives_a_concurrently_removed_probe(
     # cleaning up first must not make the other refuse to start
     state_dir = tmp_path / "state"
 
-    def _vanished(path: str) -> None:
+    def vanished(path: str) -> None:
         raise FileNotFoundError(path)
 
-    monkeypatch.setattr(os, "unlink", _vanished)
+    monkeypatch.setattr(os, "unlink", vanished)
     assert ensure_state_dir(str(state_dir)) == str(state_dir)
 
 
@@ -332,13 +332,13 @@ def test_startup_makes_the_state_directory_it_creates_durable(
     synced: list[int] = []
     real_fsync = os.fsync
 
-    def _record(fd: int) -> None:
+    def record(fd: int) -> None:
         info = os.fstat(fd)
         if stat.S_ISDIR(info.st_mode):
             synced.append(info.st_ino)
         real_fsync(fd)
 
-    monkeypatch.setattr(os, "fsync", _record)
+    monkeypatch.setattr(os, "fsync", record)
     ensure_state_dir(str(state_dir))
 
     assert tmp_path.stat().st_ino in synced
@@ -357,13 +357,13 @@ def test_clearing_an_already_absent_journal_still_syncs_the_directory(
     synced: list[int] = []
     real_fsync = os.fsync
 
-    def _record(fd: int) -> None:
+    def record(fd: int) -> None:
         info = os.fstat(fd)
         if stat.S_ISDIR(info.st_mode):
             synced.append(info.st_ino)
         real_fsync(fd)
 
-    monkeypatch.setattr(os, "fsync", _record)
+    monkeypatch.setattr(os, "fsync", record)
     journal.clear()
 
     assert tmp_path.stat().st_ino in synced

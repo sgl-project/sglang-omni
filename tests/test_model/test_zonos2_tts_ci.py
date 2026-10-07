@@ -34,7 +34,7 @@ from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
-    _find_available_port_range,
+    find_available_port_range,
     print_log_tail,
 )
 from tests.utils import (
@@ -71,17 +71,17 @@ VC_WER_MAX_CORPUS = 0.02
 # and mean RTF was 0.7620/0.7316/0.7301. This envelope uses the lowest QPS and
 # highest latency/RTF; output_tok_per_req_s remains omitted because it is not a
 # stable end-to-end metric.
-_VC_NON_STREAM_P95 = {
+VC_NON_STREAM_P95 = {
     CONCURRENCY: {
         "throughput_qps": 5.632,
         "latency_mean_s": 2.594,
         "rtf_mean": 0.762,
     }
 }
-VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
+VC_NON_STREAM_THRESHOLDS = apply_slack(VC_NON_STREAM_P95)
 
 
-def _run_benchmark(
+def run_benchmark(
     port: int,
     meta: str,
     output_dir: str,
@@ -106,7 +106,7 @@ def _run_benchmark(
     return speed_results
 
 
-def _run_wer_transcribe(
+def run_wer_transcribe(
     meta: str,
     output_dir: str,
     *,
@@ -159,7 +159,7 @@ def dataset_repo() -> str:
 
 
 @dataclass
-class _SpeedArtifacts:
+class SpeedArtifacts:
     """Outputs from the voice-clone speed benchmark.
 
     Speed-threshold assertions are deliberately NOT made here so that a
@@ -176,9 +176,9 @@ class _SpeedArtifacts:
 def speed_artifacts(
     dataset_repo: str,
     tmp_path_factory: pytest.TempPathFactory,
-) -> _SpeedArtifacts:
+) -> SpeedArtifacts:
     """Run generation, then stop TTS and free its GPU before ASR starts."""
-    port = _find_available_port_range(1)
+    port = find_available_port_range(1)
     log_file = server_log_file(tmp_path_factory, "zonos2_server_logs")
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
     with managed_omni_server(
@@ -189,9 +189,9 @@ def speed_artifacts(
         timeout=STARTUP_TIMEOUT,
         wait_for_gpu_release=True,
     ):
-        results = _run_benchmark(port, dataset_repo, output_dir)
+        results = run_benchmark(port, dataset_repo, output_dir)
     wait_for_gpu_memory_release()
-    return _SpeedArtifacts(
+    return SpeedArtifacts(
         output_dir=output_dir,
         summary=results["summary"],
         per_request=results["per_request"],
@@ -199,7 +199,7 @@ def speed_artifacts(
 
 
 @pytest.fixture(scope="module")
-def wer_audio_dir(speed_artifacts: _SpeedArtifacts) -> str:
+def wer_audio_dir(speed_artifacts: SpeedArtifacts) -> str:
     """Reuse audio generated before the TTS server was stopped."""
     generated_path = Path(speed_artifacts.output_dir) / "generated.json"
     assert generated_path.exists(), f"WER metadata missing: {generated_path}"
@@ -208,7 +208,7 @@ def wer_audio_dir(speed_artifacts: _SpeedArtifacts) -> str:
 
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
-    speed_artifacts: _SpeedArtifacts,
+    speed_artifacts: SpeedArtifacts,
 ) -> None:
     """Print speed summary and assert metrics meet thresholds."""
     print_speed_summary(
@@ -239,7 +239,7 @@ def test_voice_cloning_wer(
     dataset_repo: str,
     qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
-    results = _run_wer_transcribe(
+    results = run_wer_transcribe(
         dataset_repo,
         wer_audio_dir,
         asr_router_port=qwen3_asr_wer_router.port,

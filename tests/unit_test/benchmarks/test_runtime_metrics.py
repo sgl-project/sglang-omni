@@ -109,28 +109,36 @@ def test_nvml_handle_respects_explicitly_hidden_gpus(
     )
 
     with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES is empty"):
-        runtime_metrics._resolve_nvml_handle(pynvml, 0)
+        runtime_metrics._resolve_nvml_handle(
+            pynvml, 0
+        )  # noqa: leading-underscore  # production name
 
 
 def test_nvml_process_snapshot_marks_unsupported_getters_unavailable() -> None:
-    assert runtime_metrics._nvml_compute_processes(SimpleNamespace(), object()) is None
+    assert (
+        runtime_metrics._nvml_compute_processes(SimpleNamespace(), object()) is None
+    )  # noqa: leading-underscore  # production name
 
 
 def test_resource_monitor_requires_explicit_gpu_process_targets() -> None:
     monitor = ResourceMonitor()
-    monitor._pynvml = SimpleNamespace(
-        nvmlDeviceGetMemoryInfo=lambda _handle: SimpleNamespace(used=4096, free=8192),
-        nvmlDeviceGetComputeRunningProcesses=lambda _handle: [
+    monitor._pynvml = SimpleNamespace(  # noqa: leading-underscore  # production name
+        nvmlDeviceGetMemoryInfo=lambda handle: SimpleNamespace(used=4096, free=8192),
+        nvmlDeviceGetComputeRunningProcesses=lambda handle: [
             SimpleNamespace(pid=11, usedGpuMemory=2 * 1024**2)
         ],
-        nvmlDeviceGetUtilizationRates=lambda _handle: SimpleNamespace(gpu=50),
-        nvmlDeviceGetPowerUsage=lambda _handle: 1000,
+        nvmlDeviceGetUtilizationRates=lambda handle: SimpleNamespace(gpu=50),
+        nvmlDeviceGetPowerUsage=lambda handle: 1000,
     )
-    monitor._psutil = SimpleNamespace(cpu_percent=lambda interval=None: 10.0)
+    monitor._psutil = SimpleNamespace(
+        cpu_percent=lambda interval=None: 10.0
+    )  # noqa: leading-underscore  # production name
     monitor.handle = object()
-    monitor._started_at = time.perf_counter()
+    monitor._started_at = (
+        time.perf_counter()
+    )  # noqa: leading-underscore  # production name
 
-    monitor._sample_once()
+    monitor._sample_once()  # noqa: leading-underscore  # production name
     result = monitor.stop()
 
     assert monitor.samples[0].gpu_process_memory_mib is None
@@ -146,25 +154,27 @@ def test_resource_monitor_filters_targets_and_reports_pid_namespace() -> None:
         raise NoSuchProcess
 
     monitor = ResourceMonitor(gpu_process_pids=[22])
-    monitor._pynvml = SimpleNamespace(
-        nvmlDeviceGetMemoryInfo=lambda _handle: SimpleNamespace(used=4096, free=8192),
-        nvmlDeviceGetComputeRunningProcesses=lambda _handle: [
+    monitor._pynvml = SimpleNamespace(  # noqa: leading-underscore  # production name
+        nvmlDeviceGetMemoryInfo=lambda handle: SimpleNamespace(used=4096, free=8192),
+        nvmlDeviceGetComputeRunningProcesses=lambda handle: [
             SimpleNamespace(pid=11, usedGpuMemory=78 * 1024**2),
             SimpleNamespace(pid=22, usedGpuMemory=2 * 1024**2),
         ],
-        nvmlDeviceGetUtilizationRates=lambda _handle: SimpleNamespace(gpu=50),
-        nvmlDeviceGetPowerUsage=lambda _handle: 1000,
+        nvmlDeviceGetUtilizationRates=lambda handle: SimpleNamespace(gpu=50),
+        nvmlDeviceGetPowerUsage=lambda handle: 1000,
     )
-    monitor._psutil = SimpleNamespace(
+    monitor._psutil = SimpleNamespace(  # noqa: leading-underscore  # production name
         cpu_percent=lambda interval=None: 10.0,
         Process=missing_process,
         NoSuchProcess=NoSuchProcess,
         AccessDenied=PermissionError,
     )
     monitor.handle = object()
-    monitor._started_at = time.perf_counter()
+    monitor._started_at = (
+        time.perf_counter()
+    )  # noqa: leading-underscore  # production name
 
-    monitor._sample_once()
+    monitor._sample_once()  # noqa: leading-underscore  # production name
     result = monitor.stop()
 
     assert monitor.samples[0].gpu_process_memory_mib == 2.0
@@ -206,15 +216,15 @@ def test_resource_monitor_keeps_nvml_calls_on_sampler_thread(
     pynvml.nvmlInit = lambda: record()
     pynvml.nvmlShutdown = lambda: record()
     pynvml.nvmlDeviceGetHandleByIndex = lambda _index: record("gpu")
-    pynvml.nvmlDeviceGetMemoryInfo = lambda _handle: record(
+    pynvml.nvmlDeviceGetMemoryInfo = lambda handle: record(
         SimpleNamespace(used=1024, free=2048)
     )
-    pynvml.nvmlDeviceGetComputeRunningProcesses = lambda _handle: record([])
-    pynvml.nvmlDeviceGetGraphicsRunningProcesses = lambda _handle: record([])
-    pynvml.nvmlDeviceGetUtilizationRates = lambda _handle: record(
+    pynvml.nvmlDeviceGetComputeRunningProcesses = lambda handle: record([])
+    pynvml.nvmlDeviceGetGraphicsRunningProcesses = lambda handle: record([])
+    pynvml.nvmlDeviceGetUtilizationRates = lambda handle: record(
         SimpleNamespace(gpu=50)
     )
-    pynvml.nvmlDeviceGetPowerUsage = lambda _handle: record(1000)
+    pynvml.nvmlDeviceGetPowerUsage = lambda handle: record(1000)
 
     psutil = ModuleType("psutil")
     psutil.cpu_percent = lambda interval=None: 10.0
@@ -298,7 +308,9 @@ async def test_asr_repeat_stops_resource_monitor_when_request_fails(
     )
 
     with pytest.raises(RuntimeError, match="request failed"):
-        await benchmark_asr_seedtts._run_repeat(args, [], 1, 1)
+        await benchmark_asr_seedtts._run_repeat(
+            args, [], 1, 1
+        )  # noqa: leading-underscore  # production name
 
     assert stopped is True
     assert util_stopped is True

@@ -29,7 +29,7 @@ from sglang_omni.scheduling.pd_utils import (
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 
-class _ReqPool:
+class ReqPool:
     def __init__(self, capacity: int = 4) -> None:
         self.capacity = capacity
         self.req_to_token = torch.zeros((capacity, 32), dtype=torch.int64)
@@ -59,7 +59,7 @@ class _ReqPool:
         req.kv.req_pool_idx = None
 
 
-class _KVAllocator:
+class KVAllocator:
     def __init__(self) -> None:
         self.next_slot = 7
         self.freed = []
@@ -76,7 +76,7 @@ class _KVAllocator:
         self.freed.append(slots)
 
 
-def _prefill_req(
+def prefill_req(
     *,
     max_new_tokens: int = 16,
     custom_params: dict | None = None,
@@ -115,21 +115,21 @@ def _prefill_req(
     return req
 
 
-def _state_builder(req):
+def state_builder(req):
     return req.omni_data.stage_payload.to_dict(), None, list(req.origin_input_ids)
 
 
-def _continuation() -> DecodeContinuation:
-    return continuation_from_req(_prefill_req(), "transfer-1", _state_builder)
+def make_continuation() -> DecodeContinuation:
+    return continuation_from_req(prefill_req(), "transfer-1", state_builder)
 
 
-def _allocation() -> ReservedKV:
+def make_allocation() -> ReservedKV:
     slots = torch.tensor([7, 8, 9], dtype=torch.int64)
     return ReservedKV(slots=slots, page_indices=(7, 8, 9), seq_len=3)
 
 
-def _message(*, transfer_id="transfer-1", **metadata):
-    continuation = replace(_continuation(), transfer_id=transfer_id)
+def make_message(*, transfer_id="transfer-1", **metadata):
+    continuation = replace(make_continuation(), transfer_id=transfer_id)
     return KVTransferPrepareMessage(
         request_id=continuation.request_id,
         transfer_id=continuation.transfer_id,
@@ -143,10 +143,10 @@ def _message(*, transfer_id="transfer-1", **metadata):
     )
 
 
-def _receiver(admissions=None):
+def make_receiver(admissions=None):
     return DecodeKVReceiver(
         pool_id="decode:kv",
-        allocator=_KVAllocator(),
+        allocator=KVAllocator(),
         admissions=admissions if admissions is not None else queue.SimpleQueue(),
         resume_schema="test-v1",
     )
@@ -155,7 +155,7 @@ def _receiver(admissions=None):
 def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
     """Rebuild against SGLang's real request-row ownership contract."""
 
-    continuation = DecodeContinuation.decode(_continuation().encode())
+    continuation = DecodeContinuation.decode(make_continuation().encode())
     req_to_token_pool = ReqToTokenPool(
         size=4,
         max_context_len=32,
@@ -164,9 +164,9 @@ def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
     )
     req = req_from_continuation(
         continuation,
-        _allocation(),
+        make_allocation(),
         req_to_token_pool=req_to_token_pool,
-        state_restorer=lambda req, _data, _resume: setattr(req, "tokenizer", None),
+        state_restorer=lambda req, data, _resume: setattr(req, "tokenizer", None),
     )
 
     assert list(req.origin_input_ids) == [10, 11, 12]
@@ -183,15 +183,15 @@ def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
     assert req_to_token_pool.available_size() == req_to_token_pool.size
 
 
-def _rebuilt_req(source):
+def rebuilt_req(source):
     continuation = DecodeContinuation.decode(
-        continuation_from_req(source, "transfer-1", _state_builder).encode()
+        continuation_from_req(source, "transfer-1", state_builder).encode()
     )
     return req_from_continuation(
         continuation,
-        _allocation(),
-        req_to_token_pool=_ReqPool(),
-        state_restorer=lambda req, _data, _resume: setattr(req, "tokenizer", None),
+        make_allocation(),
+        req_to_token_pool=ReqPool(),
+        state_restorer=lambda req, data, _resume: setattr(req, "tokenizer", None),
     )
 
 
@@ -201,14 +201,14 @@ def test_continuation_preserves_the_hidden_state_mode() -> None:
         (True, CaptureHiddenMode.FULL),
         ("last", CaptureHiddenMode.LAST),
     ):
-        req = _rebuilt_req(_prefill_req(return_hidden_states=mode))
+        req = rebuilt_req(prefill_req(return_hidden_states=mode))
         assert req.return_hidden_states == mode
         assert req.return_hidden_states_mode is capture
 
 
 def test_continuation_strips_the_live_req_out_of_custom_params() -> None:
-    source = _prefill_req(custom_params={"segment_timestamps": True})
-    req = _rebuilt_req(source)
+    source = prefill_req(custom_params={"segment_timestamps": True})
+    req = rebuilt_req(source)
     assert req.sampling_params.custom_params["segment_timestamps"] is True
     assert req.sampling_params.custom_params["__req__"] is req
     assert source.sampling_params.custom_params["__req__"] is source
@@ -216,8 +216,8 @@ def test_continuation_strips_the_live_req_out_of_custom_params() -> None:
 
 def test_decode_receiver_commits_directly_to_admission_queue() -> None:
     admissions = queue.SimpleQueue()
-    receiver = _receiver(admissions)
-    message = _message()
+    receiver = make_receiver(admissions)
+    message = make_message()
 
     destination = receiver.reserve(message)
     receiver.commit(message, destination)
@@ -228,7 +228,7 @@ def test_decode_receiver_commits_directly_to_admission_queue() -> None:
 
 
 def test_prefill_defers_first_token_stop_policy_to_decode() -> None:
-    req = _prefill_req(max_new_tokens=1)
+    req = prefill_req(max_new_tokens=1)
     del req.output_ids[:]
     original_max = req.sampling_params.max_new_tokens
 

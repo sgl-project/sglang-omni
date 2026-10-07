@@ -17,13 +17,13 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 
 
-def _scheduler(config, stage_name: str):
+def make_scheduler(config, stage_name: str):
     return config.stage_named(stage_name).factory
 
 
 def test_decode_mode_default_config_is_async():
     config = HiggsTtsPipelineConfig(model_path="dummy")
-    assert _scheduler(config, "tts_engine").enable_async_decode is True
+    assert make_scheduler(config, "tts_engine").enable_async_decode is True
 
 
 def test_dotted_flag_can_force_sync_and_async():
@@ -32,12 +32,12 @@ def test_dotted_flag_can_force_sync_and_async():
     forced_sync = ConfigManager(config).merge_config(
         [("tts_engine.factory.enable_async_decode", "false")]
     )
-    assert _scheduler(forced_sync, "tts_engine").enable_async_decode is False
+    assert make_scheduler(forced_sync, "tts_engine").enable_async_decode is False
 
     forced_async = ConfigManager(config).merge_config(
         [("tts_engine.factory.enable_async_decode", "true")]
     )
-    assert _scheduler(forced_async, "tts_engine").enable_async_decode is True
+    assert make_scheduler(forced_async, "tts_engine").enable_async_decode is True
 
 
 def test_async_lookahead_min_batch_size_applies_without_mode_toggle():
@@ -45,7 +45,7 @@ def test_async_lookahead_min_batch_size_applies_without_mode_toggle():
     resolved = ConfigManager(config).merge_config(
         [("tts_engine.factory.async_decode_min_batch_size", "4")]
     )
-    scheduler = _scheduler(resolved, "tts_engine")
+    scheduler = make_scheduler(resolved, "tts_engine")
     assert scheduler.enable_async_decode is True
     assert scheduler.async_decode_min_batch_size == 4
 

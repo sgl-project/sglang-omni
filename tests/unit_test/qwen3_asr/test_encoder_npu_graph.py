@@ -13,11 +13,11 @@ from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
 )
 
 
-class _NpuBackend:
+class NpuBackend:
     supports_graph_task_update = True
 
 
-class _NpuDeviceModule:
+class NpuDeviceModule:
     def set_device(self, device):
         pass
 
@@ -28,15 +28,15 @@ class _NpuDeviceModule:
         return nullcontext()
 
 
-def _npu_runner():
+def npu_runner():
     runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
     runner.max_seqlen = 8
     runner.buckets = (8,)
     runner.failed = set()
     runner.graphs = {}
     runner.device = SimpleNamespace(type="npu", index=0)
-    runner.graph_backend = _NpuBackend()
-    runner.device_module = _NpuDeviceModule()
+    runner.graph_backend = NpuBackend()
+    runner.device_module = NpuDeviceModule()
     runner.npu_update_stream = SimpleNamespace(wait_stream=lambda stream: None)
     return runner
 
@@ -94,7 +94,7 @@ def test_npu_replay_updates_window_boundaries_for_a_reused_bucket():
     operations = []
     update_submitted = threading.Event()
     host_threads = {}
-    runner = _npu_runner()
+    runner = npu_runner()
     runner.buckets = (8, 16)
     runner.plan = lambda total, windows: (8, [8 - total])
     runner.npu_update_stream.wait_stream = lambda stream: operations.append(
@@ -140,7 +140,7 @@ def test_npu_replay_updates_window_boundaries_for_a_reused_bucket():
 
 
 def test_npu_attention_capture_restores_partial_setup():
-    runner = _npu_runner()
+    runner = npu_runner()
     original = torch.nn.Identity()
     attention = torch.nn.Module()
     attention.qkv_backend_name = "ascend_attn"
@@ -243,17 +243,10 @@ def test_npu_attention_capture_registers_and_applies_an_explicit_fia_task(monkey
     assert calls[2:] == [("update_end", "update-stream"), ("record", "update-stream")]
 
 
-def _capture_runner(backend):
+def capture_runner(backend):
     backend.supports_graph_task_update = True
 
     class DeviceModule:
-        pool = object()
-        graph_pool_handle_calls = 0
-
-        def graph_pool_handle(self):
-            self.graph_pool_handle_calls += 1
-            return self.pool
-
         def Stream(self, device):
             return SimpleNamespace(wait_stream=lambda other: None)
 
@@ -305,7 +298,12 @@ def test_npu_capture_context_failure_leaves_bucket_eager():
         def __exit__(self, *args):
             return False
 
-    runner = _capture_runner(SimpleNamespace(capture=lambda **kwargs: CaptureContext()))
+    runner = capture_runner(
+        SimpleNamespace(
+            capture=lambda **kwargs: CaptureContext(),
+            graph_pool_handle=lambda: object(),
+        )
+    )
 
     assert runner.run(torch.ones(4, 2), [4]) is None
     assert runner.run(torch.ones(4, 2), [4]) is None
@@ -317,14 +315,22 @@ def test_npu_captures_share_one_graph_pool():
     pools = []
 
     class Backend:
+        pool = object()
+        graph_pool_handle_calls = 0
+
+        def graph_pool_handle(self):
+            self.graph_pool_handle_calls += 1
+            return self.pool
+
         def capture(self, *, pool=None, stream=None, thread_local_errors=False):
             pools.append(pool)
             return nullcontext(SimpleNamespace())
 
-    runner = _capture_runner(Backend())
+    backend = Backend()
+    runner = capture_runner(backend)
 
     runner.capture(8, window_lens=(4, 4))
     runner.capture(8, window_lens=(2, 2, 4))
 
-    assert runner.device_module.graph_pool_handle_calls == 1
-    assert pools == [runner.device_module.pool, runner.device_module.pool]
+    assert backend.graph_pool_handle_calls == 1
+    assert pools == [backend.pool, backend.pool]

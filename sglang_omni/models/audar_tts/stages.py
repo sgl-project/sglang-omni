@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -33,6 +33,11 @@ from sglang_omni.scheduling.reference_encoder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
+if TYPE_CHECKING:
+    from neucodec import NeuCodec
+else:
+    pass
+
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
 DEFAULT_CODEC_MODEL = "neuphonic/neucodec"
 REFERENCE_SAMPLE_RATE = 16000
@@ -44,12 +49,12 @@ MAX_REFERENCE_SECONDS = 15.0
 @dataclass(frozen=True)
 class ReferenceInput:
     source_kind: str
-    source: Any
+    source: str | bytes
     media_type: str | None = None
 
 
 @lru_cache(maxsize=None)
-def load_codec(model: str, revision: str, device: str) -> Any:
+def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
     try:
         from neucodec import NeuCodec
     except ImportError as exc:
@@ -64,7 +69,7 @@ def codec_lock(model: str, revision: str, device: str) -> threading.Lock:
     return threading.Lock()
 
 
-def normalize_reference(raw_input: Any) -> ReferenceInput:
+def normalize_reference(raw_input: object) -> ReferenceInput:
     if not isinstance(raw_input, dict):
         raise TypeError("Audar-TTS reference input must be a dict")
     else:
@@ -126,7 +131,9 @@ def load_reference_waveform(item: ReferenceInput) -> torch.Tensor:
     return torch.from_numpy(audio).float().reshape(1, 1, -1)
 
 
-def encode_reference(codec: Any, device: str, item: ReferenceInput) -> torch.Tensor:
+def encode_reference(
+    codec: "NeuCodec", device: str, item: ReferenceInput
+) -> torch.Tensor:
     waveform = load_reference_waveform(item).to(device)
     with torch.inference_mode():
         codes = torch.as_tensor(codec.encode_code(waveform)).squeeze()
@@ -148,7 +155,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
     def __init__(
         self,
         *,
-        codec: Any,
+        codec: "NeuCodec",
         device: str,
         codec_model: str,
         codec_revision: str,
@@ -163,7 +170,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
             f"sample_rate:{REFERENCE_SAMPLE_RATE}".encode("utf-8")
         )
 
-    def normalize_input(self, raw_input: Any) -> ReferenceInput:
+    def normalize_input(self, raw_input: object) -> ReferenceInput:
         return normalize_reference(raw_input)
 
     def input_key(self, item: ReferenceInput) -> str | None:
@@ -177,7 +184,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
         return item.source_kind != "path" or reference_key(item) == key.input_key
 
 
-def create_preprocessing_executor() -> SimpleScheduler:
+def create_preprocessing_executor() -> SimpleScheduler[StagePayload, StagePayload]:
     return SimpleScheduler(
         lambda payload: store_state(payload, build_audar_state(payload))
     )
@@ -192,7 +199,7 @@ def create_reference_encoder_executor(
     cache_max_items: int = 256,
     cache_max_bytes: int = 64 * 1024 * 1024,
     max_concurrency: int = 8,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
@@ -255,7 +262,7 @@ def create_tts_engine_executor(
     model_revision: str = "main",
     n_ctx: int = 4096,
     n_gpu_layers: int = -1,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     try:
         from llama_cpp import LLAMA_SPLIT_MODE_NONE, Llama
     except ImportError as exc:
@@ -362,7 +369,7 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
@@ -397,7 +404,7 @@ def create_vocoder_executor(
             pass
         return payload
 
-    return SimpleScheduler(_decode)
+    return SimpleScheduler[StagePayload, StagePayload](_decode)
 
 
 def load_state(payload: StagePayload) -> AudarTTSState:

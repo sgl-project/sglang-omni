@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Mapping
 
 from sglang_omni.pipeline.control_plane import PushSocket
 from sglang_omni.proto import ProfilerStartMessage, ProfilerStopMessage
@@ -42,7 +42,7 @@ class ProfilerControlClient:
         self,
         run_id: str,
         trace_path_template: str,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, object] | None = None,
         stages: list[str] | None = None,
         event_dir: str | None = None,
         enable_torch: bool = True,

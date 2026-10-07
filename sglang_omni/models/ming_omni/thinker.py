@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
-from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
+from sglang.srt.layers.layer_boundary import enable_moe_dense_fully_dp
 from sglang.srt.runtime_context import get_parallel
 from torch import nn
+from transformers import PretrainedConfig
 
 from sglang_omni.models.ming_omni.configuration import (
     BailingMM2Config,
@@ -31,13 +32,8 @@ from sglang_omni.models.ming_omni.configuration import (
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
+from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
-    LayerCommunicator,
-    LayerScatterModes,
     MergedColumnParallelLinear,
     QKVParallelLinear,
     QuantizationConfig,
@@ -47,8 +43,12 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     SiluAndMul,
     VocabParallelEmbedding,
+    declare_attn,
+    declare_ffn,
     get_moe_impl_class,
     get_rope,
+    make_stages,
+    residual_batch,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
@@ -299,7 +299,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         self.n_group = config.n_group
         self.topk_group = config.topk_group
         self.routed_scaling_factor = config.routed_scaling_factor
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_parallel().tp_size
 
         # Gate: linear projection for router scores
         self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, bias=False)
@@ -313,7 +313,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             self.expert_bias = None
 
         # Routed and shared experts produce TP-partial outputs, combine first,
-        # then reduce once here or via LayerCommunicator all-reduce fusion.
+        # then reduce once here or in the next layer's input.
         FusedMoE = get_moe_impl_class(quant_config)
         self.experts = FusedMoE(
             num_experts=config.num_experts,
@@ -516,73 +516,48 @@ class BailingMoeV2DecoderLayer(nn.Module):
         is_previous_layer_sparse = layer_id - 1 >= config.first_k_dense_replace
         is_next_layer_sparse = layer_id + 1 >= config.first_k_dense_replace
 
-        self.layer_scatter_modes = LayerScatterModes.init_new(
-            layer_id=layer_id,
-            num_layers=config.num_hidden_layers,
-            is_layer_sparse=is_layer_sparse,
-            is_previous_layer_sparse=is_previous_layer_sparse,
-            is_next_layer_sparse=is_next_layer_sparse,
-        )
-        self.layer_communicator = LayerCommunicator(
-            layer_scatter_modes=self.layer_scatter_modes,
-            input_layernorm=self.input_layernorm,
-            post_attention_layernorm=self.post_attention_layernorm,
-            allow_reduce_scatter=True,
-            is_last_layer=(self.layer_id == config.num_hidden_layers - 1),
+        self.attn_boundary, self.ffn_boundary = make_stages(
+            (declare_attn(), self.input_layernorm),
+            (
+                declare_ffn(sparse=is_layer_sparse, next_sparse=is_next_layer_sparse),
+                self.post_attention_layernorm,
+            ),
+            previous=(
+                declare_ffn(
+                    sparse=is_previous_layer_sparse, next_sparse=is_layer_sparse
+                )
+                if layer_id != 0
+                else None
+            ),
+            terminal=layer_id == config.num_hidden_layers - 1,
         )
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
-        residual: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        hidden_states, residual = (
-            self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-                hidden_states,
-                residual,
-                forward_batch,
-                captured_last_layer_outputs=None,
-            )
-        )
+    ) -> torch.Tensor:
+        hidden_states = self.attn_boundary.prepare(hidden_states, forward_batch)
 
         if hidden_states.shape[0] != 0:
             hidden_states = self.self_attn(hidden_states, forward_batch)
         else:
             pass
 
-        hidden_states, residual = self.layer_communicator.prepare_mlp(
-            hidden_states=hidden_states,
-            residual=residual,
-            forward_batch=forward_batch,
-        )
+        hidden_states = self.attn_boundary.finish(hidden_states, forward_batch)
+        hidden_states = self.ffn_boundary.prepare(hidden_states, forward_batch)
 
-        should_allreduce_fusion = (
-            self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
-                forward_batch
-            )
-        )
-        use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
-            forward_batch
-        )
-
-        hidden_states = self.mlp(
-            hidden_states,
-            forward_batch=forward_batch,
-            should_allreduce_fusion=should_allreduce_fusion,
-            use_reduce_scatter=use_reduce_scatter,
-        )
-
-        if should_allreduce_fusion:
-            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        else:
-            hidden_states, residual = self.layer_communicator.postprocess_layer(
+        # note (ratish): the MLP reduces its own output, so it takes the exit's
+        # decision or the sum is taken twice.
+        with self.ffn_boundary.exit(forward_batch) as ffn_exit:
+            hidden_states = self.mlp(
                 hidden_states,
-                residual,
-                forward_batch,
+                forward_batch=forward_batch,
+                should_allreduce_fusion=ffn_exit.fuse_mlp_allreduce,
+                use_reduce_scatter=ffn_exit.mlp_reduce_scatter,
             )
 
-        return hidden_states, residual
+        return ffn_exit.finish(hidden_states)
 
 
 # ============================================================================
@@ -625,11 +600,15 @@ class BailingMoeV2TextModel(nn.Module):
         else:
             hidden_states = self.embed_tokens(input_ids)
 
-        residual = None
+        residual_batch.start(forward_batch)
         for layer in self.layers:
-            hidden_states, residual = layer(hidden_states, forward_batch, residual)
+            hidden_states = layer(hidden_states, forward_batch)
 
-        hidden_states, _ = self.norm(hidden_states, residual)
+        hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
+        if hidden_states.shape[0] != 0:
+            hidden_states = residual_batch.norm(hidden_states, forward_batch, self.norm)
+        else:
+            pass
         return hidden_states
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
@@ -835,9 +814,9 @@ class BailingMoeV2ForCausalLM(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
-    ):
+    ) -> None:
         super().__init__()
         # Keep the original HF config reference so SGLang runtime can read
         # patched attributes (audio_token_id, etc.) from the same object.
@@ -890,7 +869,9 @@ class BailingMoeV2ForCausalLM(nn.Module):
         self.patch_token_ids(config, llm_cfg)
 
     @staticmethod
-    def patch_token_ids(config: Any, llm_cfg: Any) -> None:
+    def patch_token_ids(
+        config: PretrainedConfig, llm_cfg: PretrainedConfig | None
+    ) -> None:
         """Set image/video/audio token IDs on the HF config."""
         if not hasattr(config, "image_token_id"):
             config.image_token_id = getattr(llm_cfg, "image_patch_token", None)

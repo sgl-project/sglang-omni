@@ -11,7 +11,6 @@ import math
 from collections.abc import AsyncIterator, Collection
 from contextlib import aclosing
 from dataclasses import dataclass
-from typing import Any
 
 from fastapi import File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -25,7 +24,7 @@ from sglang_omni.client import (
     SamplingParams,
 )
 from sglang_omni.serve.generation_params import record_explicit_generation_params
-from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     TranscriptionResponse,
     TranscriptionTextDeltaEvent,
@@ -154,12 +153,12 @@ def build_speech_to_text_generate_request(
     segment_timestamps: bool = False,
 ) -> GenerateRequest:
     """Keep endpoint policy out of model-neutral request construction."""
-    params: dict[str, Any] = {"task": task}
+    params: dict[str, str | bool] = {"task": task}
     if detect_language:
         params["detect_language"] = True
     else:
         pass
-    metadata: dict[str, Any] = {"task": "asr"}
+    metadata: dict[str, object] = {"task": "asr"}
     explicit_fields: list[str] = []
     if language is not None:
         params["language"] = language
@@ -258,18 +257,16 @@ async def complete_speech_to_text_request(
     try:
         return await client.completion(gen_req, request_id=request_id)
     except ClientError as exc:
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        else:
-            pass
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=generation_error_status_code(exc), detail=str(exc)
+        ) from exc
     except Exception as exc:
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = generation_error_status_code(exc)
+        if status_code == 500:
+            logger.exception(error_log_message, request_id)
         else:
             pass
-        logger.exception(error_log_message, request_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 def resolve_speech_to_text_adapter(
@@ -392,12 +389,15 @@ def assemble_speech_to_text_response(
         endpoint_path=endpoint_path,
         response_formats=response_formats,
     )
+    adapter = resolve_speech_to_text_adapter(architectures)
+    raw_text = text
     if normalized_response_format == "text":
-        return PlainTextResponse(text)
+        return PlainTextResponse(raw_text)
     else:
         pass
 
-    adapter = resolve_speech_to_text_adapter(architectures)
+    text = adapter.postprocess_text(raw_text)
+
     if (
         normalized_response_format in SEGMENT_RESPONSE_FORMATS
         and not adapter.supports_segment_timestamps
@@ -411,8 +411,6 @@ def assemble_speech_to_text_response(
         )
     else:
         pass
-    raw_text = text
-    text = adapter.postprocess_text(raw_text)
     if duration_s is None:
         duration_s = probe_audio_duration(audio_bytes)
     else:
@@ -456,7 +454,9 @@ def assemble_speech_to_text_response(
     )
 
 
-async def cancel_task_bounded(task: asyncio.Task[Any]) -> None:
+async def cancel_task_bounded(
+    task: asyncio.Task[GenerateChunk | list[str] | None],
+) -> None:
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
     if done:
@@ -465,7 +465,9 @@ async def cancel_task_bounded(task: asyncio.Task[Any]) -> None:
         task.add_done_callback(discard_cancelled_task_result)
 
 
-def discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
+def discard_cancelled_task_result(
+    task: asyncio.Task[GenerateChunk | list[str] | None],
+) -> None:
     try:
         task.result()
     except asyncio.CancelledError:
@@ -482,7 +484,7 @@ async def wait_for_request_disconnect(request: Request) -> None:
 async def abort_and_close_speech_to_text_stream(
     client: Client,
     request_id: str,
-    stream: AsyncIterator[Any],
+    stream: AsyncIterator[GenerateChunk],
 ) -> None:
     try:
         await client.abort(request_id)
@@ -610,23 +612,21 @@ async def create_speech_to_text_streaming_response(
         )
     except ClientError as exc:
         await close_async_iterator_if_supported(chunk_stream)
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        else:
-            pass
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=generation_error_status_code(exc), detail=str(exc)
+        ) from exc
     except Exception as exc:
         await close_async_iterator_if_supported(chunk_stream)
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = generation_error_status_code(exc)
+        if status_code == 500:
+            logger.exception(
+                "Error starting %s stream for request %s",
+                operation_name,
+                request_id,
+            )
         else:
             pass
-        logger.exception(
-            "Error starting %s stream for request %s",
-            operation_name,
-            request_id,
-        )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return ClosableStreamingResponse(
         speech_to_text_stream(
             chunk_stream,

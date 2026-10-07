@@ -71,7 +71,7 @@ MMSU_TALKER_WER_DATASET_LABEL = format_benchmark_dataset_label(
 )
 
 
-def _build_args(
+def build_args(
     omni_ci_model: OmniCiModelPreset, port: int, output_dir: str
 ) -> argparse.Namespace:
     return argparse.Namespace(
@@ -102,7 +102,7 @@ def _build_args(
 
 
 @dataclass
-class _TalkerEvalArtifacts:
+class TalkerEvalArtifacts:
     accuracy: dict
     speed: dict
     per_sample: list
@@ -115,9 +115,9 @@ def talker_eval_artifacts(
     omni_ci_model: OmniCiModelPreset,
     omni_ci_server: ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
-) -> _TalkerEvalArtifacts:
+) -> TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("mmsu_audio"))
-    args = _build_args(omni_ci_model, omni_ci_server.port, output_dir)
+    args = build_args(omni_ci_model, omni_ci_server.port, output_dir)
     samples = load_mmsu_samples(
         max_samples=MAX_SAMPLES, repo_id=DATASETS["mmsu-ci-2000"]
     )
@@ -129,7 +129,7 @@ def talker_eval_artifacts(
         router_guard.assert_served(
             min_total_requests=results["accuracy"].get("total_samples", 0)
         )
-    return _TalkerEvalArtifacts(
+    return TalkerEvalArtifacts(
         accuracy=results["accuracy"],
         speed=results["speed"],
         per_sample=results["per_sample"],
@@ -141,8 +141,8 @@ def talker_eval_artifacts(
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
     omni_ci_server: ManagedRouterHandle,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
-) -> _TalkerEvalArtifacts:
+    talker_eval_artifacts: TalkerEvalArtifacts,
+) -> TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
     omni_ci_server.stop()
     wait_for_gpu_memory_release()
@@ -152,7 +152,7 @@ def wer_eval_artifacts(
 @pytest.mark.benchmark
 def test_mmsu_talker_accuracy_and_speed(
     omni_ci_model: OmniCiModelPreset,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
+    talker_eval_artifacts: TalkerEvalArtifacts,
 ) -> None:
     """Run MMSU eval with audio and assert accuracy and speed meet thresholds."""
     print_mmsu_summary(
@@ -195,7 +195,7 @@ def test_mmsu_talker_accuracy_and_speed(
 @pytest.mark.benchmark
 def test_mmsu_talker_wer(
     omni_ci_model: OmniCiModelPreset,
-    wer_eval_artifacts: _TalkerEvalArtifacts,
+    wer_eval_artifacts: TalkerEvalArtifacts,
     qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""

@@ -1,15 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
-"""（wenyao）Stage factories for Ming-Omni.
-
-Heavy runtime imports are intentionally local to factory calls so importing
-Ming's config remains usable in lightweight environments.
-"""
+"""（wenyao）Stage factories for Ming-Omni."""
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Literal, TypedDict, overload
 
-from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+import torch
+
+from sglang_omni.models.ming_omni.io import (
+    MingOmniPipelineState,
+    StreamState,
+    ThinkerOutput,
+    UsagePromptInputs,
+)
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
@@ -100,16 +104,21 @@ def payload_with_state(
     )
 
 
+class EncoderInputMetadata(TypedDict, total=False):
+    cache_key: object
+    _skip: Literal[True]
+
+
 def project_encoder_input_metadata(
-    encoder_inputs: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    projected: dict[str, dict[str, Any]] = {}
+    encoder_inputs: Mapping[str, object],
+) -> dict[str, EncoderInputMetadata]:
+    projected: dict[str, EncoderInputMetadata] = {}
     for stage_name, stage_inputs in encoder_inputs.items():
         if not isinstance(stage_inputs, dict):
             continue
         else:
             pass
-        metadata: dict[str, Any] = {}
+        metadata: EncoderInputMetadata = {}
         cache_key = stage_inputs.get("cache_key")
         if cache_key is not None:
             metadata["cache_key"] = cache_key
@@ -126,7 +135,9 @@ def project_encoder_input_metadata(
     return projected
 
 
-def project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
+def project_prompt_for_usage(
+    prompt: UsagePromptInputs | None,
+) -> UsagePromptInputs | None:
     if not isinstance(prompt, dict):
         return None
     else:
@@ -139,24 +150,65 @@ def project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
     return {"input_ids": copy_mutable_containers(input_ids)}
 
 
-def slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
+def slim_thinker_out(thinker_out: ThinkerOutput | None) -> ThinkerOutput | None:
     if not isinstance(thinker_out, dict):
         return None
     else:
         pass
 
-    projected = {}
-    for key in ("output_ids", "step", "is_final", "finish_reason"):
-        if key in thinker_out:
-            projected[key] = copy_mutable_containers(thinker_out[key])
-        else:
-            pass
+    projected: ThinkerOutput = {}
+    if "output_ids" in thinker_out:
+        projected["output_ids"] = copy_mutable_containers(thinker_out["output_ids"])
+    else:
+        pass
+    if "step" in thinker_out:
+        projected["step"] = copy_mutable_containers(thinker_out["step"])
+    else:
+        pass
+    if "is_final" in thinker_out:
+        projected["is_final"] = copy_mutable_containers(thinker_out["is_final"])
+    else:
+        pass
+    if "finish_reason" in thinker_out:
+        projected["finish_reason"] = copy_mutable_containers(
+            thinker_out["finish_reason"]
+        )
+    else:
+        pass
 
     projected["extra_model_outputs"] = {}
     return projected
 
 
-def copy_mutable_containers(value: Any) -> Any:
+@overload
+def copy_mutable_containers(value: StreamState) -> StreamState: ...
+
+
+@overload
+def copy_mutable_containers(value: torch.Tensor) -> torch.Tensor: ...
+
+
+@overload
+def copy_mutable_containers(value: bool) -> bool: ...
+
+
+@overload
+def copy_mutable_containers(value: int) -> int: ...
+
+
+@overload
+def copy_mutable_containers(value: str) -> str: ...
+
+
+@overload
+def copy_mutable_containers(value: list[int]) -> list[int]: ...
+
+
+@overload
+def copy_mutable_containers(value: object) -> object: ...
+
+
+def copy_mutable_containers(value: object) -> object:
     if isinstance(value, dict):
         return {key: copy_mutable_containers(item) for key, item in value.items()}
     else:
@@ -324,7 +376,7 @@ def create_sglang_thinker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     enable_streaming_tts: bool = False,
 ):
     validate_stage_tp_support(stage_name="thinker", tp_size=tp_size)

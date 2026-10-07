@@ -25,6 +25,9 @@ sglang_model_runner = pytest.importorskip(
     reason="sglang (and its sgl_kernel dependency) not importable here",
 )
 from sglang.srt.model_executor.model_runner import ModelRunner  # noqa: E402
+from sglang.srt.model_executor.model_runner_components.weight_updater import (  # noqa: E402
+    WeightUpdater,
+)
 from sglang.srt.runtime_context import get_context, get_flags  # noqa: E402
 
 from sglang_omni.utils import ipc_weights  # noqa: E402
@@ -33,7 +36,7 @@ SGLModelRunner = sglang_model_runner.SGLModelRunner
 
 
 @pytest.fixture(autouse=True)
-def _parallel_bag(monkeypatch):
+def parallel_bag(monkeypatch):
     monkeypatch.setattr(
         sglang_model_runner,
         "get_parallel",
@@ -50,7 +53,7 @@ class SmallModel(nn.Module):
             self.linear.bias.fill_(fill)
 
 
-def _bare_runner(load_format="auto"):
+def bare_runner(load_format="auto"):
     runner = SGLModelRunner.__new__(SGLModelRunner)
     runner.server_args = SimpleNamespace(
         load_format=load_format,
@@ -66,12 +69,14 @@ def _bare_runner(load_format="auto"):
     runner.weight_share_record = None
     runner.weight_ipc_leader_monitor = None
     runner.is_draft_worker = False
-    runner.draft_load_format = runner._resolve_draft_load_format()
+    runner.draft_load_format = (
+        runner._resolve_draft_load_format()
+    )  # noqa: leading-underscore  # production name
     runner.token_to_kv_pool = SimpleNamespace(post_capture_active=False)
     return runner
 
 
-def _fake_upstream_load(fill_by_format):
+def fake_upstream_load(fill_by_format):
     """Upstream ModelRunner.load_model stand-in: materializes a model whose
     values depend on the load format actually in effect during the call."""
 
@@ -85,9 +90,9 @@ def _fake_upstream_load(fill_by_format):
 
 def test_env_unset_is_stock_path(tmp_path, monkeypatch):
     monkeypatch.delenv(ipc_weights.ENV_WEIGHT_SHARE, raising=False)
-    runner = _bare_runner()
+    runner = bare_runner()
     with mock.patch.object(
-        ModelRunner, "load_model", _fake_upstream_load({"auto": 1.0})
+        ModelRunner, "load_model", fake_upstream_load({"auto": 1.0})
     ):
         runner.load_model()
     assert runner.weight_share_config is None
@@ -97,11 +102,33 @@ def test_env_unset_is_stock_path(tmp_path, monkeypatch):
     assert runner.weight_update_blocked_reason() is None
 
 
+def test_distributed_update_reports_a_receive_without_an_update_group():
+    runner = bare_runner()
+    runner.weight_updater = WeightUpdater(
+        tp_rank=0,
+        device="cpu",
+        gpu_id=0,
+        model_config=SimpleNamespace(),
+        custom_weight_loaders={},
+        get_model=lambda: SmallModel(fill=1.0),
+        update_model_fields=lambda **fields: None,
+        recapture_cuda_graph=lambda: None,
+        get_model_runner=lambda: runner,
+    )
+
+    success, message = runner.update_weights_from_distributed(
+        ["linear.weight"], ["float32"], [[2, 3]], "absent-group"
+    )
+
+    assert success is False
+    assert message.startswith("Failed to receive weights")
+
+
 def test_leader_loads_normally_then_exports(tmp_path, monkeypatch):
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
-    runner = _bare_runner()
+    runner = bare_runner()
     with mock.patch.object(
-        ModelRunner, "load_model", _fake_upstream_load({"auto": 1.0})
+        ModelRunner, "load_model", fake_upstream_load({"auto": 1.0})
     ):
         runner.load_model()
     assert runner.draft_load_format is None
@@ -128,7 +155,7 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
         self.model = SmallModel(fill=0.0)  # dummy values
 
     with mock.patch.object(ModelRunner, "load_model", fake_load):
-        runner = _bare_runner(load_format="auto")
+        runner = bare_runner(load_format="auto")
         runner.load_model()
     runner.weight_ipc_leader_monitor.stop()  # don't leak the poller thread
 
@@ -157,7 +184,7 @@ def test_follower_runs_post_attach_hook_after_aliasing(tmp_path, monkeypatch):
         self.model = HookModel(fill=0.0)
 
     with mock.patch.object(ModelRunner, "load_model", fake_load):
-        runner = _bare_runner()
+        runner = bare_runner()
         runner.load_model()
     runner.weight_ipc_leader_monitor.stop()
 
@@ -176,7 +203,7 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
 
     calls = []
     with mock.patch.object(ModelRunner, "load_model", fake_load):
-        runner = _bare_runner()
+        runner = bare_runner()
         runner.load_model()
     runner.weight_ipc_leader_monitor.stop()  # don't leak the poller thread
     with (
@@ -197,7 +224,7 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
 
 
 def test_graph_capture_finalizes_post_capture_kv_pool():
-    runner = _bare_runner()
+    runner = bare_runner()
     runner.token_to_kv_pool = SimpleNamespace(post_capture_active=True)
     calls = []
     runner.post_capture_resize_kv_pool = lambda: calls.append("resize")
@@ -218,7 +245,7 @@ def test_graph_capture_finalizes_post_capture_kv_pool():
 def test_graph_capture_pins_sdpa_around_the_upstream_capture():
     from sglang_omni.platforms import current_platform
 
-    runner = _bare_runner()
+    runner = bare_runner()
     calls = []
 
     @contextmanager
@@ -247,7 +274,7 @@ def test_graph_capture_pins_sdpa_around_the_upstream_capture():
 def test_a_non_xpu_platform_captures_unwrapped():
     from sglang_omni.platforms import current_platform
 
-    runner = _bare_runner()
+    runner = bare_runner()
     calls = []
 
     def fail_if_entered():
@@ -269,7 +296,7 @@ def test_a_non_xpu_platform_captures_unwrapped():
 
 
 def test_graph_capture_reseeds_torch_compile_from_the_exec_bag():
-    runner = _bare_runner()
+    runner = bare_runner()
 
     with get_context().override_server_args(enable_torch_compile=True):
         assert get_flags().capture.enable_torch_compile is True
@@ -286,7 +313,7 @@ def test_graph_capture_reseeds_torch_compile_from_the_exec_bag():
 
 def test_follower_requires_explicit_kv_cap(tmp_path, monkeypatch):
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"follower:{tmp_path}")
-    runner = _bare_runner()
+    runner = bare_runner()
     runner.server_args.max_total_tokens = None
     with pytest.raises(ipc_weights.WeightShareError, match="max-total-tokens"):
         runner.load_model()
@@ -309,7 +336,7 @@ def test_moss_leader_export_marks_scratch_private(tmp_path, monkeypatch):
     import pickle
 
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
-    runner = _bare_runner()
+    runner = bare_runner()
     runner.model_arch_override = "MossTTSLocalSGLangModel"
 
     def fake_load(self):
@@ -331,7 +358,7 @@ def test_moss_follower_keeps_scratch_storage(tmp_path, monkeypatch):
         private_names=frozenset({"decode_input_embedding.weight"}),
     )
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"follower:{tmp_path}")
-    runner = _bare_runner()
+    runner = bare_runner()
     runner.model_arch_override = "MossTTSLocalSGLangModel"
     scratch_ptrs = []
 
@@ -355,10 +382,10 @@ def test_moss_policy_on_model_without_scratch_fails_closed(tmp_path, monkeypatch
     # The MOSS policy names a tensor SmallModel lacks: the model and policy
     # diverged, so the leader must refuse to export rather than share it all.
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
-    runner = _bare_runner()
+    runner = bare_runner()
     runner.model_arch_override = "MossTTSLocalSGLangModel"
     with mock.patch.object(
-        ModelRunner, "load_model", _fake_upstream_load({"auto": 1.0})
+        ModelRunner, "load_model", fake_upstream_load({"auto": 1.0})
     ):
         with pytest.raises(ipc_weights.WeightShareError, match="diverged"):
             runner.load_model()
@@ -366,16 +393,19 @@ def test_moss_policy_on_model_without_scratch_fails_closed(tmp_path, monkeypatch
 
 def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
-    runner = _bare_runner()
+    runner = bare_runner()
     with mock.patch.object(
-        ModelRunner, "load_model", _fake_upstream_load({"auto": 1.0})
+        ModelRunner, "load_model", fake_upstream_load({"auto": 1.0})
     ):
         runner.load_model()
-    for method in (
-        runner.update_weights_from_disk,
-        runner.update_weights_from_tensor,
-        runner.update_weights_from_distributed,
+    for method, args in (
+        (runner.update_weights_from_disk, ()),
+        (runner.update_weights_from_tensor, ()),
+        (
+            runner.update_weights_from_distributed,
+            (["weight"], ["float32"], [[1]], "group"),
+        ),
     ):
-        ok, message = method()
+        ok, message = method(*args)
         assert ok is False
         assert "weight sharing" in message

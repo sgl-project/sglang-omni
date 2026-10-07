@@ -9,7 +9,7 @@ import torch.nn as nn
 from sglang_omni.models.ming_omni.components.vision_encoder import linear_patch_embed
 
 
-class _TinyPatchEmbed(nn.Module):
+class TinyPatchEmbed(nn.Module):
     def __init__(
         self,
         *,
@@ -42,7 +42,7 @@ def test_patch_embed_linear_matches_conv3d():
     dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
     torch.manual_seed(0)
-    pe = _TinyPatchEmbed(
+    pe = TinyPatchEmbed(
         in_channels=3,
         temporal_patch_size=2,
         patch_size=14,

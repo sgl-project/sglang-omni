@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 
 from benchmarks.benchmarker.fingerprint import (
@@ -66,6 +67,7 @@ from benchmarks.eval.benchmark_asr_seedtts import (
     finalize_args,
 )
 from benchmarks.runtime_metrics import collect_benchmark_provenance
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 RESULTS_FILE = "asr_stt_benchmark_results.json"
 
@@ -107,6 +109,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     concurrencies = args.concurrencies
     max_samples = args.max_samples if args.max_samples > 0 else None

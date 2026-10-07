@@ -24,8 +24,8 @@ import threading
 import time
 from dataclasses import dataclass
 
-_SAMPLE_INTERVAL_S = 30.0
-_WARN_FOREIGN_CORES = 1.0
+SAMPLE_INTERVAL_S = 30.0
+WARN_FOREIGN_CORES = 1.0
 # note (Jiaxin Deng): above this a round measured the intruder, not the
 # model. Calibration rejects such rounds (tune.py). CI only reports:
 # contention can only depress perf numbers, so a passing gate is real and
@@ -34,14 +34,14 @@ FAIL_FOREIGN_CORES = 2.0
 
 
 @dataclass
-class _Proc:
+class Proc:
     ppid: int
     ticks: int
     child_ticks: int = 0
     start: int = 0
 
 
-def _parse_cpu_list(spec: str) -> set[int]:
+def parse_cpu_list(spec: str) -> set[int]:
     cpus: set[int] = set()
     for part in spec.split(","):
         part = part.strip()
@@ -67,8 +67,8 @@ def cpuset_busy_ticks(cpuset: set[int]) -> int:
     return busy
 
 
-def _snapshot() -> dict[int, _Proc]:
-    procs: dict[int, _Proc] = {}
+def snapshot() -> dict[int, Proc]:
+    procs: dict[int, Proc] = {}
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
@@ -77,7 +77,7 @@ def _snapshot() -> dict[int, _Proc]:
             with open(f"/proc/{pid}/stat", "rb") as f:
                 data = f.read().decode("ascii", "replace")
             rest = data[data.rindex(")") + 2 :].split()
-            procs[pid] = _Proc(
+            procs[pid] = Proc(
                 ppid=int(rest[1]),
                 ticks=int(rest[11]) + int(rest[12]),
                 child_ticks=int(rest[13]) + int(rest[14]),
@@ -88,7 +88,7 @@ def _snapshot() -> dict[int, _Proc]:
     return procs
 
 
-def _tree_pids(procs: dict[int, _Proc], root: int) -> set[int]:
+def tree_pids(procs: dict[int, Proc], root: int) -> set[int]:
     children: dict[int, list[int]] = {}
     for pid, proc in procs.items():
         children.setdefault(proc.ppid, []).append(pid)
@@ -103,8 +103,8 @@ def _tree_pids(procs: dict[int, _Proc], root: int) -> set[int]:
 
 def foreign_ticks(
     busy_delta: int,
-    prev: dict[int, _Proc],
-    cur: dict[int, _Proc],
+    prev: dict[int, Proc],
+    cur: dict[int, Proc],
     tree: set[int],
 ) -> int:
     """Cpuset busy ticks not accounted for by the pinned session tree.
@@ -135,35 +135,35 @@ class ContentionSampler:
     def __init__(
         self,
         cpuset: set[int],
-        interval_s: float = _SAMPLE_INTERVAL_S,
+        interval_s: float = SAMPLE_INTERVAL_S,
         root_pid: int | None = None,
     ):
-        self._cpuset = set(cpuset)
-        self._interval = interval_s
-        self._root = root_pid or os.getpid()
-        self._hz = os.sysconf("SC_CLK_TCK")
-        self._samples: list[float] = []
-        self._errors = 0
-        self._stop = threading.Event()
-        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.cpuset = set(cpuset)
+        self.interval = interval_s
+        self.root = root_pid or os.getpid()
+        self.hz = os.sysconf("SC_CLK_TCK")
+        self.samples: list[float] = []
+        self.errors = 0
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self.loop, daemon=True)
 
     def start(self) -> None:
         self.thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
+        self.stop_event.set()
         self.thread.join(timeout=5)
 
     def peak_foreign_cores(self) -> float:
-        return max(self._samples, default=0.0)
+        return max(self.samples, default=0.0)
 
     def mean_foreign_cores(self) -> float:
-        if not self._samples:
+        if not self.samples:
             return 0.0
-        return sum(self._samples) / len(self._samples)
+        return sum(self.samples) / len(self.samples)
 
     def window_count(self) -> int:
-        return len(self._samples)
+        return len(self.samples)
 
     def sustained_foreign_cores(self, windows: int, cores: float) -> bool:
         """Whether the last ``windows`` samples all exceed ``cores``.
@@ -174,40 +174,40 @@ class ContentionSampler:
         the decision it drives. Reading the tail rather than the whole series
         lets a caller poll this while the session is still running.
         """
-        if windows <= 0 or len(self._samples) < windows:
+        if windows <= 0 or len(self.samples) < windows:
             return False
-        return all(sample > cores for sample in self._samples[-windows:])
+        return all(sample > cores for sample in self.samples[-windows:])
 
-    def _loop(self) -> None:
-        prev_busy = cpuset_busy_ticks(self._cpuset)
-        prev = _snapshot()
+    def loop(self) -> None:
+        prev_busy = cpuset_busy_ticks(self.cpuset)
+        prev = snapshot()
         prev_t = time.monotonic()
-        while not self._stop.wait(self._interval):
+        while not self.stop_event.wait(self.interval):
             try:
-                cur_busy = cpuset_busy_ticks(self._cpuset)
-                cur = _snapshot()
+                cur_busy = cpuset_busy_ticks(self.cpuset)
+                cur = snapshot()
                 now = time.monotonic()
-                tree = _tree_pids(cur, self._root)
+                tree = tree_pids(cur, self.root)
                 ticks = foreign_ticks(cur_busy - prev_busy, prev, cur, tree)
-                self._samples.append(ticks / self._hz / (now - prev_t))
+                self.samples.append(ticks / self.hz / (now - prev_t))
                 prev_busy, prev, prev_t = cur_busy, cur, now
             except Exception:
-                self._errors += 1
+                self.errors += 1
 
     def summary(self) -> str:
-        spec = ",".join(map(str, sorted(self._cpuset)))
-        if not self._samples:
+        spec = ",".join(map(str, sorted(self.cpuset)))
+        if not self.samples:
             return (
                 f"[cpuset-contention] cpuset={spec} no completed sample "
-                f"windows (errors={self._errors})"
+                f"windows (errors={self.errors})"
             )
         mean = self.mean_foreign_cores()
         peak = self.peak_foreign_cores()
         lines = [
-            f"[cpuset-contention] cpuset={spec} windows={len(self._samples)} "
-            f"foreign-cores mean={mean:.2f} max={peak:.2f} errors={self._errors}"
+            f"[cpuset-contention] cpuset={spec} windows={len(self.samples)} "
+            f"foreign-cores mean={mean:.2f} max={peak:.2f} errors={self.errors}"
         ]
-        if peak > _WARN_FOREIGN_CORES:
+        if peak > WARN_FOREIGN_CORES:
             lines.append(
                 f"[cpuset-contention] WARNING: foreign load peaked at "
                 f"{peak:.2f} cores on the pinned cpuset; speed metrics in "

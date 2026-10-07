@@ -23,21 +23,21 @@ from types import ModuleType
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_SCRIPT = (
-    _REPO_ROOT
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT = (
+    REPO_ROOT
     / ".claude"
     / "skills"
     / "omni-gpu-deep-dive"
     / "scripts"
     / "omni_trace_pair.py"
 )
-_PROFILER_MODULE = "sglang_omni.profiler.torch_profiler"
-_WITH_STACK = "SGLANG_TORCH_PROFILER_WITH_STACK"
+PROFILER_MODULE = "sglang_omni.profiler.torch_profiler"
+WITH_STACK = "SGLANG_TORCH_PROFILER_WITH_STACK"
 
 
-def _load_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("omni_trace_pair", _SCRIPT)
+def load_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("omni_trace_pair", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -46,12 +46,12 @@ def _load_module() -> ModuleType:
 
 @pytest.fixture(scope="module")
 def trace_pair() -> ModuleType:
-    if not _SCRIPT.exists():
-        pytest.skip(f"{_SCRIPT} is not present in this checkout")
-    return _load_module()
+    if not SCRIPT.exists():
+        pytest.skip(f"{SCRIPT} is not present in this checkout")
+    return load_module()
 
 
-def _write_trace(path: Path, event_names: list[str], *, cat: str = "cpu_op") -> Path:
+def write_trace(path: Path, event_names: list[str], *, cat: str = "cpu_op") -> Path:
     """The minimal gzipped chrome trace the gate reads, one ts per event."""
     events = [
         {"name": name, "cat": cat, "ph": "X", "ts": index, "dur": 1}
@@ -62,7 +62,7 @@ def _write_trace(path: Path, event_names: list[str], *, cat: str = "cpu_op") -> 
     return path
 
 
-class _FakeProfiler:
+class FakeProfiler:
     """Stands in for ``TorchProfiler``: records call order, writes a clean trace.
 
     ``start`` also records the with_stack env var, where the real one reads it.
@@ -74,9 +74,9 @@ class _FakeProfiler:
 
     def start(self, trace_path_template: str, run_id: str | None = None) -> str:
         self.calls.append(f"start:{run_id}")
-        self.seen_with_stack.append(os.environ.get(_WITH_STACK))
+        self.seen_with_stack.append(os.environ.get(WITH_STACK))
         gz_path = Path(f"{trace_path_template}_rank0.trace.json.gz")
-        _write_trace(gz_path, ["cudaLaunchKernel", "aten::mm"])
+        write_trace(gz_path, ["cudaLaunchKernel", "aten::mm"])
         return str(gz_path)
 
     def stop(self, *, run_id: str | None = None) -> None:
@@ -86,8 +86,8 @@ class _FakeProfiler:
 @pytest.fixture
 def fake_profiler(
     trace_pair: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> _FakeProfiler:
-    profiler = _FakeProfiler()
+) -> FakeProfiler:
+    profiler = FakeProfiler()
     monkeypatch.setattr(trace_pair, "_torch_profiler", lambda: profiler)
     monkeypatch.setattr(trace_pair.torch.cuda, "synchronize", lambda: None)
     return profiler
@@ -102,21 +102,21 @@ def test_only_capture_needs_the_serving_runtime(
     without the pinned CUDA stack ``sglang`` pulls in. A plain torch stage there
     captures with ``torch.profiler`` and still gates the result.
     """
-    monkeypatch.setitem(sys.modules, _PROFILER_MODULE, None)
-    module = _load_module()
+    monkeypatch.setitem(sys.modules, PROFILER_MODULE, None)
+    module = load_module()
 
-    trace = _write_trace(tmp_path / "formal.trace.json.gz", ["cudaGraphLaunch"])
+    trace = write_trace(tmp_path / "formal.trace.json.gz", ["cudaGraphLaunch"])
     module.assert_steady_state(trace, tag="formal")
 
     with pytest.raises(ImportError):
-        module._torch_profiler()
+        module._torch_profiler()  # noqa: leading-underscore  # production name
 
 
 def test_gate_accepts_captured_and_compiled_execution(
     trace_pair: ModuleType, tmp_path: Path
 ) -> None:
     """A healthy formal trace replays graphs and calls the is-compiling predicate."""
-    trace = _write_trace(
+    trace = write_trace(
         tmp_path / "formal.trace.json.gz",
         [
             "cudaGraphLaunch",
@@ -139,7 +139,7 @@ def test_gate_accepts_inductor_frames_that_are_not_compilation(
     process, so both land in every trace. A gate that rejects them fails clean
     runs, and a gate that fails clean runs gets bypassed -- worse than none.
     """
-    trace = _write_trace(
+    trace = write_trace(
         tmp_path / "mapping.trace.json.gz",
         [
             "torch/_inductor/output_code.py(581): __call__",
@@ -156,7 +156,7 @@ def test_gate_rejects_a_trace_with_no_events(
     trace_pair: ModuleType, tmp_path: Path
 ) -> None:
     """An empty trace matches no marker, so passing it would gate nothing."""
-    trace = _write_trace(tmp_path / "formal.trace.json.gz", [])
+    trace = write_trace(tmp_path / "formal.trace.json.gz", [])
     with pytest.raises(ValueError, match="no events"):
         trace_pair.assert_steady_state(trace, tag="formal")
 
@@ -169,7 +169,7 @@ def test_gate_rejects_compilation(
     trace_pair: ModuleType, tmp_path: Path, event_name: str
 ) -> None:
     """Compilation in the window must fail loudly, not be subtracted afterwards."""
-    trace = _write_trace(tmp_path / "mapping.trace.json.gz", ["aten::mm", event_name])
+    trace = write_trace(tmp_path / "mapping.trace.json.gz", ["aten::mm", event_name])
     with pytest.raises(RuntimeError, match="not steady state"):
         trace_pair.assert_steady_state(trace, tag="mapping")
 
@@ -192,7 +192,7 @@ def test_gate_rejects_compilation_without_python_stacks(
     off and absent once warmed; the names change between torch versions, the
     ``(dynamo_timed)`` suffix does not.
     """
-    trace = _write_trace(
+    trace = write_trace(
         tmp_path / "formal.trace.json.gz",
         ["cudaGraphLaunch", event_name, "aten::mm"],
         cat="user_annotation",
@@ -213,7 +213,7 @@ def test_first_call_loads_are_reported_not_fatal_on_a_trace_with_stacks(
     could remove, and still fatal where there are no path markers to fall back
     on.
     """
-    trace = _write_trace(
+    trace = write_trace(
         tmp_path / "mapping.trace.json.gz",
         ["aten::mm", "Lazy Function Loading", "cudaLaunchKernel"],
         cat="cuda_driver",
@@ -232,7 +232,7 @@ def test_first_call_loads_do_not_excuse_compilation_on_the_same_trace(
     """Demoting one marker must not soften the ones beside it, in the failure or
     in what the run prints: a note calling a load harmless, printed next to a
     compile that failed the gate, reads as an excuse for it."""
-    trace = _write_trace(
+    trace = write_trace(
         tmp_path / "mapping.trace.json.gz",
         ["Lazy Function Loading", "torch/_inductor/compile_fx.py(1500): compile_fx"],
     )
@@ -248,7 +248,7 @@ def test_gate_failure_reports_bounded_samples_with_category_and_timestamp(
 ) -> None:
     """The substring alone cannot tell a stack frame from real work, and a real
     mapping trace runs to hundreds of MB, so the report stays bounded."""
-    trace = _write_trace(
+    trace = write_trace(
         tmp_path / "mapping.trace.json.gz",
         ["aten::mm"] + ["torch/_inductor/compile_fx.py(1500): compile_fx"] * 50,
         cat="python_function",
@@ -270,14 +270,14 @@ def test_capture_is_rejected_by_default_and_allowed_only_by_its_own_flag(
     trace_pair: ModuleType, tmp_path: Path
 ) -> None:
     """``allow_capture`` is an escape hatch for capture, never for compilation."""
-    captured = _write_trace(
+    captured = write_trace(
         tmp_path / "captured.trace.json.gz", ["cudaStreamBeginCapture", "aten::mm"]
     )
     with pytest.raises(RuntimeError, match="not steady state"):
         trace_pair.assert_steady_state(captured, tag="formal")
     trace_pair.assert_steady_state(captured, tag="formal", allow_capture=True)
 
-    compiled = _write_trace(
+    compiled = write_trace(
         tmp_path / "compiled.trace.json.gz", ["cudaModuleLoad", "aten::mm"]
     )
     with pytest.raises(RuntimeError, match="not steady state"):
@@ -302,7 +302,7 @@ def test_await_compression_waits_for_the_json_source_to_vanish(
 
 
 def test_capture_accepts_a_string_output_dir_and_gates_the_trace(
-    trace_pair: ModuleType, tmp_path: Path, fake_profiler: _FakeProfiler
+    trace_pair: ModuleType, tmp_path: Path, fake_profiler: FakeProfiler
 ) -> None:
     """argparse hands over a str, so the API boundary must coerce it.
 
@@ -328,11 +328,11 @@ def test_capture_accepts_a_string_output_dir_and_gates_the_trace(
 def test_capture_restores_the_with_stack_env_var(
     trace_pair: ModuleType,
     tmp_path: Path,
-    fake_profiler: _FakeProfiler,
+    fake_profiler: FakeProfiler,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A capture inside a server process must not change later /start_profile runs."""
-    monkeypatch.setenv(_WITH_STACK, "1")
+    monkeypatch.setenv(WITH_STACK, "1")
 
     trace_pair.capture(
         output_dir=tmp_path,
@@ -344,13 +344,13 @@ def test_capture_restores_the_with_stack_env_var(
     )
 
     assert fake_profiler.seen_with_stack == ["0"]
-    assert os.environ[_WITH_STACK] == "1"
+    assert os.environ[WITH_STACK] == "1"
 
 
 def test_capture_wires_with_stack_into_the_gate(
     trace_pair: ModuleType,
     tmp_path: Path,
-    fake_profiler: _FakeProfiler,
+    fake_profiler: FakeProfiler,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``capture_pair`` records mapping first, so a first-call load treated as
@@ -358,7 +358,7 @@ def test_capture_wires_with_stack_into_the_gate(
 
     def start(trace_path_template: str, run_id: str | None = None) -> str:
         gz_path = Path(f"{trace_path_template}_rank0.trace.json.gz")
-        _write_trace(gz_path, ["Lazy Function Loading", "cudaLaunchKernel"])
+        write_trace(gz_path, ["Lazy Function Loading", "cudaLaunchKernel"])
         return str(gz_path)
 
     monkeypatch.setattr(fake_profiler, "start", start)
@@ -384,7 +384,7 @@ def test_capture_wires_with_stack_into_the_gate(
 
 
 def test_capture_stops_the_profiler_when_the_body_raises(
-    trace_pair: ModuleType, tmp_path: Path, fake_profiler: _FakeProfiler
+    trace_pair: ModuleType, tmp_path: Path, fake_profiler: FakeProfiler
 ) -> None:
     """A profiler left active past an exception crashed the interpreter at exit.
 
@@ -412,7 +412,7 @@ def test_capture_stops_the_profiler_when_the_body_raises(
 def test_capture_refuses_a_profiler_that_returns_a_directory(
     trace_pair: ModuleType,
     tmp_path: Path,
-    fake_profiler: _FakeProfiler,
+    fake_profiler: FakeProfiler,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``TorchNPUProfiler.start`` returns a directory, which nothing here can

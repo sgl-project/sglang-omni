@@ -42,9 +42,31 @@ class TtsCiThresholdPreset:
 
 
 @dataclass(frozen=True)
+class TtsCiLatencyPoint:
+    """One open-loop streaming operating point of the latency stage."""
+
+    request_rate: float
+    samples: int
+    # note (luojiaxuan): None until the point is calibrated, so the stage
+    # prints the value without judging it.
+    ttfp_median_max_s: float | None = None
+
+
+@dataclass(frozen=True)
+class TtsCiLatencyPreset:
+    """Streaming first-audio latency points measured against one worker."""
+
+    points: tuple[TtsCiLatencyPoint, ...]
+    calibrated: bool = False
+
+
+@dataclass(frozen=True)
 class TtsCiPreset:
     model: TtsCiModelPreset
     thresholds: TtsCiThresholdPreset
+    # note (luojiaxuan): only the arms whose first-audio latency is being
+    # worked on carry this; the stage skips the others.
+    latency: TtsCiLatencyPreset | None = None
 
 
 # Slack factors applied to P95 reference values to derive CI thresholds.
@@ -63,7 +85,7 @@ HIGGS_VC_SIMILARITY_MEAN_MIN = 65.95185356140136
 HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1628
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
-_HIGGS_VC_NON_STREAM_P95 = {
+HIGGS_VC_NON_STREAM_P95 = {
     16: {
         "throughput_qps": 19.992,
         "output_tok_per_req_s": 160.7,
@@ -72,7 +94,7 @@ _HIGGS_VC_NON_STREAM_P95 = {
     }
 }
 
-_HIGGS_VC_STREAM_P95 = {
+HIGGS_VC_STREAM_P95 = {
     16: {
         "throughput_qps": 20.016,
         "latency_mean_s": 0.796,
@@ -81,10 +103,10 @@ _HIGGS_VC_STREAM_P95 = {
 }
 
 HIGGS_VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _HIGGS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+    HIGGS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 HIGGS_VC_STREAM_THRESHOLDS = apply_slack(
-    _HIGGS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+    HIGGS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 
 
@@ -97,7 +119,7 @@ MOSS_VC_SIMILARITY_MEAN_MIN = 64.33411296844483
 MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9521
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
-_MOSS_VC_NON_STREAM_P95 = {
+MOSS_VC_NON_STREAM_P95 = {
     16: {
         "throughput_qps": 20.463,
         "output_tok_per_req_s": 90.3,
@@ -106,7 +128,7 @@ _MOSS_VC_NON_STREAM_P95 = {
     }
 }
 
-_MOSS_VC_STREAM_P95 = {
+MOSS_VC_STREAM_P95 = {
     16: {
         "throughput_qps": 16.778,
         "latency_mean_s": 0.949,
@@ -115,10 +137,10 @@ _MOSS_VC_STREAM_P95 = {
 }
 
 MOSS_VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _MOSS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+    MOSS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 MOSS_VC_STREAM_THRESHOLDS = apply_slack(
-    _MOSS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+    MOSS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 
 # Qwen3-TTS 1.7B. This is the variant the community deploys, and it is gated as
@@ -140,7 +162,7 @@ QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.13817592620849
 QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.193
 QWEN3_TTS_VC_UTMOS_MEAN_MIN = apply_mos_slack(QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE)
 
-_QWEN3_TTS_VC_NON_STREAM_P95 = {
+QWEN3_TTS_VC_NON_STREAM_P95 = {
     16: {
         "throughput_qps": 21.083,
         "output_tok_per_req_s": 88.4,
@@ -149,7 +171,7 @@ _QWEN3_TTS_VC_NON_STREAM_P95 = {
     }
 }
 
-_QWEN3_TTS_VC_STREAM_P95 = {
+QWEN3_TTS_VC_STREAM_P95 = {
     16: {
         "throughput_qps": 19.526,
         "latency_mean_s": 0.815,
@@ -160,14 +182,14 @@ _QWEN3_TTS_VC_STREAM_P95 = {
 # note (luojiaxuan): docs/cookbook/qwen3_tts.md, 1.7B CustomVoice, Ryan/English,
 # concurrency 16 on one H200; single runs, so these are references to print
 # next to, not worst-of-N observations from the CI host.
-_QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE = {
+QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE = {
     16: {
         "throughput_qps": 14.788,
         "latency_mean_s": 1.075,
         "rtf_mean": 0.2335,
     }
 }
-_QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE = {
+QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE = {
     16: {
         "throughput_qps": 10.098,
         "latency_mean_s": 1.573,
@@ -175,12 +197,12 @@ _QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE = {
     }
 }
 QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_THRESHOLDS = apply_slack(
-    _QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE,
+    QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE,
     THRESHOLD_SLACK_HIGHER,
     THRESHOLD_SLACK_LOWER,
 )
 QWEN3_TTS_CUSTOM_VOICE_STREAM_THRESHOLDS = apply_slack(
-    _QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE,
+    QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE,
     THRESHOLD_SLACK_HIGHER,
     THRESHOLD_SLACK_LOWER,
 )
@@ -189,10 +211,10 @@ QWEN3_TTS_CUSTOM_VOICE_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(0.02085)
 QWEN3_TTS_CUSTOM_VOICE_UTMOS_MEAN_MIN = apply_mos_slack(4.1723)
 
 QWEN3_TTS_VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _QWEN3_TTS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+    QWEN3_TTS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 QWEN3_TTS_VC_STREAM_THRESHOLDS = apply_slack(
-    _QWEN3_TTS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+    QWEN3_TTS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 
 # Fun-CosyVoice3 0.5B.
@@ -209,7 +231,7 @@ COSYVOICE3_VC_SIMILARITY_MEAN_MIN = 1.0
 COSYVOICE3_VC_UTMOS_MEAN_REFERENCE = 1.0
 COSYVOICE3_VC_UTMOS_MEAN_MIN = apply_mos_slack(COSYVOICE3_VC_UTMOS_MEAN_REFERENCE)
 
-_COSYVOICE3_VC_NON_STREAM_P95 = {
+COSYVOICE3_VC_NON_STREAM_P95 = {
     16: {
         "throughput_qps": 1.0,
         "output_tok_per_req_s": 1.0,
@@ -218,7 +240,7 @@ _COSYVOICE3_VC_NON_STREAM_P95 = {
     }
 }
 
-_COSYVOICE3_VC_STREAM_P95 = {
+COSYVOICE3_VC_STREAM_P95 = {
     16: {
         "throughput_qps": 1.0,
         "latency_mean_s": 1.0,
@@ -227,10 +249,66 @@ _COSYVOICE3_VC_STREAM_P95 = {
 }
 
 COSYVOICE3_VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _COSYVOICE3_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+    COSYVOICE3_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 COSYVOICE3_VC_STREAM_THRESHOLDS = apply_slack(
-    _COSYVOICE3_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+    COSYVOICE3_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+
+
+# note (luojiaxuan): 1 rps is the idle first-chunk path, 20 rps the loaded one.
+# Each arm has its own references because a cloned voice encodes the reference
+# audio before the first chunk and a named voice does not. First playable is
+# timed from each request's planned arrival. These are raw worst-of-five
+# references; the gates below apply the slack once. Only medians are gated.
+# The references come from an idle calibration lane, and an idle-lane p95
+# reference has failed on the busy CI host before, so the 20 rps p95 of both
+# arms is printed until it is calibrated under CI co-load. The c50 continuity
+# rate is printed too: with three to seven streams per 1088 over a 50 ms
+# underrun, a ratio slack on a near-100% rate is either far too loose or flaky.
+QWEN3_TTS_LATENCY_VC_R1_TTFP_MEDIAN_REF_S = 0.0581
+QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S = 0.1041
+QWEN3_TTS_LATENCY_CUSTOM_VOICE_R1_TTFP_MEDIAN_REF_S = 0.0218
+QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_MEDIAN_REF_S = 0.0355
+
+
+def latency_gate(reference_s: float) -> float:
+    return round(reference_s * THRESHOLD_SLACK_LOWER, 4)
+
+
+QWEN3_TTS_VC_LATENCY_GATES = TtsCiLatencyPreset(
+    points=(
+        TtsCiLatencyPoint(
+            request_rate=1.0,
+            samples=60,
+            ttfp_median_max_s=latency_gate(QWEN3_TTS_LATENCY_VC_R1_TTFP_MEDIAN_REF_S),
+        ),
+        TtsCiLatencyPoint(
+            request_rate=20.0,
+            samples=1088,
+            ttfp_median_max_s=latency_gate(QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S),
+        ),
+    ),
+    calibrated=True,
+)
+QWEN3_TTS_CUSTOM_VOICE_LATENCY_GATES = TtsCiLatencyPreset(
+    points=(
+        TtsCiLatencyPoint(
+            request_rate=1.0,
+            samples=60,
+            ttfp_median_max_s=latency_gate(
+                QWEN3_TTS_LATENCY_CUSTOM_VOICE_R1_TTFP_MEDIAN_REF_S
+            ),
+        ),
+        TtsCiLatencyPoint(
+            request_rate=20.0,
+            samples=1088,
+            ttfp_median_max_s=latency_gate(
+                QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_MEDIAN_REF_S
+            ),
+        ),
+    ),
+    calibrated=True,
 )
 
 
@@ -277,6 +355,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
         ),
+        latency=QWEN3_TTS_VC_LATENCY_GATES,
     ),
     "qwen3-tts-custom-voice": TtsCiPreset(
         model=TtsCiModelPreset(
@@ -311,6 +390,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             utmos_mean_min=QWEN3_TTS_CUSTOM_VOICE_UTMOS_MEAN_MIN,
             calibrated=False,
         ),
+        latency=QWEN3_TTS_CUSTOM_VOICE_LATENCY_GATES,
     ),
     "moss": TtsCiPreset(
         model=TtsCiModelPreset(
@@ -331,6 +411,9 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
     "cosyvoice3": TtsCiPreset(
         model=TtsCiModelPreset(
             model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+            # note(ratish): a cold Inductor cache compiles the DiT at startup;
+            # two workers take about 3 minutes to start.
+            startup_timeout=300,
             gate_thresholds=False,
         ),
         thresholds=TtsCiThresholdPreset(

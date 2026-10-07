@@ -17,15 +17,17 @@ from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from itertools import accumulate
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import torch
 from sglang.srt.layers.attention.vision import VisionAttentionMetadata
 
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
 if TYPE_CHECKING:
-    from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 else:
     pass
 
@@ -65,7 +67,7 @@ def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
 
 @dataclass
 class CapturedGraph:
-    graph: Any  # the accelerator's graph type, named per backend
+    graph: ReplayableGraph  # the accelerator's graph type, named per backend
     hidden_states: torch.Tensor  # [bucket, hidden] static input
     cu_seqlens: torch.Tensor  # [max_windows + 1] static window boundaries
     attention_metadata: VisionAttentionMetadata | None
@@ -84,8 +86,8 @@ class NpuGraphUpdateTask:
 
     def apply(
         self,
-        device_module: Any,
-        update_stream: Any,
+        device_module: ModuleType,
+        update_stream: torch.Stream,
         cumulative_window_lens: list[int],
     ) -> None:
         device_module.graph_task_update_begin(update_stream, self.handle)
@@ -111,7 +113,7 @@ class NpuGraphCaptureAttention(torch.nn.Module):
     INT32_MAX = torch.iinfo(torch.int32).max
 
     def __init__(
-        self, capture_context: NpuGraphCaptureContext, device_module: Any
+        self, capture_context: NpuGraphCaptureContext, device_module: ModuleType
     ) -> None:
         super().__init__()
         self.capture_context = capture_context
@@ -126,7 +128,7 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         forward_metadata: VisionAttentionMetadata | None = None,
         attention_mask: torch.Tensor | None = None,
         softmax_scale: float | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> torch.Tensor:
         del kwargs
         if forward_metadata is None or attention_mask is not None:
@@ -214,7 +216,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
 
     def __init__(
         self,
-        audio_tower: Any,
+        audio_tower: Qwen3OmniMoeAudioEncoder,
         *,
         buckets: tuple[int, ...],
         max_batch_size: int,
@@ -399,7 +401,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             else nullcontext()
         )
         if self.graph_backend.supports_graph_task_update and self.graph_pool is None:
-            self.graph_pool = self.device_module.graph_pool_handle()
+            self.graph_pool = self.graph_backend.graph_pool_handle()
         else:
             pass
         pool = self.graph_pool
@@ -565,9 +567,10 @@ def get_feat_extract_output_lengths_int(frames: int) -> int:
 
 
 def eager_preamble(
-    tower: Any, input_features: torch.Tensor, feature_lens: torch.Tensor
+    tower: Qwen3OmniMoeAudioEncoder,
+    input_features: torch.Tensor,
+    feature_lens: torch.Tensor,
 ) -> torch.Tensor:
-
     import torch.nn.functional as F
 
     chunk_width = tower.n_window * 2

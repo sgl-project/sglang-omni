@@ -10,7 +10,7 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.types import DeferredAdmission
 
 
-class _StubScheduler:
+class StubScheduler:
     admit_or_defer_built_request = OmniScheduler.admit_or_defer_built_request
     drain_request_admission_results = OmniScheduler.drain_request_admission_results
 
@@ -40,7 +40,7 @@ class _StubScheduler:
         self.pending_request_admissions.pop(request_id, None)
 
 
-def _deferred(request_id: str):  # noqa: ANN202
+def make_deferred(request_id: str):  # noqa: ANN202
     future: concurrent.futures.Future[None] = concurrent.futures.Future()
     payload = SimpleNamespace(request_id=request_id)
     value = SimpleNamespace(req=SimpleNamespace(rid=request_id))
@@ -48,8 +48,8 @@ def _deferred(request_id: str):  # noqa: ANN202
 
 
 def test_request_waits_outside_lm_queue_until_dependency_completes() -> None:
-    scheduler = _StubScheduler()
-    payload, _, future, deferred = _deferred("r1")
+    scheduler = StubScheduler()
+    payload, _, future, deferred = make_deferred("r1")
 
     scheduler.admit_or_defer_built_request(payload, False, deferred)
     assert scheduler.admitted == []
@@ -62,8 +62,8 @@ def test_request_waits_outside_lm_queue_until_dependency_completes() -> None:
 
 
 def test_aborted_deferred_request_is_never_admitted() -> None:
-    scheduler = _StubScheduler()
-    payload, _, future, deferred = _deferred("r1")
+    scheduler = StubScheduler()
+    payload, _, future, deferred = make_deferred("r1")
     scheduler.admit_or_defer_built_request(payload, False, deferred)
 
     scheduler.abort("r1")
@@ -75,8 +75,8 @@ def test_aborted_deferred_request_is_never_admitted() -> None:
 
 
 def test_failed_dependency_emits_error_without_admission() -> None:
-    scheduler = _StubScheduler()
-    payload, _, future, deferred = _deferred("r1")
+    scheduler = StubScheduler()
+    payload, _, future, deferred = make_deferred("r1")
     scheduler.admit_or_defer_built_request(payload, False, deferred)
 
     future.set_exception(RuntimeError("encode failed"))
@@ -89,7 +89,7 @@ def test_failed_dependency_emits_error_without_admission() -> None:
     assert "r1" in scheduler.aborted_request_ids
 
 
-class _WaitPolicyScheduler:
+class WaitPolicyScheduler:
     request_build_queue_fits_workers = OmniScheduler.request_build_queue_fits_workers
 
     def __init__(
@@ -108,23 +108,21 @@ class _WaitPolicyScheduler:
 
 
 def test_request_build_queue_fits_workers_when_builds_fit_in_pool() -> None:
-    scheduler = _WaitPolicyScheduler(workers=8, pending=8, backlog=0)
+    scheduler = WaitPolicyScheduler(workers=8, pending=8, backlog=0)
     assert scheduler.request_build_queue_fits_workers() is True
 
-    scheduler = _WaitPolicyScheduler(workers=8, pending=1, backlog=0)
+    scheduler = WaitPolicyScheduler(workers=8, pending=1, backlog=0)
     assert scheduler.request_build_queue_fits_workers() is True
 
 
 def test_defer_admission_when_build_backlog_exceeds_workers() -> None:
-    scheduler = _WaitPolicyScheduler(workers=8, pending=8, backlog=1)
+    scheduler = WaitPolicyScheduler(workers=8, pending=8, backlog=1)
     assert scheduler.request_build_queue_fits_workers() is False
 
-    scheduler = _WaitPolicyScheduler(workers=8, pending=9, backlog=0)
+    scheduler = WaitPolicyScheduler(workers=8, pending=9, backlog=0)
     assert scheduler.request_build_queue_fits_workers() is False
 
 
 def test_keep_deferred_admission_without_build_executor() -> None:
-    scheduler = _WaitPolicyScheduler(
-        workers=1, pending=0, backlog=0, has_executor=False
-    )
+    scheduler = WaitPolicyScheduler(workers=1, pending=0, backlog=0, has_executor=False)
     assert scheduler.request_build_queue_fits_workers() is False

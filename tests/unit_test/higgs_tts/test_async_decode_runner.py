@@ -32,7 +32,7 @@ from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
 from sglang_omni.models.higgs_tts.utils import EOC_ID
 
 
-def _build_runner(
+def build_runner(
     *,
     codes_BN,
     was_done,
@@ -105,7 +105,7 @@ def _build_runner(
     return runner, sched, result, forward_batch, reqs, datas
 
 
-def _snapshot(reqs, datas, result):
+def snapshot(reqs, datas, result):
     """Capture the four observable outputs for cross-path comparison."""
     return {
         "output_codes": [[c.tolist() for c in d.output_codes] for d in datas],
@@ -120,7 +120,7 @@ def _snapshot(reqs, datas, result):
 
 # A 4-row mixed batch: row0 chunked, row1 was-done(skip), row2 active(not done),
 # row3 active(EOC done). Same shape as test_higgs_model_runner_collect_cg_mixed_batch.
-_MIXED = dict(
+MIXED = dict(
     codes_BN=[[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]],
     was_done=[False, True, False, False],
     active_generation_done=[False, True, False, True],
@@ -129,7 +129,7 @@ _MIXED = dict(
 )
 
 
-def _patch_cpu_host_staging(monkeypatch):
+def patch_cpu_host_staging(monkeypatch):
     """Strip the pin_memory (CUDA) requirement from ``_next_host_staging``; the
     collect logic is dtype/shape identical on a plain CPU buffer. The CUDA-guarded
     test below proves this monkeypatch does not mask a pinned-path-specific bug.
@@ -141,26 +141,26 @@ def _patch_cpu_host_staging(monkeypatch):
     )
 
 
-def _run_sync(**kw):
-    runner, sched, result, fb, reqs, datas = _build_runner(async_enabled=False, **kw)
+def run_sync(**kw):
+    runner, sched, result, fb, reqs, datas = build_runner(async_enabled=False, **kw)
     runner.collect_step_outputs_cg(result, fb, sched)
-    return _snapshot(reqs, datas, result)
+    return snapshot(reqs, datas, result)
 
 
-def _run_async(monkeypatch, **kw):
-    runner, sched, result, fb, reqs, datas = _build_runner(async_enabled=True, **kw)
-    _patch_cpu_host_staging(monkeypatch)
+def run_async(monkeypatch, **kw):
+    runner, sched, result, fb, reqs, datas = build_runner(async_enabled=True, **kw)
+    patch_cpu_host_staging(monkeypatch)
     host_buf = runner.post_decode_launch(result, fb, sched)
     # The base runner records a CUDA event here; CPU-only we just hand the
     # already-copied snapshot straight to resolve.
     runner.post_decode_resolve(host_buf, result, fb, None, sched)
-    return _snapshot(reqs, datas, result)
+    return snapshot(reqs, datas, result)
 
 
 def test_async_matches_sync_mixed_batch(monkeypatch):
     """Core parity: async (launch+resolve) == sync collect on a mixed batch."""
-    sync = _run_sync(**_MIXED)
-    asy = _run_async(monkeypatch, **_MIXED)
+    sync = run_sync(**MIXED)
+    asy = run_async(monkeypatch, **MIXED)
 
     # Lock the expected sync values first (regression anchor independent of async).
     assert sync["output_codes"] == [[], [], [[20, 1, 2]], [[EOC_ID, 3, 4]]]
@@ -189,8 +189,8 @@ def test_async_next_token_ids_published_at_launch(monkeypatch):
         inflight_middle_chunks=[0, 0],
         finished=[lambda: False, lambda: False],
     )
-    runner, sched, result, fb, reqs, datas = _build_runner(async_enabled=True, **kw)
-    _patch_cpu_host_staging(monkeypatch)
+    runner, sched, result, fb, reqs, datas = build_runner(async_enabled=True, **kw)
+    patch_cpu_host_staging(monkeypatch)
     runner.post_decode_launch(result, fb, sched)
     # Published immediately at launch, from clamp_min(0) of codebook-0.
     assert result.next_token_ids.tolist() == [5, 0]
@@ -210,8 +210,8 @@ def test_async_resolve_overrun_guard_skips_finished_row(monkeypatch):
         inflight_middle_chunks=[0, 0],
         finished=[lambda: False, lambda: True],
     )
-    sync = _run_sync(**kw)
-    asy = _run_async(monkeypatch, **kw)
+    sync = run_sync(**kw)
+    asy = run_async(monkeypatch, **kw)
     # row1 finished -> skipped in BOTH paths: no codes, cb0 reported as 0.
     assert sync["output_codes"] == [[[11, 1, 2]], []]
     assert sync["next_token_ids"] == [11, 0]
@@ -230,8 +230,8 @@ def test_async_matches_sync_bs1_active(monkeypatch):
         inflight_middle_chunks=[0],
         finished=[lambda: False],
     )
-    sync = _run_sync(**kw)
-    asy = _run_async(monkeypatch, **kw)
+    sync = run_sync(**kw)
+    asy = run_async(monkeypatch, **kw)
     assert sync["output_codes"] == [[[9, 8, 7]]]
     assert sync["next_token_ids"] == [9]
     assert asy == sync
@@ -247,14 +247,14 @@ def test_async_matches_sync_bs1_eoc(monkeypatch):
         inflight_middle_chunks=[0],
         finished=[lambda: False],
     )
-    sync = _run_sync(**kw)
-    asy = _run_async(monkeypatch, **kw)
+    sync = run_sync(**kw)
+    asy = run_async(monkeypatch, **kw)
     assert sync["generation_done"] == [True]
     assert sync["finished_reason"] == [{"type": "stop", "matched": EOC_ID}]
     assert asy == sync
 
 
-def _pick_free_cuda_device(min_free_mib: int = 512) -> str | None:
+def pick_free_cuda_device(min_free_mib: int = 512) -> str | None:
     """Return the first CUDA device with at least ``min_free_mib`` free, else
     None. Avoids OOM on shared boxes where some GPUs already host a server."""
     if not torch.cuda.is_available():
@@ -299,7 +299,7 @@ def test_async_real_pinned_path_matches_sync():
     still equals the sync collect. Proves the CPU monkeypatch above is faithful.
     Picks a GPU with free memory (the box may already host a TTS server).
     """
-    dev = _pick_free_cuda_device()
+    dev = pick_free_cuda_device()
     if dev is None:
         pytest.skip("no CUDA device with free memory for pinned D2H test")
     # pin_memory uses the DEFAULT CUDA context (device 0). On a shared box where
@@ -369,12 +369,12 @@ def test_async_real_pinned_path_matches_sync():
 
     r_s, sc_s, res_s, fb_s, rq_s, dt_s = build(False)
     r_s.collect_step_outputs_cg(res_s, fb_s, sc_s)
-    sync = _snapshot(rq_s, dt_s, res_s)
+    sync = snapshot(rq_s, dt_s, res_s)
 
     r_a, sc_a, res_a, fb_a, rq_a, dt_a = build(True)
     host_buf = r_a.post_decode_launch(res_a, fb_a, sc_a)
     torch.cuda.synchronize()  # stand in for the base runner's recorded event
     r_a.post_decode_resolve(host_buf, res_a, fb_a, None, sc_a)
-    asy = _snapshot(rq_a, dt_a, res_a)
+    asy = snapshot(rq_a, dt_a, res_a)
 
     assert asy == sync

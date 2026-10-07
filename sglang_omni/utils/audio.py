@@ -9,8 +9,7 @@ import io
 import logging
 import math
 import os
-from collections.abc import Mapping
-from typing import Any
+from typing import TypedDict
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -19,11 +18,19 @@ import pybase64
 import torch
 import torchaudio
 import xxhash
+from numpy.typing import NDArray
 
 from sglang_omni.platforms import current_platform
 
 _DEFAULT_REQUEST_TIMEOUT = 5
 logger = logging.getLogger(__name__)
+
+
+class ResampleOptions(TypedDict, total=False):
+    lowpass_filter_width: int
+    rolloff: float
+    resampling_method: str
+    beta: float | None
 
 
 class AudioDecodeError(ValueError):
@@ -64,6 +71,8 @@ def check_torchcodec_ready() -> bool:
 
 def decode_with_soundfile(
     source: str | bytes | io.BytesIO,
+    *,
+    source_name: str,
 ) -> tuple[torch.Tensor, int]:
     """Decode audio with SoundFile when TorchCodec cannot be loaded.
 
@@ -78,9 +87,8 @@ def decode_with_soundfile(
     try:
         data, sample_rate = sf.read(decoder_source, dtype="float32", always_2d=True)
     except Exception as exc:
-        raise AudioDecodeError(
-            "Could not decode audio input with the soundfile backend"
-        ) from exc
+        # openai_errors.py regex-matches this message to return 400, not 500.
+        raise AudioDecodeError(f"Could not decode {source_name} audio input") from exc
     return torch.from_numpy(np.ascontiguousarray(data.T)), int(sample_rate)
 
 
@@ -142,7 +150,7 @@ def load_with_torchaudio(
 ) -> tuple[torch.Tensor, int]:
     decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
     if not check_torchcodec_ready():
-        return decode_with_soundfile(decoder_source)
+        return decode_with_soundfile(decoder_source, source_name=source_name)
     else:
         pass
     try:
@@ -153,7 +161,7 @@ def load_with_torchaudio(
 
         return _torchaudio.load(decoder_source)
     except ImportError:
-        return decode_with_soundfile(decoder_source)
+        return decode_with_soundfile(decoder_source, source_name=source_name)
     except (MemoryError, torch.OutOfMemoryError):
         raise
     except RuntimeError as exc:
@@ -179,8 +187,8 @@ def is_sun_au(data: bytes) -> bool:
 
 
 def resample_with_scipy(
-    audio_np: np.ndarray, sample_rate: int, target_sample_rate: int
-) -> np.ndarray:
+    audio_np: NDArray[np.float32], sample_rate: int, target_sample_rate: int
+) -> NDArray[np.float32]:
     import scipy.signal
 
     orig_freq = int(sample_rate)
@@ -195,8 +203,8 @@ def resample_with_scipy(
 def try_fast_wav_decode(
     data: bytes,
     target_sample_rate: int,
-    resample_kwargs: Mapping[str, Any] | None = None,
-) -> np.ndarray | None:
+    resample_kwargs: ResampleOptions | None = None,
+) -> NDArray[np.float32] | None:
     # Note (akazaakane): Keep unsupported WAV encodings on torchaudio so the fast
     # path never narrows existing format coverage.
     from sglang_omni.preprocessing.audio import parse_wav_bytes
@@ -232,7 +240,7 @@ def resample_kernel(
     orig_freq: int,
     new_freq: int,
     gcd: int,
-    kwargs_items: tuple[tuple[str, Any], ...],
+    kwargs_items: tuple[tuple[str, int | float | str | None], ...],
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[torch.Tensor, int]:
@@ -252,7 +260,7 @@ def cached_resample(
     waveform: torch.Tensor,
     orig_freq: int,
     new_freq: int,
-    resample_kwargs: Mapping[str, Any] | None,
+    resample_kwargs: ResampleOptions | None,
 ) -> torch.Tensor:
     kwargs = dict(resample_kwargs or {})
     orig_freq, new_freq = int(orig_freq), int(new_freq)
@@ -290,13 +298,13 @@ def decode_audio_data_uri(value: str) -> bytes | None:
 
 
 def load_audio(
-    source: Any,
+    source: object,
     source_name: str = "audio",
     target_sample_rate: int = 16000,
     mono: bool = True,
     trim_top_db: float | None = None,
-    resample_kwargs: Mapping[str, Any] | None = None,
-) -> np.ndarray:
+    resample_kwargs: ResampleOptions | None = None,
+) -> NDArray[np.float32]:
     if isinstance(source, memoryview):
         source = source.tobytes()
     else:
@@ -390,7 +398,7 @@ def load_audio(
     return audio.cpu().numpy()
 
 
-def audio_fingerprint(audio: np.ndarray) -> str:
+def audio_fingerprint(audio: NDArray[np.generic]) -> str:
     contiguous = np.ascontiguousarray(audio, dtype=np.float32)
     return xxhash.xxh3_128_hexdigest(contiguous)
 

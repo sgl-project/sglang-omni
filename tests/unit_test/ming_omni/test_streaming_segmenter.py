@@ -21,7 +21,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 
-def _run_scheduler(
+def run_scheduler(
     scheduler: MingStreamingSegmenterScheduler,
 ) -> threading.Thread:
     thread = threading.Thread(target=scheduler.start, daemon=True)
@@ -29,7 +29,7 @@ def _run_scheduler(
     return thread
 
 
-def _drain_outbox(
+def drain_outbox(
     scheduler: MingStreamingSegmenterScheduler, *, until_request_id: str
 ) -> list[OutgoingMessage]:
     """Drain outbox until we see a final 'result' message for the request."""
@@ -48,7 +48,7 @@ def _drain_outbox(
     )
 
 
-def _push_text_chunks(
+def push_text_chunks(
     scheduler: MingStreamingSegmenterScheduler,
     request_id: str,
     chunks: Iterator[str],
@@ -76,7 +76,7 @@ def test_segmenter_emits_sentence_then_finalizes_on_done():
         first_segment_max_wait_ms=10_000,
     )
     sched = MingStreamingSegmenterScheduler(config=cfg)
-    thread = _run_scheduler(sched)
+    thread = run_scheduler(sched)
     try:
         rid = "req-1"
         # Main payload (handle) arrives first.
@@ -89,14 +89,14 @@ def test_segmenter_emits_sentence_then_finalizes_on_done():
             IncomingMessage(request_id=rid, type="new_request", data=payload)
         )
 
-        _push_text_chunks(
+        push_text_chunks(
             sched,
             rid,
             iter(["Hello world.", " Tail piece"]),
         )
         sched.inbox.put(IncomingMessage(request_id=rid, type="stream_done"))
 
-        messages = _drain_outbox(sched, until_request_id=rid)
+        messages = drain_outbox(sched, until_request_id=rid)
     finally:
         sched.stop()
         thread.join(timeout=1.0)
@@ -129,11 +129,11 @@ def test_segmenter_handles_stream_arriving_before_payload():
         first_segment_max_wait_ms=10_000,
     )
     sched = MingStreamingSegmenterScheduler(config=cfg)
-    thread = _run_scheduler(sched)
+    thread = run_scheduler(sched)
     try:
         rid = "req-pre"
         # Stream arrives before the main payload.
-        _push_text_chunks(sched, rid, iter(["Hi there. "]))
+        push_text_chunks(sched, rid, iter(["Hi there. "]))
         sched.inbox.put(IncomingMessage(request_id=rid, type="stream_done"))
         # Give scheduler a chance to buffer.
         time.sleep(0.05)
@@ -141,7 +141,7 @@ def test_segmenter_handles_stream_arriving_before_payload():
         sched.inbox.put(
             IncomingMessage(request_id=rid, type="new_request", data=payload)
         )
-        messages = _drain_outbox(sched, until_request_id=rid)
+        messages = drain_outbox(sched, until_request_id=rid)
     finally:
         sched.stop()
         thread.join(timeout=1.0)
@@ -161,7 +161,7 @@ def test_segmenter_first_segment_timeout_emits_before_punctuation():
         first_segment_max_wait_ms=50,
     )
     sched = MingStreamingSegmenterScheduler(config=cfg)
-    thread = _run_scheduler(sched)
+    thread = run_scheduler(sched)
     try:
         rid = "req-timeout"
         payload = StagePayload(request_id=rid, request=None, data={})
@@ -169,12 +169,12 @@ def test_segmenter_first_segment_timeout_emits_before_punctuation():
             IncomingMessage(request_id=rid, type="new_request", data=payload)
         )
         # Push two short tokens that don't end in punctuation.
-        _push_text_chunks(sched, rid, iter(["hello world"]))
+        push_text_chunks(sched, rid, iter(["hello world"]))
         # Wait past first_segment_max_wait_ms; the inbox-empty tick should
         # flush the first segment.
         time.sleep(0.3)
         sched.inbox.put(IncomingMessage(request_id=rid, type="stream_done"))
-        messages = _drain_outbox(sched, until_request_id=rid)
+        messages = drain_outbox(sched, until_request_id=rid)
     finally:
         sched.stop()
         thread.join(timeout=1.0)

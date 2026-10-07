@@ -22,7 +22,7 @@ from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
 
-def _higgs_with_vocoder_cadence() -> HiggsTtsPipelineConfig:
+def higgs_with_vocoder_cadence() -> HiggsTtsPipelineConfig:
     """Higgs's hook mirrors vocoder-set cadence onto tts_engine and supplies the
     platform-aware vocoder decode defaults (#1721); a cadence set on the
     vocoder here must reach the engine through it."""
@@ -56,7 +56,7 @@ def _higgs_with_vocoder_cadence() -> HiggsTtsPipelineConfig:
             id="dots-tts",
         ),
         pytest.param(
-            _higgs_with_vocoder_cadence(),
+            higgs_with_vocoder_cadence(),
             "tts_engine",
             id="higgs-tts",
         ),
@@ -126,9 +126,11 @@ def test_qwen3_tts_replica_launch_specs_keep_deterministic_factory_kwargs(
     for replica_id in range(2):
         suffix = f"@r{replica_id}"
         assert specs[f"preprocessing{suffix}"].factory_kwargs["max_concurrency"] == 1
-        assert specs[f"tts_engine{suffix}"].factory_kwargs["server_args_overrides"][
-            "enable_deterministic_inference"
+        server_args_overrides = specs[f"tts_engine{suffix}"].factory_kwargs[
+            "server_args_overrides"
         ]
+        assert isinstance(server_args_overrides, dict)
+        assert server_args_overrides["enable_deterministic_inference"]
         vocoder_kwargs = specs[f"vocoder{suffix}"].factory_kwargs
         assert vocoder_kwargs["enable_deterministic_inference"]
         assert vocoder_kwargs["initial_cuda_graph"] is False

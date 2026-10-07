@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 
@@ -12,6 +12,37 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
 )
+from sglang_omni.utils.device import supports_device_streams
+
+if TYPE_CHECKING:
+    from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
+        IncrementalCodecGraphStats,
+    )
+else:
+    pass
+
+
+class DisabledCodecGraphStats(TypedDict):
+    enabled: bool
+
+
+class CodecCudaGraphStats(TypedDict):
+    cold: IncrementalCodecGraphStats | DisabledCodecGraphStats
+    window: IncrementalCodecGraphStats | DisabledCodecGraphStats
+    warm: list[IncrementalCodecGraphStats]
+
+
+class CodecStateStats(TypedDict, total=False):
+    """Arena/scheduler snapshot; a disabled decoder reports only enabled."""
+
+    slots: int
+    active_slots: int
+    bytes_per_slot: int
+    total_bytes: int
+    exhausted: int
+    enabled: bool
+    left_context_fallbacks: int
+    cuda_graphs: CodecCudaGraphStats
 
 
 class Qwen3TTSCodecStateArena:
@@ -41,6 +72,7 @@ class Qwen3TTSCodecStateArena:
             pass
         self.decoder = decoder
         self.device = torch.device(device)
+        self.device_module = torch.get_device_module(self.device)
         self.dtype = dtype
         self._num_slots = int(num_slots)  # noqa: leading-underscore
         self.scratch_slot = self._num_slots  # noqa: leading-underscore
@@ -51,7 +83,7 @@ class Qwen3TTSCodecStateArena:
         )
         self.lock = threading.Lock()
         self.staging = threading.local()
-        self.release_events: dict[int, torch.cuda.Event] = {}
+        self.release_events: dict[int, torch.Event] = {}
         self.free: list[int] = list(
             reversed(range(self._num_slots))
         )  # noqa: leading-underscore
@@ -93,7 +125,7 @@ class Qwen3TTSCodecStateArena:
             slot = self.free.pop()
             released = self.release_events.pop(slot, None)
         if released is not None:
-            torch.cuda.current_stream(self.device).wait_event(released)
+            self.device_module.current_stream(self.device).wait_event(released)
         else:
             pass
         self.zero_slot(slot)
@@ -101,9 +133,9 @@ class Qwen3TTSCodecStateArena:
 
     def release(self, slot: int) -> None:
         released = None
-        if self.device.type == "cuda":
-            released = torch.cuda.Event()
-            released.record(torch.cuda.current_stream(self.device))
+        if supports_device_streams(self.device):
+            released = self.device_module.Event()
+            released.record(self.device_module.current_stream(self.device))
         else:
             pass
         with self.lock:
@@ -153,7 +185,7 @@ class Qwen3TTSCodecStateArena:
     STAGING_RING = 4
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
-        if self.device.type != "cuda":
+        if not supports_device_streams(self.device):
             return torch.as_tensor(list(values), dtype=torch.long)
         else:
             pass
@@ -273,7 +305,7 @@ class Qwen3TTSCodecStateArena:
             pass
         buffer.index_copy_(0, index, rows.contiguous())
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self) -> CodecStateStats:
         return {
             "slots": self._num_slots,  # noqa: leading-underscore
             "active_slots": self.active_slots(),

@@ -35,5 +35,6 @@ stages:
   vocoder:
     factory:
       optimize: true
+      enable_streaming_audio_vae_cuda_graph: true
       max_batch_size: 4
       max_batch_wait_ms: 2

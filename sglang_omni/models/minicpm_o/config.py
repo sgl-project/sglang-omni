@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -14,9 +14,12 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
 
 PKG = "sglang_omni.models.minicpm_o"
 THINKER_STAGE = "thinker"
+# PyTorch gives a smaller value higher priority, so this runs ahead of the default stream.
+CODE2WAV_DECODE_STREAM_PRIORITY = -1
 
 
 def preprocessing_stage(*, process: str) -> StageConfig:
@@ -115,9 +118,22 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         process=process,
         factory_path=f"{PKG}.stages.create_code2wav_executor",
         factory=FactoryArgs(
-            max_batch_size=8,
-            max_batch_wait_ms=0.0,
+            max_batch_size=16,
+            max_batch_wait_ms=0,
             batch_wait_when_idle=False,
+            # note (Dayuxiaoshui): flow activations fit the FP16 range, whose
+            # wider mantissa keeps the mel closer to FP32 than BF16 does.
+            dtype="float16",
+            enable_dit_torch_compile=True,
+            # note (Dayuxiaoshui): the compiled dense DiT beats the eager packed
+            # path even on mixed-length, mixed-reference batches.
+            enable_flow_variable_length=False,
+            reference_workers=8,
+            prompt_cache_capacity=32,
+            decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,
+            # note (Dayuxiaoshui): compiles the packed DiT, which only runs when
+            # enable_flow_variable_length is on.
+            enable_flow_block_compile=False,
         ),
         # Note (Chenyang): As a general comment and my usual understanding
         # of SGLang Omni, SGLang Omni has a poor runtime which leads to a
@@ -151,8 +167,8 @@ def speech_stages() -> list[StageConfig]:
         decode_stage(process="pipeline"),
         # note (MayDomine): each engine requires a separate process-global TP group.
         talker_stage(gpu=0, process="talker"),
-        # note (MayDomine): vocoding must not block the thinker's event loop.
-        code2wav_stage(gpu=0, process="code2wav"),
+        # note (zhaochenyang20): sharing a CUDA context lets the stage streams overlap.
+        code2wav_stage(gpu=0, process="talker"),
     ]
 
 
@@ -186,7 +202,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
     terminal_stages_fn: str | None = f"{PKG}.routing.resolve_terminal_stages"
     stages: list[StageConfig] = Field(default_factory=speech_stages)
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
         if stage_name in (THINKER_STAGE, "preprocessing"):
             return {"speech_enabled": True}
         else:
@@ -197,6 +213,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
 EntryClass = MiniCPMOSpeechPipelineConfig
 
 Variants = {
+    "session": MiniCPMODuplexPipelineConfig,
     "text": MiniCPMOPipelineConfig,
     "speech": MiniCPMOSpeechPipelineConfig,
 }

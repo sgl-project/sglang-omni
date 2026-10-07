@@ -13,7 +13,7 @@ from sglang_omni.quantization import (
 )
 
 
-def _make_model_config(
+def make_model_config(
     architecture: str | None,
     quantization_config: object,
 ) -> SimpleNamespace:
@@ -49,7 +49,7 @@ class TestNormalizeStageLocalCheckpointConfig:
             "quant_method": "auto-round",
             "block_name_to_quantize": "thinker.model.layers",
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -60,7 +60,7 @@ class TestNormalizeStageLocalCheckpointConfig:
             "quant_method": "auto-round",
             "block_name_to_quantize": "talker.model.layers",
         }
-        model_config = _make_model_config("Qwen3OmniTalker", quant_config)
+        model_config = make_model_config("Qwen3OmniTalker", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -71,7 +71,7 @@ class TestNormalizeStageLocalCheckpointConfig:
             "quant_method": "auto-round",
             "block_name_to_quantize": "thinker.model.layers",
         }
-        model_config = _make_model_config(
+        model_config = make_model_config(
             "Qwen3ASRForConditionalGeneration", quant_config
         )
 
@@ -84,7 +84,7 @@ class TestNormalizeStageLocalCheckpointConfig:
             "quant_method": "auto-round",
             "block_name_to_quantize": "thinker.model.layers,thinker.model.experts",
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -95,7 +95,7 @@ class TestNormalizeStageLocalCheckpointConfig:
             "quant_method": "auto-round",
             "block_name_to_quantize": ["thinker.model.layers", "model.shared"],
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -113,7 +113,7 @@ class TestNormalizeStageLocalCheckpointConfig:
                 "thinker.model.layers.1": {"bits": 4},
             },
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -131,7 +131,7 @@ class TestNormalizeStageLocalCheckpointConfig:
                 "thinker.model.layers.1": {"bits": 4},
             },
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -154,7 +154,7 @@ class TestNormalizeStageLocalCheckpointConfig:
                 r"thinker_audio\.model\.layers\.2": {"bits": 4},
             },
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -172,7 +172,7 @@ class TestNormalizeStageLocalCheckpointConfig:
                 r".*thinker\.model\.layers\.\d+\.mlp\.gate.*": {"bits": 8},
             },
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -185,7 +185,7 @@ class TestNormalizeStageLocalCheckpointConfig:
             "quant_method": "auto-round",
             "block_name_to_quantize": "model.layers",
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -196,7 +196,7 @@ class TestNormalizeStageLocalCheckpointConfig:
             "quant_method": "auto-round",
             "block_name_to_quantize": "thinker.model.layers",
         }
-        model_config = _make_model_config("SomeOtherForCausalLM", quant_config)
+        model_config = make_model_config("SomeOtherForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -227,14 +227,14 @@ class TestNormalizeStageLocalCheckpointConfig:
 
     def test_missing_block_name_to_quantize_is_noop(self) -> None:
         quant_config = {"quant_method": "auto-round"}
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
         assert quant_config == {"quant_method": "auto-round"}
 
     def test_non_dict_quantization_config_raises(self) -> None:
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", "not-a-dict")
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", "not-a-dict")
         with pytest.raises(TypeError, match="unsupported type"):
             normalize_quant_config(model_config)
 
@@ -248,7 +248,7 @@ class TestObjectShapedConfig:
             block_name_to_quantize="thinker.model.layers",
             bits=4,
         )
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -271,7 +271,7 @@ class TestObjectShapedConfig:
                     "bits": self.bits,
                 }
 
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", HasToDict())
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", HasToDict())
 
         normalize_quant_config(model_config)
 
@@ -286,7 +286,7 @@ class TestObjectShapedConfig:
             block_name_to_quantize="model.layers",
             extra_config={r"thinker\.model\.layers\.0": {"bits": 8}},
         )
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         normalize_quant_config(model_config)
 
@@ -296,7 +296,7 @@ class TestObjectShapedConfig:
         }
 
     def test_unsupported_quant_config_type_raises(self) -> None:
-        model_config = _make_model_config(
+        model_config = make_model_config(
             "Qwen3OmniThinkerForCausalLM", ["not", "a", "dict"]
         )
         with pytest.raises(TypeError, match="unsupported type"):

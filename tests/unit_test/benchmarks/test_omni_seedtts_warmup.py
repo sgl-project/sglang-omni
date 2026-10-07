@@ -45,7 +45,7 @@ def warmup_config(tmp_path):
     return config
 
 
-def _wav():
+def wav():
     output = io.BytesIO()
     with wave.open(output, "wb") as handle:
         handle.setparams((1, 2, 16000, 160, "NONE", "not compressed"))
@@ -70,7 +70,7 @@ async def test_distinct_warmup_finishes_before_measured_requests(
             assert set(completed) == {"warm-a", "warm-b"}
         assert kwargs["stream"] and kwargs["voice_clone"]
         completed.append(sample.sample_id)
-        return _wav(), 16000, {}
+        return wav(), 16000, {}
 
     monkeypatch.setattr(benchmark.VoiceCloneOmni, "generate_speech", generate)
     result = await benchmark.run_omni_seedtts_benchmark(warmup_config)
@@ -117,7 +117,7 @@ async def test_zero_warmup_does_not_load_separate_dataset(monkeypatch, warmup_co
 
     async def generate(self, session, url, model, sample, lang, **kwargs):
         seen.append(sample.sample_id)
-        return _wav(), 16000, {}
+        return wav(), 16000, {}
 
     monkeypatch.setattr(benchmark.VoiceCloneOmni, "generate_speech", generate)
     await benchmark.run_omni_seedtts_benchmark(warmup_config)
@@ -132,10 +132,12 @@ async def test_separate_warmup_requires_enough_samples(warmup_config):
 
 
 def test_cli_accepts_separate_warmup_dataset():
-    args = benchmark._build_arg_parser().parse_args(
+    args = benchmark._build_arg_parser().parse_args(  # noqa: leading-underscore  # production name
         ["--meta", "measured.lst", "--warmup-meta", "warmup.lst", "--warmup", "2"]
     )
-    config = benchmark._config_from_args(args)
+    config = benchmark._config_from_args(
+        args
+    )  # noqa: leading-underscore  # production name
     assert config.warmup_meta == "warmup.lst" and config.warmup == 2
 
 
@@ -155,7 +157,7 @@ async def test_speaker_reference_transport_reaches_warmup_and_measured_requests(
     warmup_config.voice_clone = voice_clone
     if reference_audio_field is not None:
         warmup_config.reference_audio_field = reference_audio_field
-    reference = _wav()
+    reference = wav()
     if voice_clone:
         for filename in ("a.wav", "b.wav", "measured.wav"):
             (tmp_path / filename).write_bytes(reference)
@@ -163,7 +165,7 @@ async def test_speaker_reference_transport_reaches_warmup_and_measured_requests(
     response = AsyncMock()
     response.status = 200
     response.json.return_value = {
-        "choices": [{"message": {"audio": {"data": base64.b64encode(_wav()).decode()}}}]
+        "choices": [{"message": {"audio": {"data": base64.b64encode(wav()).decode()}}}]
     }
     request = AsyncMock()
     request.__aenter__.return_value = response
@@ -194,14 +196,16 @@ async def test_speaker_reference_transport_reaches_warmup_and_measured_requests(
     assert results["config"]["reference_audio_field"] == (
         reference_audio_field or "audios"
     )
-    assert (tmp_path / "results/audio/measured.wav").read_bytes() == _wav()
+    assert (tmp_path / "results/audio/measured.wav").read_bytes() == wav()
 
 
 def test_cli_selects_explicit_speaker_reference_transport() -> None:
-    args = benchmark._build_arg_parser().parse_args(
+    args = benchmark._build_arg_parser().parse_args(  # noqa: leading-underscore  # production name
         ["--voice-clone", "--reference-audio-field", "audio.ref_audio"]
     )
-    config = benchmark._config_from_args(args)
+    config = benchmark._config_from_args(
+        args
+    )  # noqa: leading-underscore  # production name
     assert config.voice_clone
     assert config.reference_audio_field == "audio.ref_audio"
 
@@ -270,7 +274,7 @@ def recording_generate_speech(
                 talker_params=talker_params,
             )
         )
-        return _wav(), 0.0, {}
+        return wav(), 0.0, {}
 
     return generate_speech
 
@@ -280,7 +284,7 @@ async def test_inline_reference_is_preloaded_and_seed_forwarded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     reference = tmp_path / "ref.wav"
-    reference.write_bytes(_wav())
+    reference.write_bytes(wav())
     meta = tmp_path / "measured.lst"
     meta.write_text(f"measured|reference|{reference}|Measured text\n")
     config = benchmark.OmniSeedttsBenchmarkConfig(
@@ -294,7 +298,7 @@ async def test_inline_reference_is_preloaded_and_seed_forwarded(
         disable_tqdm=True,
         output_dir=str(tmp_path / "results"),
     )
-    expected_reference = "data:audio/wav;base64," + base64.b64encode(_wav()).decode(
+    expected_reference = "data:audio/wav;base64," + base64.b64encode(wav()).decode(
         "ascii"
     )
     forwarded: list[ForwardedSpeech] = []
@@ -340,12 +344,16 @@ async def test_inline_reference_requires_preloaded_data() -> None:
 
 
 def test_cli_accepts_seed() -> None:
-    args = benchmark._build_arg_parser().parse_args(["--seed", "3"])
-    assert benchmark._config_from_args(args).seed == 3
+    args = benchmark._build_arg_parser().parse_args(
+        ["--seed", "3"]
+    )  # noqa: leading-underscore  # production name
+    assert (
+        benchmark._config_from_args(args).seed == 3
+    )  # noqa: leading-underscore  # production name
 
 
 def test_cli_parses_talker_and_sweep_flags() -> None:
-    args = benchmark._build_arg_parser().parse_args(
+    args = benchmark._build_arg_parser().parse_args(  # noqa: leading-underscore  # production name
         [
             "--talker-temperature",
             "0.6",
@@ -358,7 +366,9 @@ def test_cli_parses_talker_and_sweep_flags() -> None:
             "--generate-only",
         ]
     )
-    config = benchmark._config_from_args(args)
+    config = benchmark._config_from_args(
+        args
+    )  # noqa: leading-underscore  # production name
     assert (config.talker_temperature, config.talker_top_k) == (0.6, 10)
     assert config.talker_top_p is None and config.talker_repetition_penalty is None
     assert args.concurrencies == [1, 16] and args.repeats == 2
@@ -374,16 +384,20 @@ def test_results_config_records_talker_params_and_optional_fingerprint() -> None
     config = benchmark.OmniSeedttsBenchmarkConfig(
         model="test", meta="measured.lst", talker_top_p=0.9
     )
-    results_config = benchmark._build_results_config(
-        config, base_url="http://localhost:8000"
+    results_config = (
+        benchmark._build_results_config(  # noqa: leading-underscore  # production name
+            config, base_url="http://localhost:8000"
+        )
     )
     assert results_config["talker_top_p"] == 0.9
     assert results_config["talker_top_k"] is None
     assert "environment_fingerprint" not in results_config
 
     config.environment_fingerprint = {"client": {"git": {}}, "server": {}}
-    results_config = benchmark._build_results_config(
-        config, base_url="http://localhost:8000"
+    results_config = (
+        benchmark._build_results_config(  # noqa: leading-underscore  # production name
+            config, base_url="http://localhost:8000"
+        )
     )
     assert results_config["environment_fingerprint"]["server"] == {}
 

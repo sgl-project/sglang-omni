@@ -40,7 +40,7 @@ from benchmarks.tasks.video_understanding import make_video_send_fn
 from benchmarks.tasks.visual_understand import make_mmmu_send_fn
 
 
-class _AppendSocket:
+class AppendSocket:
     async def send(self, message: str) -> None:
         return None
 
@@ -63,7 +63,7 @@ async def test_sender_encodes_audio_before_first_send(
     trace = SessionTrace(url="ws://localhost/v1/realtime")
     await _sender(
         trace,
-        _AppendSocket(),
+        AppendSocket(),
         [b"\x01\x00" * 8, b"\x02\x00" * 8],
         packet_ms=200,
         paced=False,
@@ -188,7 +188,7 @@ def test_streaming_ttft_payload_pins_seed_and_talker() -> None:
     assert "talker_top_p" not in payload
 
 
-def _streaming_args() -> argparse.Namespace:
+def streaming_args() -> argparse.Namespace:
     return argparse.Namespace(
         label="baseline",
         base_url="http://localhost:8000",
@@ -235,7 +235,7 @@ async def test_streaming_ttft_reuses_one_seed_for_warmup_and_repeats(
         "benchmarks.eval.benchmark_omni_streaming_ttft._measure_one",
         fake_measure,
     )
-    summary = await _run(_streaming_args())
+    summary = await _run(streaming_args())
     calls_per_prompt = 1 + 2
     assert seen_seeds == [DEFAULT_STREAMING_TTFT_SEED] * (
         len(PROMPTS) * calls_per_prompt
@@ -243,7 +243,7 @@ async def test_streaming_ttft_reuses_one_seed_for_warmup_and_repeats(
     assert summary.seed == DEFAULT_STREAMING_TTFT_SEED
 
 
-def _mmsu_sample() -> MmsuSample:
+def mmsu_sample() -> MmsuSample:
     return MmsuSample(
         sample_id="s0",
         audio_path="clip.wav",
@@ -261,7 +261,7 @@ def _mmsu_sample() -> MmsuSample:
 
 def test_mmsu_payload_forwards_seed() -> None:
     seeded = _build_request_payload(
-        _mmsu_sample(),
+        mmsu_sample(),
         model_name="qwen3-omni",
         prompt="Answer",
         modalities=["text"],
@@ -270,7 +270,7 @@ def test_mmsu_payload_forwards_seed() -> None:
         seed=7,
     )
     omitted = _build_request_payload(
-        _mmsu_sample(),
+        mmsu_sample(),
         model_name="qwen3-omni",
         prompt="Answer",
         modalities=["text"],
@@ -281,36 +281,36 @@ def test_mmsu_payload_forwards_seed() -> None:
     assert "seed" not in omitted
 
 
-class _JsonResponse:
+class JsonResponse:
     def __init__(self, body: dict[str, object]) -> None:
         self.status = 200
-        self._body = body
+        self.body = body
 
     async def json(self) -> dict[str, object]:
-        return self._body
+        return self.body
 
     def raise_for_status(self) -> None:
         return None
 
-    async def __aenter__(self) -> "_JsonResponse":
+    async def __aenter__(self) -> "JsonResponse":
         return self
 
     async def __aexit__(self, *exc: object) -> None:
         return None
 
 
-class _RecordingSession:
+class RecordingSession:
     def __init__(self) -> None:
         self.payloads: list[dict[str, object]] = []
 
-    def post(self, url: str, json: dict[str, object]) -> _JsonResponse:
+    def post(self, url: str, json: dict[str, object]) -> JsonResponse:
         self.payloads.append(json)
-        return _JsonResponse(
+        return JsonResponse(
             {"choices": [{"message": {"content": "Answer: A"}}], "usage": {}}
         )
 
 
-def _mmmu_sample() -> MMMUSample:
+def mmmu_sample() -> MMMUSample:
     return MMMUSample(
         sample_id="m0",
         question="q",
@@ -324,16 +324,16 @@ def _mmmu_sample() -> MMMUSample:
 
 @pytest.mark.asyncio
 async def test_mmmu_request_includes_seed_only_when_set() -> None:
-    session = _RecordingSession()
+    session = RecordingSession()
     seeded = make_mmmu_send_fn("qwen3-omni", "http://localhost/v1", seed=4)
     omitted = make_mmmu_send_fn("qwen3-omni", "http://localhost/v1")
-    await seeded(session, _mmmu_sample())
-    await omitted(session, _mmmu_sample())
+    await seeded(session, mmmu_sample())
+    await omitted(session, mmmu_sample())
     assert session.payloads[0]["seed"] == 4
     assert "seed" not in session.payloads[1]
 
 
-def _video_sample() -> VideoMMESample:
+def video_sample() -> VideoMMESample:
     return VideoMMESample(
         sample_id="v0",
         video_path="clip.mp4",
@@ -346,19 +346,19 @@ def _video_sample() -> VideoMMESample:
 
 @pytest.mark.asyncio
 async def test_video_request_includes_seed_only_when_set() -> None:
-    session = _RecordingSession()
+    session = RecordingSession()
     seeded = make_video_send_fn("qwen3-omni", "http://localhost/v1", seed=5)
     omitted = make_video_send_fn("qwen3-omni", "http://localhost/v1")
-    await seeded(session, _video_sample())
-    await omitted(session, _video_sample())
+    await seeded(session, video_sample())
+    await omitted(session, video_sample())
     assert session.payloads[0]["seed"] == 5
     assert "seed" not in session.payloads[1]
 
 
 @pytest.mark.asyncio
 async def test_rollout_request_uses_per_index_seed_and_talker() -> None:
-    session = _RecordingSession()
-    sample = replace(_mmmu_sample(), sample_id="m0:rollout-n1-0")
+    session = RecordingSession()
+    sample = replace(mmmu_sample(), sample_id="m0:rollout-n1-0")
     send_fn = _make_rollout_send_fn(
         model_name="qwen3-omni",
         api_url="http://localhost/v1",

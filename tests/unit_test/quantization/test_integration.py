@@ -6,7 +6,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 
-def _make_model_config(
+def make_model_config(
     architecture: str, quantization_config: object
 ) -> SimpleNamespace:
     hf_config = SimpleNamespace(
@@ -26,7 +26,7 @@ class TestApplyOmniQuantizationAdapters:
             "quant_method": "auto-round",
             "block_name_to_quantize": "thinker.model.layers",
         }
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
         model_worker.apply_omni_quantization_adapters(model_config)
 
@@ -42,7 +42,7 @@ class TestApplyOmniQuantizationAdapters:
             # An unrelated field that must not be rewritten.
             "block_name_to_quantize": "thinker.model.layers",
         }
-        model_config = _make_model_config("Qwen3OmniTalker", quant_config)
+        model_config = make_model_config("Qwen3OmniTalker", quant_config)
 
         model_worker.apply_omni_quantization_adapters(model_config)
 
@@ -52,7 +52,7 @@ class TestApplyOmniQuantizationAdapters:
     def test_no_quantization_is_noop(self) -> None:
         from sglang_omni.model_runner import model_worker
 
-        model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", None)
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", None)
 
         # Must not raise.
         model_worker.apply_omni_quantization_adapters(model_config)

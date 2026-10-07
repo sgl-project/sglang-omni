@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import multiprocessing as mp
 import queue
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from multiprocessing.connection import Connection
 
@@ -21,25 +23,26 @@ import torch
 from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPool
 from sglang_omni.relay.cuda_ipc import (
     ContiguousSlotAllocator,
+    CudaIpcGetOperation,
     CudaIpcPutOperation,
     CudaIpcRelay,
 )
 
-_N = 1024 * 1024  # 1 MiB payload
-_PAGED_PAGE_COUNT = 9
-_PAGED_SOURCE_INDICES = (7, 1, 5, 3)
-_PAGED_DESTINATION_INDICES = (2, 8, 0, 6)
-_PAGED_BUFFER_SPECS = (
+N = 1024 * 1024  # 1 MiB payload
+PAGED_PAGE_COUNT = 9
+PAGED_SOURCE_INDICES = (7, 1, 5, 3)
+PAGED_DESTINATION_INDICES = (2, 8, 0, 6)
+PAGED_BUFFER_SPECS = (
     ("keys", torch.float16, 40, 4, 6),
     ("values", torch.float32, 72, 2, 3),
 )
-_PAGED_OUTER_GUARD = 252
-_PAGED_DESTINATION_GUARD = 253
-_PAGED_MESSAGE_TIMEOUT_S = 120
-_PAGED_RESULT_TIMEOUT_S = 240
+PAGED_OUTER_GUARD = 252
+PAGED_DESTINATION_GUARD = 253
+PAGED_MESSAGE_TIMEOUT_S = 120
+PAGED_RESULT_TIMEOUT_S = 240
 
 
-def _expected(n: int) -> torch.Tensor:
+def make_expected(n: int) -> torch.Tensor:
     return (torch.arange(n, dtype=torch.int64) % 251).to(torch.uint8)
 
 
@@ -110,6 +113,105 @@ def test_cuda_ipc_put_fails_fast_after_relay_failure() -> None:
     asyncio.run(run())
 
 
+class GatedCopyEvent:
+    """CPU stand-in for the CUDA event that marks a launched copy as finished."""
+
+    def __init__(self) -> None:
+        self.copy_done = threading.Event()
+
+    def query(self) -> bool:
+        return self.copy_done.is_set()
+
+    def synchronize(self) -> None:
+        self.copy_done.wait()
+
+
+def make_copy_owning_get(
+    event: GatedCopyEvent, executor: ThreadPoolExecutor
+) -> CudaIpcGetOperation:
+    # A negative device index makes torch.cuda.device a no-op, so this runs on CPU.
+    return CudaIpcGetOperation(
+        event,
+        None,
+        0,
+        1,
+        request_id="copy-owning-get",
+        size=0,
+        device_index=-1,
+        wait_executor=executor,
+        finish_on_interrupt=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "interruption", ["timeout", "timeout_then_cancel", "cancel_twice"]
+)
+def test_cuda_ipc_get_waits_for_launched_copy_through_interruptions(
+    interruption: str,
+) -> None:
+    event = GatedCopyEvent()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    async def run() -> None:
+        timeout = 0.01 if interruption.startswith("timeout") else 30.0
+        task = asyncio.create_task(
+            make_copy_owning_get(event, executor).wait_for_completion(timeout=timeout)
+        )
+        try:
+            await asyncio.sleep(0.05)
+            if interruption == "timeout_then_cancel":
+                task.cancel()
+            elif interruption == "cancel_twice":
+                task.cancel()
+                await asyncio.sleep(0.05)
+                task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done(), "receive returned while its GPU copy was running"
+        finally:
+            event.copy_done.set()
+
+        expected = (
+            asyncio.TimeoutError
+            if interruption == "timeout"
+            else asyncio.CancelledError
+        )
+        with pytest.raises(expected):
+            await task
+
+    try:
+        asyncio.run(run())
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_cuda_ipc_relay_close_keeps_queued_copy_waits(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_CUDA_IPC_WAIT_THREADS", "1")
+    relay = CudaIpcRelay(engine_id="receiver", device="cuda:0", pool_size_mb=1)
+    event = GatedCopyEvent()
+
+    async def run() -> None:
+        tasks = [
+            asyncio.create_task(
+                make_copy_owning_get(event, relay.wait_executor).wait_for_completion()
+            )
+            for _ in range(2)
+        ]
+        try:
+            await asyncio.sleep(0.05)
+            relay.close()
+            await asyncio.sleep(0.05)
+            assert not any(task.done() for task in tasks), "close dropped a copy wait"
+        finally:
+            event.copy_done.set()
+
+        assert await asyncio.gather(*tasks) == [None, None]
+
+    try:
+        asyncio.run(run())
+    finally:
+        relay.wait_executor.shutdown(wait=True)
+
+
 def test_cuda_ipc_default_pool_uses_small_slots() -> None:
     relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
     assert relay.slot_size == 64 * 1024
@@ -165,7 +267,7 @@ def test_contiguous_slot_allocator_rejects_double_release() -> None:
     asyncio.run(run())
 
 
-def _sender(
+def make_sender(
     src_gpu: int,
     meta_q: mp.Queue,
     ack_q: mp.Queue,
@@ -179,7 +281,7 @@ def _sender(
             device=f"cuda:{src_gpu}",
             slot_size_mb=2,
         )
-        buf = _expected(_N).to(f"cuda:{src_gpu}")
+        buf = make_expected(N).to(f"cuda:{src_gpu}")
 
         async def run() -> None:
             op = await relay.put_async(
@@ -208,7 +310,7 @@ def _sender(
             relay.close()
 
 
-def _receiver(
+def make_receiver(
     dst_gpu: int, meta_q: mp.Queue, ack_q: mp.Queue, result_q: mp.Queue
 ) -> None:
     relay = None
@@ -225,7 +327,7 @@ def _receiver(
             return dest
 
         dest = asyncio.run(run())
-        expected = _expected(_N).to(f"cuda:{dst_gpu}")
+        expected = make_expected(N).to(f"cuda:{dst_gpu}")
         matches = bool(torch.equal(dest, expected))
         if not matches:
             raise AssertionError("received CUDA IPC bytes do not match the source")
@@ -240,11 +342,13 @@ def _receiver(
             relay.close()
 
 
-def _run_case(src_gpu: int, dst_gpu: int) -> None:
+def run_case(src_gpu: int, dst_gpu: int) -> None:
     ctx = mp.get_context("spawn")
     meta_q, ack_q, result_q = ctx.Queue(), ctx.Queue(), ctx.Queue()
-    sender = ctx.Process(target=_sender, args=(src_gpu, meta_q, ack_q, result_q))
-    receiver = ctx.Process(target=_receiver, args=(dst_gpu, meta_q, ack_q, result_q))
+    sender = ctx.Process(target=make_sender, args=(src_gpu, meta_q, ack_q, result_q))
+    receiver = ctx.Process(
+        target=make_receiver, args=(dst_gpu, meta_q, ack_q, result_q)
+    )
     sender.start()
     receiver.start()
     results = {}
@@ -269,13 +373,13 @@ def _run_case(src_gpu: int, dst_gpu: int) -> None:
         assert value is True
 
 
-def _paged_pattern(
+def paged_pattern(
     buffer_index: int,
     bytes_per_page: int,
     *,
     device: torch.device,
 ) -> torch.Tensor:
-    byte_count = _PAGED_PAGE_COUNT * bytes_per_page
+    byte_count = PAGED_PAGE_COUNT * bytes_per_page
     offsets = torch.arange(byte_count, dtype=torch.int64, device=device)
     page_indices = offsets // bytes_per_page
     byte_offsets = offsets % bytes_per_page
@@ -284,7 +388,7 @@ def _paged_pattern(
     )
 
 
-def _make_paged_pool(
+def make_paged_pool(
     pool_id: str,
     *,
     device: torch.device,
@@ -298,9 +402,9 @@ def _make_paged_pool(
         bytes_per_page,
         prefix_elements,
         suffix_elements,
-    ) in enumerate(_PAGED_BUFFER_SPECS):
+    ) in enumerate(PAGED_BUFFER_SPECS):
         element_size = torch.empty((), dtype=dtype).element_size()
-        region_bytes = _PAGED_PAGE_COUNT * bytes_per_page
+        region_bytes = PAGED_PAGE_COUNT * bytes_per_page
         assert region_bytes % element_size == 0
         region_elements = region_bytes // element_size
         backing = torch.empty(
@@ -308,7 +412,7 @@ def _make_paged_pool(
             dtype=dtype,
             device=device,
         )
-        backing.view(torch.uint8).fill_(_PAGED_OUTER_GUARD)
+        backing.view(torch.uint8).fill_(PAGED_OUTER_GUARD)
         tensor = backing.narrow(0, prefix_elements, region_elements)
         region = KVBufferRegion(
             name=name,
@@ -319,14 +423,14 @@ def _make_paged_pool(
         assert region.byte_view().storage_offset() == prefix_elements * element_size
         if source:
             region.byte_view().copy_(
-                _paged_pattern(
+                paged_pattern(
                     buffer_index,
                     bytes_per_page,
                     device=device,
                 )
             )
         else:
-            region.byte_view().fill_(_PAGED_DESTINATION_GUARD)
+            region.byte_view().fill_(PAGED_DESTINATION_GUARD)
         buffers.append(region)
         backings.append(backing)
     return (
@@ -340,7 +444,7 @@ def _make_paged_pool(
     )
 
 
-def _assert_bytes_equal(
+def assert_bytes_equal(
     actual: torch.Tensor,
     expected: torch.Tensor,
     *,
@@ -356,7 +460,7 @@ def _assert_bytes_equal(
     )
 
 
-def _assert_bytes_are(
+def assert_bytes_are(
     actual: torch.Tensor,
     expected: int,
     *,
@@ -372,7 +476,7 @@ def _assert_bytes_are(
     )
 
 
-def _assert_outer_guards(
+def assert_outer_guards(
     pool: KVPool,
     backings: tuple[torch.Tensor, ...],
 ) -> None:
@@ -380,73 +484,73 @@ def _assert_outer_guards(
         backing_bytes = backing.view(torch.uint8).view(-1)
         start = region.byte_view().storage_offset()
         end = start + region.byte_view().numel()
-        _assert_bytes_are(
+        assert_bytes_are(
             backing_bytes[:start],
-            _PAGED_OUTER_GUARD,
+            PAGED_OUTER_GUARD,
             context=f"{region.name} prefix guard",
         )
-        _assert_bytes_are(
+        assert_bytes_are(
             backing_bytes[end:],
-            _PAGED_OUTER_GUARD,
+            PAGED_OUTER_GUARD,
             context=f"{region.name} suffix guard",
         )
 
 
-def _assert_source_pool_unchanged(
+def assert_source_pool_unchanged(
     pool: KVPool,
     backings: tuple[torch.Tensor, ...],
 ) -> None:
     for buffer_index, region in enumerate(pool.buffers):
-        _assert_bytes_equal(
+        assert_bytes_equal(
             region.byte_view(),
-            _paged_pattern(
+            paged_pattern(
                 buffer_index,
                 region.bytes_per_page,
                 device=pool.device,
             ),
             context=f"source buffer {region.name}",
         )
-    _assert_outer_guards(pool, backings)
+    assert_outer_guards(pool, backings)
 
 
-def _assert_destination_mapping(
+def assert_destination_mapping(
     pool: KVPool,
     backings: tuple[torch.Tensor, ...],
 ) -> None:
     source_for_destination = dict(
         zip(
-            _PAGED_DESTINATION_INDICES,
-            _PAGED_SOURCE_INDICES,
+            PAGED_DESTINATION_INDICES,
+            PAGED_SOURCE_INDICES,
             strict=True,
         )
     )
     for buffer_index, region in enumerate(pool.buffers):
         actual_pages = region.byte_view().view(
-            _PAGED_PAGE_COUNT,
+            PAGED_PAGE_COUNT,
             region.bytes_per_page,
         )
-        source_pages = _paged_pattern(
+        source_pages = paged_pattern(
             buffer_index,
             region.bytes_per_page,
             device=pool.device,
-        ).view(_PAGED_PAGE_COUNT, region.bytes_per_page)
-        selected_source_pages = source_pages[list(_PAGED_SOURCE_INDICES)]
+        ).view(PAGED_PAGE_COUNT, region.bytes_per_page)
+        selected_source_pages = source_pages[list(PAGED_SOURCE_INDICES)]
         for index, page in enumerate(selected_source_pages):
             for other_page in selected_source_pages[index + 1 :]:
                 assert not torch.equal(page, other_page)
-        for destination_page in range(_PAGED_PAGE_COUNT):
+        for destination_page in range(PAGED_PAGE_COUNT):
             source_page = source_for_destination.get(destination_page)
             if source_page is None:
-                _assert_bytes_are(
+                assert_bytes_are(
                     actual_pages[destination_page],
-                    _PAGED_DESTINATION_GUARD,
+                    PAGED_DESTINATION_GUARD,
                     context=(
                         f"destination buffer {region.name} unmapped page "
                         f"{destination_page}"
                     ),
                 )
                 continue
-            _assert_bytes_equal(
+            assert_bytes_equal(
                 actual_pages[destination_page],
                 source_pages[source_page],
                 context=(
@@ -454,11 +558,11 @@ def _assert_destination_mapping(
                     f"mapped from source page {source_page}"
                 ),
             )
-    _assert_outer_guards(pool, backings)
+    assert_outer_guards(pool, backings)
 
 
-def _recv_paged_message(connection: Connection, expected: str) -> object:
-    if not connection.poll(_PAGED_MESSAGE_TIMEOUT_S):
+def recv_paged_message(connection: Connection, expected: str) -> object:
+    if not connection.poll(PAGED_MESSAGE_TIMEOUT_S):
         raise TimeoutError(f"timed out waiting for paged IPC message {expected!r}")
     kind, value = connection.recv()
     if kind == "error":
@@ -470,12 +574,12 @@ def _recv_paged_message(connection: Connection, expected: str) -> object:
     return value
 
 
-def _wait_for_receiver_close(
+def wait_for_receiver_close(
     connection: Connection,
 ) -> tuple[str | None, str | None]:
     peer_error = None
     while True:
-        if not connection.poll(_PAGED_MESSAGE_TIMEOUT_S):
+        if not connection.poll(PAGED_MESSAGE_TIMEOUT_S):
             raise TimeoutError("receiver did not close its imported CUDA handles")
         kind, value = connection.recv()
         if kind == "receiver_closed":
@@ -488,7 +592,7 @@ def _wait_for_receiver_close(
         raise RuntimeError(f"expected receiver cleanup message, received {kind!r}")
 
 
-def _paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
+def paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
     relay = None
     source_shared = False
     error: str | None = None
@@ -500,29 +604,29 @@ def _paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
             device=str(device),
             pool_size_mb=1,
         )
-        pool, backings = _make_paged_pool(
+        pool, backings = make_paged_pool(
             "source-pool",
             device=device,
             source=True,
         )
         relay.register_kv_pool(pool)
-        destination_ref = _recv_paged_message(connection, "destination")
+        destination_ref = recv_paged_message(connection, "destination")
 
         async def run() -> None:
             nonlocal source_shared
             op = await relay.put_kv_pages(
                 source_pool_id=pool.pool_id,
-                source_page_indices=_PAGED_SOURCE_INDICES,
+                source_page_indices=PAGED_SOURCE_INDICES,
                 destination_ref=destination_ref,
             )
             connection.send(("metadata", op.metadata))
             source_shared = True
-            _recv_paged_message(connection, "ack")
+            recv_paged_message(connection, "ack")
             op.mark_receiver_done()
-            await op.wait_for_completion(timeout=_PAGED_MESSAGE_TIMEOUT_S)
+            await op.wait_for_completion(timeout=PAGED_MESSAGE_TIMEOUT_S)
 
         asyncio.run(run())
-        _assert_source_pool_unchanged(pool, backings)
+        assert_source_pool_unchanged(pool, backings)
         connection.send(("sender_done", None))
     except Exception:
         error = traceback.format_exc()
@@ -531,7 +635,7 @@ def _paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
     finally:
         if source_shared:
             try:
-                close_error, peer_error = _wait_for_receiver_close(connection)
+                close_error, peer_error = wait_for_receiver_close(connection)
                 if peer_error is not None and error is None:
                     error = f"receiver failed:\n{peer_error}"
                 if close_error is not None and error is None:
@@ -551,7 +655,7 @@ def _paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
         )
 
 
-def _paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
+def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
     relay = None
     error: str | None = None
     try:
@@ -562,36 +666,36 @@ def _paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> Non
             device=str(device),
             pool_size_mb=1,
         )
-        pool, backings = _make_paged_pool(
+        pool, backings = make_paged_pool(
             "destination-pool",
             device=device,
             source=False,
         )
         relay.register_kv_pool(pool)
         connection.send(("destination", relay.prepare_kv_destination(pool.pool_id)))
-        metadata = _recv_paged_message(connection, "metadata")
-        expected_size = len(_PAGED_SOURCE_INDICES) * sum(
-            bytes_per_page for _, _, bytes_per_page, _, _ in _PAGED_BUFFER_SPECS
+        metadata = recv_paged_message(connection, "metadata")
+        expected_size = len(PAGED_SOURCE_INDICES) * sum(
+            bytes_per_page for _, _, bytes_per_page, _, _ in PAGED_BUFFER_SPECS
         )
         assert metadata["transfer_info"]["size"] == expected_size
         storages = metadata["cuda_ipc_kv"]["storages"]
-        assert len(storages) == len(_PAGED_BUFFER_SPECS)
+        assert len(storages) == len(PAGED_BUFFER_SPECS)
         assert all(int(storage["tensor_offset"]) > 0 for storage in storages)
 
         async def run() -> None:
             op = await relay.get_kv_pages(
                 metadata,
                 destination_pool_id=pool.pool_id,
-                source_page_indices=_PAGED_SOURCE_INDICES,
-                destination_page_indices=_PAGED_DESTINATION_INDICES,
+                source_page_indices=PAGED_SOURCE_INDICES,
+                destination_page_indices=PAGED_DESTINATION_INDICES,
                 request_id="paged-round-trip",
             )
-            await op.wait_for_completion(timeout=_PAGED_MESSAGE_TIMEOUT_S)
+            await op.wait_for_completion(timeout=PAGED_MESSAGE_TIMEOUT_S)
 
         asyncio.run(run())
-        _assert_destination_mapping(pool, backings)
+        assert_destination_mapping(pool, backings)
         connection.send(("ack", None))
-        _recv_paged_message(connection, "sender_done")
+        recv_paged_message(connection, "sender_done")
     except Exception:
         error = traceback.format_exc()
         with suppress(Exception):
@@ -613,22 +717,22 @@ def _paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> Non
         )
 
 
-def _run_paged_case(gpu: int) -> None:
-    assert _PAGED_SOURCE_INDICES != _PAGED_DESTINATION_INDICES
-    assert len(_PAGED_SOURCE_INDICES) == len(_PAGED_DESTINATION_INDICES)
-    assert len(set(_PAGED_SOURCE_INDICES)) == len(_PAGED_SOURCE_INDICES)
-    assert len(set(_PAGED_DESTINATION_INDICES)) == len(_PAGED_DESTINATION_INDICES)
-    assert all(0 <= index < _PAGED_PAGE_COUNT for index in _PAGED_SOURCE_INDICES)
-    assert all(0 <= index < _PAGED_PAGE_COUNT for index in _PAGED_DESTINATION_INDICES)
+def run_paged_case(gpu: int) -> None:
+    assert PAGED_SOURCE_INDICES != PAGED_DESTINATION_INDICES
+    assert len(PAGED_SOURCE_INDICES) == len(PAGED_DESTINATION_INDICES)
+    assert len(set(PAGED_SOURCE_INDICES)) == len(PAGED_SOURCE_INDICES)
+    assert len(set(PAGED_DESTINATION_INDICES)) == len(PAGED_DESTINATION_INDICES)
+    assert all(0 <= index < PAGED_PAGE_COUNT for index in PAGED_SOURCE_INDICES)
+    assert all(0 <= index < PAGED_PAGE_COUNT for index in PAGED_DESTINATION_INDICES)
     ctx = mp.get_context("spawn")
     sender_connection, receiver_connection = ctx.Pipe(duplex=True)
     result_q = ctx.Queue()
     sender = ctx.Process(
-        target=_paged_sender,
+        target=paged_sender,
         args=(gpu, sender_connection, result_q),
     )
     receiver = ctx.Process(
-        target=_paged_receiver,
+        target=paged_receiver,
         args=(gpu, receiver_connection, result_q),
     )
     sender.start()
@@ -639,7 +743,7 @@ def _run_paged_case(gpu: int) -> None:
     try:
         try:
             for _ in range(2):
-                process, status, value = result_q.get(timeout=_PAGED_RESULT_TIMEOUT_S)
+                process, status, value = result_q.get(timeout=PAGED_RESULT_TIMEOUT_S)
                 assert process not in results, f"duplicate result from {process}"
                 results[process] = (status, value)
         except queue.Empty as exc:
@@ -671,13 +775,13 @@ def _run_paged_case(gpu: int) -> None:
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_ipc_same_gpu_round_trip() -> None:
-    _run_case(0, 0)
+    run_case(0, 0)
 
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_ipc_paged_multi_buffer_round_trip_with_storage_offsets() -> None:
-    _run_paged_case(0)
+    run_paged_case(0)
 
 
 @pytest.mark.accelerator
@@ -685,4 +789,4 @@ def test_cuda_ipc_paged_multi_buffer_round_trip_with_storage_offsets() -> None:
     torch.cuda.device_count() < 2, reason="requires >= 2 GPUs for cross-GPU transfer"
 )
 def test_cuda_ipc_cross_gpu_round_trip() -> None:
-    _run_case(0, 1)
+    run_case(0, 1)

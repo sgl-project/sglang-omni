@@ -337,7 +337,7 @@ GOOGLETIME_RTF_P95_MAX: float | None = round(
 )
 
 
-def _require_cuda() -> None:
+def require_cuda() -> None:
     import torch
 
     if not torch.cuda.is_available():
@@ -423,7 +423,7 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
     moss_td_router_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
-    _require_cuda()
+    require_cuda()
     checks = MetricCheckCollector("MOSS-Transcribe-Diarize multi-speaker ASR")
     checks.check(
         len(movies800times_samples) == MOSS_TD_CI_SAMPLES,
@@ -451,25 +451,25 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
         moss_td_router_server,
         label="MOSS-Transcribe-Diarize movies800times",
     ) as movies800times_router_guard:
-        movies800times_outputs, movies800times_wall_clock_s = _run_transcribe_diarize(
+        movies800times_outputs, movies800times_wall_clock_s = run_transcribe_diarize(
             movies800times_samples,
             moss_td_router_server=moss_td_router_server,
             request_timeout_s=300,
             max_new_tokens=None,
         )
-    movies800times_results = _build_results(
+    movies800times_results = build_results(
         samples=movies800times_samples,
         outputs=movies800times_outputs,
         wall_clock_s=movies800times_wall_clock_s,
         repo_id=MOVIES800_REPO_ID,
     )
-    _print_and_save_results(
+    print_and_save_results(
         results=movies800times_results,
         tmp_path=tmp_path,
         filename="moss_transcribe_diarize_results.json",
         router_ready_s=moss_td_router_server.router_ready_s,
     )
-    _assert_movies800times_results(
+    assert_movies800times_results(
         checks,
         movies800times_results,
         movies800times_router_guard,
@@ -480,7 +480,7 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
         label="MOSS-Transcribe-Diarize movies800times stream",
     ) as movies800times_stream_router_guard:
         movies800times_stream_outputs, movies800times_stream_wall_clock_s = (
-            _run_transcribe_diarize(
+            run_transcribe_diarize(
                 movies800times_samples,
                 moss_td_router_server=moss_td_router_server,
                 request_timeout_s=300,
@@ -488,20 +488,20 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
                 stream=True,
             )
         )
-    movies800times_stream_results = _build_results(
+    movies800times_stream_results = build_results(
         samples=movies800times_samples,
         outputs=movies800times_stream_outputs,
         wall_clock_s=movies800times_stream_wall_clock_s,
         repo_id=MOVIES800_REPO_ID,
     )
-    _print_and_save_results(
+    print_and_save_results(
         results=movies800times_stream_results,
         tmp_path=tmp_path,
         filename="moss_transcribe_diarize_stream_results.json",
         router_ready_s=moss_td_router_server.router_ready_s,
         stream=True,
     )
-    _assert_movies800times_stream_results(
+    assert_movies800times_stream_results(
         checks,
         movies800times_stream_results,
         movies800times_stream_router_guard,
@@ -511,78 +511,78 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
         moss_td_router_server,
         label="MOSS-Transcribe-Diarize aishell4_long",
     ):
-        aishell4_outputs, aishell4_wall_clock_s = _run_transcribe_diarize(
+        aishell4_outputs, aishell4_wall_clock_s = run_transcribe_diarize(
             aishell4_long_samples,
             moss_td_router_server=moss_td_router_server,
             request_timeout_s=1800,
             max_new_tokens=MOSS_TD_LONG_MAX_NEW_TOKENS,
         )
-    aishell4_results = _build_results(
+    aishell4_results = build_results(
         samples=aishell4_long_samples,
         outputs=aishell4_outputs,
         wall_clock_s=aishell4_wall_clock_s,
         repo_id=AISHELL4_REPO_ID,
     )
-    _print_and_save_results(
+    print_and_save_results(
         results=aishell4_results,
         tmp_path=tmp_path,
         filename="moss_transcribe_diarize_aishell4_long_results.json",
         router_ready_s=moss_td_router_server.router_ready_s,
     )
-    _assert_aishell4_long_results(checks, aishell4_results)
+    assert_aishell4_long_results(checks, aishell4_results)
 
     with router_worker_traffic_guard(
         moss_td_router_server,
         label="MOSS-Transcribe-Diarize aishell4_long90",
     ):
-        long90_outputs, long90_wall_clock_s = _run_transcribe_diarize(
+        long90_outputs, long90_wall_clock_s = run_transcribe_diarize(
             [aishell4_long90_sample],
             moss_td_router_server=moss_td_router_server,
             request_timeout_s=1800,
             max_new_tokens=MOSS_TD_LONG90_MAX_NEW_TOKENS,
         )
-    long90_results = _build_results(
+    long90_results = build_results(
         samples=[aishell4_long90_sample],
         outputs=long90_outputs,
         wall_clock_s=long90_wall_clock_s,
         repo_id=AISHELL4_REPO_ID,
         dataset="aishell4_long90",
     )
-    _print_and_save_results(
+    print_and_save_results(
         results=long90_results,
         tmp_path=tmp_path,
         filename="moss_transcribe_diarize_aishell4_long90_results.json",
         router_ready_s=moss_td_router_server.router_ready_s,
     )
-    _assert_aishell4_long90_results(checks, long90_results)
+    assert_aishell4_long90_results(checks, long90_results)
 
     with router_worker_traffic_guard(
         moss_td_router_server,
         label="MOSS-Transcribe-Diarize googletime",
     ):
-        googletime_outputs, googletime_wall_clock_s = _run_transcribe_diarize(
+        googletime_outputs, googletime_wall_clock_s = run_transcribe_diarize(
             googletime_samples,
             moss_td_router_server=moss_td_router_server,
             request_timeout_s=1800,
             max_new_tokens=MOSS_TD_LONG_MAX_NEW_TOKENS,
         )
-    googletime_results = _build_results(
+    googletime_results = build_results(
         samples=googletime_samples,
         outputs=googletime_outputs,
         wall_clock_s=googletime_wall_clock_s,
         repo_id=GOOGLETIME_REPO_ID,
     )
-    _print_and_save_results(
+    print_and_save_results(
         results=googletime_results,
         tmp_path=tmp_path,
         filename="moss_transcribe_diarize_googletime_results.json",
         router_ready_s=moss_td_router_server.router_ready_s,
     )
-    _assert_googletime_results(checks, googletime_results)
+    assert_googletime_results(checks, googletime_results)
     checks.assert_all()
 
 
-def _run_transcribe_diarize(
+def run_transcribe_diarize(
     samples,
     *,
     moss_td_router_server: ManagedRouterHandle,
@@ -607,7 +607,7 @@ def _run_transcribe_diarize(
     )
 
 
-def _dataset_preset(repo_id: str) -> str:
+def dataset_preset(repo_id: str) -> str:
     if repo_id == MOVIES800_REPO_ID:
         return "movies800times"
     if repo_id == AISHELL4_REPO_ID:
@@ -617,7 +617,7 @@ def _dataset_preset(repo_id: str) -> str:
     return repo_id
 
 
-def _build_results(
+def build_results(
     *,
     samples,
     outputs,
@@ -633,11 +633,11 @@ def _build_results(
         concurrency=MOSS_TD_CONCURRENCY,
         repo_id=repo_id,
         split="validation",
-        dataset=dataset or _dataset_preset(repo_id),
+        dataset=dataset or dataset_preset(repo_id),
     )
 
 
-def _dataset_label_from_results(results) -> str | None:
+def dataset_label_from_results(results) -> str | None:
     config = results.get("config", {})
     if not isinstance(config, dict):
         return None
@@ -648,7 +648,7 @@ def _dataset_label_from_results(results) -> str | None:
     )
 
 
-def _print_and_save_results(
+def print_and_save_results(
     *,
     results,
     tmp_path: Path,
@@ -659,7 +659,7 @@ def _print_and_save_results(
     summary = results["summary"]
     speed = results["speed"]
     diarization_metrics = results["diarization_metrics"]
-    dataset_label = _dataset_label_from_results(results)
+    dataset_label = dataset_label_from_results(results)
     if stream and dataset_label:
         dataset_label = f"{dataset_label} [stream]"
     print_diarization_accuracy_summary(
@@ -682,7 +682,7 @@ def _print_and_save_results(
     results_path.write_text(json.dumps(artifact_payload, indent=2, ensure_ascii=False))
 
 
-def _assert_movies800times_results(
+def assert_movies800times_results(
     checks: MetricCheckCollector,
     results,
     router_guard,
@@ -709,14 +709,14 @@ def _assert_movies800times_results(
         diarization_percent.get("count") == total,
         f"Expected diarization count {total}, got {diarization_percent.get('count')}",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "cer",
         diarization_percent.get("cer"),
         MOSS_TD_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "cer_no_spk",
         diarization_percent.get("cer_no_spk"),
@@ -729,73 +729,73 @@ def _assert_movies800times_results(
         max_n_above_50_cer=MOSS_TD_N_ABOVE_50_CER_MAX,
         collector=checks,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "cp_cer",
         diarization_percent.get("cp_cer"),
         MOSS_TD_CP_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "cer_no_spk_cp_valid",
         diarization_percent.get("cer_no_spk_cp_valid"),
         MOSS_TD_CER_NO_SPK_CP_VALID_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "delta_cer",
         diarization_percent.get("delta_cer"),
         MOSS_TD_DELTA_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "speaker_timestamp_der",
         diarization_percent.get("speaker_timestamp_der"),
         MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_min(
+    check_optional_min(
         checks,
         "cer_valid_samples",
         diarization_percent.get("cer_valid_samples"),
         MOSS_TD_CER_VALID_SAMPLES_MIN,
     )
-    _check_optional_min(
+    check_optional_min(
         checks,
         "cp_cer_valid_samples",
         diarization_percent.get("cp_cer_valid_samples"),
         MOSS_TD_CP_CER_VALID_SAMPLES_MIN,
     )
-    _check_optional_min(
+    check_optional_min(
         checks,
         "throughput_qps",
         speed.get("throughput_qps"),
         MOSS_TD_THROUGHPUT_QPS_MIN,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "latency_mean_s",
         speed.get("latency_mean_s"),
         MOSS_TD_LATENCY_MEAN_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "latency_p95_s",
         speed.get("latency_p95_s"),
         MOSS_TD_LATENCY_P95_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "rtf_mean",
         speed.get("rtf_mean"),
         MOSS_TD_RTF_MEAN_MAX,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "rtf_p95",
         speed.get("rtf_p95"),
@@ -809,7 +809,7 @@ def _assert_movies800times_results(
     )
 
 
-def _assert_movies800times_stream_results(
+def assert_movies800times_stream_results(
     checks: MetricCheckCollector,
     results,
     router_guard,
@@ -845,14 +845,14 @@ def _assert_movies800times_stream_results(
         speed.get("inter_chunk_p95_s") is not None,
         "Expected streaming inter_chunk_p95_s in speed metrics",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream cer",
         diarization_percent.get("cer"),
         MOSS_TD_STREAM_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream cer_no_spk",
         diarization_percent.get("cer_no_spk"),
@@ -865,86 +865,86 @@ def _assert_movies800times_stream_results(
         max_n_above_50_cer=MOSS_TD_STREAM_N_ABOVE_50_CER_MAX,
         collector=checks,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream cp_cer",
         diarization_percent.get("cp_cer"),
         MOSS_TD_STREAM_CP_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream cer_no_spk_cp_valid",
         diarization_percent.get("cer_no_spk_cp_valid"),
         MOSS_TD_STREAM_CER_NO_SPK_CP_VALID_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream delta_cer",
         diarization_percent.get("delta_cer"),
         MOSS_TD_STREAM_DELTA_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream speaker_timestamp_der",
         diarization_percent.get("speaker_timestamp_der"),
         MOSS_TD_STREAM_SPEAKER_TIMESTAMP_DER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_min(
+    check_optional_min(
         checks,
         "stream cer_valid_samples",
         diarization_percent.get("cer_valid_samples"),
         MOSS_TD_STREAM_CER_VALID_SAMPLES_MIN,
     )
-    _check_optional_min(
+    check_optional_min(
         checks,
         "stream cp_cer_valid_samples",
         diarization_percent.get("cp_cer_valid_samples"),
         MOSS_TD_STREAM_CP_CER_VALID_SAMPLES_MIN,
     )
-    _check_optional_min(
+    check_optional_min(
         checks,
         "stream throughput_qps",
         speed.get("throughput_qps"),
         MOSS_TD_STREAM_THROUGHPUT_QPS_MIN,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream latency_mean_s",
         speed.get("latency_mean_s"),
         MOSS_TD_STREAM_LATENCY_MEAN_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream latency_p95_s",
         speed.get("latency_p95_s"),
         MOSS_TD_STREAM_LATENCY_P95_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream rtf_mean",
         speed.get("rtf_mean"),
         MOSS_TD_STREAM_RTF_MEAN_MAX,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream rtf_p95",
         speed.get("rtf_p95"),
         MOSS_TD_STREAM_RTF_P95_MAX,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream text_ttft_p95_s",
         speed.get("text_ttft_p95_s"),
         MOSS_TD_STREAM_TEXT_TTFT_P95_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "stream inter_chunk_p95_s",
         speed.get("inter_chunk_p95_s"),
@@ -959,7 +959,7 @@ def _assert_movies800times_stream_results(
     )
 
 
-def _assert_aishell4_long_results(checks: MetricCheckCollector, results) -> None:
+def assert_aishell4_long_results(checks: MetricCheckCollector, results) -> None:
     summary = results["summary"]
     speed = results["speed"]
     diarization_percent = results["diarization_metrics_percent"]
@@ -978,21 +978,21 @@ def _assert_aishell4_long_results(checks: MetricCheckCollector, results) -> None
         failed_requests == 0,
         f"Expected 0 aishell4_long failed requests, got {failed_requests}",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long cer",
         diarization_percent.get("cer"),
         AISHELL4_LONG_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long cer_no_spk",
         diarization_percent.get("cer_no_spk"),
         AISHELL4_LONG_CER_NO_SPK_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long cp_cer",
         diarization_percent.get("cp_cer"),
@@ -1007,53 +1007,53 @@ def _assert_aishell4_long_results(checks: MetricCheckCollector, results) -> None
             f"{diarization_percent.get('delta_cer')}%"
         )
     else:
-        _check_optional_max(
+        check_optional_max(
             checks,
             "aishell4_long delta_cer",
             diarization_percent.get("delta_cer"),
             AISHELL4_LONG_DELTA_CER_PERCENT_MAX,
             unit="%",
         )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long speaker_timestamp_der",
         diarization_percent.get("speaker_timestamp_der"),
         AISHELL4_LONG_SPEAKER_TIMESTAMP_DER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_min(
+    check_optional_min(
         checks,
         "aishell4_long throughput_qps",
         speed.get("throughput_qps"),
         AISHELL4_LONG_THROUGHPUT_QPS_MIN,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long latency_mean_s",
         speed.get("latency_mean_s"),
         AISHELL4_LONG_LATENCY_MEAN_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long latency_p95_s",
         speed.get("latency_p95_s"),
         AISHELL4_LONG_LATENCY_P95_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long rtf_mean",
         speed.get("rtf_mean"),
         AISHELL4_LONG_RTF_MEAN_MAX,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long rtf_p95",
         speed.get("rtf_p95"),
         AISHELL4_LONG_RTF_P95_MAX,
     )
-    _check_format_validity(
+    check_format_validity(
         checks,
         "aishell4_long",
         diarization_percent,
@@ -1061,7 +1061,7 @@ def _assert_aishell4_long_results(checks: MetricCheckCollector, results) -> None
     )
 
 
-def _assert_aishell4_long90_results(checks: MetricCheckCollector, results) -> None:
+def assert_aishell4_long90_results(checks: MetricCheckCollector, results) -> None:
     summary = results["summary"]
     speed = results["speed"]
     diarization_percent = results["diarization_metrics_percent"]
@@ -1074,7 +1074,7 @@ def _assert_aishell4_long90_results(checks: MetricCheckCollector, results) -> No
         failed_requests == 0,
         f"Expected 0 aishell4_long90 failed requests, got {failed_requests}",
     )
-    _check_format_validity(
+    check_format_validity(
         checks, "aishell4_long90", diarization_percent, expected_valid=1
     )
     missed = diarization_percent.get("speaker_timestamp_der_missed_detection")
@@ -1086,7 +1086,7 @@ def _assert_aishell4_long90_results(checks: MetricCheckCollector, results) -> No
             "Expected aishell4_long90 timestamped segments to cover the "
             f"reference speech, got missed detection ratio {ratio:.3f}",
         )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "aishell4_long90 cer_no_spk",
         diarization_percent.get("cer_no_spk"),
@@ -1104,7 +1104,7 @@ def _assert_aishell4_long90_results(checks: MetricCheckCollector, results) -> No
     )
 
 
-def _check_format_validity(
+def check_format_validity(
     checks: MetricCheckCollector,
     label: str,
     diarization_percent,
@@ -1119,7 +1119,7 @@ def _check_format_validity(
     )
 
 
-def _assert_googletime_results(checks: MetricCheckCollector, results) -> None:
+def assert_googletime_results(checks: MetricCheckCollector, results) -> None:
     summary = results["summary"]
     speed = results["speed"]
     diarization_percent = results["diarization_metrics_percent"]
@@ -1138,14 +1138,14 @@ def _assert_googletime_results(checks: MetricCheckCollector, results) -> None:
         failed_requests == 0,
         f"Expected 0 googletime failed requests, got {failed_requests}",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "googletime cer",
         diarization_percent.get("cer"),
         GOOGLETIME_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "googletime cer_no_spk",
         diarization_percent.get("cer_no_spk"),
@@ -1159,7 +1159,7 @@ def _assert_googletime_results(checks: MetricCheckCollector, results) -> None:
         max_n_above_50_cer=GOOGLETIME_N_ABOVE_50_CER_MAX,
         collector=checks,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "googletime cp_cer",
         diarization_percent.get("cp_cer"),
@@ -1174,47 +1174,47 @@ def _assert_googletime_results(checks: MetricCheckCollector, results) -> None:
             f"{diarization_percent.get('delta_cer')}%"
         )
     else:
-        _check_optional_max(
+        check_optional_max(
             checks,
             "googletime delta_cer",
             diarization_percent.get("delta_cer"),
             GOOGLETIME_DELTA_CER_PERCENT_MAX,
             unit="%",
         )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "googletime speaker_timestamp_der",
         diarization_percent.get("speaker_timestamp_der"),
         GOOGLETIME_SPEAKER_TIMESTAMP_DER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_min(
+    check_optional_min(
         checks,
         "googletime throughput_qps",
         speed.get("throughput_qps"),
         GOOGLETIME_THROUGHPUT_QPS_MIN,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "googletime latency_mean_s",
         speed.get("latency_mean_s"),
         GOOGLETIME_LATENCY_MEAN_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "googletime latency_p95_s",
         speed.get("latency_p95_s"),
         GOOGLETIME_LATENCY_P95_S_MAX,
         unit="s",
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "googletime rtf_mean",
         speed.get("rtf_mean"),
         GOOGLETIME_RTF_MEAN_MAX,
     )
-    _check_optional_max(
+    check_optional_max(
         checks,
         "googletime rtf_p95",
         speed.get("rtf_p95"),
@@ -1222,7 +1222,7 @@ def _assert_googletime_results(checks: MetricCheckCollector, results) -> None:
     )
 
 
-def _check_optional_max(
+def check_optional_max(
     checks: MetricCheckCollector,
     metric_name: str,
     value: object,
@@ -1239,7 +1239,7 @@ def _check_optional_max(
     )
 
 
-def _check_optional_min(
+def check_optional_min(
     checks: MetricCheckCollector,
     metric_name: str,
     value: object,

@@ -9,17 +9,67 @@ import math
 import os
 import threading
 from collections import Counter
+from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from types import ModuleType
+from typing import Literal, TypeAlias, TypedDict
 
 import torch
 
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
 logger = logging.getLogger(__name__)
 _MASK_SWAP_LOCK = threading.Lock()
+
+
+class Tier1Stats(TypedDict):
+    attempted_key_count: int
+    published_key_count: int
+    attempts: int
+    skipped_keys: list[dict[str, int]]
+    disable_reason: str | None
+    per_key_footprint_bytes: dict[str, int]
+
+
+class MemoryStatsRequired(TypedDict):
+    total_gpu_memory_fraction: float | None
+
+
+class MemoryStats(MemoryStatsRequired, total=False):
+    tier1: Tier1Stats
+    before: dict[str, int]
+    after: dict[str, int]
+    after_rollback: dict[str, int]
+    stage_budget_bytes: int
+    loaded_model_footprint_bytes: int
+    graph_budget_bytes: int
+    graph_footprint_bytes: int
+
+
+class BindingStats(TypedDict):
+    device: str
+    num_quantizers: int
+    input_dtype: str
+    owner_pid: int
+
+
+class RuntimeStats(TypedDict):
+    graph_replays: int
+    replay_failures: int
+    fallback_counts: dict[str, int]
+
+
+class Code2WavGraphStats(TypedDict):
+    enabled: bool
+    disable_reason: str | None
+    binding: BindingStats
+    graph_contract: dict[str, list[dict[str, int]]]
+    build: dict[str, int]
+    memory: MemoryStats
+    runtime: RuntimeStats
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,9 +100,21 @@ class Code2WavRunResult:
 
 @dataclass(slots=True)
 class CapturedGraph:
-    graph: Any
+    graph: ReplayableGraph
     static_input: torch.Tensor
     static_output: torch.Tensor
+
+
+CaptureAttemptResult: TypeAlias = (
+    tuple[Literal["shrink"], list[GraphKey]]
+    | tuple[Literal["disable"], tuple[dict[GraphKey, CapturedGraph], str]]
+    | tuple[
+        Literal["published"],
+        tuple[
+            dict[GraphKey, CapturedGraph], tuple[int, int] | None, torch.Stream | None
+        ],
+    ]
+)
 
 
 class BuildFailure(RuntimeError):
@@ -60,7 +122,7 @@ class BuildFailure(RuntimeError):
 
 
 @contextlib.contextmanager
-def unpacked_sequence_mask() -> Any:
+def unpacked_sequence_mask() -> Generator[None, None, None]:
     from transformers import masking_utils
 
     if not _MASK_SWAP_LOCK.acquire(blocking=False):
@@ -81,7 +143,7 @@ def unpacked_sequence_mask() -> Any:
 
 
 @contextlib.contextmanager
-def xpu_capture_pins() -> Any:
+def xpu_capture_pins() -> Generator[None, None, None]:
     if not current_platform.is_xpu():
         yield
         return
@@ -94,13 +156,13 @@ def xpu_capture_pins() -> Any:
 class TorchDeviceApi:
 
     @staticmethod
-    def module(device: torch.device) -> Any:
+    def module(device: torch.device) -> ModuleType:
         return torch.get_device_module(device)
 
-    def graph_backend(self, device: torch.device) -> Any | None:
+    def graph_backend(self, device: torch.device) -> DeviceGraphBackend | None:
         return current_platform.get_device_graph_backend(device)
 
-    def device_context(self, device: torch.device) -> AbstractContextManager[Any]:
+    def device_context(self, device: torch.device) -> AbstractContextManager[None]:
         return self.module(device).device(device)
 
     def memory_stats(self, device: torch.device) -> dict[str, int]:
@@ -122,17 +184,17 @@ class TorchDeviceApi:
     ) -> torch.Tensor:
         return torch.zeros(shape, dtype=torch.long, device=device)
 
-    def new_stream(self, device: torch.device) -> Any:
+    def new_stream(self, device: torch.device) -> torch.Stream:
         return self.module(device).Stream(device=device)
 
     def warmup(
         self,
-        model: Any,
+        model: Callable[[torch.Tensor], torch.Tensor],
         static_input: torch.Tensor,
         *,
         iterations: int,
         device: torch.device,
-        stream: Any,
+        stream: torch.Stream,
     ) -> None:
         module = self.module(device)
         current_stream = module.current_stream(device)
@@ -142,12 +204,17 @@ class TorchDeviceApi:
                 model(static_input)
         current_stream.wait_stream(stream)
 
-    def graph_pool_handle(self, device: torch.device) -> Any:
+    def graph_pool_handle(self, device: torch.device) -> tuple[int, int]:
         return self.module(device).graph_pool_handle()
 
     def capture(
-        self, model: Any, static_input: torch.Tensor, *, pool: Any, stream: Any
-    ) -> tuple[Any, torch.Tensor]:
+        self,
+        model: Callable[[torch.Tensor], torch.Tensor],
+        static_input: torch.Tensor,
+        *,
+        pool: tuple[int, int] | None,
+        stream: torch.Stream,
+    ) -> tuple[ReplayableGraph, torch.Tensor]:
         device = static_input.device
         module = self.module(device)
         current_stream = module.current_stream(device)
@@ -191,19 +258,21 @@ class Code2WavCudaGraphRunner:
     serving already relies on.
     """
 
-    WARMUP_ITERATIONS = 3
+    WARMUP_ITERATIONS = 2
 
     def __init__(
         self,
-        model: Any,
+        model: Callable[[torch.Tensor], torch.Tensor],
         *,
         device: str | torch.device,
         num_quantizers: int,
         graph_keys: tuple[GraphKey, ...],
-        device_api: Any,
+        decode_stream: torch.Stream | None,
+        device_api: TorchDeviceApi,
     ) -> None:
         self.model = model
         self.device = torch.device(device)
+        self.decode_stream = decode_stream
         self.device_api = device_api
         if self.device.index is None:
             raise ValueError(
@@ -228,15 +297,15 @@ class Code2WavCudaGraphRunner:
         self.owner_pid = os.getpid()
         self.graphs: dict[GraphKey, CapturedGraph] = {}
         self.sizes_by_frames: dict[int, tuple[int, ...]] = {}
-        self.pool: Any | None = None
-        self.capture_stream: Any | None = None
+        self.pool: tuple[int, int] | None = None
+        self.capture_stream: torch.Stream | None = None
         self.enabled = False
         self.disable_reason: str | None = None
-        self.build_stats: dict[str, Any] = {
+        self.build_stats: dict[str, int] = {
             "attempted_graph_count": 0,
             "published_graph_count": 0,
         }
-        self.memory_stats: dict[str, Any] = {"total_gpu_memory_fraction": None}
+        self.memory_stats: MemoryStats = {"total_gpu_memory_fraction": None}
         self.fallback_counts: Counter[str] = Counter()
         self.graph_replays = 0
         self.replay_failures = 0
@@ -244,26 +313,35 @@ class Code2WavCudaGraphRunner:
     @classmethod
     def build(
         cls,
-        model: Any,
+        model: Callable[[torch.Tensor], torch.Tensor],
         *,
         device: str | torch.device,
         num_quantizers: int,
         total_gpu_memory_fraction: float | None,
         graph_keys: tuple[GraphKey, ...],
-        device_api: Any | None = None,
+        model_footprint_bytes: int,
+        decode_stream: torch.Stream | None,
+        device_api: TorchDeviceApi | None = None,
     ) -> Code2WavCudaGraphRunner:
-        """Build the configured serving-reachable serial graphs."""
+        """Build the configured serving-reachable serial graphs.
+
+        Graphs are captured on decode_stream, the stream the scheduler replays
+        them from; None captures on a fresh stream per attempt.
+        """
         runner = cls(
             model,
             device=device,
             num_quantizers=num_quantizers,
             graph_keys=graph_keys,
+            decode_stream=decode_stream,
             device_api=TorchDeviceApi() if device_api is None else device_api,
         )
-        runner._build(total_gpu_memory_fraction)
+        runner._build(total_gpu_memory_fraction, model_footprint_bytes)
         return runner
 
-    def _build(self, total_gpu_memory_fraction: float | None) -> None:
+    def _build(
+        self, total_gpu_memory_fraction: float | None, model_footprint_bytes: int
+    ) -> None:
         fraction = self.valid_fraction(total_gpu_memory_fraction)
         if fraction is None:
             self.disable_reason = "invalid_total_gpu_memory_fraction"
@@ -271,7 +349,8 @@ class Code2WavCudaGraphRunner:
         else:
             pass
         self.memory_stats["total_gpu_memory_fraction"] = fraction
-        tier1_info: dict[str, Any] = {
+
+        tier1_info: Tier1Stats = {
             "attempted_key_count": len(self.tier1_keys),
             "published_key_count": 0,
             "attempts": 0,
@@ -293,12 +372,13 @@ class Code2WavCudaGraphRunner:
             return
         self.memory_stats["before"] = before
         stage_budget = int(before["total_bytes"] * fraction)
-        loaded_model_footprint = before["allocated_bytes"]
-        graph_budget = max(0, stage_budget - loaded_model_footprint)
+        # note (ratish): the stage budget covers this model alone, so allocations
+        # of other stages sharing the process must not shrink it.
+        graph_budget = max(0, stage_budget - model_footprint_bytes)
         self.memory_stats.update(
             {
                 "stage_budget_bytes": stage_budget,
-                "loaded_model_footprint_bytes": loaded_model_footprint,
+                "loaded_model_footprint_bytes": model_footprint_bytes,
                 "graph_budget_bytes": graph_budget,
             }
         )
@@ -378,8 +458,8 @@ class Code2WavCudaGraphRunner:
         before: dict[str, int],
         graph_budget: int,
         tier1_keys: tuple[GraphKey, ...],
-        tier1_info: dict[str, Any],
-    ) -> tuple[str, Any]:
+        tier1_info: Tier1Stats,
+    ) -> CaptureAttemptResult:
         """Capture every requested key into one fresh shared pool.
 
         Tier-1 keys go first, largest-first so the pool's peak blocks are laid
@@ -393,8 +473,8 @@ class Code2WavCudaGraphRunner:
         problem, and the atomic tier stays published either way.
         """
         temporary: dict[GraphKey, CapturedGraph] = {}
-        pool: Any | None = None
-        capture_stream: Any | None = None
+        pool: tuple[int, int] | None = None
+        capture_stream: torch.Stream | None = None
         violation_index: int | None = None
         combined_violation = False
         tier1_abandoned = False
@@ -404,7 +484,11 @@ class Code2WavCudaGraphRunner:
         try:
             with self.device_api.device_context(self.device):
                 pool = self.device_api.graph_pool_handle(self.device)
-                capture_stream = self.device_api.new_stream(self.device)
+                capture_stream = (
+                    self.device_api.new_stream(self.device)
+                    if self.decode_stream is None
+                    else self.decode_stream
+                )
                 if tier1_keys:
                     previous_footprint = self.footprint_since(before)
                 else:
@@ -546,7 +630,13 @@ class Code2WavCudaGraphRunner:
         first; the scheduler decomposes coalesced batches against this."""
         return self.sizes_by_frames.get(int(frames), ())
 
-    def capture_graph(self, key: GraphKey, *, pool: Any, stream: Any) -> CapturedGraph:
+    def capture_graph(
+        self,
+        key: GraphKey,
+        *,
+        pool: tuple[int, int] | None,
+        stream: torch.Stream,
+    ) -> CapturedGraph:
         static_input = self.device_api.new_static_input(
             (key.batch_size, self.num_quantizers, key.frames), device=self.device
         )
@@ -644,7 +734,9 @@ class Code2WavCudaGraphRunner:
         """Replay an exact graph or eagerly execute with a stable reason.
 
         Graph outputs are borrowed and valid only until the next graph replay;
-        callers must serialize replay through trim and D2H consumption.
+        callers must serialize replay through trim and D2H consumption. Replay
+        launches on the caller's current stream, which the serving thread holds
+        at decode_stream.
         """
         current_pid = os.getpid()
         if current_pid != self.owner_pid:
@@ -738,7 +830,7 @@ class Code2WavCudaGraphRunner:
             )
         logger.exception("Code2Wav device graph replay disabled the runner")
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self) -> Code2WavGraphStats:
         """Return a strict JSON-safe snapshot of build and runtime state."""
         return {
             "enabled": self.enabled,

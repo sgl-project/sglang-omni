@@ -120,20 +120,46 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
 
+    def enable_codec_decode_graph(self) -> bool:
+        """Check if current platform captures decode graphs for the Higgs TTS codec"""
+        return False
+
     def enable_talker_graph(self) -> bool:
         return True
 
     def enable_tts_predictor_graph(self) -> bool:
         return True
 
+    def enable_tts_vocoder_fast_path(self) -> bool:
+        """Whether the Qwen3-TTS vocoder takes its device fast path by default:
+        asynchronous decode on a priority stream, and the codec decode graphs its
+        warmup captures."""
+        return True
+
     def enable_thinker_decode_graph(self) -> bool:
         return True
+
+    def enable_zonos2_torch_compile(self) -> bool:
+        return True
+
+    def zonos2_bf16_mem_fraction_static(self, device: torch.device) -> float | None:
+        return None
 
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
 
+    def supports_fp8_moe(self) -> bool:
+        return True
+
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""
+        return True
+
+    def supports_graph_captured_fft(self) -> bool:
+        return True
+
+    def supports_graph_captured_host_read(self) -> bool:
+        """Whether a capture tolerates a body that reads a tensor on the host."""
         return True
 
     def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:

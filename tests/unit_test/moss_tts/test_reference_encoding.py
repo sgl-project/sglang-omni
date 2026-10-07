@@ -212,7 +212,7 @@ def test_moss_tts_preprocessing_context_closes_replaced_encoder() -> None:
     assert not second_batcher.thread.is_alive()
 
 
-def _make_moss_tts_wav_data_uri(
+def make_moss_tts_wav_data_uri(
     n_samples: int = 100,
     sample_rate: int = 16000,
 ) -> tuple[str, bytes]:
@@ -243,7 +243,7 @@ def test_moss_tts_path_file_uri_and_data_uri_use_shared_audio_loader(
 ) -> None:
     from sglang_omni.models.moss_tts import stages
 
-    data_uri, raw = _make_moss_tts_wav_data_uri()
+    data_uri, raw = make_moss_tts_wav_data_uri()
     reference_path = tmp_path / "reference.wav"
     reference_path.write_bytes(raw)
     encoded_waveforms: list[tuple[torch.Tensor, int]] = []
@@ -518,7 +518,7 @@ def test_moss_tts_cached_reference_encoder_uses_loaded_waveform_identity(
 ) -> None:
     from sglang_omni.models.moss_tts import stages
 
-    data_uri, raw = _make_moss_tts_wav_data_uri()
+    data_uri, raw = make_moss_tts_wav_data_uri()
     ref = tmp_path / "ref.wav"
     ref.write_bytes(raw)
     load_calls: list[str] = []

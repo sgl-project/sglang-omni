@@ -15,9 +15,9 @@ import logging
 import os
 import threading
 import types
+from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
@@ -26,6 +26,12 @@ import torchaudio
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
 from transformers import HiggsAudioV2TokenizerConfig, HiggsAudioV2TokenizerModel
+from transformers.models.higgs_audio_v2_tokenizer.modeling_higgs_audio_v2_tokenizer import (
+    HiggsAudioV2TokenizerResidualVectorQuantization,
+)
+
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 
 WaveformInput = torch.Tensor | np.ndarray
 logger = logging.getLogger(__name__)
@@ -44,12 +50,14 @@ _BUNDLED_CODEC_CONFIG_PATH = os.path.join(
 
 @dataclass
 class DecodeCudaGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     input_codes: torch.Tensor
     output_audio: torch.Tensor
 
 
-def capture_safe_quantizer_decode(quantizer: Any, codes: torch.Tensor) -> torch.Tensor:
+def capture_safe_quantizer_decode(
+    quantizer: HiggsAudioV2TokenizerResidualVectorQuantization, codes: torch.Tensor
+) -> torch.Tensor:
     """Equivalent RVQ decode without a pageable CPU-to-GPU scalar copy.
 
     Transformers 5.6 initializes the accumulator with
@@ -225,10 +233,15 @@ class HiggsAudioCodec:
         still use eager decode. Capture finishes before the stage becomes
         ready, so it cannot race SGLang's independently owned AR graphs.
         """
-        if self.device.type != "cuda":
-            raise RuntimeError("Higgs codec CUDA graphs require a CUDA device")
+        graph_backend = current_platform.get_device_graph_backend(self.device)
+        if graph_backend is None:
+            raise RuntimeError(
+                f"no device graph backend for {self.device}; leave the vocoder's "
+                "decode_cuda_graph_frame_counts empty to decode eagerly"
+            )
         else:
             pass
+        device_module = torch.get_device_module(self.device)
         # Descending so the shared mempool is sized once from the largest shape
         # rather than grown across captures: 130 vs 146 MiB reserved on the
         # default 1..150 domain.
@@ -239,8 +252,8 @@ class HiggsAudioCodec:
             pass
 
         num_quantizers = int(self.model.config.num_quantizers)
-        current_stream = torch.cuda.current_stream(self.device)
-        capture_stream = torch.cuda.Stream(device=self.device)
+        current_stream = device_module.current_stream(self.device)
+        capture_stream = device_module.Stream(device=self.device)
         capture_stream.wait_stream(current_stream)
         original_quantizer_decode = self.model.quantizer.decode
         self.model.quantizer.decode = types.MethodType(
@@ -249,14 +262,14 @@ class HiggsAudioCodec:
         )
         captured: dict[int, DecodeCudaGraph] = {}
         try:
-            # Bind the device: CUDAGraph and graph_pool_handle act on the
+            # Bind the device: the graph object and graph_pool_handle act on the
             # current device, which need not be the codec's.
-            with torch.cuda.device(self.device):
-                # Initialize shape-specialized CUDA-library state outside
+            with device_module.device(self.device):
+                # Initialize shape-specialized accelerator-library state outside
                 # capture. One eager pass per shape is sufficient after model
                 # startup; doing three passes made comprehensive tail-shape
                 # capture needlessly expensive.
-                with torch.cuda.stream(capture_stream):
+                with device_module.stream(capture_stream):
                     for frame_count in frames:
                         warm_codes = torch.zeros(
                             (1, num_quantizers, frame_count),
@@ -271,7 +284,7 @@ class HiggsAudioCodec:
                 # 130 MiB on the default 1..150 domain. Aliasing across shapes
                 # is safe because decode() replays one graph at a time and
                 # copies the output to host before returning.
-                graph_pool = torch.cuda.graph_pool_handle()
+                graph_pool = device_module.graph_pool_handle()
                 for frame_count in frames:
                     # Outside the capture, so the static input is not drawn from
                     # the shared pool.
@@ -280,10 +293,9 @@ class HiggsAudioCodec:
                         dtype=torch.long,
                         device=self.device,
                     )
-                    graph = torch.cuda.CUDAGraph()
-                    with torch.cuda.graph(
-                        graph, pool=graph_pool, stream=capture_stream
-                    ):
+                    with graph_backend.capture(
+                        pool=graph_pool, stream=capture_stream
+                    ) as graph:
                         output_audio = self.model.decode(input_codes).audio_values
                     captured[frame_count] = DecodeCudaGraph(
                         graph=graph,
@@ -294,7 +306,7 @@ class HiggsAudioCodec:
             self.model.quantizer.decode = original_quantizer_decode
 
         current_stream.wait_stream(capture_stream)
-        torch.cuda.synchronize(self.device)
+        device_module.synchronize(self.device)
         self.decode_cuda_graphs = captured
         logger.info(
             f"Captured {len(captured)} Higgs codec decode CUDA graphs for "
@@ -333,9 +345,9 @@ class HiggsAudioCodec:
         self,
         items: list[torch.Tensor],
         *,
-        bucket_key_fn,
-        single_fn,
-        batch_fn,
+        bucket_key_fn: Callable[[torch.Tensor], Hashable],
+        single_fn: Callable[[torch.Tensor], torch.Tensor],
+        batch_fn: Callable[[list[torch.Tensor]], Iterable[torch.Tensor]],
         error_label: str,
     ) -> list[torch.Tensor]:
         """Run single_fn on singleton buckets and batch_fn on multi-item buckets."""
@@ -348,7 +360,7 @@ class HiggsAudioCodec:
         else:
             pass
 
-        buckets: dict[int, list[int]] = {}
+        buckets: dict[Hashable, list[int]] = {}
         for i, item in enumerate(items):
             buckets.setdefault(bucket_key_fn(item), []).append(i)
 

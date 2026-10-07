@@ -21,7 +21,7 @@ from sglang_omni.models.qwen3_asr.mlx.runner import (  # noqa: E402
 )
 
 
-def _tiny_model(*, tie_word_embeddings: bool = True) -> Qwen3ASRModel:
+def tiny_model(*, tie_word_embeddings: bool = True) -> Qwen3ASRModel:
     mx.random.seed(0)
     audio = AudioEncoderConfig(
         num_mel_bins=8,
@@ -53,7 +53,7 @@ def _tiny_model(*, tie_word_embeddings: bool = True) -> Qwen3ASRModel:
 
 
 def test_native_mlx_audio_prefill_forward() -> None:
-    model = _tiny_model()
+    model = tiny_model()
     features = mx.zeros((1, 8, 20))
     mask = mx.ones((1, 20))
     audio_features = model.get_audio_features(features, mask)
@@ -75,7 +75,7 @@ def test_native_mlx_audio_prefill_forward() -> None:
 
 
 def test_native_mlx_prefill_only_projects_last_position() -> None:
-    model = _tiny_model()
+    model = tiny_model()
     input_ids = mx.array([[1, 2, 3]], dtype=mx.int32)
     embeddings = model.model.embed_tokens(input_ids)
 
@@ -94,7 +94,7 @@ def test_native_mlx_prefill_only_projects_last_position() -> None:
 
 def test_runner_restores_audio_placeholder_before_embedding() -> None:
     runner = object.__new__(Qwen3ASRMlxModelRunner)
-    runner.model = _tiny_model()
+    runner.model = tiny_model()
     item = SimpleNamespace(
         feature=torch.zeros((1, 8, 20)),
         feature_attention_mask=torch.ones((1, 20)),
@@ -179,7 +179,7 @@ def test_runner_resolves_revision_and_checks_remote_code(monkeypatch, tmp_path) 
     runner.revision = "revision-sha"
     runner.trust_remote_code = True
 
-    runner._load_model()
+    runner._load_model()  # noqa: leading-underscore  # production name
 
     assert observed == {
         "model_path": "org/model",
@@ -191,7 +191,7 @@ def test_runner_resolves_revision_and_checks_remote_code(monkeypatch, tmp_path) 
 
 
 def test_native_mlx_rejects_audio_feature_count_mismatch() -> None:
-    model = _tiny_model()
+    model = tiny_model()
     input_ids = mx.array([[1, 10, 2]], dtype=mx.int32)
     audio_features = mx.zeros((2, 8))
 
@@ -207,11 +207,11 @@ def test_native_mlx_rejects_audio_feature_count_mismatch() -> None:
 def test_runner_chains_native_single_request_decode() -> None:
     runner_class = make_qwen3_asr_mlx_runner_class()
     runner = object.__new__(runner_class)
-    runner.model = _tiny_model()
+    runner.model = tiny_model()
     runner._req_token_ids = {"req": [1]}  # noqa: leading-underscore
     runner._req_caches = {"req": runner.model.make_cache()}  # noqa: leading-underscore
-    runner._decode_step_ct = 0
-    runner._clear_steps = 0
+    runner._decode_step_ct = 0  # noqa: leading-underscore  # upstream name
+    runner._clear_steps = 0  # noqa: leading-underscore  # upstream name
 
     first = runner.decode_batch_start(["req"])
     second = runner.decode_batch_start_chained(first)
@@ -232,7 +232,7 @@ def test_hf_weight_sanitize_is_local_and_transposes_conv2d() -> None:
         "thinker.lm_head.weight": mx.zeros((64, 8)),
     }
 
-    sanitized = _tiny_model().sanitize(weights)
+    sanitized = tiny_model().sanitize(weights)
 
     assert sanitized["audio_tower.conv2d1.weight"].shape == (4, 3, 3, 1)
     assert "model.embed_tokens.weight" in sanitized
@@ -240,7 +240,7 @@ def test_hf_weight_sanitize_is_local_and_transposes_conv2d() -> None:
 
 
 def test_hf_weight_sanitize_keeps_untied_lm_head() -> None:
-    model = _tiny_model(tie_word_embeddings=False)
+    model = tiny_model(tie_word_embeddings=False)
 
     sanitized = model.sanitize(
         {
@@ -276,9 +276,11 @@ def test_shared_mlx_runner_honors_subclass_audio_item_hook() -> None:
 
 def test_shared_mlx_prefill_matches_direct_greedy_forward() -> None:
     runner = object.__new__(Qwen3ASRMlxModelRunner)
-    runner.model = _tiny_model()
+    runner.model = tiny_model()
     runner.disable_radix_cache = True
-    runner._acquire_cache = runner.model.make_cache
+    runner._acquire_cache = (
+        runner.model.make_cache
+    )  # noqa: leading-underscore  # upstream name
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(
             audio_token_id=10,

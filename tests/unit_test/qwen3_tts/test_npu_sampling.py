@@ -11,53 +11,51 @@ import torch
 
 from sglang_omni.platforms import current_platform
 
-_MODULE_PATH = (
+MODULE_PATH = (
     Path(__file__).parents[3] / "sglang_omni/models/qwen3_tts/sampling_kernels.py"
 )
-_SPEC = importlib.util.spec_from_file_location(
-    "qwen3_tts_sampling_kernels", _MODULE_PATH
-)
-assert _SPEC is not None and _SPEC.loader is not None
-sampling_kernels = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(sampling_kernels)
+SPEC = importlib.util.spec_from_file_location("qwen3_tts_sampling_kernels", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+sampling_kernels = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(sampling_kernels)
 
 
-_UINT32_MASK = 0xFFFFFFFF
+UINT32_MASK = 0xFFFFFFFF
 
 
-def _npu_available() -> bool:
+def npu_available() -> bool:
     return current_platform.is_npu()
 
 
-def _rotl32(value: int, shift: int) -> int:
-    return ((value << shift) | (value >> (32 - shift))) & _UINT32_MASK
+def rotl32(value: int, shift: int) -> int:
+    return ((value << shift) | (value >> (32 - shift))) & UINT32_MASK
 
 
-def _mix32(hash_value: int, key: int) -> int:
-    key = (key * 0xCC9E2D51) & _UINT32_MASK
-    key = _rotl32(key, 15)
-    key = (key * 0x1B873593) & _UINT32_MASK
+def mix32(hash_value: int, key: int) -> int:
+    key = (key * 0xCC9E2D51) & UINT32_MASK
+    key = rotl32(key, 15)
+    key = (key * 0x1B873593) & UINT32_MASK
     hash_value ^= key
-    hash_value = _rotl32(hash_value, 13)
-    return (hash_value * 5 + 0xE6546B64) & _UINT32_MASK
+    hash_value = rotl32(hash_value, 13)
+    return (hash_value * 5 + 0xE6546B64) & UINT32_MASK
 
 
-def _fmix32(hash_value: int) -> int:
+def fmix32(hash_value: int) -> int:
     hash_value ^= hash_value >> 16
-    hash_value = (hash_value * 0x85EBCA6B) & _UINT32_MASK
+    hash_value = (hash_value * 0x85EBCA6B) & UINT32_MASK
     hash_value ^= hash_value >> 13
-    hash_value = (hash_value * 0xC2B2AE35) & _UINT32_MASK
-    return (hash_value ^ (hash_value >> 16)) & _UINT32_MASK
+    hash_value = (hash_value * 0xC2B2AE35) & UINT32_MASK
+    return (hash_value ^ (hash_value >> 16)) & UINT32_MASK
 
 
-def _reference_hash(seed: int, position: int, column: int) -> int:
+def reference_hash(seed: int, position: int, column: int) -> int:
     seed &= 0xFFFFFFFFFFFFFFFF
     hash_value = 0
-    hash_value = _mix32(hash_value, seed & _UINT32_MASK)
-    hash_value = _mix32(hash_value, (seed >> 32) & _UINT32_MASK)
-    hash_value = _mix32(hash_value, position & _UINT32_MASK)
-    hash_value = _mix32(hash_value, column & _UINT32_MASK)
-    return _fmix32(hash_value ^ 16)
+    hash_value = mix32(hash_value, seed & UINT32_MASK)
+    hash_value = mix32(hash_value, (seed >> 32) & UINT32_MASK)
+    hash_value = mix32(hash_value, position & UINT32_MASK)
+    hash_value = mix32(hash_value, column & UINT32_MASK)
+    return fmix32(hash_value ^ 16)
 
 
 def test_murmur_hash32_pytorch_matches_scalar_reference() -> None:
@@ -67,7 +65,7 @@ def test_murmur_hash32_pytorch_matches_scalar_reference() -> None:
     actual = sampling_kernels.murmur_hash32_pytorch(seeds, positions, 4)
     expected = torch.tensor(
         [
-            [_reference_hash(seed, position, column) for column in range(4)]
+            [reference_hash(seed, position, column) for column in range(4)]
             for seed, position in zip(seeds.tolist(), positions.tolist())
         ],
         dtype=torch.int64,
@@ -114,7 +112,7 @@ def test_float32_seeded_sampling_caps_maximum_hash_uniform() -> None:
     seeds = torch.tensor([0], dtype=torch.int64)
     positions = torch.tensor([1_707_985_137], dtype=torch.int64)
     hashes = sampling_kernels.murmur_hash32_pytorch(seeds, positions, 2)
-    assert hashes[0, 0].item() == _UINT32_MASK
+    assert hashes[0, 0].item() == UINT32_MASK
 
     sampled = sampling_kernels.seeded_gumbel_argmax_float32(
         torch.tensor([[-100.0, 0.0]], dtype=torch.float32), seeds, positions
@@ -123,7 +121,7 @@ def test_float32_seeded_sampling_caps_maximum_hash_uniform() -> None:
     assert sampled.item() == 1
 
 
-@pytest.mark.skipif(not _npu_available(), reason="requires Ascend NPU")
+@pytest.mark.skipif(not npu_available(), reason="requires Ascend NPU")
 def test_npu_murmur_hash_and_float32_gumbel_execute_on_device() -> None:
     device = torch.device("npu:0")
     seeds = torch.tensor([0, 17, -1], device=device, dtype=torch.int64)
@@ -143,7 +141,7 @@ def test_npu_murmur_hash_and_float32_gumbel_execute_on_device() -> None:
 
     expected_hashes = torch.tensor(
         [
-            [_reference_hash(seed, position, column) for column in range(4)]
+            [reference_hash(seed, position, column) for column in range(4)]
             for seed, position in zip(seeds.cpu().tolist(), positions.cpu().tolist())
         ],
         dtype=torch.int64,
@@ -153,7 +151,7 @@ def test_npu_murmur_hash_and_float32_gumbel_execute_on_device() -> None:
     assert sampled.shape == (3,)
 
 
-@pytest.mark.skipif(not _npu_available(), reason="requires Ascend NPU")
+@pytest.mark.skipif(not npu_available(), reason="requires Ascend NPU")
 def test_sorted_seeded_sampler_executes_float32_path_on_npu() -> None:
     device = torch.device("npu:0")
     sampled = sampling_kernels.sample_from_sorted_logprobs_with_seed_small_k(

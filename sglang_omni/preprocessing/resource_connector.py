@@ -11,14 +11,21 @@ import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, TypeVar
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, Awaitable, TypeVar
+from urllib.parse import ParseResult, urlparse
 from urllib.request import url2pathname
 
 import httpx
+import numpy as np
 import numpy.typing as npt
 
 from .base import MediaIO
+
+if TYPE_CHECKING:
+    import torch
+    from PIL import Image
+else:
+    pass
 
 _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
@@ -28,10 +35,26 @@ global_thread_pool = ThreadPoolExecutor(max_workers=8)
 atexit.register(global_thread_pool.shutdown)
 
 
+async def await_media_cleanup(awaitable: Awaitable[None]) -> None:
+    """Finish cleanup before propagating cancellation of its caller."""
+    cleanup = asyncio.ensure_future(awaitable)
+    cancellation = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    cleanup.result()
+    if cancellation is not None:
+        raise cancellation
+    else:
+        pass
+
+
 class ResourceHTTPConnection:
     """Manages persistent HTTP clients for connection pooling."""
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0) -> None:
         self.client: httpx.Client | None = None
         self.async_client: httpx.AsyncClient | None = None
         self.timeout = timeout
@@ -58,7 +81,7 @@ class ResourceHTTPConnection:
             pass
         return self.async_client
 
-    async def close(self):
+    async def close(self) -> None:
         if self.async_client:
             await self.async_client.aclose()
         else:
@@ -267,7 +290,7 @@ class MultiModalResourceConnector:
 
     def __init__(
         self,
-        media_io_kwargs: dict[str, dict[str, Any]] | None = None,
+        media_io_kwargs: dict[str, dict[str, object]] | None = None,
         *,
         connection: ResourceHTTPConnection = global_http_connection,
         allowed_local_media_path: str | Path | None = None,
@@ -306,7 +329,7 @@ class MultiModalResourceConnector:
         self.allow_remote_media_without_domains = allow_remote_media_without_domains
         self.reject_unsafe_remote_addresses = reject_unsafe_remote_addresses
 
-    def _assert_url_allowed(self, url_spec: Any) -> None:
+    def _assert_url_allowed(self, url_spec: ParseResult) -> None:
         """Check whether a remote media URL is allowed to be fetched."""
         hostname = url_spec.hostname
         if not hostname:
@@ -347,10 +370,10 @@ class MultiModalResourceConnector:
         """Validate URL policy without loading the resource."""
         self._assert_url_allowed(urlparse(url))
 
-    async def assert_url_allowed_async(self, url_spec: Any) -> None:
+    async def assert_url_allowed_async(self, url_spec: ParseResult) -> None:
         await asyncio.to_thread(self._assert_url_allowed, url_spec)
 
-    def load_data_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
+    def load_data_url(self, url_spec: ParseResult, media_io: MediaIO[_M]) -> _M:
         """Load media from a data URL (base64 encoded)."""
         path = url_spec.path or ""
         if "," not in path:
@@ -365,7 +388,7 @@ class MultiModalResourceConnector:
         media_type = spec.split(";")[0].lstrip("/")
         return media_io.load_base64(media_type, data)
 
-    def load_file_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
+    def load_file_url(self, url_spec: ParseResult, media_io: MediaIO[_M]) -> _M:
         """Load media from a file URL."""
         if not self.allowed_local_media_path:
             raise RuntimeError("Local file loading is disabled.")
@@ -455,7 +478,6 @@ class MultiModalResourceConnector:
             Loaded media object.
         """
         url_spec = urlparse(url)
-        loop = asyncio.get_running_loop()
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
             download_start = time.time()
@@ -474,9 +496,17 @@ class MultiModalResourceConnector:
                 pass
 
             decode_start = time.time()
-            result = await loop.run_in_executor(
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 global_thread_pool, media_io.load_http_bytes, data, media_type
             )
+
+            async def cleanup_http_decoder() -> None:
+                await asyncio.gather(decode_future, return_exceptions=True)
+
+            try:
+                result = await asyncio.shield(decode_future)
+            finally:
+                await await_media_cleanup(cleanup_http_decoder())
             decode_time = time.time() - decode_start
 
             if len(data) > 1024 * 1024:
@@ -496,9 +526,17 @@ class MultiModalResourceConnector:
             method = (
                 self.load_data_url if url_spec.scheme == "data" else self.load_file_url
             )
-            return await loop.run_in_executor(
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 global_thread_pool, method, url_spec, media_io
             )
+
+            async def cleanup_url_decoder() -> None:
+                await asyncio.gather(decode_future, return_exceptions=True)
+
+            try:
+                return await asyncio.shield(decode_future)
+            finally:
+                await await_media_cleanup(cleanup_url_decoder())
         else:
             pass
 
@@ -576,7 +614,7 @@ class MultiModalResourceConnector:
         *,
         target_sr: int = 16000,
         timeout: float = 30.0,
-    ) -> tuple[npt.NDArray, float]:
+    ) -> tuple[npt.NDArray[np.float32], float]:
         """Asynchronously fetch audio from a URL.
 
         Args:
@@ -601,7 +639,7 @@ class MultiModalResourceConnector:
         *,
         image_mode: str = "RGB",
         timeout: float = 30.0,
-    ) -> Any:
+    ) -> Image.Image:
         """Asynchronously load image from a URL.
 
         Args:
@@ -633,7 +671,7 @@ class MultiModalResourceConnector:
         timeout: float = 30.0,
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
-    ) -> tuple[Any, float, Any | None]:
+    ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
         Args:

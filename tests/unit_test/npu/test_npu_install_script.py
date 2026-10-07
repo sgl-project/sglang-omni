@@ -17,18 +17,18 @@ import pytest
 
 from scripts.npu.config import read_config
 
-_SCRIPT = Path("scripts/npu/install_npu.sh")
-_ORIGINAL_MARKER = "# ORIGINAL-CUDA-MANIFEST"
-_VERSION = read_config()[0]["sglang-version"]
+SCRIPT = Path("scripts/npu/install_npu.sh")
+ORIGINAL_MARKER = "# ORIGINAL-CUDA-MANIFEST"
+VERSION = read_config()[0]["sglang-version"]
 
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     (root / "scripts" / "npu").mkdir(parents=True)
-    shutil.copy(_SCRIPT, root / "scripts" / "npu" / "install_npu.sh")
-    shutil.copy(_SCRIPT.with_name("config.py"), root / "scripts" / "npu" / "config.py")
-    (root / "pyproject.toml").write_text(f'{_ORIGINAL_MARKER}\n[project]\nname = "x"\n')
+    shutil.copy(SCRIPT, root / "scripts" / "npu" / "install_npu.sh")
+    shutil.copy(SCRIPT.with_name("config.py"), root / "scripts" / "npu" / "config.py")
+    (root / "pyproject.toml").write_text(f'{ORIGINAL_MARKER}\n[project]\nname = "x"\n')
     shutil.copy("pyproject_npu.toml", root / "pyproject_npu.toml")
 
     # A space in the executable path catches accidental shell word splitting.
@@ -39,7 +39,7 @@ def repo(tmp_path: Path) -> Path:
         f'  exec {shlex.quote(sys.executable)} "$@"\n'
         'elif [[ "$1" == "-c" && "$2" == *\'version("sglang")\'* ]]; then\n'
         '  [[ "${FAKE_SGLANG_INSTALLED:-1}" == "1" ]] || exit 1\n'
-        f"  printf '%s\\n' \"${{FAKE_SGLANG_VERSION:-{_VERSION}}}\"\n"
+        f"  printf '%s\\n' \"${{FAKE_SGLANG_VERSION:-{VERSION}}}\"\n"
         'elif [[ "$1" == "-c" ]]; then\n'
         "  printf '%s\\n' \"$0\"\n"
         "fi\n"
@@ -49,7 +49,7 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def _run(
+def run(
     repo: Path, *args: str, env_overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -71,25 +71,25 @@ def test_rerun_after_interrupted_swap_preserves_original(repo: Path) -> None:
     shutil.copy(repo / "pyproject.toml", backup)
     shutil.copy(repo / "pyproject_npu.toml", repo / "pyproject.toml")
 
-    result = _run(repo, "--check")
+    result = run(repo, "--check")
 
     assert result.returncode != 0
-    assert _ORIGINAL_MARKER in backup.read_text()
+    assert ORIGINAL_MARKER in backup.read_text()
     assert "leftover backup" in result.stderr
     assert "git checkout" not in result.stderr
 
 
 def test_clean_dry_run_does_not_modify_manifest(repo: Path) -> None:
-    result = _run(repo, "--check")
+    result = run(repo, "--check")
 
     assert result.returncode == 0
     assert "would run" in result.stdout
-    assert (repo / "pyproject.toml").read_text().startswith(_ORIGINAL_MARKER)
+    assert (repo / "pyproject.toml").read_text().startswith(ORIGINAL_MARKER)
     assert not (repo / ".pyproject.cuda.bak").exists()
 
 
 def test_default_install_resolves_project_dependencies(repo: Path) -> None:
-    result = _run(repo, "--check")
+    result = run(repo, "--check")
 
     assert result.returncode == 0
     assert "--no-build-isolation" not in result.stdout
@@ -98,7 +98,7 @@ def test_default_install_resolves_project_dependencies(repo: Path) -> None:
 
 
 def test_non_editable_install_restores_manifest(repo: Path) -> None:
-    result = _run(
+    result = run(
         repo,
         "--no-editable",
         "--skip-device-check",
@@ -115,12 +115,12 @@ def test_non_editable_install_restores_manifest(repo: Path) -> None:
         "install",
         ".",
     ]
-    assert (repo / "pyproject.toml").read_text().startswith(_ORIGINAL_MARKER)
+    assert (repo / "pyproject.toml").read_text().startswith(ORIGINAL_MARKER)
     assert not (repo / ".pyproject.cuda.bak").exists()
 
 
 def test_docker_dry_run_lists_dependencies_without_installing(repo: Path) -> None:
-    result = _run(
+    result = run(
         repo,
         "--install-system-deps",
         "--with-qwen-tts",
@@ -135,11 +135,11 @@ def test_docker_dry_run_lists_dependencies_without_installing(repo: Path) -> Non
     assert "sox=" in result.stdout
     assert "-m pip install --no-deps qwen-tts==0.1.1" in result.stdout
     assert "editable:    no" in result.stdout
-    assert (repo / "pyproject.toml").read_text().startswith(_ORIGINAL_MARKER)
+    assert (repo / "pyproject.toml").read_text().startswith(ORIGINAL_MARKER)
 
 
 def test_extras_resolve_project_dependencies(repo: Path) -> None:
-    result = _run(repo, "--extras", "eval", "--check")
+    result = run(repo, "--extras", "eval", "--check")
 
     assert result.returncode == 0, result.stderr
     assert "--constraint" not in result.stdout
@@ -149,7 +149,7 @@ def test_extras_resolve_project_dependencies(repo: Path) -> None:
 
 @pytest.mark.parametrize("failure", [None, "missing", "mismatch"])
 def test_device_free_precheck_uses_metadata(monkeypatch, failure) -> None:
-    source = _SCRIPT.read_text().split("\"${PYBIN}\" - <<'PY'\n", 1)[1]
+    source = SCRIPT.read_text().split("\"${PYBIN}\" - <<'PY'\n", 1)[1]
     source = source.split("\nPY\n", 1)[0]
     original_import = builtins.__import__
 
@@ -169,23 +169,23 @@ def test_device_free_precheck_uses_metadata(monkeypatch, failure) -> None:
     monkeypatch.setattr(importlib.metadata, "version", version)
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     with pytest.raises(SystemExit) as result:
-        exec(compile(source, str(_SCRIPT), "exec"), {})
+        exec(compile(source, str(SCRIPT), "exec"), {})
     assert result.value.code == (0 if failure is None else 1)
 
 
 @pytest.mark.parametrize(
     "installed",
     [
-        f"{_VERSION}.dev7+gec43c1f20",
-        f"{_VERSION}rc1",
-        _VERSION,
-        f"{_VERSION}+ascend",
-        f"{_VERSION}.post1",
-        f"{_VERSION}.1",
+        f"{VERSION}.dev7+gec43c1f20",
+        f"{VERSION}rc1",
+        VERSION,
+        f"{VERSION}+ascend",
+        f"{VERSION}.post1",
+        f"{VERSION}.1",
     ],
 )
 def test_matching_sglang_version_is_accepted(repo: Path, installed: str) -> None:
-    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
+    result = run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
 
     assert result.returncode == 0
     assert f"sglang:      {installed}" in result.stdout
@@ -201,27 +201,27 @@ def test_matching_sglang_version_is_accepted(repo: Path, installed: str) -> None
     ],
 )
 def test_mismatched_sglang_version_is_rejected(repo: Path, installed: str) -> None:
-    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
+    result = run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
 
     assert result.returncode != 0
-    assert f"supported: {_VERSION} release line" in result.stderr
+    assert f"supported: {VERSION} release line" in result.stderr
     assert f"installed: {installed}" in result.stderr
     assert "would run" not in result.stdout
 
 
 def test_missing_sglang_is_rejected(repo: Path) -> None:
-    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_INSTALLED": "0"})
+    result = run(repo, "--check", env_overrides={"FAKE_SGLANG_INSTALLED": "0"})
 
     assert result.returncode != 0
-    assert f"supported: {_VERSION} release line" in result.stderr
+    assert f"supported: {VERSION} release line" in result.stderr
     assert "installed: not installed" in result.stderr
     assert "would run" not in result.stdout
 
 
 def test_supported_version_is_read_from_manifest(repo: Path) -> None:
     manifest = repo / "pyproject_npu.toml"
-    manifest.write_text(manifest.read_text().replace(_VERSION, "99.0.0"))
-    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": "99.0.0"})
+    manifest.write_text(manifest.read_text().replace(VERSION, "99.0.0"))
+    result = run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": "99.0.0"})
     assert result.returncode == 0, result.stderr
     assert "would run" in result.stdout
 
@@ -230,7 +230,7 @@ def test_supported_version_is_read_from_manifest(repo: Path) -> None:
     "extra", ["eval", "all", "fun-cosyvoice3", "eval,fun-cosyvoice3"]
 )
 def test_supported_extras_are_preserved_as_one_argument(repo: Path, extra: str) -> None:
-    result = _run(repo, "--check", "--extras", extra)
+    result = run(repo, "--check", "--extras", extra)
 
     assert result.returncode == 0
     # Bash versions differ on whether printf %q escapes commas.
@@ -238,21 +238,21 @@ def test_supported_extras_are_preserved_as_one_argument(repo: Path, extra: str) 
 
 
 def test_unknown_extra_is_rejected(repo: Path) -> None:
-    result = _run(repo, "--check", "--extras", "eval] --index-url bad [")
+    result = run(repo, "--check", "--extras", "eval] --index-url bad [")
 
     assert result.returncode == 2
     assert "unsupported extra" in result.stderr
 
 
 def test_missing_extra_value_is_rejected(repo: Path) -> None:
-    result = _run(repo, "--extras")
+    result = run(repo, "--extras")
 
     assert result.returncode == 2
     assert "requires a value" in result.stderr
 
 
 def test_skip_device_check_flag_is_accepted(repo: Path) -> None:
-    result = _run(repo, "--check", "--skip-device-check")
+    result = run(repo, "--check", "--skip-device-check")
 
     assert result.returncode == 0
 
@@ -263,12 +263,12 @@ def test_second_run_refuses_while_lock_is_held(repo: Path) -> None:
     holder = subprocess.Popen(["flock", str(lock), "sleep", "10"])
     try:
         time.sleep(0.2)
-        result = _run(repo, "--check")
+        result = run(repo, "--check")
     finally:
         holder.kill()
         holder.wait()
 
     assert result.returncode != 0
     assert "holds" in result.stderr
-    assert _ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
+    assert ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
     assert not (repo / ".pyproject.cuda.bak").exists()

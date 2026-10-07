@@ -126,7 +126,7 @@ def test_omni_scheduler_update_weights_rejects_active_requests_by_default() -> N
         or (True, "ok")
     )
     scheduler.admin_lock = threading.Lock()
-    scheduler._engine_paused = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
     scheduler.async_pending = None
     scheduler.resolve_pending_async = lambda: None
@@ -144,7 +144,9 @@ def test_omni_scheduler_update_weights_rejects_active_requests_by_default() -> N
     assert result["success"] is False
     assert "active requests are present" in result["message"]
     assert result["data"]["active_request_count"] == 1
-    assert scheduler._engine_paused is False
+    assert (
+        scheduler._engine_paused is False
+    )  # noqa: leading-underscore  # production name
     assert result["data"]["engine_paused"] is False
     assert update_calls == []
 
@@ -209,7 +211,7 @@ def test_omni_scheduler_weight_updates_flush_and_advance_epoch(
     scheduler = object.__new__(OmniScheduler)
     scheduler.model_worker = SimpleNamespace(**{worker_method: update_weights})
     scheduler.admin_lock = threading.Lock()
-    scheduler._engine_paused = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
     scheduler.async_pending = None
     scheduler.request_admission_lock = threading.RLock()
@@ -245,7 +247,7 @@ def test_weight_swap_isolates_prompt_cache_when_flush_fails() -> None:
     )
     scheduler.admin_lock = threading.Lock()
     scheduler.request_admission_lock = threading.RLock()
-    scheduler._engine_paused = True
+    scheduler._engine_paused = True  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = "retract"
     scheduler.prompt_cache_epoch = 0
     scheduler.waiting_queue = [retracted]
@@ -283,7 +285,7 @@ def test_tensor_update_failure_keeps_engine_paused(failure_mode: str) -> None:
         update_weights_from_tensor=update_weights_from_tensor
     )
     scheduler.admin_lock = threading.Lock()
-    scheduler._engine_paused = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
     scheduler.prompt_cache_epoch = 0
     scheduler.resolve_pending_async = lambda: None
@@ -297,11 +299,15 @@ def test_tensor_update_failure_keeps_engine_paused(failure_mode: str) -> None:
         assert result["success"] is False
         assert result["data"]["engine_paused"] is True
 
-    assert scheduler._engine_paused is True
+    assert (
+        scheduler._engine_paused is True
+    )  # noqa: leading-underscore  # production name
     assert scheduler.prompt_cache_epoch == 0
 
 
 def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
+    from sglang.srt.runtime_context import get_context
+
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
     class EmptyBatch:
@@ -335,6 +341,8 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     )
     scheduler.disaggregation_mode = None
     scheduler.enable_hierarchical_cache = False
+    scheduler.enable_lmcache = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.req_to_token_pool = SimpleNamespace(
         clear=lambda: reset_calls.append("req_pool"),
         reset_aux_cache_allocator=lambda: reset_calls.append("aux_cache"),
@@ -342,14 +350,14 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(
         clear=lambda: reset_calls.append("kv_pool")
     )
-    scheduler.ps = SimpleNamespace(pp_size=1)
     scheduler.metrics_reporter = SimpleNamespace(
         reset_metrics=lambda: reset_calls.append("metrics"),
         is_stats_logging_rank=False,
     )
     scheduler.draft_worker = None
 
-    assert OmniScheduler.flush_cache_after_update(scheduler) is True
+    with get_context().override_server_args():
+        assert OmniScheduler.flush_cache_after_update(scheduler) is True
     assert scheduler.device_module is not None
     assert reset_calls == [
         "tree",
@@ -371,7 +379,7 @@ def test_omni_scheduler_distributed_update_rejects_active_requests_by_default() 
         or (True, "ok")
     )
     scheduler.admin_lock = threading.Lock()
-    scheduler._engine_paused = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
     scheduler.async_pending = None
     scheduler.resolve_pending_async = lambda: None
@@ -391,7 +399,9 @@ def test_omni_scheduler_distributed_update_rejects_active_requests_by_default() 
     assert result["success"] is False
     assert "active requests are present" in result["message"]
     assert result["data"]["active_request_count"] == 1
-    assert scheduler._engine_paused is False
+    assert (
+        scheduler._engine_paused is False
+    )  # noqa: leading-underscore  # production name
     assert result["data"]["engine_paused"] is False
     assert update_calls == []
 
@@ -427,7 +437,7 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
         update_weights_from_distributed=update_weights_from_distributed
     )
     scheduler.admin_lock = threading.Lock()
-    scheduler._engine_paused = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
     scheduler.async_pending = None
     scheduler.request_admission_lock = threading.RLock()
@@ -476,7 +486,7 @@ def test_omni_scheduler_distributed_update_failure_keeps_engine_paused() -> None
         update_weights_from_distributed=update_weights_from_distributed
     )
     scheduler.admin_lock = threading.Lock()
-    scheduler._engine_paused = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
     scheduler.async_pending = None
     scheduler.resolve_pending_async = lambda: None
@@ -495,11 +505,13 @@ def test_omni_scheduler_distributed_update_failure_keeps_engine_paused() -> None
     assert result["success"] is False
     assert "partially updated" in result["message"]
     assert result["data"]["engine_paused"] is True
-    assert scheduler._engine_paused is True
+    assert (
+        scheduler._engine_paused is True
+    )  # noqa: leading-underscore  # production name
 
 
 def test_coordinator_admin_waits_for_all_stage_results() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -533,11 +545,11 @@ def test_coordinator_admin_waits_for_all_stage_results() -> None:
         assert result["success"] is True
         assert {item["stage"] for item in result["results"]} == {"decode", "vocoder"}
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_stage_admin_dispatches_to_scheduler() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         scheduler = AdminScheduler()
         control_plane = RecordingStageControlPlane()
         stage = Stage(
@@ -567,4 +579,4 @@ def test_stage_admin_dispatches_to_scheduler() -> None:
         assert result_msg.result.success is True
         assert result_msg.result.data["action"] == "pause_generation"
 
-    asyncio.run(_run())
+    asyncio.run(run())

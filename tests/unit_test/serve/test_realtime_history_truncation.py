@@ -8,20 +8,20 @@ import pytest
 
 from sglang_omni.client.types import CompletionStreamChunk
 from sglang_omni.serve.realtime.vad import Emit, VADEvent
-from tests.unit_test.serve.test_realtime_barge_in import _chunk, _session
+from tests.unit_test.serve.test_realtime_barge_in import make_chunk, make_session
 
 
-def _assistant_item_id(events: list[dict]) -> str:
+def make_assistant_item_id(events: list[dict]) -> str:
     response_done = next(event for event in events if event["type"] == "response.done")
     return response_done["response"]["output"][0]["id"]
 
 
-def _response_stream() -> AsyncIterator[CompletionStreamChunk]:
+def response_stream() -> AsyncIterator[CompletionStreamChunk]:
     async def response() -> AsyncIterator[CompletionStreamChunk]:
-        yield _chunk(text="full assistant answer")
-        yield _chunk(finish_reason="stop")
-        yield _chunk(modality="audio")
-        yield _chunk(modality="audio", finish_reason="stop")
+        yield make_chunk(text="full assistant answer")
+        yield make_chunk(finish_reason="stop")
+        yield make_chunk(modality="audio")
+        yield make_chunk(modality="audio", finish_reason="stop")
 
     return response()
 
@@ -29,7 +29,7 @@ def _response_stream() -> AsyncIterator[CompletionStreamChunk]:
 def test_cancelled_assistant_item_tombstones_are_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, _, _ = _session(monkeypatch, [])
+    session, _, _ = make_session(monkeypatch, [])
 
     for index in range(65):
         session.remember_cancelled_assistant_item(f"assistant-{index}")
@@ -49,13 +49,13 @@ async def test_truncate_before_history_append_omits_pending_assistant(
     async def transcription() -> AsyncIterator[CompletionStreamChunk]:
         transcription_started.set()
         await release_transcription.wait()
-        yield _chunk(text="question")
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text="question")
+        yield make_chunk(finish_reason="stop")
 
-    session, websocket, _ = _session(monkeypatch, [_response_stream, transcription])
+    session, websocket, _ = make_session(monkeypatch, [response_stream, transcription])
     turn = asyncio.create_task(session.run_turn("user-item", "audio"))
     await transcription_started.wait()
-    assistant_item_id = _assistant_item_id(websocket.events)
+    assistant_item_id = make_assistant_item_id(websocket.events)
 
     await session.dispatch(
         {
@@ -85,12 +85,12 @@ async def test_truncate_after_history_append_removes_recorded_assistant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def transcription() -> AsyncIterator[CompletionStreamChunk]:
-        yield _chunk(text="question")
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text="question")
+        yield make_chunk(finish_reason="stop")
 
-    session, websocket, _ = _session(monkeypatch, [_response_stream, transcription])
+    session, websocket, _ = make_session(monkeypatch, [response_stream, transcription])
     await session.run_turn("user-item", "audio")
-    assistant_item_id = _assistant_item_id(websocket.events)
+    assistant_item_id = make_assistant_item_id(websocket.events)
 
     await session.dispatch(
         {
@@ -117,23 +117,23 @@ async def test_truncate_after_cancelled_response_is_acknowledged(
 
     async def response() -> AsyncIterator[CompletionStreamChunk]:
         response_started.set()
-        yield _chunk(text="partial assistant answer")
-        yield _chunk(modality="audio")
+        yield make_chunk(text="partial assistant answer")
+        yield make_chunk(modality="audio")
         await asyncio.Event().wait()
 
     async def transcription() -> AsyncIterator[CompletionStreamChunk]:
         transcription_started.set()
         await release_transcription.wait()
-        yield _chunk(text="question")
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text="question")
+        yield make_chunk(finish_reason="stop")
 
-    session, websocket, _ = _session(monkeypatch, [response, transcription])
+    session, websocket, _ = make_session(monkeypatch, [response, transcription])
     turn = asyncio.create_task(session.run_turn("user-item", "audio"))
     await response_started.wait()
     await session.handle_vad_emit(Emit(VADEvent.SPEECH_STARTED, 0))
     await transcription_started.wait()
 
-    assistant_item_id = _assistant_item_id(websocket.events)
+    assistant_item_id = make_assistant_item_id(websocket.events)
     event_count = len(websocket.events)
     await session.dispatch(
         {
@@ -171,12 +171,12 @@ async def test_invalid_truncate_does_not_mutate_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def transcription() -> AsyncIterator[CompletionStreamChunk]:
-        yield _chunk(text="question")
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text="question")
+        yield make_chunk(finish_reason="stop")
 
-    session, websocket, _ = _session(monkeypatch, [_response_stream, transcription])
+    session, websocket, _ = make_session(monkeypatch, [response_stream, transcription])
     await session.run_turn("user-item", "audio")
-    assistant_item_id = _assistant_item_id(websocket.events)
+    assistant_item_id = make_assistant_item_id(websocket.events)
     if item_id == "assistant-item":
         item_id = assistant_item_id
     history_before = list(session.conversation)

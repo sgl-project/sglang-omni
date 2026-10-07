@@ -4,16 +4,16 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.runtime_context import get_parallel
 from torch import nn
 from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
 from sglang_omni.vendor.sglang.layers import (
     AttentionType,
     MergedColumnParallelLinear,
@@ -54,7 +54,7 @@ class LLaDA2MoeAttention(nn.Module):
         self.head_dim = config.head_dim
         self.use_qk_norm = config.use_qk_norm
 
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_size = get_parallel().tp_size
         self.num_heads_per_tp = self.num_heads // tp_size
         self.num_kv_heads_per_tp = max(1, self.num_kv_heads // tp_size)
         self.q_size = self.num_heads_per_tp * self.head_dim
@@ -546,9 +546,9 @@ class LLaDA2MoeModelLM(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
-    ):
+    ) -> None:
         super().__init__()
         self.config = config
 

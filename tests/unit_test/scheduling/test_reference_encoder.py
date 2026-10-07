@@ -17,19 +17,19 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 
 
-class _FirstWaveGate:
+class FirstWaveGate:
     def __init__(self, count: int) -> None:
-        self._barrier = threading.Barrier(count)
+        self.barrier = threading.Barrier(count)
         self.done = threading.Event()
 
     def wait(self) -> None:
         if self.done.is_set():
             return
-        self._barrier.wait(timeout=5)
+        self.barrier.wait(timeout=5)
         self.done.set()
 
 
-def _wait_for_merged(
+def wait_for_merged(
     service: ReferenceEncodeService[Any, Any, Any],
     expected: int,
     timeout_s: float = 5.0,
@@ -42,7 +42,7 @@ def _wait_for_merged(
     assert service.stats()["merged"] >= expected
 
 
-class _TensorHook(TensorReferenceEncodeHook[str]):
+class TensorHook(TensorReferenceEncodeHook[str]):
     model_id = "test"
     model_revision = "rev"
     encoder_id = "encoder"
@@ -68,13 +68,13 @@ class _TensorHook(TensorReferenceEncodeHook[str]):
 
 
 def test_service_close_delegates_to_hook() -> None:
-    class _ClosableHook(_TensorHook):
+    class ClosableHook(TensorHook):
         closed = False
 
         def close(self) -> None:
             self.closed = True
 
-    hook = _ClosableHook()
+    hook = ClosableHook()
     service = ReferenceEncodeService(hook)
 
     service.close()
@@ -83,14 +83,14 @@ def test_service_close_delegates_to_hook() -> None:
 
 
 def test_tensor_hook_builds_key_and_owns_stored_and_loaded_tensors() -> None:
-    class _CompressedHook(_TensorHook):
+    class CompressedHook(TensorHook):
         storage_dtype = torch.int32
         option = "v1"
 
         def options_key(self, item: str) -> str:
             return self.option
 
-    hook = _CompressedHook()
+    hook = CompressedHook()
     key = hook.cache_key("stable")
     assert key is not None
     assert key == ReferenceEncodeKey(
@@ -117,11 +117,11 @@ def test_tensor_hook_builds_key_and_owns_stored_and_loaded_tensors() -> None:
     assert loaded.dtype == torch.long
     assert torch.equal(loaded, torch.tensor([1, 2], dtype=torch.long))
 
-    class _PreservingHook(_TensorHook):
+    class PreservingHook(TensorHook):
         storage_dtype = None
         output_dtype = None
 
-    preserving_hook = _PreservingHook()
+    preserving_hook = PreservingHook()
     source = torch.tensor([1.5], dtype=torch.float32)
     preserved = preserving_hook.load_artifact(preserving_hook.store_artifact(source))
     assert preserved.dtype == torch.float32
@@ -132,9 +132,9 @@ def test_same_key_concurrent_single_flight() -> None:
     release = threading.Event()
     entered = threading.Event()
     worker_count = 8
-    gate = _FirstWaveGate(worker_count)
+    gate = FirstWaveGate(worker_count)
 
-    class _GatedHook(_TensorHook):
+    class GatedHook(TensorHook):
         def normalize_input(self, raw_input: Any) -> str:
             item = super().normalize_input(raw_input)
             gate.wait()
@@ -145,7 +145,7 @@ def test_same_key_concurrent_single_flight() -> None:
             assert release.wait(timeout=5)
             return super().encode_one(item)
 
-    hook = _GatedHook()
+    hook = GatedHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
     results: list[torch.Tensor | None] = [None] * worker_count
     errors: list[Exception] = []
@@ -160,7 +160,7 @@ def test_same_key_concurrent_single_flight() -> None:
     for thread in threads:
         thread.start()
     assert entered.wait(timeout=5)
-    _wait_for_merged(service, worker_count - 1)
+    wait_for_merged(service, worker_count - 1)
     release.set()
     for thread in threads:
         thread.join(timeout=5)
@@ -180,7 +180,7 @@ def test_same_key_concurrent_single_flight() -> None:
 
 
 def test_cache_hit_returns_loaded_artifact() -> None:
-    hook = _TensorHook()
+    hook = TensorHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
 
     first = service.get_or_encode("hit")
@@ -194,7 +194,7 @@ def test_cache_hit_returns_loaded_artifact() -> None:
 
 
 def test_key_none_bypasses_cache() -> None:
-    hook = _TensorHook()
+    hook = TensorHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
 
     service.get_or_encode("uncacheable-a")
@@ -211,9 +211,9 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
     release = threading.Event()
     entered = threading.Event()
     worker_count = 4
-    gate = _FirstWaveGate(worker_count)
+    gate = FirstWaveGate(worker_count)
 
-    class _FlakyHook(_TensorHook):
+    class FlakyHook(TensorHook):
         def normalize_input(self, raw_input: Any) -> str:
             item = super().normalize_input(raw_input)
             gate.wait()
@@ -229,7 +229,7 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
                 raise ValueError("boom")
             return torch.tensor([9], dtype=torch.long)
 
-    hook = _FlakyHook()
+    hook = FlakyHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
     errors: list[Exception] = []
 
@@ -243,7 +243,7 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
     for thread in threads:
         thread.start()
     assert entered.wait(timeout=5)
-    _wait_for_merged(service, worker_count - 1)
+    wait_for_merged(service, worker_count - 1)
     release.set()
     for thread in threads:
         thread.join(timeout=5)
@@ -261,7 +261,7 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
 
 
 def test_artifact_larger_than_budget_is_returned_but_not_cached() -> None:
-    hook = _TensorHook()
+    hook = TensorHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1)
 
     first = service.get_or_encode("large")
@@ -273,7 +273,7 @@ def test_artifact_larger_than_budget_is_returned_but_not_cached() -> None:
 
 
 def test_lru_eviction_respects_max_bytes() -> None:
-    hook = _TensorHook()
+    hook = TensorHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=16)
 
     service.get_or_encode("a")
@@ -288,19 +288,19 @@ def test_lru_eviction_respects_max_bytes() -> None:
 
 def test_constructor_rejects_nonpositive_capacity() -> None:
     with pytest.raises(ValueError, match="max_items"):
-        ReferenceEncodeService(_TensorHook(), max_items=0)
+        ReferenceEncodeService(TensorHook(), max_items=0)
     with pytest.raises(ValueError, match="max_items"):
-        ReferenceEncodeService(_TensorHook(), max_items=-1)
+        ReferenceEncodeService(TensorHook(), max_items=-1)
     with pytest.raises(ValueError, match="max_bytes"):
-        ReferenceEncodeService(_TensorHook(), max_items=16, max_bytes=0)
+        ReferenceEncodeService(TensorHook(), max_items=16, max_bytes=0)
 
 
 def test_revalidate_false_returns_but_does_not_cache() -> None:
-    class _NoCacheHook(_TensorHook):
+    class NoCacheHook(TensorHook):
         def revalidate(self, item: str, key: ReferenceEncodeKey) -> bool:
             return False
 
-    hook = _NoCacheHook()
+    hook = NoCacheHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
 
     service.get_or_encode("changed")
@@ -314,13 +314,13 @@ def test_follower_timeout_does_not_remove_leader_inflight() -> None:
     release = threading.Event()
     entered = threading.Event()
 
-    class _SlowHook(_TensorHook):
+    class SlowHook(TensorHook):
         def encode_one(self, item: str) -> torch.Tensor:
             entered.set()
             assert release.wait(timeout=5)
             return super().encode_one(item)
 
-    hook = _SlowHook()
+    hook = SlowHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024, timeout_s=0.01)
     leader_result: list[torch.Tensor] = []
 
@@ -340,7 +340,7 @@ def test_follower_timeout_does_not_remove_leader_inflight() -> None:
 
 
 def test_stats_hits_misses_merged_entries_bytes() -> None:
-    hook = _TensorHook()
+    hook = TensorHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
 
     service.get_or_encode("stats")
@@ -359,11 +359,11 @@ def test_revalidate_exception_clears_inflight_and_does_not_poison() -> None:
     # must not strand the in-flight entry: the leader has to fail the future and
     # drop the key so the next same-key request is a fresh leader, never a
     # follower blocked on a dead future for the full timeout.
-    class _RaisingRevalidateHook(_TensorHook):
+    class RaisingRevalidateHook(TensorHook):
         def revalidate(self, item: str, key: ReferenceEncodeKey) -> bool:
             raise RuntimeError("revalidate boom")
 
-    hook = _RaisingRevalidateHook()
+    hook = RaisingRevalidateHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
 
     with pytest.raises(RuntimeError, match="revalidate boom"):
@@ -384,9 +384,9 @@ def test_revalidate_exception_propagates_to_followers_without_timeout() -> None:
     release = threading.Event()
     entered = threading.Event()
     worker_count = 4
-    gate = _FirstWaveGate(worker_count)
+    gate = FirstWaveGate(worker_count)
 
-    class _GatedRaisingHook(_TensorHook):
+    class GatedRaisingHook(TensorHook):
         def normalize_input(self, raw_input: Any) -> str:
             item = super().normalize_input(raw_input)
             gate.wait()
@@ -400,7 +400,7 @@ def test_revalidate_exception_propagates_to_followers_without_timeout() -> None:
         def revalidate(self, item: str, key: ReferenceEncodeKey) -> bool:
             raise RuntimeError("revalidate boom")
 
-    hook = _GatedRaisingHook()
+    hook = GatedRaisingHook()
     # Large timeout: if the key were poisoned, followers would block far past the
     # join() below, leaving their threads alive and errors incomplete.
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024, timeout_s=30)
@@ -416,7 +416,7 @@ def test_revalidate_exception_propagates_to_followers_without_timeout() -> None:
     for thread in threads:
         thread.start()
     assert entered.wait(timeout=5)
-    _wait_for_merged(service, worker_count - 1)
+    wait_for_merged(service, worker_count - 1)
     release.set()
     for thread in threads:
         thread.join(timeout=5)

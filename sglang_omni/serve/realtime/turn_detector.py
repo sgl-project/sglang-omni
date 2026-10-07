@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Protocol
+from typing import Mapping, Protocol
 
 from .semantic_vad import SemanticEOUModel, SemanticTurnDetector, SemanticVADConfig
 from .vad import Emit, StreamingVAD, VADConfig
@@ -19,11 +19,11 @@ class TurnDetector(Protocol):
 @dataclass(frozen=True)
 class TurnDetectorBuild:
     detector: TurnDetector
-    effective_config: dict[str, Any]
+    effective_config: dict[str, object]
 
 
 def build_turn_detector(
-    config: Mapping[str, Any],
+    config: Mapping[str, object],
     smart_turn_model: SemanticEOUModel | None,
 ) -> TurnDetectorBuild:
     raw_type = config.get("type")
@@ -80,7 +80,7 @@ def build_turn_detector(
 
 
 def optional_float(
-    value: Any,
+    value: int | float | str | None,
     default: float,
     *,
     minimum: float | None = None,
@@ -106,7 +106,9 @@ def optional_float(
     return result
 
 
-def optional_int(value: Any, default: int, *, minimum: int | None = None) -> int:
+def optional_int(
+    value: int | float | str | None, default: int, *, minimum: int | None = None
+) -> int:
     if value is None:
         return default
     else:

@@ -20,7 +20,7 @@ TEXT_EOS = 5
 AUDIO_BOS = 6
 
 
-def _bare_model() -> MiniCPMOTalkerForCausalLM:
+def bare_model() -> MiniCPMOTalkerForCausalLM:
     model = object.__new__(MiniCPMOTalkerForCausalLM)
     nn.Module.__init__(model)
     model.text_eos_token_id = TEXT_EOS
@@ -32,7 +32,7 @@ def _bare_model() -> MiniCPMOTalkerForCausalLM:
 
 
 def test_condition_matches_reference_math():
-    model = _bare_model()
+    model = bare_model()
     tokens = torch.tensor([3, 7, 1], dtype=torch.long)
     hidden = torch.randn(3, LLM_DIM)
 
@@ -48,7 +48,7 @@ def test_condition_matches_reference_math():
 
 
 def test_condition_empty_span_is_boundary_only():
-    model = _bare_model()
+    model = bare_model()
     condition = model.build_condition_embeddings(
         torch.empty(0, dtype=torch.long), torch.empty(0, LLM_DIM)
     )
@@ -57,6 +57,6 @@ def test_condition_empty_span_is_boundary_only():
 
 
 def test_condition_length_mismatch_raises():
-    model = _bare_model()
+    model = bare_model()
     with pytest.raises(ValueError, match="length mismatch"):
         model.build_condition_embeddings(torch.tensor([1, 2]), torch.randn(3, LLM_DIM))

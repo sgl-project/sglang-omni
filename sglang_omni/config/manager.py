@@ -1,6 +1,5 @@
 import os
 from collections.abc import Iterable, Mapping
-from typing import Any
 
 from transformers import AutoConfig
 
@@ -15,6 +14,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_cosyvoice3_layout,
     try_resolve_arch_from_mistral_config,
     try_resolve_arch_from_nemo_config,
+    try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
 )
 
@@ -56,6 +56,10 @@ def resolve_config_cls_for_model_path(model_path: str):
         pass
     if arch is None:
         arch = try_resolve_arch_from_auk_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_personaplex_layout(repo_id, revision=revision)
     else:
         pass
     if arch is None:
@@ -114,7 +118,7 @@ class ConfigManager:
 
     def merge_config(
         self,
-        extra_args: Mapping[str, Any] | Iterable[tuple[str, Any]],
+        extra_args: Mapping[str, object] | Iterable[tuple[str, object]],
         *,
         extra_patches: ConfigPatchSet | None = None,
     ) -> PipelineConfig:

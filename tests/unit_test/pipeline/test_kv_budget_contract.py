@@ -21,10 +21,10 @@ from sglang_omni.config.runtime import (
 )
 from sglang_omni.models.registry import import_pipeline_configs
 
-_KV_BYTES = 2 * 1024**3
+KV_BYTES = 2 * 1024**3
 
 
-def _registered_config_classes():
+def registered_config_classes():
     configs = import_pipeline_configs("sglang_omni.models", "config")
     # Note (Jiaxin Deng): dedupe aliases so each config class is exercised once.
     seen: dict[type, str] = {}
@@ -36,11 +36,11 @@ def _registered_config_classes():
     )
 
 
-def _stage_with_kv_budget(stage):
+def stage_with_kv_budget(stage):
     """Rebuild the stage with a byte budget through real validation."""
     data = stage.model_dump()
     engine = dict(data.get("engine") or {})
-    engine["kv_cache_bytes"] = _KV_BYTES
+    engine["kv_cache_bytes"] = KV_BYTES
     engine["mem_fraction_static"] = None
     data["engine"] = engine
     return type(stage).model_validate(data)
@@ -55,7 +55,7 @@ def test_registry_discovery_covers_every_model_package():
     }
     discovered_packages = {
         config_cls.__module__.rsplit(".", 2)[-2]
-        for _, config_cls in _registered_config_classes()
+        for _, config_cls in registered_config_classes()
     }
 
     missing = packages_with_configs - discovered_packages
@@ -64,7 +64,7 @@ def test_registry_discovery_covers_every_model_package():
 
 @pytest.mark.parametrize(
     ("arch", "config_cls"),
-    _registered_config_classes(),
+    registered_config_classes(),
     ids=lambda value: value if isinstance(value, str) else value.__name__,
 )
 def test_every_registered_model_stage_accepts_a_kv_byte_budget(arch, config_cls):
@@ -83,13 +83,13 @@ def test_every_registered_model_stage_accepts_a_kv_byte_budget(arch, config_cls)
     for index, stage in enumerate(config.stages):
         if not config_cls.stage_config_cls(stage.name).engine_stage:
             continue
-        budgeted = _stage_with_kv_budget(stage)
+        budgeted = stage_with_kv_budget(stage)
         config.stages[index] = budgeted
 
         # The budget rides StageLaunchConfig.kv_cache_bytes, which the spec
         # constructors read from stage.engine; it must never surface as a
         # factory kwarg or a ServerArgs override.
-        assert budgeted.engine.kv_cache_bytes == _KV_BYTES
+        assert budgeted.engine.kv_cache_bytes == KV_BYTES
         kwargs = resolve_stage_factory_kwargs(budgeted, config)
         typed = resolve_stage_typed_kwargs(budgeted)
         assert "kv_cache_bytes" not in kwargs

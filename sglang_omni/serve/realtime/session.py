@@ -5,14 +5,16 @@ import dataclasses
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Mapping, TypedDict, overload
 
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
+from typing_extensions import Unpack
 
 from sglang_omni.client import Client, GenerateRequest, Message, SamplingParams
 from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
+    ClientEvent,
     ConversationItemTruncate,
     InputAudioBufferAppend,
     InputAudioBufferClear,
@@ -27,6 +29,7 @@ from sglang_omni.serve.realtime.events import (
 from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel, SemanticVADConfig
 from sglang_omni.serve.realtime.turn_detector import TurnDetector, build_turn_detector
 from sglang_omni.serve.realtime.vad import (
+    Emit,
     StreamingVAD,
     VADConfig,
     VADEvent,
@@ -46,7 +49,7 @@ _TRANSCRIPTION_PROMPT = (
 
 _MAX_CANCELLED_ASSISTANT_ITEM_IDS = 64
 
-HANDLERS: dict[type, str] = {
+HANDLERS: dict[type[ClientEvent], str] = {
     SessionUpdate: "handle_session_update",
     InputAudioBufferAppend: "handle_audio_append",
     InputAudioBufferClear: "handle_audio_clear",
@@ -55,6 +58,17 @@ HANDLERS: dict[type, str] = {
 }
 
 _UNSET = object()
+
+
+class RequiredTerminalFields(TypedDict):
+    response_text: str
+    include_audio: bool
+    status: str
+    reason: str
+
+
+class TerminalFields(RequiredTerminalFields, total=False):
+    error: tuple[str, str, str] | None
 
 
 def new_id(prefix: str) -> str:
@@ -125,7 +139,7 @@ class RealtimeSession:
         self.closed = False
 
         self.active_request_id: str | None = None
-        self.active_task: asyncio.Task | None = None
+        self.active_task: asyncio.Task[None] | None = None
         self.active_response_task: asyncio.Task[ResponseOutput] | None = None
         self.active_response_request_id: str | None = None
         self.active_response_has_audio = False
@@ -135,7 +149,7 @@ class RealtimeSession:
         self.cancelled_response_reason: str | None = None
         self.finalized_response_request_id: str | None = None
         self.response_state_lock = asyncio.Lock()
-        self.active_response_abort_task: asyncio.Task | None = None
+        self.active_response_abort_task: asyncio.Task[None] | None = None
         self.response_start_pending = False
         self.pending_response_cancel_reason: str | None = None
         self.pending_assistant_item_ids: set[str] = set()
@@ -146,7 +160,7 @@ class RealtimeSession:
         # VAD may emit speech_stopped while engine is still busy on an
         # earlier utterance — serialize via FIFO.
         self.response_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
-        self.queue_drainer: asyncio.Task | None = None
+        self.queue_drainer: asyncio.Task[None] | None = None
 
         self.vad: TurnDetector = StreamingVAD(VADConfig())
         self.vad_origin_samples = 0
@@ -178,7 +192,7 @@ class RealtimeSession:
             assert isinstance(payload, dict), "Top-level payload must be a JSON object"
             await self.dispatch(payload)
 
-    async def dispatch(self, payload: dict[str, Any]) -> None:
+    async def dispatch(self, payload: Mapping[str, object]) -> None:
         event = parse_conversation_client_event(payload)
         assert event is not None, f"Unsupported event type: {payload.get('type')!r}"
         method_name = HANDLERS[type(event)]
@@ -313,7 +327,7 @@ class RealtimeSession:
         )
 
     @staticmethod
-    def detector_config(value: TurnDetection | None) -> dict[str, Any]:
+    def detector_config(value: TurnDetection | None) -> dict[str, str | float | int]:
         # Resolve against the same runtime defaults build_turn_detector applies,
         # so a client that merely restates the active default doesn't compare
         # as "changed" and trigger a needless detector rebuild/buffer clear.
@@ -367,10 +381,21 @@ class RealtimeSession:
         }
 
     @staticmethod
+    @overload
+    def merge_turn_detection(current: None, update: None) -> None: ...
+
+    @staticmethod
+    @overload
     def merge_turn_detection(
-        current: Mapping[str, Any] | None,
-        update: Mapping[str, Any] | None,
-    ) -> dict[str, Any] | None:
+        current: Mapping[str, object] | None,
+        update: Mapping[str, object] | None,
+    ) -> dict[str, object] | None: ...
+
+    @staticmethod
+    def merge_turn_detection(
+        current: Mapping[str, object] | None,
+        update: Mapping[str, object] | None,
+    ) -> dict[str, object] | None:
         if update is None:
             return dict(current) if current is not None else None
         else:
@@ -381,6 +406,7 @@ class RealtimeSession:
             current_data.get("type") or TurnDetectionType.SERVER_VAD.value
         )
         requested_type = str(update_data.get("type") or current_type)
+        merged: dict[str, object]
         if requested_type == current_type:
             merged = {**current_data, **update_data}
         else:
@@ -425,7 +451,7 @@ class RealtimeSession:
         rel_samples = self.absolute_sample(sample_offset) - self.buffer_origin_samples
         return max(0, rel_samples * 2)
 
-    async def handle_vad_emit(self, emit: Any) -> None:
+    async def handle_vad_emit(self, emit: Emit) -> None:
         timestamp_ms = offsets_to_ms(self.absolute_sample(emit.sample_offset))
         if emit.event_type == VADEvent.SPEECH_STARTED:
             self.speech_idle.clear()
@@ -704,7 +730,7 @@ class RealtimeSession:
         self.active_response_has_audio = wants_audio
         text_acc: list[str] = []
         finish_reason = "stop"
-        usage: dict[str, Any] | None = None
+        usage: dict[str, int | float | None] | None = None
         saw_audio = False
         text_done = False
         audio_done = False
@@ -774,7 +800,7 @@ class RealtimeSession:
                 pass
             response_done = True
 
-        async def emit_terminals_safely(**kwargs: Any) -> None:
+        async def emit_terminals_safely(**kwargs: Unpack[TerminalFields]) -> None:
             terminal_task = asyncio.create_task(emit_terminals(**kwargs))
             try:
                 await asyncio.shield(terminal_task)
@@ -1029,9 +1055,9 @@ class RealtimeSession:
         include_audio: bool,
         status: str,
         reason: str,
-        usage: dict[str, Any] | None,
+        usage: dict[str, int | float | None] | None,
     ) -> None:
-        content: list[dict[str, Any]] = [{"type": "text", "text": response_text}]
+        content: list[dict[str, str]] = [{"type": "text", "text": response_text}]
         if include_audio:
             content.append({"type": "audio", "transcript": response_text})
         else:
@@ -1150,7 +1176,7 @@ class RealtimeSession:
             metadata={"audios": [audio_payload]},
         )
 
-    async def send(self, event: dict[str, Any]) -> None:
+    async def send(self, event: dict[str, object]) -> None:
         if self.closed:
             return
         else:
@@ -1171,7 +1197,7 @@ class RealtimeSession:
         )
 
     async def cancel_and_abort(
-        self, task: asyncio.Task | None, request_id: str | None
+        self, task: asyncio.Task[None] | None, request_id: str | None
     ) -> None:
         """Cancel the owning turn, abort its engine request, absorb the result.
 
