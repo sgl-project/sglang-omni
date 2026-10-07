@@ -262,11 +262,7 @@ stages:
 An explicit stage value wins over the pipeline default. See the platform-neutral
 defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
-### AuK (speech generation and editing)
-
-`tencent/AuK` and `tencent/AuK-Flash` use the same pipeline and also download the separate `Qwen/Qwen2.5-Omni-3B` conditioning encoder. The commands below keep block compilation and step-graph capture enabled by default, as on CUDA.
-
-XPU validation is incomplete: on 24 GiB Intel Arc Pro B60 cards, both checkpoints returned audio for the request below, but speech-content checks found extra words from the voice description. Step graphs were skipped because free memory was below the 4 GiB reserve; block compilation stayed enabled.
+### AuK (speech generation and editing, single XPU)
 
 Run one checkpoint at a time:
 
