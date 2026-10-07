@@ -33,7 +33,12 @@ def start_stream(scheduler, request_id: str) -> StagePayload:
 
 def test_interleaved_requests_stream_their_own_waveforms(random_codec):
     codec = random_codec
-    scheduler = PersonaPlexCode2WavScheduler(codec, compute_fn=lambda payload: payload)
+    scheduler = PersonaPlexCode2WavScheduler(
+        codec,
+        compute_fn=lambda payload: payload,
+        max_batch_size=1,
+        stream_slots=4,
+    )
     codes = {
         "a": torch.randint(0, 2048, (4, 8), generator=torch.Generator().manual_seed(1)),
         "b": torch.randint(0, 2048, (4, 8), generator=torch.Generator().manual_seed(2)),
@@ -69,7 +74,10 @@ def test_interleaved_requests_stream_their_own_waveforms(random_codec):
 
 def test_a_reply_with_frames_streams_whatever_arrives_first(random_codec):
     scheduler = PersonaPlexCode2WavScheduler(
-        random_codec, compute_fn=lambda payload: payload
+        random_codec,
+        compute_fn=lambda payload: payload,
+        max_batch_size=1,
+        stream_slots=4,
     )
     empty = StagePayload(
         "a", request=OmniRequest(inputs={}), data=PersonaPlexState().to_dict()
@@ -85,7 +93,10 @@ def test_a_reply_with_frames_streams_whatever_arrives_first(random_codec):
 
 def test_abort_clears_stream_state(random_codec):
     scheduler = PersonaPlexCode2WavScheduler(
-        random_codec, compute_fn=lambda payload: payload
+        random_codec,
+        compute_fn=lambda payload: payload,
+        max_batch_size=1,
+        stream_slots=4,
     )
     start_stream(scheduler, "a")
     assert scheduler.on_stream_done("a") != []
@@ -103,7 +114,12 @@ def test_reply_length_matches_the_caller_in_chunks_and_final_payload(
     random_codec: MimiCodec, num_samples: int
 ) -> None:
     codec = random_codec
-    scheduler = PersonaPlexCode2WavScheduler(codec, compute_fn=lambda payload: payload)
+    scheduler = PersonaPlexCode2WavScheduler(
+        codec,
+        compute_fn=lambda payload: payload,
+        max_batch_size=1,
+        stream_slots=4,
+    )
     frames, samples_per_frame = 4, codec.samples_per_frame
     expected_samples = num_samples or frames * samples_per_frame
     codes = torch.randint(

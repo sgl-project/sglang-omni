@@ -208,7 +208,13 @@ def create_decode_executor(
 
 
 def create_code2wav_executor(
-    model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
+    model_path: str,
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    max_batch_size: int,
+    stream_slots: int,
+    **_,
 ) -> PersonaPlexCode2WavScheduler:
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
 
@@ -231,7 +237,12 @@ def create_code2wav_executor(
         )
         return payload
 
-    return PersonaPlexCode2WavScheduler(codec, compute_fn=decode)
+    return PersonaPlexCode2WavScheduler(
+        codec,
+        compute_fn=decode,
+        max_batch_size=max_batch_size,
+        stream_slots=stream_slots,
+    )
 
 
 __all__ = [
