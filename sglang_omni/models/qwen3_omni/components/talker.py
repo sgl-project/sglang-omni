@@ -1712,8 +1712,9 @@ class Qwen3OmniTalker(nn.Module):
                 codebook_embedding = self.code_predictor.model.codec_embedding[
                     layer_idx
                 ]
-                # note (ratish): the codebook step runs where the fused layers do: CUDA
-                # with Triton and bf16 tables, whose widths are powers of two.
+                # note (ratish): the codebook step runs where the fused layers do, on CUDA
+                # with Triton; the checkpoint's bf16 tables are 2048 by 1024, the
+                # power-of-two widths it needs.
                 if self.predictor_fused_layers is not None:
                     new_embed = codebook_step(
                         logits[:, -1, :],

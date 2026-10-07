@@ -21,6 +21,7 @@ from sglang.srt.model_executor.cuda_graph_config import (
 from sglang.srt.runtime_context import get_context
 from torch import nn
 
+from sglang_omni.models.qwen3_omni.components import talker as talker_module
 from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
@@ -606,14 +607,87 @@ def test_codebook_step_matches_argmax_gather_and_add() -> None:
     summed = torch.randn(rows, HIDDEN, device=device, generator=generator).to(DTYPE)
     codes = torch.full((rows, NUM_CODE_GROUPS), -1, device=device, dtype=torch.long)
     expected_codes = torch.argmax(logits, dim=-1)
+    expected_matrix = codes.clone()
+    expected_matrix[:, column] = expected_codes
     expected_summed = summed.clone()
     expected_summed.add_(weight[expected_codes])
     codebook_input = codebook_step(logits, weight, codes[:, column], summed)
     assert expected_codes[:4].tolist() == [9, 4, 0, 11]
-    assert torch.equal(codes[:, column], expected_codes)
-    assert torch.equal(codes[:, :column], torch.full_like(codes[:, :column], -1))
+    assert torch.equal(codes, expected_matrix)
     assert torch.equal(codebook_input[:, 0], weight[expected_codes])
     assert torch.equal(summed, expected_summed)
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
+def test_captured_predictor_step_replays_fresh_inputs_as_the_torch_codebook_ops_do(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = torch.device("cuda")
+    vocab, rows = 2048, 3
+    talker = fuse(build_talker(device, seed=31))
+    talker.code_predictor.lm_head = [
+        TupleLinear(HIDDEN, vocab).to(device, DTYPE) for _ in range(NUM_CODE_GROUPS - 1)
+    ]
+    talker.code_predictor.model.codec_embedding = [
+        nn.Embedding(vocab, HIDDEN).to(device, DTYPE)
+        for _ in range(NUM_CODE_GROUPS - 1)
+    ]
+    layer0_embedding = nn.Embedding(3072, HIDDEN).to(device, DTYPE)
+    talker.get_input_embeddings = lambda: layer0_embedding
+    talker.config = SimpleNamespace(num_code_groups=NUM_CODE_GROUPS)
+    talker.predictor_input_buffer = torch.zeros(
+        MAX_BS, 2, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.output_codes = torch.zeros(
+        MAX_BS, NUM_CODE_GROUPS, device=device, dtype=torch.long
+    )
+    talker.output_embeds = torch.zeros(MAX_BS, HIDDEN, device=device, dtype=DTYPE)
+    layer0_codes = torch.zeros(rows, 1, device=device, dtype=torch.long)
+    talker_hidden = torch.zeros(rows, 1, HIDDEN, device=device, dtype=DTYPE)
+
+    def step() -> tuple[torch.Tensor, torch.Tensor]:
+        return talker.code_predictor_forward_incremental_eager(
+            layer0_codes=layer0_codes, talker_hidden=talker_hidden
+        )
+
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side), torch.no_grad():
+        step()
+    torch.cuda.current_stream().wait_stream(side)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph), torch.no_grad():
+        captured_codes, captured_embeds = step()
+
+    def torch_codebook_ops(
+        logits: torch.Tensor,
+        embedding_weight: torch.Tensor,
+        codes: torch.Tensor,
+        summed: torch.Tensor,
+    ) -> torch.Tensor:
+        code = torch.argmax(logits, dim=-1)
+        codes.copy_(code)
+        embedding = embedding_weight[code]
+        summed.add_(embedding)
+        return embedding[:, None, :]
+
+    generator = torch.Generator(device=device).manual_seed(33)
+    for _ in range(2):
+        layer0_codes.copy_(
+            torch.randint(0, 3072, (rows, 1), device=device, generator=generator)
+        )
+        talker_hidden.copy_(
+            torch.randn(rows, 1, HIDDEN, device=device, generator=generator).to(DTYPE)
+        )
+        graph.replay()
+        replayed = (captured_codes.clone(), captured_embeds.clone())
+        with monkeypatch.context() as patch, torch.no_grad():
+            patch.setattr(talker_module, "codebook_step", torch_codebook_ops)
+            expected_codes, expected_embeds = step()
+        assert torch.equal(replayed[0], expected_codes)
+        assert torch.equal(replayed[1], expected_embeds)
 
 
 @accelerator
