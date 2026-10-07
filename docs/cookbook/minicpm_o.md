@@ -42,6 +42,23 @@ curl --fail http://localhost:8000/v1/realtime/capabilities
 
 Full duplex has been tested on one H100 and one H200.
 
+Two configs are provided. Pass either with `--config`:
+
+| Config | Use it for |
+|---|---|
+| `examples/full_duplex/minicpmo.yaml` | Normal serving. Sampling matches the MiniCPM-o demo |
+| `examples/full_duplex/minicpmo-parity.yaml` | Repeatable output for regression and parity recordings. Differs only in greedy sampling and `top_k: 100` |
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503 |
+| `reference_audio` | checkpoint default | Voice used when a session sends no reference |
+| `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation |
+| `sampling` | see the config | Default sampling when a session does not set its own |
+| `vision` | see the config | Camera-frame limits per unit (1 s of audio) |
+
+A session holds at most 8192 tokens of history, the model's limit. When that fills, the server sends `context_exhausted` and closes the session.
+
 ## Browser demo
 
 With the full-duplex server running, start the demo page in another terminal:
@@ -98,5 +115,3 @@ Session settings go in the `sglang` field of `session.update`, before the first 
 | Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
 
 Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
-
-By default the server runs at most 2 sessions at a time (`max_sessions`), and further connections get HTTP 503. A session keeps up to 8192 tokens of history; when it is full, the server sends `context_exhausted` and closes the session. For repeatable output, start the server with `examples/full_duplex/minicpmo-parity.yaml`.
