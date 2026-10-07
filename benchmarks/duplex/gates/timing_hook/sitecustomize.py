@@ -313,7 +313,6 @@ def patch_streaming_perception_prepare(recorder, module):
                 "prepare_image",
                 lambda self, *a, **k: "perc:image_prepare",
                 lambda self, *a, **k: 1,
-                sync=True,
             )
         else:
             pass
