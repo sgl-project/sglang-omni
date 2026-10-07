@@ -41,7 +41,8 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
     def __init__(
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
     ) -> None:
-        super().__init__(tp_worker, output_processor)
+        # note (ruinique): duplex_sample owns the native runner's termination tokens.
+        super().__init__(tp_worker, output_processor, eos_token_ids=[])
         self.special_tokens: MiniCPMOSpecialTokenIds | None = None
         self.forbidden_token_index: torch.Tensor | None = None
 

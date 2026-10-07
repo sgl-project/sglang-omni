@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -563,3 +564,47 @@ def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
     scheduler = stage_workers.construct_scheduler(spec, None, RecordingLog())
 
     assert isinstance(scheduler, FakeScheduler)
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "expected"),
+    [
+        (platforms.CPUOmniPlatform, []),
+        (
+            platforms.XPUOmniPlatform,
+            ["set_device:xpu:1", "synchronize", "empty_cache"],
+        ),
+        (
+            CUDAOmniPlatform,
+            ["set_device:cuda:1", "synchronize", "empty_cache", "ipc_collect"],
+        ),
+    ],
+)
+def test_stage_teardown_reclaims_through_the_platform(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_type: type[platforms.OmniPlatform],
+    expected: list[str],
+) -> None:
+    """A stage that dies on a non-CUDA accelerator still has to give its memory back,
+    which the torch.cuda.is_available guard used to skip entirely."""
+    calls: list[str] = []
+    platform = platform_type()
+    monkeypatch.setattr(stage_workers, "current_platform", platform)
+    monkeypatch.setattr(
+        platform_type,
+        "set_device",
+        lambda self, device: calls.append(f"set_device:{device}"),
+    )
+    monkeypatch.setattr(
+        platform_type, "synchronize", lambda self: calls.append("synchronize")
+    )
+    monkeypatch.setattr(
+        platform_type, "empty_cache", lambda self: calls.append("empty_cache")
+    )
+    monkeypatch.setattr(torch.cuda, "ipc_collect", lambda: calls.append("ipc_collect"))
+
+    stage_workers.reclaim_process_gpu_memory(
+        [1], logging.getLogger(__name__), reason="test"
+    )
+
+    assert calls == expected

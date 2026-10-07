@@ -93,6 +93,7 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
     if use_runner:
         runner = MiniCPMOThinkerModelRunner.__new__(MiniCPMOThinkerModelRunner)
         runner.special_tokens = None
+        runner.eos_token_ids = []
         special = runner.resolve_special_tokens(
             SimpleNamespace(req=Mock(tokenizer=tokenizer))
         )

@@ -325,8 +325,8 @@ def serve(
             "--allowed-local-media-path",
             "--allowed_local_media_path",
             help=(
-                "Directory that local media references in TTS requests must "
-                "resolve inside. file:// references are disabled when this is "
+                "Directory that local media references in chat and TTS requests "
+                "must resolve inside. file:// references are disabled when this is "
                 "omitted; bare local paths stay allowed by default but are also "
                 "restricted to this directory once it is configured."
             ),
