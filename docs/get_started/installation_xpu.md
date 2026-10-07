@@ -199,7 +199,7 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 
 #### CustomVoice
 
-`CustomVoice` checkpoints synthesize speech with built-in speakers and needs no reference audio. Use its matching config and select a speaker in the request. This example uses `mem_fraction_static=0.60` to reduce KV-cache allocation:
+`CustomVoice` checkpoints synthesize speech with built-in speakers and need no reference audio. Use the matching config and select a speaker in the request. This example uses `mem_fraction_static=0.60` to reduce KV-cache allocation:
 
 ```bash
 sgl-omni serve \
