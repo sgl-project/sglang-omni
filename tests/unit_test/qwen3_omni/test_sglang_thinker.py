@@ -437,10 +437,7 @@ def test_no_token_count_up_to_the_ceiling_compiles_a_fused_moe_kernel_after_prec
     ).to(torch.bfloat16)
     router = torch.randn(hidden_size, num_experts, device=device, generator=generator)
     runner_config = MoeRunnerConfig(
-        num_experts=num_experts,
-        num_local_experts=num_experts,
-        top_k=top_k,
-        inplace=False,
+        num_experts=num_experts, num_local_experts=num_experts, top_k=top_k
     )
 
     def forward_normal(hidden_states: torch.Tensor) -> torch.Tensor:
