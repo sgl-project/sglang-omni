@@ -10,6 +10,7 @@ from PIL import Image
 
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
+from sglang_omni.models.minicpm_o.routing import project_preprocessing_to_image_encoder
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -49,6 +50,31 @@ async def empty_images(images):
 
 async def explicit_audios(_audios, *, target_sr):
     return [np.array([0.25, 0.5], dtype=np.float32)] if _audios else []
+
+
+def test_image_encoder_projection_copies_lists_without_copying_tensors() -> None:
+    pixel_tensor = torch.zeros(1, 2)
+    target_size_tensor = torch.tensor([1, 1])
+    pixel_values = [pixel_tensor]
+    target_sizes = [target_size_tensor]
+    payload = make_payload({})
+    payload.data = {
+        "encoder_inputs": {
+            "image_encoder": {
+                "pixel_values": pixel_values,
+                "tgt_sizes": target_sizes,
+                "cache_key": "image-cache",
+            }
+        }
+    }
+
+    projected = project_preprocessing_to_image_encoder(payload)
+    projected_inputs = projected.data["encoder_inputs"]["image_encoder"]
+
+    assert projected_inputs["pixel_values"] is not pixel_values
+    assert projected_inputs["tgt_sizes"] is not target_sizes
+    assert projected_inputs["pixel_values"][0] is pixel_tensor
+    assert projected_inputs["tgt_sizes"][0] is target_size_tensor
 
 
 @pytest.mark.parametrize("use_audio_in_video", [None, False, True])
