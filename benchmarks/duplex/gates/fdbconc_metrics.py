@@ -6,19 +6,28 @@ A run directory holds one recorder output per client (<run>/w<k>/samples/<subset
 
 - lag of a unit: receive time of its sglang.unit.done minus the send time of the 80 ms input packet that
   holds the unit's media end (taken from the unit's media_time, so a padded first unit is located correctly);
-- miss: share of units whose lag exceeds UNIT_BUDGET_S (one unit of audio, 1 s);
-- expected units of a sample: ceil(accepted input ms / 1000) from sglang.input_audio.ended;
+- miss: share of units whose lag exceeds one unit of audio (UNIT_MS: 1000 for MiniCPM-o, 80 for PersonaPlex and VoiceChat);
+  session_miss_max_pct is the miss of the worst sample (one sample is one session);
+- expected units of a sample: ceil(accepted input ms / UNIT_MS) from sglang.input_audio.ended;
 - errors: error events; sessions_with_error counts samples with at least one.
+
+UNIT_MS comes from the environment (default 1000); report.py sets it from the results directory.
 """
 
 import collections
 import glob
 import json
 import math
+import os
 import sys
 
 PACKET_MS = 80
-UNIT_BUDGET_S = 1.0
+UNIT_MS = float(os.environ.get("UNIT_MS") or 1000)
+
+
+def set_unit_ms(unit_ms):
+    global UNIT_MS
+    UNIT_MS = float(unit_ms)
 
 
 def percentile(values, q):
@@ -69,7 +78,8 @@ def read_trace(path):
 
 
 def run_metrics(root):
-    lags, speak, unit_index = [], [], []
+    budget_s = UNIT_MS / 1000
+    lags, speak, unit_index, session_miss = [], [], [], []
     samples = sessions_with_error = expected = 0
     messages = collections.Counter()
     first_send = last_receive = None
@@ -79,9 +89,9 @@ def run_metrics(root):
         sessions_with_error += bool(errors)
         messages.update(errors)
         if accepted_ms is not None:
-            expected += math.ceil(accepted_ms / 1000 - 1e-9)
+            expected += math.ceil(accepted_ms / UNIT_MS - 1e-9)
         else:
-            expected += math.ceil(len(sends) * PACKET_MS / 1000 - 1e-9)
+            expected += math.ceil(len(sends) * PACKET_MS / UNIT_MS - 1e-9)
         if t_first is not None:
             first_send = t_first if first_send is None else min(first_send, t_first)
         else:
@@ -90,12 +100,20 @@ def run_metrics(root):
             last_receive = t_last if last_receive is None else max(last_receive, t_last)
         else:
             pass
+        sample_lags = []
         for k, (done_s, audio, end_ms) in enumerate(dones):
-            end = end_ms if end_ms is not None else (k + 1) * 1000
+            end = end_ms if end_ms is not None else (k + 1) * UNIT_MS
             idx = min(-(-int(end) // PACKET_MS) - 1, len(sends) - 1)
-            lags.append(done_s - sends[idx])
+            sample_lags.append(done_s - sends[idx])
             speak.append(audio)
             unit_index.append(k)
+        lags.extend(sample_lags)
+        if sample_lags:
+            session_miss.append(
+                100 * sum(lag > budget_s for lag in sample_lags) / len(sample_lags)
+            )
+        else:
+            pass
     spoken = [lag for lag, s in zip(lags, speak) if s]
     units = len(lags)
     return {
@@ -104,12 +122,12 @@ def run_metrics(root):
         "expected_units": expected,
         "speak_pct": 100 * len(spoken) / units if units else float("nan"),
         "miss_pct": (
-            100 * sum(lag > UNIT_BUDGET_S for lag in lags) / units
-            if units
-            else float("nan")
+            100 * sum(lag > budget_s for lag in lags) / units if units else float("nan")
         ),
         "miss_first5_pct": miss_share(lags, unit_index, lambda k: k < 5),
         "miss_after5_pct": miss_share(lags, unit_index, lambda k: k >= 5),
+        "session_miss_max_pct": max(session_miss, default=float("nan")),
+        "unit_ms": UNIT_MS,
         "lag_p50_ms": 1000 * percentile(lags, 0.5),
         "lag_p90_ms": 1000 * percentile(lags, 0.9),
         "lag_p95_ms": 1000 * percentile(lags, 0.95),
@@ -125,7 +143,7 @@ def run_metrics(root):
 def miss_share(lags, unit_index, keep):
     chosen = [lag for lag, k in zip(lags, unit_index) if keep(k)]
     return (
-        100 * sum(lag > UNIT_BUDGET_S for lag in chosen) / len(chosen)
+        100 * sum(lag > UNIT_MS / 1000 for lag in chosen) / len(chosen)
         if chosen
         else float("nan")
     )

@@ -1,10 +1,13 @@
 #!/bin/bash
 # setup_node.sh <deps-tag>: prepare a GPU node for the gates. Runs on the node host, idempotent, about 15 minutes on a fresh node.
 #   1. pull $IMAGE;
-#   2. download $MODEL_REPO@$MODEL_REVISION into $OMNI_ROOT/models and check every file against its Hub digest;
+#   2. download $MODEL_REPO@$MODEL_REVISION of models/$MODEL.env into $OMNI_ROOT/models and check every file against its Hub digest
+#      (HF_TOKEN, when set, authorizes gated checkpoints such as PersonaPlex; it is used only here);
 #   3. create one container per card in $CARDS (--device nvidia.com/gpu=<UUID>; a single container with CUDA_VISIBLE_DEVICES breaks stage platform resolution);
 #      the first is provisioned (apt sox/unzip, $PIP_PINS, the dependencies of the pushed tree <deps-tag>, $PIP_EXTRAS), committed, and cloned for the other cards;
-#   4. fetch Full-Duplex-Bench v1.0 (only the five v1.0 zips) into $OMNI_ROOT/logs/fdb and check $FDB_DIGEST.
+#   4. fetch the HUB_FILES of the model (VoiceChat: the tokenizer and config of its backbone repo) into the HF cache $OMNI_ROOT/logs/hf-home;
+#   5. fetch Full-Duplex-Bench v1.0 (only the five v1.0 zips) into $OMNI_ROOT/logs/fdb and check $FDB_DIGEST.
+# Run it once per model (MODEL=personaplex setup_node.sh base); the steps already done are skipped.
 # Push the harness and the <deps-tag> tree first (gate.sh push). Run detached, e.g.
 #   setsid nohup bash ~/omni/src/harness/setup_node.sh base > ~/omni/setup.log 2>&1 < /dev/null &
 # and wait for the line SETUP_DONE (or SETUP_FAILED). MPS is started per container by gate.sh, not here.
@@ -36,8 +39,10 @@ import sys
 import urllib.request
 
 repo, revision, out = sys.argv[1:]
+token = os.environ.get("HF_TOKEN")
+auth = {"Authorization": f"Bearer {token}"} if token else {}
 tree_url = f"https://huggingface.co/api/models/{repo}/tree/{revision}?recursive=1"
-entries = [e for e in json.load(urllib.request.urlopen(tree_url)) if e["type"] == "file"]
+entries = [e for e in json.load(urllib.request.urlopen(urllib.request.Request(tree_url, headers=auth))) if e["type"] == "file"]
 
 
 def digest_ok(entry):
@@ -67,7 +72,8 @@ def fetch(entry):
         else:
             pass  # missing or partial: curl -C - resumes it
         url = f"https://huggingface.co/{repo}/resolve/{revision}/{entry['path']}"
-        subprocess.run(["curl", "-sfL", "--retry", "5", "-C", "-", url, "-o", path], check=False)
+        header = [arg for key, value in auth.items() for arg in ("-H", f"{key}: {value}")]
+        subprocess.run(["curl", "-sfL", "--retry", "5", *header, "-C", "-", url, "-o", path], check=False)
     return None if digest_ok(entry) else entry["path"]
 
 
@@ -118,6 +124,23 @@ for i in "${!cards[@]}"; do
   [ "$i" = 0 ] && continue
   create "${containers[$i]}" "${cards[$i]}" "$env_image" || fail "create ${containers[$i]}"
 done
+
+if [ -n "$HUB_FILES" ]; then
+  echo "$(date -u +%T) Hub files $HUB_FILES"
+  # shellcheck disable=SC2016  # expands inside the container
+  podman exec -e HUB_FILES="$HUB_FILES" -e HF_HOME="$HUB_HOME" -e HF_TOKEN="${HF_TOKEN:-}" "$first" python -c '
+import os
+from huggingface_hub import hf_hub_download
+for entry in os.environ["HUB_FILES"].split():
+    spec, files = entry.split(":")
+    repo, revision = spec.split("@")
+    for name in files.split(","):
+        print(hf_hub_download(repo, name, revision=revision, token=os.environ["HF_TOKEN"] or None))
+    # the server resolves the default revision offline (HF_HUB_OFFLINE=1): point it at the pinned one
+    refs = os.path.join(os.environ["HF_HOME"], "hub", "models--" + repo.replace("/", "--"), "refs")
+    os.makedirs(refs, exist_ok=True)
+    open(os.path.join(refs, "main"), "w").write(revision)' || fail "Hub files"
+fi
 
 echo "$(date -u +%T) Full-Duplex-Bench v1.0"
 # shellcheck disable=SC2016

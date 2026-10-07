@@ -1,4 +1,4 @@
-"""Recorder-side video probe for the duplex gates (not part of the client).
+"""Recorder-side video probe and model options for the duplex gates (not part of the client).
 
 With DUPLEX_FRAMES_PER_UNIT=N > 0 and DUPLEX_FRAME_DIR=<dir of .jpg files>, every recorder
 websocket sends N sglang.input_image.append events for each 1 s unit, just before the first
@@ -6,6 +6,7 @@ input audio packet that starts in that unit. The frames rotate over the sorted J
 (unit u, frame j uses file (u * N + j) mod count) and carry t_ms = unit start + 1 + j, so the
 server attaches them to that unit. The dataset audio is unchanged. The image events are not
 written to the recorder trace; the server's sglang.input_image.accepted replies are.
+The model options live in model_client.py, imported at the end.
 """
 
 import base64
@@ -60,3 +61,5 @@ if FRAMES_PER_UNIT > 0:
     install(load_frames(FRAME_DIR))
 else:
     pass
+# model options of the recorder (PersonaPlex profile, input sample rate, session.update fields)
+import model_client  # noqa: E402,F401

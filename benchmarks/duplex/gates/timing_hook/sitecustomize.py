@@ -7,7 +7,9 @@ appends JSON lines {"t": start, "dt": seconds, "kind": ..., "n": batch size} to
 SIGKILL. "t" is time.perf_counter(), the same clock as the recorder traces' "time_s".
 
 Recorded kinds:
-  hooks:<Hooks>          SessionScheduler.compute_batch (perception, speech), n = sessions in the batch
+  hooks:<Hooks>          SessionScheduler.compute_batch (perception, speech), n = sessions in the batch;
+                         with STAGE_TIMING_SESSION_COMPUTE=1 also SessionScheduler.compute, the path of per-session
+                         hooks that never batch (VoiceChat perception and codec), n = 1
   open:<Hooks>           SessionScheduler.open_session
   perc:append[_batch]    PerceptionHooks.append / append_batch
   perc:image, perc:audio one frame's image encoding / one batched streaming audio encoder call
@@ -31,6 +33,7 @@ import time
 
 OUT_DIR = os.environ.get("STAGE_TIMING_DIR")
 LIGHT = os.environ.get("STAGE_TIMING_LIGHT") == "1"
+SESSION_COMPUTE = os.environ.get("STAGE_TIMING_SESSION_COMPUTE") == "1"
 GC_PAUSE_MIN_S = 0.005
 
 
@@ -170,6 +173,18 @@ def patch_session(recorder, module):
         lambda self, payloads, *a, **k: len(payloads),
         sync=True,
     )
+    if SESSION_COMPUTE:
+        # compute_batch also calls compute for opens and closes; batching models leave this off
+        wrap_method(
+            recorder,
+            cls,
+            "compute",
+            lambda self, *a, **k: "hooks:" + hooks_name(self),
+            lambda self, *a, **k: 1,
+            sync=True,
+        )
+    else:
+        pass
 
 
 def patch_engine(recorder, module):

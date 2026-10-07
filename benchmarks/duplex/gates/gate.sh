@@ -1,16 +1,17 @@
 #!/bin/bash
-# gate.sh: MiniCPM-o duplex gates. See README.md in this directory.
+# gate.sh: duplex gates for MiniCPM-o, PersonaPlex and Nemotron VoiceChat. See README.md in this directory.
+# MODEL=minicpmo (default) | personaplex | voicechat picks models/$MODEL.env; unit, ladder and sweep run for every model, the others for MiniCPM-o only.
 #
 # Local (inside a git checkout; NODE=<ssh destination>):
 #   gate.sh push <tag>:<sha>...          copy this directory and `git archive` of each tree (and $BENCH_TREE) to the node
 #   gate.sh pull <name> [dest]           copy a results directory back without recorder traces (TRACES=1 keeps them; large)
 # Node host (each command starts detached work in the containers and returns; results in $OMNI_ROOT/logs/gates/<name>):
-#   gate.sh unit <tree> [--gpu] [--full]
+#   gate.sh unit <tree> [--gpu] [--full]          (UNIT_TESTS of the model; --gpu: MiniCPM-o only)
 #   gate.sh ladder <tree>[,<tree>...] <sessions> <runs> [--speech tuned|default] [--samples N] [--frames-per-unit N] [--no-warm] [--name NAME]
 #   gate.sh perception <tree>[,<tree>...] [sessions=48] [runs=3]
 #   gate.sh serving <tree> <c-list> <reps> [--graphs] [--card I]
 #   gate.sh agree <tree> [--card I]
-#   gate.sh sweep <tree> [--sessions 1,2,4,8,16,32,48,64] [--runs 2] [--runs-above-target R] [--miss-threshold 1.0] [--stop-miss 30] [--frames-per-unit N]
+#   gate.sh sweep <tree> [--sessions $SWEEP_LEVELS] [--runs 2] [--runs-above-target R] [--miss-threshold 1.0] [--stop-miss 30] [--frames-per-unit N]
 #   gate.sh status <name> | report <name> | stop
 # A tree is <tag>:<sha> of a tree pushed with `gate.sh push`; the sha may be abbreviated.
 # Environment: HOSTLOAD=1 (host CPU sampler next to each ladder run), WAVE_GAP (s between two cards' client waves, 30),
@@ -81,7 +82,8 @@ new_results() { # <name> <kind> <args...>: create the results directory and its 
   [ -e "$dir" ] && die "results $dir exist; pass another --name"
   mkdir -p "$dir"
   {
-    for var in CARDS CONTAINERS CLIENT_CPUS_LIST UNIT_CPUS BENCH_TREE CLIENT_PROFILE MODEL_REPO MODEL_REVISION MODEL_NAME FDB_DIGEST WAVE_GAP; do
+    for var in CARDS CONTAINERS CLIENT_CPUS_LIST UNIT_CPUS BENCH_TREE CLIENT_PROFILE MODEL_REPO MODEL_REVISION MODEL_NAME FDB_DIGEST WAVE_GAP \
+      MODEL SERVER_KIND SERVER_YAML INPUT_SAMPLE_RATE SESSION_UPDATE UNIT_MS MAX_LEVEL WARM_SESSIONS WARM_SAMPLES UNIT_TESTS HUB_FILES STAGE_TIMING_SESSION_COMPUTE; do
       printf '%s=%q\n' "$var" "${!var}"
     done
     printf '%s=%q\n' HOSTLOAD "${HOSTLOAD:-0}" STAGE_TIMING_LIGHT "${STAGE_TIMING_LIGHT:-0}" MPS "${MPS:-1}"
@@ -93,16 +95,28 @@ new_results() { # <name> <kind> <args...>: create the results directory and its 
 exec_detached() { # <slot> <args...>: run gate.sh <args> inside the container of card slot <slot>
   local slot=$1
   shift
-  podman exec -d "${CONTAINER_LIST[$slot]}" bash "$HARNESS_DIR/gate.sh" "$@" > /dev/null
+  podman exec -d -e MODEL="$MODEL" "${CONTAINER_LIST[$slot]}" bash "$HARNESS_DIR/gate.sh" "$@" > /dev/null
 }
 
 default_name() { date -u +"$1-$2-%m%d-%H%M"; }
+
+minicpmo_only() { # <gate>
+  [ "$MODEL" = minicpmo ] || die "$1 runs for MiniCPM-o only (MODEL=$MODEL)"
+}
 
 ladder_like() { # <kind> <trees> <sessions-list> <runs> <speech> <samples> <warm> <name> <miss-threshold> <stop-miss>
   local kind=$1 trees=$2 levels=$3 runs=$4 speech=$5 samples=$6 warm=$7 name=$8 threshold=$9 stop_miss=${10}
   local results spec run level tag sha label n queue=() slot resolved
   local -a specs
   IFS=, read -r -a specs <<< "$trees"
+  if [ -n "$MAX_LEVEL" ]; then
+    for level in ${levels//,/ }; do
+      [ "$level" -le "$MAX_LEVEL" ] || die "$MODEL serves at most $MAX_LEVEL sessions (MAX_LEVEL); level $level would be refused, not measured"
+    done
+  fi
+  # the speech block and the video probe are MiniCPM-o settings
+  [ "$MODEL" = minicpmo ] || speech=none
+  [ "$MODEL" = minicpmo ] || [ "$FRAMES" = 0 ] || die "--frames-per-unit runs for MiniCPM-o only"
   for level in ${levels//,/ }; do
     for run in $(seq 1 "$runs"); do
       for spec in "${specs[@]}"; do
@@ -145,11 +159,12 @@ cmd_ladder() {
 
 cmd_perception() {
   local trees=${1:?tree} sessions=${2:-48} runs=${3:-3}
+  minicpmo_only perception
   ladder_like perception "$trees" "$sessions" "$runs" default 96 1 "$(default_name perception "${trees%%:*}")" 1.0 101
 }
 
 cmd_sweep() {
-  local tree=${1:?tree} levels=1,2,4,8,16,32,48,64 runs=2 threshold=1.0 stop_miss=30 warm=1 name=""
+  local tree=${1:?tree} levels=$SWEEP_LEVELS runs=2 threshold=1.0 stop_miss=30 warm=1 name=""
   shift
   while [ $# -gt 0 ]; do
     case $1 in
@@ -172,6 +187,8 @@ cmd_sweep() {
 cmd_single() { # unit | serving | agree: one container
   local kind=$1 spec=$2 slot=0 name="" tag sha results resolved
   shift 2
+  [ "$kind" = unit ] || minicpmo_only "$kind"
+  [ "$kind" != unit ] || [[ " $* " != *" --gpu "* ]] || minicpmo_only "unit --gpu"
   local -a rest=()
   while [ $# -gt 0 ]; do
     case $1 in
@@ -204,6 +221,7 @@ load_results_env() { # <results>
   RESULTS=$1
   # shellcheck source=/dev/null
   source "$RESULTS/env.sh"
+  MODEL_DIR=$MODELS_DIR/$MODEL_NAME
   read -r -a CARD_LIST <<< "$CARDS"
   read -r -a CPUS_LIST <<< "$CLIENT_CPUS_LIST"
   BENCH_TAG=${BENCH_TREE%%:*}
@@ -222,8 +240,8 @@ prep_tree() { # <tag> <sha>: extract the pushed tree to /work-<tag> unless it is
   )
 }
 
-write_yaml() { # <tree> <out> <max_sessions> <speech tuned|default> <graphs 1|0>
-  MODEL_DIR=$MODEL_DIR TUNED_SPEECH=$TUNED_SPEECH python - "$@" << 'PY'
+write_yaml() { # <tree> <out> <max_sessions> <speech tuned|default|none> <graphs 1|0>: the server yaml (only a record of the settings when SERVER_YAML is empty)
+  MODEL_DIR=$MODEL_DIR TUNED_SPEECH=$TUNED_SPEECH SERVER_YAML=$SERVER_YAML python - "$@" << 'PY'
 import json
 import os
 import sys
@@ -231,7 +249,8 @@ import sys
 import yaml
 
 tree, out, sessions, speech, graphs = sys.argv[1:]
-config = yaml.safe_load(open(f"{tree}/examples/full_duplex/minicpmo-parity.yaml"))
+source = os.environ["SERVER_YAML"]
+config = yaml.safe_load(open(f"{tree}/{source}")) if source else {"stages": {}}
 config["model_path"] = os.environ["MODEL_DIR"]
 config["max_sessions"] = int(sessions)
 if graphs == "1":
@@ -247,17 +266,28 @@ yaml.safe_dump(config, open(out, "w"), sort_keys=False)
 PY
 }
 
+server_command() { # <yaml> <port>: the server command line of SERVER_KIND
+  case $SERVER_KIND in
+    cli) echo "python -m sglang_omni.cli serve --config $1 --enable-realtime --host 127.0.0.1 --port $2" ;;
+    voicechat) echo "python examples/run_nemotron_voicechat_duplex.py --model-path $MODEL_DIR --serve --port $2" ;;
+    *) die "unknown SERVER_KIND $SERVER_KIND" ;;
+  esac
+}
+
 start_server() { # <tree> <yaml> <port> <log> <timing-dir or ""> -> prints seconds to ready; fails on a crash or after 30 min
-  local tree=$1 yaml=$2 port=$3 log=$4 timing=$5 t0 pythonpath=$1
-  local -a hook_env=()
+  local tree=$1 yaml=$2 port=$3 log=$4 timing=$5 t0 pythonpath=$1 cmdline
+  local -a hook_env=() hub_env=()
   if [ -n "$timing" ]; then
     pythonpath=$HARNESS_DIR/timing_hook:$tree
-    hook_env=("STAGE_TIMING_DIR=$timing" "STAGE_TIMING_LIGHT=${STAGE_TIMING_LIGHT:-0}")
+    hook_env=("STAGE_TIMING_DIR=$timing" "STAGE_TIMING_LIGHT=${STAGE_TIMING_LIGHT:-0}" "STAGE_TIMING_SESSION_COMPUTE=$STAGE_TIMING_SESSION_COMPUTE")
   fi
+  [ -n "$HUB_FILES" ] && hub_env=("HF_HOME=$HUB_HOME")
+  cmdline=$(server_command "$yaml" "$port")
   t0=$(date +%s)
   # the whole background group writes to the log, so it does not hold the caller's $(...) pipe open
-  (cd "$tree" && exec env HF_HUB_OFFLINE=1 PYTHONPATH="$pythonpath" CUDA_VISIBLE_DEVICES=0 "${hook_env[@]}" \
-    setsid nohup python -m sglang_omni.cli serve --config "$yaml" --enable-realtime --host 127.0.0.1 --port "$port") > "$log" 2>&1 < /dev/null &
+  # shellcheck disable=SC2086  # the command line is split into words on purpose
+  (cd "$tree" && exec env HF_HUB_OFFLINE=1 PYTHONPATH="$pythonpath" CUDA_VISIBLE_DEVICES=0 "${hook_env[@]}" "${hub_env[@]}" \
+    setsid nohup $cmdline) > "$log" 2>&1 < /dev/null &
   for _ in $(seq 1 600); do
     if curl -sf -m 3 "http://127.0.0.1:$port/v1/realtime/capabilities" > /dev/null; then
       echo $(($(date +%s) - t0))
@@ -269,9 +299,13 @@ start_server() { # <tree> <yaml> <port> <log> <timing-dir or ""> -> prints secon
   return 1
 }
 
-stop_server() { # <yaml>: kill the server's session (main process and stage processes)
-  local pid sid
-  for pid in $(pgrep -f "[s]glang_omni.cli serve --config $1"); do
+stop_server() { # <yaml> <port>: kill the server's session (main process and stage processes)
+  local pid sid pattern
+  case $SERVER_KIND in
+    voicechat) pattern="[r]un_nemotron_voicechat_duplex.py --model-path $MODEL_DIR --serve --port $2" ;;
+    *) pattern="[s]glang_omni.cli serve --config $1" ;;
+  esac
+  for pid in $(pgrep -f "$pattern"); do
     sid=$(ps -o sid= -p "$pid" | tr -d ' ')
     [ -n "$sid" ] && pkill -9 -s "$sid"
   done
@@ -296,7 +330,8 @@ record() { # <out> <port> <tree-sha> <cpus> <frames per unit> <dataset-root> <sa
   shift 6
   local -a ids=()
   for id in "$@"; do ids+=(--sample-id "$id"); done
-  (cd /work-bench && env PYTHONPATH="$HARNESS_DIR/frame_hook:/work-bench" DUPLEX_FRAMES_PER_UNIT="$frames" DUPLEX_FRAME_DIR="$HARNESS_DIR/frames" OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 taskset -c "$cpus" \
+  (cd /work-bench && env PYTHONPATH="$HARNESS_DIR/frame_hook:/work-bench" DUPLEX_FRAMES_PER_UNIT="$frames" DUPLEX_FRAME_DIR="$HARNESS_DIR/frames" \
+    DUPLEX_INPUT_SAMPLE_RATE="$INPUT_SAMPLE_RATE" DUPLEX_SESSION_UPDATE="$SESSION_UPDATE" OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 taskset -c "$cpus" \
     python -m benchmarks.eval.benchmark_duplex_v10 record --dataset-root "$root" --dataset-revision "zips-sha256-$FDB_DIGEST" \
     --url "ws://127.0.0.1:$port/v1/realtime" --profile "$CLIENT_PROFILE" --model "$MODEL_REPO" --model-revision "$MODEL_REVISION" \
     --server-revision "$sha" --timeout 180 "${ids[@]}" --output "$out" > "$out-record.log" 2>&1)
@@ -328,7 +363,7 @@ run_ladder_job() { # <slot> <port> <label> <tag> <sha> <sessions> <speech> <samp
   if ! startup=$(start_server "/work-$tag" "$run/server.yaml" "$port" "$run/server.log" "$run/timing"); then
     echo "NOT_READY" > "$run/status"
     echo "$(stamp) $label card ${CARD_LIST[$slot]} NOT_READY $(grep -m1 -E 'Error' "$run/server.log" | cut -c1-300)" >> "$RESULTS/chain.log"
-    stop_server "$run/server.yaml"
+    stop_server "$run/server.yaml" "$port"
     return 0
   fi
   echo "startup_s=$startup" >> "$run/meta.txt"
@@ -356,7 +391,7 @@ run_ladder_job() { # <slot> <port> <label> <tag> <sha> <sessions> <speech> <samp
   wait "$sampler"
   [ -n "$hostload" ] && kill "$hostload"
   grep -c Traceback "$run/server.log" > "$run/tracebacks.txt"
-  stop_server "$run/server.yaml"
+  stop_server "$run/server.yaml" "$port"
   echo READY > "$run/status"
   echo "$(stamp) $(python "$HARNESS_DIR/report.py" run "$run")" >> "$RESULTS/chain.log"
 }
@@ -425,7 +460,7 @@ run_worker() { # <results> <slot> <warm 1|0>: take runs off the queue until it i
     read -r _ tag sha _ <<< "$(sed -n 's/^warm_tree=//p' "$RESULTS/gate.txt")"
     speech=$(sed -n 's/^speech=//p' "$RESULTS/gate.txt")
     frames=$(sed -n 's/^frames=//p' "$RESULTS/gate.txt")
-    run_ladder_job "$slot" "$base" "warm-c${CARD_LIST[$slot]}" "$tag" "$sha" 8 "$speech" 16 "${frames:-0}"
+    run_ladder_job "$slot" "$base" "warm-c${CARD_LIST[$slot]}" "$tag" "$sha" "$WARM_SESSIONS" "$speech" "$WARM_SAMPLES" "${frames:-0}"
   fi
   while true; do
     job=$(
@@ -465,7 +500,7 @@ run_worker() { # <results> <slot> <warm 1|0>: take runs off the queue until it i
 
 run_unit() { # <results> <slot> <tag> <sha> [--gpu] [--full]
   load_results_env "$1"
-  local tag=$3 sha=$4 gpu=0 tests="tests/unit_test/minicpm_o tests/unit_test/scheduling tests/unit_test/test_stage_device_contract.py" rc
+  local tag=$3 sha=$4 gpu=0 tests=$UNIT_TESTS rc
   shift 4
   for arg in "$@"; do
     case $arg in
@@ -510,7 +545,7 @@ run_serving() { # <results> <slot> <tag> <sha> <c-list> <reps> [--graphs]
     port=$((28000 + CARD_LIST[slot] * 200 + rep * 10))
     if ! startup=$(start_server "/work-$tag" "$yaml" "$port" "$RESULTS/rep$rep-server.log" ""); then
       echo "$(stamp) rep $rep NOT_READY $(grep -m1 Error "$RESULTS/rep$rep-server.log" | cut -c1-300)" >> "$RESULTS/chain.log"
-      stop_server "$yaml"
+      stop_server "$yaml" "$port"
       break
     fi
     echo "READY ${startup}s" > "$RESULTS/rep$rep-server.out"
@@ -521,7 +556,7 @@ run_serving() { # <results> <slot> <tag> <sha> <c-list> <reps> [--graphs]
         --output-dir "$RESULTS/rep$rep/$pacing" > "$RESULTS/rep$rep-$pacing.out" 2>&1)
     done
     grep -c Traceback "$RESULTS/rep$rep-server.log" > "$RESULTS/rep$rep-tracebacks.txt"
-    stop_server "$yaml"
+    stop_server "$yaml" "$port"
     echo "$(stamp) rep $rep done startup ${startup}s" >> "$RESULTS/chain.log"
   done
   python "$HARNESS_DIR/report.py" serving "$RESULTS" > "$RESULTS/report.md" 2>&1
@@ -541,7 +576,7 @@ run_agree() { # <results> <slot> <tag> <sha>: all 727 samples, max_sessions 4, f
   write_yaml "/work-$tag" "$yaml" 4 default 1
   if ! startup=$(start_server "/work-$tag" "$yaml" "$port" "$RESULTS/server.log" ""); then
     echo "$(stamp) NOT_READY" >> "$RESULTS/chain.log"
-    stop_server "$yaml"
+    stop_server "$yaml" "$port"
     touch "$RESULTS/DONE"
     return 1
   fi
@@ -562,14 +597,14 @@ run_agree() { # <results> <slot> <tag> <sha>: all 727 samples, max_sessions 4, f
   shard s4 synthetic_user_interruption &
   wait
   grep -c Traceback "$RESULTS/server.log" > "$RESULTS/tracebacks.txt"
-  stop_server "$yaml"
+  stop_server "$yaml" "$port"
   python "$HARNESS_DIR/report.py" agree "$RESULTS" > "$RESULTS/report.md" 2>&1
   touch "$RESULTS/DONE"
 }
 
 run_stop() { # stop gate workers, servers (with their stage processes), clients and MPS in this container
   local pattern
-  for pattern in "gate[.]sh run-(worker|unit|serving|agree)" "benchmark_duplex[_]v10" "benchmarks[.]duplex[.]serving" "[p]ytest" "sglang_omni[.]cli serve" "multiprocessing[.]spawn" "multiprocessing[.]resource_tracker" "hostload[.]sh"; do
+  for pattern in "gate[.]sh run-(worker|unit|serving|agree)" "benchmark_duplex[_]v10" "benchmarks[.]duplex[.]serving" "[p]ytest" "sglang_omni[.]cli serve" "run_nemotron_voicechat_duplex[.]py" "multiprocessing[.]spawn" "multiprocessing[.]resource_tracker" "hostload[.]sh"; do
     pkill -9 -f "$pattern"
   done
   echo quit | CUDA_MPS_PIPE_DIRECTORY=/tmp/mps-pipe nvidia-cuda-mps-control 2> /dev/null

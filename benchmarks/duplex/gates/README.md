@@ -90,6 +90,28 @@ Sample count per run: 2 per session, at least 16 and at most 96 (so 1 session pl
 
 The limiting stage is the stage with the highest busy share over the run; when another stage is busier in the first 10 s, the report says so, since a saturated first wave is the usual cause of the early misses.
 
+## 4. PersonaPlex and Nemotron VoiceChat
+
+`MODEL=personaplex` or `MODEL=voicechat` in front of `setup_node.sh` and `gate.sh` selects `models/<model>.env`; without it every command runs MiniCPM-o exactly as above. `unit`, `ladder` and `sweep` run for all three models; `agree`, `perception`, `serving`, `unit --gpu` and `--frames-per-unit` are MiniCPM-o only. The results directory records the model's settings in `env.sh`, and `report.py` reads the unit length from there, so a pulled copy reports with the same deadline.
+
+| | MiniCPM-o (`minicpmo.env`) | PersonaPlex (`personaplex.env`) | VoiceChat (`voicechat.env`) |
+|---|---|---|---|
+| tree | main plus the MiniCPM-o stack | private `perf/personaplex-duplex-opt` (1b38ad7d8) or later; not on main | main |
+| checkpoint | `openbmb/MiniCPM-o-4_5` | `nvidia/personaplex-7b-v1`, 17.1 GB, gated: `HF_TOKEN=… setup_node.sh` | `nvidia/NVIDIA-NemotronLabs-VoiceChat-11B`, 44.4 GB, plus four files of `nvidia/NVIDIA-Nemotron-Nano-9B-v2` (`HUB_FILES`, into the HF cache `/logs/hf-home`) |
+| server | `sglang_omni.cli serve`, `minicpmo-parity.yaml` | `sglang_omni.cli serve`, `personaplex.yaml` (`max_sessions` = N) | `examples/run_nemotron_voicechat_duplex.py --serve` (no yaml; two zero units of warm-up before serving) |
+| unit, miss | 1 s; lag over 1 s | 80 ms frame, 24 kHz in and out; lag over 80 ms | 80 ms frame, 16 kHz in, 22.05 kHz out; lag over 80 ms |
+| recorder | profile `minicpmo-native-pr2377` | profile `personaplex-native`, input resampled to 24 kHz; server default voice (NATF2) and prompt | profile `nemotron-voicechat-pr2188`; the session takes no prompt, voice or sampling |
+| levels | 1, 2, 4, 8, 16, 32, 48, 64 | 1, 2, 4, 6, 8, 12, 16 (about 4 GiB of KV per session) | 1 (`MAX_LEVEL=1`: main allows one connection, a second gets 503) |
+| stages in the report | perception, thinker, talker, speech | mimi_encode, lm, code2wav | perception, thinker, talker, code2wav |
+
+```bash
+MODEL=personaplex HF_TOKEN=<token> setsid nohup bash ~/omni/src/harness/setup_node.sh base > ~/omni/setup-personaplex.log 2>&1 < /dev/null &
+MODEL=personaplex ~/omni/src/harness/gate.sh sweep pplex:1b38ad7d8
+MODEL=voicechat ~/omni/src/harness/gate.sh ladder main:<sha> 1 3
+```
+
+Model options of the recorder live in `frame_hook/model_client.py` (the recorder tree is unchanged): it adds the `personaplex-native` profile, resamples the 16 kHz dataset audio to `INPUT_SAMPLE_RATE`, and merges `SESSION_UPDATE` (a JSON object, for example `{"sglang": {"voice": "NATM1"}}`) into every `session.update`. With 80 ms units the first frames carry the session's opening work (PersonaPlex's voice and prompt prefill, VoiceChat's talker warm-up), so read the miss of units 0–4 apart from the rest; `run.json` also has `session_miss_max_pct`, the miss of the worst session. VoiceChat's perception and codec use per-session hooks, so `voicechat.env` sets `STAGE_TIMING_SESSION_COMPUTE=1` and the timing hook records `SessionScheduler.compute` as their calls. For a VoiceChat tree that serves more sessions, raise `MAX_LEVEL` and pass `--sessions`.
+
 ## Server yaml conventions
 
 - Ladder, perception and sweep runs: the tree's `examples/full_duplex/minicpmo-parity.yaml`, minus `disable_cuda_graph` on the thinker and talker (graphs on), with `max_sessions` = N and the tuned speech block `speech: {dtype: float32, enable_dit_torch_compile: true, n_timesteps: 5}`. `--speech default` leaves the speech block out; trees before the speech settings were exposed need it.

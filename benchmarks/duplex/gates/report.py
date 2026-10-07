@@ -2,7 +2,7 @@
 
     python report.py run <run-dir>                       write <run-dir>/run.json, print one chain.log line
     python report.py ladder <results>                    per tree and session count: miss, lag, memory, startup, errors
-    python report.py sweep <results>... [--miss-threshold X] [--budget-ms B]
+    python report.py sweep <results>... [--miss-threshold X] [--budget-ms B]   (B defaults to one unit: UNIT_MS of the results' env.sh)
                                                          per session count, the operating point, the current target level and its limiting stage
     python report.py stages [--budget-ms B] <run-dir>... per-stage busy share, calls over budget, worst call, gen-2 GC, peak memory
     python report.py perception <results>                perception-stage timing (batched and single calls, session opens, memory)
@@ -22,6 +22,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import fdbconc_metrics  # noqa: E402
 from fdbconc_metrics import percentile, run_metrics  # noqa: E402
 
 FIRST_WINDOW_S = 10.0
@@ -197,6 +198,15 @@ def workload_stats(run, units, t0, t1):
     else:
         pass
     return stats
+
+
+def unit_ms_of(results):
+    """One unit of audio in ms: UNIT_MS from the environment, else from the results' env.sh (1000 for results without it)."""
+    if os.environ.get("UNIT_MS"):
+        return float(os.environ["UNIT_MS"])
+    else:
+        value = read_kv(os.path.join(results, "env.sh")).get("UNIT_MS", "")
+    return float(value.strip("'\"") or DEFAULT_BUDGET_MS)
 
 
 def peak_card_mib(run):
@@ -896,10 +906,20 @@ def main():
     )
     parser.add_argument("paths", nargs="+")
     parser.add_argument("--miss-threshold", type=float)
-    parser.add_argument("--budget-ms", type=float, default=DEFAULT_BUDGET_MS)
+    parser.add_argument(
+        "--budget-ms", type=float, help="call budget (default: one unit, UNIT_MS)"
+    )
     parser.add_argument("--ref", default=os.path.join(HERE, "ref_units.json"))
     args = parser.parse_args()
     path = args.paths[0]
+    unit_ms = unit_ms_of(
+        os.path.dirname(path.rstrip("/")) if args.command in ("run", "stages") else path
+    )
+    fdbconc_metrics.set_unit_ms(unit_ms)
+    if args.budget_ms is None:
+        args.budget_ms = unit_ms
+    else:
+        pass
     if args.command == "run":
         summary = summarize_run(path, args.budget_ms)
         write_json(summary, os.path.join(path, "run.json"), indent=1)
