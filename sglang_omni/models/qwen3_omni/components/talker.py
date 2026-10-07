@@ -39,7 +39,6 @@ from sglang_omni.utils.predictor_layers import (
     add_rmsnorm_rounded,
     codebook_step,
     resolve_fused_predictor_layers,
-    supports_codebook_step,
     supports_exact_add_rmsnorm,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -921,10 +920,6 @@ class Qwen3OmniTalker(nn.Module):
         self.predictor_exact_add_norm = supports_exact_add_rmsnorm(
             hidden_size, self.model.codec_embedding.weight.dtype, device
         )
-        self.predictor_fused_codebook_step = supports_codebook_step(
-            self.code_predictor.model.codec_embedding[0].weight,
-            self.model.codec_embedding.weight.dtype,
-        )
         self.sampled_token_ids = torch.zeros(
             max_batch_size,
             dtype=torch.long,
@@ -1717,7 +1712,9 @@ class Qwen3OmniTalker(nn.Module):
                 codebook_embedding = self.code_predictor.model.codec_embedding[
                     layer_idx
                 ]
-                if self.predictor_fused_codebook_step:
+                # note (ratish): the codebook step runs where the fused layers do: CUDA
+                # with Triton and bf16 tables, whose widths are powers of two.
+                if self.predictor_fused_layers is not None:
                     new_embed = codebook_step(
                         logits[:, -1, :],
                         codebook_embedding.weight,

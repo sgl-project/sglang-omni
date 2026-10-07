@@ -34,7 +34,6 @@ from sglang_omni.utils.predictor_layers import (
     resolve_fused_predictor_layers,
     resolve_predictor_layer_shape,
     split_count,
-    supports_codebook_step,
     supports_exact_add_rmsnorm,
 )
 from tests.unit_test.fixtures.qwen_predictor import TupleLinear
@@ -617,18 +616,16 @@ def test_codebook_step_matches_argmax_gather_and_add() -> None:
     assert torch.equal(summed, expected_summed)
 
 
-def test_codebook_step_applies_to_bf16_power_of_two_tables_only(
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
+def test_fused_layers_match_without_programmatic_dependent_launch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(predictor_layers, "current_platform", CUDAOmniPlatform())
-
-    def table(rows: int, dtype: torch.dtype, device: str) -> SimpleNamespace:
-        return SimpleNamespace(
-            shape=(rows, HIDDEN), dtype=dtype, device=torch.device(device)
-        )
-
-    assert supports_codebook_step(table(2048, DTYPE, "cuda"), torch.bfloat16)
-    assert not supports_codebook_step(table(2048, DTYPE, "cuda"), torch.float32)
-    assert not supports_codebook_step(table(2048, torch.float16, "cuda"), DTYPE)
-    assert not supports_codebook_step(table(3000, DTYPE, "cuda"), DTYPE)
-    assert not supports_codebook_step(table(2048, DTYPE, "cpu"), DTYPE)
+    device = torch.device("cuda")
+    steps = predictor_inputs(device, batch_size=8, seed=24)
+    with_pdl = run_sequence(fuse(build_talker(device, seed=23)), steps)
+    monkeypatch.setattr(predictor_layers, "is_arch_support_pdl", lambda: False)
+    without_pdl = run_sequence(fuse(build_talker(device, seed=23)), steps)
+    for expected, actual in zip(with_pdl, without_pdl, strict=True):
+        assert torch.equal(actual, expected)

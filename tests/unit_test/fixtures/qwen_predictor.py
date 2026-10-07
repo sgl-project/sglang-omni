@@ -108,7 +108,6 @@ def build_real_step_predictor_graph_talker(
         talker.predictor_cache_slots[:2, :].t().reshape(-1).contiguous()
     )
     talker.predictor_exact_add_norm = False
-    talker.predictor_fused_codebook_step = False
     talker.predictor_fused_layers = None
     talker.predictor_decode_graph_batch_sizes = (1, 2, 4)
     talker.predictor_decode_graphs = {}
