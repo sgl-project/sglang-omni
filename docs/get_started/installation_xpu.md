@@ -195,6 +195,24 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "response_format":"wav"}' -o out.wav
 ```
 
+#### VoiceDesign checkpoint
+
+`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config. The tested XPU launch lowered `mem_fraction_static` from the default 0.85 to 0.60:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --tts_engine.engine.mem_fraction_static 0.60 \
+  --host 0.0.0.0 --port 8000
+# VoiceDesign requires task_type and non-empty instructions:
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign","input":"Hello, how are you?",
+       "voice":"default","task_type":"VoiceDesign",
+       "instructions":"A warm, natural young adult voice.","response_format":"wav"}' -o out.wav
+```
+
 #### Codec decoding on XPU
 
 The stateful incremental codec decoder runs, but the pipeline starts it with
