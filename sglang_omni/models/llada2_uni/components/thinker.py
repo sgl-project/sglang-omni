@@ -14,10 +14,7 @@ from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
+from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     AttentionType,
     MergedColumnParallelLinear,
@@ -322,7 +319,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             pass
 
         # note (Anmuliar): Reduce both expert partials together before the BF16 cast.
-        if get_tensor_model_parallel_world_size() > 1:
+        if get_parallel().tp_size > 1:
             y = tensor_model_parallel_all_reduce(y)
         else:
             pass

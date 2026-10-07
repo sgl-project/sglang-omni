@@ -129,7 +129,7 @@ def test_moe_combines_rank_partials_before_cast(
     block.topk_group = 1
     block.routed_scaling_factor = 1.0
     monkeypatch.setattr(
-        thinker, "get_tensor_model_parallel_world_size", lambda: tp_size
+        thinker, "get_parallel", lambda: SimpleNamespace(tp_size=tp_size)
     )
     reduced_inputs: list[torch.Tensor] = []
 
