@@ -5,7 +5,8 @@ Run these commands from the repository root after installing `sglang-omni`.
 ## Full-duplex audio
 
 MiniCPM-o launch commands, server settings, and the realtime protocol are in the
-[MiniCPM-o cookbook](../docs/cookbook/minicpm_o.md).
+[MiniCPM-o cookbook](../docs/cookbook/minicpm_o.md); PersonaPlex's are in the
+[PersonaPlex cookbook](../docs/cookbook/personaplex.md#full-duplex-calls-over-v1realtime).
 
 ## Unified Launcher
 

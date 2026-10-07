@@ -100,6 +100,8 @@ def test_the_realtime_variant_is_one_linear_route_that_streams_nothing():
     assert Variants["realtime"] is PersonaPlexRealtimePipelineConfig
     assert Variants["offline"] is PersonaPlexPipelineConfig
     assert PersonaPlexPipelineConfig.realtime_deployment_factory is None
+    assert PersonaPlexRealtimePipelineConfig.is_realtime_only
+    assert not PersonaPlexPipelineConfig.is_realtime_only
 
 
 def test_every_realtime_stage_holds_max_sessions_calls():

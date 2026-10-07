@@ -59,7 +59,7 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 The realtime variant holds a live call: the client streams the caller's microphone, and the server streams the agent's voice back continuously while the model decides for itself when to speak, listen or interrupt.
 
 ```bash
-python -m sglang_omni.cli serve --config examples/configs/personaplex_realtime.yaml --enable-realtime --port 8000
+python -m sglang_omni.cli serve --model-path nvidia/personaplex-7b-v1 --variant realtime --enable-realtime --port 8000
 ```
 
 Each 80 ms unit of caller audio (24 kHz mono PCM16, 3840 bytes) goes through preprocessing, Mimi encode, the LM and Mimi decode as one step. The LM keeps one SGLang streaming session per call: the first unit prefills the voice and role prompt, and every later unit extends the retained KV cache by exactly one position, so a call produces the frames the offline pipeline produces for the same audio and options.
@@ -110,9 +110,9 @@ The fixed caller-frame budget still determines the number of generated frames.
 - Offline, one request at a time by default (`max_running_requests=1`). If you raise `--lm.engine.max_running_requests`, the requests in a batch share one depformer pass per frame, and each seeded request still draws from its own generator. A seeded reply repeats exactly only with one request in flight, because batched kernels can round differently.
 - On CUDA the backbone's decode step replays a CUDA graph (`--lm.engine.disable_cuda_graph true` turns it off); the 8 depformer steps still run eagerly, so a frame runs close to the 80 ms budget rather than well inside it.
 - On CUDA, streaming Mimi decode replays CUDA graphs for chunks of 1 to `max_graph_frames` frames (default 1, the LM's chunk width) on `num_decode_slots` resident decode states (default 8); other platforms decode eagerly. A stream that arrives while every slot is taken decodes eagerly, so keep `--code2wav.factory.num_decode_slots` at or above `--lm.engine.max_running_requests`; `--code2wav.factory.max_graph_frames 0` turns the graphs off.
-- Realtime, one call at a time; another connection is refused (HTTP 503) until it ends. The session bridge admits a call's first unit only while a request slot stays free for calls already holding KV, so the realtime LM runs with two slots, and `--lm.engine.max_running_requests` must not go below 2 there.
-- A realtime unit's output is released once the whole route has finished it, so each frame has to clear Mimi encode, the LM and its depformer, and Mimi decode within 80 ms, or the call falls behind. The realtime Mimi stages run eagerly, without the decode graphs.
-- A realtime call is bounded by the LM context like an offline request (about 10.8 minutes at 8192 positions); the unit that would pass it ends the call.
+- Realtime, `max_sessions` calls at a time (one by default, `--max_sessions` to change it); a further connection is refused (HTTP 503) until a call ends. The session bridge admits a call's first unit only while a request slot stays free for calls already holding KV, so the realtime LM runs with `max_sessions + 1` slots, and `--lm.engine.max_running_requests` must not go below that.
+- A realtime unit's output is released once the whole route has finished it, so each frame has to clear Mimi encode, the LM and its depformer, and Mimi decode within 80 ms, or the call falls behind. Concurrent calls share that budget; each Mimi stage runs one unit at a time, eagerly, without the decode graphs.
+- A realtime call is bounded by the LM context like an offline request (about 10.8 minutes at 8192 positions, `--lm.engine.context_length` to change it); the unit that would pass it ends the call with a `context_exhausted` error.
 - The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
 
 ## Tests
