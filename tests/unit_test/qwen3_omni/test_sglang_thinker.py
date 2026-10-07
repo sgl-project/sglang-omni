@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU tests for the Qwen3-Omni thinker's M-RoPE plumbing and padded-row routing."""
+"""Tests for the Qwen3-Omni thinker's M-RoPE plumbing, padded-row routing and MoE
+precompile."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,9 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 
+from sglang.kernels.ops.moe.fused_moe_triton_kernels import fused_moe_kernel
+from sglang.srt.layers.moe.moe_runner.base import MoeRunnerConfig
+from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe import fused_experts
 from sglang.srt.layers.moe.topk import StandardTopKOutput
 from sglang.srt.layers.moe.utils import MoeRunnerBackend
 from sglang.srt.layers.quantization.fp8 import Fp8Config
@@ -19,6 +24,7 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
+from sglang.srt.runtime_context import get_context
 
 from sglang_omni.models.qwen3_omni.components import (
     sglang_thinker as sglang_thinker_module,
@@ -357,54 +363,115 @@ def test_thinker_routes_every_unquantized_moe_layer_through_the_shared_decode_ma
     assert wrapper.model.layers[1].mlp is dense_mlp
 
 
-@pytest.mark.parametrize(
-    ("runner_backend", "expected_token_counts"),
-    [
-        (MoeRunnerBackend.TRITON, [1, 2, 17, 18, 65, 66, 101, 102, 513, 514]),
-        (MoeRunnerBackend.FLASHINFER_CUTLASS, []),
-    ],
-)
-def test_precompile_runs_the_moe_once_per_kernel_variant_up_to_the_prefill_ceiling(
-    monkeypatch: pytest.MonkeyPatch,
+def thinker_with_moe(
     runner_backend: MoeRunnerBackend,
-    expected_token_counts: list[int],
-) -> None:
-    def table_config(
-        w1_shape: torch.Size,
-        w2_shape: torch.Size,
-        top_k: int,
-        dtype: str | None,
-        num_tokens: int,
-        return_down_config: bool,
-    ) -> tuple[dict[str, int], tuple[None, None]]:
-        block_columns = 64 if num_tokens <= 100 else 128
-        return {"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": block_columns}, (None, None)
-
-    monkeypatch.setattr(
-        sglang_thinker_module, "try_get_optimal_moe_config", table_config
-    )
-    monkeypatch.setattr(
-        sglang_thinker_module, "max_prefill_buffer_tokens", lambda: 1000
-    )
+    w13_weight: torch.Tensor,
+    w2_weight: torch.Tensor,
+    top_k: int,
+    forward_normal: Callable[[torch.Tensor], torch.Tensor | None],
+) -> Qwen3OmniThinkerForCausalLM:
     quant_method = object.__new__(UnquantizedFusedMoEMethod)
     quant_method.runner = SimpleNamespace(runner_backend=runner_backend)
     moe_block = object.__new__(Qwen3MoeSparseMoeBlock)
     torch.nn.Module.__init__(moe_block)
     moe_block.experts = SimpleNamespace(
-        quant_method=quant_method,
-        w13_weight=torch.zeros(128, 16, 8, dtype=torch.bfloat16),
-        w2_weight=torch.zeros(128, 8, 8, dtype=torch.bfloat16),
+        quant_method=quant_method, w13_weight=w13_weight, w2_weight=w2_weight
     )
-    token_counts = []
-    moe_block.forward_normal = lambda hidden: token_counts.append(hidden.shape[0])
+    moe_block.forward_normal = forward_normal
     layer = object.__new__(Qwen3MoeDecoderLayer)
     torch.nn.Module.__init__(layer)
     layer.mlp = moe_block
     wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
     torch.nn.Module.__init__(wrapper)
     wrapper.model = SimpleNamespace(layers=[layer])
-    wrapper.config = SimpleNamespace(num_experts_per_tok=8, hidden_size=8)
+    wrapper.config = SimpleNamespace(
+        num_experts_per_tok=top_k, hidden_size=w13_weight.shape[2]
+    )
+    return wrapper
+
+
+def test_precompile_runs_no_moe_pass_on_a_backend_other_than_triton() -> None:
+    token_counts = []
+    wrapper = thinker_with_moe(
+        MoeRunnerBackend.FLASHINFER_CUTLASS,
+        torch.zeros(128, 16, 8, dtype=torch.bfloat16),
+        torch.zeros(128, 8, 8, dtype=torch.bfloat16),
+        8,
+        lambda hidden: token_counts.append(hidden.shape[0]),
+    )
 
     wrapper.precompile_kernels_after_loading()
 
-    assert token_counts == expected_token_counts
+    assert token_counts == []
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="the fused MoE kernel compiles on CUDA"
+)
+def test_no_token_count_up_to_the_ceiling_compiles_a_fused_moe_kernel_after_precompile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = torch.device("cuda")
+    num_experts, top_k, hidden_size, intermediate_size, ceiling = 128, 8, 128, 64, 600
+    generator = torch.Generator(device=device).manual_seed(0)
+    w13_weight = (
+        torch.randn(
+            num_experts,
+            2 * intermediate_size,
+            hidden_size,
+            device=device,
+            generator=generator,
+        )
+        / 16
+    ).to(torch.bfloat16)
+    w2_weight = (
+        torch.randn(
+            num_experts,
+            hidden_size,
+            intermediate_size,
+            device=device,
+            generator=generator,
+        )
+        / 16
+    ).to(torch.bfloat16)
+    router = torch.randn(hidden_size, num_experts, device=device, generator=generator)
+    runner_config = MoeRunnerConfig(
+        num_experts=num_experts,
+        num_local_experts=num_experts,
+        top_k=top_k,
+        inplace=False,
+    )
+
+    def forward_normal(hidden_states: torch.Tensor) -> torch.Tensor:
+        router_logits = hidden_states.float() @ router
+        topk_weights, topk_ids = torch.topk(
+            torch.softmax(router_logits, dim=-1), top_k, dim=-1
+        )
+        return fused_experts(
+            hidden_states,
+            w13_weight,
+            w2_weight,
+            StandardTopKOutput(topk_weights, topk_ids.to(torch.int32), router_logits),
+            runner_config,
+        )
+
+    monkeypatch.setattr(
+        sglang_thinker_module, "max_prefill_buffer_tokens", lambda: ceiling
+    )
+    wrapper = thinker_with_moe(
+        MoeRunnerBackend.TRITON, w13_weight, w2_weight, top_k, forward_normal
+    )
+    with get_context().override_server_args():
+        wrapper.precompile_kernels_after_loading()
+        compiled = fused_moe_kernel.device_caches[torch.cuda.current_device()][0]
+        variants = len(compiled)
+        for num_tokens in range(1, ceiling + 1):
+            forward_normal(
+                torch.randn(
+                    num_tokens, hidden_size, device=device, generator=generator
+                ).to(torch.bfloat16)
+            )
+
+    assert variants > 0
+    assert len(compiled) == variants
