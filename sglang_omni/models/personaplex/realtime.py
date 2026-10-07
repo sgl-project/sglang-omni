@@ -7,7 +7,10 @@ import uuid
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER_FRAME
-from sglang_omni.models.personaplex.config import REALTIME_MAX_CALLS, REALTIME_STAGES
+from sglang_omni.models.personaplex.config import (
+    REALTIME_STAGES,
+    PersonaPlexRealtimePipelineConfig,
+)
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
@@ -93,7 +96,9 @@ class PersonaPlexOutputConverter:
         return events
 
 
-def create_realtime_deployment(client: Client) -> RealtimeDeployment:
+def create_realtime_deployment(
+    client: Client, pipeline_config: PersonaPlexRealtimePipelineConfig
+) -> RealtimeDeployment:
     def create_adapter() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
@@ -107,7 +112,7 @@ def create_realtime_deployment(client: Client) -> RealtimeDeployment:
     return RealtimeDeployment(
         capabilities=CAPABILITIES,
         adapter_factory=create_adapter,
-        max_connections=REALTIME_MAX_CALLS,
+        max_connections=pipeline_config.max_sessions,
     )
 
 

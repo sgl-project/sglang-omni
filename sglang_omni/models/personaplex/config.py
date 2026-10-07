@@ -5,6 +5,7 @@ The default pipeline answers a whole recording; the realtime variant holds
 full-duplex calls over /v1/realtime.
 """
 
+from collections.abc import Mapping
 from typing import ClassVar
 
 from pydantic import Field
@@ -26,7 +27,6 @@ LM_STAGE = "lm"
 CODE2WAV_STAGE = "code2wav"
 # A full-duplex call visits these in order, one 80 ms unit at a time.
 REALTIME_STAGES = (PREPROCESSING_STAGE, MIMI_ENCODE_STAGE, LM_STAGE, CODE2WAV_STAGE)
-REALTIME_MAX_CALLS = 1
 
 
 def personaplex_stages_factory() -> list[StageConfig]:
@@ -127,9 +127,13 @@ class PersonaPlexRealtimePipelineConfig(PersonaPlexPipelineConfig):
         "sglang_omni.models.personaplex.realtime.create_realtime_deployment"
     )
 
+    max_sessions: int = Field(default=1, ge=1)
     stages: list[StageConfig] = Field(
         default_factory=personaplex_realtime_stages_factory
     )
+
+    def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, int]:
+        return {"max_sessions": self.max_sessions}
 
 
 EntryClass = PersonaPlexPipelineConfig

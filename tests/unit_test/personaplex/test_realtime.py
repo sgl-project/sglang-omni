@@ -39,6 +39,7 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
 )
+from sglang_omni.utils.imports import import_string
 
 CALL = SessionIdentity("call")
 UNIT_BYTES = SAMPLES_PER_FRAME * 2
@@ -70,16 +71,18 @@ def test_a_call_that_ends_before_any_output_opens_no_response():
     assert PersonaPlexOutputConverter()(output("audio", None, eos=True)) == []
 
 
-def test_the_deployment_takes_24khz_audio_in_80ms_units_one_call_at_a_time():
+def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls():
     client = Client(None)
-    deployment = create_realtime_deployment(client)
+    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex", max_sessions=2)
+    # Note (wilsonzheng0327): Called the way the launcher calls it.
+    deployment = import_string(config.realtime_deployment_factory)(client, config)
     capabilities = deployment.capabilities
     assert capabilities.input_sample_rate_hz == SAMPLE_RATE
     assert capabilities.output_sample_rate_hz == SAMPLE_RATE
     assert capabilities.native_unit_ms == 80
     assert capabilities.native_unit_bytes == UNIT_BYTES
     assert capabilities.tail_policy == "pad"
-    assert deployment.max_connections == 1
+    assert deployment.max_connections == 2
 
     first, second = deployment.adapter_factory(), deployment.adapter_factory()
     assert isinstance(first, CoordinatorAdapter)
@@ -97,6 +100,13 @@ def test_the_realtime_variant_is_one_linear_route_that_streams_nothing():
     assert Variants["realtime"] is PersonaPlexRealtimePipelineConfig
     assert Variants["offline"] is PersonaPlexPipelineConfig
     assert PersonaPlexPipelineConfig.realtime_deployment_factory is None
+
+
+def test_every_realtime_stage_holds_max_sessions_calls():
+    assert PersonaPlexRealtimePipelineConfig(model_path="personaplex").max_sessions == 1
+    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex", max_sessions=3)
+    for name in REALTIME_STAGES:
+        assert config.stage_factory_kwargs(name) == {"max_sessions": 3}
 
 
 def test_instructions_become_the_role_prompt():
@@ -183,7 +193,9 @@ def test_a_call_over_the_websocket_streams_speech_and_its_transcript():
     app = create_app(
         client,
         model_name="personaplex",
-        realtime_deployment=create_realtime_deployment(client),
+        realtime_deployment=create_realtime_deployment(
+            client, PersonaPlexRealtimePipelineConfig(model_path="personaplex")
+        ),
     )
     with TestClient(app).websocket_connect("/v1/realtime") as websocket:
         assert websocket.receive_json()["type"] == "session.created"

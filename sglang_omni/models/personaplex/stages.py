@@ -21,10 +21,7 @@ from sglang_omni.models.personaplex.components.mimi import (
     load_mimi_codec,
     resolve_mimi_weights,
 )
-from sglang_omni.models.personaplex.config import (
-    PREPROCESSING_STAGE,
-    REALTIME_MAX_CALLS,
-)
+from sglang_omni.models.personaplex.config import PREPROCESSING_STAGE
 from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexEngineBuilder,
     PersonaPlexRealtimeEngineBuilder,
@@ -164,11 +161,13 @@ def create_preprocessing_executor(
     return SimpleScheduler(preprocess)
 
 
-def create_realtime_preprocessing_executor(model_path: str, **_) -> SessionScheduler:
+def create_realtime_preprocessing_executor(
+    model_path: str, *, max_sessions: int, **_
+) -> SessionScheduler:
     model_dir = Path(resolve_model_path(model_path))
     return SessionScheduler(
         PromptSessionHooks(prompt_preparer(model_dir, load_text_tokenizer(model_dir))),
-        max_open_sessions=REALTIME_MAX_CALLS,
+        max_open_sessions=max_sessions,
     )
 
 
@@ -204,12 +203,17 @@ def create_mimi_encode_executor(
 
 
 def create_realtime_mimi_encode_executor(
-    model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
+    model_path: str,
+    *,
+    max_sessions: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
 ) -> SessionScheduler:
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
     return SessionScheduler(
         MimiEncodeSessionHooks(codec, device),
-        max_open_sessions=REALTIME_MAX_CALLS,
+        max_open_sessions=max_sessions,
         max_concurrency=1,
     )
 
@@ -265,6 +269,7 @@ def create_lm_executor(
 def create_realtime_lm_executor(
     model_path: str,
     *,
+    max_sessions: int,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -277,7 +282,7 @@ def create_realtime_lm_executor(
         model_path,
         # Note (wilsonzheng0327): The session bridge admits a call's first unit
         # only while these slots stay free for calls already holding KV.
-        max_running_requests=REALTIME_MAX_CALLS
+        max_running_requests=max_sessions
         + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
         dtype=dtype,
         device=device,
@@ -340,13 +345,18 @@ def create_code2wav_executor(
 
 
 def create_realtime_code2wav_executor(
-    model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
+    model_path: str,
+    *,
+    max_sessions: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
 ) -> SessionScheduler:
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
     tokenizer = load_text_tokenizer(resolve_model_path(model_path))
     return SessionScheduler(
         Code2WavSessionHooks(codec, device, tokenizer),
-        max_open_sessions=REALTIME_MAX_CALLS,
+        max_open_sessions=max_sessions,
         max_concurrency=1,
     )
 

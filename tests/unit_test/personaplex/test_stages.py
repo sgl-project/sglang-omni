@@ -10,7 +10,6 @@ import torch
 from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
-from sglang_omni.models.personaplex.config import REALTIME_MAX_CALLS
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -174,24 +173,26 @@ def test_realtime_engine_keeps_a_request_slot_beyond_its_calls(monkeypatch):
             pass
 
     monkeypatch.setattr(stages, "PersonaPlexRealtimeEngineBuilder", Builder)
-    stages.create_realtime_lm_executor("m")
+    stages.create_realtime_lm_executor("m", max_sessions=2)
     assert built["max_running_requests"] == (
-        REALTIME_MAX_CALLS + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+        2 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
     )
 
 
-def test_realtime_session_stages_hold_one_call_and_run_codecs_serially(
+def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially(
     monkeypatch, tmp_path
 ):
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (Mock(), "cpu"))
-    prompt = stages.create_realtime_preprocessing_executor(str(tmp_path))
+    prompt = stages.create_realtime_preprocessing_executor(
+        str(tmp_path), max_sessions=3
+    )
     codecs = [
-        stages.create_realtime_mimi_encode_executor(str(tmp_path)),
-        stages.create_realtime_code2wav_executor(str(tmp_path)),
+        stages.create_realtime_mimi_encode_executor(str(tmp_path), max_sessions=3),
+        stages.create_realtime_code2wav_executor(str(tmp_path), max_sessions=3),
     ]
     for scheduler in [prompt, *codecs]:
-        assert scheduler.max_open_sessions == REALTIME_MAX_CALLS
+        assert scheduler.max_open_sessions == 3
     assert all(scheduler.max_concurrency == 1 for scheduler in codecs)
 
 
