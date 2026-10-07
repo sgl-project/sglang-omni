@@ -24,7 +24,7 @@ from sglang_omni.client import (
     SamplingParams,
 )
 from sglang_omni.serve.generation_params import record_explicit_generation_params
-from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     TranscriptionResponse,
     TranscriptionTextDeltaEvent,
@@ -257,18 +257,16 @@ async def complete_speech_to_text_request(
     try:
         return await client.completion(gen_req, request_id=request_id)
     except ClientError as exc:
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        else:
-            pass
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=generation_error_status_code(exc), detail=str(exc)
+        ) from exc
     except Exception as exc:
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = generation_error_status_code(exc)
+        if status_code == 500:
+            logger.exception(error_log_message, request_id)
         else:
             pass
-        logger.exception(error_log_message, request_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 def resolve_speech_to_text_adapter(
@@ -614,23 +612,21 @@ async def create_speech_to_text_streaming_response(
         )
     except ClientError as exc:
         await close_async_iterator_if_supported(chunk_stream)
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        else:
-            pass
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=generation_error_status_code(exc), detail=str(exc)
+        ) from exc
     except Exception as exc:
         await close_async_iterator_if_supported(chunk_stream)
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = generation_error_status_code(exc)
+        if status_code == 500:
+            logger.exception(
+                "Error starting %s stream for request %s",
+                operation_name,
+                request_id,
+            )
         else:
             pass
-        logger.exception(
-            "Error starting %s stream for request %s",
-            operation_name,
-            request_id,
-        )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return ClosableStreamingResponse(
         speech_to_text_stream(
             chunk_stream,

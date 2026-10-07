@@ -78,7 +78,7 @@ def test_voice_cache_lifecycle() -> None:
     shared = estimate_cache_bytes(first.speaker.base_caches)
     own = estimate_cache_bytes((first.caches, first.pending_codec_token_ids))
     assert runtime.held("a").bytes == own + shared
-    assert runtime.held("b").bytes == own
+    assert runtime.held("b").bytes == own + shared
 
     runtime.close_session("a")
     assert runtime.held("b").bytes == own + shared

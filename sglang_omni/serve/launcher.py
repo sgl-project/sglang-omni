@@ -34,6 +34,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
+from types import FrameType
 from typing import TypedDict
 
 import uvicorn
@@ -609,6 +610,12 @@ async def serve_with_failure_watch(
                 pass
             raise RuntimeError("Pipeline runtime task exited unexpectedly")
     finally:
+        if not server_task.done():
+            server_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await server_task
+        else:
+            pass
         for task in watcher_tasks:
             if not task.done():
                 task.cancel()
@@ -651,8 +658,17 @@ def launch_server(
             ``/v1/audio/speech/batch``.
     """
     apply_gpu_compat_env_defaults()
-    asyncio.run(
-        run_server(
+    sigterm_received = False
+    cleanup_failed = False
+
+    async def run_server_with_sigterm_cleanup() -> None:
+        """Let SIGTERM cancel run_server while HTTP serving is not running.
+
+        PipelineUvicornServer replaces this handler while it serves. Once runner
+        cleanup succeeds, launch_server raises SIGTERM again for the previous handler.
+        """
+        nonlocal cleanup_failed
+        server_run = run_server(
             pipeline_config,
             host=host,
             port=port,
@@ -664,4 +680,45 @@ def launch_server(
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
         )
-    )
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        if (
+            threading.current_thread() is not threading.main_thread()
+            or previous_handler in (None, signal.SIG_IGN)
+        ):
+            await server_run
+            return
+        else:
+            pass
+        loop = asyncio.get_running_loop()
+        main_task = asyncio.current_task()
+
+        def cancel_main_task() -> None:
+            nonlocal sigterm_received
+            logger.warning("Received SIGTERM, stopping the pipeline")
+            if not sigterm_received:
+                sigterm_received = True
+                main_task.cancel()
+            else:
+                pass
+
+        def handle_sigterm(signal_number: int, frame: FrameType | None) -> None:
+            loop.call_soon_threadsafe(cancel_main_task)
+
+        signal.signal(signal.SIGTERM, handle_sigterm)
+        try:
+            await server_run
+        except asyncio.CancelledError as cancelled:
+            # note (Richard Wang): Python 3.10 drops the cause outside asyncio.run
+            cleanup_failed = cancelled.__cause__ is not None
+            raise
+        finally:
+            signal.signal(signal.SIGTERM, previous_handler)
+
+    try:
+        asyncio.run(run_server_with_sigterm_cleanup())
+    except asyncio.CancelledError:
+        if sigterm_received and not cleanup_failed:
+            signal.raise_signal(signal.SIGTERM)
+        else:
+            pass
+        raise

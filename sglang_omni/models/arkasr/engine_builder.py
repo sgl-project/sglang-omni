@@ -16,12 +16,15 @@ from transformers import (
     WhisperFeatureExtractor,
 )
 
+from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.arkasr import request_builders
 from sglang_omni.models.arkasr.encoder_service import (
     ArkasrPreLMEncoderService,
     build_cache_namespace,
 )
 from sglang_omni.models.arkasr.request_builders import ArkASRRequestData
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
@@ -29,10 +32,12 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
 )
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import DeferredAdmission
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 else:
@@ -137,6 +142,28 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         self.context_length = encoder_token_count + self.max_new_tokens + 8
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            if not current_platform.is_mps():
+                raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
+            else:
+                pass
+            # Note (yexiaodong): Audio embeddings exist only inside native MLX
+            # prefill, so token-only radix reuse and split prefill are unsafe.
+            return {
+                "max_running_requests": self.max_running_requests,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "mem_fraction_static": self.mem_fraction_static,
+                "dtype": dtype,
+            }
+        else:
+            pass
         defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
@@ -159,6 +186,51 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
                 pass
         return defaults
 
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> ModelRunner[ArkASRRequestData]:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            from sglang_omni.model_runner.mlx_model_worker import (
+                MlxSchedulerModelRunner,
+            )
+
+            return MlxSchedulerModelRunner(model_worker, output_proc)
+        else:
+            pass
+        return super().make_model_runner(model_worker, output_proc)
+
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if "context_length" in overrides:
+            self.context_length = int(overrides.pop("context_length"))
+        else:
+            pass
+        if use_mlx():
+            # Note (yexiaodong): Typed pipeline defaults are merged after the
+            # backend profile and otherwise re-enable Torch compilation.
+            overrides["enable_torch_compile"] = False
+        else:
+            pass
+
+    def customize_server_args(self, server_args: ServerArgs) -> None:
+        self.context_length = int(server_args.context_length)
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        from sglang.srt.arg_groups.model_override_base import resolved_view
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        cfg = resolved_view(server_args)
+        if use_mlx() and cfg.mlx_enable_sampling:
+            raise ValueError("ARK-ASR MLX currently requires mlx_enable_sampling=False")
+        else:
+            pass
+        super().validate_before_infrastructure(server_args)
+
     def setup_model_resources(
         self,
         model: ArkasrForConditionalGeneration,
@@ -166,6 +238,14 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            # Note (yexiaodong): Native MLX prefill owns audio encoding, so the
+            # Torch pre-LM service and CUDA graphs must remain uninitialized.
+            return
+        else:
+            pass
         del generation_cuda_graph_enabled
         model.set_encoder_max_batch_size(self.encoder_max_batch_size)
         if self.enable_encoder_cuda_graph:
@@ -216,13 +296,18 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         Callable[[ArkASRRequestData], StagePayload],
     ]:
         del model
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        mlx_mode = use_mlx()
         return request_builders.make_arkasr_scheduler_adapters(
             tokenizer=self.tokenizer,
             feature_extractor=self.feature_extractor,
             max_new_tokens=self.max_new_tokens,
+            context_length=self.context_length if mlx_mode else None,
             merge_factor=self.merge_factor,
             audio_token_id=self.audio_token_id,
             audio_encoder_service=self.audio_encoder_service,
+            mlx_mode=mlx_mode,
         )
 
     def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:

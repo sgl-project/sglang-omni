@@ -88,7 +88,7 @@ class NemotronSessionScheduler(SessionScheduler):
             compute_fn=self.compute_offline,
             max_concurrency=max_concurrency,
             max_open_sessions=max_open_sessions,
-            max_state_bytes=max_state_bytes,
+            max_state_bytes_per_session=max_state_bytes,
         )
 
     def compute_offline(self, payload: StagePayload) -> StagePayload:

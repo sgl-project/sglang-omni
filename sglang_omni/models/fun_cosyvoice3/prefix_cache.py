@@ -23,9 +23,6 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     FA3_PAGE_SIZE,
     PACKED_INDUCTOR_OPTIONS,
     PackedDiT,
-    PackedRows,
-    gather_rows,
-    pack_rows,
     packed_fa3,
     ragged_fa3,
     rotate_in_place,
@@ -36,6 +33,9 @@ BLOCK_FRAMES = 64
 # Note (Jiaxin Deng): each positional conv has kernel 31, so it reads the 30
 # frames before its input frame.
 CONV_CONTEXT_FRAMES = 30
+# note(ratish): FA3's pick for these segments with a tight page table; pinned, since a
+# graph's wider table would change the pick and the result.
+PREFIX_FA3_SPLITS = 1
 
 
 class PrefixForward(Protocol):
@@ -49,7 +49,6 @@ class PrefixForward(Protocol):
         speaker_embeddings: torch.Tensor,
         mel_conditioning: torch.Tensor,
         t: torch.Tensor,
-        rows: PackedRows,
         attention: PrefixRowAttention,
         rope: tuple[torch.Tensor, torch.Tensor],
         first_context: torch.Tensor,
@@ -74,7 +73,8 @@ class PrefixKVPool:
         dtype: torch.dtype,
     ) -> None:
         block_count = max(int(capacity_frames) // BLOCK_FRAMES, 0)
-        shape = (block_count * BLOCK_FRAMES, FA3_PAGE_SIZE, head_num, head_dim)
+        self.padding_block = block_count
+        shape = ((block_count + 1) * BLOCK_FRAMES, FA3_PAGE_SIZE, head_num, head_dim)
         # Note (Jiaxin Deng): separate storages, not views of one slab: the
         # compiled hop mutates them in place only when its inputs don't alias.
         self.keys = [
@@ -173,50 +173,92 @@ def release_rows(pool: PrefixKVPool, rows: list[PrefixCacheRow]) -> None:
         row.conv_context = None
 
 
+@dataclass(frozen=True, kw_only=True)
+class PrefixStepLayout:
+    """Frames and row slots are per CFG half; frames past a step's own are padding."""
+
+    half_frames: int
+    row_slots: int
+    segment_count: int
+    page_table_width: int
+
+
 class PrefixRowAttention:
     """Queries are each row's new frames in chunk segments; keys are the row's
-    cached prefix plus its new frames, all addressed through pool pages."""
+    cached prefix plus its new frames, all addressed through pool pages. The
+    convs read one packed sequence: unused slots' contexts, then per CFG half
+    each row's context and new frames, then the half's padding frames."""
 
     def __init__(
         self,
         *,
-        prefix_frames: list[int],
+        rows: list[PrefixCacheRow],
         new_frames: list[int],
-        pages: list[torch.Tensor],
+        layout: PrefixStepLayout,
+        padding_block: int,
         chunk_size: int,
         device: torch.device,
     ) -> None:
+        assert chunk_size <= BLOCK_FRAMES, "a padding segment reads one block"
+        row_count = len(rows) // 2
+        row_slots = layout.row_slots
+        padding_frames = layout.half_frames - sum(new_frames[:row_count])
+        assert padding_frames >= 0 and row_count <= row_slots
+        prefix_frames = [row.committed_frames for row in rows]
+        padding_row = 2 * row_count
+        query_lengths: list[int] = []
+        query_prefixes: list[int] = []
+        query_block_rows: list[int] = []
+        query_slots: list[int] = []
+        for half in range(2):
+            for index in range(row_count):
+                twin_row = half * row_count + index
+                query_lengths.append(new_frames[twin_row])
+                query_prefixes.append(prefix_frames[twin_row])
+                query_block_rows.append(twin_row)
+                query_slots.append(half * row_slots + index)
+            query_lengths.append(padding_frames)
+            query_prefixes.append(0)
+            query_block_rows.append(padding_row)
+            query_slots.append(row_slots)
+        context_starts: list[int] = []
+        frame_starts: list[int] = []
         segment_rows: list[int] = []
         segment_ends: list[int] = []
         offsets: list[int] = [0]
-        for row, (start_frame, new_frame_count) in enumerate(
-            zip(prefix_frames, new_frames, strict=True)
+        extended_frames = 2 * (row_slots - row_count) * CONV_CONTEXT_FRAMES
+        for length, start_frame, block_row in zip(
+            query_lengths, query_prefixes, query_block_rows, strict=True
         ):
-            end_frame = start_frame + new_frame_count
+            if block_row == padding_row:
+                pass
+            else:
+                assert (
+                    rows[block_row].allocated_frames >= start_frame + length
+                ), "row holds fewer pages than frames"
+                context_starts.append(extended_frames)
+                extended_frames += CONV_CONTEXT_FRAMES
+            frame_starts.append(extended_frames)
+            extended_frames += length
             segment_start = start_frame
-            while segment_start < end_frame:
+            while segment_start < start_frame + length:
                 segment_end = min(
-                    (segment_start // chunk_size + 1) * chunk_size, end_frame
+                    (segment_start // chunk_size + 1) * chunk_size,
+                    start_frame + length,
                 )
-                segment_rows.append(row)
-                segment_ends.append(segment_end)
+                segment_rows.append(block_row)
+                if block_row == padding_row:
+                    segment_ends.append(segment_end - segment_start)
+                else:
+                    segment_ends.append(segment_end)
                 offsets.append(offsets[-1] + segment_end - segment_start)
                 segment_start = segment_end
-        self.cache_seqlens = torch.tensor(
-            segment_ends, dtype=torch.int32, device=device
-        )
-        self.cu_seqlens_q = torch.tensor(offsets, dtype=torch.int32, device=device)
-        self.max_seqlen_q = max(b - a for a, b in pairwise(offsets))
-        widest = max(segment_ends)
-        table = torch.zeros(len(segment_ends), widest, dtype=torch.int32, device=device)
-        for segment, (row, segment_end) in enumerate(
-            zip(segment_rows, segment_ends, strict=True)
-        ):
-            assert (
-                pages[row].numel() >= segment_end
-            ), "row holds fewer pages than frames"
-            table[segment, :segment_end] = pages[row][:segment_end]
-        self.page_table = table
+        self.max_seqlen_q = max(end - start for start, end in pairwise(offsets))
+        unused_segments = layout.segment_count - len(segment_ends)
+        assert unused_segments >= 0, "the layout holds fewer segments than the step"
+        segment_rows += [padding_row] * unused_segments
+        segment_ends += [0] * unused_segments
+        offsets += [offsets[-1]] * unused_segments
         # note(ratish): a frame's K and V are final once its whole chunk exists,
         # so a row keeps whole chunks and recomputes the rest on its next hop.
         self.committed_frames = [
@@ -225,34 +267,88 @@ class PrefixRowAttention:
                 prefix_frames, new_frames, strict=True
             )
         ]
-        self.tail_index = torch.tensor(
-            [
-                committed - start_frame
-                for committed, start_frame in zip(
-                    self.committed_frames, prefix_frames, strict=True
-                )
-            ],
-            device=device,
-        ).unsqueeze(1) + torch.arange(CONV_CONTEXT_FRAMES, device=device)
+
+        lengths = torch.tensor(query_lengths)
+        query_of_frame = torch.repeat_interleave(
+            torch.arange(len(query_lengths)), lengths
+        )
+        local_frames = (
+            torch.arange(len(query_of_frame))
+            - (lengths.cumsum(0) - lengths)[query_of_frame]
+        )
+        frame_block_rows = torch.tensor(query_block_rows)[query_of_frame]
+        positions = torch.where(
+            frame_block_rows == padding_row,
+            local_frames % chunk_size,
+            torch.tensor(query_prefixes)[query_of_frame] + local_frames,
+        )
+        extended_positions = torch.tensor(frame_starts)[query_of_frame] + local_frames
+        context_frames = torch.arange(CONV_CONTEXT_FRAMES)
+        is_row_query = torch.tensor(query_block_rows) != padding_row
+        row_query_slots = torch.tensor(query_slots)[is_row_query]
+        extended_index = torch.zeros(extended_frames, dtype=torch.int64)
+        extended_index[extended_positions] = 2 * row_slots * CONV_CONTEXT_FRAMES + (
+            torch.arange(len(query_of_frame))
+        )
+        row_context_starts = torch.tensor(context_starts, dtype=torch.int64)
+        extended_index[row_context_starts.unsqueeze(1) + context_frames] = (
+            row_query_slots.unsqueeze(1) * CONV_CONTEXT_FRAMES + context_frames
+        )
+        tail_index = torch.zeros(2 * row_slots, CONV_CONTEXT_FRAMES, dtype=torch.int64)
+        tail_index[row_query_slots] = (
+            row_context_starts
+            + torch.tensor(self.committed_frames, dtype=torch.int64)
+            - torch.tensor(prefix_frames, dtype=torch.int64)
+        ).unsqueeze(1) + context_frames
+        block_lists = [row.blocks for row in rows] + [[padding_block]]
+        block_width = max(len(blocks) for blocks in block_lists)
+        block_table = torch.tensor(
+            [blocks + [0] * (block_width - len(blocks)) for blocks in block_lists]
+        )
+        host_parts = (
+            positions,
+            extended_positions - CONV_CONTEXT_FRAMES,
+            torch.tensor(query_slots)[query_of_frame],
+            frame_block_rows,
+            extended_index,
+            tail_index.view(-1),
+            torch.tensor(segment_rows),
+            torch.tensor(segment_ends),
+            torch.tensor(offsets),
+            block_table.view(-1),
+        )
+        (
+            self.positions,
+            self.conv_output_index,
+            self.speaker_index,
+            frame_block_rows,
+            self.extended_index,
+            tail_index,
+            segment_block_rows,
+            segment_ends_tensor,
+            offsets_tensor,
+            block_table,
+        ) = (
+            torch.cat(host_parts).to(device).split([len(part) for part in host_parts])
+        )
+        self.tail_index = tail_index.view(2 * row_slots, CONV_CONTEXT_FRAMES)
+        block_table = block_table.view(len(block_lists), block_width)
+        self.cache_seqlens = segment_ends_tensor.to(torch.int32)
+        self.cu_seqlens_q = offsets_tensor.to(torch.int32)
         # every new frame's page, in packed order: where this hop writes K and V
-        self.write_index = torch.cat(
-            [
-                pages[row][start_frame : start_frame + new_frame_count]
-                for row, (start_frame, new_frame_count) in enumerate(
-                    zip(prefix_frames, new_frames, strict=True)
-                )
-            ]
-        ).to(torch.int64)
-        # Note (Jiaxin Deng): the row count and width reach the compiled graph
-        # only as this tensor's shape, which is marked dynamic, not as guards.
-        slots = torch.full((len(new_frames), max(new_frames)), -1, dtype=torch.int64)
-        offset = 0
-        for row, new_frame_count in enumerate(new_frames):
-            slots[row, :new_frame_count] = torch.arange(
-                offset, offset + new_frame_count
-            )
-            offset += new_frame_count
-        self.slots = slots.to(device)
+        self.write_index = (
+            block_table[frame_block_rows, self.positions // BLOCK_FRAMES] * BLOCK_FRAMES
+            + self.positions % BLOCK_FRAMES
+        )
+        page = torch.arange(layout.page_table_width, device=device)
+        block_column = (page // BLOCK_FRAMES).clamp(max=block_width - 1)
+        pages = (
+            block_table[segment_block_rows][:, block_column] * BLOCK_FRAMES
+            + page % BLOCK_FRAMES
+        )
+        self.page_table = torch.where(
+            page < segment_ends_tensor.unsqueeze(1), pages, 0
+        ).to(torch.int32)
 
     def __call__(
         self,
@@ -281,25 +377,28 @@ class PrefixRowAttention:
             self.page_table,
             self.cu_seqlens_q,
             self.max_seqlen_q,
+            PREFIX_FA3_SPLITS,
         )
         return out.reshape(1, -1, head_num * head_dim)
 
-    def mark_dynamic(self, rows: PackedRows, absolute_positions: torch.Tensor) -> None:
+    def mark_dynamic(self) -> None:
+        # Note (Jiaxin Deng): the row count and width reach the compiled graph
+        # only as these tensors' shapes, which are marked dynamic, not as guards.
         dynamo.mark_dynamic(self.page_table, (0, 1))
-        dynamo.mark_dynamic(self.cu_seqlens_q, 0)
-        dynamo.mark_dynamic(self.cache_seqlens, 0)
-        dynamo.mark_dynamic(self.write_index, 0)
-        dynamo.mark_dynamic(self.slots, (0, 1))
-        dynamo.mark_dynamic(rows.starts_host, 0)
-        dynamo.mark_dynamic(rows.row_ids, 0)
-        dynamo.mark_dynamic(rows.positions, 0)
-        dynamo.mark_dynamic(absolute_positions, 0)
+        dynamo.mark_dynamic(self.tail_index, 0)
+        for tensor in (
+            self.cu_seqlens_q,
+            self.cache_seqlens,
+            self.write_index,
+            self.extended_index,
+            self.conv_output_index,
+        ):
+            dynamo.mark_dynamic(tensor, 0)
 
 
 def conv_pos_embed_prefix(
     estimator: PackedDiT,
     hidden_states: torch.Tensor,
-    rows: PackedRows,
     first_context: torch.Tensor,
     second_context: torch.Tensor,
     attention: PrefixRowAttention,
@@ -307,26 +406,30 @@ def conv_pos_embed_prefix(
     """The two causal positional convs over each row's new frames, each fed
     the last CONV_CONTEXT_FRAMES of its own input from the prefix (zeros for
     an empty prefix, the padding the whole-sequence call uses); each context
-    is (rows, CONV_CONTEXT_FRAMES, hidden_size). Returns the new frames'
+    is (twin row slots, CONV_CONTEXT_FRAMES, hidden_size). Returns the new frames'
     embedding and the two next contexts."""
     # Note (Jiaxin Deng): the whole-sequence call zero-pads conv2's input,
     # not conv1's output, so the second conv needs its own cached tail.
     conv_pos_embed = estimator.dit.input_embed.conv_pos_embed
-    slots = attention.slots
-    padded = torch.where(
-        (slots >= 0).unsqueeze(-1), hidden_states[0][slots.clamp(min=0)], 0.0
-    )  # (rows, width, hidden_size)
-    first_input = torch.cat((first_context.to(padded.dtype), padded), dim=1)
-    first_output = conv_pos_embed.conv1(first_input.permute(0, 2, 1)).permute(0, 2, 1)
+    hidden_size = hidden_states.shape[2]
+    first_input = torch.cat(
+        (
+            first_context.reshape(-1, hidden_size).to(hidden_states.dtype),
+            hidden_states[0],
+        )
+    )[attention.extended_index]
+    first_output = conv_pos_embed.conv1(first_input.T.unsqueeze(0))[0].T
     second_input = torch.cat(
-        (second_context.to(first_output.dtype), first_output), dim=1
-    )
-    second_output = conv_pos_embed.conv2(second_input.permute(0, 2, 1)).permute(0, 2, 1)
-    tail_index = attention.tail_index.unsqueeze(-1).expand(-1, -1, first_input.shape[2])
+        (
+            second_context.reshape(-1, hidden_size).to(first_output.dtype),
+            first_output[attention.conv_output_index],
+        )
+    )[attention.extended_index]
+    second_output = conv_pos_embed.conv2(second_input.T.unsqueeze(0))[0].T
     return (
-        gather_rows(second_output, rows),
-        first_input.gather(1, tail_index),
-        second_input.gather(1, tail_index),
+        second_output[attention.conv_output_index].unsqueeze(0),
+        first_input[attention.tail_index],
+        second_input[attention.tail_index],
     )
 
 
@@ -339,7 +442,6 @@ def forward_prefix(
     speaker_embeddings: torch.Tensor,
     mel_conditioning: torch.Tensor,
     t: torch.Tensor,
-    rows: PackedRows,
     attention: PrefixRowAttention,
     rope: tuple[torch.Tensor, torch.Tensor],
     first_context: torch.Tensor,
@@ -356,7 +458,7 @@ def forward_prefix(
         torch.cat((x, mel_conditioning, mu, speaker_embeddings), dim=-1)
     )
     embedded, first_tail, second_tail = conv_pos_embed_prefix(
-        estimator, hidden_states, rows, first_context, second_context, attention
+        estimator, hidden_states, first_context, second_context, attention
     )
     hidden_states = embedded + hidden_states
     residual = hidden_states
@@ -413,6 +515,69 @@ def compile_forward_prefix() -> PrefixForward:
     )
 
 
+def run_prefix_solve(
+    estimator: PackedDiT,
+    pool: PrefixKVPool,
+    noise: torch.Tensor,
+    time_span: torch.Tensor,
+    mu: torch.Tensor,
+    speaker_embeddings: torch.Tensor,
+    mel_conditioning: torch.Tensor,
+    attention: PrefixRowAttention,
+    angles: torch.Tensor,
+    context: torch.Tensor,
+    next_context: torch.Tensor,
+    *,
+    cfg_rate: float,
+) -> torch.Tensor:
+    """noise, mu, mel_conditioning: (1, half frames, channels); speaker_embeddings:
+    (row slots, channels); context, next_context: (euler_steps, twin row slots, 2,
+    CONV_CONTEXT_FRAMES, hidden_size)."""
+    half_frames = noise.shape[1]
+    mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=1)
+    mel_conditioning_cfg = torch.cat(
+        (mel_conditioning, torch.zeros_like(mel_conditioning)), dim=1
+    )
+    speaker_embeddings_cfg = torch.cat(
+        (speaker_embeddings, torch.zeros_like(speaker_embeddings)), dim=0
+    )[attention.speaker_index].unsqueeze(0)
+    angles = angles[:, attention.positions]
+    rope = (angles.cos(), angles.sin())
+    flow_time = torch.zeros(1, device=noise.device, dtype=speaker_embeddings.dtype)
+    euler_steps = len(time_span) - 1
+    x = noise
+    t, dt = time_span[0], time_span[1] - time_span[0]
+    for euler_step in range(euler_steps):
+        flow_time[:] = t
+        (
+            vector_field,
+            next_context[euler_step, :, 0],
+            next_context[euler_step, :, 1],
+        ) = pool.forward(
+            estimator,
+            pool.keys[euler_step],
+            pool.values[euler_step],
+            torch.cat((x, x), dim=1),
+            mu_cfg,
+            speaker_embeddings_cfg,
+            mel_conditioning_cfg,
+            flow_time,
+            attention,
+            rope,
+            context[euler_step, :, 0],
+            context[euler_step, :, 1],
+        )
+        conditional = vector_field[:, :half_frames]
+        unconditional = vector_field[:, half_frames:]
+        x = x + dt * ((1.0 + cfg_rate) * conditional - cfg_rate * unconditional)
+        t = t + dt
+        if euler_step < euler_steps - 1:
+            dt = time_span[euler_step + 2] - t
+        else:
+            pass
+    return x.float()
+
+
 def solve_flow_euler_prefix(
     estimator: PackedDiT,
     pool: PrefixKVPool,
@@ -432,36 +597,31 @@ def solve_flow_euler_prefix(
     channels) in row order; speaker_embeddings: (rows, channels). Commits every
     cache up to its last whole chunk."""
     device = noise.device
-    dtype = speaker_embeddings.dtype
-    total_new_frames = noise.shape[1]
+    chunk_size = estimator.chunk_size
     twin_caches = [pair[0] for pair in caches] + [pair[1] for pair in caches]
-    prefix_frames = [row.committed_frames for row in twin_caches]
     twin_new_frames = list(new_frames) * 2
-    twin_rows = pack_rows(twin_new_frames, device)
-    # Note (Jiaxin Deng): the rows stay local for scatter/gather; RoPE alone
-    # sees each frame's absolute position in its row.
-    absolute_positions = (
-        twin_rows.positions
-        + torch.tensor(prefix_frames, device=device)[twin_rows.row_ids]
-    )
+    end_frames = [
+        row.committed_frames + new_frame_count
+        for row, new_frame_count in zip(twin_caches, twin_new_frames, strict=True)
+    ]
     attention = PrefixRowAttention(
-        prefix_frames=prefix_frames,
+        rows=twin_caches,
         new_frames=twin_new_frames,
-        pages=[row.pages(device) for row in twin_caches],
-        chunk_size=estimator.chunk_size,
+        layout=PrefixStepLayout(
+            half_frames=sum(new_frames),
+            row_slots=len(caches),
+            segment_count=sum(
+                -(-end_frame // chunk_size) - row.committed_frames // chunk_size
+                for row, end_frame in zip(twin_caches, end_frames, strict=True)
+            ),
+            page_table_width=max(end_frames),
+        ),
+        padding_block=pool.padding_block,
+        chunk_size=chunk_size,
         device=device,
     )
-    angles, scale = estimator.dit.rotary_embed.forward_from_seq_len(
-        max(
-            start_frame + new_frame_count
-            for start_frame, new_frame_count in zip(
-                prefix_frames, twin_new_frames, strict=True
-            )
-        )
-    )
+    angles, scale = estimator.dit.rotary_embed.forward_from_seq_len(max(end_frames))
     assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
-    angles = angles[:, absolute_positions]
-    rope = (angles.cos(), angles.sin())
     euler_steps = len(time_span) - 1
     hidden_size = int(estimator.dit.input_embed.proj.out_features)
     contexts: list[torch.Tensor] = []
@@ -474,7 +634,7 @@ def solve_flow_euler_prefix(
                     CONV_CONTEXT_FRAMES,
                     hidden_size,
                     device=device,
-                    dtype=dtype,
+                    dtype=speaker_embeddings.dtype,
                 )
             )
         else:
@@ -482,52 +642,25 @@ def solve_flow_euler_prefix(
     # (euler_steps, twin rows, 2, CONV_CONTEXT_FRAMES, hidden_size)
     context = torch.stack(contexts, dim=1)
     next_context = torch.empty_like(context)
-    mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=1)
-    mel_conditioning_cfg = torch.cat(
-        (mel_conditioning, torch.zeros_like(mel_conditioning)), dim=1
-    )
-    speaker_embeddings_cfg = torch.cat(
-        (speaker_embeddings, torch.zeros_like(speaker_embeddings)), dim=0
-    )
-    speaker_embeddings_cfg = speaker_embeddings_cfg[twin_rows.row_ids].unsqueeze(0)
-    flow_time = torch.zeros(1, device=device, dtype=dtype)
-    forward = pool.forward
-    if forward is not forward_prefix:
-        attention.mark_dynamic(twin_rows, absolute_positions)
+    if pool.forward is not forward_prefix:
+        attention.mark_dynamic()
     else:
         pass
-    x = noise
-    t, dt = time_span[0], time_span[1] - time_span[0]
-    for euler_step in range(euler_steps):
-        flow_time[:] = t
-        (
-            vector_field,
-            next_context[euler_step, :, 0],
-            next_context[euler_step, :, 1],
-        ) = forward(
-            estimator,
-            pool.keys[euler_step],
-            pool.values[euler_step],
-            torch.cat((x, x), dim=1),
-            mu_cfg,
-            speaker_embeddings_cfg,
-            mel_conditioning_cfg,
-            flow_time,
-            twin_rows,
-            attention,
-            rope,
-            context[euler_step, :, 0],
-            context[euler_step, :, 1],
-        )
-        conditional = vector_field[:, :total_new_frames]
-        unconditional = vector_field[:, total_new_frames:]
-        x = x + dt * ((1.0 + cfg_rate) * conditional - cfg_rate * unconditional)
-        t = t + dt
-        if euler_step < euler_steps - 1:
-            dt = time_span[euler_step + 2] - t
-        else:
-            pass
+    x = run_prefix_solve(
+        estimator,
+        pool,
+        noise,
+        time_span,
+        mu,
+        speaker_embeddings,
+        mel_conditioning,
+        attention,
+        angles,
+        context,
+        next_context,
+        cfg_rate=cfg_rate,
+    )
     for index, row in enumerate(twin_caches):
         row.committed_frames = attention.committed_frames[index]
         row.conv_context = next_context[:, index].clone()
-    return x.float()
+    return x

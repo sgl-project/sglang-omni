@@ -37,6 +37,7 @@ def ragged_fa3(
     page_table: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
     max_seqlen_q: int,
+    num_splits: int = 0,
 ) -> torch.Tensor:
     return flash_attn_with_kvcache(
         q=q,
@@ -47,6 +48,7 @@ def ragged_fa3(
         cu_seqlens_q=cu_seqlens_q,
         max_seqlen_q=max_seqlen_q,
         causal=False,
+        num_splits=num_splits,
     )
 
 
@@ -66,6 +68,7 @@ def fake_packed_fa3(
     page_table: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
     max_seqlen_q: int,
+    num_splits: int = 0,
 ) -> torch.Tensor:
     return torch.empty_like(q)
 

@@ -1,0 +1,3 @@
+repository=https://github.com/lifeiteng/OmniVAD-Kit.git
+requested_ref=085c1344981dc33250b87e98ce60bd302810bd6d
+resolved_commit=085c1344981dc33250b87e98ce60bd302810bd6d
