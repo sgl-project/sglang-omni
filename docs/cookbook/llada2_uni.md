@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) accepts text and image input and supports text output, text-to-image generation, and image editing.
 
 ## Highlights
 
@@ -20,13 +20,182 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline
-(`preprocessing → image_encoder → thinker → decode`) on a single GPU. The
-thinker disables CUDA graph by default for this experimental DLLM path.
+The default `omni` pipeline runs preprocessing, image encoding, and the
+DLLM thinker, then routes to text and image decoders. The image decoder
+uses diffusers' ZImage backbone, SigVQ conditioning, and a VAE. This is
+LLaDA2-Uni's semantic decoder, not the LLaDA-Image text-conditioned model.
+The `text` variant retains the four-stage text-output pipeline.
+
+The CFG thinker currently uses synchronous eager execution. An explicit
+CUDA graph request is rejected until CFG graph metadata is supported.
 
 ```bash
-sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.engine.enable_torch_compile false
 ```
+
+The cookbook explicitly disables `torch.compile` to match the validated
+generation settings. CUDA Graph execution is controlled separately.
+
+## Image Generation and Editing
+
+### Native Decoder Sequence Parallelism
+
+The native SGLang adapter supports single-rank decoding and opt-in sequence
+parallelism. The thinker TP setting is independent of decoder SP. Set the
+following stage overrides in the pipeline YAML for two decoder GPUs:
+
+```yaml
+stages:
+  thinker:
+    engine:
+      enable_torch_compile: false
+  image_decode:
+    gpu: [1, 2]
+    sp_size: 2
+    factory:
+      backend: sglang
+      attention_backend: torch_sdpa
+      ulysses_degree: 2
+      ring_degree: 1
+```
+
+GPU IDs are relative to the parent's visible devices. Each decoder rank owns
+one process; SP followers do not participate in the thinker's TP/KV groups.
+SigVQ conditioning and VAE/image encoding run on rank zero. All ranks use the
+same noise seed and SGLang's spatial sharding, RoPE, attention, and gather.
+
+| Configuration | `gpu` | `sp_size` | Ulysses | Ring | Attention backend |
+| --- | --- | --- | --- | --- | --- |
+| Native SP1 | `1` | 1 | 1 | 1 | `torch_sdpa` |
+| Native SP2 Ulysses | `[1, 2]` | 2 | 2 | 1 | `torch_sdpa` |
+| Native SP2 ring | `[1, 2]` | 2 | 1 | 2 | `torch_sdpa` is unsupported |
+
+SGLang's ring path requires `fa` or `sage_attn`; configuration rejects SDPA
+with ring instead of changing the backend. A ring comparison must also run
+SP1 and Ulysses with the same explicitly selected backend. Ulysses degree
+must divide the checkpoint's attention head count. Spatial layouts that add
+learned padding tokens relative to SP1 are rejected to preserve semantics.
+
+The opt-in GPU test checks a small checkpoint against diffusers and verifies
+the instantiated attention backend. It does not replace full server validation:
+
+```bash
+LLADA_DECODER_GPU_TEST=1 python -m pytest -q \
+  tests/unit_test/llada2_uni/test_decoder_native_gpu.py
+```
+
+For generation/performance comparisons, use the same checkpoint, request,
+seed, resolution, CFG, dtype, decode mode and step count. Warm each server
+before timing; report request latency separately from decoder GPU time.
+
+### Requests
+
+Use `POST /v1/images/generations` for T2I and `POST /v1/images/edits` for
+editing. These routes use SGLang Diffusion's image request and response
+schemas while executing Omni's Thinker and selected image decoder backend.
+`dllm_steps` controls VQ token generation; `num_inference_steps` controls
+decoder diffusion sampling. `guidance_scale` sets Thinker CFG, not an
+additional CFG pass in the image decoder.
+
+```python
+import base64
+from pathlib import Path
+
+import requests
+
+request = {
+    "model": "inclusionAI/LLaDA2.0-Uni",
+    "prompt": "A sailboat on a calm lake.",
+    "size": "1024x1024",
+    "response_format": "b64_json",
+    "decode_mode": "decoder-turbo",
+    "num_inference_steps": 8,
+    "dllm_steps": 8,
+    "guidance_scale": 4.0,
+    "seed": 42,
+}
+response = requests.post(
+    "http://localhost:8000/v1/images/generations", json=request, timeout=600
+)
+response.raise_for_status()
+image = response.json()["data"][0]
+Path("generated.png").write_bytes(base64.b64decode(image["b64_json"]))
+```
+
+Edits accept multipart form data with exactly one `image`/`image[]` upload or
+`url`/`url[]` reference. Dimensions follow the processed source grid; omit
+`size`, `width`, and `height`. Set `cfg_text_scale` and `cfg_image_scale` for
+editing guidance. Omitting them retains the model's task-specific defaults.
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -F 'image=@source.png' \
+  -F 'prompt=Change the background to a beach.' \
+  -F 'response_format=b64_json' \
+  -F 'decode_mode=decoder-turbo' \
+  -F 'num_inference_steps=8' \
+  -F 'cfg_text_scale=4.0' -F 'cfg_image_scale=1.5' -F 'seed=42'
+```
+
+Both routes are non-streaming, support one PNG (`n=1`), and return
+`{id, created, data: [...]}`. `response_format=b64_json` returns raw base64;
+`response_format=url` returns an inline PNG data URL without server-side file
+retention. T2I accepts either `size` or paired `width`/`height`, defaulting to
+1024x1024. Unsupported native sampling controls are rejected rather than ignored.
+The old chat image-generation entrypoint remains available for existing clients.
+
+For thinking T2I, set `mode: "thinking"`. To retrieve both thinking text and
+the image, use `/v1/chat/completions` with `modalities: ["text", "image"]`
+and `image_generation.mode: "thinking"`.
+The text pass has a 2048-token budget and stops at `<boi>`. The image pass
+retains the generated context and applies CFG to the VQ tokens. Both passes
+must fit the thinker's configured context length. Thinking mode does not
+support editing.
+
+The server selects a patch-aligned source grid near a 512x512 pixel budget,
+then resizes proportionally and center-crops the image to that grid. Small
+images are enlarged without black padding; images already matching the grid
+are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
+Image understanding retains its separate preprocessing and pixel budgets.
+
+## Interleaved Output
+
+Start the interleaved variant with `examples/configs/llada2_uni_interleaved.yaml`.
+Send `/v1/chat/completions` with text-only `messages`,
+`modalities: ["text", "image"]`, `stream: false`, and
+`image_generation: {"mode": "interleaved", "max_frames": 3}`.
+LLaDA-specific generation controls remain in `image_generation`; it does not
+use Cosmos3's Reasoner decision loop or media re-ingestion policy.
+
+The response exposes ordered `choices[0].message.segments` following the
+[Cosmos3 segment contract](https://github.com/sgl-project/sglang-omni/issues/2183).
+That shared contract is proposed in PRs #2204/#2205 and is not yet merged into
+main. `message.content` is the concatenated text view. The previous
+`message.images` table and `content[].image_ref` format are no longer emitted
+for interleaved requests.
+
+```json
+{
+  "type": "segment",
+  "session_id": "request-execution-id",
+  "segment_index": 1,
+  "kind": "image",
+  "data": {
+    "kind": "image",
+    "mime_type": "image/png",
+    "url": "data:image/png;base64,...",
+    "sha256": "sha256-of-png-bytes",
+    "size_bytes": 12345
+  }
+}
+```
+
+Text segments use `kind: "text"` and a string `data`. Indices start at zero
+and are contiguous across text and images. The session ID identifies this
+request execution. SDK `CompletionResult.segments` and buffered `/generate`
+results expose the same list. This adapter returns a completed snapshot;
+incremental `delta.segment` delivery is not enabled by this API migration.
 
 ## Text Input
 
@@ -135,18 +304,12 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 |---|---|---|---|
 | `model` | string | `null` | Model identifier |
 | `messages` | list | (required) | List of chat messages, each with `role` and `content` |
-| `modalities` | list | `["text"]` | Output modalities (only `["text"]` is supported) |
+| `modalities` | list | `["text"]` | Use `["text"]` for understanding or `["image"]` for generation/editing |
+| `image_generation` | object | `null` | Image generation options shown above |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
-### Incoming Features
-
-- Text-to-image generation
-- Text-to-Image Generation with Thinking
-- Interleaved Generation
-
 ## Known Limitations
 
-- Text output is supported for text and image input. Image generation and
-  interleaved generation are not wired to the OpenAI-compatible response path
-  yet.
+- Image generation and editing return one image per non-streaming request.
+- Interleaved generation returns a buffered segment snapshot; streaming is not supported.

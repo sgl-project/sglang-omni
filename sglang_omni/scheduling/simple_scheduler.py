@@ -22,6 +22,10 @@ from typing import Awaitable, Callable, Generic, Protocol
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.threaded_simple_scheduler import ComputeInput, ComputeResult
+from sglang_omni.scheduling.types import (
+    ParallelSchedulerCapabilities,
+    SynchronizedRequestError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,10 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
     Streaming stages should provide a dedicated scheduler implementation
     (for example ``Code2WavScheduler``) rather than rely on SimpleScheduler.
     """
+
+    parallel_capabilities = ParallelSchedulerCapabilities(
+        fanout_work=True, drain_aborted_work=True
+    )
 
     def __init__(
         self,
@@ -63,6 +71,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         abort_callback: Callable[[str], None] | None = None,
         shutdown_callback: Callable[[], None] | None = None,
         request_arrival_hook: RequestArrivalHook | None = None,
+        allow_multiple_inflight_per_request: bool = False,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -91,11 +100,44 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.abort_callback = abort_callback
         self.shutdown_callback = shutdown_callback
         self.request_arrival_hook = request_arrival_hook
+        self.allow_multiple_inflight_per_request = allow_multiple_inflight_per_request
         self.shutdown_lock = threading.Lock()
         self.aborted: set[str] = set()
+        self.draining_aborts: set[tuple[str, int]] = set()
         self.abort_lock = threading.Lock()
         self.running = False
+        self.drain_on_stop = False
+        self.fail_on_unsynchronized_error: bool = False
         self.pending_messages: collections.deque[IncomingMessage] = collections.deque()
+
+    def enable_parallel_failure_handling(self) -> None:
+        if self.max_concurrency != 1 or self.max_batch_size != 1:
+            raise ValueError(
+                "Parallel work fanout requires serial, unbatched SimpleScheduler execution"
+            )
+        else:
+            self.fail_on_unsynchronized_error = True
+
+    def validate_sequence_parallel(self) -> None:
+        if self.max_concurrency != 1 or self.max_batch_size != 1:
+            raise ValueError("SP SimpleScheduler requires serial, unbatched execution")
+        else:
+            pass
+        self.drain_on_stop = True
+
+    def mark_request_aborted_for_drain(self, request_id: str, dispatch_id: int) -> None:
+        with self.abort_lock:
+            self.draining_aborts.add((request_id, dispatch_id))
+
+    def acknowledge_request_terminal(self, request_id: str, dispatch_id: int) -> None:
+        with self.abort_lock:
+            key = (request_id, dispatch_id)
+            if key not in self.draining_aborts:
+                return
+            else:
+                pass
+            self.draining_aborts.remove(key)
+        self.cleanup_aborted_request(request_id)
 
     def cleanup_aborted_request(self, request_id: str) -> None:
         if self.abort_callback is None:
@@ -112,14 +154,12 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             return request_id in self.aborted
 
     def consume_if_aborted(self, request_id: str) -> bool:
-        with self.abort_lock:
-            if request_id not in self.aborted:
-                return False
-            else:
-                pass
-            self.aborted.discard(request_id)
-        self.cleanup_aborted_request(request_id)
-        return True
+        """Skip aborted work at admission while retaining its cancellation marker.
+
+        Subclasses may retire skipped operations or admit required cleanup work.
+        The marker remains set so later work for the same request is suppressed.
+        """
+        return self.is_aborted(request_id)
 
     def enqueue(self, message: IncomingMessage) -> None:
         """Runs on the stage event loop, so the arrival hook must not block."""
@@ -235,12 +275,19 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             else:
                 pass
         except Exception:
-            if self.consume_if_aborted(msg.request_id):
+            if (
+                self.is_aborted(msg.request_id)
+                and not self.fail_on_unsynchronized_error
+            ):
                 return
             else:
+                raise
+        finally:
+            if self.is_aborted(msg.request_id):
+                self.cleanup_aborted_request(msg.request_id)
+            else:
                 pass
-            raise
-        if self.consume_if_aborted(msg.request_id):
+        if self.is_aborted(msg.request_id):
             return
         else:
             pass
@@ -251,27 +298,42 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop,
     ) -> None:
-        if self.batch_fn is None or len(batch) <= 1:
-            for msg in batch:
+        active_batch = [
+            msg for msg in batch if not self.consume_if_aborted(msg.request_id)
+        ]
+        if not active_batch:
+            return
+        else:
+            pass
+        if self.batch_fn is None or len(active_batch) <= 1:
+            for msg in active_batch:
                 self.run_single(msg, loop)
             return
         else:
             pass
 
-        payloads = [msg.data for msg in batch]
-        results = self.batch_fn(payloads)
-        if asyncio.iscoroutine(results):
-            results = loop.run_until_complete(results)
-        else:
-            pass
-        if len(results) != len(batch):
+        payloads = [msg.data for msg in active_batch]
+        try:
+            results = self.batch_fn(payloads)
+            if asyncio.iscoroutine(results):
+                results = loop.run_until_complete(results)
+            else:
+                pass
+        finally:
+            for request_id in {message.request_id for message in active_batch}:
+                if self.is_aborted(request_id):
+                    self.cleanup_aborted_request(request_id)
+                else:
+                    pass
+        if len(results) != len(active_batch):
             raise ValueError(
-                f"batch_compute_fn returned {len(results)} results for {len(batch)} requests"
+                "batch_compute_fn returned "
+                f"{len(results)} results for {len(active_batch)} requests"
             )
         else:
             pass
-        for msg, result in zip(batch, results):
-            if self.consume_if_aborted(msg.request_id):
+        for msg, result in zip(active_batch, results):
+            if self.is_aborted(msg.request_id):
                 continue
             else:
                 pass
@@ -295,15 +357,24 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
         self.running = True
-        if self.max_concurrency > 1:
-            self.start_concurrent()
-        else:
-            self.start_serial()
+        try:
+            if self.max_concurrency > 1:
+                self.start_concurrent()
+            else:
+                self.start_serial()
+        finally:
+            if self.drain_on_stop:
+                self.run_shutdown_callback()
+            else:
+                pass
 
     def start_serial(self) -> None:
         loop = asyncio.new_event_loop()
         try:
-            while self.running:
+            # note (Anmuliar): SP peers must finish every committed collective.
+            while self.running or (
+                self.drain_on_stop and (self.pending_messages or not self.inbox.empty())
+            ):
                 msg = self.next_message()
                 if msg is None:
                     continue
@@ -320,19 +391,23 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                         batch = self.collect_batch(msg)
                         self.run_batch(batch, loop)
                     except Exception as exc:
-                        logger.exception(
-                            "SimpleScheduler: compute_fn failed for %s", msg.request_id
-                        )
-                        for failed_msg in batch:
-                            if self.consume_if_aborted(failed_msg.request_id):
-                                continue
-                            else:
-                                pass
-                            self.emit_error(
-                                failed_msg.request_id,
-                                exc,
-                                self.outbox,
+                        if self.fail_on_unsynchronized_error and not isinstance(
+                            exc, SynchronizedRequestError
+                        ):
+                            raise
+                        else:
+                            logger.exception(
+                                f"SimpleScheduler: compute_fn failed for {msg.request_id}"
                             )
+                            for failed_msg in batch:
+                                if self.is_aborted(failed_msg.request_id):
+                                    continue
+                                else:
+                                    self.emit_error(
+                                        failed_msg.request_id,
+                                        exc,
+                                        self.outbox,
+                                    )
                 else:
                     pass
         finally:
@@ -376,13 +451,13 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     result = await asyncio.to_thread(
                         self.run_compute_in_thread, msg.data
                     )
-                    if self.consume_if_aborted(msg.request_id):
+                    if self.is_aborted(msg.request_id):
                         continue
                     else:
                         pass
                     self.emit_result(msg.request_id, result, self.outbox)
                 except Exception as exc:
-                    if self.consume_if_aborted(msg.request_id):
+                    if self.is_aborted(msg.request_id):
                         continue
                     else:
                         pass
@@ -390,6 +465,11 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                         "SimpleScheduler: compute_fn failed for %s", msg.request_id
                     )
                     self.emit_error(msg.request_id, exc, self.outbox)
+                finally:
+                    if self.is_aborted(msg.request_id):
+                        self.cleanup_aborted_request(msg.request_id)
+                    else:
+                        pass
 
         bridge_task = asyncio.create_task(bridge_inbox())
         worker_tasks = [
@@ -403,6 +483,12 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
 
     def stop(self) -> None:
         self.running = False
+        if not self.drain_on_stop:
+            self.run_shutdown_callback()
+        else:
+            pass
+
+    def run_shutdown_callback(self) -> None:
         with self.shutdown_lock:
             callback = self.shutdown_callback
             self.shutdown_callback = None
@@ -413,6 +499,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
 
     def abort(self, request_id: str) -> None:
         with self.abort_lock:
+            is_new_abort = request_id not in self.aborted
             self.aborted.add(request_id)
             if len(self.aborted) > 10000:
                 excess = len(self.aborted) - 5000
@@ -420,4 +507,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     self.aborted.discard(stale_request_id)
             else:
                 pass
-        self.cleanup_aborted_request(request_id)
+        if is_new_abort:
+            self.cleanup_aborted_request(request_id)
+        else:
+            pass
