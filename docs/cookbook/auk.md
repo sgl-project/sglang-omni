@@ -27,6 +27,8 @@ python -m sglang_omni.cli serve --model-path tencent/AuK --port 8000
 python -m sglang_omni.cli serve --model-path tencent/AuK-Flash --port 8000
 ```
 
+For Intel GPUs, see the [XPU launch recipes](../get_started/installation_xpu.md#auk-speech-generation-and-editing).
+
 ## Speech Generation
 
 `/v1/audio/speech` takes the text in `input`. Without reference audio, `instructions` describes the voice and defaults to `A clear, natural voice.` An explicit target duration is required in this mode:

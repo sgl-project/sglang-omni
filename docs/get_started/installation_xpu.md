@@ -260,6 +260,40 @@ stages:
 An explicit stage value wins over the pipeline default. See the platform-neutral
 defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
+### AuK (speech generation and editing)
+
+`tencent/AuK` and `tencent/AuK-Flash` use the same pipeline and also download the separate `Qwen/Qwen2.5-Omni-3B` conditioning encoder. The commands below use eager DiT sampling, disabling block compilation and step-graph capture at startup. These recipes have not yet been validated end-to-end on Intel XPU.
+
+Run one checkpoint at a time:
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path tencent/AuK \
+  --auk_engine.factory.enable_dit_torch_compile false \
+  --auk_engine.factory.enable_dit_cuda_graph false \
+  --host 0.0.0.0 --port 8000
+```
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path tencent/AuK-Flash \
+  --auk_engine.factory.enable_dit_torch_compile false \
+  --auk_engine.factory.enable_dit_cuda_graph false \
+  --host 0.0.0.0 --port 8000
+```
+
+With either server, generate a 24 kHz WAV from text and voice instructions. Without reference audio, `stage_params.auk_engine.gen_seconds` is required:
+
+```bash
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Welcome home.","instructions":"A warm, relaxed voice.",
+       "stage_params":{"auk_engine":{"gen_seconds":3}},
+       "seed":1234,"response_format":"wav"}' -o out.wav
+```
+
+AuK uses 32 sampling steps by default; AuK-Flash uses its fixed four-step recipe. See the [AuK cookbook](../cookbook/auk.md) for voice cloning and speech editing through `/generate`.
+
 ### dots.tts (text-to-speech, single XPU)
 
 The XPU installation includes `dots.tts==0.2.1`.
