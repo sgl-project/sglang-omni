@@ -27,7 +27,7 @@ python -m sglang_omni.cli serve --model-path tencent/AuK --port 8000
 python -m sglang_omni.cli serve --model-path tencent/AuK-Flash --port 8000
 ```
 
-For Intel GPUs, see the [XPU launch recipes](../get_started/installation_xpu.md#auk-speech-generation-and-editing).
+For Intel GPUs, see the [XPU launch recipes](../get_started/installation_xpu.md#auk-speech-generation-and-editing-single-xpu).
 
 ## Speech Generation
 
