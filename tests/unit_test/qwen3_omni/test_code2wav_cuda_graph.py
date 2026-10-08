@@ -1090,6 +1090,40 @@ def test_tier1_equivalence_failure_abandons_tier_with_original_reason() -> None:
     assert stats["memory"]["tier1"]["disable_reason"].startswith("equivalence_failed")
 
 
+def test_failing_best_effort_single_request_key_keeps_the_atomic_tier() -> None:
+    backend = SequencedBackend(
+        snapshots=[
+            (100, 120),
+            (100, 120),
+            (160, 200),
+        ],
+    )
+    backend.corrupt_at = 0
+    runner = Code2WavCudaGraphRunner.build(
+        FakeModel(),
+        device="cuda:0",
+        num_quantizers=16,
+        total_gpu_memory_fraction=0.5,
+        graph_keys=DEFAULT_GRAPH_KEYS,
+        best_effort_keys=(
+            GraphKey(batch_size=1, frames=27),
+            GraphKey(batch_size=1, frames=26),
+        ),
+        model_footprint_bytes=100,
+        decode_stream=None,
+        device_api=backend,
+    )
+
+    stats = runner.stats()
+    assert stats["enabled"] is True
+    assert stats["build"]["published_graph_count"] == len(DEFAULT_GRAPH_KEYS)
+    assert stats["memory"]["tier1"]["disable_reason"].startswith("equivalence_failed")
+    assert runner.run(make_codes(backend, 1, 30)).execution_mode == "cuda_graph"
+    tail = runner.run(make_codes(backend, 1, 27))
+    assert tail.execution_mode == "eager"
+    assert tail.fallback_reason == "key_miss"
+
+
 def test_runtime_disable_clears_tier1_availability() -> None:
     backend = SequencedBackend(
         snapshots=[

@@ -117,6 +117,33 @@ def serial_window_frames(
     return tuple(frames)
 
 
+def final_window_frames(
+    stream_chunk_size: int, left_context_size: int, initial_chunk_frames: int = 0
+) -> tuple[int, ...]:
+    """Window lengths a finished stream's last decode can take, in walk order.
+
+    A stream ends 1 to step - 1 frames past its last threshold window, read with
+    the context it holds by then.
+    """
+    initial = min(max(int(initial_chunk_frames), 0), stream_chunk_size)
+    frames: list[int] = []
+    emitted = 0
+    while True:
+        step = initial if emitted == 0 and initial else stream_chunk_size
+        context = min(left_context_size, emitted)
+        for new_frames in range(1, step):
+            if context + new_frames not in frames:
+                frames.append(context + new_frames)
+            else:
+                pass
+        if context + step == left_context_size + stream_chunk_size:
+            break
+        else:
+            pass
+        emitted += step
+    return tuple(frames)
+
+
 def serial_threshold_graph_keys(
     stream_chunk_size: int, left_context_size: int, initial_chunk_frames: int = 0
 ) -> tuple[GraphKey, ...]:
@@ -562,7 +589,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.wait_codes_ready(state)
         window = torch.stack(state.chunks[start - context : end], dim=0)
         codes = window.transpose(0, 1).unsqueeze(0)
-        wav, execution_metadata = self.forward_codes(codes, graph_eligible=not is_final)
+        wav, execution_metadata = self.forward_codes(codes, graph_eligible=True)
         wav = wav[..., -(end - start) * self.total_upsample :]
         samples = int(wav.numel())
         prev_wait_ns = 0
@@ -1439,12 +1466,23 @@ def create_code2wav_scheduler(
             graph_keys = serial_threshold_graph_keys(
                 stream_chunk_size, left_context_size, initial_codec_chunk_frames
             )
+        final_window_keys = tuple(
+            key
+            for key in (
+                GraphKey(batch_size=1, frames=frames)
+                for frames in final_window_frames(
+                    stream_chunk_size, left_context_size, initial_codec_chunk_frames
+                )
+            )
+            if key not in graph_keys
+        )
         cuda_graph_runner = Code2WavCudaGraphRunner.build(
             model,
             device=concrete_device,
             num_quantizers=int(model.config.num_quantizers),
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             graph_keys=graph_keys,
+            best_effort_keys=final_window_keys,
             model_footprint_bytes=sum(
                 tensor.nbytes
                 for tensor in itertools.chain(model.parameters(), model.buffers())
