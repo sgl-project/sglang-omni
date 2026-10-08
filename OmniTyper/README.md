@@ -40,6 +40,8 @@ On first launch:
    requires these permissions to be granted through its system UI.
 2. Open **Settings → Local speech model → Download & prepare ASR**. The first run
    downloads model weights from Hugging Face. Cached weights support offline ASR.
+   The card shows the download percentage and whether the model is missing,
+   downloaded, or loaded.
 3. Place the cursor in the destination input field. Press **Control + Option +
    Space**, wait for **Listening**, and speak. Press the shortcut again to finish.
    Keep the input focused until the result is inserted.

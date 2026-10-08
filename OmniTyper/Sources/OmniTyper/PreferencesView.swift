@@ -57,6 +57,7 @@ struct PreferencesView: View {
                     Label(L("settings.localModel"), systemImage: "cpu").font(.headline)
                     Text("Qwen3-ASR · 0.6B · MLX 4-bit").font(.subheadline)
                     Text(L("settings.modelNote")).font(.caption).foregroundStyle(.secondary)
+                    SpeechModelStatusRow(worker: model.worker, repository: store.preferences.asrModel)
                     HStack {
                         Button(L("settings.prepareASR")) { model.prepareModels() }.buttonStyle(.borderedProminent).disabled(model.isBusy)
                         Button(L("settings.unloadASR")) { model.releaseModels() }.disabled(model.isBusy)

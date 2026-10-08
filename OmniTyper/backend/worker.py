@@ -221,7 +221,9 @@ class Worker:
         self.asr = NativeASRServer()
 
     def handle(
-        self, value: object, progress: Callable[[str], None] = lambda message: None
+        self,
+        value: object,
+        progress: Callable[..., None] = lambda message, fraction=None: None,
     ) -> dict[str, Any]:
         started = time.monotonic()
         request = validate_request(value)
@@ -321,12 +323,14 @@ def serve(source: BinaryIO, output: TextIO, worker: Worker) -> None:
             value = json.loads(line)
             if isinstance(value, dict) and isinstance(value.get("id"), str):
                 request_id = value["id"][:128]
-            result = worker.handle(
-                value,
-                lambda message: emit(
-                    {"id": request_id, "event": "progress", "message": message}
-                ),
-            )
+
+            def report(message: str, fraction: float | None = None) -> None:
+                event = {"id": request_id, "event": "progress", "message": message}
+                if fraction is not None:
+                    event["fraction"] = round(fraction, 3)
+                emit(event)
+
+            result = worker.handle(value, report)
             emit(result)
         except Exception as exc:
             logger.warning("Worker request failed: %s", type(exc).__name__)
