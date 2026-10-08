@@ -24,16 +24,12 @@ from sglang_omni.models.sensenova_u1.neo_unify.modeling_qwen3 import (
     _flash_or_sdpa,
     _sdpa_attn_func,
     create_block_causal_mask,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.modeling_qwen3 import (
-    current_platform as model_platform,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.modeling_qwen3 import (
     make_qwen3_rms_norm,
     npu_fia_available,
     npu_swiglu_available,
     position_ids_from_indexes,
 )
+from sglang_omni.platforms import current_platform as model_platform
 
 
 def test_right_aligns_bnsd_prefix_for_npu_fia():
@@ -270,18 +266,44 @@ def test_npu_operator_probes(monkeypatch, operator, probe, available):
     assert probe() is available
 
 
-@pytest.mark.parametrize(
-    ("is_npu", "uses_native"),
-    [(False, True), (True, False)],
-)
-def test_shared_rmsnorm_dispatch(monkeypatch, is_npu, uses_native):
-    monkeypatch.setattr(model_platform, "is_npu", lambda: is_npu)
-
+def test_shared_rmsnorm_uses_framework_dispatch():
     norm = make_qwen3_rms_norm(64, eps=1e-6)
 
     assert isinstance(norm, RMSNorm)
     assert norm.cast_x_before_out_mul
-    assert (norm._forward_method == norm.forward_native) is uses_native
+    assert norm._forward_method != norm.forward_native
+
+
+def test_shared_rmsnorm_aiter_cpu_input_uses_native(monkeypatch):
+    norm = make_qwen3_rms_norm(64, eps=1e-6)
+    hidden_states = torch.randn(2, 3, 64)
+    expected = norm.forward_native(hidden_states)
+
+    def fail_aiter(*_args, **_kwargs):
+        raise AssertionError("AITER must not receive CPU inputs")
+
+    monkeypatch.setattr(RMSNorm, "forward_aiter", fail_aiter)
+    norm._forward_method = norm.forward_aiter
+
+    actual = norm(hidden_states)
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_shared_rmsnorm_npu_cpu_input_uses_native(monkeypatch):
+    norm = make_qwen3_rms_norm(64, eps=1e-6)
+    hidden_states = torch.randn(2, 3, 64)
+    expected = norm.forward_native(hidden_states)
+
+    def fail_npu(*_args, **_kwargs):
+        raise AssertionError("NPU RMSNorm must not receive CPU inputs")
+
+    monkeypatch.setattr(RMSNorm, "forward_npu", fail_npu)
+    norm._forward_method = norm.forward_npu
+
+    actual = norm(hidden_states)
+
+    torch.testing.assert_close(actual, expected)
 
 
 @torch.no_grad()
