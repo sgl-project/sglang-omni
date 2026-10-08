@@ -16,6 +16,7 @@ import librosa
 import numpy as np
 import numpy.typing as npt
 from PIL import Image
+from pydantic import BaseModel
 from qwen_vl_utils.vision_process import smart_resize
 
 from sglang_omni.preprocessing.base import MediaIO, is_url
@@ -31,6 +32,15 @@ except ImportError:
 MAX_VIDEO_FRAMES = 64
 AUDIO_SAMPLE_RATE = 16000
 MIN_TAIL_AUDIO_SAMPLES = 1600
+LONG_VIDEO_SAMPLE_INTERVAL_SECONDS = 0.1
+
+
+class VideoProcessingOptions(BaseModel):
+    video_fps: float | None = None
+    video_max_frames: int | None = None
+    video_min_pixels: int | None = None
+    video_max_pixels: int | None = None
+    video_total_pixels: int | None = None
 
 
 @dataclass(kw_only=True)
@@ -52,12 +62,12 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
         max_pixels: int | None = None,
         total_pixels: int | None = None,
     ) -> None:
-        self.use_audio = use_audio
-        self.fps = fps
-        self.max_frames = max_frames
-        self.min_pixels = min_pixels
-        self.max_pixels = max_pixels
-        self.total_pixels = total_pixels
+        self.use_audio: bool = use_audio
+        self.frames_per_second: float | None = fps
+        self.maximum_frame_count: int | None = max_frames
+        self.minimum_pixels_per_frame: int | None = min_pixels
+        self.maximum_pixels_per_frame: int | None = max_pixels
+        self.total_pixel_budget: int | None = total_pixels
         if fps is not None and (not math.isfinite(fps) or fps <= 0):
             raise ValueError("video_fps must be positive and finite")
         elif any(
@@ -81,103 +91,124 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
         if VideoReader is None or cpu is None:
             raise RuntimeError("MiniCPM-o video input requires decord==0.6.0")
         else:
-            reader = VideoReader(str(video_path), ctx=cpu(0))
+            video_reader = VideoReader(str(video_path), ctx=cpu(0))
         try:
-            source_fps = reader.get_avg_fps()
-            duration_seconds = len(reader) / source_fps if source_fps > 0 else 0.0
-            if duration_seconds <= 0 or source_fps <= 0:
+            source_frames_per_second = video_reader.get_avg_fps()
+            duration_seconds = (
+                len(video_reader) / source_frames_per_second
+                if source_frames_per_second > 0
+                else 0.0
+            )
+            if duration_seconds <= 0 or source_frames_per_second <= 0:
                 raise ValueError("Video input has invalid duration or frame rate")
             else:
                 pass
-            if self.fps is not None:
-                timestamps = np.arange(0, duration_seconds, 1.0 / self.fps).tolist()
+            if self.frames_per_second is not None:
+                timestamps_seconds = np.arange(
+                    0, duration_seconds, 1.0 / self.frames_per_second
+                ).tolist()
             elif duration_seconds > MAX_VIDEO_FRAMES:
-                timestamps = [
-                    round(index * 0.1, 1)
-                    for index in range(int(duration_seconds / 0.1))
+                timestamps_seconds = [
+                    round(index * LONG_VIDEO_SAMPLE_INTERVAL_SECONDS, 1)
+                    for index in range(
+                        int(duration_seconds / LONG_VIDEO_SAMPLE_INTERVAL_SECONDS)
+                    )
                 ]
             else:
-                timestamps = list(range(math.ceil(duration_seconds)))
-            frame_limit = (
-                self.max_frames if self.max_frames is not None else MAX_VIDEO_FRAMES
+                timestamps_seconds = list(range(math.ceil(duration_seconds)))
+            maximum_frame_count = (
+                self.maximum_frame_count
+                if self.maximum_frame_count is not None
+                else MAX_VIDEO_FRAMES
             )
-            if frame_limit < 1:
+            if maximum_frame_count < 1:
                 raise ValueError("video_max_frames must be positive")
-            elif len(timestamps) > frame_limit:
-                indices = np.linspace(
-                    0, len(timestamps) - 1, frame_limit, dtype=int
+            elif len(timestamps_seconds) > maximum_frame_count:
+                sample_indices = np.linspace(
+                    0, len(timestamps_seconds) - 1, maximum_frame_count, dtype=int
                 ).tolist()
-                timestamps = [timestamps[index] for index in indices]
+                timestamps_seconds = [
+                    timestamps_seconds[index] for index in sample_indices
+                ]
             else:
                 pass
             frame_indices = [
-                min(int(timestamp * source_fps), len(reader) - 1)
-                for timestamp in timestamps
+                min(
+                    int(timestamp_seconds * source_frames_per_second),
+                    len(video_reader) - 1,
+                )
+                for timestamp_seconds in timestamps_seconds
             ]
-            pixels = reader.get_batch(frame_indices).asnumpy()
-            frames = [Image.fromarray(frame).convert("RGB") for frame in pixels]
+            frame_pixels = video_reader.get_batch(frame_indices).asnumpy()
+            frames = [Image.fromarray(frame).convert("RGB") for frame in frame_pixels]
         finally:
-            del reader
+            del video_reader
         if self.use_audio:
             try:
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", message="PySoundFile failed")
-                    waveform, sample_rate = librosa.load(
+                    audio_waveform, sample_rate = librosa.load(
                         str(video_path), sr=AUDIO_SAMPLE_RATE, mono=True
                     )
             except (audioread.NoBackendError, RuntimeError):
-                waveform = extract_audio_from_path(video_path, AUDIO_SAMPLE_RATE)
+                audio_waveform = extract_audio_from_path(video_path, AUDIO_SAMPLE_RATE)
         else:
-            waveform = None
-        segments: list[npt.NDArray[np.float32]] = []
-        if waveform is not None:
-            for index, timestamp in enumerate(timestamps):
+            audio_waveform = None
+        audio_segments: list[npt.NDArray[np.float32]] = []
+        if audio_waveform is not None:
+            for index, timestamp_seconds in enumerate(timestamps_seconds):
                 end_seconds = (
-                    timestamps[index + 1]
-                    if index + 1 < len(timestamps)
+                    timestamps_seconds[index + 1]
+                    if index + 1 < len(timestamps_seconds)
                     else duration_seconds
                 )
-                segment = waveform[
-                    int(timestamp * AUDIO_SAMPLE_RATE) : int(
+                audio_segment = audio_waveform[
+                    int(timestamp_seconds * AUDIO_SAMPLE_RATE) : int(
                         end_seconds * AUDIO_SAMPLE_RATE
                     )
                 ]
                 if (
-                    index == len(timestamps) - 1
-                    and len(segment) < MIN_TAIL_AUDIO_SAMPLES
+                    index == len(timestamps_seconds) - 1
+                    and len(audio_segment) < MIN_TAIL_AUDIO_SAMPLES
                 ):
-                    segment = np.pad(
-                        segment, (0, MIN_TAIL_AUDIO_SAMPLES - len(segment))
+                    audio_segment = np.pad(
+                        audio_segment, (0, MIN_TAIL_AUDIO_SAMPLES - len(audio_segment))
                     )
                 else:
                     pass
-                segments.append(segment.astype(np.float32, copy=False))
+                audio_segments.append(audio_segment.astype(np.float32, copy=False))
         else:
             pass
         return TimedVideo(
             frames=self.resize_frames(frames),
-            audio_segments=segments,
-            timestamps_seconds=timestamps,
+            audio_segments=audio_segments,
+            timestamps_seconds=timestamps_seconds,
             duration_seconds=duration_seconds,
         )
 
     def resize_frames(self, frames: list[Image.Image]) -> list[Image.Image]:
         if all(
             budget is None
-            for budget in (self.min_pixels, self.max_pixels, self.total_pixels)
+            for budget in (
+                self.minimum_pixels_per_frame,
+                self.maximum_pixels_per_frame,
+                self.total_pixel_budget,
+            )
         ):
             return frames
         else:
-            resized: list[Image.Image] = []
+            resized_frames: list[Image.Image] = []
             for frame in frames:
-                maximum_pixels = self.max_pixels or frame.width * frame.height
-                if self.total_pixels is not None:
+                maximum_pixels = (
+                    self.maximum_pixels_per_frame or frame.width * frame.height
+                )
+                if self.total_pixel_budget is not None:
                     maximum_pixels = min(
-                        maximum_pixels, self.total_pixels // len(frames)
+                        maximum_pixels, self.total_pixel_budget // len(frames)
                     )
                 else:
                     pass
-                minimum_pixels = self.min_pixels or min(
+                minimum_pixels = self.minimum_pixels_per_frame or min(
                     maximum_pixels, frame.width * frame.height
                 )
                 if minimum_pixels > maximum_pixels:
@@ -191,14 +222,14 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
                         min_pixels=minimum_pixels,
                         max_pixels=maximum_pixels,
                     )
-                    resized.append(
+                    resized_frames.append(
                         frame.resize((width, height), Image.Resampling.BICUBIC)
                     )
-            return resized
+            return resized_frames
 
 
 async def load_timed_video(
-    source: str,
+    media_url: str,
     *,
     use_audio: bool,
     fps: float | None = None,
@@ -207,11 +238,7 @@ async def load_timed_video(
     max_pixels: int | None = None,
     total_pixels: int | None = None,
 ) -> TimedVideo:
-    if fps is not None and fps <= 0:
-        raise ValueError("video_fps must be positive")
-    else:
-        pass
-    decoder = MiniCPMVideoIO(
+    video_decoder = MiniCPMVideoIO(
         use_audio=use_audio,
         fps=fps,
         max_frames=max_frames,
@@ -219,9 +246,9 @@ async def load_timed_video(
         max_pixels=max_pixels,
         total_pixels=total_pixels,
     )
-    connector = get_global_resource_connector()
-    if is_url(source):
-        return await connector.load_resource_async(source, decoder)
+    resource_connector = get_global_resource_connector()
+    if is_url(media_url):
+        return await resource_connector.load_resource_async(media_url, video_decoder)
     else:
-        video_path = Path(connector.local_media_path(source))
-        return await asyncio.to_thread(decoder.load_file, video_path)
+        video_path = Path(resource_connector.local_media_path(media_url))
+        return await asyncio.to_thread(video_decoder.load_file, video_path)

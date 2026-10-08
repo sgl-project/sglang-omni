@@ -20,6 +20,7 @@ from transformers import AutoProcessor, PreTrainedTokenizerBase, ProcessorMixin
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
 from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
+from sglang_omni.models.minicpm_o.prompt_frontend import video_to_images
 from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
@@ -421,7 +422,7 @@ def test_real_processor_visual_packing(
     pixels = np.random.default_rng(17).integers(0, 256, (672, 1120, 3), dtype=np.uint8)
     image = Image.fromarray(pixels)
     frames = (
-        preprocessor_mod.video_to_images(
+        video_to_images(
             torch.from_numpy(
                 np.stack([pixels, np.flip(pixels, axis=1).copy()])
             ).permute(0, 3, 1, 2)

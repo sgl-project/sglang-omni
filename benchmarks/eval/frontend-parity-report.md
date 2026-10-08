@@ -9,7 +9,7 @@
 - Omni runtime: SGLang 0.5.21, Transformers 5.12.1, Torch 2.13 CUDA 13.0.
 - MiniCPM reference: Transformers 4.51.0, Torch 2.8, librosa 0.11.0, minicpmo-utils 1.0.5. Qwen reference uses the Omni environment.
 - The image's initial SGLang 0.5.19 lacked SpawnRanks; it was replaced with 0.5.21. MiniCPM reference runs in a separate environment. Video final verification fixes librosa 0.11.0 and Decord 0.6.0 on both sides.
-- Decode: greedy, 256 new tokens, repetition penalty 1, text output. MiniCPM thinking and TTS templates remain disabled by the existing frontend defaults. Qwen uses its existing template default.
+- Decode: greedy, 256 new tokens, repetition penalty 1, text output. MiniCPM thinking remains disabled; requests containing audio retain the existing TTS template. Qwen uses its existing template default.
 
 Fixture manifests retain sample IDs, source revisions, media SHA256, messages and references. Local manifests are `parity-fixtures/manifest.json` (350 samples) and `video-parity-fixtures/manifest.json` (50 questions across 17 videos). Raw results, punctuation, prompt IDs and bounds remain in `benchmarks/results/input-parity/`.
 
@@ -61,6 +61,16 @@ MMMU often reaches the 256-token limit before an option: MiniCPM official/after 
 Video official and final after outputs differ only on video-020-2: official D, after C, reference D. That video's prompt, IDs, pixels, audio features and both modality bounds also match exactly. Generation identity is not required. The one-question gap and MiniCPM ASR execution differences mean complete correctness parity is not yet established.
 
 ## Verification and reproduction
+
+### PR review and refactor verification
+
+The test review is recorded in bb354f2a and 8213b54c. The 36 frontend cases cover actual inline decoding, ordered parts, media turn ownership, supported top-level aliases, timed video sampling, pixel budgets and the audio decoder fallback. Duplicate layout assertions and processor keyword snapshots were removed. Tests were frozen after the second commit and remained byte-identical during production refactoring.
+
+The reviewed production frontend uses typed video options, explicit unit names and reuses decoded inline media. Nine complete preprocessing snapshots (including video) and eight independently captured prompt/ID/bounds fixtures are identical before and after refactoring. The MiniCPM/pipeline/API regression run passed 1031 tests with 15 environment-dependent skips. The final frontend/API run and two enabled live transcription cases also pass. Full pre-commit checks pass.
+
+The same frozen 350 generation cases and 50 video questions were rerun before and after refactoring. All metrics in the MiniCPM table remain exactly unchanged, with zero request errors. All 50 video outputs are identical. Six of the 350 text outputs differ: five MMMU explanations and one English comma; option accuracy, missing-answer counts, raw and extracted WER, and CER are unchanged.
+
+This PR claims correctness improvements, not generation throughput or latency improvements. A warmed frontend profile with 31 measurements per fixture shows identical output snapshots and small timing variation: the final video median is 3.47% lower, image 1.99% lower, while other fixtures range from 0.54% lower to 7.57% higher (the latter is about 0.01 ms on text). These measurements do not establish a stable speedup or a material processing regression. Local evidence is stored under pr2635-before-refactor-*, pr2635-after-refactor-* and pr2635-profile-*.
 
 The model frontend, Qwen pipeline and API suite passed 281 tests; two environment-gated live tests skipped. Enabled live inline/top-level audio transcription checks passed two tests. Full pre-commit validation includes Rust formatting. Large evidence files and media are intentionally outside tracked source.
 
