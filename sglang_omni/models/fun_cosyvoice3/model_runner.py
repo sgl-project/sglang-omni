@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.sampler import SGLANG_RETURN_ORIGINAL_LOGPROB
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -252,7 +253,15 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         onto the repeated token.
         """
         sampling_info = forward_batch.sampling_info
-        if sampling_info.is_all_greedy or not forward_batch.forward_mode.is_decode():
+        sampler = self.tp_worker.model_runner.sampler
+        # note (Yucheng Hu): an RL on-policy rollout must sample the trainer's
+        # distribution, and that sampler and the Ascend one leave raw logits behind.
+        if (
+            sampling_info.is_all_greedy
+            or not forward_batch.forward_mode.is_decode()
+            or sampler.rl_on_policy_target is not None
+            or sampler.use_ascend_backend
+        ):
             return next_token_ids
         else:
             pass
@@ -272,6 +281,16 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             emitted_logprobs = torch.log(
                 probs.gather(1, next_token_ids.long().unsqueeze(1)).squeeze(1)
             )
+            if SGLANG_RETURN_ORIGINAL_LOGPROB:
+                # note (Yucheng Hu): that mode reports logprobs before temperature;
+                # T * log(probs) differs from those logits by a per-row constant.
+                temperatures = sampling_info.temperatures.reshape(-1)
+                scaled_logprobs = torch.log(probs) * temperatures.unsqueeze(1)
+                emitted_logprobs = emitted_logprobs * temperatures - torch.logsumexp(
+                    scaled_logprobs, dim=1
+                )
+            else:
+                pass
             logits_output.next_token_logprobs = torch.where(
                 is_repeated, emitted_logprobs, logits_output.next_token_logprobs
             )
