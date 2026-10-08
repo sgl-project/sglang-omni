@@ -38,8 +38,9 @@ On first launch:
 
 1. Allow **Microphone** and **Accessibility** access from the home screen. macOS
    requires these permissions to be granted through its system UI.
-2. Open **Settings → Local speech model → Download & prepare ASR**. The first run
-   downloads model weights from Hugging Face. Cached weights support offline ASR.
+2. Open **Settings → Local speech model**, choose **Hugging Face** or
+   **ModelScope (China)**, then click **Download & prepare ASR**. The first run
+   downloads model weights from that source. Cached weights support offline ASR.
 3. Place the cursor in the destination input field. Press **Control + Option +
    Space**, wait for **Listening**, and speak. Press the shortcut again to finish.
    Keep the input focused until the result is inserted.
@@ -50,6 +51,25 @@ On first launch:
 5. The default writing style is **verbatim**, which needs no text API. Configure
    [a text model](#text-model-api) when you want cleanup, translation, editing, or
    answers to questions.
+
+Shortcut capture pauses dictation and reports conflicts with enabled macOS
+shortcuts or registered global hotkeys. Invalid combinations leave the saved
+shortcut unchanged. Private keyboard listeners and app menu shortcuts cannot all
+be detected; change the combination in either app if a conflict remains. Existing
+saved shortcuts keep working while a detected conflict is shown in Settings.
+
+The download source selects one of two pinned MLX conversions:
+
+| Source | Model | Revision |
+| --- | --- | --- |
+| Hugging Face | [`mlx-community/Qwen3-ASR-0.6B-4bit`](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-4bit) | `313d850181767edf09f00a9c289becca70e58cd0` |
+| ModelScope | [`aufklarer/Qwen3-ASR-0.6B-MLX-4bit`](https://modelscope.cn/models/aufklarer/Qwen3-ASR-0.6B-MLX-4bit) | `3478f178e267548f04a6b616ff10beeb1e644e54` |
+
+Changing source reloads the local ASR server on its next use. Both sources use
+SGLang-Omni's MLX backend. The ModelScope conversion omits the audio processor
+configuration; OmniTyper creates it locally using the pinned Hugging Face model's
+128-bin, 16 kHz Whisper feature-extractor parameters. It does not fetch missing
+files from Hugging Face or execute code from the model repository.
 
 Clicking **Start speaking** in OmniTyper's main window produces a result you can
 copy. Use the global shortcut from the destination app for automatic insertion.
@@ -250,7 +270,8 @@ audio retention deletes saved audio.
 
 Failed recordings can be retained temporarily for retries during the current
 session and are removed on normal exit. Crashes or forced termination can leave
-temporary files. Model weights use the standard Hugging Face cache.
+temporary files. Model weights use the selected provider's cache, normally
+`~/.cache/huggingface/hub` or `~/.cache/modelscope`.
 
 Diagnostics are available from Settings and stored at:
 
@@ -302,14 +323,37 @@ Model smoke tests require cached or downloadable ASR weights and, where applicab
 a running text API. Set `HF_HUB_OFFLINE=1` to prevent Hugging Face downloads when
 weights are cached. This does not prevent network access to the configured text API.
 
+To test ModelScope weights with the real streaming server:
+
+```bash
+HF_HUB_OFFLINE=1 OmniTyper/.venv/bin/python OmniTyper/backend/smoke_stream.py --source modelscope
+```
+
 The app bundle includes worker source files and records the Python executable's
 absolute path in `Info.plist`. It does not bundle Python or model weights. On
 another Mac, rerun setup or configure an existing compatible environment. Do not
 move or delete the repository or virtual environment while the app relies on it.
 
-Builds use ad-hoc signing by default. Set `CODE_SIGN_IDENTITY` to an appropriate
-code-signing identity for a stable designated requirement across rebuilds. Public
-distribution requires your own Developer ID signing and Apple notarization.
+Local builds create **OmniTyper Local Development** once in your default Keychain
+and reuse its private key and certificate. Temporary key files are removed; the
+imported private key is non-extractable and permits `/usr/bin/codesign` to use it.
+This does not add a trusted root or change system permission settings. Keep that
+identity and install updates at the same path so the app's designated requirement
+stays stable. Keychain may request access during the first build.
+
+Migrating from an ad-hoc build requires granting Microphone and Accessibility
+once more. Subsequent builds with the same certificate retain their identity;
+deleting the certificate, changing signers, or resetting permissions requires
+authorization again. See Apple's [code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
+
+Set `CODE_SIGN_IDENTITY` to use your own identity, or explicitly set it to `-` for
+an ad-hoc build. A signing failure stops the build; it never silently falls back
+to ad-hoc signing. Public distribution requires your own Developer ID signing and
+Apple notarization. To verify that a changed bundle keeps the same requirement:
+
+```bash
+bash OmniTyper/scripts/test-signing.sh
+```
 
 ### Migrating from OpenTypeless
 
@@ -334,9 +378,9 @@ fields. Switching apps or windows cancels automatic insertion.
 
 ### Permissions stop working after an update
 
-With the default ad-hoc signature, macOS ties an Accessibility grant to the build's
-code hash. Rebuilding can invalidate the grant while System Settings still shows
-its switch enabled. Toggling the stale entry may not fix it.
+Older builds used ad-hoc signatures, which tie grants to the build's code hash.
+Rebuilding or changing the signing identity can invalidate a grant while System
+Settings still shows its switch enabled. Toggling the stale entry may not fix it.
 
 Quit OmniTyper, remove its entry from **System Settings → Privacy & Security →
 Accessibility**, or reset that app's grant:
@@ -346,9 +390,9 @@ tccutil reset Accessibility org.sglang.OmniTyper
 ```
 
 Add the rebuilt app, enable access, and relaunch it. If microphone permission also
-stops working, grant it again under **Privacy & Security → Microphone**. Frequent
-local rebuilds can use a stable signing identity through `CODE_SIGN_IDENTITY`
-instead of ad-hoc signing.
+stops working, grant it again under **Privacy & Security → Microphone**. Current
+builds reuse a local Keychain signing identity automatically; retain that identity
+and avoid `CODE_SIGN_IDENTITY=-` for repeated local testing.
 
 ### Hold-to-talk closes before recording starts
 
@@ -363,8 +407,9 @@ all keys remain held.
 Allow microphone access and check that the selected input device is connected.
 The system-default device is resolved at the start of each recording. For model
 startup failures, rerun `OmniTyper/scripts/setup.sh` and check Python 3.12,
-`ffmpeg@7`, and Hugging Face connectivity. Setup includes HTTPX's SOCKS support for
-proxy environments.
+`ffmpeg@7`, and connectivity to the selected model source. Choose **ModelScope
+(China)** in Settings if Hugging Face is unreachable. Setup includes HTTPX's
+SOCKS support for proxy environments.
 
 ### Text processing fails
 

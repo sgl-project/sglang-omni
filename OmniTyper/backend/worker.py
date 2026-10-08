@@ -34,7 +34,7 @@ if BACKEND_DIRECTORY not in sys.path:
     sys.path.insert(0, BACKEND_DIRECTORY)
 
 import text_api
-from server import DEFAULT_MODEL, NativeASRServer
+from server import DEFAULT_MODEL, MODELSCOPE_MODEL, NativeASRServer
 
 import sglang_omni
 
@@ -122,8 +122,8 @@ def validate_request(value: object) -> dict[str, Any]:
     }
     for field, default in defaults.items():
         request.setdefault(field, default)
-    if request["asr_model"] != DEFAULT_MODEL:
-        raise ValueError(f"Supported ASR model: {DEFAULT_MODEL}.")
+    if request["asr_model"] not in {DEFAULT_MODEL, MODELSCOPE_MODEL}:
+        raise ValueError(f"Supported ASR models: {DEFAULT_MODEL}, {MODELSCOPE_MODEL}.")
     options = request.setdefault("text_api_options", {})
     if not isinstance(options, dict) or any(
         not isinstance(key, str) for key in options
@@ -243,7 +243,7 @@ class Worker:
             )[:200]
             return {"id": request["id"], "ok": True, "models": models}
         if request["op"] == "prepare":
-            self.asr.start(progress)
+            self.asr.start(progress, request["asr_model"])
             return {
                 "id": request["id"],
                 "ok": True,
@@ -256,7 +256,7 @@ class Worker:
             if is_silent(samples):
                 raw = ""
             else:
-                self.asr.start(progress)
+                self.asr.start(progress, request["asr_model"])
                 progress("Transcribing locally…")
                 raw = self.asr.transcribe(
                     samples,
