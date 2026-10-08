@@ -1005,7 +1005,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     def emit_completed_windows(self) -> list[str]:
         """Send every streaming window whose host copy has finished. Callers hold
         state_lock and run abort cleanup for the returned failed request ids once
-        it is released, as pump_due_streams does."""
+        it is released, as run_ready_step does."""
         failed: list[str] = []
         for request_id, pending in self.streaming_pending_windows():
             try:

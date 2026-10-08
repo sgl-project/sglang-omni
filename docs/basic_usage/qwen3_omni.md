@@ -174,12 +174,12 @@ The speech pipeline sets `codec_coalesce_frames=10`,
 `stages.talker_ar.factory`. The first 10 codec frames are sent individually;
 later frames are coalesced into groups of 10. Omitting a YAML override keeps
 these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to
-disable the early prefix. This aligns with the default serial Code2Wav
-10-frame threshold: the first three windows contain 10, 20, and 30 frames,
-and subsequent full windows contain 35 frames including left context.
-These shapes can use the captured serial windows when CUDA Graph is enabled.
-An early prefix of 12 with this serial configuration instead produces
-22- and 32-frame windows that fall back to eager execution.
+disable the early prefix. This aligns with the default Code2Wav 10-frame
+threshold: the first three windows contain 10, 20, and 30 frames, and
+subsequent full windows contain 35 frames including left context. These
+shapes can use the captured windows when CUDA Graph is enabled. Each window
+decodes one 10-frame chunk past its context, so an early prefix of 12 keeps
+these window lengths and its two extra frames wait for the next window.
 
 With `initial_codec_chunk_frames=2` and `stream_chunk_size=10`, explicitly set
 `codec_coalesce_early_frames=12` to make the first two windows eligible at
@@ -189,7 +189,7 @@ first group at step 11: the sender retains the newest row until the next step
 can exclude EOS, or the request finishes. For a request that continues past
 step 10, first-window input readiness therefore moves from step 2 to step 11,
 adding nine Talker decode intervals. If the interval is approximately `d` ms,
-the added input wait is approximately `9d` ms. With the serial 10-frame first
+the added input wait is approximately `9d` ms. With the default 10-frame first
 window, readiness instead moves from step 10 to step 11. The default 10-frame
 early prefix preserves readiness at step 10; the next two windows become
 ready at steps 21 and 31. The extra step after the prefix retains the newest
