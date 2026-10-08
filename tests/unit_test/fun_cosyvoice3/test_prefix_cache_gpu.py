@@ -9,6 +9,7 @@ import copy
 import pytest
 import torch
 
+from sglang_omni.models.fun_cosyvoice3.causal_conv import FusedConvPositionEmbedding
 from sglang_omni.models.fun_cosyvoice3.final_cuda_graph import FinalCudaGraphRunner
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
@@ -73,6 +74,9 @@ def make_estimator() -> PackedDiT:
             module.to(torch.bfloat16)
         else:
             pass
+    dit.input_embed.conv_pos_embed = FusedConvPositionEmbedding(
+        dit.input_embed.conv_pos_embed
+    )
     estimator = PackedDiT(dit, device="cuda")
     if not estimator.is_ragged:
         pytest.skip("requires FA3")

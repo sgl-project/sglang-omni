@@ -38,6 +38,11 @@ if TYPE_CHECKING:
 else:
     pass
 
+from sglang_omni.models.fun_cosyvoice3.causal_conv import (
+    GROUP_CONV_KERNEL_CHANNELS,
+    HAS_TRITON,
+    FusedConvPositionEmbedding,
+)
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
 from sglang_omni.models.fun_cosyvoice3.final_cuda_graph import (
     FINAL_TIER_FRAMES,
@@ -1191,6 +1196,14 @@ def load_cosyvoice3_flow_hift(
                 module.to(autocast_dtype)
             else:
                 pass
+        input_embed = flow.decoder.estimator.input_embed
+        conv = input_embed.conv_pos_embed.conv1[0]
+        if HAS_TRITON and conv.in_channels // conv.groups in GROUP_CONV_KERNEL_CHANNELS:
+            input_embed.conv_pos_embed = FusedConvPositionEmbedding(
+                input_embed.conv_pos_embed
+            )
+        else:
+            pass
     else:
         pass
     wrapped = FunCosyVoice3Flow(

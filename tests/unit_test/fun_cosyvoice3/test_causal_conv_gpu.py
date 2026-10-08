@@ -3,11 +3,23 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.fun_cosyvoice3.causal_conv import (
+    GROUP_CONV_KERNEL_CHANNELS,
+    FusedConvPositionEmbedding,
+    group_conv_mish,
+    pack_group_conv_weight,
+)
+
 pytestmark = pytest.mark.accelerator
+
+GROUPS = 16
+TAPS = 31
 
 
 def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
@@ -18,21 +30,18 @@ def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("group_channels", GROUP_CONV_KERNEL_CHANNELS)
 @pytest.mark.parametrize("frames", [31, 32, 95, 1000])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_group_conv_mish_is_as_close_to_float64_as_the_module(
-    frames: int, dtype: torch.dtype
+    group_channels: int, frames: int, dtype: torch.dtype
 ) -> None:
-    from sglang_omni.models.fun_cosyvoice3.causal_conv import (
-        group_conv_mish,
-        pack_group_conv_weight,
-    )
-
+    channels = GROUPS * group_channels
     torch.manual_seed(0)
-    conv = torch.nn.Conv1d(1024, 1024, 31, groups=16).cuda().to(dtype)
+    conv = torch.nn.Conv1d(channels, channels, TAPS, groups=GROUPS).cuda().to(dtype)
     with torch.no_grad():
         conv.bias.normal_(0, 0.5)
-    x = torch.randn(2, frames, 1024, device="cuda").to(dtype)
+    x = torch.randn(2, frames, channels, device="cuda").to(dtype)
 
     with torch.inference_mode():
         fused = group_conv_mish(x, pack_group_conv_weight(conv), conv.bias)
@@ -42,47 +51,30 @@ def test_group_conv_mish_is_as_close_to_float64_as_the_module(
                 x.double().transpose(1, 2),
                 conv.weight.double(),
                 conv.bias.double(),
-                groups=16,
+                groups=GROUPS,
             )
         ).transpose(1, 2)
 
-    assert fused.shape == (2, frames - 30, 1024) and fused.dtype == dtype
+    assert fused.shape == (2, frames - TAPS + 1, channels) and fused.dtype == dtype
     assert relative_error(fused, float64) <= relative_error(module, float64)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_the_padded_dit_runs_its_positional_convs_on_the_fused_kernel() -> None:
-    cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
-    from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT
-
+def test_the_fused_position_embedding_is_as_close_to_float64_as_the_module() -> None:
+    cosyvoice_modules = pytest.importorskip("cosyvoice.flow.DiT.modules")
     torch.manual_seed(0)
-    dit = cosyvoice_dit.DiT(
-        dim=256,
-        depth=1,
-        heads=4,
-        dim_head=64,
-        mel_dim=80,
-        mu_dim=80,
-        spk_dim=80,
-        out_channels=80,
-        static_chunk_size=50,
-        num_decoding_left_chunks=-1,
-    ).cuda()
-    conv_pos_embed = dit.input_embed.conv_pos_embed
-    float64 = type(conv_pos_embed)(256).cuda().double()
-    float64.load_state_dict(conv_pos_embed.state_dict())
-    for module in dit.modules():
-        if isinstance(module, (torch.nn.Linear, torch.nn.Conv1d)):
-            module.to(torch.bfloat16)
-        else:
-            pass
-    PackedDiT(dit, device="cuda")
+    original = cosyvoice_modules.CausalConvPositionEmbedding(256).cuda().eval()
+    float64 = copy.deepcopy(original).double()
+    original.to(torch.bfloat16)
+    fused = FusedConvPositionEmbedding(original)
     x = torch.randn(2, 77, 256, device="cuda", dtype=torch.bfloat16)
 
     with torch.inference_mode():
-        fused = conv_pos_embed(x)
-        module = type(conv_pos_embed).forward(conv_pos_embed, x)
+        fused_output = fused(x)
+        module_output = original(x)
         reference = float64(x.double())
 
-    assert not torch.equal(fused, module)
-    assert relative_error(fused, reference) <= relative_error(module, reference)
+    assert fused_output.shape == module_output.shape
+    assert relative_error(fused_output, reference) <= relative_error(
+        module_output, reference
+    )
