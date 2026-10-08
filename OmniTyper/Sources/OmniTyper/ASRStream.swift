@@ -38,6 +38,8 @@ struct TranscriptionPreview {
 
 @MainActor
 final class ASRStream {
+    private static let maximumHotwords = 20
+    private static let maximumPromptScalars = 4096
     private let session: URLSession
     private let socket: URLSessionWebSocketTask
     private let audio = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(32))
@@ -81,15 +83,25 @@ final class ASRStream {
         }
     }
 
-    func connect(language: String) async throws {
+    func connect(language: String, hotwords: [String] = []) async throws {
         socket.resume()
         let timeout = deadline(seconds: 30)
         defer { timeout.cancel() }
         do {
-            try await send(["type": "session.update", "session": [
+            var settings: [String: Any] = [
                 "language": language.isEmpty ? NSNull() : language as Any,
                 "turn_detection": NSNull()
-            ]])
+            ]
+            var includedHotwords: [String] = []
+            for hotword in hotwords.prefix(Self.maximumHotwords) {
+                let encoded = try JSONSerialization.data(withJSONObject: includedHotwords + [hotword],
+                                                         options: [.withoutEscapingSlashes])
+                let prompt = String(decoding: encoded, as: UTF8.self).replacingOccurrences(of: "<", with: "\\u003c")
+                guard prompt.unicodeScalars.count <= Self.maximumPromptScalars else { break }
+                includedHotwords.append(hotword)
+                settings["prompt"] = prompt
+            }
+            try await send(["type": "session.update", "session": settings])
             while true {
                 let event = try await receive()
                 if event["type"] as? String == "error" {

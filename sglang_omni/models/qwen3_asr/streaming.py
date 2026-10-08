@@ -13,15 +13,18 @@ _UNFIXED_CHUNK_NUM = 2
 class Qwen3ASRStreamingState:
     model_name: str
     language: str | None = None
+    prompt: str | None = None
     chunk_id: int = 0
     transcript: str = ""
 
 
 class Qwen3ASRStreamingStrategy:
     def create_state(
-        self, *, model_name: str, language: str | None
+        self, *, model_name: str, language: str | None, prompt: str | None = None
     ) -> Qwen3ASRStreamingState:
-        return Qwen3ASRStreamingState(model_name=model_name, language=language)
+        return Qwen3ASRStreamingState(
+            model_name=model_name, language=language, prompt=prompt
+        )
 
     @staticmethod
     def state(state: object) -> Qwen3ASRStreamingState:
@@ -53,7 +56,7 @@ class Qwen3ASRStreamingStrategy:
             content_type="audio/wav",
             model=qwen_state.model_name,
             language=qwen_state.language,
-            prompt=None,
+            prompt=qwen_state.prompt,
             temperature=0.0,
             stream=False,
         )

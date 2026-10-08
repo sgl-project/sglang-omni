@@ -249,6 +249,7 @@ WebSocket session open for new audio.
   "type": "session.update",
   "session": {
     "language": "English",
+    "prompt": "SGLang, OmniTyper, Qwen",
     "turn_detection": {
       "type": "server_vad",
       "threshold": 0.5,
@@ -258,6 +259,21 @@ WebSocket session open for new audio.
   }
 }
 ```
+
+`prompt` supplies vocabulary or context hints, using the same system-turn
+conditioning as the HTTP transcription endpoint. It is limited to 4096 Unicode
+code points; the model's token/context budget still applies. Omitting it from
+`session.update` retains the current hint, while `null`, an empty string, or
+whitespace clears it. The normalized value is echoed in `session.created` and
+`session.updated`.
+
+Set hints before appending audio. Changes to language, prompt, or VAD are rejected
+while a segment is active or uncommitted audio is buffered; commit or clear first.
+Each segment retains its own hint for both partial and final decoding, including
+finals still queued when later session settings change. Clearing audio keeps the
+session hint. Prompts bias recognition but do not guarantee a spelling or replace
+the transcript. Realtime models must explicitly support prompts; unsupported
+models reject nonempty hints rather than silently ignoring them.
 
 Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
 in the active segment. After the first two refreshes, the server rolls five

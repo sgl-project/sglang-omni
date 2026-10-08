@@ -67,7 +67,9 @@ _UNBOUNDED_BUFFER_S = 600.0
 
 
 class StreamingASRStrategy(Protocol):
-    def create_state(self, *, model_name: str, language: str | None) -> object: ...
+    def create_state(
+        self, *, model_name: str, language: str | None, prompt: str | None = None
+    ) -> object: ...
 
     def build_decode_request(
         self,
@@ -101,6 +103,7 @@ def new_id(prefix: str) -> str:
 @dataclass(slots=True)
 class TranscriptionSessionSettings:
     language: str | None = None
+    prompt: str | None = None
     decode_interval_ms: int = 2000
     # the session seeds this from the model's server_vad declaration,
     # and the client may change it via session.update.
@@ -330,6 +333,7 @@ class RealtimeTranscriptionSession:
             id=self.session_id,
             model=self.model_name,
             language=self.settings.language,
+            prompt=self.settings.prompt,
             decode_interval_ms=self.settings.decode_interval_ms,
             turn_detection=self.settings.turn_detection,
         )
@@ -374,22 +378,30 @@ class RealtimeTranscriptionSession:
 
     async def handle_session_update(self, event: TranscriptionSessionUpdate) -> None:
         update = event.session.model_dump(exclude_unset=True)
-        if not self.audio_buffer.is_empty() and any(
-            key in update for key in ("language", "turn_detection")
-        ):
+        if (
+            not self.audio_buffer.is_empty() or self.active_segment is not None
+        ) and any(key in update for key in ("language", "prompt", "turn_detection")):
             await self.send_error(
                 "invalid_request_error",
                 "session_active",
-                "Language and VAD settings cannot change "
-                "while uncommitted audio is buffered.",
+                "Language, prompt and VAD settings cannot change "
+                "while an audio segment is active or uncommitted audio is buffered.",
             )
             return
         else:
             pass
 
-        if "language" in update:
-            language = update["language"]
-            self.settings.language = language.strip() if language else None
+        if "prompt" in update:
+            prompt = (event.session.prompt or "").strip() or None
+        else:
+            prompt = self.settings.prompt
+        if prompt is not None and not self.transcription_config.supports_prompt:
+            await self.send_error(
+                "invalid_request_error",
+                "unsupported_prompt",
+                "This model does not support realtime transcription prompts.",
+            )
+            return
         else:
             pass
         if "turn_detection" in update:
@@ -426,14 +438,21 @@ class RealtimeTranscriptionSession:
                     pass
             else:
                 pass
+            vad = self.new_vad(turn_detection)
             if self.vad is not None:
                 self.vad.reset()
             else:
                 pass
             self.settings.turn_detection = turn_detection
-            self.vad = self.new_vad(turn_detection)
+            self.vad = vad
         else:
             pass
+        if "language" in update:
+            language = event.session.language
+            self.settings.language = language.strip() if language else None
+        else:
+            pass
+        self.settings.prompt = prompt
         await self.send(TranscriptionSessionUpdated(session=self.session_object()))
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
@@ -517,13 +536,21 @@ class RealtimeTranscriptionSession:
         self.maybe_schedule_partial()
 
     def start_segment(self, start_sample: int) -> ActiveTranscriptionSegment:
+        if self.transcription_config.supports_prompt:
+            strategy_state = self.strategy.create_state(
+                model_name=self.model_name,
+                language=self.settings.language,
+                prompt=self.settings.prompt,
+            )
+        else:
+            strategy_state = self.strategy.create_state(
+                model_name=self.model_name,
+                language=self.settings.language,
+            )
         segment = ActiveTranscriptionSegment(
             segment_id=self.next_segment_id,
             start_sample=start_sample,
-            strategy_state=self.strategy.create_state(
-                model_name=self.model_name,
-                language=self.settings.language,
-            ),
+            strategy_state=strategy_state,
             next_refresh_sample=start_sample + self.refresh_interval_samples,
         )
         self.next_segment_id += 1
@@ -820,6 +847,8 @@ class RealtimeTranscriptionSession:
         else:
             pass
         await self.finalize_through(end_sample)
+        # note (PansaLegrand): Commit also closes an empty continuation after a hard-limit split.
+        self.active_segment = None
         if self.vad is not None:
             self.vad.reset()
         else:

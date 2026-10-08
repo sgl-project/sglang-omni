@@ -70,6 +70,9 @@ def test_request_builder_reconstructs_prefix_plus_continuation(
     class BuilderTokenizer(Tokenizer):
         eos_token_id = 2
 
+        def __init__(self) -> None:
+            self.prompt_texts: list[str] = []
+
         def __len__(self) -> int:
             return 256
 
@@ -83,8 +86,11 @@ def test_request_builder_reconstructs_prefix_plus_continuation(
                 return [100, 101]
             return [30 + index for index, _char in enumerate(text)]
 
-        def __call__(self, _text: str, *, add_special_tokens: bool = False):
+        def __call__(
+            self, text: str, *, add_special_tokens: bool = False
+        ) -> SimpleNamespace:
             assert not add_special_tokens
+            self.prompt_texts.append(text)
             return SimpleNamespace(input_ids=[11, 42, 12, 13])
 
         def decode(self, token_ids: list[int], **_: object) -> str:
@@ -103,8 +109,9 @@ def test_request_builder_reconstructs_prefix_plus_continuation(
         "load_audio",
         lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
+    tokenizer = BuilderTokenizer()
     request_builder, result_adapter = make_qwen3_asr_scheduler_adapters(
-        tokenizer=BuilderTokenizer(),
+        tokenizer=tokenizer,
         max_new_tokens=32,
         feature_extractor=lambda *args, **kwargs: SimpleNamespace(
             input_features=torch.zeros((1, 128, 100)),
@@ -118,6 +125,7 @@ def test_request_builder_reconstructs_prefix_plus_continuation(
                 inputs={"audio_bytes": b"wav"},
                 params={
                     "language": "English",
+                    "prompt": "PyTorch, Kubernetes",
                     "_asr_streaming": True,
                     "_asr_streaming_prefix_text": "abcdef",
                     "_asr_streaming_rollback_tokens": 2,
@@ -129,16 +137,23 @@ def test_request_builder_reconstructs_prefix_plus_continuation(
     data.output_ids = [34, 35]
     result = result_adapter(data)
 
+    assert (
+        "<|im_start|>system\nPyTorch, Kubernetes<|im_end|>" in tokenizer.prompt_texts[0]
+    )
     assert data.prompt_token_ids[-4:] == [30, 31, 32, 33]
     assert result.data["text"] == "abcdef"
     assert result.data["language"] == "English"
 
 
-def test_qwen_strategy_waits_for_unfixed_chunks_before_using_prefix() -> None:
+@pytest.mark.parametrize("prompt", [None, "PyTorch, 张三"])
+def test_qwen_strategy_waits_for_unfixed_chunks_before_using_prefix(
+    prompt: str | None,
+) -> None:
     strategy = Qwen3ASRStreamingStrategy()
     state = strategy.create_state(
         model_name="qwen3-asr",
         language="English",
+        prompt=prompt,
     )
 
     first = strategy.build_decode_request(
@@ -160,10 +175,19 @@ def test_qwen_strategy_waits_for_unfixed_chunks_before_using_prefix() -> None:
     third = strategy.build_decode_request(
         audio=b"wav", state=state, is_final=False, request_id="r2"
     )
+    final = strategy.build_decode_request(
+        audio=b"wav", state=state, is_final=True, request_id="r3"
+    )
 
     assert first.extra_params["_asr_streaming_prefix_text"] is None
     assert second.extra_params["_asr_streaming_prefix_text"] is None
     assert third.extra_params["_asr_streaming_prefix_text"] == "hello world"
+    assert final.extra_params["_asr_streaming_prefix_text"] == "hello world"
+    for request in (first, second, third, final):
+        if prompt is None:
+            assert "prompt" not in request.extra_params
+        else:
+            assert request.extra_params["prompt"] == prompt
 
 
 def test_qwen_strategy_skips_prefix_until_language_is_known() -> None:

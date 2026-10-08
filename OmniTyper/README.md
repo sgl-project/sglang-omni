@@ -146,9 +146,11 @@ preview text is not inserted into the destination app. If streaming fails or
 falls behind, OmniTyper shows a warning and transcribes the complete WAV after
 recording ends.
 
-The realtime path does not currently pass dictionary hotwords to ASR. Dictionary
-replacements still apply to the final transcript; full-WAV transcription also
-passes supported hotword hints to the server.
+Realtime and full-WAV transcription pass dictionary written forms as ASR vocabulary
+hints. Realtime uses a snapshot taken when recording starts, keeping whole entries
+from the first 20 that fit the server's 4096-character prompt limit after JSON
+escaping. Hints do not guarantee exact spelling; dictionary replacements still
+apply to the final transcript.
 
 ## Text insertion and clipboard behavior
 

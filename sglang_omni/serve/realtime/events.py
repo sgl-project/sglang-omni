@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
+MAX_TRANSCRIPTION_PROMPT_CHARACTERS = 4096
+
 
 # Forward compatibility for future event types.
 class EventBase(BaseModel):
@@ -62,6 +64,9 @@ class TranscriptionSessionConfig(EventBase):
     model_config = ConfigDict(extra="forbid")
 
     language: str | None = None
+    prompt: str | None = Field(
+        default=None, max_length=MAX_TRANSCRIPTION_PROMPT_CHARACTERS
+    )
     turn_detection: TurnDetection | None = None
     input_audio_format: Literal["pcm16"] | None = None
 
@@ -148,6 +153,7 @@ class TranscriptionSessionObject(EventBase):
     intent: Literal["transcription"] = "transcription"
     input_audio_format: Literal["pcm16"] = "pcm16"
     language: str | None = None
+    prompt: str | None = None
     decode_interval_ms: int
     turn_detection: TurnDetection | None = None
 

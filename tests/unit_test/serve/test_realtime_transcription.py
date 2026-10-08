@@ -13,8 +13,10 @@ from starlette.websockets import WebSocketState
 
 from sglang_omni.client import CompletionResult, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
+from sglang_omni.models.qwen3_asr.streaming import Qwen3ASRStreamingStrategy
 from sglang_omni.serve.realtime import transcription_session as session_module
 from sglang_omni.serve.realtime import vad as vad_module
+from sglang_omni.serve.realtime.events import MAX_TRANSCRIPTION_PROMPT_CHARACTERS
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
 )
@@ -64,8 +66,10 @@ def use_fake_speech_model(monkeypatch: pytest.MonkeyPatch) -> FakeSpeechModel:
 
 
 class FakeStrategy:
-    def create_state(self, **settings: Any) -> object:
-        return settings
+    def create_state(
+        self, *, model_name: str, language: str | None
+    ) -> dict[str, str | None]:
+        return {"model_name": model_name, "language": language}
 
     def build_decode_request(self, **_: Any) -> GenerateRequest:
         return GenerateRequest(prompt="audio", stream=False)
@@ -86,12 +90,14 @@ class FakeClient:
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = outputs
         self.calls: list[str] = []
+        self.requests: list[GenerateRequest] = []
         self.aborted: list[str] = []
 
     async def completion(
         self, _request: GenerateRequest, *, request_id: str
     ) -> CompletionResult:
         self.calls.append(request_id)
+        self.requests.append(_request)
         text = self.outputs.pop(0) if self.outputs else f"text-{len(self.calls)}"
         return CompletionResult(request_id=request_id, text=text, language="English")
 
@@ -109,6 +115,7 @@ class BlockingClient(FakeClient):
         self, _request: GenerateRequest, *, request_id: str
     ) -> CompletionResult:
         self.calls.append(request_id)
+        self.requests.append(_request)
         if len(self.calls) == 1:
             self.started.set()
             await self.release.wait()
@@ -155,20 +162,23 @@ async def make_session(
     *,
     outputs: list[str] | None = None,
     max_segment_s: float | None = 60.0,
+    supports_prompt: bool = False,
 ) -> tuple[RealtimeTranscriptionSession, RecordingWebSocket, FakeClient]:
     use_fake_speech_model(monkeypatch)
     websocket = RecordingWebSocket()
     client = FakeClient(outputs or [])
+    strategy = Qwen3ASRStreamingStrategy() if supports_prompt else FakeStrategy()
     session = RealtimeTranscriptionSession(
         websocket,  # type: ignore[arg-type]
         client=client,  # type: ignore[arg-type]
         model_name="qwen3-asr",
         transcription_config=RealtimeTranscriptionConfig(
-            strategy_cls=FakeStrategy,
+            strategy_cls=type(strategy),
             decode_interval_ms=2000,
             max_segment_s=max_segment_s,
+            supports_prompt=supports_prompt,
         ),
-        strategy=FakeStrategy(),
+        strategy=strategy,
         session_id="sess-test",
     )
     await session.dispatch(
@@ -209,6 +219,308 @@ async def test_partial_is_replaced_by_one_final_segment(
     assert completed["type"] == "transcription.completed"
     assert completed["text"] == "hello world"
     assert session.decode_worker_task.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [(" \nPyTorch, 张三\t", "PyTorch, 张三"), (None, None), ("", None), (" \n", None)],
+)
+async def test_prompt_updates_normalize_clear_and_retain_omitted_values(
+    monkeypatch: pytest.MonkeyPatch, prompt: str | None, expected: str | None
+) -> None:
+    session, websocket, client = await make_session(monkeypatch, supports_prompt=True)
+    try:
+        await session.send(
+            session_module.TranscriptionSessionCreated(session=session.session_object())
+        )
+        assert websocket.events[-1]["session"]["prompt"] is None
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": "original"}}
+        )
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": prompt}}
+        )
+        assert websocket.events[-1]["type"] == "session.updated"
+        assert websocket.events[-1]["session"]["prompt"] == expected
+        await session.dispatch(
+            {"type": "session.update", "session": {"language": "English"}}
+        )
+        assert websocket.events[-1]["session"]["prompt"] == expected
+        await session.dispatch(audio_event(make_pcm(0.5)))
+        await session.dispatch({"type": "transcription.done"})
+        assert client.requests[0].extra_params.get("prompt") == expected
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_prompt_limit_counts_unicode_characters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await make_session(monkeypatch, supports_prompt=True)
+    prompt = "词" * MAX_TRANSCRIPTION_PROMPT_CHARACTERS
+    try:
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": prompt}}
+        )
+        assert websocket.events[-1]["type"] == "session.updated"
+        assert websocket.events[-1]["session"]["prompt"] == prompt
+        await session.dispatch(
+            {
+                "type": "session.update",
+                "session": {"prompt": prompt + "词", "language": "French"},
+            }
+        )
+        assert websocket.events[-1]["error"]["code"] == "invalid_event"
+        assert session.session_object().prompt == prompt
+        assert session.settings.language is None
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", [123, ["PyTorch"], {"term": "PyTorch"}])
+async def test_prompt_rejects_non_string_values(
+    monkeypatch: pytest.MonkeyPatch, prompt: int | list[str] | dict[str, str]
+) -> None:
+    session, websocket, _client = await make_session(monkeypatch, supports_prompt=True)
+    try:
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": prompt}}
+        )
+        assert websocket.events[-1]["error"]["code"] == "invalid_event"
+        assert session.session_object().prompt is None
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_unsupported_prompt_rejects_entire_update_and_keeps_legacy_strategy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, client = await make_session(monkeypatch)
+    try:
+        await session.dispatch(
+            {
+                "type": "session.update",
+                "session": {"prompt": "PyTorch", "language": "French"},
+            }
+        )
+        assert websocket.events[-1]["error"]["code"] == "unsupported_prompt"
+        assert session.session_object().prompt is None
+        assert session.settings.language is None
+        for prompt in (None, "", " \t"):
+            await session.dispatch(
+                {"type": "session.update", "session": {"prompt": prompt}}
+            )
+            assert websocket.events[-1]["type"] == "session.updated"
+        await session.dispatch(audio_event(make_pcm(0.5)))
+        await session.dispatch({"type": "transcription.done"})
+        assert len(client.requests) == 1
+        assert websocket.events[-1]["type"] == "transcription.completed"
+        assert [
+            event["error"]["code"]
+            for event in websocket.events
+            if event["type"] == "error"
+        ] == ["unsupported_prompt"]
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_invalid_vad_does_not_apply_prompt_or_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket = vad_session(monkeypatch)
+    session.transcription_config = RealtimeTranscriptionConfig(
+        strategy_cls=Qwen3ASRStreamingStrategy, server_vad=True, supports_prompt=True
+    )
+    session.strategy = Qwen3ASRStreamingStrategy()
+    try:
+        await session.dispatch(
+            {
+                "type": "session.update",
+                "session": {"prompt": "original", "language": "English"},
+            }
+        )
+        before = session.session_object()
+        await session.dispatch(
+            {
+                "type": "session.update",
+                "session": {
+                    "prompt": "replacement",
+                    "language": "French",
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "prefix_padding_ms": 600,
+                        "silence_duration_ms": 500,
+                    },
+                },
+            }
+        )
+        assert websocket.events[-1]["error"]["code"] == "invalid_turn_detection"
+        assert session.session_object() == before
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration_s", [0.5, 1.0])
+async def test_active_audio_and_empty_hard_cap_segment_reject_setting_updates(
+    monkeypatch: pytest.MonkeyPatch, duration_s: float
+) -> None:
+    session, websocket, _client = await make_session(
+        monkeypatch, supports_prompt=True, max_segment_s=1.0
+    )
+    try:
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": "original"}}
+        )
+        await session.dispatch(audio_event(make_pcm(duration_s)))
+        before = session.session_object()
+        assert session.active_segment is not None
+        assert session.audio_buffer.is_empty() == (duration_s == 1.0)
+        for update in (
+            {"prompt": "replacement"},
+            {"language": "French"},
+            {"turn_detection": None},
+        ):
+            await session.dispatch({"type": "session.update", "session": update})
+            assert websocket.events[-1]["error"]["code"] == "session_active"
+            assert session.session_object() == before
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_prompt_update_rejects_idle_vad_audio_before_a_segment_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket = vad_session(monkeypatch)
+    session.transcription_config = RealtimeTranscriptionConfig(
+        strategy_cls=Qwen3ASRStreamingStrategy, server_vad=True, supports_prompt=True
+    )
+    session.strategy = Qwen3ASRStreamingStrategy()
+    try:
+        await session.dispatch(audio_event(make_pcm(0.1, amplitude=0)))
+        assert session.active_segment is None
+        assert not session.audio_buffer.is_empty()
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": "PyTorch"}}
+        )
+        assert websocket.events[-1]["error"]["code"] == "session_active"
+        assert session.session_object().prompt is None
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_commit_closes_empty_hard_cap_segment_without_losing_its_final(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await make_session(
+        monkeypatch, supports_prompt=True, max_segment_s=1.0
+    )
+    client = BlockingClient()
+    session.client = client
+    try:
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": "original"}}
+        )
+        await session.dispatch(audio_event(make_pcm(1.0)))
+        await asyncio.wait_for(client.started.wait(), timeout=5.0)
+        assert session.audio_buffer.is_empty()
+        assert session.active_segment is not None
+        await session.dispatch({"type": "input_audio_buffer.commit"})
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": "replacement"}}
+        )
+        assert websocket.events[-1]["type"] == "session.updated"
+        await session.dispatch(audio_event(make_pcm(0.5)))
+        client.release.set()
+        await session.dispatch({"type": "transcription.done"})
+        assert [request.extra_params["prompt"] for request in client.requests] == [
+            "original",
+            "replacement",
+        ]
+        assert client.aborted == []
+        assert [
+            event["text"]
+            for event in websocket.events
+            if event["type"] == "transcription.segment" and event["is_final"]
+        ] == ["text-1", "text-2"]
+        assert websocket.events[-1]["text"] == "text-1 text-2"
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_queued_final_retains_prompt_after_next_segment_setting_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await make_session(monkeypatch, supports_prompt=True)
+    client = BlockingClient()
+    session.client = client
+    try:
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": "original"}}
+        )
+        await session.dispatch(audio_event(make_pcm(2.0)))
+        await asyncio.wait_for(client.started.wait(), timeout=5.0)
+        await session.dispatch({"type": "input_audio_buffer.commit"})
+        assert session.pending_finals
+        await session.dispatch(
+            {"type": "session.update", "session": {"prompt": "replacement"}}
+        )
+        assert websocket.events[-1]["type"] == "session.updated"
+        await session.dispatch(audio_event(make_pcm(0.5)))
+        await session.dispatch({"type": "input_audio_buffer.commit"})
+        client.release.set()
+        await session.dispatch({"type": "transcription.done"})
+        assert [request.extra_params["prompt"] for request in client.requests] == [
+            "original",
+            "original",
+            "replacement",
+        ]
+        assert websocket.events[-1]["type"] == "transcription.completed"
+    finally:
+        await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_clear_preserves_prompt_without_leaking_into_another_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, _first_websocket, first_client = await make_session(
+        monkeypatch, supports_prompt=True
+    )
+    second, _second_websocket, second_client = await make_session(
+        monkeypatch, supports_prompt=True
+    )
+    try:
+        await first.dispatch(
+            {"type": "session.update", "session": {"prompt": "first vocabulary"}}
+        )
+        await second.dispatch(
+            {"type": "session.update", "session": {"prompt": "second vocabulary"}}
+        )
+        await first.dispatch(audio_event(make_pcm(0.5)))
+        await first.dispatch({"type": "input_audio_buffer.clear"})
+        assert first.session_object().prompt == "first vocabulary"
+        await first.dispatch(audio_event(make_pcm(0.5)))
+        await first.dispatch({"type": "transcription.done"})
+        await second.dispatch(audio_event(make_pcm(0.5)))
+        await second.dispatch({"type": "transcription.done"})
+        assert [
+            request.extra_params["prompt"] for request in first_client.requests
+        ] == ["first vocabulary"]
+        assert [
+            request.extra_params["prompt"] for request in second_client.requests
+        ] == ["second vocabulary"]
+    finally:
+        await first.teardown()
+        await second.teardown()
 
 
 @pytest.mark.asyncio
