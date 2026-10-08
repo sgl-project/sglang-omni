@@ -4,14 +4,16 @@ import io
 import json
 from unittest.mock import Mock
 
+import pytest
 import torch
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateChunk
-from sglang_omni.config import FactoryArgs
+from sglang_omni.config import FactoryArgs, ProcessConfig
 from sglang_omni.config.manager import resolve_config_cls_for_model_path
+from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.sensenova_u1.config import SenseNovaU1PipelineConfig
 from sglang_omni.models.sensenova_u1.stages import (
     generate_image,
@@ -19,6 +21,7 @@ from sglang_omni.models.sensenova_u1.stages import (
     image_generation_batch_key,
     image_generation_request_cost,
 )
+from sglang_omni.pipeline.replicas import expand_replica_stages
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.serve.openai_api import create_app
 
@@ -528,6 +531,45 @@ def test_config_registers_checkpoint_architecture(tmp_path):
         json.dumps({"model_type": "neo_chat", "architectures": ["NEOChatModel"]})
     )
     assert resolve_config_cls_for_model_path(str(tmp_path)) is SenseNovaU1PipelineConfig
+
+
+def test_sensenova_dp_expands_to_distinct_gpu_replicas():
+    config = SenseNovaU1PipelineConfig(
+        model_path="/model/sensenova",
+        processes={
+            "sensenova_generate": ProcessConfig(
+                num_replicas=2, replica_devices=[0, 1]
+            )
+        },
+    )
+
+    plan, stages = compile_logical_processes(config)
+    expanded, topology = expand_replica_stages(stages, plan)
+
+    assert [(stage.name, stage.gpu) for stage in expanded] == [
+        ("generate@r0", 0),
+        ("generate@r1", 1),
+    ]
+    assert topology.instances("generate") == ("generate@r0", "generate@r1")
+
+
+def test_sensenova_rejects_tp_and_same_gpu_dp():
+    config = SenseNovaU1PipelineConfig(model_path="/model/sensenova")
+    tp_config = config.model_dump()
+    tp_config["stages"][0]["tp_size"] = 2
+    tp_config["stages"][0]["gpu"] = [0, 1]
+    with pytest.raises(ValueError, match="not TP"):
+        SenseNovaU1PipelineConfig.model_validate(tp_config)
+
+    with pytest.raises(ValueError, match="distinct GPU"):
+        SenseNovaU1PipelineConfig(
+            model_path="/model/sensenova",
+            processes={
+                "sensenova_generate": ProcessConfig(
+                    num_replicas=2, replica_devices=[0, 0]
+                )
+            },
+        )
 
 
 def test_client_preserves_generated_image():
