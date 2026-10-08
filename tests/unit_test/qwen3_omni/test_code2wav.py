@@ -338,11 +338,14 @@ def test_qwen_code2wav_window_graph_keys_are_the_windows_the_scheduler_decodes(
     ("stream_chunk_size", "left_context_size", "initial_chunk_frames"),
     [(10, 25, 0), (20, 25, 0), (10, 25, 4), (6, 0, 0), (10, 0, 4), (10, 1, 0)],
 )
-def test_qwen_code2wav_final_window_frames_are_every_last_window_a_stream_can_end_on(
-    stream_chunk_size: int, left_context_size: int, initial_chunk_frames: int
+def test_qwen_code2wav_factory_captures_the_last_window_of_every_stream_length(
+    monkeypatch,
+    stream_chunk_size: int,
+    left_context_size: int,
+    initial_chunk_frames: int,
 ) -> None:
-    """Streams of every length end on a final window the factory captures, and on no other."""
-    final_lengths = set()
+    """Streams of every length end on a window the factory captures, and its final keys hold no other length."""
+    final_lengths: set[int] = set()
     for stream_frames in range(1, left_context_size + 3 * stream_chunk_size + 1):
         emitted = 0
         while True:
@@ -360,12 +363,36 @@ def test_qwen_code2wav_final_window_frames_are_every_last_window_a_stream_can_en
         else:
             pass
 
-    frames = code2wav_scheduler.final_window_frames(
-        stream_chunk_size, left_context_size, initial_chunk_frames
+    pin_cuda_platform(monkeypatch)
+    captured: dict[str, tuple[GraphKey, ...]] = {}
+
+    def build(built_model, *, graph_keys, best_effort_keys, **kwargs):
+        captured.update(graph_keys=graph_keys, best_effort_keys=best_effort_keys)
+        return SimpleNamespace(stats=lambda: {"enabled": True, "disable_reason": None})
+
+    monkeypatch.setattr(
+        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: FactoryModel()
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler.Code2WavCudaGraphRunner, "build", staticmethod(build)
     )
 
-    assert len(frames) == len(set(frames))
-    assert set(frames) == final_lengths
+    code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cuda",
+        gpu_id=0,
+        stream_chunk_size=stream_chunk_size,
+        left_context_size=left_context_size,
+        initial_codec_chunk_frames=initial_chunk_frames,
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.02,
+    )
+
+    threshold_frames = {key.frames for key in captured["graph_keys"]}
+    final_keys = captured["best_effort_keys"]
+    assert all(key.batch_size == 1 for key in final_keys)
+    assert len(final_keys) == len(set(final_keys))
+    assert {key.frames for key in final_keys} == final_lengths - threshold_frames
 
 
 def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(

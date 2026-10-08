@@ -252,10 +252,10 @@ class Code2WavCudaGraphRunner:
     best-effort. All keys share one mempool, whose
     total stays near the largest member's peak instead of paying that peak
     once per pool; because pool memory is only reclaimable as a whole, the
-    retry unit is a whole capture attempt. Each attempt captures the batched
+    retry unit is a whole capture attempt. Each attempt captures the best-effort
     keys first — largest-first, each followed by a budget check while the pool
     holds nothing serving depends on — then closes with the atomic tier, so an
-    oversized batched graph can never take down the single-request tier that
+    oversized best-effort graph can never take down the atomic tier that
     serving already relies on.
     """
 
