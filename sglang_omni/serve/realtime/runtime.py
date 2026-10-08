@@ -414,13 +414,13 @@ class SessionRuntime:
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
                 logger.error(f"Realtime session {self.session_id} closed: {exc}")
-                code = ContextExhaustedError.CODE
+                failure_code = ContextExhaustedError.CODE
             else:
                 logger.exception(
                     f"Realtime session {self.session_id} input pump failed"
                 )
-                code = "internal"
-            self.fail(str(exc), code)
+                failure_code = "internal"
+            self.fail(str(exc), failure_code)
 
     def fail(
         self, message: str, code: str = "internal", event_id: str | None = None
