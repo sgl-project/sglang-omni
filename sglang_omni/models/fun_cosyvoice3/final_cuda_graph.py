@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import bisect
-import gc
 import logging
 import time
 from collections.abc import Sequence
@@ -19,15 +18,17 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     pack_rows,
     solve_flow_euler_packed,
 )
-from sglang_omni.models.fun_cosyvoice3.prefix_cuda_graph import CAPTURE_WARMUP_RUNS
+from sglang_omni.models.fun_cosyvoice3.prefix_cuda_graph import (
+    capture_solve_graph,
+    frozen_gc,
+)
 from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
 logger = logging.getLogger(__name__)
 
-# note(ratish): frames per CFG half. A replay below about 1,000 frames costs its kernel
-# count more than its frames, so the tiers there are coarse. From 1,280 they step by 256,
-# as SGLang's prefill graph token ladder does. Past 4,096 a final is device bound even
-# when the host is contended, and its graph saves only the host prologue.
+# note (ratish): frames per CFG half, from measured replay times: coarse below 1,024
+# where a replay costs its kernel count, 256 apart above, none past 4,096 where a final
+# is device bound.
 FINAL_TIER_FRAMES = (
     64,
     128,
@@ -104,16 +105,12 @@ class FinalCudaGraphRunner:
         before_mem = get_available_gpu_memory(self.device.type, self.device.index)
         graph_pool = self.backend.graph_pool_handle()
         stream = self.device_module.Stream(device=self.device)
-        # note(ratish): a collection during capture can free what a reference cycle holds,
-        # an onnxruntime session among them, and invalidate the graph.
-        gc.collect()
-        gc.freeze()
-        try:
+        with frozen_gc():
             for tier_frames in reversed(self.tier_frames):
                 twin_rows = pack_rows(
                     self.slot_lengths([], tier_frames) * 2, self.device
                 )
-                # note(ratish): captured over one padding row as wide as the tier, so the
+                # note (ratish): captured over one padding row as wide as the tier, so the
                 # baked widest row bounds every replay.
                 attention = self.estimator.row_attention(
                     twin_rows, streaming=False, dtype=self.speaker_dtype
@@ -151,27 +148,14 @@ class FinalCudaGraphRunner:
                         cfg_rate=self.cfg_rate,
                     )
 
-                stream.wait_stream(self.device_module.current_stream(self.device))
-                with (
-                    self.device_module.stream(stream),
-                    torch.autocast(
-                        device_type=self.device.type, dtype=self.autocast_dtype
-                    ),
-                ):
-                    for _ in range(CAPTURE_WARMUP_RUNS):
-                        solve()
-                self.device_module.current_stream(self.device).wait_stream(stream)
-                self.device_module.synchronize(self.device)
-                with (
-                    self.backend.capture(
-                        pool=graph_pool, stream=stream, thread_local_errors=True
-                    ) as graph,
-                    torch.autocast(
-                        device_type=self.device.type, dtype=self.autocast_dtype
-                    ),
-                ):
-                    output = solve()
-                self.device_module.synchronize(self.device)
+                graph, output = capture_solve_graph(
+                    solve,
+                    backend=self.backend,
+                    graph_pool=graph_pool,
+                    stream=stream,
+                    device=self.device,
+                    autocast_dtype=self.autocast_dtype,
+                )
                 self.captured.append(
                     CapturedFinalSolve(
                         tier_frames=tier_frames,
@@ -185,9 +169,6 @@ class FinalCudaGraphRunner:
                         output=output,
                     )
                 )
-        finally:
-            gc.unfreeze()
-            gc.collect()
         self.captured.reverse()
         after_mem = get_available_gpu_memory(self.device.type, self.device.index)
         logger.info(
@@ -237,5 +218,5 @@ class FinalCudaGraphRunner:
         ):
             destination.copy_(source)
         captured.graph.replay()
-        # note(ratish): the next replay of any tier overwrites the shared pool.
+        # note (ratish): the next replay of any tier overwrites the shared pool.
         return captured.output[:, :frame_count].clone()
