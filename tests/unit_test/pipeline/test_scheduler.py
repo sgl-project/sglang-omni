@@ -185,6 +185,27 @@ def test_scheduler_idle_sleep_yields_to_pending_request_builds(
     assert sleep_calls == ([0.001, 0.0001] if follower else [0.0001])
 
 
+@pytest.mark.parametrize("loop_name", ["event_loop_normal", "event_loop_async_decode"])
+def test_event_loops_run_without_autograd(loop_name: str) -> None:
+    class StopLoop(Exception):
+        pass
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.running = True
+    grad_modes: list[bool] = []
+
+    def process_admin_requests() -> None:
+        grad_modes.append(torch.is_grad_enabled())
+        raise StopLoop
+
+    scheduler.process_admin_requests = process_admin_requests
+    with pytest.raises(StopLoop):
+        getattr(scheduler, loop_name)()
+
+    assert grad_modes == [False]
+    assert torch.is_grad_enabled()
+
+
 def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.running = True
