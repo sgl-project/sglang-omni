@@ -31,6 +31,7 @@ MODEL_NAME = "duplex-test"
 SAMPLE_RATE = 16000
 NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
+RUNTIME_LOGGER_NAME = "sglang_omni.serve.realtime.runtime"
 
 
 class GatedAdapter(InteractionAdapter):
@@ -124,38 +125,40 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("message", "code"),
+    ("failure_message", "failure_code", "has_traceback"),
     [
         (
             "context_exhausted: the session reached the thinker context length",
             "context_exhausted",
+            False,
         ),
-        ("talker step failed", "internal"),
+        ("talker step failed", "internal", True),
     ],
 )
-async def test_unit_failure_closes_session(
-    message: str, code: str, caplog: pytest.LogCaptureFixture
+async def test_unit_failure_closes_session_and_logs_once(
+    failure_message: str,
+    failure_code: str,
+    has_traceback: bool,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     class FailingAdapter(GatedAdapter):
         async def process(self, unit: Unit) -> int:
-            raise RuntimeError(message)
+            raise RuntimeError(failure_message)
 
-    with caplog.at_level(logging.WARNING, logger="sglang_omni.serve.realtime.runtime"):
+    with caplog.at_level(logging.WARNING, logger=RUNTIME_LOGGER_NAME):
         runtime = await open_runtime(FailingAdapter([]))
         await runtime.append(b"\1" * UNIT_BYTES, 0, None, "append")
         envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
     failures = [entry.event for entry in envelopes if isinstance(entry.event, Failure)]
     assert len(failures) == 1
-    assert failures[0].code == code
+    assert failures[0].code == failure_code
     assert failures[0].is_fatal
-    assert message in failures[0].message
-    records = [
-        record
-        for record in caplog.records
-        if record.name == "sglang_omni.serve.realtime.runtime"
+    assert failure_message in failures[0].message
+    runtime_records = [
+        record for record in caplog.records if record.name == RUNTIME_LOGGER_NAME
     ]
-    assert len(records) == 1
-    assert (records[0].exc_info is not None) == (code == "internal")
+    assert len(runtime_records) == 1
+    assert (runtime_records[0].exc_info is not None) == has_traceback
 
 
 def test_output_budget_counts_outbound_events_only() -> None:
