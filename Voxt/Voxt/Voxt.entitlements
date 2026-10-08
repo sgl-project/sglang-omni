@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Stable identity for Data Protection Keychain items. -->
+	<key>com.apple.application-identifier</key>
+	<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>$(DEVELOPMENT_TEAM)</string>
+
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</array>
+
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
+
+	<!-- Local Codex OAuth credentials, including token refresh writes -->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+	<array>
+		<string>.codex/</string>
+	</array>
+
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+
+	<!-- Microphone access -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- EventKit access (required for Reminders in sandboxed macOS apps) -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+
+	<!-- Outgoing network connections (for downloading MLX Audio models from HuggingFace) -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+
+	<!-- Apple Events to supported browsers for active-tab URL -->
+	<key>com.apple.security.temporary-exception.apple-events</key>
+	<array>
+		<string>com.apple.Safari</string>
+		<string>com.apple.SafariTechnologyPreview</string>
+		<string>com.google.Chrome</string>
+		<string>com.microsoft.edgemac</string>
+		<string>com.brave.Browser</string>
+		<string>company.thebrowser.Browser</string>
+	</array>
+
+	<!-- Sparkle sandboxed updater helper lookup -->
+	<key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+	<array>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spks</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spki</string>
+	</array>
+
+	<!-- Accessibility (for CGEvent tap to detect Option key globally) -->
+	<!-- Note: this is requested at runtime; the user must grant it in System Settings -->
+</dict>
+</plist>

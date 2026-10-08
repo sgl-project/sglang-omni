@@ -14,13 +14,15 @@ from typing import Any
 from sglang_omni import platforms
 
 
-def _build_on(monkeypatch, device: str) -> dict[str, Any]:
+def build_on(monkeypatch, device: str) -> dict[str, Any]:
     """Run the shared builder against fakes and return the server-args kwargs."""
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
 
     monkeypatch.setattr(platforms.current_platform, "is_cpu", lambda: True)
-    monkeypatch.setattr("sglang.srt.utils.get_device", lambda device_id=None: "cpu")
 
     build_kwargs: dict[str, Any] = {}
     events: list[str] = []
@@ -87,7 +89,7 @@ def _build_on(monkeypatch, device: str) -> dict[str, Any]:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             # A stage default that wants graphs: the CPU decision must beat it.
             return {
                 "max_running_requests": 4,
@@ -100,7 +102,7 @@ def _build_on(monkeypatch, device: str) -> dict[str, Any]:
             }
 
         def setup_model(self, **kwargs: Any) -> None:
-            build_kwargs["_device"] = kwargs["device"]
+            build_kwargs["device"] = kwargs["device"]
 
         def get_model_buffer_bs(self, model: Any) -> int | None:
             # Must cover max_running_requests above or the policy check rejects it.
@@ -127,7 +129,7 @@ def test_cpu_placement_forces_graph_capture_off(monkeypatch):
     """generation_defaults() asks for disable_cuda_graph=False; on CPU the
     builder's decision has to win over that stage default, not merely fill a gap.
     """
-    build_kwargs = _build_on(monkeypatch, device="cpu")
+    build_kwargs = build_on(monkeypatch, device="cpu")
 
     assert build_kwargs["disable_cuda_graph"] is True
     assert build_kwargs["device"] == "cpu"
@@ -137,7 +139,7 @@ def test_cpu_placement_skips_the_capture_phases(monkeypatch):
     """Skipping capture entirely, rather than running it against a disabled
     config, is what keeps the failure at configuration time.
     """
-    build_kwargs = _build_on(monkeypatch, device="cpu")
+    build_kwargs = build_on(monkeypatch, device="cpu")
 
     assert build_kwargs["_defer_capture"] is False
     assert "init_graphs" not in build_kwargs["_events"]
@@ -183,8 +185,11 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
 
     monkeypatch.setattr("sglang.srt.runtime_context.get_context", lambda: FakeContext())
     monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule", lambda: SimpleNamespace(page_size=1)
+    )
+    monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda server_args, gpu_id: "CPU test runtime",
     )
     monkeypatch.setattr(model_worker_mod, "ModelWorker", lambda **kwargs: FakeWorker())
@@ -193,7 +198,7 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
 
     want_cuda_graph, infrastructure = (
         bootstrap.create_sglang_infrastructure_defer_cuda_graph(
-            SimpleNamespace(disable_cuda_graph=True, page_size=1),
+            SimpleNamespace(disable_cuda_graph=True),
             gpu_id=0,
         )
     )
@@ -211,7 +216,7 @@ def test_a_cpu_stage_drops_its_placement_index(monkeypatch):
     """gpu_id=2 is handed in, but a CPU device carries no index, so the builder
     must fall back to 0 rather than build 'cpu:2'.
     """
-    build_kwargs = _build_on(monkeypatch, device="cpu")
+    build_kwargs = build_on(monkeypatch, device="cpu")
 
-    assert build_kwargs["_device"] == "cpu"
+    assert build_kwargs["device"] == "cpu"
     assert build_kwargs["_gpu_id"] == 0

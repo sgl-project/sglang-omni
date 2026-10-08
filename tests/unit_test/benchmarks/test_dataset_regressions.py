@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import yaml
+import soundfile as sf
 
 from benchmarks.dataset import asr_longform, prepare, seedtts, stt_benchmark
 from benchmarks.eval import (
@@ -19,29 +19,33 @@ from benchmarks.eval import (
     benchmark_asr_stt_benchmark,
 )
 
-_MODELS_DIR = (
-    Path(__file__).resolve().parents[3] / ".claude/skills/tune-ci-thresholds/models"
-)
 
-
-class _FakeDataset:
+class FakeDataset:
     def __init__(self, rows: list[dict]) -> None:
-        self._rows = rows
+        self.rows = rows
         self.column_names = list(rows[0].keys()) if rows else []
         self.selected_indices: list[int] | None = None
 
-    def cast_column(self, _name: str, _audio_spec) -> "_FakeDataset":
+    def cast_column(self, _name: str, _audio_spec) -> "FakeDataset":
         return self
 
-    def select(self, indices: list[int]) -> "_FakeDataset":
+    def select(self, indices: list[int]) -> "FakeDataset":
         self.selected_indices = list(indices)
-        return _FakeDataset([self._rows[i] for i in indices])
+        return FakeDataset([self.rows[i] for i in indices])
+
+    def rename_columns(self, aliases: dict[str, str]) -> "FakeDataset":
+        return FakeDataset(
+            [
+                {aliases.get(key, key): value for key, value in row.items()}
+                for row in self.rows
+            ]
+        )
 
     def __len__(self) -> int:
-        return len(self._rows)
+        return len(self.rows)
 
     def __iter__(self):
-        return iter(self._rows)
+        return iter(self.rows)
 
 
 def test_download_dataset_prewarms_all_mmmu_configs(monkeypatch) -> None:
@@ -88,14 +92,14 @@ def test_download_seedtts_uses_pinned_revision(
         sys.modules,
         "datasets",
         types.SimpleNamespace(
-            get_dataset_config_names=lambda *_args, **_kwargs: [],
+            get_dataset_config_names=lambda *args, **_kwargs: [],
             load_dataset=fake_load_dataset,
         ),
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        types.SimpleNamespace(hf_hub_download=lambda *_args, **_kwargs: None),
+        types.SimpleNamespace(hf_hub_download=lambda *args, **_kwargs: None),
     )
 
     prepare.download_dataset(prepare.SEEDTTS_DATASET_ID, quiet=True)
@@ -135,7 +139,7 @@ def test_local_seedtts_source_does_not_claim_huggingface_revision(
     output_path = tmp_path / "result.json"
     captured: dict = {}
 
-    async def empty_sweep(*_args, **_kwargs):
+    async def empty_sweep(*args, **_kwargs):
         return []
 
     def capture_provenance(**kwargs):
@@ -190,7 +194,7 @@ def test_custom_seedtts_repo_does_not_use_canonical_revision(
             )
         ]
 
-    async def empty_sweep(*_args, **_kwargs):
+    async def empty_sweep(*args, **_kwargs):
         return []
 
     def capture_provenance(**kwargs):
@@ -270,7 +274,7 @@ def test_asr_benchmark_rejects_empty_dataset(
     monkeypatch.setattr(
         benchmark_asr_seedtts,
         "load_seedtts_samples",
-        lambda *_args, **_kwargs: [],
+        lambda *args, **_kwargs: [],
     )
 
     with pytest.raises(RuntimeError, match="No SeedTTS samples"):
@@ -289,9 +293,13 @@ def test_evaluation_input_fingerprint_tracks_audio_content(tmp_path: Path) -> No
         )
     ]
 
-    before = benchmark_asr_seedtts._evaluation_input_sha256(samples)
+    before = benchmark_asr_seedtts._evaluation_input_sha256(
+        samples
+    )  # noqa: leading-underscore  # production name
     audio_path.write_bytes(b"second")
-    after = benchmark_asr_seedtts._evaluation_input_sha256(samples)
+    after = benchmark_asr_seedtts._evaluation_input_sha256(
+        samples
+    )  # noqa: leading-underscore  # production name
 
     assert before != after
 
@@ -299,7 +307,7 @@ def test_evaluation_input_fingerprint_tracks_audio_content(tmp_path: Path) -> No
 def test_load_seedtts_samples_stages_only_selected_rows(
     monkeypatch, tmp_path: Path
 ) -> None:
-    seedtts._STAGED_CACHE.clear()
+    seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
     rows = [
         {
@@ -311,7 +319,7 @@ def test_load_seedtts_samples_stages_only_selected_rows(
         }
         for idx in range(5)
     ]
-    dataset = _FakeDataset(rows)
+    dataset = FakeDataset(rows)
     stage_dir = tmp_path / "seedtts_stage"
     stage_dir.mkdir()
 
@@ -347,7 +355,7 @@ def test_load_seedtts_samples_stages_only_selected_rows(
         "audio/1.wav",
     ]
 
-    seedtts._STAGED_CACHE.clear()
+    seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 @pytest.mark.parametrize(
@@ -360,7 +368,7 @@ def test_load_seedtts_samples_stages_only_selected_rows(
 def test_load_seedtts_samples_rejects_unsafe_audio_paths(
     monkeypatch, tmp_path: Path, ref_audio_path: str | None, outside_name: str
 ) -> None:
-    seedtts._STAGED_CACHE.clear()
+    seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
     stage_dir = tmp_path / "seedtts_stage"
     stage_dir.mkdir()
@@ -381,7 +389,7 @@ def test_load_seedtts_samples_rejects_unsafe_audio_paths(
         assert repo_id == prepare.SEEDTTS_DATASET_ID
         assert split == "en"
         assert revision == prepare.SEEDTTS_DATASET_REVISION
-        return _FakeDataset(rows)
+        return FakeDataset(rows)
 
     monkeypatch.setitem(
         sys.modules,
@@ -404,182 +412,7 @@ def test_load_seedtts_samples_rejects_unsafe_audio_paths(
     assert not outside_path.exists()
     assert list(stage_dir.rglob("*.wav")) == []
 
-    seedtts._STAGED_CACHE.clear()
-
-
-def test_tune_ci_threshold_configs_use_arrow_seedtts_datasets() -> None:
-    for config_path in sorted(_MODELS_DIR.glob("*/config.yaml")):
-        config = yaml.safe_load(config_path.read_text())
-        for repo_id in config.get("hf_datasets", []):
-            if "seed-tts" not in repo_id:
-                continue
-            assert repo_id.endswith(
-                "-arrow"
-            ), f"{config_path} still points to a non-arrow SeedTTS dataset: {repo_id}"
-
-
-def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
-    config = yaml.safe_load((_MODELS_DIR / "asr/config.yaml").read_text())
-    stages = yaml.safe_load((_MODELS_DIR / "asr/stages.yaml").read_text())
-
-    assert config["test_globs"] == [
-        "tests/test_model/test_asr_ci_multi_speaker.py",
-        "tests/test_model/test_asr_ci_seedtts.py",
-    ]
-    assert "tests/test_model/test_asr_ci.py" not in config["test_globs"]
-    assert config["gpus_per_test"] == {
-        "test_asr_ci_multi_speaker.py": 2,
-        "test_asr_ci_seedtts.py": 2,
-    }
-    assert config["hf_model_ids_by_test"] == {
-        "test_asr_ci_multi_speaker.py": ["OpenMOSS-Team/MOSS-Transcribe-Diarize"],
-        "test_asr_ci_seedtts.py": [
-            "FunAudioLLM/Fun-ASR-Nano-2512-hf",
-            "Qwen/Qwen3-ASR-1.7B",
-            "openai/whisper-large-v3",
-        ],
-    }
-    assert {
-        "zhaochenyang20/movies800time",
-        "zhaochenyang20/AISHELL4",
-        "zhaochenyang20/googletime",
-        "zhaochenyang20/seed-tts-eval-arrow",
-    }.issubset(config["hf_datasets"])
-
-    assert set(config["metric_sources"]) == {
-        "test_asr_ci_multi_speaker.py",
-        "test_asr_ci_seedtts.py",
-    }
-    assert (
-        config["metric_sources"]["test_asr_ci_seedtts.py"]["threshold_file"]
-        == "tests/test_model/asr_ci_config.py"
-    )
-    seedtts_presets = config["metric_sources"]["test_asr_ci_seedtts.py"][
-        "calibration_presets"
-    ]
-    assert set(seedtts_presets) == {"fun", "qwen3", "whisper"}
-    assert seedtts_presets["fun"]["extra_env"] == {"ASR_CI_MODEL": "fun"}
-    assert seedtts_presets["qwen3"]["extra_env"] == {"ASR_CI_MODEL": "qwen3"}
-    assert seedtts_presets["whisper"]["extra_env"] == {"ASR_CI_MODEL": "whisper"}
-    assert (
-        config["metric_sources"]["test_asr_ci_multi_speaker.py"]["json_file"]
-        == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_results.json"
-    )
-    assert (
-        config["metric_sources"]["test_asr_ci_multi_speaker.py"]["paths"]["cer_percent"]
-        == "diarization_metrics_percent.cer"
-    )
-    assert (
-        config["metric_sources"]["test_asr_ci_seedtts.py"]["variants"]["en"]["paths"][
-            "corpus_wer"
-        ]
-        == "summary.corpus_wer"
-    )
-
-    assert set(stages) == {
-        "aishell4_long_diarization",
-        "aishell4_long_speed",
-        "googletime_diarization",
-        "googletime_speed",
-        "multi_speaker_diarization",
-        "multi_speaker_speed",
-        "multi_speaker_stream_diarization",
-        "multi_speaker_stream_speed",
-        "seedtts_fun_en_wer",
-        "seedtts_fun_en_speed",
-        "seedtts_fun_zh_wer",
-        "seedtts_qwen3_en_wer",
-        "seedtts_qwen3_en_speed",
-        "seedtts_qwen3_zh_wer",
-        "seedtts_whisper_en_wer",
-        "seedtts_whisper_en_speed",
-        "seedtts_whisper_zh_wer",
-    }
-    assert stages["multi_speaker_diarization"]["test"] == (
-        "tests/test_model/test_asr_ci_multi_speaker.py"
-    )
-    assert stages["multi_speaker_diarization"]["expected_samples"] == 800
-    assert "cer_percent" in stages["multi_speaker_diarization"]["metrics"]
-    assert "throughput_qps" in stages["multi_speaker_speed"]["metrics"]
-    assert stages["aishell4_long_diarization"]["expected_samples"] == 20
-    assert (
-        stages["aishell4_long_diarization"]["metrics"]["cer_percent"]["source"]
-        == "AISHELL4_LONG_CER_PERCENT_REF"
-    )
-    assert (
-        stages["aishell4_long_speed"]["metrics"]["throughput_qps"]["source"]
-        == "AISHELL4_LONG_THROUGHPUT_QPS_REF"
-    )
-    assert (
-        stages["aishell4_long_speed"]["metrics"]["throughput_qps"]["json_file"]
-        == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_aishell4_long_results.json"
-    )
-    assert stages["googletime_diarization"]["expected_samples"] == 25
-    assert (
-        stages["googletime_diarization"]["metrics"]["cer_percent"]["source"]
-        == "GOOGLETIME_CER_PERCENT_REF"
-    )
-    assert (
-        stages["googletime_diarization"]["metrics"]["n_above_50_pct_cer"]["source"]
-        == "GOOGLETIME_N_ABOVE_50_CER_REF"
-    )
-    assert (
-        stages["googletime_diarization"]["metrics"]["cer_no_spk_below_50_corpus"][
-            "source"
-        ]
-        == "GOOGLETIME_CER_NO_SPK_BELOW_50_PERCENT_REF"
-    )
-    assert (
-        stages["googletime_speed"]["metrics"]["throughput_qps"]["source"]
-        == "GOOGLETIME_THROUGHPUT_QPS_REF"
-    )
-    assert (
-        stages["googletime_speed"]["metrics"]["throughput_qps"]["json_file"]
-        == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_googletime_results.json"
-    )
-    assert stages["multi_speaker_stream_diarization"]["expected_samples"] == 800
-    assert (
-        stages["multi_speaker_stream_speed"]["metrics"]["text_ttft_p95_s"]["source"]
-        == "MOSS_TD_STREAM_TEXT_TTFT_P95_S_REF"
-    )
-    assert (
-        stages["multi_speaker_stream_speed"]["metrics"]["text_ttft_p95_s"]["json_file"]
-        == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
-    )
-    assert (
-        stages["seedtts_fun_en_wer"]["test"]
-        == "tests/test_model/test_asr_ci_seedtts.py"
-    )
-    assert stages["seedtts_fun_en_wer"]["expected_samples"] == 1088
-    assert stages["seedtts_fun_zh_wer"]["expected_samples"] == 2020
-    assert (
-        stages["seedtts_fun_zh_wer"]["metrics"]["corpus_wer"]["json_file"]
-        == "asr_seedtts_zh_results.json"
-    )
-    assert "throughput_qps" in stages["seedtts_fun_en_speed"]["metrics"]
-    assert stages["seedtts_qwen3_en_wer"]["extra_env"] == {"ASR_CI_MODEL": "qwen3"}
-    assert (
-        stages["seedtts_qwen3_en_wer"]["metrics"]["corpus_wer"]["source"]
-        == "QWEN3_ASR_EN_CORPUS_WER_MAX"
-    )
-    assert stages["seedtts_qwen3_zh_wer"]["expected_samples"] == 2020
-
-
-def test_tune_ci_threshold_tts_config_owns_only_tts_stages() -> None:
-    config = yaml.safe_load((_MODELS_DIR / "tts/config.yaml").read_text())
-    stages = yaml.safe_load((_MODELS_DIR / "tts/stages.yaml").read_text())
-
-    expected_tests = [
-        "tests/test_model/test_tts_ci.py",
-        "tests/test_model/test_tts_serving_ci.py",
-        "tests/test_ci/test_tts_mps_dp2.py",
-    ]
-    assert config["test_globs"] == expected_tests
-    assert "test_asr_ci.py" not in config.get("gpus_per_test", {})
-    assert "test_asr_ci.py" not in config.get("hf_model_ids_by_test", {})
-    assert "test_asr_ci.py" not in config.get("metric_sources", {})
-    assert {stage["test"] for stage in stages.values()} == set(expected_tests)
-    assert not any(stage_key.startswith("qwen3_asr") for stage_key in stages)
+    seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_download_stt_benchmark_uses_pinned_revision(
@@ -596,14 +429,14 @@ def test_download_stt_benchmark_uses_pinned_revision(
         sys.modules,
         "datasets",
         types.SimpleNamespace(
-            get_dataset_config_names=lambda *_args, **_kwargs: [],
+            get_dataset_config_names=lambda *args, **_kwargs: [],
             load_dataset=fake_load_dataset,
         ),
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        types.SimpleNamespace(hf_hub_download=lambda *_args, **_kwargs: None),
+        types.SimpleNamespace(hf_hub_download=lambda *args, **_kwargs: None),
     )
 
     prepare.download_dataset(prepare.DATASETS["stt-benchmark"], quiet=True)
@@ -614,7 +447,7 @@ def test_download_stt_benchmark_uses_pinned_revision(
     }
 
 
-def _stt_wav_bytes(idx: int) -> bytes:
+def stt_wav_bytes(idx: int) -> bytes:
     """A valid minimal 16 kHz mono PCM WAV whose frames vary with *idx*."""
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
@@ -625,11 +458,11 @@ def _stt_wav_bytes(idx: int) -> bytes:
     return buffer.getvalue()
 
 
-def _stt_rows(count: int) -> list[dict]:
+def stt_rows(count: int) -> list[dict]:
     return [
         {
             "sample_id": f"sample-{idx}",
-            "audio": {"bytes": _stt_wav_bytes(idx), "path": None},
+            "audio": {"bytes": stt_wav_bytes(idx), "path": None},
             "duration_seconds": 1.0 + idx,
             "transcription": f"Transcript {idx}.",
         }
@@ -637,18 +470,21 @@ def _stt_rows(count: int) -> list[dict]:
     ]
 
 
-def _install_fake_datasets(monkeypatch: pytest.MonkeyPatch, load_dataset) -> None:
+def install_fake_datasets(monkeypatch: pytest.MonkeyPatch, load_dataset) -> None:
     monkeypatch.setitem(
         sys.modules,
         "datasets",
         types.SimpleNamespace(
             Audio=lambda **kwargs: ("Audio", kwargs),
             load_dataset=load_dataset,
+            get_dataset_config_names=lambda repo_id: pytest.fail(
+                f"Unexpected config enumeration for {repo_id}"
+            ),
         ),
     )
 
 
-def _stage_stt_into(monkeypatch: pytest.MonkeyPatch, stage_dir: Path) -> None:
+def stage_stt_into(monkeypatch: pytest.MonkeyPatch, stage_dir: Path) -> None:
     monkeypatch.setattr(
         stt_benchmark.tempfile, "mkdtemp", lambda prefix: str(stage_dir)
     )
@@ -658,9 +494,9 @@ def _stage_stt_into(monkeypatch: pytest.MonkeyPatch, stage_dir: Path) -> None:
 def test_load_stt_benchmark_samples_stages_selected_rows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
-    dataset = _FakeDataset(_stt_rows(5))
+    dataset = FakeDataset(stt_rows(5))
     stage_dir = tmp_path / "stt_stage"
     stage_dir.mkdir()
 
@@ -670,8 +506,8 @@ def test_load_stt_benchmark_samples_stages_selected_rows(
         assert revision == prepare.STT_BENCHMARK_DATASET_REVISION
         return dataset
 
-    _install_fake_datasets(monkeypatch, fake_load_dataset)
-    _stage_stt_into(monkeypatch, stage_dir)
+    install_fake_datasets(monkeypatch, fake_load_dataset)
+    stage_stt_into(monkeypatch, stage_dir)
 
     samples = stt_benchmark.load_stt_benchmark_samples(max_samples=2)
 
@@ -680,7 +516,7 @@ def test_load_stt_benchmark_samples_stages_selected_rows(
     assert samples[0].ref_text == "Transcript 0."
     assert samples[0].target_text == "Transcript 0."
     assert Path(samples[0].ref_audio) == stage_dir / "sample-0.wav"
-    assert (stage_dir / "sample-0.wav").read_bytes() == _stt_wav_bytes(0)
+    assert (stage_dir / "sample-0.wav").read_bytes() == stt_wav_bytes(0)
     assert sorted(path.name for path in stage_dir.glob("*.wav")) == [
         "sample-0.wav",
         "sample-1.wav",
@@ -695,23 +531,23 @@ def test_load_stt_benchmark_samples_stages_selected_rows(
     again = stt_benchmark.load_stt_benchmark_samples(max_samples=2)
     assert [sample.sample_id for sample in again] == ["sample-0", "sample-1"]
 
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_custom_stt_benchmark_repo_loads_default_revision(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
     observed: dict = {}
 
     def fake_load_dataset(repo_id: str, split: str, **kwargs):
         observed["repo_id"] = repo_id
         observed["split"] = split
         observed.update(kwargs)
-        return _FakeDataset(_stt_rows(1))
+        return FakeDataset(stt_rows(1))
 
-    _install_fake_datasets(monkeypatch, fake_load_dataset)
-    _stage_stt_into(monkeypatch, tmp_path)
+    install_fake_datasets(monkeypatch, fake_load_dataset)
+    stage_stt_into(monkeypatch, tmp_path)
 
     samples = stt_benchmark.load_stt_benchmark_samples(
         "example/custom-stt", split="validation"
@@ -720,32 +556,144 @@ def test_custom_stt_benchmark_repo_loads_default_revision(
     assert len(samples) == 1
     assert observed == {"repo_id": "example/custom-stt", "split": "validation"}
 
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+
+
+def test_custom_stt_config_uses_dataset_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+    calls: list[dict] = []
+
+    def load_dataset(repo_id: str, **kwargs):
+        calls.append({"repo_id": repo_id, **kwargs})
+        return FakeDataset(stt_rows(1))
+
+    install_fake_datasets(monkeypatch, load_dataset)
+    stage_stt_into(monkeypatch, tmp_path)
+    for config_name in ("english", "chinese", "english"):
+        samples = stt_benchmark.load_stt_benchmark_samples(
+            "example/custom-stt", config_name=config_name, split="validation"
+        )
+        assert len(samples) == 1
+
+    assert calls == [
+        {
+            "repo_id": "example/custom-stt",
+            "split": "validation",
+            "name": name,
+        }
+        for name in ("english", "chinese")
+    ]
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+
+
+def test_librispeech_stages_flac_with_column_aliases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+    audio = io.BytesIO()
+    waveform = np.array([0.0, 0.25, -0.25, 0.5], dtype=np.float32)
+    sf.write(audio, waveform, 16000, format="FLAC")
+
+    def load_dataset(repo_id: str, **kwargs):
+        assert repo_id == "openslr/librispeech_asr"
+        assert kwargs == {
+            "split": "test",
+            "data_files": {"test": "clean/test/*.parquet"},
+            "verification_mode": "no_checks",
+            "revision": "example-revision",
+        }
+        return FakeDataset(
+            [
+                {
+                    "id": "sample-0",
+                    "text": "Transcript.",
+                    "audio": {"bytes": audio.getvalue()},
+                }
+            ]
+        )
+
+    install_fake_datasets(monkeypatch, load_dataset)
+    stage_stt_into(monkeypatch, tmp_path)
+    samples = stt_benchmark.load_stt_benchmark_samples(
+        "openslr/librispeech_asr",
+        config_name="clean",
+        split="test",
+        revision="example-revision",
+    )
+
+    assert samples[0].sample_id == "sample-0"
+    assert samples[0].ref_text == "Transcript."
+    staged = sf.info(samples[0].ref_audio)
+    assert staged.format == "WAV"
+    assert staged.samplerate == 16000
+    decoded, _ = sf.read(samples[0].ref_audio)
+    np.testing.assert_array_equal(decoded, waveform)
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+
+
+def test_stt_column_aliases_preserve_canonical_columns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+    rows = stt_rows(1)
+    rows[0].update(id="alternate-id", text="Alternate transcript.")
+    install_fake_datasets(monkeypatch, lambda *args, **kwargs: FakeDataset(rows))
+    stage_stt_into(monkeypatch, tmp_path)
+
+    samples = stt_benchmark.load_stt_benchmark_samples()
+
+    assert samples[0].sample_id == "sample-0"
+    assert samples[0].ref_text == "Transcript 0."
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+
+
+@pytest.mark.parametrize("config_name", ["clean", "other"])
+def test_download_librispeech_selects_only_test_files(
+    monkeypatch: pytest.MonkeyPatch, config_name: str
+) -> None:
+    calls: list[dict] = []
+    install_fake_datasets(
+        monkeypatch,
+        lambda repo_id, **kwargs: calls.append({"repo_id": repo_id, **kwargs}),
+    )
+
+    prepare.download_dataset(f"openslr/librispeech_asr:{config_name}", quiet=True)
+
+    assert calls == [
+        {
+            "repo_id": "openslr/librispeech_asr",
+            "data_files": {"test": f"{config_name}/test/*.parquet"},
+            "split": "test",
+            "verification_mode": "no_checks",
+        }
+    ]
 
 
 @pytest.mark.parametrize("sample_id", ["../escape", "nested/id", "", ".."])
 def test_load_stt_benchmark_samples_rejects_unsafe_sample_ids(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sample_id: str
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
     stage_dir = tmp_path / "stt_stage"
     stage_dir.mkdir()
-    rows = _stt_rows(1)
+    rows = stt_rows(1)
     rows[0]["sample_id"] = sample_id
 
-    _install_fake_datasets(monkeypatch, lambda *a, **k: _FakeDataset(rows))
-    _stage_stt_into(monkeypatch, stage_dir)
+    install_fake_datasets(monkeypatch, lambda *a, **k: FakeDataset(rows))
+    stage_stt_into(monkeypatch, stage_dir)
 
     with pytest.raises(ValueError, match="Invalid sample_id"):
         stt_benchmark.load_stt_benchmark_samples(max_samples=1)
 
     assert list(tmp_path.rglob("*.wav")) == []
 
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
-def _one_stt_sample(tmp_path: Path) -> list[seedtts.SampleInput]:
+def one_stt_sample(tmp_path: Path) -> list[seedtts.SampleInput]:
     audio_path = tmp_path / "sample.wav"
     audio_path.write_bytes(b"audio")
     return [
@@ -758,7 +706,7 @@ def _one_stt_sample(tmp_path: Path) -> list[seedtts.SampleInput]:
     ]
 
 
-def _run_stt_benchmark_main(
+def run_stt_benchmark_main(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
@@ -773,7 +721,7 @@ def _run_stt_benchmark_main(
         loaded.update(kwargs)
         return samples
 
-    async def empty_sweep(*_args, **_kwargs):
+    async def empty_sweep(*args, **_kwargs):
         return []
 
     def capture_provenance(**kwargs):
@@ -808,13 +756,14 @@ def _run_stt_benchmark_main(
 def test_stt_benchmark_main_pins_canonical_revision_and_english(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    loaded, captured = _run_stt_benchmark_main(
-        monkeypatch, tmp_path, argv=[], samples=_one_stt_sample(tmp_path)
+    loaded, captured = run_stt_benchmark_main(
+        monkeypatch, tmp_path, argv=[], samples=one_stt_sample(tmp_path)
     )
 
     assert loaded == {
         "repo_id": prepare.STT_BENCHMARK_DATASET_ID,
         "max_samples": None,
+        "config_name": None,
         "split": "train",
         "revision": prepare.STT_BENCHMARK_DATASET_REVISION,
     }
@@ -834,11 +783,11 @@ def test_stt_benchmark_main_pins_canonical_revision_and_english(
 def test_custom_stt_benchmark_repo_does_not_use_canonical_revision(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    loaded, captured = _run_stt_benchmark_main(
+    loaded, captured = run_stt_benchmark_main(
         monkeypatch,
         tmp_path,
         argv=["--repo-id", "example/custom-stt", "--max-samples", "3"],
-        samples=_one_stt_sample(tmp_path),
+        samples=one_stt_sample(tmp_path),
     )
 
     assert loaded["revision"] is None
@@ -846,16 +795,41 @@ def test_custom_stt_benchmark_repo_does_not_use_canonical_revision(
     assert captured["dataset_revision"] is None
 
 
+def test_stt_benchmark_cli_records_config_and_language(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    loaded, _ = run_stt_benchmark_main(
+        monkeypatch,
+        tmp_path,
+        argv=[
+            "--repo-id",
+            "example/custom-stt",
+            "--config-name",
+            "mandarin",
+            "--lang",
+            "zh",
+        ],
+        samples=one_stt_sample(tmp_path),
+    )
+
+    assert loaded["config_name"] == "mandarin"
+    payload = json.loads((tmp_path / "result.json").read_text())
+    assert payload["config"]["config_name"] == "mandarin"
+    assert payload["config"]["lang"] == "zh"
+
+
 def test_stt_benchmark_main_rejects_empty_dataset(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     with pytest.raises(RuntimeError, match="No STT benchmark samples"):
-        _run_stt_benchmark_main(monkeypatch, tmp_path, argv=[], samples=[])
+        run_stt_benchmark_main(monkeypatch, tmp_path, argv=[], samples=[])
 
 
 def test_evaluation_input_fingerprint_is_namespaced(tmp_path: Path) -> None:
-    samples = _one_stt_sample(tmp_path)
-    fingerprint = benchmark_asr_seedtts._evaluation_input_sha256
+    samples = one_stt_sample(tmp_path)
+    fingerprint = (
+        benchmark_asr_seedtts._evaluation_input_sha256
+    )  # noqa: leading-underscore  # production name
 
     assert fingerprint(samples) == fingerprint(samples, namespace="seedtts")
     assert fingerprint(samples) != fingerprint(samples, namespace="stt-benchmark")
@@ -902,14 +876,14 @@ def test_download_asr_longform_dataset_uses_split_and_pinned_revision(
         sys.modules,
         "datasets",
         types.SimpleNamespace(
-            get_dataset_config_names=lambda *_args, **_kwargs: [],
+            get_dataset_config_names=lambda *args, **_kwargs: [],
             load_dataset=fake_load_dataset,
         ),
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        types.SimpleNamespace(hf_hub_download=lambda *_args, **_kwargs: None),
+        types.SimpleNamespace(hf_hub_download=lambda *args, **_kwargs: None),
     )
 
     prepare.download_dataset(prepare.DATASETS[dataset_name], quiet=True)
@@ -921,7 +895,7 @@ def test_download_asr_longform_dataset_uses_split_and_pinned_revision(
     }
 
 
-def _longform_rows(count: int) -> list[dict]:
+def longform_rows(count: int) -> list[dict]:
     return [
         {
             "audio": {"bytes": f"encoded-{index}".encode(), "path": None},
@@ -931,7 +905,7 @@ def _longform_rows(count: int) -> list[dict]:
     ]
 
 
-def _stage_longform_into(monkeypatch: pytest.MonkeyPatch, staging_dir: Path) -> None:
+def stage_longform_into(monkeypatch: pytest.MonkeyPatch, staging_dir: Path) -> None:
     monkeypatch.setattr(
         asr_longform.tempfile, "mkdtemp", lambda prefix: str(staging_dir)
     )
@@ -941,8 +915,8 @@ def _stage_longform_into(monkeypatch: pytest.MonkeyPatch, staging_dir: Path) -> 
 def test_load_asr_longform_samples_selects_before_decode_and_stages_pcm(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    asr_longform._STAGED_CACHE.clear()
-    dataset = _FakeDataset(_longform_rows(5))
+    asr_longform._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+    dataset = FakeDataset(longform_rows(5))
     staging_dir = tmp_path / "longform_stage"
     staging_dir.mkdir()
     decoded_sources: list[bytes | str] = []
@@ -956,7 +930,7 @@ def test_load_asr_longform_samples_selects_before_decode_and_stages_pcm(
     monkeypatch.setattr(asr_longform, "load_dataset", lambda *a, **k: dataset)
     monkeypatch.setattr(asr_longform, "Audio", lambda **kwargs: ("Audio", kwargs))
     monkeypatch.setattr(asr_longform, "load_audio", fake_load_audio)
-    _stage_longform_into(monkeypatch, staging_dir)
+    stage_longform_into(monkeypatch, staging_dir)
 
     samples = asr_longform.load_asr_longform_samples("meanwhile", max_samples=2)
 
@@ -985,17 +959,17 @@ def test_load_asr_longform_samples_selects_before_decode_and_stages_pcm(
         "meanwhile-000001",
     ]
 
-    asr_longform._STAGED_CACHE.clear()
+    asr_longform._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_load_asr_longform_full_split_checks_canonical_sample_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    asr_longform._STAGED_CACHE.clear()
+    asr_longform._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
     monkeypatch.setattr(
         asr_longform,
         "load_dataset",
-        lambda *a, **k: _FakeDataset(_longform_rows(1)),
+        lambda *a, **k: FakeDataset(longform_rows(1)),
     )
 
     with pytest.raises(ValueError, match="Expected 64 samples"):
@@ -1005,16 +979,14 @@ def test_load_asr_longform_full_split_checks_canonical_sample_count(
 def test_load_asr_longform_rejects_empty_reference(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    asr_longform._STAGED_CACHE.clear()
-    rows = _longform_rows(1)
+    asr_longform._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+    rows = longform_rows(1)
     rows[0]["text"] = "  "
     staging_dir = tmp_path / "longform_stage"
     staging_dir.mkdir()
-    monkeypatch.setattr(
-        asr_longform, "load_dataset", lambda *a, **k: _FakeDataset(rows)
-    )
+    monkeypatch.setattr(asr_longform, "load_dataset", lambda *a, **k: FakeDataset(rows))
     monkeypatch.setattr(asr_longform, "Audio", lambda **kwargs: ("Audio", kwargs))
-    _stage_longform_into(monkeypatch, staging_dir)
+    stage_longform_into(monkeypatch, staging_dir)
 
     with pytest.raises(ValueError, match="Empty text"):
         asr_longform.load_asr_longform_samples("meanwhile", max_samples=1)
@@ -1030,9 +1002,9 @@ def test_asr_longform_main_records_registered_dataset_provenance(
     def capture_load(dataset_name: str, **kwargs):
         loaded["dataset_name"] = dataset_name
         loaded.update(kwargs)
-        return _one_stt_sample(tmp_path)
+        return one_stt_sample(tmp_path)
 
-    async def empty_sweep(*_args, **_kwargs):
+    async def empty_sweep(*args, **_kwargs):
         return []
 
     def capture_provenance(**kwargs):
@@ -1056,7 +1028,7 @@ def test_asr_longform_main_records_registered_dataset_provenance(
         benchmark_asr_longform, "load_asr_longform_samples", capture_load
     )
     monkeypatch.setattr(benchmark_asr_longform, "_sweep", empty_sweep)
-    monkeypatch.setattr(benchmark_asr_longform, "_print_table", lambda *_args: None)
+    monkeypatch.setattr(benchmark_asr_longform, "_print_table", lambda *args: None)
     monkeypatch.setattr(
         benchmark_asr_longform,
         "collect_benchmark_provenance",

@@ -8,15 +8,17 @@
 FROM intel/deep-learning-essentials:2026.0.0-devel-ubuntu24.04 AS base
 
 ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
-ARG SGLANG_XPU_BRANCH=v0.5.18
-# SGLang's XPU manifest requires sgl-kernel-xpu with no revision, so pinning SGLang
-# alone leaves the SYCL kernels floating. Pinned to the last sgl-kernel-xpu revision
-# at the v0.5.18 tag boundary; override only to move deliberately.
-ARG SGL_KERNEL_XPU_REF=c1b7e00ff8a07f0ebcd922045e117d83a87e0112
+ARG SGLANG_XPU_BRANCH=v0.5.21
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_INDEX_URL=https://pypi.org/simple
 ENV TORCH_XPU_INDEX=https://download.pytorch.org/whl/xpu
+# files.pythonhosted.org occasionally throttles large wheels below pip's
+# default 15s socket-read window; raise the timeout and retry budget so
+# builds ride through transient CDN slowdowns instead of failing. 60s x
+# 5 retries caps worst-case wait at 5 min per stalled file.
+ENV PIP_DEFAULT_TIMEOUT=60
+ENV PIP_RETRIES=5
 
 # Level-Zero UMD + IGC, mirroring SGLang's image, which pins them because the rolling
 # PPA once faulted libze on B580 (sgl-kernel-xpu#296). Keep in lockstep with the host
@@ -76,26 +78,31 @@ RUN pip install --no-cache-dir --extra-index-url ${TORCH_XPU_INDEX} \
         torchaudio==2.11.0+xpu \
         torchcodec==0.13.0
 
-# The grep guard fails the build if upstream reshapes that requirement line, since
-# the sed would otherwise no-op and silently restore a floating kernel.
+# SGLang's XPU manifest pins the SYCL kernel wheel itself. An isolated build would
+# download torch again and compile Rust extensions this image never loads, so it
+# builds against the torch installed above, without setuptools-rust.
 RUN git clone --branch ${SGLANG_XPU_BRANCH} --single-branch ${SGLANG_XPU_REPO} sglang \
     && cd sglang/python \
     && cp pyproject_xpu.toml pyproject.toml \
-    && sed -i "s|\(sgl-kernel @ git+https://github.com/sgl-project/sgl-kernel-xpu.git\)\"|\1@${SGL_KERNEL_XPU_REF}\"|" pyproject.toml \
-    && grep -q "sgl-kernel-xpu.git@${SGL_KERNEL_XPU_REF}\"" pyproject.toml \
-    && pip install --no-cache-dir . --extra-index-url ${TORCH_XPU_INDEX}
+    && pip install --no-cache-dir 'setuptools>=77.0.0' setuptools-scm wheel \
+    && pip install --no-cache-dir . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX}
+
+# --no-deps avoids installing NVIDIA Triton over the XPU Triton stack.
+RUN pip install --no-cache-dir --no-deps xgrammar==0.1.33
 
 # --no-build-isolation installs no build requirement, so setuptools is pinned here:
 # below 77 it rejects the PEP 639 license metadata in pyproject_xpu.toml.
+# --no-deps keeps openai-whisper from replacing triton-xpu.
 COPY . /workspace/sglang-omni
 RUN cd /workspace/sglang-omni \
     && pip install --no-cache-dir -U 'setuptools>=77.0.0' \
     && cp pyproject_xpu.toml pyproject.toml \
-    && pip install --no-cache-dir -e . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX}
+    && pip install --no-cache-dir -e . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX} \
+    && pip install --no-cache-dir --no-deps openai-whisper==20250625
 
 # --no-deps: qwen-tts pins Transformers 4.57.3, which would replace the stack above,
 # and resolving sox lifts numpy past the numba==0.65.1 ceiling.
-RUN pip install --no-cache-dir --no-deps sox einops \
+RUN pip install --no-cache-dir --no-deps sox \
     && pip install --no-cache-dir --no-deps qwen-tts==0.1.1
 
 WORKDIR /workspace/sglang-omni

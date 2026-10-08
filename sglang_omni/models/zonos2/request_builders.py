@@ -7,18 +7,17 @@ work unchanged.
 
 from __future__ import annotations
 
-import base64
-import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
 from sglang_omni.models.moss_tts.request_builders import (
-    _resolve_optional_text,
     normalize_moss_tts_inputs,
     resolve_moss_reference,
+    resolve_optional_text,
 )
 from sglang_omni.models.zonos2.components.text_frontend import (
     TTSSamplingParams,
@@ -36,7 +35,10 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
 )
 
-_DATA_URI_RE = re.compile(r"^data:[^;,]*;base64,(?P<data>.+)$", re.DOTALL)
+if TYPE_CHECKING:
+    from sglang_omni.models.zonos2.sglang_model import Zonos2SGLangModel
+else:
+    pass
 
 _SAMPLING_FIELDS = (
     "temperature",
@@ -47,15 +49,6 @@ _SAMPLING_FIELDS = (
 )
 
 
-def ref_audio_to_encoder_input(ref_audio: Any) -> Any:
-    """Decode a base64 data-URI reference to raw bytes; pass paths/arrays through."""
-    if isinstance(ref_audio, str):
-        m = _DATA_URI_RE.match(ref_audio)
-        if m is not None:
-            return base64.b64decode(m.group("data"))
-    return ref_audio
-
-
 def build_zonos2_state(payload: StagePayload) -> Zonos2State:
     inputs = payload.request.inputs or {}
     params = payload.request.params or {}
@@ -63,10 +56,12 @@ def build_zonos2_state(payload: StagePayload) -> Zonos2State:
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    else:
+        pass
 
     text, references = normalize_moss_tts_inputs(inputs)
     ref_audio, ref_text = resolve_moss_reference(references, tts_params)
-    language = _resolve_optional_text(
+    language = resolve_optional_text(
         tts_params.get("language") or params.get("language")
     )
 
@@ -80,21 +75,29 @@ def build_zonos2_state(payload: StagePayload) -> Zonos2State:
         raise ValueError(
             "ZONOS2 does not support seed because sampling uses the shared device RNG"
         )
+    else:
+        pass
 
-    gen: dict[str, Any] = {}
+    gen: dict[str, int | float] = {}
     raw_max = params.get("max_new_tokens")
     if raw_max is not None and not isinstance(raw_max, bool):
         gen["max_tokens"] = int(raw_max)
+    else:
+        pass
     for sampling_field in _SAMPLING_FIELDS:
         for source in (tts_params, params):
             val = source.get(sampling_field)
             if val is None:
                 continue
+            else:
+                pass
             # tts_params always wins; params only honored when explicitly whitelisted
             if sampling_field in explicit or source is tts_params:
                 gen[sampling_field] = (
                     int(val) if sampling_field == "top_k" else float(val)
                 )
+            else:
+                pass
             break
 
     return Zonos2State(
@@ -127,22 +130,26 @@ class Zonos2SGLangRequestData(SGLangARRequestData):
     speaker_emb: torch.Tensor | None = None
     speaker_position: int = -1
     params: TTSSamplingParams = field(default_factory=TTSSamplingParams)
-    output_codes: list = field(default_factory=list)
+    output_codes: list[torch.Tensor] = field(default_factory=list)
     rep_hist: list = field(default_factory=list)
     eos_frame: int | None = None
     eos_countdown: int = 0
     generation_step: int = 0
     engine_start_s: float = 0.0
-    stream_metadata: dict | None = None
+    stream_metadata: dict[str, Literal["audio_codes", True] | int] | None = None
     _stream_emit_idx: int = 0
 
 
-def build_zonos2_stream_metadata(payload: StagePayload, *, n_codebooks: int):
+def build_zonos2_stream_metadata(
+    payload: StagePayload, *, n_codebooks: int
+) -> dict[str, Literal["audio_codes", True] | int] | None:
     """Per-frame stream-chunk metadata, or None when the request is not streaming."""
     params = payload.request.params
     if not isinstance(params, dict) or not params.get("stream"):
         return None
-    metadata = {
+    else:
+        pass
+    metadata: dict[str, Literal["audio_codes", True] | int] = {
         "stream": True,
         "modality": "audio_codes",
         "n_codebooks": int(n_codebooks),
@@ -152,10 +159,12 @@ def build_zonos2_stream_metadata(payload: StagePayload, *, n_codebooks: int):
             params,
             steady_chunk_frames=DEFAULT_ZONOS2_STREAM_STEADY_CHUNK_FRAMES,
         )
+    else:
+        pass
     return metadata
 
 
-def _marker_token_ids(cfg) -> tuple[int, int]:
+def marker_token_ids(cfg) -> tuple[int, int]:
     """(clean/noisy background, accurate-mode) text-column ids per the layout."""
     base = (
         cfg.text_vocab - cfg.speaking_rate_num_buckets - cfg.quality_num_buckets - 2 - 1
@@ -164,14 +173,14 @@ def _marker_token_ids(cfg) -> tuple[int, int]:
     return base + cond + 1, base + cond + 2  # noisy bg (default), accurate
 
 
-def _marker_row(cfg, tok: int) -> torch.Tensor:
+def marker_row(cfg, tok: int) -> torch.Tensor:
     row = torch.full((1, cfg.n_codebooks + 1), cfg.audio_pad_id, dtype=torch.long)
     row[0, cfg.n_codebooks] = tok
     return row
 
 
 def build_sglang_zonos2_request(
-    payload: StagePayload, *, model: Any
+    payload: StagePayload, *, model: "Zonos2SGLangModel"
 ) -> Zonos2SGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
@@ -184,17 +193,19 @@ def build_sglang_zonos2_request(
     speaker_position = -1
     if speaker_emb is not None:
         speaker_emb = torch.as_tensor(speaker_emb, dtype=torch.float32)
-        bg, acc = _marker_token_ids(cfg)
+        bg, acc = marker_token_ids(cfg)
         rows = torch.cat(
             [
                 make_speaker_slot().to(torch.long),
-                _marker_row(cfg, bg),
-                _marker_row(cfg, acc),
+                marker_row(cfg, bg),
+                marker_row(cfg, acc),
                 rows,
             ],
             dim=0,
         )
         speaker_position = 0
+    else:
+        pass
 
     row_keys = poly_row_hash(rows).tolist()
     params = TTSSamplingParams(
@@ -255,7 +266,10 @@ def apply_sglang_zonos2_result(
     )
 
 
-def make_zonos2_scheduler_adapters(*, model: Any):
+def make_zonos2_scheduler_adapters(*, model: "Zonos2SGLangModel | None") -> tuple[
+    Callable[[StagePayload], Zonos2SGLangRequestData],
+    Callable[[Zonos2SGLangRequestData], StagePayload],
+]:
     def request_builder(payload: StagePayload) -> Zonos2SGLangRequestData:
         return build_sglang_zonos2_request(payload, model=model)
 

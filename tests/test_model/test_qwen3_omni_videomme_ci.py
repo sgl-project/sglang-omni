@@ -23,36 +23,27 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_e
 from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
+from tests.test_model.omni_ci_config import OmniCiModelPreset
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
 )
-from tests.utils import MetricCheckCollector, apply_slack, assert_speed_thresholds
+from tests.utils import MetricCheckCollector, assert_speed_thresholds
 
 CONCURRENCY = 16
 MAX_SAMPLES = 50
 
-VIDEOMME_MIN_ACCURACY = 0.58
-
-_VIDEOMME_P95 = {
-    16: {
-        "throughput_qps": 1.235,
-        "output_tok_per_req_s": 9.8,
-        "latency_mean_s": 11.249,
-    },
-}
-VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
-
 
 @pytest.mark.benchmark
 def test_videomme_accuracy_and_speed(
-    qwen3_omni_bf16_disagg_server: ManagedRouterHandle,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run videomme-ci-50 at concurrency=16 and report accuracy + speed."""
     config = VideoEvalConfig(
-        model="qwen3-omni",
-        port=qwen3_omni_bf16_disagg_server.port,
+        model=omni_ci_model.name,
+        port=omni_ci_server.port,
         max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "videomme"),
@@ -64,8 +55,8 @@ def test_videomme_accuracy_and_speed(
         timeout_s=500,
     )
     with router_worker_traffic_guard(
-        qwen3_omni_bf16_disagg_server,
-        label="Qwen3-Omni Video-MME",
+        omni_ci_server,
+        label=f"{omni_ci_model.name} Video-MME",
     ) as router_guard:
         results = asyncio.run(
             run_video_eval(
@@ -90,25 +81,33 @@ def test_videomme_accuracy_and_speed(
         dataset=dataset_label,
     )
     total = summary.get("total_samples", 0)
+    thresholds = omni_ci_model.thresholds["videomme"]
     checks = MetricCheckCollector("Video-MME accuracy and speed")
     checks.check_assertion(
         "router traffic",
         router_guard.assert_served,
         min_total_requests=total,
     )
+    if omni_ci_model.name == "minicpmo":
+        checks.check(
+            summary.get("failed", 0) == 0,
+            f"Video-MME had {summary.get('failed', 0)} failed requests",
+        )
     accuracy = summary.get("accuracy")
     if accuracy is None:
         checks.fail("Video-MME accuracy missing from summary")
-    else:
+    elif thresholds.calibrated:
         checks.check(
-            accuracy >= VIDEOMME_MIN_ACCURACY,
+            accuracy >= thresholds.accuracy,
             f"Video-MME accuracy {accuracy:.4f} "
             f"({accuracy * 100:.1f}%) < "
-            f"threshold {VIDEOMME_MIN_ACCURACY} ({VIDEOMME_MIN_ACCURACY * 100:.0f}%)",
+            f"threshold {thresholds.accuracy} ({thresholds.accuracy * 100:.0f}%)",
         )
-    assert_speed_thresholds(
-        results["speed"], VIDEOMME_THRESHOLDS, CONCURRENCY, collector=checks
-    )
+    if thresholds.calibrated:
+        assert_speed_thresholds(
+            results["speed"], thresholds.speed, CONCURRENCY, collector=checks
+        )
+    thresholds.require_calibrated(omni_ci_model.name, "videomme", checks)
     checks.assert_all()
 
 

@@ -42,6 +42,11 @@ class MingOmniTalkerConfig:
         self.spk_dim = spk_dim
         self.max_conc = max_conc
 
+    def use_torch_attention(self) -> None:
+        """Force portable PyTorch attention for Talker accelerator backends."""
+        self.flowmodel["attn_backend"] = "torch"
+        self.aggregator["attn_backend"] = "torch"
+
     @classmethod
     def from_pretrained_dir(cls, model_dir: str) -> MingOmniTalkerConfig:
         """Load config from a talker checkpoint directory.
@@ -55,6 +60,8 @@ class MingOmniTalkerConfig:
         config_path = model_dir / "config.json"
         if not config_path.exists():
             raise FileNotFoundError(f"config.json not found in {model_dir}")
+        else:
+            pass
         with config_path.open("r", encoding="utf-8") as f:
             raw = json.load(f)
 
@@ -64,6 +71,8 @@ class MingOmniTalkerConfig:
         if llm_config_path.exists():
             with llm_config_path.open("r", encoding="utf-8") as f:
                 llm_config = json.load(f)
+        else:
+            pass
 
         return cls(
             llm_config=llm_config,

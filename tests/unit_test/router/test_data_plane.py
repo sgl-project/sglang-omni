@@ -19,7 +19,7 @@ from sglang_omni_router.python.snapshot import SnapshotWorker, SnapshotWriter
 from sglang_omni_router.python.worker import worker_id_from_url
 
 
-def _config(failure_threshold: int = 1) -> RouterConfig:
+def make_config(failure_threshold: int = 1) -> RouterConfig:
     return RouterConfig(
         workers=[WorkerConfig(url="http://worker-a:8101")],
         health_failure_threshold=failure_threshold,
@@ -27,15 +27,15 @@ def _config(failure_threshold: int = 1) -> RouterConfig:
     )
 
 
-def _entry(url: str = "http://worker-a:8101", **kwargs) -> SnapshotWorker:
+def entry(url: str = "http://worker-a:8101", **kwargs) -> SnapshotWorker:
     return SnapshotWorker(url=url, worker_id=url.replace("://", "%3A%2F%2F"), **kwargs)
 
 
-def _snapshot(writer: SnapshotWriter, *entries: SnapshotWorker):
+def snapshot(writer: SnapshotWriter, *entries: SnapshotWorker):
     return writer.publish(list(entries))
 
 
-class _Recorder:
+class Recorder:
     def __init__(self, status_for: dict[str, int] | None = None) -> None:
         self.requests: list[tuple[str, bytes]] = []
         self.status_for = status_for or {}
@@ -46,10 +46,10 @@ class _Recorder:
         return httpx.Response(status, json={"ok": status == 200})
 
 
-def _dp_app(
+def dp_app(
     tmp_path: Path,
-    upstream: _Recorder,
-    internal: _Recorder | None = None,
+    upstream: Recorder,
+    internal: Recorder | None = None,
     failure_threshold: int = 1,
     **kwargs,
 ):
@@ -63,7 +63,7 @@ def _dp_app(
     kwargs.setdefault("dp_refresh_interval_secs", 0.02)
     kwargs.setdefault("heartbeat_interval_secs", 0.02)
     app = create_data_plane_app(
-        _config(failure_threshold),
+        make_config(failure_threshold),
         snapshot_path=snapshot_path,
         dp_index=0,
         generation=1,
@@ -77,7 +77,7 @@ def _dp_app(
     return app, snapshot_path
 
 
-def _wait_for(predicate, timeout: float = 3.0):
+def wait_for(predicate, timeout: float = 3.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
@@ -96,15 +96,15 @@ def test_forwarded_admin_routes_publish_the_single_process_schema_identity(
     from sglang_omni_router.python.app import create_app
 
     single = create_app(
-        _config(),
+        make_config(),
         client=httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
         ),
         admin_api_key="parity-key",
     )
-    dp = _dp_app_forwarding_to_cp(tmp_path, _CPRecorder(), admin_api_key="parity-key")
+    dp = dp_app_forwarding_to_cp(tmp_path, CPRecorder(), admin_api_key="parity-key")
 
-    def _ops(app):
+    def list_ops(app):
         spec = app.openapi()
         return {
             (path, method): {
@@ -116,7 +116,7 @@ def test_forwarded_admin_routes_publish_the_single_process_schema_identity(
             for method, op in item.items()
         }
 
-    single_ops, dp_ops = _ops(single), _ops(dp)
+    single_ops, dp_ops = list_ops(single), list_ops(dp)
     shared = set(single_ops) & set(dp_ops)
     assert ("/workers/{worker_id}", "get") in shared  # not {worker_path}
     for key in shared:
@@ -131,14 +131,14 @@ def test_forwarded_admin_routes_publish_the_single_process_schema_identity(
         param.get("name") == "authorization" for params in authed for param in params
     )
 
-    def _duplicates(ops):
+    def duplicates(ops):
         ids = [op["operationId"] for op in ops.values() if op["operationId"]]
         return {op for op in ids if ids.count(op) > 1}
 
     # Note (Jiaxin Deng): the split must not introduce a collision the single-process
     # schema does not already have (/weights_checker shares one id in both, pre-
     # existing)
-    assert _duplicates(dp_ops) <= _duplicates(single_ops)
+    assert duplicates(dp_ops) <= duplicates(single_ops)
 
 
 def test_replaced_incarnation_stays_reportable_until_its_request_drains() -> None:
@@ -147,19 +147,19 @@ def test_replaced_incarnation_stays_reportable_until_its_request_drains() -> Non
     # retired object must keep reaching the CP ledger until it drains
     view = DataPlaneWorkerView()
 
-    class _First:
+    class First:
         seq = 1
-        workers = [_entry(incarnation="inc-a")]
+        workers = [entry(incarnation="inc-a")]
 
-    view.apply(_First())
+    view.apply(First())
     old = view.workers()[0]
     old.increment_active()  # a request is in flight on incarnation A
 
-    class _Second:
+    class Second:
         seq = 2
-        workers = [_entry(incarnation="inc-b")]
+        workers = [entry(incarnation="inc-b")]
 
-    view.apply(_Second())
+    view.apply(Second())
     new = view.workers()[0]
     assert new is not old  # fresh object for the new incarnation
     assert view.workers() == [new]  # routing only ever sees the live one
@@ -178,11 +178,11 @@ def test_replaced_incarnation_stays_reportable_until_its_request_drains() -> Non
 def test_view_apply_preserves_counters_and_tracks_membership() -> None:
     view = DataPlaneWorkerView()
 
-    class _Snapshot:
+    class Snapshot:
         seq = 1
-        workers = [_entry(), _entry("http://worker-b:8102")]
+        workers = [entry(), entry("http://worker-b:8102")]
 
-    view.apply(_Snapshot())
+    view.apply(Snapshot())
     assert {w.url for w in view.workers()} == {
         "http://worker-a:8101",
         "http://worker-b:8102",
@@ -191,11 +191,11 @@ def test_view_apply_preserves_counters_and_tracks_membership() -> None:
     worker_a.increment_active()
     worker_a.record_routed_request(status_code=200)
 
-    class _Second:
+    class Second:
         seq = 2
-        workers = [_entry(disabled=True)]
+        workers = [entry(disabled=True)]
 
-    view.apply(_Second())
+    view.apply(Second())
     assert view.last_applied_seq == 2
     assert [w.url for w in view.workers()] == ["http://worker-a:8101"]
     survivor = view.workers()[0]
@@ -207,8 +207,8 @@ def test_view_apply_preserves_counters_and_tracks_membership() -> None:
 
 
 def test_dp_sheds_until_the_first_snapshot_arrives(tmp_path: Path) -> None:
-    upstream = _Recorder()
-    app, _ = _dp_app(tmp_path, upstream)
+    upstream = Recorder()
+    app, _ = dp_app(tmp_path, upstream)
     with TestClient(app) as client:
         assert client.get("/live").status_code == 200
         ready = client.get("/ready")
@@ -223,27 +223,27 @@ def test_dp_sheds_until_the_first_snapshot_arrives(tmp_path: Path) -> None:
 def test_dp_routes_after_snapshot_and_tracks_disabled_workers(
     tmp_path: Path,
 ) -> None:
-    upstream = _Recorder()
-    app, snapshot_path = _dp_app(tmp_path, upstream)
+    upstream = Recorder()
+    app, snapshot_path = dp_app(tmp_path, upstream)
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
         assert client.post("/generate", json={"prompt": "x"}).status_code == 200
         assert upstream.requests[-1][0] == "/generate"
 
-        _snapshot(writer, _entry(disabled=True))
-        _wait_for(lambda: client.post("/generate", json={}).status_code == 503)
+        snapshot(writer, entry(disabled=True))
+        wait_for(lambda: client.post("/generate", json={}).status_code == 503)
         response = client.post("/generate", json={})
         assert response.json()["error"]["message"] == "no eligible upstream"
 
 
 def test_dp_large_speech_body_preserves_audio_input_routing(tmp_path: Path) -> None:
-    upstream = _Recorder()
-    app, snapshot_path = _dp_app(tmp_path, upstream)
+    upstream = Recorder()
+    app, snapshot_path = dp_app(tmp_path, upstream)
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
-    speech_only = _entry(capabilities=["speech"])
-    audio_worker = _entry(
+    speech_only = entry(capabilities=["speech"])
+    audio_worker = entry(
         "http://worker-b:8102",
         capabilities=["speech", "audio_input"],
     )
@@ -256,8 +256,8 @@ def test_dp_large_speech_body_preserves_audio_input_routing(tmp_path: Path) -> N
     ).encode()
 
     with TestClient(app) as client:
-        _snapshot(writer, speech_only, audio_worker)
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, speech_only, audio_worker)
+        wait_for(lambda: client.get("/ready").status_code == 200)
         response = client.post(
             "/v1/audio/speech",
             content=body,
@@ -271,8 +271,8 @@ def test_dp_large_speech_body_preserves_audio_input_routing(tmp_path: Path) -> N
 
 
 def test_dp_large_speech_body_rejects_a_speech_only_pool(tmp_path: Path) -> None:
-    upstream = _Recorder()
-    app, snapshot_path = _dp_app(tmp_path, upstream)
+    upstream = Recorder()
+    app, snapshot_path = dp_app(tmp_path, upstream)
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     body = json.dumps(
         {
@@ -283,8 +283,8 @@ def test_dp_large_speech_body_rejects_a_speech_only_pool(tmp_path: Path) -> None
     ).encode()
 
     with TestClient(app) as client:
-        _snapshot(writer, _entry(capabilities=["speech"]))
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry(capabilities=["speech"]))
+        wait_for(lambda: client.get("/ready").status_code == 200)
         response = client.post(
             "/v1/audio/speech",
             content=body,
@@ -299,43 +299,43 @@ def test_dp_large_speech_body_rejects_a_speech_only_pool(tmp_path: Path) -> None
 def test_dp_sheds_when_the_snapshot_goes_stale_and_recovers(
     tmp_path: Path,
 ) -> None:
-    upstream = _Recorder()
-    app, snapshot_path = _dp_app(tmp_path, upstream, snapshot_max_age_secs=0.15)
+    upstream = Recorder()
+    app, snapshot_path = dp_app(tmp_path, upstream, snapshot_max_age_secs=0.15)
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
 
         # Note (Jiaxin Deng): CP goes silent: past max age new requests are shed
-        _wait_for(lambda: client.post("/generate", json={}).status_code == 503)
+        wait_for(lambda: client.post("/generate", json={}).status_code == 503)
         assert client.get("/ready").json()["reason"] == "snapshot_stale"
 
         # Note (Jiaxin Deng): CP comes back: one republish restores service
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.post("/generate", json={}).status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.post("/generate", json={}).status_code == 200)
 
 
 def test_dp_reports_eviction_relevant_failures_to_the_cp(tmp_path: Path) -> None:
-    upstream = _Recorder(status_for={"/generate": 502})
-    internal = _Recorder()
-    app, snapshot_path = _dp_app(
+    upstream = Recorder(status_for={"/generate": 502})
+    internal = Recorder()
+    app, snapshot_path = dp_app(
         tmp_path, upstream, internal=internal, failure_threshold=3
     )
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
 
         assert client.post("/generate", json={}).status_code == 502
         assert client.post("/generate", json={}).status_code == 502
 
-        _wait_for(
+        wait_for(
             lambda: any(
                 path == "/internal/worker_failure" for path, _ in internal.requests
             )
         )
 
-        def _reports():
+        def read_reports():
             return [
                 body
                 for path, body in internal.requests
@@ -344,7 +344,7 @@ def test_dp_reports_eviction_relevant_failures_to_the_cp(tmp_path: Path) -> None
 
         # Note (Jiaxin Deng): every distinct failure is reported: the CP threshold
         # counts events
-        reports = _wait_for(lambda: _reports() if len(_reports()) >= 2 else None)
+        reports = wait_for(lambda: read_reports() if len(read_reports()) >= 2 else None)
         assert len(reports) == 2
         assert all(
             b'"status_code": 502' in r or b'"status_code":502' in r for r in reports
@@ -355,24 +355,24 @@ def test_dp_leaves_the_failure_verdict_to_the_cp(tmp_path: Path) -> None:
     # Note (Jiaxin Deng): the CP owns the health verdict: a snapshot carries state but
     # never resets a DP-local consecutive_failures, so a DP that counted failures too
     # would evict a worker the CP still counts as healthy
-    upstream = _Recorder(status_for={"/generate": 502})
-    internal = _Recorder()
-    app, snapshot_path = _dp_app(
+    upstream = Recorder(status_for={"/generate": 502})
+    internal = Recorder()
+    app, snapshot_path = dp_app(
         tmp_path, upstream, internal=internal, failure_threshold=3
     )
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
         view = app.state.worker_view
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
 
         for _ in range(2):
             assert client.post("/generate", json={}).status_code == 502
 
         # Note (Jiaxin Deng): the CP's own health probe succeeded: it reset its counter
         # and republished the worker healthy
-        seq = _snapshot(writer, _entry(state="healthy")).seq
-        _wait_for(lambda: view.last_applied_seq == seq)
+        seq = snapshot(writer, entry(state="healthy")).seq
+        wait_for(lambda: view.last_applied_seq == seq)
 
         assert client.post("/generate", json={}).status_code == 502
         assert view.workers()[0].consecutive_failures == 0
@@ -386,9 +386,9 @@ def test_dp_leaves_the_failure_verdict_to_the_cp(tmp_path: Path) -> None:
 def test_dp_heartbeats_the_applied_seq_and_reacts_to_fencing(
     tmp_path: Path,
 ) -> None:
-    upstream = _Recorder()
+    upstream = Recorder()
 
-    class _FencingInternal(_Recorder):
+    class FencingInternal(Recorder):
         def __init__(self) -> None:
             super().__init__()
             self.fence_after = 3
@@ -399,22 +399,22 @@ def test_dp_heartbeats_the_applied_seq_and_reacts_to_fencing(
                 return httpx.Response(409, json={"detail": "stale generation"})
             return httpx.Response(200, json={"status": "ok"})
 
-    internal = _FencingInternal()
+    internal = FencingInternal()
     fenced: list[bool] = []
-    app, snapshot_path = _dp_app(
+    app, snapshot_path = dp_app(
         tmp_path, upstream, internal=internal, on_fenced=lambda: fenced.append(True)
     )
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        published = _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
-        _wait_for(
+        published = snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
+        wait_for(
             lambda: any(
                 path == "/internal/heartbeat" and str(published.seq).encode() in body
                 for path, body in internal.requests
             )
         )
-        _wait_for(lambda: fenced)
+        wait_for(lambda: fenced)
     assert fenced == [True]
 
 
@@ -426,9 +426,9 @@ def test_a_snapshot_apply_wakes_the_heartbeat_without_a_full_period(
     # Note (Jiaxin Deng): the weight-update ACK barrier learns last_applied_seq
     # only from heartbeats; an apply must reach the CP promptly even when the
     # next periodic beat is a full interval away
-    upstream = _Recorder()
-    internal = _Recorder()
-    app, snapshot_path = _dp_app(
+    upstream = Recorder()
+    internal = Recorder()
+    app, snapshot_path = dp_app(
         tmp_path,
         upstream,
         internal=internal,
@@ -436,11 +436,11 @@ def test_a_snapshot_apply_wakes_the_heartbeat_without_a_full_period(
     )
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
-        published = _snapshot(writer, _entry(), _entry(url="http://worker-b:8102"))
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
+        published = snapshot(writer, entry(), entry(url="http://worker-b:8102"))
 
-        def _acked() -> bool:
+        def acked() -> bool:
             for path, body in internal.requests:
                 if path != "/internal/heartbeat":
                     continue
@@ -448,7 +448,7 @@ def test_a_snapshot_apply_wakes_the_heartbeat_without_a_full_period(
                     return True
             return False
 
-        _wait_for(_acked)
+        wait_for(acked)
 
 
 def test_cp_keepalive_republishes_without_state_changes(tmp_path: Path) -> None:
@@ -462,7 +462,7 @@ def test_cp_keepalive_republishes_without_state_changes(tmp_path: Path) -> None:
         )
     )
     app = create_control_plane_app(
-        _config(),
+        make_config(),
         snapshot_path=snapshot_path,
         cp_epoch="e",
         client=client,
@@ -470,29 +470,29 @@ def test_cp_keepalive_republishes_without_state_changes(tmp_path: Path) -> None:
     )
     with TestClient(app):
         reader = SnapshotReader(snapshot_path)
-        _wait_for(lambda: reader.maybe_reload())
+        wait_for(lambda: reader.maybe_reload())
         first_seq = reader.snapshot.seq
-        _wait_for(lambda: reader.maybe_reload() and reader.snapshot.seq > first_seq)
+        wait_for(lambda: reader.maybe_reload() and reader.snapshot.seq > first_seq)
 
 
-class _CPRecorder:
+class CPRecorder:
     """Records requests the DP forwards to the CP."""
 
     def __init__(self, status: int = 418) -> None:
         self.requests: list[httpx.Request] = []
-        self._status = status
+        self.status = status
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         return httpx.Response(
-            self._status, json={"from": "cp"}, headers={"x-cp-extra": "yes"}
+            self.status, json={"from": "cp"}, headers={"x-cp-extra": "yes"}
         )
 
 
-def _dp_app_forwarding_to_cp(tmp_path: Path, cp: _CPRecorder, **kwargs):
+def dp_app_forwarding_to_cp(tmp_path: Path, cp: CPRecorder, **kwargs):
     from sglang_omni_router.python.data_plane import create_data_plane_app
 
-    upstream = _Recorder()
+    upstream = Recorder()
     client = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler))
     internal_client = httpx.AsyncClient(
         transport=httpx.MockTransport(cp.handler), base_url="http://cp"
@@ -500,7 +500,7 @@ def _dp_app_forwarding_to_cp(tmp_path: Path, cp: _CPRecorder, **kwargs):
     # NOTE: no snapshot exists, so data routes are shedding; admin and health
     # forwarding must be exempt from that gate and from admission.
     return create_data_plane_app(
-        _config(),
+        make_config(),
         snapshot_path=str(tmp_path / "w2.json"),
         dp_index=0,
         generation=1,
@@ -517,8 +517,8 @@ def test_dp_forwards_admin_and_health_routes_to_the_cp_with_fidelity(
 ) -> None:
     import json as jsonlib
 
-    cp = _CPRecorder()
-    app = _dp_app_forwarding_to_cp(tmp_path, cp)
+    cp = CPRecorder()
+    app = dp_app_forwarding_to_cp(tmp_path, cp)
     with TestClient(app) as tc:
         response = tc.post(
             "/workers?url=http%3A%2F%2Fw%3A1",
@@ -550,8 +550,8 @@ def test_dp_strips_hop_by_hop_headers_when_forwarding_to_the_cp(
 ) -> None:
     # Note (Jiaxin Deng): the DP re-frames the body as fixed-length bytes, so a client
     # Transfer-Encoding must not ride along (smuggling ambiguity at the CP)
-    cp = _CPRecorder(status=200)
-    app = _dp_app_forwarding_to_cp(tmp_path, cp)
+    cp = CPRecorder(status=200)
+    app = dp_app_forwarding_to_cp(tmp_path, cp)
     with TestClient(app) as tc:
         response = tc.post(
             "/workers?url=http%3A%2F%2Fw%3A1",
@@ -579,7 +579,7 @@ def test_dp_strips_hop_by_hop_headers_when_forwarding_to_the_cp(
 def test_dp_serves_v1_models_locally_from_the_snapshot_view(
     tmp_path: Path,
 ) -> None:
-    class _ModelsUpstream(_Recorder):
+    class ModelsUpstream(Recorder):
         def handler(self, request: httpx.Request) -> httpx.Response:
             self.requests.append((request.url.path, request.content))
             if request.url.path == "/v1/models":
@@ -592,12 +592,12 @@ def test_dp_serves_v1_models_locally_from_the_snapshot_view(
                 )
             return httpx.Response(200, json={"ok": True})
 
-    upstream = _ModelsUpstream()
-    app, snapshot_path = _dp_app(tmp_path, upstream)
+    upstream = ModelsUpstream()
+    app, snapshot_path = dp_app(tmp_path, upstream)
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
         response = client.get("/v1/models")
         assert response.status_code == 200
         assert any(item["id"] == "higgs" for item in response.json()["data"])
@@ -607,19 +607,19 @@ def test_dp_serves_v1_models_locally_from_the_snapshot_view(
 def test_dp_flushes_cumulative_counters_to_the_cp(tmp_path: Path) -> None:
     import json as jsonlib
 
-    upstream = _Recorder()
-    internal = _Recorder()
-    app, snapshot_path = _dp_app(
+    upstream = Recorder()
+    internal = Recorder()
+    app, snapshot_path = dp_app(
         tmp_path, upstream, internal=internal, counter_flush_interval_secs=0.03
     )
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
         assert client.post("/generate", json={}).status_code == 200
         assert client.post("/generate", json={}).status_code == 200
 
-        def _latest_counters():
+        def latest_counters():
             reports = [
                 jsonlib.loads(body)
                 for path, body in internal.requests
@@ -630,7 +630,7 @@ def test_dp_flushes_cumulative_counters_to_the_cp(tmp_path: Path) -> None:
                     return report
             return None
 
-        report = _wait_for(_latest_counters)
+        report = wait_for(latest_counters)
         assert report["dp_index"] == 0
         assert report["generation"] == 1
         assert report["counter_seq"] >= 1
@@ -643,9 +643,9 @@ def test_dp_flushes_cumulative_counters_to_the_cp(tmp_path: Path) -> None:
 
 
 def test_failure_reports_retry_with_a_bound_then_give_up(tmp_path: Path) -> None:
-    upstream = _Recorder(status_for={"/generate": 502})
+    upstream = Recorder(status_for={"/generate": 502})
 
-    class _FlakyInternal(_Recorder):
+    class FlakyInternal(Recorder):
         def __init__(self, fail_first: int) -> None:
             super().__init__()
             self.fail_first = fail_first
@@ -659,8 +659,8 @@ def test_failure_reports_retry_with_a_bound_then_give_up(tmp_path: Path) -> None
             self.requests.append((request.url.path, request.content))
             return httpx.Response(200, json={"status": "ok"})
 
-    internal = _FlakyInternal(fail_first=2)
-    app, snapshot_path = _dp_app(
+    internal = FlakyInternal(fail_first=2)
+    app, snapshot_path = dp_app(
         tmp_path,
         upstream,
         internal=internal,
@@ -670,12 +670,12 @@ def test_failure_reports_retry_with_a_bound_then_give_up(tmp_path: Path) -> None
     )
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
         assert client.post("/generate", json={}).status_code == 502
         # Note (Jiaxin Deng): two transport failures, then the bounded third attempt
         # lands
-        _wait_for(
+        wait_for(
             lambda: any(
                 path == "/internal/worker_failure" for path, _ in internal.requests
             )
@@ -684,9 +684,9 @@ def test_failure_reports_retry_with_a_bound_then_give_up(tmp_path: Path) -> None
 
 
 def test_dp_reregisters_on_428_instead_of_fencing(tmp_path: Path) -> None:
-    upstream = _Recorder()
+    upstream = Recorder()
 
-    class _RestartedCP(_Recorder):
+    class RestartedCP(Recorder):
         """Heartbeats get 428 until a register arrives (CP lost its state)."""
 
         def __init__(self) -> None:
@@ -710,15 +710,15 @@ def test_dp_reregisters_on_428_instead_of_fencing(tmp_path: Path) -> None:
                 return httpx.Response(200, json={"status": "ok"})
             return httpx.Response(200, json={"status": "ok"})
 
-    internal = _RestartedCP()
+    internal = RestartedCP()
     fenced: list[bool] = []
-    app, snapshot_path = _dp_app(
+    app, snapshot_path = dp_app(
         tmp_path, upstream, internal=internal, on_fenced=lambda: fenced.append(True)
     )
     with TestClient(app):
         # Note (Jiaxin Deng): register -> heartbeat(200, then forgotten) ->
         # heartbeat(428) -> register again: at least two registrations, and never fenced
-        _wait_for(
+        wait_for(
             lambda: sum(
                 1 for path, _ in internal.requests if path == "/internal/register"
             )
@@ -732,24 +732,26 @@ def test_dp_fails_closed_after_persistent_registration_rejection(
 ) -> None:
     from sglang_omni_router.python import data_plane as dp_module
 
-    upstream = _Recorder()
-    internal = _Recorder(status_for={"/internal/register": 403})
+    upstream = Recorder()
+    internal = Recorder(status_for={"/internal/register": 403})
     fenced: list[bool] = []
-    app, snapshot_path = _dp_app(
+    app, snapshot_path = dp_app(
         tmp_path, upstream, internal=internal, on_fenced=lambda: fenced.append(True)
     )
     with TestClient(app):
-        _wait_for(lambda: fenced)
+        wait_for(lambda: fenced)
     rejects = [path for path, _ in internal.requests if path == "/internal/register"]
-    assert len(rejects) == dp_module._REGISTER_REJECT_LIMIT
+    assert (
+        len(rejects) == dp_module._REGISTER_REJECT_LIMIT
+    )  # noqa: leading-underscore  # production name
     assert fenced == [True]
 
 
 def test_forwarded_admin_bodies_are_bounded_before_buffering(
     tmp_path: Path,
 ) -> None:
-    upstream = _Recorder()
-    internal = _Recorder()
+    upstream = Recorder()
+    internal = Recorder()
     snapshot_path = str(tmp_path / "w3.json")
     client = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler))
     internal_client = httpx.AsyncClient(
@@ -787,8 +789,8 @@ def test_forwarded_admin_bodies_are_bounded_before_buffering(
 def test_dp_answers_cors_preflight_like_the_single_process_app(
     tmp_path: Path,
 ) -> None:
-    upstream = _Recorder()
-    app, snapshot_path = _dp_app(tmp_path, upstream)
+    upstream = Recorder()
+    app, snapshot_path = dp_app(tmp_path, upstream)
     with TestClient(app) as client:
         response = client.options(
             "/v1/chat/completions",
@@ -832,11 +834,11 @@ def test_dp_uses_the_injected_shared_admission(tmp_path: Path) -> None:
     own = SharedAdmission(
         buf, slots=2, own_index=0, max_inflight=1, generation=1, pid=8
     )
-    upstream = _Recorder()
+    upstream = Recorder()
     snapshot_path = str(tmp_path / "w4.json")
     client = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler))
     app = create_data_plane_app(
-        _config(),
+        make_config(),
         snapshot_path=snapshot_path,
         dp_index=0,
         generation=1,
@@ -845,8 +847,8 @@ def test_dp_uses_the_injected_shared_admission(tmp_path: Path) -> None:
     )
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as tc:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: tc.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: tc.get("/ready").status_code == 200)
         response = tc.post("/generate", json={})
         # Note (Jiaxin Deng): the sibling's in-flight fills the GLOBAL bound: this DP
         # sheds
@@ -862,12 +864,12 @@ def test_selector_rr_offset_staggers_first_picks() -> None:
 
     view = DataPlaneWorkerView()
 
-    class _Snapshot:
+    class Snapshot:
         seq = 1
         cp_epoch = "e"
-        workers = [_entry(), _entry("http://worker-b:8102")]
+        workers = [entry(), entry("http://worker-b:8102")]
 
-    view.apply(_Snapshot())
+    view.apply(Snapshot())
     first_picks = {
         index: WorkerSelector("round_robin", rr_offset=index)
         .select(view.workers(), required_capabilities=set())
@@ -886,29 +888,29 @@ def test_dp_relays_sse_byte_identically(tmp_path: Path) -> None:
         b"data: [DONE]\n\n",
     ]
 
-    class _EventStream(httpx.AsyncByteStream):
+    class EventStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             for chunk in chunks:
                 yield chunk
 
-    class _SSEUpstream(_Recorder):
+    class SSEUpstream(Recorder):
         def handler(self, request: httpx.Request) -> httpx.Response:
             self.requests.append((request.url.path, request.content))
             if request.url.path == "/v1/chat/completions":
                 return httpx.Response(
                     200,
-                    stream=_EventStream(),
+                    stream=EventStream(),
                     headers={"content-type": "text/event-stream"},
                     request=request,
                 )
             return httpx.Response(200, json={"ok": True})
 
-    upstream = _SSEUpstream()
-    app, snapshot_path = _dp_app(tmp_path, upstream)
+    upstream = SSEUpstream()
+    app, snapshot_path = dp_app(tmp_path, upstream)
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
         with client.stream(
             "POST",
             "/v1/chat/completions",
@@ -925,21 +927,21 @@ def test_incarnation_change_replaces_the_worker_object() -> None:
     # flight request holding the old one cannot misattribute a late failure (ABA)
     view = DataPlaneWorkerView()
 
-    class _Snap:
+    class Snap:
         seq = 1
         cp_epoch = "e"
-        workers = [_entry(incarnation="inc-A")]
+        workers = [entry(incarnation="inc-A")]
 
-    view.apply(_Snap())
+    view.apply(Snap())
     old_obj = view.workers()[0]
     assert old_obj.incarnation == "inc-A"
 
-    class _Snap2:
+    class Snap2:
         seq = 2
         cp_epoch = "e"
-        workers = [_entry(incarnation="inc-B")]
+        workers = [entry(incarnation="inc-B")]
 
-    view.apply(_Snap2())
+    view.apply(Snap2())
     new_obj = view.workers()[0]
     assert new_obj is not old_obj  # replaced, not mutated in place
     assert new_obj.incarnation == "inc-B"
@@ -949,22 +951,22 @@ def test_incarnation_change_replaces_the_worker_object() -> None:
 def test_incarnation_unchanged_preserves_the_worker_object_and_counters() -> None:
     view = DataPlaneWorkerView()
 
-    class _Snap:
+    class Snap:
         seq = 1
         cp_epoch = "e"
-        workers = [_entry(incarnation="inc-A")]
+        workers = [entry(incarnation="inc-A")]
 
-    view.apply(_Snap())
+    view.apply(Snap())
     obj = view.workers()[0]
     obj.increment_active()
     obj.record_routed_request(status_code=200)
 
-    class _Snap2:
+    class Snap2:
         seq = 2
         cp_epoch = "e"
-        workers = [_entry(incarnation="inc-A", state="unhealthy")]
+        workers = [entry(incarnation="inc-A", state="unhealthy")]
 
-    view.apply(_Snap2())
+    view.apply(Snap2())
     assert view.workers()[0] is obj  # same incarnation: same object
     assert obj.active_requests == 1
     assert obj.routed_requests == 1
@@ -975,15 +977,15 @@ def test_dp_does_not_report_non_gateway_failures_to_the_cp(tmp_path: Path) -> No
     # failure, not an eviction signal, so it must not fire a worker_failure report
     import time as _time
 
-    upstream = _Recorder(status_for={"/generate": 503})
-    internal = _Recorder()
-    app, snapshot_path = _dp_app(
+    upstream = Recorder(status_for={"/generate": 503})
+    internal = Recorder()
+    app, snapshot_path = dp_app(
         tmp_path, upstream, internal=internal, failure_threshold=3
     )
     writer = SnapshotWriter(snapshot_path, cp_epoch="e")
     with TestClient(app) as client:
-        _snapshot(writer, _entry())
-        _wait_for(lambda: client.get("/ready").status_code == 200)
+        snapshot(writer, entry())
+        wait_for(lambda: client.get("/ready").status_code == 200)
         assert client.post("/generate", json={}).status_code == 503
         assert client.post("/generate", json={}).status_code == 503
         _time.sleep(0.3)  # let any (erroneous) report task run
@@ -998,25 +1000,25 @@ def test_control_traffic_survives_a_saturated_forwarding_pool(tmp_path: Path) ->
     # inside the liveness window and falsely degrade this DP.
     control_paths: list[str] = []
 
-    async def _forward_handler(request: httpx.Request) -> httpx.Response:
+    async def forward_handler(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(1.5)
         return httpx.Response(200, json={"status": "ok"})
 
-    def _control_handler(request: httpx.Request) -> httpx.Response:
+    def control_handler(request: httpx.Request) -> httpx.Response:
         control_paths.append(request.url.path)
         return httpx.Response(200, json={"status": "ok"})
 
     app = create_data_plane_app(
-        _config(),
+        make_config(),
         snapshot_path=str(tmp_path / "w.json"),
         dp_index=0,
         generation=1,
-        client=httpx.AsyncClient(transport=httpx.MockTransport(_Recorder().handler)),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(Recorder().handler)),
         internal_client=httpx.AsyncClient(
-            transport=httpx.MockTransport(_control_handler), base_url="http://cp"
+            transport=httpx.MockTransport(control_handler), base_url="http://cp"
         ),
         forward_client=httpx.AsyncClient(
-            transport=httpx.MockTransport(_forward_handler),
+            transport=httpx.MockTransport(forward_handler),
             base_url="http://cp",
             limits=httpx.Limits(max_connections=1),
         ),
@@ -1029,7 +1031,7 @@ def test_control_traffic_survives_a_saturated_forwarding_pool(tmp_path: Path) ->
         )
         occupy.start()
         try:
-            beats = _wait_for(
+            beats = wait_for(
                 lambda: (
                     [p for p in control_paths if p == "/internal/heartbeat"] or None
                 )
@@ -1044,18 +1046,18 @@ def test_forwarded_admin_requests_are_bounded_in_concurrency(tmp_path: Path) -> 
     # unbounded number of them must not each hold a buffered body.
     from sglang_omni_router.python.data_plane import _MAX_CONCURRENT_FORWARDS
 
-    async def _cp_handler(request: httpx.Request) -> httpx.Response:
+    async def cp_handler(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(1.0)
         return httpx.Response(200, json={"status": "ok"})
 
     app = create_data_plane_app(
-        _config(),
+        make_config(),
         snapshot_path=str(tmp_path / "w.json"),
         dp_index=0,
         generation=1,
-        client=httpx.AsyncClient(transport=httpx.MockTransport(_Recorder().handler)),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(Recorder().handler)),
         internal_client=httpx.AsyncClient(
-            transport=httpx.MockTransport(_cp_handler), base_url="http://cp"
+            transport=httpx.MockTransport(cp_handler), base_url="http://cp"
         ),
         heartbeat_interval_secs=600,
         counter_flush_interval_secs=600,

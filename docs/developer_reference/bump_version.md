@@ -35,19 +35,34 @@ The other places a version lives:
 |---|---|
 | `docker/Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's cu13 manifest), the FlashInfer reinstall version, the JIT cache path `/root/.cache/flashinfer/<version>`, `FLASHINFER_CACHE_IMAGE` |
 | `.github/workflows/*.yaml` | Every `image:` line, pinned by digest |
-| `docs/get_started/installation.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
+| `docker/cpu.Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's `-xeon` manifest) |
+| `docker/xpu.Dockerfile` | `SGLANG_XPU_BRANCH` (the tag); SGLang's XPU manifest pins the `sglang-kernel-xpu` wheel |
+| `pyproject_cpu.toml`, `pyproject_xpu.toml`, `scripts/cpu/install_cpu.sh`, `scripts/xpu/install_xpu.sh` | The verified SGLang tag; the provider pyprojects cannot pin `sglang` because every wheel pulls CUDA torch |
+| `docs/get_started/installation.md`, `docs/get_started/installation_cpu.md`, `docs/get_started/installation_xpu.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
 | Comments in `sglang_omni/` | Never name a version; state the invariant the code relies on so the text survives the next bump |
 
 Search the tree for the old versions and the old image digest; the table is
 what past bumps touched.
 
-The ROCm, XPU, NPU and MUSA stacks (`docker/rocm.Dockerfile`,
-`docker/xpu.Dockerfile`, `pyproject_rocm.toml`, `pyproject_xpu.toml`,
-`docs/get_started/installation_xpu.md`) pin their own SGLang tag and base
-images. No project CI builds them, so a bump PR leaves them alone, says so in
-its description, and hands the provider owners the new tag, the matching
-provider image digest if one exists, and any platform dispatch change made in
-`sglang_omni/platforms/`.
+The Intel CPU and XPU stacks pin their own SGLang tag and base images, and
+their CI workflows build `docker/cpu.Dockerfile` and `docker/xpu.Dockerfile`
+on every PR that touches `sglang_omni/`. `sglang_omni/platforms/` imports the
+pinned release's modules at import time, so those workflows fail on a bump
+until the two stacks move with it: the `-xeon` image digest, the XPU tag, and
+the verified tag in the provider pyprojects, install scripts and install docs.
+The XPU image builds SGLang from source, so diff upstream's
+`python/pyproject_xpu.toml` and `docker/xpu.Dockerfile` between the tags for
+new build requirements, and diff `python/pyproject_cpu.toml` for its own
+torch and torchvision pins, which move independently of the CUDA manifest:
+one release moved the SYCL kernel from a git
+requirement to a pinned wheel and added `setuptools-rust` to the build
+requirements, which the image avoids by building without isolation.
+
+The ROCm, NPU and MUSA stacks (`docker/rocm.Dockerfile`, `pyproject_rocm.toml`)
+pin their own SGLang tag and base images. No project CI builds them, so a bump
+PR leaves them alone, says so in its description, and hands the provider owners
+the new tag, the matching provider image digest if one exists, and any platform
+dispatch change made in `sglang_omni/platforms/`.
 
 ## Where Omni depends on SGLang
 
@@ -70,13 +85,41 @@ back to SDPA without a word.
 `Scheduler` methods it does not override through `__getattr__` and runs them
 with itself as `self`, and builds the scheduler components those methods
 expect (`SchedulerDPAttnAdapter`, `SchedulerLoadInquirer`, the logprob
-processor, `ParallelState`, `NewTokenRatioTracker`) with upstream's own
+processor, `NewTokenRatioTracker`) with upstream's own
 kwargs; `SGLModelRunner` subclasses `ModelRunner`. Diff the body of every
 method Omni overrides and every borrowed method it calls, and look for
 `self.<attr>` reads the new upstream bodies make that `OmniScheduler.__init__`
-never assigns. When a constructor gains or loses fields, pass the new shape;
+never assigns. A decorator on a borrowed method reads `self` too: one release
+wrapped `get_next_batch_to_run` in a stage timer whose first statement read an
+attribute only upstream's `__init__` set. Upstream also moves work between
+methods: request timeout aborts left `get_next_batch_to_run` for an intake
+method Omni's event loops never call, which disables them without an error.
+When a constructor gains or loses fields, pass the new shape;
 a helper that filters kwargs by signature or branches on field layout keeps
 two versions alive.
+
+**The boot sequence.** `ModelWorker` and the MLX worker run upstream's worker
+boot themselves: publish the resolved config together with the process
+placement, run the parallel runtime phase, run the layer runtime phase, then
+build the runner. The order and the arguments of each step are upstream's, and
+a step that upstream adds in front of the runner is not an import change. One
+release moved the ranks from a record passed to the runner into the published
+context, and every rank read made before the placement was published raised.
+The image encoders that build model parallel groups outside a worker publish
+their own placement first, and follow the same contract.
+
+**Decoder layers.** The Qwen3-Omni talker, the Ming-Omni thinker and the
+Ming-TTS model define their own decoder layers on upstream's layer boundary
+API (`sglang_omni/vendor/sglang/layers.py` re-exports it). The Qwen3-Omni
+talker's layer lives in `qwen3_omni/components/thinker_model.py`; the
+Qwen3-Omni thinker itself runs upstream's `Qwen3MoeLLMModel`, and Qwen3-TTS
+keeps its own decoder layer with an explicit residual and reuses only the
+attention class. A layer written against the boundary API is a copy of
+upstream's layer forward with Omni's hooks in it. Diff upstream's layer for
+the same architecture between the tags and mirror the change in order: which
+boundary prepares, which finishes, what the exit scope publishes for the MoE
+reduction. Outputs of a boundary are modified in place or through its
+accessors; the boundary checks the stream identity.
 
 **The vendor layer.** `sglang_omni/vendor/sglang/layers.py` patches
 `RMSNorm.forward_cuda` and `models.py` patches `apply_qk_norm`; the module
@@ -85,12 +128,15 @@ removing it. Check that the wrapped upstream body still has the shape the
 patch assumes (a dispatch rewrite upstream can route around a patched method
 without an error) and that `tests/unit_test/vendor/` still pins it.
 
-**`ServerArgs` mutation.** Omni changes engine configuration after
-`build_sglang_server_args` through one seam,
+**`ServerArgs` mutation.** `build_sglang_server_args` constructs the record
+and resolves it once, so every reader between the builder and publish sees
+what resolution decided rather than the raw input. Omni changes engine
+configuration after the builder through one seam,
 `sglang_omni/vendor/sglang/server_args.py::override_server_args`. Upstream
-decides what a mutation means at each lifecycle phase; today a record that
-is not yet published resolves in place, and a published record is read-only
-with its values living on the runtime-context bags. Every call site has a
+decides what a mutation means at each lifecycle phase; today a resolved record
+that is not yet published takes the change as a declaration, and a
+published record is read-only with its values living on the runtime-context
+bags. Every call site has a
 phase, and every later reader has to read from where the current release
 stores the value. The bump that introduced the read-only record turned
 several write-then-read-back sites into hard errors.
@@ -115,7 +161,9 @@ order), mirror it in every copy and pin the boundary with a test per copy.
 test-local fakes model resolved upstream shapes. A test that patches an
 upstream name fails loudly when the name is gone; a fake that still accepts
 a field upstream removed does not, so the test passes and the code does
-not.
+not. A test that builds an upstream parallel layer under
+`override_server_args()` gets a context with no process placement, so it
+also overrides the ranks on the parallel context.
 
 **Defensive access.** `getattr`, `hasattr` and `except AttributeError`
 against state the pinned release defines statically are a second version
@@ -172,19 +220,42 @@ that have cost time:
   pretrained model the arithmetic that interprets its weights is part of
   the contract; the overlay preserves the old sequence and is verified on
   intermediates, not only on the final score.
-- Caches. New Inductor, Triton and FlashInfer versions invalidate every
-  compiled artifact once, so the first pass in a fresh image measures
-  compilation, not serving.
+- Caches. New Inductor, Triton, FlashInfer and DeepGEMM versions invalidate
+  every compiled artifact once, so the first pass in a fresh image measures
+  compilation, not serving. SGLang builds DeepGEMM, Triton and its own JIT
+  kernels under `SGLANG_CACHE_DIR`; the CI setup action points it at a
+  directory shared across PRs on the persistent CI mount, so only the first
+  job after a bump pays the build.
 
 ## The CI image
 
 GPU CI runs inside `hongccc/sglang-omni`, pinned by digest in every
-workflow. The CI virtualenv is built on the image's Python with system site
-packages, so torch, FlashInfer and SGLang come from the image and only what
+workflow. The CI virtualenv uses Python 3.12 with system site-packages and
+loads `/opt/sglang/lib/python3.12/site-packages` with `site.addsitedir`, including
+the upstream SGLang editable-install `.pth` file. Torch, FlashInfer and SGLang
+come from the image and only what
 the image lacks is installed on top; `verify_omni_installed_pins.py` then
 checks every exact pin in `pyproject.toml` against what is installed.
 
-A bump therefore ships a new image: build `docker/Dockerfile` on the
+The image also installs Qwen-TTS without its conflicting dependencies, system
+SoX, the Descript DAC packages, and the Audar/CosyVoice extras. Apply the
+project's dependency overrides when resolving these packages. CosyVoice itself
+has no package release, so the CI venv setup clones it at the commit the
+Fun-CosyVoice3 cookbook pins, with its Matcha-TTS submodule, and adds both to
+the venv through a `.pth` file. The CI import gate checks Qwen-TTS after the
+compatibility patch, DAC, NeuCodec, CosyVoice and Matcha-TTS imports, and the
+SoX executable. It imports llama.cpp before Torch to catch system NCCL
+conflicts; the image prioritizes Torch's NCCL library. A package listing alone
+does not prove a usable runtime.
+
+Reinstalling even the same FlashInfer wheel refreshes bundled header mtimes.
+The Dockerfile preserves the cache donor's mtimes only for byte-identical
+FlashInfer sources; changed sources remain newer and invalidate their objects.
+After rebuilding, run Ninja with `-n -d explain` in the copied `cached_ops`
+directories before GPU validation to catch unintended object recompilation.
+
+Whether a bump ships a new image follows from the pin diff. When torch, CUDA,
+Python or FlashInfer move, it does: build `docker/Dockerfile` on the
 `lmsysorg/sglang` digest for the new tag, populate the FlashInfer JIT cache
 on a GPU for the architectures CI runs on (Docker builds have none, so the
 Dockerfile copies the cache from a previous image), push it, and put the new
@@ -192,6 +263,15 @@ digest in the Dockerfile and the workflows. CI on the branch means nothing
 until the workflows point at the new image: on the old one the setup step
 installs the new torch into the virtualenv and nothing after that reflects
 the shipped stack.
+
+When only SGLang and the wheels it pins move (`sglang-kernel`,
+`sgl-deep-gemm`), the image stays. The setup step installs those pins into the
+virtualenv, whose site-packages precede the image's, and they are the same
+PyPI wheels upstream's CUDA image installs. The FlashInfer cache in the image
+is keyed by a version that did not change. `SGLANG_IMAGE` in
+`docker/Dockerfile` still moves to the new tag's digest so the next rebuild
+starts from the right base; the workflow digests and
+`FLASHINFER_CACHE_IMAGE` do not.
 
 ## Validation
 
@@ -243,9 +323,13 @@ commits and image digests, sample counts and the profiler attribution for
 any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
-GPU CI needs the `run-ci` label plus one selector per family (`run-higgs`,
-`run-moss`, `run-qwen3-tts`; `run-fun-asr`, `run-qwen3-asr`,
-`run-whisper-asr`), applied with `/tag-and-rerun-ci <selectors>`. The
+GPU CI needs the `run-ci` label. Model selectors choose presets within each
+family: TTS (`run-higgs`, `run-moss`, `run-qwen3-tts`, `run-cosyvoice3`,
+`run-qwen3-tts-custom-voice`), ASR (`run-fun-asr`, `run-qwen3-asr`,
+`run-whisper-asr`), and Omni (`run-qwen3-omni`, `run-minicpmo`). Apply them
+with `/tag-and-rerun-ci <selectors>`, for example
+`/tag-and-rerun-ci moss fun-asr minicpmo`. The Omni model defaults to
+Qwen3-Omni. The
 selectors within a family are exclusive, so each preset gets its own run on
 the new image before merge.
 

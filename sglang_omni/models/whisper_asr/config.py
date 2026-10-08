@@ -64,7 +64,6 @@ class WhisperASRPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_sglang_whisper_asr_executor",
             engine=EngineArgs(max_running_requests=64),
             factory=WhisperASRFactoryArgs(
-                device="cuda:0",
                 # The encoder CUDA-graph replay is a documented tuning knob for
                 # this pipeline; disable it when profiling eager encoder
                 # execution.

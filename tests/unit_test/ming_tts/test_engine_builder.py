@@ -10,7 +10,7 @@ from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
 from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
 
 
-def _adjust_overrides(key: str, value: Any) -> dict[str, Any]:
+def adjust_overrides(key: str, value: Any) -> dict[str, Any]:
     overrides: dict[str, Any] = {
         "disable_overlap_schedule": True,
         "disable_radix_cache": True,
@@ -22,15 +22,15 @@ def _adjust_overrides(key: str, value: Any) -> dict[str, Any]:
 
 def test_ming_tts_abort_callback_resets_runner_state() -> None:
     runner = object.__new__(MingTTSModelRunner)
-    runner._request_states = {"req-ming-tts": object()}
+    runner.request_states = {"req-ming-tts": object()}
     builder = object.__new__(MingTtsEngineBuilder)
-    builder._model_runner = runner
+    builder.model_runner = runner
 
     abort_callback = builder.make_abort_callback()
     abort_callback("req-ming-tts")
     abort_callback("req-ming-tts")
 
-    assert runner._request_states == {}
+    assert runner.request_states == {}
 
 
 @pytest.mark.parametrize(
@@ -44,7 +44,7 @@ def test_ming_tts_abort_callback_resets_runner_state() -> None:
 def test_ming_tts_accepts_affirmative_unsupported_feature_flags(
     key: str, value: Any
 ) -> None:
-    overrides = _adjust_overrides(key, value)
+    overrides = adjust_overrides(key, value)
 
     assert overrides[key] is True
 
@@ -64,12 +64,12 @@ def test_ming_tts_rejects_enabled_unsupported_feature_flags(
     key: str, message: str, value: Any
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        _adjust_overrides(key, value)
+        adjust_overrides(key, value)
 
 
 @pytest.mark.parametrize("value", [False, 0, "false", "no", "", None])
 def test_ming_tts_accepts_disabled_torch_compile(value: Any) -> None:
-    overrides = _adjust_overrides("enable_torch_compile", value)
+    overrides = adjust_overrides("enable_torch_compile", value)
 
     assert overrides["enable_torch_compile"] is value
 
@@ -77,4 +77,4 @@ def test_ming_tts_accepts_disabled_torch_compile(value: Any) -> None:
 @pytest.mark.parametrize("value", [True, 1, "1", "true", " yes ", "on"])
 def test_ming_tts_rejects_enabled_torch_compile(value: Any) -> None:
     with pytest.raises(ValueError, match="torch.compile is not currently supported"):
-        _adjust_overrides("enable_torch_compile", value)
+        adjust_overrides("enable_torch_compile", value)

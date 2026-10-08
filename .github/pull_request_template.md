@@ -14,11 +14,11 @@
 
 ## Accuracy Test
 
-<!-- If this PR affects model-side code (e.g., kernels, model architecture), please provide accuracy test results. Ref: https://docs.sglang.ai/references/accuracy_evaluation.html -->
+<!-- If this PR affects model-side code (e.g., kernels, model architecture), please provide accuracy test results. Ref: https://docs.sglang.io/docs/developer_guide/evaluating_new_models -->
 
 ## Benchmark & Profiling
 
-<!-- If this PR is expected to impact performance, please provide benchmark and profiling results. Ref: https://docs.sglang.ai/references/benchmark_and_profiling.html -->
+<!-- If this PR is expected to impact performance, please provide benchmark and profiling results. Ref: https://docs.sglang.io/docs/developer_guide/benchmark_and_profiling -->
 
 ## Checklist
 
@@ -33,9 +33,11 @@
 CI runs on self-hosted GPU runners and requires a maintainer to add the
 `run-ci` label. Once labeled, every subsequent push re-triggers CI as
 long as the label remains. Use `/tag-and-rerun-ci higgs` or
-`/tag-and-rerun-ci moss` or `/tag-and-rerun-ci qwen3-tts` to select a TTS CI
-model, and
+`/tag-and-rerun-ci moss` or `/tag-and-rerun-ci qwen3-tts` or
+`/tag-and-rerun-ci cosyvoice3` to select a TTS CI model, and
 `/tag-and-rerun-ci fun-asr`, `/tag-and-rerun-ci qwen3-asr` or
-`/tag-and-rerun-ci whisper-asr` to select an ASR CI model. One selector from
-each family can be combined, for example `/tag-and-rerun-ci moss fun-asr`.
+`/tag-and-rerun-ci whisper-asr` to select an ASR CI model. Use
+`/tag-and-rerun-ci qwen3-omni` or `/tag-and-rerun-ci minicpmo` to select
+the Omni CI model (Qwen3-Omni by default). One selector from each family
+can be combined, for example `/tag-and-rerun-ci moss fun-asr minicpmo`.
 Draft PRs are skipped even if labeled.

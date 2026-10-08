@@ -37,6 +37,55 @@ stages:
 
 The graph is captured after SGLang's generation graphs. With pre-LM off, raise `max_prefill_tokens` before configuring larger LM-side buckets (12/16). Each request uses the smallest captured bucket that fits its batch. Requests larger than every captured bucket, with a different feature shape, or without a successful capture run eagerly. Startup and first-replay logs identify the captured and executed buckets.
 
+## Breakable Prefill CUDA Graph
+
+The decoder body uses SGLang's breakable prefill CUDA Graph backend by default.
+Whisper encoder states and cross-attention K/V are prepared outside the captured
+decoder body. The default capture ladder stops at the largest aggregate decoder
+token count atomic admission can form. The cap considers every reachable request
+count because a batch of more, shorter prompts can contain more decoder tokens
+than a batch sized from the longest possible request. With the default 6,144
+budget, 1,500 encoder placeholders, and at most 232 decoder tokens per request,
+the cap is 696. Startup logs report the capture cost and confirm the active
+buckets with `prefill CUDA graphs attested`.
+
+The current benchmark results were collected with
+`cuda_graph_max_bs_prefill=256`. To reproduce that capture profile and limit
+startup time and GPU memory, set the prefill graph cap explicitly:
+
+```yaml
+stages:
+  asr:
+    engine:
+      cuda_graph_max_bs_prefill: 256
+```
+
+Whisper runs three independently configured graph planes, each bucketed on its
+own axis; cross-attention K/V is written once per request between the first
+two and only read afterwards:
+
+| plane | bucket axis | config |
+|---|---|---|
+| encoder forward | batch size | `enable_encoder_cuda_graph`, encoder graph buckets |
+| decoder prefill body | aggregate prefill tokens | `cuda_graph_backend_prefill`, `cuda_graph_bs_prefill` |
+| decoder decode | batch size | `cuda_graph_bs`, `cuda_graph_max_bs` |
+
+Disabling one plane leaves the other two active.
+
+To disable only the prefill graph while keeping decode and encoder CUDA Graphs
+enabled, override the ASR stage:
+
+```yaml
+config_cls: WhisperASRPipelineConfig
+name: whisper
+model_path: openai/whisper-large-v3
+
+stages:
+  asr:
+    engine:
+      cuda_graph_backend_prefill: disabled
+```
+
 ## Prefill Coalescing
 
 Whisper builds requests with eight worker threads by default, matching other pre-LM ASR pipelines. The coalescing gate targets two requests, while the default 6,144-token atomic budget lets the LM scheduler admit up to four 1,504-token Whisper requests together. A partial batch waits for at most 6 ms only while another request build is pending; a single request and a partial batch with no remaining build work are released immediately.
@@ -159,7 +208,18 @@ YAML keys:
 |---|---|---|
 | `--audio_chunking.max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR you can only lower it: 30s is the hard edge of the model's mel window. |
 | `--audio_chunking.max_concurrent_chunks` | `8` | Per-request concurrency cap used while chunks are independent. When previous-text conditioning is enabled, one request's Whisper chunks decode in order while chunks from different requests can still batch together. |
-| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
+| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on one upload; you get HTTP 400 above it. It bounds a single decoded waveform, not the total across uploads; that is the next knob's job. |
+| `--audio_chunking.max_concurrent_long_audio_requests` | `max_running_requests // (2 × max_concurrent_chunks)`, at least 1; `4` with the stock defaults | How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated. The slot is taken before the upload is decoded and returned when its chunks are done. |
+
+The last knob is the aggregate guard: decoded waveforms held at once are at
+most `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4`
+bytes (decoding itself has transient peaks above that), and long audio holds
+at most
+`max_concurrent_long_audio_requests × max_concurrent_chunks` engine slots at
+once. The default keeps that product at half of
+`--asr.engine.max_running_requests`; an explicit value whose product reaches
+`max_running_requests` logs a warning at startup, since short requests would
+then queue behind long audio whenever it is saturated.
 
 The model properties are ClassVars on `WhisperASRPipelineConfig`; no
 configuration path reaches them:

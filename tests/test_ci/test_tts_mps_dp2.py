@@ -47,28 +47,31 @@ from tests.test_ci.tts_mps_ci_config import (
     check_mps_performance,
 )
 from tests.test_model.omni_router_utils import (
-    _find_available_port_range,
+    CiRouterTopology,
+    ManagedRouterHandle,
+    assert_router_healthy,
     assert_workers_served_requests_since,
+    find_available_port_range,
     launch_managed_router,
     router_get_json,
 )
 from tests.test_model.test_tts_ci import (
-    _PRESET,
-    _THRESHOLDS,
+    PRESET,
     SEEDTTS_DATASET_LABEL,
     SEEDTTS_EN_FULLSET_SAMPLES,
+    THRESHOLDS,
     TTS_MODEL_PATH,
     TTS_SIMILARITY_MAX_SAMPLES,
     TTS_WORKER_EXTRA_ARGS,
-    _assert_full_seedtts_en_speed_results,
-    _assert_full_seedtts_en_wer_results,
-    _assert_similarity_results,
-    _assert_tts_audio_result_integrity,
-    _assert_utmos_results,
-    _run_benchmark,
-    _run_similarity,
-    _run_utmos,
-    _run_wer_transcribe,
+    assert_full_seedtts_en_speed_results,
+    assert_full_seedtts_en_wer_results,
+    assert_similarity_results,
+    assert_tts_audio_result_integrity,
+    assert_utmos_results,
+    run_benchmark,
+    run_similarity,
+    run_utmos,
+    run_wer_transcribe,
 )
 from tests.utils import (
     QWEN3_ASR_ROUTER_STARTUP_TIMEOUT,
@@ -116,18 +119,18 @@ DEFAULT_CONFIGS = {
 pytestmark = [pytest.mark.benchmark, pytest.mark.accelerator]
 
 
-def _selected_model() -> str:
+def selected_model() -> str:
     model = os.environ.get("TTS_CI_MODEL", "higgs").strip() or "higgs"
     if model not in DEFAULT_CONFIGS:
         raise ValueError(f"unsupported TTS MPS model {model!r}")
     return model
 
 
-def _env_or(name: str, fallback: str) -> str:
+def env_or(name: str, fallback: str) -> str:
     return os.environ.get(name, "").strip() or fallback
 
 
-def _physical_gpu_id() -> int:
+def physical_gpu_id() -> int:
     """Resolve the physical GPU index the launcher should bind.
 
     The launcher resolves a GPU UUID through nvidia-smi, which enumerates
@@ -143,7 +146,7 @@ def _physical_gpu_id() -> int:
     return int(first) if first.isdigit() else 0
 
 
-def _resolve_roots(
+def resolve_roots(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> tuple[Path, Path]:
     # Note: (Jiaxin Deng) the dedicated CI job supplies these roots so artifacts
@@ -169,13 +172,13 @@ def _resolve_roots(
     return output_root, state_root
 
 
-def _ensure_summary(model: str, output_root: Path, run_id: str) -> Path:
+def ensure_summary(model: str, output_root: Path, run_id: str) -> Path:
     path = output_root / "tts_mps_summary.json"
     if not path.exists():
         atomic_write_json(
             path,
             new_summary(
-                exact_sha=_env_or(EXACT_SHA_ENV, "local"),
+                exact_sha=env_or(EXACT_SHA_ENV, "local"),
                 run_id=run_id,
                 run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT", "local"),
                 selected_model=model,
@@ -184,16 +187,16 @@ def _ensure_summary(model: str, output_root: Path, run_id: str) -> Path:
     return path
 
 
-def _launch_spec(
+def launch_spec(
     model: str,
     output_root: Path,
     state_root: Path,
     run_id: str,
 ) -> MpsLaunchSpec:
-    config = Path(_env_or(CONFIG_ENV, DEFAULT_CONFIGS[model]))
+    config = Path(env_or(CONFIG_ENV, DEFAULT_CONFIGS[model]))
     if not config.is_absolute():
         config = PROJECT_ROOT / config
-    gpu_id = _physical_gpu_id()
+    gpu_id = physical_gpu_id()
     return MpsLaunchSpec(
         repository_root=PROJECT_ROOT,
         output_dir=output_root,
@@ -204,17 +207,17 @@ def _launch_spec(
         base_port=(
             int(os.environ[BASE_PORT_ENV])
             if os.environ.get(BASE_PORT_ENV)
-            else _find_available_port_range(2)
+            else find_available_port_range(2)
         ),
         core_blocks=derive_core_blocks(gpu_id),
         python_bin=sys.executable,
         serve_extra_args=(
-            f"{TTS_WORKER_EXTRA_ARGS} {_PRESET.worker_extra_args}".strip()
+            f"{TTS_WORKER_EXTRA_ARGS} {PRESET.worker_extra_args}".strip()
         ),
     )
 
 
-def _write_validation(
+def write_validation(
     output_root: Path,
     *,
     valid: bool,
@@ -231,7 +234,7 @@ def _write_validation(
     )
 
 
-def _write_activity(path: Path, events: list[dict]) -> None:
+def write_activity(path: Path, events: list[dict]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         for event in events:
             stream.write(json.dumps(event, sort_keys=True))
@@ -239,7 +242,7 @@ def _write_activity(path: Path, events: list[dict]) -> None:
 
 
 @contextmanager
-def _mps_replicas(
+def mps_replicas(
     spec: MpsLaunchSpec,
     summary_path: Path,
     baseline_gpu_clients: list[dict],
@@ -287,18 +290,18 @@ def _mps_replicas(
         wait_for_gpu_memory_release()
 
 
-def _run_canonical_generation(
+def run_canonical_generation(
     *,
-    router_port: int,
+    router: ManagedRouterHandle,
     model: str,
     dataset_repo: str,
     canonical_dir: Path,
     output_root: Path,
     summary_path: Path,
 ) -> tuple[dict, MetricCheckCollector]:
-    before_workers = router_get_json(router_port, "/workers")
-    speed_results = _run_benchmark(
-        router_port, dataset_repo, str(canonical_dir), concurrency=CONCURRENCY
+    before_workers = router_get_json(router.port, "/diagnostics")
+    speed_results = run_benchmark(
+        router.port, dataset_repo, str(canonical_dir), concurrency=CONCURRENCY
     )
     performance = check_mps_performance(
         model=model, concurrency=CONCURRENCY, summary=speed_results["summary"]
@@ -311,17 +314,17 @@ def _run_canonical_generation(
         performance["status"] == "pass",
         "MPS performance references: " + "; ".join(performance["failed_checks"]),
     )
-    _assert_full_seedtts_en_speed_results(
+    assert_full_seedtts_en_speed_results(
         speed_results, label="TTS MPS non-stream c16", collector=checks
     )
-    _assert_tts_audio_result_integrity(
+    assert_tts_audio_result_integrity(
         speed_results["summary"],
         speed_results["per_request"],
         label="TTS MPS non-stream c16",
         collector=checks,
     )
-    assert_workers_served_requests_since(
-        port=router_port,
+    router_delta = assert_workers_served_requests_since(
+        handle=router,
         before_snapshot=before_workers,
         label="TTS MPS canonical generation",
         min_total_requests=SEEDTTS_EN_FULLSET_SAMPLES,
@@ -331,11 +334,12 @@ def _run_canonical_generation(
         runtime={
             "performance": performance,
             "router_workers_before": before_workers,
+            "router_worker_delta": router_delta,
         },
     )
     # The benchmark produced a complete result set, so the observation stands
     # even when a reference assertion fails; calibration needs that distinction.
-    _write_validation(
+    write_validation(
         output_root,
         valid=True,
         threshold_assertion_failed=bool(checks.failures),
@@ -344,7 +348,7 @@ def _run_canonical_generation(
     return speed_results, checks
 
 
-def _run_overlap_canary(
+def run_overlap_canary(
     *,
     snapshot: Any,
     spec: MpsLaunchSpec,
@@ -356,7 +360,7 @@ def _run_overlap_canary(
     start_request_profiles(snapshot, spec.run_id)
     started = time.perf_counter()
     try:
-        canary_results = _run_benchmark(
+        canary_results = run_benchmark(
             router_port,
             dataset_repo,
             str(canary_dir),
@@ -370,7 +374,7 @@ def _run_overlap_canary(
         canary_results["summary"], expected_requests=CANARY_REQUESTS
     )
     events = read_model_path_activity(snapshot, min_terminal_events=CANARY_REQUESTS)
-    _write_activity(output_root / "replica_activity.jsonl", events)
+    write_activity(output_root / "replica_activity.jsonl", events)
     overlap = build_overlap_verdict(
         events,
         expected_run_id=spec.run_id,
@@ -382,7 +386,7 @@ def _run_overlap_canary(
     return overlap
 
 
-def _evaluate_quality(
+def evaluate_quality(
     *,
     model: str,
     tmp_path_factory: pytest.TempPathFactory,
@@ -396,10 +400,11 @@ def _evaluate_quality(
         model_path=QWEN3_ASR_WER_MODEL_PATH,
         model_name=QWEN3_ASR_WER_MODEL_PATH,
         worker_extra_args="",
+        router_topology=CiRouterTopology.ASR,
         wait_timeout=QWEN3_ASR_ROUTER_STARTUP_TIMEOUT,
         log_prefix="tts_mps_asr_router_logs",
     ) as asr_router:
-        wer_results = _run_wer_transcribe(
+        wer_results = run_wer_transcribe(
             dataset_repo,
             str(canonical_dir),
             asr_router_port=asr_router.port,
@@ -414,18 +419,18 @@ def _evaluate_quality(
             "duration_s": time.perf_counter() - evaluator_started,
         },
     )
-    similarity_results = _run_similarity(
+    similarity_results = run_similarity(
         dataset_repo,
         str(canonical_dir),
         os.environ.get("SEEDTTS_SIM_CHECKPOINT"),
         max_samples=TTS_SIMILARITY_MAX_SAMPLES,
     )
-    utmos_results = _run_utmos(str(canonical_dir))
+    utmos_results = run_utmos(str(canonical_dir))
     quality = MetricCheckCollector("TTS MPS quality")
-    _assert_full_seedtts_en_wer_results(
+    assert_full_seedtts_en_wer_results(
         wer_results, label="TTS MPS non-stream c16", collector=quality
     )
-    assert_wer_results(wer_results, _THRESHOLDS.wer_corpus, collector=quality)
+    assert_wer_results(wer_results, THRESHOLDS.wer_corpus, collector=quality)
     # Note: (Jiaxin Deng) the canonical reference is calibrated under ordinary
     # DP2; under a shared card the spread straddles it, so this stage carries
     # its own worst-of-five baseline rather than borrowing a line it fails
@@ -434,17 +439,15 @@ def _evaluate_quality(
     if similarity_min is None:
         quality.fail(
             "uncalibrated MPS speaker-similarity baseline; run "
-            ".claude/skills/tune-ci-thresholds with 5 repeats"
+            "calibrate-h100-ci from sglang-omni-calibration with 5 repeats"
         )
     else:
-        _assert_similarity_results(
-            similarity_results, similarity_min, collector=quality
-        )
-    _assert_utmos_results(utmos_results, _THRESHOLDS.utmos_mean_min, collector=quality)
+        assert_similarity_results(similarity_results, similarity_min, collector=quality)
+    assert_utmos_results(utmos_results, THRESHOLDS.utmos_mean_min, collector=quality)
     return wer_results, similarity_results, utmos_results, quality
 
 
-def _run_mps_session(
+def run_mps_session(
     *,
     tmp_path_factory: pytest.TempPathFactory,
     spec: MpsLaunchSpec,
@@ -456,25 +459,26 @@ def _run_mps_session(
     baseline_gpu_clients: list[dict],
 ) -> tuple[dict, dict, MetricCheckCollector]:
     """Generate under two MPS replicas and prove they ran concurrently."""
-    with _mps_replicas(spec, summary_path, baseline_gpu_clients) as snapshot:
+    with mps_replicas(spec, summary_path, baseline_gpu_clients) as snapshot:
         with launch_managed_router(
             tmp_path_factory=tmp_path_factory,
             model_path=TTS_MODEL_PATH,
             model_name=TTS_MODEL_PATH,
             worker_extra_args="",
+            router_topology=CiRouterTopology.TTS,
             external_worker_urls=list(spec.worker_urls),
-            wait_timeout=_PRESET.startup_timeout,
+            wait_timeout=PRESET.startup_timeout,
             log_prefix="tts_mps_router_logs",
         ) as router:
-            speed_results, canonical_checks = _run_canonical_generation(
-                router_port=router.port,
+            speed_results, canonical_checks = run_canonical_generation(
+                router=router,
                 model=model,
                 dataset_repo=dataset_repo,
                 canonical_dir=canonical_dir,
                 output_root=output_root,
                 summary_path=summary_path,
             )
-            overlap = _run_overlap_canary(
+            overlap = run_overlap_canary(
                 snapshot=snapshot,
                 spec=spec,
                 router_port=router.port,
@@ -486,13 +490,13 @@ def _run_mps_session(
                 summary_path,
                 runtime={
                     "overlap": overlap,
-                    "router_workers_after": router_get_json(router.port, "/workers"),
+                    "router_diagnostics": assert_router_healthy(router),
                 },
             )
     return speed_results, overlap, canonical_checks
 
 
-def _record_failure(summary_path: Path, exc: BaseException) -> None:
+def record_failure(summary_path: Path, exc: BaseException) -> None:
     current = json.loads(summary_path.read_text(encoding="utf-8"))
     runtime = current.get("runtime")
     if not isinstance(runtime, dict) or runtime.get("status") not in {"fail", "pass"}:
@@ -500,12 +504,12 @@ def _record_failure(summary_path: Path, exc: BaseException) -> None:
 
 
 def test_tts_mps_non_streaming(tmp_path_factory: pytest.TempPathFactory) -> None:
-    model = _selected_model()
-    output_root, state_root = _resolve_roots(tmp_path_factory)
+    model = selected_model()
+    output_root, state_root = resolve_roots(tmp_path_factory)
     # new_summary() requires a run-<suffix> path component.
-    run_id = _env_or(RUN_ID_ENV, f"run-local-{os.getpid()}")
-    summary_path = _ensure_summary(model, output_root, run_id)
-    spec = _launch_spec(model, output_root, state_root, run_id)
+    run_id = env_or(RUN_ID_ENV, f"run-local-{os.getpid()}")
+    summary_path = ensure_summary(model, output_root, run_id)
+    spec = launch_spec(model, output_root, state_root, run_id)
     dataset_repo = DATASETS["seedtts"]
     download_dataset(dataset_repo, quiet=True)
 
@@ -520,7 +524,7 @@ def test_tts_mps_non_streaming(tmp_path_factory: pytest.TempPathFactory) -> None
         },
     )
     try:
-        speed_results, overlap, canonical_checks = _run_mps_session(
+        speed_results, overlap, canonical_checks = run_mps_session(
             tmp_path_factory=tmp_path_factory,
             spec=spec,
             model=model,
@@ -536,10 +540,10 @@ def test_tts_mps_non_streaming(tmp_path_factory: pytest.TempPathFactory) -> None
             timing={"generation_and_cleanup_s": time.perf_counter() - total_started},
         )
     except BaseException as exc:
-        _record_failure(summary_path, exc)
+        record_failure(summary_path, exc)
         raise
 
-    wer_results, similarity_results, utmos_results, quality = _evaluate_quality(
+    wer_results, similarity_results, utmos_results, quality = evaluate_quality(
         model=model,
         tmp_path_factory=tmp_path_factory,
         dataset_repo=dataset_repo,
@@ -562,7 +566,7 @@ def test_tts_mps_non_streaming(tmp_path_factory: pytest.TempPathFactory) -> None
     # A quality threshold miss is a threshold failure, not a missing
     # observation: every metric and the full sample scope were produced, so
     # calibration must still be able to consume this repeat.
-    _write_validation(
+    write_validation(
         output_root,
         valid=True,
         threshold_assertion_failed=bool(quality.failures),

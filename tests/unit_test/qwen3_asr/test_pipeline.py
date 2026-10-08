@@ -8,7 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sglang.srt.server_args import ServerArgs
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 
 import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.qwen3_asr.engine_builder as qwen3_asr_builder
@@ -31,25 +33,24 @@ from sglang_omni.scheduling.generation_batch_policy import (
 
 
 @pytest.fixture(autouse=True)
-def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+def select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     # Backend-specific tests opt into MLX explicitly. Keep CUDA/ROCm/Torch MPS
     # profile tests independent of the caller's SGLANG_USE_MLX environment.
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
 
 
-def _sglang_prefill_ladder(max_bs: int) -> list[int]:
-    unresolved = ServerArgs.__new__(ServerArgs)
-    return ServerArgs._generate_prefill_cuda_graph_batch_sizes(unresolved, max_bs)
+def sglang_prefill_ladder(max_bs: int) -> list[int]:
+    return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
-def _fake_server_args_builder(
+def fake_server_args_builder(
     build_kwargs: dict[str, object],
     *,
     resolved_chunked_prefill_size: int = 8192,
 ):
-    def _build(model_path, context_length, **overrides):
+    def build(model_path, context_length, **overrides):
         del model_path
         build_kwargs.update(overrides)
         flat = {
@@ -84,7 +85,7 @@ def _fake_server_args_builder(
             if server_args.max_total_tokens is not None:
                 prefill_max_bs = min(prefill_max_bs, server_args.max_total_tokens)
         if prefill_bs is None:
-            prefill_bs = _sglang_prefill_ladder(prefill_max_bs)
+            prefill_bs = sglang_prefill_ladder(prefill_max_bs)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
@@ -96,13 +97,15 @@ def _fake_server_args_builder(
                 max_bs=prefill_max_bs,
             ),
         )
-        server_args._cuda_graph_config_locked = locked
+        server_args._cuda_graph_config_locked = (
+            locked  # noqa: leading-underscore  # upstream name
+        )
         return server_args
 
-    return _build
+    return build
 
 
-def _make_engine_builder(
+def make_engine_builder(
     *, mm_attention_backend: str | None = None, context_length: int = 1636
 ) -> qwen3_asr_builder.Qwen3ASREngineBuilder:
     builder = qwen3_asr_builder.Qwen3ASREngineBuilder(
@@ -129,7 +132,7 @@ def _make_engine_builder(
 
 
 def test_qwen3_asr_engine_builder_binds_encode_wait_policy() -> None:
-    builder = _make_engine_builder()
+    builder = make_engine_builder()
     assert builder.should_wait_for_encode() is False
 
     builder.post_scheduler_setup(
@@ -156,7 +159,7 @@ def test_qwen3_asr_default_mm_attention_backend_by_sm(
         lambda gpu_id: queried_gpu_ids.append(gpu_id) or sm_version,
         raising=False,
     )
-    builder = _make_engine_builder()
+    builder = make_engine_builder()
     builder.gpu_id = 3
 
     defaults = builder.generation_defaults(dtype="bfloat16")
@@ -177,7 +180,7 @@ def test_qwen3_asr_explicit_mm_attention_backend_overrides_sm_default(
         lambda gpu_id: pytest.fail(f"unexpected SM lookup for GPU {gpu_id}"),
         raising=False,
     )
-    builder = _make_engine_builder(mm_attention_backend="fa3")
+    builder = make_engine_builder(mm_attention_backend="fa3")
     builder.gpu_id = 0
 
     defaults = builder.generation_defaults(dtype="bfloat16")
@@ -218,7 +221,7 @@ def test_qwen3_asr_defaults_prefill_to_triton_only_on_rocm_72_gfx95(
         lambda: hip_version,
     )
 
-    defaults = _make_engine_builder(mm_attention_backend="fa3").generation_defaults(
+    defaults = make_engine_builder(mm_attention_backend="fa3").generation_defaults(
         dtype="bfloat16"
     )
 
@@ -234,7 +237,7 @@ def test_qwen3_asr_explicit_prefill_backend_overrides_rocm_default(
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_rocm", lambda: True)
     monkeypatch.setattr(qwen3_asr_builder, "is_gfx95_supported", lambda: True)
     monkeypatch.setattr(qwen3_asr_builder, "get_hip_version", lambda: (7, 2, 0))
-    builder = _make_engine_builder(mm_attention_backend="fa3")
+    builder = make_engine_builder(mm_attention_backend="fa3")
 
     overrides = build_generation_batch_overrides(
         **builder.generation_defaults(dtype="bfloat16"),
@@ -245,11 +248,11 @@ def test_qwen3_asr_explicit_prefill_backend_overrides_rocm_default(
 
 
 def test_qwen3_asr_torch_mps_uses_eager_native_profile() -> None:
-    from sglang.srt.utils.tensor_bridge import use_mlx
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
     if use_mlx():
         pytest.skip("Torch MPS profile requires SGLANG_USE_MLX=0")
-    builder = _make_engine_builder()
+    builder = make_engine_builder()
     builder.device = "mps"
 
     defaults = builder.generation_defaults(dtype="float16")
@@ -275,11 +278,11 @@ def test_qwen3_asr_torch_mps_uses_eager_native_profile() -> None:
 def test_qwen3_asr_mlx_profile_overrides_typed_torch_compile_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: True)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_mps", lambda: True)
-    builder = _make_engine_builder()
+    builder = make_engine_builder()
     builder.device = "mps"
     overrides = {"enable_torch_compile": True}
 
@@ -390,10 +393,10 @@ def test_qwen3_asr_stage_default_disables_multimodal_embedding_cache() -> None:
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
 
 
-def test_qwen3_asr_stage_default_disables_torch_compile() -> None:
+def test_qwen3_asr_stage_default_defers_torch_compile_to_builder() -> None:
     signature = inspect.signature(create_sglang_qwen3_asr_executor)
 
-    assert signature.parameters["enable_torch_compile"].default is False
+    assert signature.parameters["enable_torch_compile"].default is None
     assert signature.parameters["torch_compile_max_bs"].default == 1
 
 
@@ -419,7 +422,7 @@ def test_qwen3_asr_rtx4090_profile_is_bf16_and_bounded() -> None:
     assert overrides["mem_fraction_static"] == 0.65
 
 
-def _patch_engine_dependencies(
+def patch_engine_dependencies(
     monkeypatch: pytest.MonkeyPatch,
     *,
     want_cuda_graph: bool = False,
@@ -465,14 +468,14 @@ def _patch_engine_dependencies(
     )
     monkeypatch.setattr(qwen3_asr_builder, "init_mm_embedding_cache", lambda size: None)
 
-    def _make_encoder_service(*args, **kwargs):
+    def make_encoder_service(*args, **kwargs):
         recorded.encoder_service_kwargs.update(kwargs)
         return recorded.encoder_service
 
     monkeypatch.setattr(
         qwen3_asr_builder,
         "Qwen3ASRPreLMEncoderService",
-        _make_encoder_service,
+        make_encoder_service,
     )
     monkeypatch.setattr(
         qwen3_asr_builder,
@@ -511,11 +514,11 @@ def _patch_engine_dependencies(
     monkeypatch.setattr(
         sglang_backend,
         "build_sglang_server_args",
-        _fake_server_args_builder(recorded.build_kwargs),
+        fake_server_args_builder(recorded.build_kwargs),
     )
 
-    def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
-        del server_args
+    def fake_create_infrastructure(server_args, gpu_id, **kwargs):
+        recorded.server_args = server_args
         recorded.infra_kwargs.append(dict(kwargs))
         model_worker = SimpleNamespace(
             gpu_id=gpu_id,
@@ -534,7 +537,7 @@ def _patch_engine_dependencies(
     monkeypatch.setattr(
         bootstrap,
         "create_sglang_infrastructure_defer_cuda_graph",
-        _fake_create_infrastructure,
+        fake_create_infrastructure,
     )
     monkeypatch.setattr(
         bootstrap,
@@ -544,15 +547,15 @@ def _patch_engine_dependencies(
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda model_runner, server_args: recorded.attest_calls.append(
-            (model_runner, server_args)
+        lambda model_runner, *, operator_selected: recorded.attest_calls.append(
+            (model_runner, operator_selected)
         ),
     )
     return recorded
 
 
 def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
-    recorded = _patch_engine_dependencies(monkeypatch)
+    recorded = patch_engine_dependencies(monkeypatch)
     build_kwargs = recorded.build_kwargs
 
     with caplog.at_level("INFO", logger=qwen3_asr_builder.__name__):
@@ -598,13 +601,13 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
 
 
 def test_qwen3_asr_prefill_ladder_is_accepted_by_the_shared_policy(caplog) -> None:
-    builder = _make_engine_builder(mm_attention_backend="fa3")
+    builder = make_engine_builder(mm_attention_backend="fa3")
     overrides = build_generation_batch_overrides(
         **builder.generation_defaults(dtype="bfloat16")
     )
     builder.adjust_overrides(overrides)
-    assert overrides["cuda_graph_bs_prefill"] == _sglang_prefill_ladder(4096)
-    server_args = _fake_server_args_builder({})("dummy", 1636, **overrides)
+    assert overrides["cuda_graph_bs_prefill"] == sglang_prefill_ladder(4096)
+    server_args = fake_server_args_builder({})("dummy", 1636, **overrides)
 
     with caplog.at_level(logging.WARNING):
         validate_generation_batch_policy(
@@ -615,7 +618,7 @@ def test_qwen3_asr_prefill_ladder_is_accepted_by_the_shared_policy(caplog) -> No
 
 
 def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> None:
-    recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
 
     qwen3_asr_stages.create_sglang_qwen3_asr_executor("dummy")
 
@@ -630,11 +633,11 @@ def test_qwen3_asr_auto_chunked_prefill_uses_the_sglang_ladder(
     caplog,
     resolved_chunked_prefill_size: int,
 ) -> None:
-    recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
     monkeypatch.setattr(
         sglang_backend,
         "build_sglang_server_args",
-        _fake_server_args_builder(
+        fake_server_args_builder(
             recorded.build_kwargs,
             resolved_chunked_prefill_size=resolved_chunked_prefill_size,
         ),
@@ -646,16 +649,14 @@ def test_qwen3_asr_auto_chunked_prefill_uses_the_sglang_ladder(
             server_args_overrides={"chunked_prefill_size": None},
         )
 
-    _, attested = recorded.attest_calls[-1]
     assert scheduler is not None
     assert recorded.build_kwargs["chunked_prefill_size"] is None
     assert "cuda_graph_bs_prefill" not in recorded.build_kwargs
     assert "cuda_graph_max_bs_prefill" not in recorded.build_kwargs
-    assert ("prefill", "bs") not in attested._cuda_graph_config_locked
-    assert list(attested.cuda_graph_config.prefill.bs) == (
-        _sglang_prefill_ladder(resolved_chunked_prefill_size)
-    )
-    assert attested.cuda_graph_config.prefill.max_bs == resolved_chunked_prefill_size
+    assert recorded.attest_calls[-1][1] is False
+    prefill = recorded.server_args.cuda_graph_config.prefill
+    assert list(prefill.bs) == sglang_prefill_ladder(resolved_chunked_prefill_size)
+    assert prefill.max_bs == resolved_chunked_prefill_size
     assert (
         "Qwen3-ASR: chunked_prefill_size was unset, SGLang resolved "
         f"{resolved_chunked_prefill_size}, prefill CUDA graph cap "
@@ -667,15 +668,14 @@ def test_qwen3_asr_auto_chunked_prefill_uses_the_sglang_ladder(
 def test_qwen3_asr_disabled_chunked_prefill_derives_no_buckets(
     monkeypatch, caplog
 ) -> None:
-    recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
 
     with caplog.at_level(logging.WARNING):
         qwen3_asr_stages.create_sglang_qwen3_asr_executor(
             "dummy", server_args_overrides={"chunked_prefill_size": 0}
         )
 
-    _, attested = recorded.attest_calls[-1]
-    assert list(attested.cuda_graph_config.prefill.bs) == []
+    assert list(recorded.server_args.cuda_graph_config.prefill.bs) == []
     assert len(recorded.graph_init_calls) == 1
     assert "require a positive prefill graph cap" in caplog.text
 
@@ -683,17 +683,17 @@ def test_qwen3_asr_disabled_chunked_prefill_derives_no_buckets(
 def test_qwen3_asr_operator_buckets_above_the_chunk_start_with_a_warning(
     monkeypatch, caplog
 ) -> None:
-    recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
 
     with caplog.at_level(logging.WARNING):
         qwen3_asr_stages.create_sglang_qwen3_asr_executor(
             "dummy", server_args_overrides={"cuda_graph_bs_prefill": [1024, 8192]}
         )
 
-    _, attested = recorded.attest_calls[-1]
+    assert recorded.attest_calls[-1][1] is False
     assert recorded.build_kwargs["cuda_graph_bs_prefill"] == [1024, 8192]
     assert recorded.build_kwargs["cuda_graph_max_bs_prefill"] == 8192
-    assert list(attested.cuda_graph_config.prefill.bs) == [1024, 8192]
+    assert list(recorded.server_args.cuda_graph_config.prefill.bs) == [1024, 8192]
     assert "max=8192 exceeds chunked_prefill_size=4096" in caplog.text
 
 
@@ -712,19 +712,19 @@ def test_qwen3_asr_ladder_respects_deployment_cap_overrides(
     cap_override: dict[str, int],
     expected_cap: int,
 ) -> None:
-    recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
 
     qwen3_asr_stages.create_sglang_qwen3_asr_executor(
         "dummy", server_args_overrides=dict(cap_override)
     )
 
-    _, attested = recorded.attest_calls[-1]
+    assert len(recorded.attest_calls) == 1
     assert all(
         recorded.build_kwargs[key] == value for key, value in cap_override.items()
     )
     assert recorded.build_kwargs["cuda_graph_bs_prefill"][-1] == expected_cap
-    assert max(attested.cuda_graph_config.prefill.bs) == expected_cap
-    assert attested.cuda_graph_config.prefill.max_bs == expected_cap
+    assert max(recorded.build_kwargs["cuda_graph_bs_prefill"]) == expected_cap
+    assert recorded.build_kwargs["cuda_graph_max_bs_prefill"] == expected_cap
 
 
 @pytest.mark.parametrize(
@@ -740,7 +740,7 @@ def test_qwen3_asr_disable_override_yields_no_prefill_ladder(
     want_cuda_graph: bool,
     expected_graph_inits: int,
 ) -> None:
-    recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=want_cuda_graph)
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=want_cuda_graph)
 
     qwen3_asr_stages.create_sglang_qwen3_asr_executor(
         "dummy", server_args_overrides=dict(disable_override)
@@ -754,7 +754,7 @@ def test_qwen3_asr_disable_override_yields_no_prefill_ladder(
 def test_qwen3_asr_nested_prefill_override_supersedes_the_derived_ladder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
 
     qwen3_asr_stages.create_sglang_qwen3_asr_executor(
         "dummy",
@@ -763,6 +763,6 @@ def test_qwen3_asr_nested_prefill_override_supersedes_the_derived_ladder(
         },
     )
 
-    _, attested = recorded.attest_calls[-1]
-    assert list(attested.cuda_graph_config.prefill.bs) == [128, 256]
-    assert attested.cuda_graph_config.prefill.max_bs == 256
+    assert recorded.attest_calls[-1][1] is True
+    assert list(recorded.build_kwargs["cuda_graph_bs_prefill"]) == [128, 256]
+    assert recorded.build_kwargs["cuda_graph_max_bs_prefill"] == 256

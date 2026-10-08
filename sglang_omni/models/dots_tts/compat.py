@@ -17,8 +17,8 @@ def import_dots_tts() -> ModuleType:
 
     dots.tts refuses to import unless the torch and torchaudio distributions
     share a minor version (dots_tts/__init__.py, _check_torch_install, which
-    reads both through importlib.metadata.version). sglang 0.5.18 pins torch
-    2.13.0 with torchaudio 2.11.0, and omni pins the same pair: torchaudio
+    reads both through importlib.metadata.version). sglang pins torch 2.13.0
+    with torchaudio 2.11.0, and omni pins the same pair: torchaudio
     2.11.0 is its last release, and its release note states it is compatible
     with torch 2.11 and with future torch versions. The check is stricter than
     that supported pair, and the torchaudio surface dots.tts uses
@@ -34,11 +34,15 @@ def import_dots_tts() -> ModuleType:
     with _IMPORT_LOCK:
         if "dots_tts" in sys.modules:
             return importlib.import_module("dots_tts")
+        else:
+            pass
         reader = importlib.metadata.version
 
         def bridged(distribution_name: str) -> str:
             if distribution_name == "torchaudio":
                 return reader("torch")
+            else:
+                pass
             return reader(distribution_name)
 
         importlib.metadata.version = bridged

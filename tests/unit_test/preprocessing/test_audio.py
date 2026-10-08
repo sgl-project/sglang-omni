@@ -7,10 +7,10 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from sglang_omni.preprocessing.audio import _decode_audio_bytes_av, _parse_wav_bytes
+from sglang_omni.preprocessing.audio import decode_audio_bytes_av, parse_wav_bytes
 
 
-def _encode_audio(
+def encode_audio(
     audio: np.ndarray, sample_rate: int, container_format: str, subtype: str
 ) -> bytes:
     buffer = io.BytesIO()
@@ -24,10 +24,10 @@ def test_flac_decode_matches_pcm_wav_duration_and_amplitude(channels: int) -> No
     signal = np.where(np.arange(sample_rate) % 2, -0.125, 0.125).astype(np.float32)
     source = signal if channels == 1 else np.column_stack((signal, signal / 2))
 
-    flac = _encode_audio(source, sample_rate, "FLAC", "PCM_16")
-    wav = _encode_audio(source, sample_rate, "WAV", "PCM_16")
-    decoded_flac, flac_rate = _decode_audio_bytes_av(flac)
-    decoded_wav, wav_rate = _parse_wav_bytes(wav)
+    flac = encode_audio(source, sample_rate, "FLAC", "PCM_16")
+    wav = encode_audio(source, sample_rate, "WAV", "PCM_16")
+    decoded_flac, flac_rate = decode_audio_bytes_av(flac)
+    decoded_wav, wav_rate = parse_wav_bytes(wav)
 
     assert flac_rate == wav_rate == sample_rate
     assert decoded_flac.shape == decoded_wav.shape == (sample_rate,)
@@ -37,9 +37,9 @@ def test_flac_decode_matches_pcm_wav_duration_and_amplitude(channels: int) -> No
 def test_av_decode_preserves_float_amplitude() -> None:
     sample_rate = 8_000
     source = np.where(np.arange(sample_rate) % 2, -1.5, 1.5).astype(np.float32)
-    wav = _encode_audio(source, sample_rate, "WAV", "FLOAT")
+    wav = encode_audio(source, sample_rate, "WAV", "FLOAT")
 
-    decoded, decoded_rate = _decode_audio_bytes_av(wav)
+    decoded, decoded_rate = decode_audio_bytes_av(wav)
 
     assert decoded_rate == sample_rate
     np.testing.assert_array_equal(decoded, source)

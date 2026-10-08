@@ -1,0 +1,5 @@
+# Run the repository install.sh for native SGLang-Omni MLX ASR.
+# Text processing calls an OpenAI-compatible API; no bundled text model runtime.
+httpx[socks]>=0.28,<1
+# Already a serving dependency; live smoke/tests use the modern client API.
+websockets>=15,<18

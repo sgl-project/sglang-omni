@@ -37,6 +37,9 @@ Today: `qwen3-omni` (covers all 6 benchmarks/eval/*.py — Qwen3-Omni
 rows + S2-Pro TTS rows live in the same config; per-row `hf_model_id`
 distinguishes the model launched per row).
 
+The linked calibration skill is maintained in a private repository; access is
+limited to its maintainers.
+
 ## Prerequisites (the skill verifies, it does not create)
 
 - A sglang-omni clone (`benchmarks/eval/` reachable from the working dir).
@@ -53,7 +56,7 @@ distinguishes the model launched per row).
   GPUs are busy precheck fails with the busy PID list and stops.
 - `auto_env` from `config.yaml` is applied at startup (overrides shell) to
   match CI omni-setup: `OMNI_CI_HOME`, `UV_INDEX_URL`, torchinductor slice
-  paths, etc. See `tune-ci-thresholds` skill for the full cache layout table.
+  paths, etc. See [`calibrate-h100-ci`][calibration-skill] skill for the full cache layout table.
   All benchmarks share the single **`omni`** venv and `.github/scripts/ci_env.sh`.
 - `HF_ENDPOINT` defaults to `https://hf-mirror.com` (matches CI omni-setup).
 - Before pytest or eval runs, run `source .github/scripts/ci_env.sh` so
@@ -61,7 +64,7 @@ distinguishes the model launched per row).
 
 ## Two-terminal supervision (mandatory — always)
 
-Same contract as `tune-ci-thresholds` — **permanent, non-negotiable**:
+Same contract as [`calibrate-h100-ci`][calibration-skill] — **permanent, non-negotiable**:
 
 | Tab | Role | Shows |
 |-----|------|-------|
@@ -75,7 +78,7 @@ Agent **must spawn both tabs** (Shell, `block_until_ms: 0`): Tab A first, Tab B
 second. Tell the user which is which.
 
 **Calibration (`tune.py run`):** Tab A = newest `_pytest/*/run*.log`; Tab B =
-`tune.py run` on stdout (**never** `>> run.log`). See `tune-ci-thresholds` §
+`tune.py run` on stdout (**never** `>> run.log`). See [`calibrate-h100-ci`][calibration-skill] §
 **Calibration (`tune.py run`) — always two tabs**.
 
 **Eval suite commands:**
@@ -85,12 +88,12 @@ second. Tell the user which is which.
 | **A — supervision** | `tail -f <run-dir>/run.log` |
 | **B — job** | `cd /sgl-workspace/sglang-omni && python .claude/skills/running-eval-suite/runner.py run ... >> <run-dir>/run.log 2>&1` |
 
-Full diagram, log-path table, and checklist: see `tune-ci-thresholds` §
+Full diagram, log-path table, and checklist: see [`calibrate-h100-ci`][calibration-skill] §
 **Two-terminal supervision (mandatory — always)**.
 
 - First-time venv on the repro host: use `.github/scripts/prepare_omni_venv.sh`
   and `.github/scripts/install_flashinfer_jit_cache.sh` with
-  `OMNI_CI_HOME=/github/home/calibration` (documented in tune-ci-thresholds).
+  `OMNI_CI_HOME=/github/home/calibration` (documented in [the calibration skill][calibration-skill]).
 
 If anything's off, `precheck` fails with an actionable message; fix it
 yourself and retry.
@@ -120,7 +123,7 @@ yourself and retry.
 I never call `AskUserQuestion`. Defaults handle the full run; optional
 flags above are only for filtering, recovery, or explicit GPU placement.
 Errors halt the run with a printed reason. This matches the
-`tune-ci-thresholds` contract: type `/running-eval-suite` and walk away.
+[`calibrate-h100-ci`][calibration-skill] contract: type `/running-eval-suite` and walk away.
 
 ## Steps I follow
 
@@ -265,3 +268,5 @@ Adding a whole new model = drop in `models/<new-model>/config.yaml`
 mirroring `qwen3-omni/config.yaml`. No Python changes needed unless
 the new benchmark client emits result JSON in a structure that needs
 new helpers in `runner.py`.
+
+[calibration-skill]: https://github.com/zhaochenyang20/sglang-omni-calibration/tree/main/skills/calibrate-h100-ci/references/calibration.md

@@ -34,7 +34,7 @@ from sglang_omni.models.weight_loader import default_weight_loader
 logger = logging.getLogger(__name__)
 
 
-def _extract_vision_dict(vision_config) -> dict:
+def extract_vision_dict(vision_config) -> dict:
     """Extract a plain dict from a vision config object."""
     if hasattr(vision_config, "to_dict"):
         d = vision_config.to_dict()
@@ -58,7 +58,7 @@ _WEIGHT_SUBSTR_MAPPINGS = {
 }
 
 
-def _remap_ming_vision_weight(name: str) -> str:
+def remap_ming_vision_weight(name: str) -> str:
     """Remap Ming checkpoint vision weight name to sglang model name."""
     # 1. Merger / deepstack naming
     for old, new in _WEIGHT_SUBSTR_MAPPINGS.items():
@@ -75,7 +75,7 @@ def _remap_ming_vision_weight(name: str) -> str:
     return name
 
 
-def _build_qwen3_vision_block_kwargs(
+def build_qwen3_vision_block_kwargs(
     *,
     dim: int,
     num_heads: int,
@@ -98,7 +98,7 @@ def _build_qwen3_vision_block_kwargs(
     }
 
 
-def _linear_patch_embed(
+def linear_patch_embed(
     patch_embed: nn.Module, pixel_values: torch.Tensor
 ) -> torch.Tensor:
     """Run Qwen3VLVisionPatchEmbed's Conv3d projection as an equivalent Linear."""
@@ -150,7 +150,7 @@ class MingOmniVisionEncoder(nn.Module):
         from sglang.srt.utils import add_prefix
 
         # Store mixin method as a static helper
-        self._rot_pos_ids = RotaryPosMixin.rot_pos_ids
+        self.rot_pos_ids = RotaryPosMixin.rot_pos_ids
 
         # --- config ---
         self.hidden_size = vision_config.hidden_size
@@ -194,7 +194,7 @@ class MingOmniVisionEncoder(nn.Module):
         self.blocks = nn.ModuleList(
             [
                 Qwen3_VisionBlock(
-                    **_build_qwen3_vision_block_kwargs(
+                    **build_qwen3_vision_block_kwargs(
                         dim=self.hidden_size,
                         num_heads=self.num_heads,
                         head_size=head_dim,
@@ -246,13 +246,13 @@ class MingOmniVisionEncoder(nn.Module):
 
     # --- position embedding helpers (adapted from Qwen3VLMoeVisionModel) ---
 
-    def _rot_pos_emb(
+    def rot_pos_emb(
         self, grid_thw: list[list[int]]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute rotary position embeddings for vision blocks."""
         pos_ids = []
         for t, h, w in grid_thw:
-            base = self._rot_pos_ids(h, w, self.spatial_merge_size)
+            base = self.rot_pos_ids(h, w, self.spatial_merge_size)
             pos_ids.append(base if t == 1 else base.repeat(t, 1))
 
         pos_ids = torch.cat(pos_ids, dim=0).to(self.device, non_blocking=True)
@@ -263,7 +263,7 @@ class MingOmniVisionEncoder(nn.Module):
         sin_combined = sin[pos_ids].flatten(1)
         return cos_combined, sin_combined
 
-    def _interpolate_pos_embed(self, grid_thw: list[list[int]]) -> torch.Tensor:
+    def interpolate_pos_embed(self, grid_thw: list[list[int]]) -> torch.Tensor:
         """Bilinear interpolation of position embeddings.
 
         Adapted from ``Qwen3VLMoeVisionModel.fast_pos_embed_interpolate_from_list``.
@@ -341,7 +341,7 @@ class MingOmniVisionEncoder(nn.Module):
         x = pixel_values.to(device=self.device, dtype=self.dtype)
         # Qwen3VLVisionPatchEmbed wraps a Conv3d with one output cell per
         # patch. This is equivalent to Linear and avoids a slow cuDNN path.
-        x = _linear_patch_embed(self.patch_embed, x)
+        x = linear_patch_embed(self.patch_embed, x)
 
         # Convert grid_thw to list for iteration
         if isinstance(grid_thw, torch.Tensor):
@@ -352,11 +352,11 @@ class MingOmniVisionEncoder(nn.Module):
             grid_thw_np = np.array(grid_thw, dtype=np.int32)
 
         # Position embeddings (bilinear interpolation)
-        pos_embeds = self._interpolate_pos_embed(grid_thw_list)
+        pos_embeds = self.interpolate_pos_embed(grid_thw_list)
         x += pos_embeds
 
         # Rotary position embeddings for attention
-        rotary_pos_emb_cos, rotary_pos_emb_sin = self._rot_pos_emb(grid_thw_list)
+        rotary_pos_emb_cos, rotary_pos_emb_sin = self.rot_pos_emb(grid_thw_list)
 
         # Build cu_seqlens for variable-length flash attention
         token_cu_seqlens = np.repeat(
@@ -388,6 +388,8 @@ class MingOmniVisionEncoder(nn.Module):
                 deepstack_feature = self.merger_list[num_deepstack_captured](x)
                 deepstack_feature_lists.append(deepstack_feature)
                 num_deepstack_captured += 1
+            else:
+                pass
 
         # Final merger
         x = self.merger(x)
@@ -407,11 +409,13 @@ class MingOmniVisionEncoder(nn.Module):
         loaded_params: set[str] = set()
 
         for name, loaded_weight in weights:
-            name = _remap_ming_vision_weight(name)
+            name = remap_ming_vision_weight(name)
 
             if name not in params_dict:
                 logger.debug("Skipping unknown vision weight: %s", name)
                 continue
+            else:
+                pass
 
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
