@@ -471,7 +471,7 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex and dots.tts single-card;
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
+> (Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).
