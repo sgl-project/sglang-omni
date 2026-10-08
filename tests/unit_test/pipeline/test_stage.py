@@ -6,6 +6,9 @@ import asyncio
 import logging
 import pickle
 import threading
+from pathlib import Path
+from typing import Literal
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -19,6 +22,7 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
+from sglang_omni.profiler import torch_profiler as torch_profiler_module
 from sglang_omni.proto import DataReadyMessage, SubmitMessage
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -37,6 +41,42 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     tensor_equal,
 )
 from tests.unit_test.pipeline.helpers import make_stage
+
+
+@pytest.mark.parametrize("stack_setting", [None, "0", "1", "true"])
+def test_torch_profiler_warns_before_starting_stack_collection(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    stack_setting: Literal["0", "1", "true"] | None,
+) -> None:
+    if stack_setting is None:
+        monkeypatch.delenv("SGLANG_TORCH_PROFILER_WITH_STACK", raising=False)
+    else:
+        monkeypatch.setenv("SGLANG_TORCH_PROFILER_WITH_STACK", stack_setting)
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setattr(torch_profiler_module.TorchProfiler, "profiler", None)
+    monkeypatch.setattr(torch_profiler_module.TorchProfiler, "trace_template", "")
+    monkeypatch.setattr(torch_profiler_module.TorchProfiler, "active_run_id", None)
+    recording_profiler = Mock()
+    profiler_factory = Mock(return_value=recording_profiler)
+    monkeypatch.setattr(torch_profiler_module, "profile", profiler_factory)
+
+    def check_warning_before_start() -> None:
+        assert ("may deadlock" in caplog.text) == (stack_setting == "1")
+
+    recording_profiler.start.side_effect = check_warning_before_start
+    trace_template = str(tmp_path / "trace")
+    with caplog.at_level(logging.WARNING):
+        trace_path = torch_profiler_module.TorchProfiler.start(trace_template)
+    assert trace_path == f"{trace_template}_rank0.trace.json.gz"
+    assert profiler_factory.call_args.kwargs["with_stack"] == (stack_setting == "1")
+    recording_profiler.start.assert_called_once_with()
+    if stack_setting == "1":
+        assert "SGLANG_TORCH_PROFILER_WITH_STACK=0" in caplog.text
+        assert "#1779" in caplog.text
+    else:
+        assert "SGLANG_TORCH_PROFILER_WITH_STACK" not in caplog.text
 
 
 @pytest.fixture(autouse=True)

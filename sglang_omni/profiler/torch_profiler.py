@@ -101,6 +101,15 @@ class TorchProfiler(ProfilerBase):
                 except Exception as e:
                     logger.warning(f"[Rank {rank}] Failed to export trace: {e}")
 
+            with_stack = os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1"
+            if with_stack:
+                logger.warning(
+                    f"[Rank {rank}] Stack collection may deadlock when profiling "
+                    "concurrent requests (#1779); use "
+                    "SGLANG_TORCH_PROFILER_WITH_STACK=0 to disable it."
+                )
+            else:
+                pass
             cls.profiler = profile(
                 activities=profiler_activities(),
                 on_trace_ready=trace_handler,
@@ -108,7 +117,7 @@ class TorchProfiler(ProfilerBase):
                 == "1",
                 profile_memory=os.environ.get("SGLANG_TORCH_PROFILER_PROFILE_MEMORY")
                 == "1",
-                with_stack=os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1",
+                with_stack=with_stack,
                 with_flops=os.environ.get("SGLANG_TORCH_PROFILER_WITH_FLOPS") == "1",
             )
             cls.profiler.start()
