@@ -11,7 +11,10 @@ from typing import Any
 import pytest
 import torch
 
-from sglang_omni.models.qwen3_omni.components import code2wav_cuda_graph
+from sglang_omni.models.qwen3_omni.components import (
+    code2wav_cuda_graph,
+    code2wav_scheduler,
+)
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavCudaGraphRunner,
     GraphKey,
@@ -1126,6 +1129,64 @@ def test_failing_best_effort_single_request_key_keeps_the_atomic_tier() -> None:
     tail = runner.run(make_codes(backend, 1, 27))
     assert tail.execution_mode == "eager"
     assert tail.fallback_reason == "key_miss"
+
+
+class PoolGrowthBackend(FakeCudaBackend):
+    """Fake backend whose fresh pool grows per captured graph, past the whole
+    graph budget for graphs of oversized_rows rows or more."""
+
+    def __init__(self, *, oversized_rows: int) -> None:
+        super().__init__()
+        self.oversized_rows = oversized_rows
+        self.pool_bytes = 0
+
+    def memory_stats(self, device: torch.device) -> dict[str, int]:
+        del device
+        return {
+            "allocated_bytes": 100 + self.pool_bytes,
+            "reserved_bytes": 120 + self.pool_bytes,
+            "max_reserved_bytes": 120 + self.pool_bytes,
+            "free_bytes": 900 - self.pool_bytes,
+            "total_bytes": 1000,
+        }
+
+    def graph_pool_handle(self, device: torch.device) -> object:
+        self.pool_bytes = 0
+        return super().graph_pool_handle(device)
+
+    def capture(self, model, static_input, *, pool, stream=None):
+        rows = int(static_input.shape[0])
+        self.pool_bytes += 500 if rows >= self.oversized_rows else 5
+        return super().capture(model, static_input, pool=pool, stream=stream)
+
+
+def test_capacity_shrinks_reach_every_row_count_of_the_default_ladder() -> None:
+    backend = PoolGrowthBackend(oversized_rows=3)
+    graph_keys = code2wav_scheduler.window_graph_keys(10, 25, 8)
+    final_keys = tuple(
+        GraphKey(batch_size=1, frames=frames)
+        for frames in range(1, 36)
+        if frames not in (10, 20, 30, 35)
+    )
+    runner = Code2WavCudaGraphRunner.build(
+        FakeModel(),
+        device="cuda:0",
+        num_quantizers=16,
+        total_gpu_memory_fraction=0.5,
+        graph_keys=graph_keys,
+        best_effort_keys=final_keys,
+        model_footprint_bytes=100,
+        decode_stream=None,
+        device_api=backend,
+    )
+
+    stats = runner.stats()
+    assert stats["enabled"] is True
+    # eight rows down to three each fail their first capture; the seventh attempt fits
+    assert stats["memory"]["tier1"]["attempts"] == 7
+    assert runner.available_batch_sizes(35) == (2, 1)
+    assert all(runner.available_batch_sizes(key.frames) == (1,) for key in final_keys)
+    assert runner.run(make_codes(backend, 2, 35)).execution_mode == "cuda_graph"
 
 
 def test_runtime_disable_clears_tier1_availability() -> None:
