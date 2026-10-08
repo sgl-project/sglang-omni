@@ -518,6 +518,7 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#codec-decoding-on-xpu">Codec decoding on XPU</a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-cosyvoice3-text-to-speech-single-xpu">Fun-CosyVoice3 (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dots-tts-text-to-speech-single-xpu">dots.tts (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zonos2-moe-tts-single-xpu">ZONOS2 (MoE TTS, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#personaplex-speech-to-speech-single-xpu">PersonaPlex (speech-to-speech, single XPU)</a></li>
@@ -550,7 +551,9 @@ XPU wheel index.</p>
 family and CUDA-only wheels would replace the <code class="docutils literal notranslate"><span class="pre">+xpu</span></code> stack.
 <a class="reference download internal" download="" href="../_downloads/e6282636738987ea324fd398b24bcb06/pyproject_xpu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code></span></a> encodes the XPU replacements.</p>
 <p>Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts) plus the API server;
-<code class="docutils literal notranslate"><span class="pre">[eval]</span></code> adds SeedTTS/WER tooling and <code class="docutils literal notranslate"><span class="pre">[all]</span></code> aliases it. ZONOS2 also serves here,
+<code class="docutils literal notranslate"><span class="pre">[eval]</span></code> adds SeedTTS/WER tooling and <code class="docutils literal notranslate"><span class="pre">[all]</span></code> aliases it. <code class="docutils literal notranslate"><span class="pre">[fun-cosyvoice3]</span></code> adds
+that model’s CosyVoice dependencies — see
+<a class="reference internal" href="#fun-cosyvoice3-text-to-speech-single-xpu"><span class="std std-ref">Fun-CosyVoice3</span></a>. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 <a class="reference internal" href="#zonos2-moe-tts-single-xpu"><span class="std std-ref">ZONOS2</span></a> for the XPU-safe way to add it. Other model
 families (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.</p>
@@ -744,6 +747,26 @@ startup:</p>
 defaults in <a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">docs/cookbook/qwen3_tts.md</span></a>.</p>
 </section>
 </section>
+<section id="fun-cosyvoice3-text-to-speech-single-xpu">
+<h3>Fun-CosyVoice3 (text-to-speech, single XPU)<a class="headerlink" href="#fun-cosyvoice3-text-to-speech-single-xpu" title="Link to this heading">#</a></h3>
+<p>Fun-CosyVoice3 needs the <code class="docutils literal notranslate"><span class="pre">[fun-cosyvoice3]</span></code> extra and the CosyVoice sources. Install the
+extra through the helper above, not with <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">&quot;.[fun-cosyvoice3]&quot;</span></code>, which would
+resolve the CUDA project file. Then clone CosyVoice with its Matcha-TTS submodule as in
+<a class="reference internal" href="../cookbook/fun_cosyvoice3.html#prerequisites"><span class="std std-ref">docs/cookbook/fun_cosyvoice3.md</span></a> and add both to
+<code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code>; <code class="docutils literal notranslate"><span class="pre">sox</span></code> is not needed.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>scripts/xpu/install_xpu.sh<span class="w"> </span>--extras<span class="w"> </span>fun-cosyvoice3
+<span class="nb">export</span><span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">COSYVOICE_PATH</span><span class="si">}</span><span class="s2">:</span><span class="si">${</span><span class="nv">COSYVOICE_PATH</span><span class="si">}</span><span class="s2">/third_party/Matcha-TTS:</span><span class="nv">$PYTHONPATH</span><span class="s2">"</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+<span class="c1"># clones a reference voice — pass ref_audio (+ ref_text):</span>
+curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"FunAudioLLM/Fun-CosyVoice3-0.5B-2512","input":"Hello from Intel XPU.",</span>
+<span class="s1">       "ref_audio":"/path/to/ref.wav","ref_text":"reference transcript"}'</span><span class="w"> </span>-o<span class="w"> </span>out.wav
+</pre></div>
+</div>
+</section>
 <section id="dots-tts-text-to-speech-single-xpu">
 <h3>dots.tts (text-to-speech, single XPU)<a class="headerlink" href="#dots-tts-text-to-speech-single-xpu" title="Link to this heading">#</a></h3>
 <p>The XPU installation includes <code class="docutils literal notranslate"><span class="pre">dots.tts==0.2.1</span></code>.
@@ -933,9 +956,9 @@ in a graph.</p>
 — those CUDA-only transfer backends are omitted; tensors move through the <code class="docutils literal notranslate"><span class="pre">shm</span></code> relay instead.</p>
 </div></blockquote>
 <blockquote>
-<div><p>✅ Support status: <strong>Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
+<div><p>✅ Support status: <strong>Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
 Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts all serve end-to-end on Intel XPU</strong>
-(Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex and dots.tts single-card;
+(Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex and dots.tts single-card;
 ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 </div></blockquote>
@@ -1007,6 +1030,7 @@ Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#codec-decoding-on-xpu">Codec decoding on XPU</a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-cosyvoice3-text-to-speech-single-xpu">Fun-CosyVoice3 (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dots-tts-text-to-speech-single-xpu">dots.tts (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zonos2-moe-tts-single-xpu">ZONOS2 (MoE TTS, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#personaplex-speech-to-speech-single-xpu">PersonaPlex (speech-to-speech, single XPU)</a></li>

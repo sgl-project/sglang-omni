@@ -13,7 +13,9 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts) plus the API server;
-`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
+`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
+that model's CosyVoice dependencies — see
+[Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
 families (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
@@ -225,6 +227,28 @@ stages:
 An explicit stage value wins over the pipeline default. See the platform-neutral
 defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
+### Fun-CosyVoice3 (text-to-speech, single XPU)
+
+Fun-CosyVoice3 needs the `[fun-cosyvoice3]` extra and the CosyVoice sources. Install the
+extra through the helper above, not with `pip install -e ".[fun-cosyvoice3]"`, which would
+resolve the CUDA project file. Then clone CosyVoice with its Matcha-TTS submodule as in
+[docs/cookbook/fun_cosyvoice3.md](../cookbook/fun_cosyvoice3.md#prerequisites) and add both to
+`PYTHONPATH`; `sox` is not needed.
+
+```bash
+scripts/xpu/install_xpu.sh --extras fun-cosyvoice3
+export PYTHONPATH="${COSYVOICE_PATH}:${COSYVOICE_PATH}/third_party/Matcha-TTS:$PYTHONPATH"
+```
+
+```bash
+sgl-omni serve --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 --host 0.0.0.0 --port 8000
+# clones a reference voice — pass ref_audio (+ ref_text):
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"FunAudioLLM/Fun-CosyVoice3-0.5B-2512","input":"Hello from Intel XPU.",
+       "ref_audio":"/path/to/ref.wav","ref_text":"reference transcript"}' -o out.wav
+```
+
 ### dots.tts (text-to-speech, single XPU)
 
 The XPU installation includes `dots.tts==0.2.1`.
@@ -407,8 +431,8 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
+> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
 > Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex and dots.tts single-card;
+> (Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).
