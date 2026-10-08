@@ -820,7 +820,8 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
     assert overrides["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
     assert "cuda_graph_bs_prefill" not in overrides
     assert "cuda_graph_max_bs_prefill" not in overrides
-    assert overrides["disable_cuda_graph"] is False
+    assert defaults["disable_cuda_graph"] is current_platform.is_cpu()
+    assert overrides["disable_cuda_graph"] is defaults["disable_cuda_graph"]
 
 
 @pytest.mark.parametrize("is_npu", [False, True])
@@ -9808,8 +9809,12 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
 
     assert infrastructure_saw_deferred_capture == [not is_cpu]
     assert init_graph_calls == ([] if is_cpu else [True])
-    assert predictor_captures == [(True, 50, 1.0)]
-    assert events == ["predictor_capture", "memory_pool", "init_graphs"]
+    assert predictor_captures == ([] if is_cpu else [(True, 50, 1.0)])
+    assert events == (
+        ["memory_pool"]
+        if is_cpu
+        else ["predictor_capture", "memory_pool", "init_graphs"]
+    )
     assert scheduler.server_args.cuda_graph_bs == expected_cuda_graph_bs
     assert scheduler.server_args.cuda_graph_max_bs == 64
     assert scheduler.server_args.disable_cuda_graph is is_cpu
@@ -10480,9 +10485,13 @@ def test_qwen3_tts_config_loads_frontend_only_outside_engine_process(
     # A split frontend declares its own gpu, the way the documented recipe does.
     fractions = {"preprocessing": 0.05, "tts_engine": 0.75, "vocoder": 0.12}
     for index, stage in enumerate(split.stages):
-        update = {"gpu_memory_fraction": fractions[stage.name]}
+        update = {}
+        if not current_platform.is_cpu():
+            update["gpu_memory_fraction"] = fractions[stage.name]
         if stage.name == "preprocessing":
-            update.update({"process": "tts_frontend", "gpu": 0})
+            update["process"] = "tts_frontend"
+            if not current_platform.is_cpu():
+                update["gpu"] = 0
         split.stages[index] = stage.model_copy(update=update)
     assert split.preprocessing_in_own_process() is True
     assert split.stage_factory_kwargs("preprocessing") == {"load_frontend": True}
@@ -10496,9 +10505,11 @@ def test_qwen3_tts_config_loads_frontend_only_outside_engine_process(
         "vocoder": "pipeline",
     }
     placement = build_stage_placement_plan(split)
-    assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(0.92)
-    assert placement.gpus[0].missing_fraction_stage_names == ()
-
+    if current_platform.is_cpu():
+        assert placement.gpus == {}
+    else:
+        assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(0.92)
+        assert placement.gpus[0].missing_fraction_stage_names == ()
     split.enable_deterministic_inference = True
     assert split.stage_factory_kwargs("preprocessing") == {
         "load_frontend": True,
@@ -10568,6 +10579,7 @@ def test_qwen3_tts_split_preprocessing_loads_the_frontend_on_the_placed_gpu(
     assert seen["float32_encoder"] is (model_type == "base")
 
 
+@pytest.mark.skipif(current_platform.is_cpu(), reason="GPU placement test")
 def test_qwen3_tts_shared_gpu_layout_demands_no_preprocessing_fraction() -> None:
     """Sharing the engine's process, preprocessing has no GPU budget to declare.
 

@@ -285,7 +285,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             "max_running_requests": QWEN3_TTS_MAX_RUNNING_REQUESTS,
             "max_queued_requests": QWEN3_TTS_MAX_QUEUED_REQUESTS,
             "dtype": dtype,
-            "disable_cuda_graph": False,
+            "disable_cuda_graph": current_platform.is_cpu(),
             "disable_overlap_schedule": True,
             "enable_torch_compile": False,
             "mem_fraction_static": 0.85,
