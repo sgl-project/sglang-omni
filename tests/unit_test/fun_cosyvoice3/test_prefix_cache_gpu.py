@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Hops over a cached prefix reproduce the whole-history causal solve, and
-graph replayed hops and finals their eager solves."""
+graph replayed hops and whole-history solves their eager solves."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import copy
 import pytest
 import torch
 
-from sglang_omni.models.fun_cosyvoice3.final_cuda_graph import FinalCudaGraphRunner
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
     gather_rows,
@@ -26,6 +25,10 @@ from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     solve_flow_euler_prefix,
 )
 from sglang_omni.models.fun_cosyvoice3.prefix_cuda_graph import PrefixCudaGraphRunner
+from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
+from sglang_omni.models.fun_cosyvoice3.whole_history_cuda_graph import (
+    WholeHistoryCudaGraphRunner,
+)
 from sglang_omni.platforms import current_platform
 
 pytestmark = pytest.mark.accelerator
@@ -298,7 +301,8 @@ def test_grow_rows_takes_nothing_on_a_shortfall() -> None:
 @pytest.mark.parametrize("compile_prefix", [False, True], ids=["eager", "compiled"])
 def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> None:
     """Replays with padding frames and unused row slots equal the eager solve,
-    also when they resume from a step above the largest tier that ran eagerly."""
+    also when they resume from a step above the largest tier that ran eagerly and
+    when a whole-history graph replays from the same pool between hops."""
     estimator = make_estimator()
     device = torch.device("cuda", torch.cuda.current_device())
     dtype = torch.bfloat16
@@ -323,11 +327,11 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
         pass
     backend = current_platform.get_device_graph_backend(device)
     assert backend is not None
+    graphs = SolveGraphCapture(backend, device=device, autocast_dtype=dtype)
     runner = PrefixCudaGraphRunner(
         estimator,
         graph_pool,
-        backend=backend,
-        autocast_dtype=dtype,
+        graphs=graphs,
         frame_dtype=torch.float32,
         speaker_dtype=dtype,
         cfg_rate=0.7,
@@ -338,8 +342,30 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
         min_hop_frames=CHUNK,
         max_frames=1024,
     )
+    whole_history = WholeHistoryCudaGraphRunner(
+        estimator,
+        graphs=graphs,
+        frame_dtype=torch.float32,
+        speaker_dtype=dtype,
+        cfg_rate=0.7,
+        euler_steps=10,
+        mel_channels=CHANNELS,
+        speaker_channels=CHANNELS,
+        max_rows=2,
+        tier_frames=(512,),
+        max_frames=1024,
+    )
     runner.capture()
+    whole_history.capture()
     torch.manual_seed(3)
+    whole_history_inputs = dict(
+        noise=torch.randn(1, 500, CHANNELS, device=device),
+        time_span=torch.linspace(0, 1, 11, device=device),
+        mu=torch.randn(1, 500, CHANNELS, device=device),
+        speaker_embeddings=torch.randn(2, CHANNELS, device=device, dtype=dtype),
+        mel_conditioning=torch.randn(1, 500, CHANNELS, device=device),
+        lengths=(300, 200),
+    )
     streams = {}
     for name, prompt_frames in (("a", 100), ("b", 50), ("c", 50)):
         mel_conditioning = torch.zeros(CHANNELS, 650, device=device, dtype=dtype)
@@ -384,6 +410,7 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
                     .float()
                 )
 
+            assert whole_history.run(**whole_history_inputs) is not None
             outputs = []
             for pool_index, pool in enumerate(pools):
                 pairs = [caches[name][pool_index] for name in names]
@@ -450,7 +477,9 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("compile_packed", [False, True], ids=["eager", "compiled"])
-def test_final_graph_replays_equal_the_eager_solve(compile_packed: bool) -> None:
+def test_whole_history_graph_replays_equal_the_eager_solve(
+    compile_packed: bool,
+) -> None:
     """Replays with empty row slots and a padding row, after other steps left
     their frames in the tier's buffers, equal the eager solve of the rows alone.
     Steps above the largest tier or past the row slots are refused."""
@@ -498,11 +527,9 @@ def test_final_graph_replays_equal_the_eager_solve(compile_packed: bool) -> None
         pass
     backend = current_platform.get_device_graph_backend(device)
     assert backend is not None
-    runner = FinalCudaGraphRunner(
+    runner = WholeHistoryCudaGraphRunner(
         estimator,
-        backend=backend,
-        device=device,
-        autocast_dtype=dtype,
+        graphs=SolveGraphCapture(backend, device=device, autocast_dtype=dtype),
         frame_dtype=torch.float32,
         speaker_dtype=dtype,
         cfg_rate=0.7,

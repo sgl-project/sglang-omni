@@ -162,7 +162,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 max_batch_wait_ms=30,
                 enable_flow_cuda_graph=True,
                 enable_flow_prefix_cuda_graph=True,
-                enable_flow_final_cuda_graph=True,
+                enable_flow_whole_history_cuda_graph=True,
                 flow_cuda_graph_capture_shapes=FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
                 # note (guozhihao-224, chenyang):
                 # CUDA Graph and DiT torch.compile are on by default. TensorRT stays opt-in;

@@ -20,6 +20,9 @@ import torch._dynamo as dynamo
 import torch._inductor.config as inductor_config
 import torch.nn.functional as F
 from numpy.typing import ArrayLike, NDArray
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 from torch._inductor.runtime.compile_tasks import _set_triton_libdevice_path
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 from x_transformers.x_transformers import apply_rotary_pos_emb
@@ -39,10 +42,6 @@ else:
     pass
 
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
-from sglang_omni.models.fun_cosyvoice3.final_cuda_graph import (
-    FINAL_TIER_FRAMES,
-    FinalCudaGraphRunner,
-)
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
@@ -70,7 +69,11 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
 )
+from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
 from sglang_omni.models.fun_cosyvoice3.streaming import TOKEN_HOP_LEN, TOKEN_MAX_HOP_LEN
+from sglang_omni.models.fun_cosyvoice3.whole_history_cuda_graph import (
+    WholeHistoryCudaGraphRunner,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -804,9 +807,9 @@ def generate_flow_packed(
     streaming: bool,
     finalize: bool,
 ) -> torch.Tensor:
-    """Flow call over the rows packed along the sequence, a final replayed from the
-    final graphs when one holds its rows. Returns the padded (rows, channels,
-    frames) layout the mel split reads."""
+    """Flow call over the rows packed along the sequence, a non-streaming call
+    replayed from the whole history graphs when one holds its rows. Returns the
+    padded (rows, channels, frames) layout the mel split reads."""
     conditioning = prepare_flow_conditioning(flow, packed, finalize=finalize)
     token_condition = conditioning.token_condition
     device = token_condition.device
@@ -814,10 +817,10 @@ def generate_flow_packed(
     noise = gather_rows(conditioning.noisy_mel.transpose(1, 2), rows)
     mu = gather_rows(token_condition.transpose(1, 2), rows)
     mel_conditioning = gather_rows(conditioning.prompt_mel.transpose(1, 2), rows)
-    if streaming or flow.final_cuda_graph_runner is None:
+    if streaming or flow.whole_history_cuda_graph_runner is None:
         generated = None
     else:
-        generated = flow.final_cuda_graph_runner.run(
+        generated = flow.whole_history_cuda_graph_runner.run(
             noise=noise,
             time_span=conditioning.time_span,
             mu=mu,
@@ -896,7 +899,7 @@ class FunCosyVoice3Flow:
         self.packed_estimator = packed_estimator
         self.prefix_pool: PrefixKVPool | None = None
         self.prefix_cuda_graph_runner: PrefixCudaGraphRunner | None = None
-        self.final_cuda_graph_runner: FinalCudaGraphRunner | None = None
+        self.whole_history_cuda_graph_runner: WholeHistoryCudaGraphRunner | None = None
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.flow, name)
@@ -2596,7 +2599,7 @@ def create_vocoder_executor(
     enable_dit_torch_compile: bool = True,
     enable_flow_cuda_graph: bool = True,
     enable_flow_prefix_cuda_graph: bool,
-    enable_flow_final_cuda_graph: bool,
+    enable_flow_whole_history_cuda_graph: bool,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
     hift_dtype: str = "float32",
@@ -2754,17 +2757,20 @@ def create_vocoder_executor(
     else:
         pass
     has_prefix_graphs = enable_flow_prefix_cuda_graph and flow.prefix_pool is not None
-    has_final_graphs = (
-        enable_flow_final_cuda_graph
+    has_whole_history_graphs = (
+        enable_flow_whole_history_cuda_graph
         and device_obj.type == "cuda"
         and flow.packed_estimator is not None
         and flow.packed_estimator.is_ragged
         and autocast_dtype in FA3_DTYPES
     )
-    if has_prefix_graphs or has_final_graphs:
+    if has_prefix_graphs or has_whole_history_graphs:
         graph_backend = current_platform.get_device_graph_backend(device_obj)
         assert graph_backend is not None and flow.packed_estimator is not None
         assert autocast_dtype is not None
+        solve_graphs = SolveGraphCapture(
+            graph_backend, device=device_obj, autocast_dtype=autocast_dtype
+        )
         # note(ratish): a graph replays its captured dtypes; under autocast a hop's frames
         # keep the token embedding's dtype and its speaker embedding does not.
         with (
@@ -2789,8 +2795,7 @@ def create_vocoder_executor(
         prefix_cuda_graph_runner = PrefixCudaGraphRunner(
             flow.packed_estimator,
             flow.prefix_pool,
-            backend=graph_backend,
-            autocast_dtype=autocast_dtype,
+            graphs=solve_graphs,
             frame_dtype=conditioning.noisy_mel.dtype,
             speaker_dtype=conditioning.speaker_embedding.dtype,
             cfg_rate=flow.decoder.inference_cfg_rate,
@@ -2805,12 +2810,10 @@ def create_vocoder_executor(
         flow.prefix_cuda_graph_runner = prefix_cuda_graph_runner
     else:
         pass
-    if has_final_graphs:
-        final_cuda_graph_runner = FinalCudaGraphRunner(
+    if has_whole_history_graphs:
+        whole_history_cuda_graph_runner = WholeHistoryCudaGraphRunner(
             flow.packed_estimator,
-            backend=graph_backend,
-            device=device_obj,
-            autocast_dtype=autocast_dtype,
+            graphs=solve_graphs,
             frame_dtype=conditioning.noisy_mel.dtype,
             speaker_dtype=conditioning.speaker_embedding.dtype,
             cfg_rate=flow.decoder.inference_cfg_rate,
@@ -2818,11 +2821,15 @@ def create_vocoder_executor(
             mel_channels=flow.output_size,
             speaker_channels=flow.spk_embed_affine_layer.out_features,
             max_rows=max_batch_size,
-            tier_frames=FINAL_TIER_FRAMES,
+            # note (ratish): SGLang's prefill graph ladder up to the largest Flow step
+            # the vocoder admits, as SGLang caps it at its largest prefill step.
+            tier_frames=generate_prefill_cuda_graph_batch_sizes(
+                flow_batch_admission_frames
+            ),
             max_frames=flow.decoder.rand_noise.shape[2],
         )
-        final_cuda_graph_runner.capture()
-        flow.final_cuda_graph_runner = final_cuda_graph_runner
+        whole_history_cuda_graph_runner.capture()
+        flow.whole_history_cuda_graph_runner = whole_history_cuda_graph_runner
     else:
         pass
     scheduler.warmup_now()
