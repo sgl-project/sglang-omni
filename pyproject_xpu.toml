@@ -108,6 +108,19 @@ all = [
     "s3prl>=0.4.18", "jiwer",
     "pytest>=7.0.0", "pytest-asyncio>=0.21.0",
 ]
+fun-cosyvoice3 = [
+    "conformer==0.3.2",
+    "HyperPyYAML==1.2.3",
+    "pyworld==0.3.4",
+    "setuptools<80",  # Note (yexiaodong): pyworld 0.3.4 imports pkg_resources.
+    "wetext==0.0.4",
+    "inflect==7.3.1",
+    "gdown==5.1.0",
+    "wget==3.2",
+    "lightning==2.6.5",
+    "matplotlib",
+    "hydra-core",
+]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
