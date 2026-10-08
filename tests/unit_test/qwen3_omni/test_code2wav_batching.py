@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from types import SimpleNamespace
@@ -127,7 +128,7 @@ def test_the_serving_loop_takes_every_queued_chunk_before_one_replay() -> None:
         while len(sent) < 3 and time.monotonic() < deadline:
             try:
                 sent.add(scheduler.outbox.get(timeout=0.1).request_id)
-            except Exception:
+            except queue.Empty:
                 pass
     finally:
         scheduler.stop()

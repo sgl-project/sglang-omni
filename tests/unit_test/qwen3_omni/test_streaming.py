@@ -35,6 +35,7 @@ from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+from tests.unit_test.fixtures.qwen_fakes import deliver_code2wav_chunk
 
 
 class ByteTokenizer:
@@ -579,8 +580,8 @@ def test_code2wav_streaming_emits_per_window_and_slim_final():
     sched.stream_payloads["req-1"] = payload
 
     # Two chunks trigger the first decode step (stream_chunk_size=2).
-    sched.handle_stream_chunk("req-1", make_code_chunk(metadata={"stream": True}))
-    sched.handle_stream_chunk("req-1", make_code_chunk(metadata={"stream": True}))
+    deliver_code2wav_chunk(sched, "req-1", make_code_chunk(metadata={"stream": True}))
+    deliver_code2wav_chunk(sched, "req-1", make_code_chunk(metadata={"stream": True}))
 
     out: list[OutgoingMessage] = []
     while not sched.outbox.empty():

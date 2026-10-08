@@ -282,7 +282,7 @@ def test_ingest_2d_chunk_does_not_sync() -> None:
     )
     scheduler.ingest("req-1", state, codes)
     assert len(state.chunks) == 2
-    assert scheduler.should_decode(state, is_final=False)
+    assert scheduler.window_ready(state)
 
 
 def test_ingest_1d_row_eager_path_drops_eos_immediately() -> None:
