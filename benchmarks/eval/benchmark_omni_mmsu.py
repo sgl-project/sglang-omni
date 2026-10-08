@@ -107,7 +107,12 @@ from benchmarks.benchmarker.conditions import (
 )
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
-from benchmarks.dataset.mmsu import MmsuSample, load_mmsu_samples
+from benchmarks.dataset.mmsu import (
+    DEFAULT_MMSU_DATASET_REPOSITORY,
+    MMSU_DATASET_SPLIT,
+    MmsuSample,
+    load_mmsu_samples,
+)
 from benchmarks.metrics.mmsu import compute_mmsu_metrics, print_mmsu_summary
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.wer import print_wer_summary
@@ -116,6 +121,7 @@ from benchmarks.tasks.asr import (
     compute_text_audio_consistency,
 )
 from benchmarks.tasks.audio_understanding import (
+    DEFAULT_PROMPT,
     build_mmsu_results,
     make_mmsu_send_fn,
     save_mmsu_results,
@@ -136,30 +142,56 @@ async def run(
         args, "asr_concurrency", DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     )
 
+    provided_samples = samples is not None
+    prompt = args.prompt or DEFAULT_PROMPT
+
     if samples is None:
+        task_names = (
+            sorted(
+                {
+                    task_name.strip()
+                    for task_name in (args.task_names or "").split(",")
+                    if task_name.strip()
+                }
+            )
+            or None
+        )
+        categories = (
+            sorted(
+                {
+                    category.strip()
+                    for category in (args.categories or "").split(",")
+                    if category.strip()
+                }
+            )
+            or None
+        )
         samples = load_mmsu_samples(
             max_samples=args.max_samples,
-            task_names=args.task_names.split(",") if args.task_names else None,
-            categories=args.categories.split(",") if args.categories else None,
+            task_names=task_names,
+            categories=categories,
             seed=args.seed,
             repo_id=args.repo_id,
         )
+    else:
+        task_names = None
+        categories = None
 
     save_audio_dir = None
     if args.save_audio and args.output_dir:
         save_audio_dir = os.path.join(args.output_dir, "audio")
         os.makedirs(save_audio_dir, exist_ok=True)
 
-    send_fn_kwargs = dict(
+    send_fn = make_mmsu_send_fn(
+        args.model,
+        api_url,
+        prompt=prompt,
         modalities=modalities,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         seed=args.seed,
         save_audio_dir=save_audio_dir,
     )
-    if args.prompt:
-        send_fn_kwargs["prompt"] = args.prompt
-    send_fn = make_mmsu_send_fn(args.model, api_url, **send_fn_kwargs)
     runner = BenchmarkRunner(
         RunConfig(
             max_concurrency=args.max_concurrency,
@@ -205,11 +237,40 @@ async def run(
                 "model": args.model,
                 "base_url": base_url,
                 "modalities": modalities,
+                "stream": False,
+                "prompt": prompt,
+                "dataset": {
+                    "source": "provided_samples" if provided_samples else "huggingface",
+                    "repo_id": (
+                        None
+                        if provided_samples
+                        else args.repo_id or DEFAULT_MMSU_DATASET_REPOSITORY
+                    ),
+                    "split": None if provided_samples else MMSU_DATASET_SPLIT,
+                    "task_names": None if provided_samples else task_names,
+                    "categories": None if provided_samples else categories,
+                    "sampling": (
+                        "provided_order"
+                        if provided_samples
+                        else (
+                            "seeded_shuffle_then_limit"
+                            if args.seed is not None
+                            else "dataset_order_then_limit"
+                        )
+                    ),
+                    "sample_count": len(samples),
+                    "sample_ids": [sample.sample_id for sample in samples],
+                },
                 "max_samples": args.max_samples,
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
                 "seed": args.seed,
                 "asr_concurrency": asr_concurrency,
+                "asr_device": args.asr_device,
+                "lang": args.lang,
+                "compute_wer": audio_mode and compute_wer,
+                "save_audio": bool(save_audio_dir),
+                "timeout_s": runner.config.timeout_s,
                 "warmup": runner.config.effective_warmup,
                 "max_concurrency": args.max_concurrency,
                 "request_rate": args.request_rate,
