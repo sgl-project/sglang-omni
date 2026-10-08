@@ -413,7 +413,7 @@ class SessionRuntime:
             self.fail(str(exc), exc.code)
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
-                logger.warning(f"Realtime session {self.session_id} closed: {exc}")
+                logger.error(f"Realtime session {self.session_id} closed: {exc}")
                 code = ContextExhaustedError.CODE
             else:
                 logger.exception(
