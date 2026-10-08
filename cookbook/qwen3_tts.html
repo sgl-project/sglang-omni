@@ -1048,6 +1048,12 @@ against 82 to 89 ms.</p>
 <p>Intel XPU, Ascend NPU, CPU and Apple MPS decode synchronously by default. To opt
 in on Intel GPUs, follow the
 <a class="reference internal" href="../get_started/installation_xpu.html#qwen3-tts-text-to-speech-single-xpu"><span class="std std-ref">Qwen3-TTS XPU recipe</span></a>.</p>
+<p>Each follow-up batch sorts the stateful decoder’s cohorts, and the rows within
+each, by playback deadline: the nearest cohort launches first and its nearest
+rows fill the first graph-sized group. Left-context decodes keep queue order.
+The follow-up workers also commit each in-flight cohort as soon as its decode
+has finished, checked at the top of the worker loop and before each launch,
+instead of at the next drain.</p>
 </section>
 <section id="first-audio-chunk-ramp">
 <h4>First-audio chunk ramp<a class="headerlink" href="#first-audio-chunk-ramp" title="Link to this heading">#</a></h4>
