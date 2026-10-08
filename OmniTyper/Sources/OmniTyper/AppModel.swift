@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
     var hideVoicePanel: (() -> Void)?
     private var target: InsertionTarget?
     private var task: Task<Void, Never>?
+    private var loadingTask: Task<Void, Never>?
     private var speechStream: ASRStream?
     private var generation = UUID()
     private var timer: Timer?
@@ -104,7 +105,22 @@ final class AppModel: ObservableObject {
                            if self?.phase == .recording { self?.finish() }
                            else if self?.phase == .starting { self?.cancel() }
                        },
-                       onCancel: { [weak self] in if self?.isBusy == true { self?.cancel() } })
+                       onCancel: { [weak self] in
+                           guard let self, Self.escapeCancels(self.phase, appIsActive: NSApp.isActive) else { return }
+                           self.cancel()
+                       })
+    }
+
+    nonisolated static func escapeCancels(_ phase: Phase, appIsActive: Bool) -> Bool {
+        switch phase {
+        case .starting, .recording: return true
+        case .processing, .preparing: return appIsActive
+        case .idle: return false
+        }
+    }
+
+    nonisolated static func cancelReleasesWorker(_ phase: Phase) -> Bool {
+        phase == .processing || phase == .preparing
     }
 
     func refreshPermissions() {
@@ -170,6 +186,7 @@ final class AppModel: ObservableObject {
         showVoicePanel?()
         let token = UUID(); generation = token
         task = Task { [self] in
+            await finishCancelledLoad()
             do {
                 let response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel],
                                                         python: sessionPreferences.pythonExecutable)
@@ -254,6 +271,7 @@ final class AppModel: ObservableObject {
         let recording = FailedRecording(url: audio, duration: duration, mode: requestMode,
                                         target: capturedTarget, appName: lastApp)
         task = Task {
+            await finishCancelledLoad()
             do {
                 var payload = try request.get()
                 var streamingWarning = ""
@@ -357,6 +375,7 @@ final class AppModel: ObservableObject {
         let preferences = store.preferences
         let token = UUID(); generation = token
         task = Task {
+            await finishCancelledLoad()
             do {
                 _ = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel], python: preferences.pythonExecutable)
                 guard generation == token else { return }
@@ -379,6 +398,7 @@ final class AppModel: ObservableObject {
             phase = .preparing
             let token = UUID(); generation = token
             task = Task {
+                await finishCancelledLoad()
                 do {
                     let response = try await worker.request(request, python: python)
                     guard generation == token else { return }
@@ -396,15 +416,23 @@ final class AppModel: ObservableObject {
     func releaseModels() { if phase == .idle { worker.stop(); notice = L("notice.modelUnloaded") } }
 
     func cancel() {
-        generation = UUID(); task?.cancel(); task = nil
+        // A cancelled start keeps loading the model so the next dictation starts warm.
+        if phase == .starting { loadingTask = task } else { task?.cancel() }
+        if Self.cancelReleasesWorker(phase) { worker.stop() }
+        generation = UUID(); task = nil
         speechStream?.cancel(); speechStream = nil; liveText = ""; liveStatus = ""
-        recorder.cancel(); worker.stop(); target = nil; phase = .idle; hideVoicePanel?()
+        recorder.cancel(); target = nil; phase = .idle; hideVoicePanel?()
         notice = L("notice.cancelled")
+    }
+
+    private func finishCancelledLoad() async {
+        let load = loadingTask; loadingTask = nil
+        await load?.value
     }
 
     func shutdown() {
         preferencesSubscription?.cancel(); preferencesSubscription = nil
-        cancel(); shortcut.stop(); timer?.invalidate()
+        cancel(); loadingTask?.cancel(); loadingTask = nil; worker.stop(); shortcut.stop(); timer?.invalidate()
         textAPIKey = ""; sessionAPIKey = ""
         discardRetryRecording()
     }

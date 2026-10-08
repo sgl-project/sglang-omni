@@ -8,8 +8,9 @@ import logging
 import math
 import os
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Literal, Optional, Tuple, TypeAlias
 
 import torch
 from sglang.kernels.fused_op import get_fused_op_backend
@@ -22,6 +23,7 @@ from sglang.srt.layers.quantization.unquant import (
 )
 from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.runtime_context import get_context, get_exec, get_parallel, get_schedule
+from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import add_prefix
 from sglang.srt.utils.common import is_pin_memory_available
 from torch import nn
@@ -45,12 +47,37 @@ from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
 )
+from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
+    Qwen3TTSSpeakerEncoderCudaGraphRunner,
+)
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
+from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
 
+if TYPE_CHECKING:
+    from qwen_tts import Qwen3TTSTokenizer
+    from qwen_tts.core.models.configuration_qwen3_tts import (
+        Qwen3TTSConfig,
+        Qwen3TTSTalkerCodePredictorConfig,
+        Qwen3TTSTalkerConfig,
+    )
+
+    from sglang_omni.models.qwen3_tts.request_builders import VoicePrompt
+else:
+    pass
+
 logger = logging.getLogger(__name__)
+
+PredictorGraphSignature: TypeAlias = tuple[
+    Literal["argmax", "sampled"], int, bool, bool, bool
+]
+PredictorGraphKey: TypeAlias = tuple[
+    int, Literal["argmax", "sampled"], int, bool, bool, bool
+]
 
 QTTS_PREDICTOR_GRAPH_ENV = "SGLANG_OMNI_QTTS_PREDICTOR_GRAPH"
 _PREDICTOR_GRAPH_MAX_LAZY_KEYS = 32
@@ -175,7 +202,7 @@ class PredictorDecodeGraph:
     def __init__(
         self,
         batch_size: int,
-        signature: tuple,
+        signature: PredictorGraphSignature,
         *,
         device: torch.device,
         hidden_size: int,
@@ -192,7 +219,7 @@ class PredictorDecodeGraph:
         self.semantic_positions = torch.zeros(
             batch_size, dtype=torch.long, device=device
         )
-        self.graph: Any | None = None
+        self.graph: ReplayableGraph | None = None
         self.result_codes: torch.Tensor | None = None
         self.summed_embeddings: torch.Tensor | None = None
 
@@ -234,7 +261,12 @@ class PredictorDecodeGraph:
 
 
 class Qwen3TTSTalkerDecoderLayer(nn.Module):
-    def __init__(self, config: Any, layer_id: int, prefix: str = "") -> None:
+    def __init__(
+        self,
+        config: "Qwen3TTSTalkerConfig | Qwen3TTSTalkerCodePredictorConfig",
+        layer_id: int,
+        prefix: str = "",
+    ) -> None:
         super().__init__()
         self.self_attn = Qwen3OmniMoeThinkerTextAttention(
             hidden_size=config.hidden_size,
@@ -286,7 +318,7 @@ class Qwen3TTSTalkerDecoderLayer(nn.Module):
 
 
 class Qwen3TTSTalkerTextModel(nn.Module):
-    def __init__(self, config: Any, prefix: str = "") -> None:
+    def __init__(self, config: "Qwen3TTSTalkerConfig", prefix: str = "") -> None:
         super().__init__()
         self.config = config
         self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
@@ -327,10 +359,10 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         )
         self.decode_feedback_embedding.weight.requires_grad_(False)
 
-    def get_input_embeddings(self):
+    def get_input_embeddings(self) -> nn.Embedding:
         return self.codec_embedding
 
-    def get_text_embeddings(self):
+    def get_text_embeddings(self) -> nn.Embedding:
         return self.text_embedding
 
     def build_input_hidden_states(
@@ -381,7 +413,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
 
 
 class Qwen3TTSCodePredictor(nn.Module):
-    def __init__(self, config: Any, prefix: str = "") -> None:
+    def __init__(self, config: "Qwen3TTSTalkerConfig", prefix: str = "") -> None:
         super().__init__()
         self.config = config
         cp_config = config.code_predictor_config
@@ -432,9 +464,9 @@ class Qwen3TTSCodePredictor(nn.Module):
 class Qwen3TTSPromptBuilderMixin:
     """Prompt construction shared by the talker and the standalone prompt frontend.
 
-    Expects ``model`` (embedding tables and ``_feedback_buffer``), ``text_projection``,
-    ``code_predictor.model.codec_embedding``, ``speaker_encoder``, ``speech_tokenizer``,
-    ``config``/``root_config`` and ``speaker_encoder_sample_rate`` on the instance.
+    Expects model (embedding tables and the feedback buffer), text_projection,
+    code_predictor.model.codec_embedding, speaker_encoder, speaker_encoder_graph_runner,
+    speech_tokenizer, config, root_config and speaker_encoder_sample_rate on the instance.
     """
 
     @property
@@ -445,13 +477,15 @@ class Qwen3TTSPromptBuilderMixin:
     def dtype(self) -> torch.dtype:
         return self.model.codec_embedding.weight.dtype
 
-    def get_input_embeddings(self):
+    def get_input_embeddings(self) -> nn.Embedding:
         return self.model.get_input_embeddings()
 
-    def get_text_embeddings(self):
+    def get_text_embeddings(self) -> nn.Embedding:
         return self.model.get_text_embeddings()
 
-    def load_speech_tokenizer(self, speech_tokenizer: Any) -> None:
+    def load_speech_tokenizer(
+        self, speech_tokenizer: "Qwen3TTSTokenizer | None"
+    ) -> None:
         self.speech_tokenizer = speech_tokenizer
 
     def get_supported_languages(self):
@@ -462,33 +496,22 @@ class Qwen3TTSPromptBuilderMixin:
 
     @torch.inference_mode()
     def extract_speaker_embedding(self, audio, sr):
-        apply_qwen_tts_transformers_compatibility_patches()
-        from qwen_tts.core.models.modeling_qwen3_tts import mel_spectrogram
-
         if sr != self.speaker_encoder_sample_rate:
             raise ValueError(
                 f"Expected {self.speaker_encoder_sample_rate}Hz reference audio"
             )
         else:
             pass
-        if self.speaker_encoder is None:
+        if self.speaker_encoder_graph_runner is None:
             raise RuntimeError("Qwen3-TTS speaker encoder is not loaded")
         else:
             pass
-        mels = mel_spectrogram(
-            torch.from_numpy(audio).unsqueeze(0),
-            n_fft=1024,
-            num_mels=128,
-            sampling_rate=self.speaker_encoder_sample_rate,
-            hop_size=256,
-            win_size=1024,
-            fmin=0,
-            fmax=12000,
-        ).transpose(1, 2)
-        return self.speaker_encoder(mels.to(self.device).to(self.dtype))[0]
+        return self.speaker_encoder_graph_runner.embed(audio)
 
     @torch.inference_mode()
-    def generate_speaker_prompt(self, voice_clone_prompt: dict[str, Any]):
+    def generate_speaker_prompt(
+        self, voice_clone_prompt: VoicePrompt
+    ) -> list[torch.Tensor]:
         return [
             emb.to(self.device).to(self.dtype)
             for emb in voice_clone_prompt["ref_spk_embedding"]
@@ -661,7 +684,7 @@ class Qwen3TTSPromptBuilderMixin:
         *,
         input_id: torch.Tensor,
         ref_id: torch.Tensor | None,
-        voice_clone_prompt: dict[str, Any],
+        voice_clone_prompt: VoicePrompt,
         language: str,
         non_streaming_mode: bool,
         instruct_id: torch.Tensor | None = None,
@@ -926,7 +949,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     # directly and use this marker to preserve that position contract.
     is_mrope_enabled = True
 
-    def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
+    def __init__(
+        self,
+        config: "Qwen3TTSConfig | Qwen3TTSTalkerConfig",
+        quant_config: object = None,
+        prefix: str = "",
+    ) -> None:
         del quant_config
         super().__init__()
         if hasattr(config, "talker_config"):
@@ -971,8 +999,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self.speaker_encoder = Qwen3TTSSpeakerEncoder(
                 root_config.speaker_encoder_config
             )
+            self.speaker_encoder_graph_runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(
+                self.speaker_encoder, sample_rate=self.speaker_encoder_sample_rate
+            )
         else:
             self.speaker_encoder = None
+            self.speaker_encoder_graph_runner = None
         self.speech_tokenizer = None
 
         server_args = get_context().server_args
@@ -1030,6 +1062,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.predictor_rope_stores_kv = self.resolve_predictor_rope_store(
             cp_attn, device=device
         )
+        self.predictor_fused_layers = resolve_fused_predictor_layers(
+            self.code_predictor, predictor_len, max_batch_size, device, dtype
+        )
         self.sampled_token_ids = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
         )
@@ -1045,6 +1080,23 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.predictor_embedding_buffer = torch.empty(
             max_batch_size, hidden_size, device=device, dtype=dtype
         )
+        projection = self.code_predictor.small_to_mtp_projection
+        if projection is None:
+            self.predictor_projected_embeddings = None
+            self.predictor_projected_buffer = None
+        else:
+            # note (ratish): the projection of an embedding row is that row of the
+            # projected table; the last codebook feeds no predictor step, so has none.
+            self.predictor_projected_embeddings = torch.empty(
+                config.num_code_groups - 2,
+                config.code_predictor_config.vocab_size,
+                projection.out_features,
+                device=device,
+                dtype=dtype,
+            )
+            self.predictor_projected_buffer = torch.empty(
+                max_batch_size, projection.out_features, device=device, dtype=dtype
+            )
         self.sub_batch_size = 0
         self.sub_temperature_tensor = torch.full(
             (max_batch_size,), 0.9, device=device, dtype=torch.float32
@@ -1072,13 +1124,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.sub_sampled_has_top_p = False
         self.sub_sampled_max_top_k = 0
         self.sub_sampled_has_unbounded_top_k = False
-        self.decode_prep_rids: list | None = None
+        self.decode_prep_rids: list[tuple[str, int]] | None = None
         self.predictor_graph_batch_sizes = self.normalize_predictor_graph_batch_sizes(
             server_args,
             max_batch_size=max_batch_size,
         )
-        self.predictor_graphs: dict[tuple, PredictorDecodeGraph] = {}
-        self.predictor_graph_disabled: set[tuple] = set()
+        self.predictor_graphs: dict[PredictorGraphKey, PredictorDecodeGraph] = {}
+        self.predictor_graph_disabled: set[PredictorGraphKey] = set()
         # note(ratish): None until the startup capture, which runs before the
         # KV pool is sized, or the first decode resolves it.
         self.predictor_graph_enabled: bool | None = None
@@ -1093,7 +1145,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.cached_params_dict = dict(self.named_parameters())
         self.sampler = None
 
-    def prepare_decode_buffers(self, requests: list[Any]) -> None:
+    def prepare_decode_buffers(self, requests: list[SchedulerRequest]) -> None:
         batch_size = len(requests)
         if batch_size > self.sub_temperature_tensor.shape[0]:
             raise RuntimeError("Qwen3-TTS sampling buffers are too small")
@@ -1104,7 +1156,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         # an unchanged batch composition can reuse the previous staging wholesale.
         # Request ids alone are reusable across request lifetimes, so identity is
         # (request_id, per-data epoch); test doubles without request_id restage.
-        rids: list | None = []
+        rids: list[tuple[str, int]] | None = []
         for sched_req in requests:
             rid = getattr(sched_req, "request_id", None)
             if rid is None:
@@ -1287,7 +1339,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
 
     @staticmethod
     def normalize_predictor_graph_batch_sizes(
-        server_args: object,
+        server_args: ServerArgs,
         *,
         max_batch_size: int,
     ) -> tuple[int, ...]:
@@ -1327,7 +1379,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self,
         batch_size: int,
         semantic_positions: torch.Tensor | None,
-    ) -> tuple | None:
+    ) -> PredictorGraphSignature | None:
         if semantic_positions is not None:
             if semantic_positions.device != self.predictor_device:
                 return None
@@ -1363,7 +1415,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
 
     @contextmanager
-    def predictor_graph_capture_state(self, bucket_size: int, signature: tuple):
+    def predictor_graph_capture_state(
+        self, bucket_size: int, signature: PredictorGraphSignature
+    ) -> Generator[None, None, None]:
         saved = (
             self.sub_batch_size,
             self.sub_has_sampled_rows,
@@ -1446,6 +1500,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             return 0
         else:
             pass
+        signatures: list[PredictorGraphSignature]
         if do_sample:
             max_top_k, has_top_p, has_unbounded_top_k = predictor_signature_terms(
                 [int(top_k)],
@@ -1488,7 +1543,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     def capture_predictor_graph(
         self,
         bucket_size: int,
-        signature: tuple,
+        signature: PredictorGraphSignature,
     ) -> PredictorDecodeGraph:
         """One stream per talker for warmups and captures: the allocator only
         reuses a pool block on the stream that freed it. Automatic collection
@@ -1699,6 +1754,11 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         else:
             pass
         use_fused_embedding = embedding_buffer is not None and layer0_codes.is_cuda
+        projected_tables = self.predictor_projected_embeddings
+        if projected_tables is None:
+            projected_buffer = None
+        else:
+            projected_buffer = self.predictor_projected_buffer[:batch_size]
 
         for pos in range(seq_len):
             layer0_code = layer0_codes[:, pos : pos + 1]
@@ -1746,6 +1806,10 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 )
                 pos_codes[:, layer_idx + 1].copy_(next_code)
                 codec_embedding = self.code_predictor.model.codec_embedding[layer_idx]
+                has_next_step = layer_idx < num_groups - 2
+                should_gather_projection = (
+                    projected_tables is not None and has_next_step
+                )
                 fused_embedding = (
                     use_fused_embedding
                     and embedding_buffer.dtype == predictor_dtype
@@ -1754,6 +1818,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                         codec_embedding.weight,
                         embedding_buffer,
                         pos_summed,
+                        projected_weight=(
+                            projected_tables[layer_idx]
+                            if should_gather_projection
+                            else None
+                        ),
+                        projected=(
+                            projected_buffer if should_gather_projection else None
+                        ),
                     )
                 )
                 if fused_embedding:
@@ -1763,8 +1835,17 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                         dtype=predictor_dtype
                     )
                     pos_summed.add_(new_embed[:, 0, :])
-                new_predictor_embed = self.code_predictor.project_input(new_embed)
-                if layer_idx < num_groups - 2:
+                if has_next_step:
+                    if projected_tables is None:
+                        new_predictor_embed = self.code_predictor.project_input(
+                            new_embed
+                        )
+                    elif fused_embedding:
+                        new_predictor_embed = projected_buffer.unsqueeze(1)
+                    else:
+                        new_predictor_embed = torch.nn.functional.embedding(
+                            next_code.unsqueeze(1), projected_tables[layer_idx]
+                        )
                     last_hidden = self.predictor_forward_tokens(
                         token_embeds=new_predictor_embed,
                         batch_size=batch_size,
@@ -1948,6 +2029,20 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             positions = self.predictor_pair_positions[: 2 * batch_size]
             cache_slots = self.predictor_pair_cache_slots[: 2 * batch_size]
         num_rows = batch_size * num_tokens
+        fused = self.predictor_fused_layers
+        if fused is not None and fused.covers(num_rows):
+            return fused.forward(
+                layers=self.code_predictor.model.layers,
+                final_norm=self.code_predictor.model.norm,
+                token_embeds=token_embeds,
+                batch_size=batch_size,
+                cache_len=cache_len,
+                positions=positions,
+                k_cache=self.predictor_k_cache,
+                v_cache=self.predictor_v_cache,
+            )
+        else:
+            pass
         # note(ratish): 2D rows for the fused add and norm, which every
         # backend's kernel expects and which writes both operands in place.
         residual = token_embeds.reshape(num_rows, 1, hidden_size)
@@ -2039,7 +2134,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
 
     @staticmethod
-    def resolve_predictor_rope_store(attn: Any, *, device: torch.device) -> bool:
+    def resolve_predictor_rope_store(
+        attn: Qwen3OmniMoeThinkerTextAttention, *, device: torch.device
+    ) -> bool:
         """Resolve store support before capture: a supported CUDA head size
         does not imply CUDA dispatch when the backend override selects Torch."""
         return (
@@ -2159,6 +2256,20 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     weight_loader(param, loaded_weight)
             else:
                 pass
+        self.post_load_weights()
+
+    @torch.no_grad()
+    def post_load_weights(self) -> None:
+        """Rebuild the projected codec tables; the loaders call this after every
+        weight load."""
+        if self.predictor_projected_embeddings is None:
+            pass
+        else:
+            for table, embedding in zip(
+                self.predictor_projected_embeddings,
+                self.code_predictor.model.codec_embedding,
+            ):
+                table.copy_(self.code_predictor.project_input(embedding.weight))
 
 
 EntryClass = Qwen3TTSTalker

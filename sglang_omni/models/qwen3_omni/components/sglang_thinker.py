@@ -9,18 +9,30 @@ prefill, so this wrapper keeps only the text model and LM head.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
-from typing import Any, Iterable, Optional, Tuple
+from dataclasses import dataclass
+from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from sglang.srt.layers.logits_processor import LogitsProcessor
+from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe_triton_config import (
+    get_config_dtype_str,
+    try_get_optimal_moe_config,
+)
+from sglang.srt.layers.moe.topk import StandardTopKOutput, TopK, TopKOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
+from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
 from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel, load_fused_expert_weights
+from sglang.srt.runtime_context import max_prefill_buffer_tokens
 from sglang.srt.utils import add_prefix, logger
+from transformers import PretrainedConfig
 
 from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
     install_thinker_fused_rope,
@@ -28,7 +40,7 @@ from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
 from sglang_omni.quantization import get_weight_preprocessor
 
 
-def config_uses_mrope(config: Any) -> bool:
+def config_uses_mrope(config: PretrainedConfig) -> bool:
     """Return whether the exact Qwen text config declares M-RoPE."""
     for field in ("rope_parameters", "rope_scaling"):
         value = getattr(config, field, None)
@@ -39,12 +51,52 @@ def config_uses_mrope(config: Any) -> bool:
     return False
 
 
+@dataclass(kw_only=True)
+class DecodeLiveRows:
+    """The real rows of the current decode forward, shared by every MoE top-k."""
+
+    is_live_row: torch.Tensor | None = None
+
+
+class PaddedRowsTopK(nn.Module):
+    """Top-k that gives a padded decode row the experts of row 0, so padding adds
+    no experts to the fused MoE."""
+
+    def __init__(self, topk: TopK, live_rows: DecodeLiveRows) -> None:
+        super().__init__()
+        self.topk = topk
+        self.live_rows = live_rows
+
+    def forward(
+        self, hidden_states: torch.Tensor, router_logits: torch.Tensor
+    ) -> TopKOutput:
+        topk_output = self.topk(hidden_states, router_logits)
+        is_live_row = self.live_rows.is_live_row
+        # note (ratish): runners that route inside the expert kernel return no ids.
+        if is_live_row is None or not isinstance(topk_output, StandardTopKOutput):
+            return topk_output
+        else:
+            pass
+        return StandardTopKOutput(
+            topk_weights=topk_output.topk_weights,
+            topk_ids=torch.where(
+                is_live_row.unsqueeze(1), topk_output.topk_ids, topk_output.topk_ids[:1]
+            ),
+            router_logits=topk_output.router_logits,
+        )
+
+    def empty_topk_output(
+        self, device: torch.device, *, layer_id: int | None = None
+    ) -> TopKOutput:
+        return self.topk.empty_topk_output(device, layer_id=layer_id)
+
+
 class Qwen3OmniThinkerForCausalLM(nn.Module):
     """Qwen3-Omni thinker text model without duplicated audio/vision towers."""
 
     def __init__(
         self,
-        config: Any,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ) -> None:
@@ -73,6 +125,21 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             )
         self.logits_processor = LogitsProcessor(self.config)
         self.fused_rope_gate = install_thinker_fused_rope(self.model)
+        # note (ratish): a quantized MoE can share one activation scale across rows,
+        # so a padded row's experts could change the live rows' rounding.
+        self.decode_live_rows: DecodeLiveRows | None = None
+        if quant_config is None:
+            live_rows = DecodeLiveRows()
+            for layer in self.model.layers:
+                if isinstance(layer, Qwen3MoeDecoderLayer) and isinstance(
+                    layer.mlp, Qwen3MoeSparseMoeBlock
+                ):
+                    layer.mlp.topk = PaddedRowsTopK(layer.mlp.topk, live_rows)
+                    self.decode_live_rows = live_rows
+                else:
+                    pass
+        else:
+            pass
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
@@ -83,13 +150,13 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        forward_batch: Any,
+        forward_batch: ForwardBatch,
         get_embedding: bool = False,
-        pp_proxy_tensors: Any | None = None,
+        pp_proxy_tensors: PPProxyTensors | None = None,
         input_embeds: torch.Tensor | None = None,
         input_deepstack_embeds: torch.Tensor | None = None,
         omni_prefill_rids: list[str] | tuple[str, ...] | None = None,
-    ):
+    ) -> LogitsProcessorOutput:
         del get_embedding, omni_prefill_rids
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
@@ -99,20 +166,99 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             self.fused_rope_gate.evaluate(positions, forward_batch)
         else:
             pass
-
-        hidden_states = self.model(
-            input_ids=input_ids,
-            positions=positions,
-            forward_batch=forward_batch,
-            input_embeds=input_embeds,
-            pp_proxy_tensors=pp_proxy_tensors,
-            input_deepstack_embeds=input_deepstack_embeds,
-        )
+        # note (ratish): padded decode-graph rows write KV slot 0, which the allocator
+        # never hands out; one row pads nothing, and other paths run self.model unmasked.
+        marked_live_rows = self.decode_live_rows
+        if (
+            marked_live_rows is not None
+            and forward_batch.forward_mode.is_decode()
+            and forward_batch.out_cache_loc.shape[0] > 1
+        ):
+            marked_live_rows.is_live_row = forward_batch.out_cache_loc != 0
+        else:
+            marked_live_rows = None
+        try:
+            hidden_states = self.model(
+                input_ids=input_ids,
+                positions=positions,
+                forward_batch=forward_batch,
+                input_embeds=input_embeds,
+                pp_proxy_tensors=pp_proxy_tensors,
+                input_deepstack_embeds=input_deepstack_embeds,
+            )
+        finally:
+            if marked_live_rows is not None:
+                marked_live_rows.is_live_row = None
+            else:
+                pass
         return self.logits_processor(
             input_ids,
             hidden_states,
             self.lm_head,
             forward_batch,
+        )
+
+    @torch.no_grad()
+    def precompile_kernels_after_loading(self) -> None:
+        """Run one MoE layer on zero rows once per fused MoE kernel variant that a forward
+        up to the prefill ceiling reaches, so no request waits for one to compile."""
+        moe = next(
+            layer.mlp
+            for layer in self.model.layers
+            if isinstance(layer, Qwen3MoeDecoderLayer)
+            and isinstance(layer.mlp, Qwen3MoeSparseMoeBlock)
+        )
+        experts = moe.experts
+        if not (
+            isinstance(experts.quant_method, UnquantizedFusedMoEMethod)
+            and experts.quant_method.runner.runner_backend.is_triton()
+        ):
+            return
+        else:
+            pass
+        num_experts = experts.w13_weight.shape[0]
+        top_k = self.config.num_experts_per_tok
+        variant_token_counts: dict[tuple, int] = {}
+        for num_tokens in range(1, max_prefill_buffer_tokens() + 1):
+            config, (down_config, _) = try_get_optimal_moe_config(
+                experts.w13_weight.shape,
+                experts.w2_weight.shape,
+                top_k,
+                get_config_dtype_str(experts.w13_weight.dtype),
+                num_tokens,
+                return_down_config=True,
+            )
+            routed_rows = top_k * num_tokens
+            block_rows = config["BLOCK_SIZE_M"]
+            if routed_rows < num_experts + 1:
+                aligned_rows = routed_rows * block_rows
+            else:
+                aligned_rows = routed_rows + (num_experts + 1) * (block_rows - 1)
+            # note (ratish): besides its config, each GEMM's kernel compiles per early
+            # release of its dependents (at most 512 input rows) and per divisibility by 16
+            # of the routed rows and of the expert-aligned routing length.
+            variant = (
+                tuple(sorted(config.items())),
+                None if down_config is None else tuple(sorted(down_config.items())),
+                num_tokens <= 512,
+                routed_rows <= 512,
+                routed_rows % 16 == 0,
+                aligned_rows % 16 == 0,
+            )
+            variant_token_counts.setdefault(variant, num_tokens)
+        start = time.perf_counter()
+        for num_tokens in variant_token_counts.values():
+            moe.forward_normal(
+                torch.zeros(
+                    num_tokens,
+                    self.config.hidden_size,
+                    device=experts.w13_weight.device,
+                    dtype=experts.w13_weight.dtype,
+                )
+            )
+        logger.info(
+            f"Compiled the thinker MoE kernels for {len(variant_token_counts)} token "
+            f"counts in {time.perf_counter() - start:.1f} s"
         )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:

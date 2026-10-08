@@ -397,6 +397,7 @@ def wait_for_service(
     server_log_file: str | os.PathLike[str] | None = None,
     health_path: str = "/health",
     health_body_contains: str | None = None,
+    trust_env: bool = True,
 ) -> None:
     """Wait for SGLang Omni Server to be ready."""
     logger.info(f"Waiting for service at {base_url} ...")
@@ -413,7 +414,12 @@ def wait_for_service(
                             log_text = f.read()
                 raise RuntimeError(f"Server exited with code {exit_code}.\n{log_text}")
         try:
-            resp = requests_lib.get(f"{base_url}{health_path}", timeout=1)
+            if trust_env:
+                resp = requests_lib.get(f"{base_url}{health_path}", timeout=1)
+            else:
+                with requests_lib.Session() as session:
+                    session.trust_env = False
+                    resp = session.get(f"{base_url}{health_path}", timeout=1)
             if resp.status_code == 200 and (
                 health_body_contains is None or health_body_contains in resp.text
             ):

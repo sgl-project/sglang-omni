@@ -127,6 +127,7 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
 
     stats = ModelWorker.model_info(worker)["prefill_cuda_graph"]
 
+    assert isinstance(stats, dict)
     assert stats["backend"] == "breakable"
     assert stats["capture_num_tokens"] == [16, 32]
     assert stats["runner"] == "PrefillCudaGraphRunner"

@@ -7,8 +7,9 @@ import logging
 import queue
 import threading
 import types
+from collections.abc import Mapping
 from contextlib import nullcontext
-from typing import Any, Callable
+from typing import Callable
 from uuid import uuid4
 
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
@@ -16,7 +17,7 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling.message import OutgoingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
     DecodeKVReceiver,
     DecodeRequestPoolExhausted,
@@ -55,14 +56,18 @@ class PDKVLifecycle(OmniScheduler):
         self.pd_outstanding_releases.add(req.rid)
         self.pd_due_releases.put(req)
 
-    def is_fully_idle(self, for_health_check: bool = False) -> bool:
+    def is_fully_idle(
+        self, for_health_check: bool = False, ignore_waiting: bool = False
+    ) -> bool:
         # Health checks only care whether a running request can carry their
         # result. Destructive operations must also see PD-owned KV.
         if not for_health_check and self.pd_holds_kv():
             return False
         else:
             pass
-        return _Upstream.is_fully_idle(self, for_health_check=for_health_check)
+        return _Upstream.is_fully_idle(
+            self, for_health_check=for_health_check, ignore_waiting=ignore_waiting
+        )
 
     def drain_due_releases(self) -> None:
         while True:
@@ -80,12 +85,12 @@ class PDKVLifecycle(OmniScheduler):
 
     def run_weight_update_with_lifecycle(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         update_fn,
-        result_data: dict[str, Any],
+        result_data: Mapping[str, object],
         *,
         keep_pause_on_failure: bool = False,
-    ) -> dict[str, Any]:
+    ) -> AdminActionResult:
         def update_after_pd_drains(update_payload):
             self.drain_due_releases()
             if self.pd_holds_kv():
@@ -331,7 +336,11 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 or super().pd_holds_kv()
             )
 
-    def is_fully_idle(self, for_health_check: bool = False) -> bool:
+    def is_fully_idle(
+        self, for_health_check: bool = False, ignore_waiting: bool = False
+    ) -> bool:
+        # note (ratish): an admitted request waits holding its transferred KV,
+        # so the waiting queue counts even when a paused flush asks to skip it.
         with self.pd_lifecycle_lock:
             return super().is_fully_idle(for_health_check=for_health_check)
 

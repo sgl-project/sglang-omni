@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.client import GenerateChunk
 from sglang_omni.client.types import CompletionResult, GenerateRequest
 from sglang_omni.serve import create_app
@@ -293,3 +295,43 @@ def test_unknown_model_rejected_with_404() -> None:
     assert error["code"] == "model_not_found"
     assert "unknown/model" in error["message"]
     assert backend.requests == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_translation_overload_returns_openai_503(stream: bool) -> None:
+    class OverloadedTranslationClient(RecordingTranslationClient):
+        async def completion(
+            self,
+            request: GenerateRequest,
+            *,
+            request_id: str,
+            audio_format: str = "wav",
+        ) -> CompletionResult:
+            raise QueueFullError()
+
+        async def generate(
+            self,
+            request: GenerateRequest,
+            request_id: str | None = None,
+        ) -> AsyncIterator[GenerateChunk]:
+            raise QueueFullError()
+            yield  # note (Richard Wang): unreachable, makes this an async generator
+
+    app = create_app(
+        OverloadedTranslationClient(),
+        model_name=WHISPER_MODEL,
+        architectures=["WhisperForConditionalGeneration"],
+        supports_audio_translation=True,
+    )
+
+    response = post_translation(app, stream=stream)
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "message": QueueFullError.MESSAGE,
+            "type": "server_error",
+            "param": None,
+            "code": None,
+        }
+    }

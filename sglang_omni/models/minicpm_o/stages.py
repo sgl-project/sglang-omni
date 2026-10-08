@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import logging
 import os
-from collections import defaultdict
-from typing import Any
+from collections.abc import Mapping
 
+import numpy as np
 import torch
 import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -26,13 +26,13 @@ from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
-from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
@@ -50,17 +50,19 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     speech_enabled: bool = False,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
 
-    return SimpleScheduler(preprocessor)
+    return SimpleScheduler[StagePayload, StagePayload](preprocessor)
 
 
 ENCODER_CACHE_MAX_ENTRIES = 64
 ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 
 
-def create_encoder_executor(encoder: nn.Module, *, stage_name: str) -> SimpleScheduler:
+def create_encoder_executor(
+    encoder: nn.Module, *, stage_name: str
+) -> SimpleScheduler[StagePayload, StagePayload]:
     cache = StageOutputCache(
         max_size=ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=ENCODER_CACHE_MAX_BYTES,
@@ -94,7 +96,7 @@ def create_image_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     encoder = MiniCPMOImageEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
@@ -107,7 +109,7 @@ def create_audio_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     encoder = MiniCPMOAudioEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
@@ -123,9 +125,10 @@ def create_sglang_talker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     max_seq_len: int = 4096,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
-) -> OmniScheduler:
+    session_mode: bool = False,
+) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
@@ -134,9 +137,19 @@ def create_sglang_talker_executor_from_config(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+        enable_torch_compile=False,
         sampling_backend="pytorch",
     )
     overrides.setdefault("trust_remote_code", False)
+    if session_mode:
+        overrides.update(
+            enable_streaming_session=True,
+            disable_overlap_schedule=True,
+            disable_cuda_graph=True,
+        )
+    else:
+        pass
     overrides["tp_size"] = tp_size
     # note (MayDomine): cap talker KV allocation so it does not starve the thinker.
     overrides.setdefault("max_total_tokens", 32 * max_seq_len)
@@ -163,6 +176,7 @@ def create_sglang_talker_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        session_mode=session_mode,
     )
     logger.info(
         f"sglang_ar_started stage=talker gpu_id={gpu_id} "
@@ -171,43 +185,58 @@ def create_sglang_talker_executor_from_config(
     return scheduler
 
 
+def create_sglang_session_talker_executor_from_config(
+    model_path: str,
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
+    total_gpu_memory_fraction: float | None = None,
+) -> OmniScheduler[SGLangARRequestData]:
+    """Returns the talker that keeps native KV across the units of a duplex session."""
+    return create_sglang_talker_executor_from_config(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        server_args_overrides=server_args_overrides,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        session_mode=True,
+    )
+
+
 def vocode_code2wav_payloads(
     model: MiniCPMOCode2Wav, payloads: list[StagePayload]
 ) -> list[StagePayload]:
-    """Vocode talker payloads, grouping rows that share a speaker reference."""
+    """Vocode talker payloads in one batch, one speaker reference per row."""
     codec_tokens: list[list[int]] = []
-    references: list[str | bytes] = []
-    groups: dict[str, list[int]] = defaultdict(list)
-    for idx, payload in enumerate(payloads):
+    references: list[bytes | None] = []
+    for payload in payloads:
         state = MiniCPMOPipelineState.from_dict(payload.data)
-        tokens = state.engine_outputs[TALKER_STAGE]["codec_tokens"].reshape(-1).tolist()
-        reference = model.resolve_prompt_wav(code2wav_reference_audio(payload))
-        codec_tokens.append(tokens)
-        references.append(reference)
-        if isinstance(reference, bytes):
-            group_key = f"bytes:{hash_bytes(reference)}"
-        else:
-            group_key = reference_path_cache_key(reference) or str(reference)
-        groups[group_key].append(idx)
+        token_ids = (
+            state.engine_outputs[TALKER_STAGE]["codec_tokens"].reshape(-1).tolist()
+        )
+        codec_tokens.append(token_ids)
+        references.append(code2wav_reference_audio(payload))
 
     logger.info(
-        f"minicpm_code2wav_batch size={len(payloads)} groups={len(groups)} "
-        f"max_codec_tokens={max(len(tokens) for tokens in codec_tokens)}"
+        f"minicpm_code2wav_batch size={len(payloads)} "
+        f"max_codec_tokens={max(len(token_ids) for token_ids in codec_tokens)}"
     )
-    waveforms_by_index = {}
-    for group_indices in groups.values():
-        group_waveforms = model.vocode(
-            [codec_tokens[idx] for idx in group_indices],
-            references[group_indices[0]],
-        )
-        for idx, waveform in zip(group_indices, group_waveforms, strict=True):
-            waveforms_by_index[idx] = waveform
+    # note (Junnan Li): model.vocode rejects empty rows, which turns without speech produce.
+    voiced = [index for index, tokens in enumerate(codec_tokens) if tokens]
+    voiced_waveforms = model.vocode(
+        [codec_tokens[index] for index in voiced],
+        [references[index] for index in voiced],
+    )
+    waveforms = [np.zeros(0, dtype=np.float32) for _ in codec_tokens]
+    for index, waveform in zip(voiced, voiced_waveforms, strict=True):
+        waveforms[index] = waveform
 
     outputs: list[StagePayload] = []
-    for idx, payload in enumerate(payloads):
+    for payload, waveform in zip(payloads, waveforms, strict=True):
         payload.data = dict(
             audio_waveform_payload(
-                waveforms_by_index[idx],
+                waveform,
                 sample_rate=model.sample_rate,
                 modality="audio",
                 source_hint="MiniCPM-o",
@@ -220,32 +249,63 @@ def vocode_code2wav_payloads(
 def create_code2wav_executor(
     model_path: str,
     *,
+    max_batch_size: int,
+    max_batch_wait_ms: float,
+    batch_wait_when_idle: bool,
+    enable_flow_variable_length: bool,
+    reference_workers: int,
+    prompt_cache_capacity: int,
+    decode_stream_priority: int,
+    enable_flow_block_compile: bool,
+    enable_dit_torch_compile: bool,
+    enable_hift_torch_compile: bool,
     device: str | None = None,
     gpu_id: int | None = None,
-    max_batch_size: int = 8,
-    max_batch_wait_ms: float = 0.0,
-    batch_wait_when_idle: bool = False,
     dtype: str | None = None,
     max_batch_cost: int | None = None,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     model = MiniCPMOCode2Wav(
         model_path,
         device=str(resolve_concrete_device(device, gpu_id)),
         dtype=dtype,
+        enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_hift_torch_compile=enable_hift_torch_compile,
+        enable_flow_variable_length=enable_flow_variable_length,
+        reference_workers=reference_workers,
+        prompt_cache_capacity=prompt_cache_capacity,
+        decode_stream_priority=decode_stream_priority,
+        enable_flow_block_compile=enable_flow_block_compile,
     )
 
     def codec_token_cost(payload: StagePayload) -> int:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         return int(state.engine_outputs[TALKER_STAGE]["codec_tokens"].numel())
 
+    def prefetch_reference(payload: StagePayload) -> None:
+        try:
+            reference = code2wav_reference_audio(payload)
+        except ValueError:
+            return
+        model.prefetch_reference(payload.request_id, reference)
+
+    def vocode_and_release(payloads: list[StagePayload]) -> list[StagePayload]:
+        try:
+            return vocode_code2wav_payloads(model, payloads)
+        finally:
+            for payload in payloads:
+                model.release_reference(payload.request_id)
+
     return SimpleScheduler(
-        lambda payload: vocode_code2wav_payloads(model, [payload])[0],
-        batch_compute_fn=lambda payloads: vocode_code2wav_payloads(model, payloads),
+        lambda payload: vocode_and_release([payload])[0],
+        batch_compute_fn=vocode_and_release,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         batch_wait_when_idle=batch_wait_when_idle,
         request_cost_fn=codec_token_cost,
         max_batch_cost=max_batch_cost,
+        abort_callback=model.release_reference,
+        shutdown_callback=model.close_reference_pool,
+        request_arrival_hook=prefetch_reference,
     )
 
 
@@ -273,12 +333,12 @@ def create_sglang_thinker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     max_seq_len: int = 8192,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
     speech_enabled: bool = False,
-) -> OmniScheduler:
+) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the MiniCPM-o thinker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
@@ -287,6 +347,8 @@ def create_sglang_thinker_executor_from_config(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+        enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
         sampling_backend="pytorch",

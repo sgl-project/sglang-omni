@@ -102,6 +102,8 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     )
     restored = S2ProState.from_dict(state.to_dict())
     assert restored.input_ids == [1, 2, 3]
+    assert restored.vq_parts is not None
+    assert isinstance(restored.vq_parts[0], torch.Tensor)
     assert torch.equal(restored.vq_parts[0], torch.tensor([[10, 11], [20, 21]]))
     assert torch.equal(
         restored.output_codes, torch.tensor([[100, 101], [1, 2], [3, 4]])
@@ -172,7 +174,12 @@ def run_configure_preprocessing_threads(
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in ("OMP_NUM_THREADS", "MKL_NUM_THREADS")
+        if key
+        not in (
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "SGLANG_OMNI_OMP_FROM_CPU_PLAN",
+        )
     }
     env.update(env_overrides)
     stdout = subprocess.check_output(
@@ -180,6 +187,37 @@ def run_configure_preprocessing_threads(
     )
     returned, effective, cap = (int(token) for token in stdout.split()[-3:])
     return returned, effective, cap
+
+
+@pytest.mark.parametrize(
+    "env_overrides,worker_count,expected_threads",
+    [
+        (
+            {"OMP_NUM_THREADS": "32", "SGLANG_OMNI_OMP_FROM_CPU_PLAN": "1"},
+            4,
+            8,
+        ),
+        (
+            {"OMP_NUM_THREADS": "32", "SGLANG_OMNI_OMP_FROM_CPU_PLAN": "1"},
+            8,
+            4,
+        ),
+        (
+            {"OMP_NUM_THREADS": "2", "SGLANG_OMNI_OMP_FROM_CPU_PLAN": "1"},
+            4,
+            1,
+        ),
+        ({"OMP_NUM_THREADS": "32"}, 4, 32),
+    ],
+)
+def test_fish_preprocessing_composes_cpu_plan_with_worker_policy(
+    env_overrides: dict[str, str], worker_count: int, expected_threads: int
+) -> None:
+    returned, effective, _ = run_configure_preprocessing_threads(
+        env_overrides, worker_count=worker_count
+    )
+
+    assert returned == effective == expected_threads
 
 
 @pytest.mark.parametrize(
@@ -428,6 +466,7 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
 
     req_data = build_sglang_tts_request(state, tokenizer, request_id="req-1")
     assert torch.equal(req_data.input_ids, torch.tensor([10, 11, 12]))
+    assert isinstance(req_data.vq_mask_tokens, torch.Tensor)
     assert req_data.vq_mask_tokens.dtype == torch.bool
     assert torch.equal(req_data.vq_parts[0], torch.tensor([[1, 2], [3, 4]]))
     assert req_data.req.eos_token_ids == {99}

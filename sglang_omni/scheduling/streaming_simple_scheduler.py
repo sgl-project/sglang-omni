@@ -18,9 +18,11 @@ import logging
 import queue as queue_mod
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Coroutine, Sequence
+from typing import Callable
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -45,12 +47,24 @@ class StreamingSimpleScheduler:
 
     def __init__(
         self,
-        compute_fn: Callable[[Any], Any] | None,
+        compute_fn: (
+            Callable[
+                [StagePayload],
+                StagePayload | Coroutine[None, None, StagePayload],
+            ]
+            | None
+        ),
         *,
-        batch_compute_fn: Callable[[list[Any]], list[Any]] | None = None,
+        batch_compute_fn: (
+            Callable[
+                [list[StagePayload]],
+                Sequence[StagePayload] | Coroutine[None, None, Sequence[StagePayload]],
+            ]
+            | None
+        ) = None,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         abort_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -71,19 +85,26 @@ class StreamingSimpleScheduler:
         self.running = False
         self.pending_messages: collections.deque[IncomingMessage] = collections.deque()
         self.pending_done: set[str] = set()
-        self.stream_payloads: dict[str, Any] = {}
+        self.stream_payloads: dict[str, StagePayload] = {}
         self.aborted_request_ids: set[str] = set()
         self.completed_non_streaming_request_ids: set[str] = set()
         self.state_lock = threading.RLock()
         self.abort_lock = threading.Lock()
 
-    def is_streaming_payload(self, payload: Any) -> bool:
+    def is_streaming_payload(
+        self,
+        payload: StagePayload,
+    ) -> bool:
         return False
 
-    def validate_non_streaming_payload(self, payload: Any) -> None:
+    def validate_non_streaming_payload(self, payload: StagePayload) -> None:
         del payload
 
-    def on_streaming_new_request(self, request_id: str, payload: Any) -> None:
+    def on_streaming_new_request(
+        self,
+        request_id: str,
+        payload: StagePayload,
+    ) -> None:
         del request_id, payload
 
     def on_stream_chunk(
@@ -538,12 +559,19 @@ class StreamingSimpleScheduler:
             pass
         for msg, result in zip(valid, results):
             if not self.is_aborted(msg.request_id):
-                self.emit_result(msg.request_id, result)
+                if isinstance(result, BaseException):
+                    self.emit_error(msg.request_id, result)
+                else:
+                    self.emit_result(msg.request_id, result)
                 self.record_completed_non_streaming_request_id(msg.request_id)
             else:
                 pass
 
-    def run_compute(self, payload: Any, loop: asyncio.AbstractEventLoop) -> Any:
+    def run_compute(
+        self,
+        payload: StagePayload,
+        loop: asyncio.AbstractEventLoop,
+    ) -> StagePayload:
         if self.compute_fn is None:
             raise RuntimeError(
                 f"{self.__class__.__name__} does not support non-streaming compute"
@@ -557,7 +585,7 @@ class StreamingSimpleScheduler:
             pass
         return result
 
-    def validate_stream_chunk_item(self, request_id: str, item: Any) -> StreamItem:
+    def validate_stream_chunk_item(self, request_id: str, item: object) -> StreamItem:
         if not isinstance(item, StreamItem):
             raise TypeError(
                 f"{self.__class__.__name__} expected StreamItem for "
@@ -567,7 +595,11 @@ class StreamingSimpleScheduler:
             pass
         return item
 
-    def handle_streaming_new_request(self, request_id: str, payload: Any) -> None:
+    def handle_streaming_new_request(
+        self,
+        request_id: str,
+        payload: StagePayload,
+    ) -> None:
         with self.abort_lock:
             self.aborted_request_ids.discard(request_id)
         with self.state_lock:
@@ -580,7 +612,7 @@ class StreamingSimpleScheduler:
             else:
                 pass
 
-    def handle_stream_chunk(self, request_id: str, item: Any) -> None:
+    def handle_stream_chunk(self, request_id: str, item: object) -> None:
         item = self.validate_stream_chunk_item(request_id, item)
         with self.state_lock:
             for out in self.on_stream_chunk(request_id, item):
@@ -650,7 +682,7 @@ class StreamingSimpleScheduler:
             else:
                 pass
 
-    def emit_result(self, request_id: str, result: Any) -> None:
+    def emit_result(self, request_id: str, result: StagePayload) -> None:
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,

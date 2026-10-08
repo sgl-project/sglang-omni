@@ -6,7 +6,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Iterable, TypedDict
+
+if TYPE_CHECKING:
+    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
+        AudioVAE,
+    )
+else:
+    pass
 
 OWNER_AR_MODEL = "ar_model"
 OWNER_TTS_HEADS = "tts_heads"
@@ -60,7 +67,7 @@ class MingTTSWeightManifest:
     def unknown_keys(self) -> list[str]:
         return list(self.keys_by_owner.get(OWNER_UNKNOWN, ()))
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | dict[str, int] | dict[str, list[str]]]:
         return {
             "model_path": self.model_path,
             "source": self.source,
@@ -76,6 +83,19 @@ class MingTTSWeightManifest:
                 for owner, keys in self.keys_by_owner.items()
             },
         }
+
+
+class MingTTSWeightReportDict(TypedDict):
+    manifest: dict[str, str | int | dict[str, int] | dict[str, list[str]]] | None
+    loaded: dict[str, int]
+    loaded_keys: dict[str, dict[str, int | list[str]]]
+    loaded_params: dict[str, dict[str, int | list[str]]]
+    skipped: dict[str, dict[str, int | list[str]]]
+    deferred: dict[str, dict[str, int | list[str]]]
+    leftover_count: int
+    leftovers: list[str]
+    missing: dict[str, dict[str, int | list[str]]]
+    packed_shards: dict[str, dict[str, int | list[str]]]
 
 
 @dataclass
@@ -128,8 +148,10 @@ class MingTTSWeightReport:
             else:
                 pass
 
-    def to_dict(self) -> dict[str, Any]:
-        def bucket_summary(buckets: dict[str, list[str]]) -> dict[str, dict[str, Any]]:
+    def to_dict(self) -> MingTTSWeightReportDict:
+        def bucket_summary(
+            buckets: dict[str, list[str]]
+        ) -> dict[str, dict[str, int | list[str]]]:
             return {
                 key: {
                     "count": len(values),
@@ -142,7 +164,7 @@ class MingTTSWeightReport:
         def packed_shard_summary(
             loaded_shards: dict[str, list[str]],
             required_shards: dict[str, list[str]],
-        ) -> dict[str, dict[str, Any]]:
+        ) -> dict[str, dict[str, int | list[str]]]:
             summary = {}
             for target, required in required_shards.items():
                 loaded = loaded_shards.get(target, [])
@@ -371,7 +393,7 @@ def scan_ming_tts_weights(
 
 def load_ming_tts_audio_vae_weights(
     model_path: str | Path,
-    audio_vae: Any,
+    audio_vae: "AudioVAE",
     *,
     local_files_only: bool = False,
 ) -> MingTTSWeightReport:

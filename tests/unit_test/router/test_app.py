@@ -2714,6 +2714,95 @@ def test_speech_stream_requires_speech_and_streaming_capabilities() -> None:
     assert body == b"data: [DONE]\n\n"
 
 
+def test_speech_sse_stream_format_requires_streaming_capability() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/speech":
+            seen_workers.append(request_netloc(request))
+            return httpx.Response(
+                200,
+                content=b"event: speech.audio.done\ndata: {}\n\n",
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"speech"}),
+        WorkerConfig(url="http://worker-b:8102", capabilities={"speech", "streaming"}),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+    payload = {
+        "model": "qwen3-tts",
+        "input": "hello",
+        "response_format": "pcm",
+        "stream_format": "sse",
+    }
+
+    with TestClient(app) as client:
+        for body in (payload, payload | {"stream": False}):
+            response = client.post("/v1/audio/speech", json=body)
+            assert response.status_code == 200, response.text
+
+    assert seen_workers == ["worker-b:8102", "worker-b:8102"]
+
+
+@pytest.mark.parametrize("is_large_body", [False, True])
+def test_speech_sse_stream_format_without_streaming_worker_is_rejected(
+    is_large_body: bool,
+) -> None:
+    forwarded: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        forwarded.append(request.url.path)
+        return httpx.Response(200, content=b"PCM", request=request)
+
+    def post_speech(
+        client: TestClient, stream_format: str, headers: dict[str, str]
+    ) -> httpx.Response:
+        payload = {
+            "model": "qwen3-tts",
+            "input": "hello",
+            "response_format": "pcm",
+            "stream_format": stream_format,
+        }
+        body = (
+            large_json_body(payload) if is_large_body else json.dumps(payload).encode()
+        )
+        return client.post(
+            "/v1/audio/speech",
+            content=body,
+            headers={"content-type": "application/json"} | headers,
+        )
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"speech", "audio_input"})
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        assert post_speech(client, "sse", {}).status_code == 503
+        conflict = post_speech(client, "sse", {"x-sglang-omni-route-stream": "false"})
+        assert conflict.status_code == 400
+        assert "conflicts with JSON body stream" in conflict.text
+        assert post_speech(client, "audio", {}).status_code == 200
+
+    assert forwarded == ["/v1/audio/speech"]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -3513,6 +3602,7 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
         "/generate",
         "/v1/chat/completions",
         "/v1/audio/speech",
+        "/v1/audio/speech/{request_id}",
         "/v1/audio/transcriptions",
         "/v1/audio/translations",
     }
@@ -3765,20 +3855,28 @@ def test_multipart_form_stream_conflicting_route_header_is_rejected() -> None:
     assert seen_workers == []
 
 
-def test_worker_crud_stays_unauthenticated_even_with_admin_key() -> None:
-    # Note (Jiaxin Deng): current behavior, frozen: worker CRUD carries no admin auth
-    # while the weight-update/broadcast routes do; the route split must not change this.
+def test_worker_crud_requires_the_admin_key() -> None:
     app = admin_router_app(admin_api_key=ROUTER_ADMIN_API_KEY)
     with TestClient(app) as client:
-        created = client.post("/workers", json={"url": "http://127.0.0.1:8199"})
+        worker = {"url": "http://127.0.0.1:8199"}
+        assert client.post("/workers", json=worker).status_code == 401
+        created = client.post("/workers", json=worker, headers=admin_headers())
         assert created.status_code == 200
-        assert client.get("/workers").status_code == 200
         worker_id = created.json()["worker"]["worker_id"]
+        assert client.get("/workers").status_code == 200
+        disable = {"disabled": True}
+        assert client.put(f"/workers/{worker_id}", json=disable).status_code == 401
+        assert client.delete(f"/workers/{worker_id}").status_code == 401
         assert (
-            client.put(f"/workers/{worker_id}", json={"disabled": True}).status_code
+            client.put(
+                f"/workers/{worker_id}", json=disable, headers=admin_headers()
+            ).status_code
             == 200
         )
-        assert client.delete(f"/workers/{worker_id}").status_code == 200
+        assert (
+            client.delete(f"/workers/{worker_id}", headers=admin_headers()).status_code
+            == 200
+        )
 
 
 def test_pool_timeout_is_router_local_not_a_worker_failure() -> None:

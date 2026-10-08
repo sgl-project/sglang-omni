@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import struct
 import sys
 import types
@@ -19,6 +20,7 @@ from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalPipelineConfig,
     MossTTSLocalSplitPipelineConfig,
 )
+from sglang_omni.models.moss_tts_local.engine_builder import MossTtsLocalEngineBuilder
 from sglang_omni.models.moss_tts_local.local_transformer import (
     MossTTSLocalTransformer,
     rotate_half_interleaved,
@@ -226,6 +228,79 @@ def test_local_transformer_rejects_out_of_range_position():
 def test_rotate_half_interleaved_matches_upstream():
     x = torch.randn(5, 4, 8)
     torch.testing.assert_close(rotate_half_interleaved(x), hf_rotate_half(x))
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("batch_size,head_dim", [(1, 8), (3, 80), (16, 80)])
+@torch.no_grad()
+def test_local_transformer_fused_rotary_matches_eager(
+    monkeypatch, dtype, batch_size, head_dim
+):
+    pytest.importorskip("triton")
+    torch.manual_seed(42)
+    hidden_size = 4 * head_dim
+    module = MossTTSLocalTransformer(
+        hidden_size=hidden_size,
+        num_heads=4,
+        inner_size=2 * hidden_size,
+        num_layers=2,
+        max_positions=N_VQ + 1,
+        rope_base=1_000_000.0,
+    ).to(device="cuda", dtype=dtype)
+    reference = copy.deepcopy(module)
+    for decoder in (module, reference):
+        decoder.ensure_kv_cache(batch_size + 2, torch.device("cuda"), dtype)
+        for key, value in decoder.kv_cache:
+            key.fill_(7)
+            value.fill_(7)
+    for position in range(N_VQ + 1):
+        inputs = torch.randn(batch_size, hidden_size, device="cuda", dtype=dtype)
+        actual = module.step(inputs, position)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "sglang_omni.models.moss_tts_local.local_transformer.triton", None
+            )
+            expected = reference.step(inputs, position)
+        assert torch.equal(actual, expected)
+        for actual_cache, expected_cache in zip(module.kv_cache, reference.kv_cache):
+            for actual_tensor, expected_tensor in zip(actual_cache, expected_cache):
+                assert torch.equal(actual_tensor, expected_tensor)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@torch.no_grad()
+def test_local_transformer_fused_rotary_graph_replay(monkeypatch):
+    pytest.importorskip("triton")
+    module = MossTTSLocalTransformer(
+        hidden_size=320,
+        num_heads=4,
+        inner_size=640,
+        num_layers=1,
+        max_positions=N_VQ + 1,
+        rope_base=1_000_000.0,
+    ).to(device="cuda", dtype=torch.bfloat16)
+    reference = copy.deepcopy(module)
+    inputs = torch.randn(N_VQ + 1, 3, 320, device="cuda", dtype=torch.bfloat16)
+    for position in range(N_VQ + 1):
+        module.step(inputs[position], position)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        outputs = [
+            module.step(inputs[position], position) for position in range(N_VQ + 1)
+        ]
+    for _ in range(2):
+        inputs.normal_()
+        graph.replay()
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "sglang_omni.models.moss_tts_local.local_transformer.triton", None
+            )
+            for position, output in enumerate(outputs):
+                assert torch.equal(output, reference.step(inputs[position], position))
 
 
 # Shared MOSS-Audio-Tokenizer encoder
@@ -595,7 +670,7 @@ def install_fake_moss_ar_factory(
         server_args = types.SimpleNamespace(
             model_path=model_path,
             context_length=context_length,
-            **kwargs,
+            **{"enable_torch_compile": False, **kwargs},
         )
         server_args.cuda_graph_config = types.SimpleNamespace(
             decode=types.SimpleNamespace(
@@ -732,6 +807,19 @@ def test_moss_local_engine_uses_text_backbone_context(
     assert (
         builder.generation_defaults(dtype="bfloat16")["max_prefill_tokens"]
         == expected_max_prefill_tokens
+    )
+
+
+def test_moss_tts_local_generation_defaults_disable_torch_compile() -> None:
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=True,
+        async_decode_min_batch_size=1,
+        total_gpu_memory_fraction=0.5,
+        codec_mem_reserve=0.0,
+    )
+
+    assert (
+        builder.generation_defaults(dtype="bfloat16")["enable_torch_compile"] is False
     )
 
 
@@ -1517,7 +1605,7 @@ def test_batched_reference_encoder_mixes_path_and_waveform_jobs():
     assert calls[0] == [2, 5]
 
 
-# _MossLocalReferenceEncoder
+# MossLocalReferenceEncoder
 
 
 def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
@@ -1586,7 +1674,7 @@ def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
     )
     assert encode_count == 1
 
-    # ON-miss: first call to _MossLocalReferenceEncoder (cache empty)
+    # ON-miss: first call to MossLocalReferenceEncoder (cache empty)
     cached_enc = MossLocalReferenceEncoder(
         fake_batched, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
@@ -1664,8 +1752,8 @@ def test_cached_reference_encoder_duration_gate(tmp_path, monkeypatch):
         FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
 
-    # _BatchedReferenceEncoder.encode checks duration before enqueuing;
-    # _MossLocalReferenceEncoder calls through so the duration check still fires.
+    # BatchedReferenceEncoder.encode checks duration before enqueuing;
+    # MossLocalReferenceEncoder calls through so the duration check still fires.
     with pytest.raises(ValueError, match="100"):
         enc.encode(str(ref))
 

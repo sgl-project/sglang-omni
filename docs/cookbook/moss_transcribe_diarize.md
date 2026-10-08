@@ -98,13 +98,24 @@ Unlike TTS where the same reference voice is reused across many prompts (high hi
 
 ### Launching Commands
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
+Install `sglang-omni` with [Installation](../get_started/installation.md) on CUDA or
+[Intel XPU installation](../get_started/installation_xpu.md) on Intel GPUs, then download the model:
 
 ```bash
 hf download OpenMOSS-Team/MOSS-Transcribe-Diarize
 ```
 
+MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
+default target is 4 requests with a 12 ms oldest-request deadline. While more
+request builds are pending, the scheduler waits for either limit; after build
+work drains, it releases immediately only when decode is idle. During active
+decode, it continues coalescing until the target or deadline. Override the two
+limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
+set the request target to `0` to disable coalescing.
+
 Serve the model:
+
+#### CUDA GPU
 
 ```bash
 sgl-omni serve \
@@ -115,13 +126,25 @@ sgl-omni serve \
   --mem-fraction-static 0.80
 ```
 
-MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
-default target is 4 requests with a 12 ms oldest-request deadline. While more
-request builds are pending, the scheduler waits for either limit; after build
-work drains, it releases immediately only when decode is idle. During active
-decode, it continues coalescing until the target or deadline. Override the two
-limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
-set the request target to `0` to disable coalescing.
+#### Intel GPU
+
+MOSS-TD with LLM and Whisper encoder XPUGraph capture has been validated in
+BF16 on one Intel Arc Pro B60 with 24 GB of memory:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --port 8000 \
+  --asr.engine.max_running_requests 16 \
+  --asr.engine.cuda_graph_max_bs 16 \
+  --asr.engine.enable_torch_compile false \
+  --mem-fraction-static 0.70
+```
+
+The graph configuration names retain `cuda_graph` for compatibility, but
+SGLang selects the XPUGraph backend on XPU. The B60 validation uses
+`mem_fraction_static=0.70` to leave enough memory for all eight encoder graph
+buckets; `0.80` leaves too little graph-capture headroom on a 24 GB card.
 
 ### Sending Requests
 

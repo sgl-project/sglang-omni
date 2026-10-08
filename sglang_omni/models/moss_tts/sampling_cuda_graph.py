@@ -6,11 +6,16 @@ from __future__ import annotations
 import gc
 import logging
 from bisect import bisect_left
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 
 from sglang_omni.models.moss_tts.sampler import DelayGraphBatch, DelaySamplingOutput
+
+if TYPE_CHECKING:
+    from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +48,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
     def __init__(
         self,
         *,
-        model: Any,
+        model: MossTTSDelaySGLangModel,
         capture_bs: tuple[int, ...],
         disable_padding: bool = False,
     ) -> None:
@@ -74,7 +79,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
     def capture(
         cls,
         *,
-        model: Any,
+        model: MossTTSDelaySGLangModel,
         capture_bs: tuple[int, ...],
         disable_padding: bool = False,
     ) -> "MossTTSDelaySamplingCudaGraphRunner":

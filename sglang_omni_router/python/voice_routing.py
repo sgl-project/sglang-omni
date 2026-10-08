@@ -8,7 +8,7 @@ import json
 import logging
 from collections.abc import Set
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 import httpx
 
@@ -141,7 +141,7 @@ class VoiceRoutingState:
         if self._mutations_inflight == 0:
             self._refresh_requested.set()
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | bool | None]:
         owner = self.owner()
         if owner is None:
             registry_state = "unassigned"
@@ -287,7 +287,7 @@ class VoiceRoutingState:
             self._uploaded_names.discard(mutation.name)
 
 
-def uploaded_voice_names(payload: Any) -> set[str]:
+def uploaded_voice_names(payload: object) -> set[str]:
     if not isinstance(payload, dict):
         raise ValueError("voice list response must be an object")
     uploaded_names = payload.get("uploaded_voice_names")
@@ -324,7 +324,7 @@ def registry_refresh_error(exc: Exception) -> str:
     return type(exc).__name__
 
 
-def normalize_voice_name(value: Any) -> str | None:
+def normalize_voice_name(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip().lower()

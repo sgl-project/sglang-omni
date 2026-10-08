@@ -10,6 +10,7 @@ import pybase64
 import pytest
 
 import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.preprocessing import resource_connector
 from sglang_omni.preprocessing.transcription import (
     PreparedAudio,
     prepare_audio,
@@ -184,6 +185,7 @@ def test_resolve_audio_source_wraps_declared_g711_bytes() -> None:
         make_payload({"audio_bytes": raw, "content_type": "audio/basic"})
     )
 
+    assert isinstance(wrapped, bytes)
     assert wrapped[:4] == b"RIFF"
     assert wrapped.endswith(raw)
 
@@ -210,3 +212,26 @@ def test_prepare_audio_decodes_headerless_mulaw_from_the_offline_inputs() -> Non
     assert prepared.sample_rate == 16000
     assert prepared.duration_s == pytest.approx(0.5)
     assert np.abs(prepared.waveform).max() == 0.0
+
+
+def test_request_audio_follows_the_server_media_policy(monkeypatch, tmp_path) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    inside, outside = allowed / "inside.wav", tmp_path / "outside.wav"
+    for path in (inside, outside):
+        path.write_bytes(wav_bytes())
+    monkeypatch.setenv(resource_connector.ALLOWED_LOCAL_MEDIA_PATH_ENV, str(allowed))
+    monkeypatch.setenv(resource_connector.ALLOWED_MEDIA_DOMAINS_ENV, "example.com")
+    monkeypatch.setattr(resource_connector, "_global_connector", None)
+
+    def prepare(source: str):
+        return prepare_audio(make_payload({"audio_path": source}), source_name="ASR")
+
+    assert prepare(str(inside)).duration_s == pytest.approx(0.1)
+    for source, refusal in (
+        (str(outside), "not within allowed directory"),
+        (f"file://{outside}", "not within allowed directory"),
+        ("http://127.0.0.1:9/audio.wav", "Domain 127.0.0.1 is not allowed"),
+    ):
+        with pytest.raises(ValueError, match=refusal):
+            prepare(source)

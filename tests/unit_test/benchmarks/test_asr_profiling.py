@@ -43,12 +43,15 @@ def test_profile_control_posts_run_id_and_event_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, dict]] = []
+    headers_sent: list[dict] = []
 
-    def fake_post(url, *, json, timeout, proxies):
+    def fake_post(url, *, json, timeout, proxies, headers):
         del timeout, proxies
         calls.append((url, json))
+        headers_sent.append(headers)
         return FakeResponse({"run_id": json.get("run_id"), "event_dir": "/tmp/e"})
 
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "")
     monkeypatch.setattr(asr_profiling.requests, "post", fake_post)
 
     started = start_request_profile("http://127.0.0.1:8000/", "run-1", "/tmp/e")
@@ -59,6 +62,53 @@ def test_profile_control_posts_run_id_and_event_dir(
     assert calls[0][0] == "http://127.0.0.1:8000/start_request_profile"
     assert calls[0][1] == {"run_id": "run-1", "event_dir": "/tmp/e"}
     assert calls[1][0] == "http://127.0.0.1:8000/stop_request_profile"
+    assert headers_sent == [{}, {}]
+
+
+def test_profile_control_sends_the_admin_key_when_it_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from benchmarks.eval.benchmark_omni_rollout_stress import (
+        _start_request_profile,
+        _stop_request_profile,
+    )
+
+    sent: list[dict | None] = []
+
+    def fake_post(url, *, json, timeout, proxies, headers=None):
+        sent.append(headers)
+        return FakeResponse({"run_id": json.get("run_id")})
+
+    class FakeSession:
+        def post(self, url, *, json, headers=None):
+            sent.append(headers)
+            response = SimpleNamespace(raise_for_status=lambda: None)
+
+            async def body():
+                return {"run_id": json.get("run_id")}
+
+            response.json = body
+
+            class Context:
+                async def __aenter__(self):
+                    return response
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            return Context()
+
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "admin-key")
+    monkeypatch.setattr(asr_profiling.requests, "post", fake_post)
+    start_request_profile("http://127.0.0.1:8000", "run-1", "/tmp/e")
+    stop_request_profile("http://127.0.0.1:8000", "run-1")
+    session = FakeSession()
+    asyncio.run(
+        _start_request_profile(session, "http://h", run_id="r", event_dir="/tmp/e")
+    )
+    asyncio.run(_stop_request_profile(session, "http://h", run_id="r"))
+
+    assert sent == [{"Authorization": "Bearer admin-key"}] * 4
 
 
 def test_profiled_pass_runs_shared_lifecycle_and_builds_report(

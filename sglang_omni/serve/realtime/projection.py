@@ -14,6 +14,7 @@ from sglang_omni.serve.realtime.control import (
     Drained,
     Ended,
     Failure,
+    ImageAccepted,
     UnitCompleted,
     Updated,
 )
@@ -259,6 +260,12 @@ def project_control(event: ControlEvent) -> ServerEvent:
             type="sglang.input_audio.accepted",
             seq=event.sequence,
             accepted_end_ms=event.accepted_end_ms,
+            client_event_id=event.client_event_id,
+        )
+    elif isinstance(event, ImageAccepted):
+        return dict(
+            type="sglang.input_image.accepted",
+            unit_id=event.unit_id,
             client_event_id=event.client_event_id,
         )
     elif isinstance(event, Cleared):

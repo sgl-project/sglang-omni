@@ -3,13 +3,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Iterable, TypeGuard
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+else:
+    pass
 
 import torch
 
 from sglang_omni.models.qwen3_omni.payload_types import (
+    EncoderOutputs,
     Qwen3OmniEvent,
     Qwen3OmniPipelineState,
+    ThinkerInputs,
+    ThinkerModelInputs,
     ThinkerOutput,
 )
 from sglang_omni.proto import StagePayload
@@ -28,7 +36,7 @@ def cast_tensor(
     return value.to(dtype=dtype) if dtype is not None else value
 
 
-def non_empty(value: Any) -> bool:
+def non_empty(value: object) -> TypeGuard[torch.Tensor]:
     if isinstance(value, torch.Tensor):
         return value.numel() > 0
     else:
@@ -40,7 +48,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     """Aggregate preprocessing + encoder outputs into thinker inputs."""
     base = payloads.get("preprocessing") or next(iter(payloads.values()))
     state = Qwen3OmniPipelineState.from_dict(base.data)
-    encoder_outs: dict[str, Any] = {}
+    encoder_outs: EncoderOutputs = {}
     if state.encoder_outs:
         encoder_outs.update(state.encoder_outs)
     else:
@@ -72,8 +80,8 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 
 def build_thinker_inputs(
     state: Qwen3OmniPipelineState,
-    encoder_outs: dict[str, Any],
-) -> dict[str, Any]:
+    encoder_outs: EncoderOutputs,
+) -> ThinkerInputs:
     mm_inputs = state.mm_inputs
     mm_image = mm_inputs.get("image", {})
     mm_audio = mm_inputs.get("audio", {})
@@ -122,7 +130,7 @@ def build_thinker_inputs(
         dtype=torch.float,
     )
 
-    thinker_model_inputs: dict[str, Any] = {}
+    thinker_model_inputs: ThinkerModelInputs = {}
     has_image = non_empty(image_embeds)
     has_video = non_empty(video_embeds)
     if has_image:
@@ -196,7 +204,7 @@ def build_thinker_inputs(
     else:
         pass
 
-    result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
+    result: ThinkerInputs = {"model_inputs": thinker_model_inputs}
     if media_cache_keys:
         result["media_cache_keys"] = media_cache_keys
     else:
@@ -206,7 +214,7 @@ def build_thinker_inputs(
 
 def prune_preprocessing_for_thinker(
     state: Qwen3OmniPipelineState,
-    encoder_outs: dict[str, Any],
+    encoder_outs: EncoderOutputs,
 ) -> None:
     mm_inputs = state.mm_inputs
     mm_image = mm_inputs.get("image", {})
@@ -262,7 +270,7 @@ def decode_events(
     *,
     thinker_out: ThinkerOutput,
     state: Qwen3OmniPipelineState,
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     eos_token_id: int | None,
     step: int,
 ) -> Iterable[Qwen3OmniEvent]:

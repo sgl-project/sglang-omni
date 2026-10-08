@@ -7,11 +7,10 @@ import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
-from transformers import AutoConfig
+from transformers import AutoConfig, PretrainedConfig
 
 try:
     from transformers.initialization import no_init_weights
@@ -29,6 +28,7 @@ _CONFIG_MODEL_TYPE_TO_ARCH = {
     "qwen3_tts": "Qwen3TTSForConditionalGeneration",
     "voxtral_tts": "VoxtralTTSForConditionalGeneration",
     "zonos2": "Zonos2ForCausalLM",
+    "personaplex": "PersonaPlexForCausalLM",
 }
 
 _COSYVOICE3_LAYOUT_MARKER = "cosyvoice3.yaml"
@@ -37,9 +37,11 @@ _AUK_ARCHITECTURE = "AuKForConditionalGeneration"
 _AUK_CONFIG_NAMES = ("config.yaml", "config.yml")
 _AUK_MODEL_NAMES = frozenset({"auk", "auk-flash"})
 _AUK_WEIGHT_MARKERS = ("auk_base.safetensors", "auk_flash.safetensors")
+_PERSONAPLEX_ARCHITECTURE = "PersonaPlexForCausalLM"
+_PERSONAPLEX_LAYOUT_MARKER = "tokenizer_spm_32k_3.model"
 
 
-def architecture_from_hf_config(hf_config: Any) -> str | None:
+def architecture_from_hf_config(hf_config: PretrainedConfig) -> str | None:
     """Prefer HF architectures; fall back to architecture/model_type."""
     archs = getattr(hf_config, "architectures", None)
     if archs:
@@ -216,6 +218,33 @@ def try_resolve_arch_from_cosyvoice3_layout(
     return _COSYVOICE3_ARCHITECTURE
 
 
+def try_resolve_arch_from_personaplex_layout(
+    model_path: str, revision: str | None = None
+) -> str | None:
+    """Resolve PersonaPlex (and its Moshi base) from the released layout.
+
+    The checkpoint carries no architectures entry; what identifies the family
+    is the Moshi text tokenizer shipped alongside model.safetensors.
+    """
+    if os.path.isfile(os.path.join(model_path, _PERSONAPLEX_LAYOUT_MARKER)):
+        return _PERSONAPLEX_ARCHITECTURE
+    else:
+        pass
+    if os.path.isdir(model_path):
+        return None
+    else:
+        pass
+    try:
+        hf_hub_download(
+            repo_id=model_path,
+            filename=_PERSONAPLEX_LAYOUT_MARKER,
+            revision=revision,
+        )
+    except (OSError, ValueError):
+        return None
+    return _PERSONAPLEX_ARCHITECTURE
+
+
 def auk_architecture_from_config(path: str) -> str | None:
     """Return the AuK architecture if the file names AuK or AuK-Flash."""
     import yaml
@@ -286,7 +315,7 @@ def load_hf_config(
     *,
     trust_remote_code: bool = True,
     local_files_only: bool = True,
-) -> Any:
+) -> PretrainedConfig:
     """Load the HF config, preferring the local cache."""
     try:
         config_path = cached_file(
@@ -304,7 +333,9 @@ def load_hf_config(
     return cfg
 
 
-def instantiate_module(module_cls: type[nn.Module], config: Any) -> nn.Module:
+def instantiate_module(
+    module_cls: type[nn.Module], config: PretrainedConfig
+) -> nn.Module:
     """Instantiate a module without allocating its parameters."""
     with no_init_weights():
         if hasattr(module_cls, "_from_config"):

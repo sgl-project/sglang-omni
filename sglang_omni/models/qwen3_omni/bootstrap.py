@@ -3,11 +3,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+else:
+    pass
 
 
 def create_thinker_scheduler(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int = 0,
     *,
     speech_enabled: bool = False,
@@ -20,7 +29,7 @@ def create_thinker_scheduler(
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
-):
+) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
@@ -111,7 +120,7 @@ def create_thinker_scheduler(
 
 
 def create_talker_scheduler(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int = 0,
     *,
     weight_prefix: str = "talker.",
@@ -124,10 +133,11 @@ def create_talker_scheduler(
     partial_start_min_chunks: int = 5,
     enable_talker_start_topology: bool = False,
     code2wav_in_process: bool = False,
+    operator_selected_prefill_backend: bool = False,
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
-):
+) -> "QwenTalkerScheduler":
     """Create the Qwen talker scheduler."""
     del speech_enabled
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -144,12 +154,18 @@ def create_talker_scheduler(
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
     )
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
+    )
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+    from sglang_omni.utils import cuda_graph_batch_validator
 
     want_cuda_graph = configure_talker_server_args(
         server_args,
         feedback_enabled=feedback_enabled,
     )
+    prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
 
     (
         model_worker,
@@ -166,6 +182,7 @@ def create_talker_scheduler(
         weight_prefix=weight_prefix,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         defer_cuda_graph_capture=want_cuda_graph,
+        enable_prefill_input_embeds=prefill_graph_backend == CudaGraphBackend.BREAKABLE,
     )
     # Note:(Chenchen Hong) align the talker vocab to the codec vocab: post1 sizes
     # the repetition-penalty orchestrator from model_config.vocab_size (the
@@ -179,10 +196,15 @@ def create_talker_scheduler(
         pass
     model_worker.model_runner.model.sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
-        # Equivalent to init_cuda_graphs() while the talker requests no prefill
-        # embeds slot, but keeps both stages on one path so enabling talker
-        # prefill graphs later cannot silently miss the embeds view.
+        # note (ratish): capture after binding the sampler so decode graphs record it.
         init_sglang_cuda_graphs(model_worker)
+        if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
+            cuda_graph_batch_validator.attest_prefill_cuda_graphs(
+                model_worker.model_runner,
+                operator_selected=operator_selected_prefill_backend,
+            )
+        else:
+            pass
     else:
         pass
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from pathlib import Path
+from traceback import format_exception
 from types import FrameType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -20,6 +21,7 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
@@ -246,10 +248,9 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.fail_spawn = fail_spawn
             self.process = FakeProcess() if not fail_spawn else None
             self.channels_closed = False
-
-        @property
-        def process_specs(self) -> list[SimpleNamespace]:
-            return [SimpleNamespace(process_name=self.stage_name)] * len(self.processes)
+            self.process_specs = [
+                StageWorkerProcessSpec(stage_name, [StageLaunchConfig(stage_name)])
+            ]
 
         @property
         def processes(self) -> list[FakeProcess]:
@@ -372,9 +373,15 @@ async def test_mp_runner_stop_cleans_runtime_dir(
 
         def __init__(self) -> None:
             self.shutdown_called = False
+            self.process_specs = [
+                StageWorkerProcessSpec(
+                    self.stage_name, [StageLaunchConfig(self.stage_name)]
+                )
+            ]
 
         def spawn(self, ctx) -> None:
             del ctx
+            assert self.process_specs[0].cpu_threads == 8
 
         async def wait_ready(self, timeout: float) -> None:
             del timeout
@@ -392,9 +399,12 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     group = FakeGroup()
     monkeypatch.setattr(mp_runner, "Coordinator", FakeCoordinator)
     monkeypatch.setattr(mp_runner, "build_stage_groups", lambda *a, **k: [group])
+    capacity = Mock(return_value=8)
+    monkeypatch.setattr(mp_runner, "effective_cpu_count", capacity)
 
     runner = mp_runner.MultiProcessPipelineRunner(make_config(tmp_path))
     await runner.start()
+    capacity.assert_called_once_with()
     assert len([path for path in tmp_path.iterdir() if path.is_dir()]) == 1
 
     await runner.stop()
@@ -595,6 +605,42 @@ def test_start_profile_request_only_mode_does_not_require_trace_template(
             rec.stop()
 
 
+class RecordingProfilerControl:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def broadcast_start(self, **kwargs: object) -> None:
+        self.calls.append("start")
+
+    async def broadcast_stop(self, **kwargs: object) -> None:
+        self.calls.append("stop")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/start_profile",
+        "/stop_profile",
+        "/start_request_profile",
+        "/stop_request_profile",
+    ],
+)
+def test_profiler_routes_take_the_admin_key(
+    path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni.serve import launcher
+
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "admin-key")
+    app = FastAPI()
+    control = RecordingProfilerControl()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    body = {"enable_torch": False, "event_dir": str(tmp_path / "events")}
+
+    with TestClient(app) as client:
+        assert client.post(path, json=body).status_code == 401
+    assert control.calls == []
+
+
 def test_start_profile_torch_mode_still_requires_trace_template() -> None:
     from sglang_omni.serve import launcher
 
@@ -701,3 +747,109 @@ async def test_launcher_preserves_runner_start_error(
 
     with pytest.raises(RuntimeError, match="start failed"):
         await launcher.run_server(config, port=8000)
+
+
+@pytest.mark.parametrize(
+    "window", ["start", "handover", "serve", "stop", "failed_stop"]
+)
+def test_launcher_cleans_up_before_passing_on_sigterm(
+    window: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import launcher
+
+    events: list[str] = []
+    original_handler = signal.getsignal(signal.SIGTERM)
+
+    def previous_handler(sig: int, frame: FrameType | None) -> None:
+        events.append("previous handler")
+
+    async def receive_sigterm_then_clean_up() -> None:
+        signal.raise_signal(signal.SIGTERM)
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError as cancelled:
+            events.append("cancelled")
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(0)
+            if window == "failed_stop":
+                raise cancelled from RuntimeError("stop failed")
+            else:
+                pass
+            events.append("cleaned up")
+            raise
+
+    class FakeRunner:
+        def __init__(self, pipeline_config: PipelineConfig) -> None:
+            self.coordinator = StubCoordinator()
+            self.stage_control_endpoints = {}
+            self.prep = SimpleNamespace(
+                placement_plan=SimpleNamespace(gpus={}),
+                process_plan=SimpleNamespace(groups=(), tp_stage_to_processes={}),
+            )
+
+        async def start(self, timeout: float) -> None:
+            if window == "start":
+                await receive_sigterm_then_clean_up()
+            else:
+                pass
+
+        async def stop(self) -> None:
+            events.append("stop")
+            if window in ("stop", "failed_stop"):
+                await receive_sigterm_then_clean_up()
+            else:
+                pass
+
+        async def wait_failed(self) -> None:
+            await asyncio.Future()
+
+    def create_app(*args, **kwargs) -> FastAPI:
+        if window == "handover":
+            signal.raise_signal(signal.SIGTERM)
+        else:
+            pass
+        return FastAPI()
+
+    async def serve(server: launcher.uvicorn.Server, sockets=None) -> None:
+        if window == "serve":
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(0.01)
+            assert server.should_exit
+        elif window == "handover":
+            for _ in range(100):
+                await asyncio.sleep(0)
+        else:
+            pass
+
+    monkeypatch.setattr(launcher, "apply_gpu_compat_env_defaults", Mock())
+    monkeypatch.setattr(launcher, "find_available_port", lambda host, port: port)
+    monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
+    monkeypatch.setattr(launcher, "ProfilerControlClient", Mock())
+    monkeypatch.setattr(launcher, "create_app", create_app)
+    monkeypatch.setattr(launcher.uvicorn.Server, "_serve", serve)
+    signal.signal(signal.SIGTERM, previous_handler)
+    try:
+        if window == "serve":
+            launcher.launch_server(make_config(tmp_path), port=8000)
+        else:
+            with pytest.raises(asyncio.CancelledError) as raised:
+                launcher.launch_server(make_config(tmp_path), port=8000)
+        assert signal.getsignal(signal.SIGTERM) is previous_handler
+    finally:
+        signal.signal(signal.SIGTERM, original_handler)
+
+    expected_events = {
+        "start": ["cancelled", "cleaned up", "previous handler"],
+        "handover": ["stop", "previous handler"],
+        "serve": ["stop"],
+        "stop": ["stop", "cancelled", "cleaned up", "previous handler"],
+        "failed_stop": ["stop", "cancelled"],
+    }
+    assert events == expected_events[window]
+    if window == "failed_stop":
+        error_text = "".join(format_exception(raised.value))
+        assert "RuntimeError: stop failed" in error_text
+    else:
+        pass

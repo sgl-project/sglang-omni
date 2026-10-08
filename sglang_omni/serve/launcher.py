@@ -32,19 +32,25 @@ import signal
 import socket
 import threading
 import time
+from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
-from typing import Any
+from types import FrameType
+from typing import TypedDict
 
 import uvicorn
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from sglang_omni.client import Client
+from sglang_omni.client.types import GenerateChunk
 from sglang_omni.config import PipelineConfig
+from sglang_omni.http import admin_auth
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+from sglang_omni.preprocessing.resource_connector import export_media_policy
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
+from sglang_omni.proto.messages import StreamMessage
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
@@ -61,6 +67,59 @@ logger = logging.getLogger(__name__)
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
 
+class ClientOptions(TypedDict, total=False):
+    result_builder: Callable[[str, object], GenerateChunk] | None
+    stream_builder: Callable[[str, StreamMessage], GenerateChunk] | None
+
+
+class StageRuntimeLog(TypedDict):
+    gpu: int | list[int] | None
+    total_gpu_memory_fraction: float | None
+    kv_cache_bytes: int | None
+    total_reserve_bytes: int | None
+    mem_fraction_static: float | None
+
+
+class GpuDeviceLog(TypedDict):
+    device_id: int | str | None
+    name: str
+    total_memory: str
+
+
+class ProcessGroupLog(TypedDict):
+    stages: list[str]
+    gpu: int | None
+
+
+class GpuPlacementLog(TypedDict):
+    hardware: GpuDeviceLog
+    stages: list[str]
+    total_gpu_memory_fraction: float
+    missing_fraction_stages: list[str]
+    total_kv_cache_bytes: int
+    total_reserve_bytes: int
+
+
+class PlacementLog(TypedDict):
+    topology: str
+    pipeline: str | None
+    process_groups: dict[str, ProcessGroupLog]
+    tp_process_groups: dict[str, list[str]]
+    stage_runtime: dict[str, StageRuntimeLog]
+    gpus: dict[int, GpuPlacementLog]
+
+
+class ModelCapabilitiesLog(TypedDict):
+    architecture: str
+    reference_audio: bool
+    batch_vocoder: bool
+    streaming_vocoder: bool
+    cuda_graph: bool
+    torch_compile: bool
+    breakable_prefill_cuda_graph: bool
+    full_prefill_cuda_graph: bool
+
+
 class PipelineUvicornServer(uvicorn.Server):
     """Keep Uvicorn's graceful handling without re-raising process signals.
 
@@ -71,7 +130,7 @@ class PipelineUvicornServer(uvicorn.Server):
     """
 
     @contextmanager
-    def capture_signals(self):
+    def capture_signals(self) -> Generator[None, None, None]:
         if threading.current_thread() is not threading.main_thread():
             yield
             return
@@ -130,10 +189,12 @@ def default_template(profiler_dir: str, run_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-def stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any]:
+def stage_runtime_log_summary(
+    pipeline_config: PipelineConfig,
+) -> dict[str, StageRuntimeLog]:
     """Build stage placement and runtime budget fields for startup logs."""
 
-    summary: dict[str, Any] = {}
+    summary: dict[str, StageRuntimeLog] = {}
     for stage in pipeline_config.stages:
         fraction = stage.gpu_memory_fraction
         kv_cache_bytes = (
@@ -156,7 +217,7 @@ def stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any]
     return summary
 
 
-def format_gpu_device_info(info: GpuDeviceInfo) -> dict[str, Any]:
+def format_gpu_device_info(info: GpuDeviceInfo) -> GpuDeviceLog:
     return {
         "device_id": info.device_id,
         "name": info.name or "unknown",
@@ -172,7 +233,7 @@ def placement_log_summary(
     placement_plan,
     process_plan,
     pipeline_config: PipelineConfig,
-) -> dict[str, Any]:
+) -> PlacementLog:
     """Build the resolved startup placement summary.
 
     The summary includes topology, stage placement, stage budgets, per-GPU
@@ -211,7 +272,7 @@ def placement_log_summary(
 
 def model_capabilities_log_summary(
     pipeline_config: PipelineConfig,
-) -> dict[str, Any] | None:
+) -> ModelCapabilitiesLog | None:
     architecture = getattr(type(pipeline_config), "architecture", None)
     if architecture is None:
         return None
@@ -232,6 +293,7 @@ def model_capabilities_log_summary(
         "breakable_prefill_cuda_graph": (
             capabilities.supports_breakable_prefill_cuda_graph
         ),
+        "full_prefill_cuda_graph": capabilities.supports_full_prefill_cuda_graph,
     }
 
 
@@ -253,7 +315,7 @@ def log_model_capabilities(pipeline_config: PipelineConfig) -> None:
 class StartReq(BaseModel):
     run_id: str | None = None
     trace_path_template: str | None = None
-    config: dict[str, Any] | None = None
+    config: dict[str, object] | None = None
     event_dir: str | None = None
     enable_torch: bool = True
 
@@ -274,7 +336,8 @@ def default_event_dir(profiler_dir: str, run_id: str) -> str:
 def mount_profiler_routes(
     app, profiler_ctl: ProfilerControlClient, profiler_dir: str | None
 ) -> None:
-    router = APIRouter()
+    auth = admin_auth.make_admin_auth_dependency(admin_auth.resolve_admin_api_key())
+    router = APIRouter(dependencies=[Depends(auth)])
 
     @router.post("/start_profile")
     async def start(req: StartReq):
@@ -407,7 +470,7 @@ async def run_server(
     port: int = 8000,
     model_name: str | None = None,
     log_level: str = "info",
-    client_kwargs: dict[str, Any] | None = None,
+    client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
@@ -417,6 +480,7 @@ async def run_server(
 
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
+    export_media_policy(allowed_local_media_path, allowed_media_domains)
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
 
@@ -453,7 +517,7 @@ async def run_server(
         if enable_realtime and deployment_factory is not None:
             realtime_deployment: RealtimeDeployment | None = import_string(
                 deployment_factory
-            )(client)
+            )(client, pipeline_config)
         else:
             realtime_deployment = None
         app = create_app(
@@ -550,6 +614,12 @@ async def serve_with_failure_watch(
                 pass
             raise RuntimeError("Pipeline runtime task exited unexpectedly")
     finally:
+        if not server_task.done():
+            server_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await server_task
+        else:
+            pass
         for task in watcher_tasks:
             if not task.done():
                 task.cancel()
@@ -564,7 +634,7 @@ def launch_server(
     port: int = 8000,
     model_name: str | None = None,
     log_level: str = "info",
-    client_kwargs: dict[str, Any] | None = None,
+    client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
@@ -592,8 +662,17 @@ def launch_server(
             ``/v1/audio/speech/batch``.
     """
     apply_gpu_compat_env_defaults()
-    asyncio.run(
-        run_server(
+    sigterm_received = False
+    cleanup_failed = False
+
+    async def run_server_with_sigterm_cleanup() -> None:
+        """Let SIGTERM cancel run_server while HTTP serving is not running.
+
+        PipelineUvicornServer replaces this handler while it serves. Once runner
+        cleanup succeeds, launch_server raises SIGTERM again for the previous handler.
+        """
+        nonlocal cleanup_failed
+        server_run = run_server(
             pipeline_config,
             host=host,
             port=port,
@@ -605,4 +684,45 @@ def launch_server(
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
         )
-    )
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        if (
+            threading.current_thread() is not threading.main_thread()
+            or previous_handler in (None, signal.SIG_IGN)
+        ):
+            await server_run
+            return
+        else:
+            pass
+        loop = asyncio.get_running_loop()
+        main_task = asyncio.current_task()
+
+        def cancel_main_task() -> None:
+            nonlocal sigterm_received
+            logger.warning("Received SIGTERM, stopping the pipeline")
+            if not sigterm_received:
+                sigterm_received = True
+                main_task.cancel()
+            else:
+                pass
+
+        def handle_sigterm(signal_number: int, frame: FrameType | None) -> None:
+            loop.call_soon_threadsafe(cancel_main_task)
+
+        signal.signal(signal.SIGTERM, handle_sigterm)
+        try:
+            await server_run
+        except asyncio.CancelledError as cancelled:
+            # note (Richard Wang): Python 3.10 drops the cause outside asyncio.run
+            cleanup_failed = cancelled.__cause__ is not None
+            raise
+        finally:
+            signal.signal(signal.SIGTERM, previous_handler)
+
+    try:
+        asyncio.run(run_server_with_sigterm_cleanup())
+    except asyncio.CancelledError:
+        if sigterm_received and not cleanup_failed:
+            signal.raise_signal(signal.SIGTERM)
+        else:
+            pass
+        raise

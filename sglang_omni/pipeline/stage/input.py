@@ -4,7 +4,7 @@
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import Any, Callable
+from typing import Callable
 
 from sglang_omni.proto import StagePayload
 
@@ -18,7 +18,7 @@ class InputHandler(ABC):
 
     @abstractmethod
     def receive(
-        self, request_id: str, from_stage: str, data: Any
+        self, request_id: str, from_stage: str, data: "StagePayload"
     ) -> StagePayload | None:
         """Receive data from a stage.
         Returns merged payload if ready, None if still waiting.
@@ -32,7 +32,9 @@ class InputHandler(ABC):
 class DirectInput(InputHandler):
     """Direct pass-through. Single input, no aggregation."""
 
-    def receive(self, request_id: str, from_stage: str, data: Any) -> StagePayload:
+    def receive(
+        self, request_id: str, from_stage: str, data: "StagePayload"
+    ) -> StagePayload:
         return data
 
     def cancel(self, request_id: str) -> None:
@@ -51,11 +53,11 @@ class AggregatedInput(InputHandler):
         self.sources = sources
         self.merge = merge
         self.expected_sources_fn = expected_sources_fn
-        self.pending: dict[str, dict[str, Any]] = {}
+        self.pending: dict[str, dict[str, StagePayload]] = {}
         self.expected_sources: dict[str, set[str]] = {}
 
     def receive(
-        self, request_id: str, from_stage: str, data: Any
+        self, request_id: str, from_stage: str, data: "StagePayload"
     ) -> StagePayload | None:
         if from_stage not in self.sources:
             logger.warning(

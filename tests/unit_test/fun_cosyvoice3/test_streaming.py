@@ -19,7 +19,6 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import EOS_ID, VOCAB_SIZE
 from sglang_omni.models.fun_cosyvoice3.streaming import (
     PRE_LOOKAHEAD_LEN,
     TOKEN_HOP_LEN,
-    TOKEN_MEL_RATIO,
     first_ar_flush_tokens,
     next_stream_hop_len,
     pad_flow_prompt_to_hop,
@@ -34,9 +33,11 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
+from tests.unit_test.fun_cosyvoice3.test_vocoder import FakeHiFT as _FakeHiFT
 
 AR_INITIAL_FLUSH_TOKENS = TOKEN_HOP_LEN + PRE_LOOKAHEAD_LEN
 AR_FOLLOWUP_FLUSH_TOKENS = TOKEN_HOP_LEN
+TOKEN_MEL_RATIO = 2
 
 
 def test_stream_hop_math_matches_cosyvoice3() -> None:
@@ -67,36 +68,34 @@ def test_pad_flow_prompt_repeats_last_frame_to_hop_multiple() -> None:
         .reshape(1, 10 * TOKEN_MEL_RATIO, 1)
         .repeat(1, 1, 80)
     )
-    padded_token, padded_feat = pad_flow_prompt_to_hop(token, feat)
+    padded_token, padded_feat = pad_flow_prompt_to_hop(
+        token, feat, token_mel_ratio=TOKEN_MEL_RATIO
+    )
     assert tuple(padded_token.shape) == (1, 25)
     assert torch.equal(padded_token[:, :10], token)
     assert torch.equal(padded_token[:, 10:], torch.full((1, 15), 10, dtype=torch.int32))
     assert tuple(padded_feat.shape) == (1, 50, 80)
     assert torch.equal(padded_feat[:, :20], feat)
     assert torch.equal(padded_feat[:, 20:], feat[:, -1:, :].repeat(1, 30, 1))
-    aligned_token, aligned_feat = pad_flow_prompt_to_hop(padded_token, padded_feat)
+    aligned_token, aligned_feat = pad_flow_prompt_to_hop(
+        padded_token, padded_feat, token_mel_ratio=TOKEN_MEL_RATIO
+    )
     assert torch.equal(aligned_token, padded_token)
     assert torch.equal(aligned_feat, padded_feat)
 
 
 class FakeFlow(_PackedFlow):
-    def __init__(self) -> None:
-        super().__init__(channels=80, max_frames=512)
+    def __init__(self, *, token_mel_ratio: int) -> None:
+        super().__init__(channels=80, token_mel_ratio=token_mel_ratio, max_frames=512)
         self.spk_embed_affine_layer = torch.nn.Linear(192, 80, bias=False)
         self.input_embedding = torch.nn.Embedding(VOCAB_SIZE, 80)
 
 
-class FakeHiFT(torch.nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.anchor = torch.nn.Parameter(torch.zeros(1))
-        self.calls: list[tuple] = []
-        self.upsample_rates = [8, 5, 3]
-        self.istft_params = {"n_fft": 16, "hop_len": 4}
+class FakeHiFT(_FakeHiFT):
+    """One sample per mel frame."""
 
-    def inference(self, *, speech_feat, finalize):
-        self.calls.append((speech_feat, finalize))
-        return torch.arange(speech_feat.shape[-1]).reshape(1, -1).float(), None
+    upsample_rates = [1]
+    istft_params = {"n_fft": 4, "hop_len": 1}
 
 
 def drain(scheduler: FunCosyVoice3StreamingVocoderScheduler) -> list[OutgoingMessage]:
@@ -137,9 +136,11 @@ def waveform(data: dict) -> np.ndarray:
 
 
 def make_scheduler(
+    *,
+    token_mel_ratio: int = TOKEN_MEL_RATIO,
     **scheduler_kwargs,
 ) -> tuple[FakeFlow, FunCosyVoice3StreamingVocoderScheduler]:
-    flow = FakeFlow()
+    flow = FakeFlow(token_mel_ratio=token_mel_ratio)
     return flow, FunCosyVoice3StreamingVocoderScheduler(
         stages.CosyVoice3Vocoder(
             stages.FunCosyVoice3Flow(flow, packed_estimator=flow.packed_estimator),
@@ -166,8 +167,8 @@ def hop_frames(flow: FakeFlow) -> set[int]:
     }
 
 
-def window_frames(tokens: int) -> int:
-    return (TOKEN_HOP_LEN + tokens - PRE_LOOKAHEAD_LEN) * TOKEN_MEL_RATIO
+def window_frames(flow: FakeFlow, tokens: int) -> int:
+    return (TOKEN_HOP_LEN + tokens - PRE_LOOKAHEAD_LEN) * flow.token_mel_ratio
 
 
 def model_runner() -> FunCosyVoice3ModelRunner:
@@ -193,6 +194,7 @@ def stream_payload(
         flow_prompt_speech_token=torch.zeros(1, prompt_token_len, dtype=torch.int32),
         flow_prompt_speech_feat=torch.zeros(1, prompt_feat_frames, 80),
         flow_embedding=torch.ones(1, 192),
+        finish_reason="length",
     )
     return StagePayload(
         request_id=request_id,
@@ -210,16 +212,25 @@ def item(tokens: list[int]) -> StreamItem:
     )
 
 
-def test_streaming_vocoder_emits_causal_chunk_then_finalizes_remainder() -> None:
-    flow, scheduler = make_scheduler()
-    scheduler.handle_streaming_new_request("req-stream", stream_payload())
+@pytest.mark.parametrize("token_mel_ratio", [TOKEN_MEL_RATIO, 3])
+def test_streaming_vocoder_emits_causal_chunk_then_finalizes_remainder(
+    token_mel_ratio: int,
+) -> None:
+    flow, scheduler = make_scheduler(token_mel_ratio=token_mel_ratio)
+    scheduler.handle_streaming_new_request(
+        "req-stream",
+        stream_payload(prompt_feat_frames=TOKEN_HOP_LEN * token_mel_ratio),
+    )
     scheduler.handle_stream_chunk("req-stream", item(list(range(28))))
     assert drain(scheduler) == []
     assert serve(scheduler) == 1
     messages = drain(scheduler)
     assert [message.type for message in messages] == ["stream"]
-    assert hop_frames(flow) == {window_frames(28)}
-    assert waveform(messages[0].data).shape == (50,)
+    hold_frames = scheduler.vocoder.hift_hold_frames
+    assert hop_frames(flow) == {window_frames(flow, 28)}
+    assert waveform(messages[0].data).shape == (
+        TOKEN_HOP_LEN * token_mel_ratio - hold_frames,
+    )
 
     scheduler.handle_stream_done("req-stream")
     assert drain(scheduler) == []
@@ -228,9 +239,12 @@ def test_streaming_vocoder_emits_causal_chunk_then_finalizes_remainder() -> None
     messages = drain(scheduler)
     assert [message.type for message in messages] == ["stream", "result"]
     assert estimator_calls(flow)[-1]["streaming"] is False
-    assert waveform(messages[0].data).shape == (6,)
+    assert waveform(messages[0].data).shape == (
+        (28 - TOKEN_HOP_LEN) * token_mel_ratio + hold_frames,
+    )
     assert messages[1].data.data["modality"] == "audio"
     assert messages[1].data.data["sample_rate"] == 24000
+    assert messages[1].data.data["finish_reason"] == "length"
     assert "req-stream" not in scheduler.stream_states
 
 
@@ -244,15 +258,18 @@ def test_streaming_vocoder_does_not_decode_before_lookahead_tokens_arrive() -> N
     assert estimator_calls(flow) == []
 
 
-def test_streaming_vocoder_pads_prompt_and_decodes_first_hop_at_28() -> None:
-    flow, scheduler = make_scheduler()
+@pytest.mark.parametrize("token_mel_ratio", [TOKEN_MEL_RATIO, 3])
+def test_streaming_vocoder_pads_prompt_and_decodes_first_hop_at_28(
+    token_mel_ratio: int,
+) -> None:
+    flow, scheduler = make_scheduler(token_mel_ratio=token_mel_ratio)
     prompt_len = 10
     scheduler.handle_streaming_new_request(
         "req-pad",
         stream_payload(
             "req-pad",
             prompt_token_len=prompt_len,
-            prompt_feat_frames=prompt_len * TOKEN_MEL_RATIO,
+            prompt_feat_frames=prompt_len * token_mel_ratio,
         ),
     )
     scheduler.handle_stream_chunk("req-pad", item(list(range(27))))
@@ -265,9 +282,15 @@ def test_streaming_vocoder_pads_prompt_and_decodes_first_hop_at_28() -> None:
     messages = drain(scheduler)
     assert [message.type for message in messages] == ["stream"]
     assert scheduler.stream_states["req-pad"].prompt_token.shape == (1, 25)
-    assert scheduler.stream_states["req-pad"].prompt_feat.shape == (1, 50, 80)
-    assert hop_frames(flow) == {window_frames(28)}
-    assert waveform(messages[0].data).shape == (TOKEN_HOP_LEN * TOKEN_MEL_RATIO,)
+    assert scheduler.stream_states["req-pad"].prompt_feat.shape == (
+        1,
+        TOKEN_HOP_LEN * token_mel_ratio,
+        80,
+    )
+    assert hop_frames(flow) == {window_frames(flow, 28)}
+    assert waveform(messages[0].data).shape == (
+        TOKEN_HOP_LEN * token_mel_ratio - scheduler.vocoder.hift_hold_frames,
+    )
 
 
 def test_model_runner_flushes_speech_tokens_and_skips_control_ids() -> None:
@@ -402,10 +425,11 @@ def test_ar_to_vocoder_grows_hops_then_finalizes_remainder() -> None:
             assert message.type == "stream"
             pcm_chunks.append(waveform(message.data))
 
-    assert hop_frames(flow) == {window_frames(28), window_frames(78)}
+    assert hop_frames(flow) == {window_frames(flow, 28), window_frames(flow, 78)}
     assert all(call["streaming"] for call in estimator_calls(flow))
+    hold_frames = scheduler.vocoder.hift_hold_frames
     assert [chunk.shape[0] for chunk in pcm_chunks] == [
-        TOKEN_HOP_LEN * TOKEN_MEL_RATIO,
+        TOKEN_HOP_LEN * TOKEN_MEL_RATIO - hold_frames,
         2 * TOKEN_HOP_LEN * TOKEN_MEL_RATIO,
     ]
 
@@ -427,7 +451,7 @@ def test_ar_to_vocoder_grows_hops_then_finalizes_remainder() -> None:
     final_messages = drain(scheduler)
     assert [message.type for message in final_messages] == ["stream", "result"]
     remainder = waveform(final_messages[0].data)
-    assert remainder.shape == (PRE_LOOKAHEAD_LEN * TOKEN_MEL_RATIO,)
+    assert remainder.shape == (PRE_LOOKAHEAD_LEN * TOKEN_MEL_RATIO + hold_frames,)
     assert estimator_calls(flow)[-1]["streaming"] is False
     total = np.concatenate(pcm_chunks + [remainder])
     assert total.shape == (len(generated) * TOKEN_MEL_RATIO,)
@@ -460,7 +484,7 @@ def test_equal_first_hops_share_one_causal_flow_batch() -> None:
     messages = drain(scheduler)
     assert [message.type for message in messages] == ["stream", "stream"]
     assert {waveform(message.data).shape[0] for message in messages} == {
-        TOKEN_HOP_LEN * TOKEN_MEL_RATIO
+        TOKEN_HOP_LEN * TOKEN_MEL_RATIO - scheduler.vocoder.hift_hold_frames
     }
 
 
@@ -565,14 +589,14 @@ def test_backlogged_request_runs_one_hop_per_step() -> None:
     scheduler.ingest_stream_item("req-a", item(list(range(178))))
     with scheduler.state_lock:
         assert scheduler.pump_one_step() == []
-    assert hop_frames(flow) == {window_frames(28)}
+    assert hop_frames(flow) == {window_frames(flow, 28)}
     state = scheduler.stream_states["req-a"]
     assert state.token_offset == TOKEN_HOP_LEN
     assert state.hop_len == next_stream_hop_len(TOKEN_HOP_LEN)
 
     with scheduler.state_lock:
         assert scheduler.pump_one_step() == []
-    assert hop_frames(flow) == {window_frames(28), window_frames(78)}
+    assert hop_frames(flow) == {window_frames(flow, 28), window_frames(flow, 78)}
     assert state.token_offset == TOKEN_HOP_LEN + next_stream_hop_len(TOKEN_HOP_LEN)
 
 
@@ -584,9 +608,9 @@ def test_pump_drains_backlog_across_one_hop_steps() -> None:
         failed = scheduler.pump_streams()
     assert failed == []
     assert hop_frames(flow) == {
-        window_frames(28),
-        window_frames(78),
-        window_frames(178),
+        window_frames(flow, 28),
+        window_frames(flow, 78),
+        window_frames(flow, 178),
     }
     messages = [m for m in drain(scheduler) if m.type == "stream"]
     assert len(messages) == 3
@@ -612,7 +636,7 @@ def test_hops_of_different_token_windows_share_one_causal_flow_batch() -> None:
     }
     assert samples == {
         "req-a": 2 * TOKEN_HOP_LEN * TOKEN_MEL_RATIO,
-        "req-c": TOKEN_HOP_LEN * TOKEN_MEL_RATIO,
+        "req-c": TOKEN_HOP_LEN * TOKEN_MEL_RATIO - scheduler.vocoder.hift_hold_frames,
     }
     assert scheduler.stream_states["req-b"].token_offset == TOKEN_HOP_LEN
 
@@ -654,7 +678,7 @@ def test_first_hop_runs_when_no_started_stream_is_runnable() -> None:
     scheduler.ingest_stream_item("req-b", item(list(range(28))))
     assert serve(scheduler) == 1
     assert stream_ids(drain(scheduler)) == ["req-a", "req-b"]
-    assert hop_frames(flow) == {window_frames(28)}
+    assert hop_frames(flow) == {window_frames(flow, 28)}
 
 
 def test_finals_rank_by_slack_with_the_other_started_streams() -> None:
@@ -719,7 +743,7 @@ def test_finals_share_one_non_streaming_flow_batch() -> None:
     assert estimator_calls(flow)[-1]["streaming"] is False
     assert len(estimator_calls(flow)[-1]["lengths"]) == 4
     assert {waveform(m.data).shape[0] for m in messages if m.type == "stream"} == {
-        (30 - TOKEN_HOP_LEN) * TOKEN_MEL_RATIO
+        (30 - TOKEN_HOP_LEN) * TOKEN_MEL_RATIO + scheduler.vocoder.hift_hold_frames
     }
     assert scheduler.stream_states == {}
 
@@ -750,13 +774,14 @@ def test_finals_of_different_widths_share_one_step_at_their_own_lengths() -> Non
     scheduler.handle_streaming_new_request("req-b", stream_payload("req-b"))
     scheduler.ingest_stream_item("req-b", item([i % 31 for i in range(200)]))
     assert serve(scheduler) == 3
-    drain(scheduler)
+    hop_messages = drain(scheduler)
     scheduler.handle_stream_done("req-a")
     scheduler.handle_stream_done("req-b")
     estimator_calls(flow).clear()
 
     assert serve(scheduler) == 1
-    assert [(m.request_id, m.type) for m in drain(scheduler)] == [
+    final_messages = drain(scheduler)
+    assert [(m.request_id, m.type) for m in final_messages] == [
         ("req-a", "stream"),
         ("req-a", "result"),
         ("req-b", "stream"),
@@ -764,6 +789,17 @@ def test_finals_of_different_widths_share_one_step_at_their_own_lengths() -> Non
     ]
     assert estimator_calls(flow)[0]["lengths"] == (110, 450, 110, 450)
     assert estimator_calls(flow)[0]["streaming"] is False
+    for request_id in ("req-a", "req-b"):
+        samples = np.concatenate(
+            [
+                waveform(m.data)
+                for m in hop_messages + final_messages
+                if m.request_id == request_id and m.type == "stream"
+            ]
+        )
+        np.testing.assert_array_equal(
+            samples, np.arange(samples.shape[0], dtype=np.float32)
+        )
 
 
 def test_stream_without_tokens_fails_in_its_own_step() -> None:
@@ -912,9 +948,9 @@ def test_disable_hop_growth_keeps_fixed_follow_up_windows() -> None:
     with scheduler.state_lock:
         assert scheduler.pump_streams() == []
     assert hop_frames(flow) == {
-        window_frames(28),
-        window_frames(53),
-        window_frames(78),
+        window_frames(flow, 28),
+        window_frames(flow, 53),
+        window_frames(flow, 78),
     }
     state = scheduler.stream_states["req-a"]
     assert state.hop_len == TOKEN_HOP_LEN
@@ -928,9 +964,9 @@ def test_token_max_hop_len_caps_growth() -> None:
     with scheduler.state_lock:
         assert scheduler.pump_streams() == []
     assert hop_frames(flow) == {
-        window_frames(28),
-        window_frames(78),
-        window_frames(128),
+        window_frames(flow, 28),
+        window_frames(flow, 78),
+        window_frames(flow, 128),
     }
     state = scheduler.stream_states["req-a"]
     assert state.hop_len == 50

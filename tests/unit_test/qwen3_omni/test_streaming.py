@@ -99,7 +99,7 @@ def drain_outbox(scheduler: StreamingDetokenizeScheduler) -> list[OutgoingMessag
 def thinker_stage_payload(
     output_modalities: list[str] | None, *, stream: bool = True
 ) -> StagePayload:
-    metadata = {}
+    metadata: dict[str, object] = {}
     if output_modalities is not None:
         metadata["output_modalities"] = output_modalities
     return StagePayload(
@@ -259,13 +259,9 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
     prefill_builder.speaker_map = {}
 
     prompt_ids = torch.tensor([10, 20, 30, 31, 10, 40, 41], dtype=torch.long)
-    prompt_embed = token_embedding_rows(prompt_ids)
-    prompt_hidden = prompt_embed.clone()
-    prompt_hidden[2] = torch.tensor([5.0, 6.0])
     prefill_builder.reconstruct_prompt_states = lambda state: (
         prompt_ids,
-        prompt_embed,
-        prompt_hidden,
+        token_embedding_rows(prompt_ids),
         {},
     )
     prefill_builder.load_prompt_token_embeddings = token_embedding_rows
@@ -286,7 +282,7 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
     )
 
     expected_user_rows = torch.cat(
-        [text_projected(10, 20), torch.tensor([[105.0, 106.0]]), text_projected(31)]
+        [text_projected(10, 20), torch.tensor([[100.0, 100.0]]), text_projected(31)]
     )
     expected_assistant_rows = torch.cat(
         [

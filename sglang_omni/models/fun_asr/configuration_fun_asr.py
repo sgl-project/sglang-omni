@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from sglang.srt.multimodal.customized_mm_processor_utils import (
     register_customized_processor,
@@ -21,6 +22,11 @@ from transformers.feature_extraction_sequence_utils import SequenceFeatureExtrac
 from sglang_omni.utils.audio_features import cached_fbank
 
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
+
+if TYPE_CHECKING:
+    import mlx.core as mx
+else:
+    pass
 
 AUDIO_PLACEHOLDER_TOKEN = "<|object_ref_start|>"
 
@@ -232,6 +238,18 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
 # ---------------------------------------------------------------------------
 
 
+class FunAsrNanoInputs(TypedDict, total=False):
+    input_features: torch.Tensor | npt.NDArray[np.float32]
+    feature_attention_mask: torch.Tensor | npt.NDArray[np.int64]
+    input_ids: (
+        torch.Tensor
+        | npt.NDArray[np.int64 | np.object_]
+        | mx.array
+        | list[int]
+        | list[list[int]]
+    )
+
+
 class FunAsrNanoProcessor:
     """Composite processor: FunAsrNanoFeatureExtractor + Qwen2Tokenizer.
 
@@ -267,7 +285,7 @@ class FunAsrNanoProcessor:
         return fun_asr_low_frame_rate_length(input_lengths)
 
     def __call__(self, text=None, audio=None, audio_kwargs=None, **kwargs):
-        inputs: dict[str, Any] = {}
+        inputs: FunAsrNanoInputs = {}
         if audio is not None:
             audio_kwargs = audio_kwargs or {}
             audio_inputs = self.feature_extractor(
@@ -412,7 +430,7 @@ class FunAsrNanoConfig(PretrainedConfig):
     """Configuration for the Fun-ASR-Nano checkpoint."""
 
     model_type = "fun_asr_nano"
-    sub_configs: ClassVar[dict[str, Any]] = {
+    sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
         "audio_config": FunAsrNanoEncoderConfig,
         "adaptor_config": FunAsrNanoAdaptorConfig,
     }

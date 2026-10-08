@@ -990,7 +990,7 @@ def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> N
         dispatcher.register_many([sender, receiver])
 
         chunk = torch.arange(4)
-        metadata = {"modality": "audio"}
+        metadata: dict[str, object] = {"modality": "audio"}
 
         await sender.send_stream_to_target(
             "req-stream-local",
@@ -1480,14 +1480,33 @@ def test_completed_request_id_can_record_new_replica_bindings() -> None:
     asyncio.run(run())
 
 
-def test_replica_bindings_not_recorded_after_abort() -> None:
-    stage = make_stage(
-        name="thinker",
-        replica_topology={"decode": ["decode@r0", "decode@r1"]},
-    )
-    stage.record_aborted_request_id("req-1")
-    stage.record_replica_bindings("req-1", {"decode": 1})
-    assert "req-1" not in stage.replica_bindings
+def test_aborted_request_id_resubmit_fails_without_new_state() -> None:
+    async def run() -> None:
+        stage = make_stage(
+            name="thinker",
+            replica_topology={"decode": ["decode@r0", "decode@r1"]},
+        )
+        stage.record_aborted_request_id("req-1")
+        stage.record_replica_bindings("req-1", {"decode": 1})
+        assert "req-1" not in stage.replica_bindings
+
+        await stage.on_submit(
+            SubmitMessage(
+                request_id="req-1",
+                data=make_stage_payload(request_id="req-1"),
+                replica_bindings={"decode": 1},
+            )
+        )
+
+        (completion,) = stage.control_plane.completions
+        assert completion.success is False
+        assert "use a fresh request ID" in completion.error
+        assert stage.scheduler.inbox.empty()
+        assert "req-1" not in stage.active_requests
+        assert "req-1" not in stage.replica_bindings
+        assert "req-1" in stage.aborted
+
+    asyncio.run(run())
 
 
 @pytest.mark.accelerator

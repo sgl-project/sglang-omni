@@ -36,13 +36,17 @@ def init_sglang_tp() -> None:
     """Reuse a TP=1 context or initialize one for standalone vision encoding."""
     import os
 
-    import sglang.srt.layers.dp_attention as dp
     from sglang.srt.distributed import parallel_state
-    from sglang.srt.runtime_context import get_server_args
-    from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
+    from sglang.srt.runtime_context import (
+        SpawnRanks,
+        get_parallel,
+        get_server_args,
+        publish,
+    )
+    from sglang.srt.server_args import ServerArgs
 
     if parallel_state.model_parallel_is_initialized():
-        tp_size = parallel_state.get_tensor_model_parallel_world_size()
+        tp_size = get_parallel().tp_size
         if tp_size != 1:
             raise RuntimeError(
                 "MiniCPM-o image encoder requires tp_size=1 but the process "
@@ -68,7 +72,11 @@ def init_sglang_tp() -> None:
     try:
         get_server_args()
     except ValueError:
-        set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
+        publish(
+            ServerArgs(model_path="dummy"),
+            role="scheduler",
+            ranks=SpawnRanks(world_rank=0),
+        )
 
     parallel_state.init_distributed_environment(
         backend=current_platform.get_torch_distributed_backend_str(),
@@ -76,10 +84,7 @@ def init_sglang_tp() -> None:
         rank=0,
         local_rank=0,
     )
-    parallel_state.initialize_model_parallel(tensor_model_parallel_size=1)
-
-    dp._ATTN_TP_SIZE = 1  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    dp._ATTN_TP_RANK = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    parallel_state.initialize_model_parallel()
 
 
 def load_srt_weights(module: nn.Module, weights: dict[str, torch.Tensor]) -> None:

@@ -48,11 +48,15 @@ class RecordingEstimator(torch.nn.Module):
 class RecordingPackedEstimator:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.is_ragged = False
 
     def row_attention(
         self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
     ) -> SimpleNamespace:
         return SimpleNamespace(rows=rows, streaming=streaming, dtype=dtype)
+
+    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
+        return rows.positions, rows.positions
 
     def forward(
         self,
@@ -63,6 +67,7 @@ class RecordingPackedEstimator:
         t: torch.Tensor,
         rows: PackedRows,
         attention: SimpleNamespace,
+        rope: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
         self.calls.append(
             {

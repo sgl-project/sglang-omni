@@ -7,9 +7,10 @@ import queue as _queue_mod
 import threading
 import time
 from dataclasses import asdict, dataclass
-from typing import Any, Generic, TypeVar, cast
+from typing import Generic, cast
 
 import torch
+from typing_extensions import TypeVar
 
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 InputT = TypeVar("InputT")
 ArtifactT = TypeVar("ArtifactT")
 StoredT = TypeVar("StoredT")
+RawInputT = TypeVar("RawInputT", default=object)
 
 
 @dataclass(frozen=True)
@@ -33,9 +35,8 @@ class ReferenceEncodeKey:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
 
 
-class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT]):
-
-    def normalize_input(self, raw_input: Any) -> InputT:
+class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT, RawInputT]):
+    def normalize_input(self, raw_input: RawInputT) -> InputT:
         raise NotImplementedError
 
     def cache_key(self, item: InputT) -> ReferenceEncodeKey | None:
@@ -60,7 +61,9 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT]):
         return [self.encode_one(item) for item in items]
 
 
-class KeyedReferenceEncodeHook(ReferenceEncodeHook[InputT, ArtifactT, StoredT]):
+class KeyedReferenceEncodeHook(
+    ReferenceEncodeHook[InputT, ArtifactT, StoredT, RawInputT]
+):
     """Defaults for hooks with structured identity and option keys."""
 
     model_id: str
@@ -69,7 +72,7 @@ class KeyedReferenceEncodeHook(ReferenceEncodeHook[InputT, ArtifactT, StoredT]):
     encoder_config_hash: str
     artifact_kind: str
 
-    def normalize_input(self, raw_input: Any) -> InputT:
+    def normalize_input(self, raw_input: RawInputT) -> InputT:
         return cast(InputT, raw_input)
 
     def input_key(self, item: InputT) -> str | None:
@@ -102,7 +105,7 @@ class KeyedReferenceEncodeHook(ReferenceEncodeHook[InputT, ArtifactT, StoredT]):
 
 
 class TensorReferenceEncodeHook(
-    KeyedReferenceEncodeHook[InputT, torch.Tensor, torch.Tensor]
+    KeyedReferenceEncodeHook[InputT, torch.Tensor, torch.Tensor, RawInputT]
 ):
     """Defaults for reference encoders that cache CPU tensor artifacts."""
 
@@ -130,12 +133,12 @@ def fresh_exception(exc: BaseException) -> BaseException:
     return fresh
 
 
-class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
+class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
     LOG_INTERVAL_S = 60.0
 
     def __init__(
         self,
-        hook: ReferenceEncodeHook[InputT, ArtifactT, StoredT],
+        hook: ReferenceEncodeHook[InputT, ArtifactT, StoredT, RawInputT],
         *,
         max_items: int | None = 256,
         max_bytes: int | None = 64 * 1024 * 1024,
@@ -193,7 +196,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             pass
 
     @property
-    def hook(self) -> ReferenceEncodeHook[InputT, ArtifactT, StoredT]:
+    def hook(self) -> ReferenceEncodeHook[InputT, ArtifactT, StoredT, RawInputT]:
         return self._hook  # noqa: leading-underscore
 
     @property
@@ -265,7 +268,9 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                 continue
             if batch:
                 try:
-                    results: list[Any] = self.encode_batch([item for item, _ in batch])
+                    results: list[ArtifactT | BaseException] = self.encode_batch(
+                        [item for item, _ in batch]
+                    )
                 except BaseException as exc:
                     logger.exception("reference encode batch worker: encode failed")
                     results = [exc] * len(batch)
@@ -309,7 +314,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             else:
                 pass
 
-    def encode_batch(self, items: list[InputT]) -> list[Any]:
+    def encode_batch(self, items: list[InputT]) -> list[ArtifactT | BaseException]:
         """Encode a drained batch, falling back to per-item encodes on failure."""
         try:
             artifacts = self._hook.encode_batch(items)  # noqa: leading-underscore
@@ -328,7 +333,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                 "%s batched reference encode failed; retrying per item",
                 self.log_prefix or "reference encode",
             )
-        results: list[Any] = []
+        results: list[ArtifactT | BaseException] = []
         for item in items:
             try:
                 results.append(self._hook.encode_one(item))  # noqa: leading-underscore
@@ -336,7 +341,9 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                 results.append(exc)
         return results
 
-    def get_or_encode(self, raw_input: Any, *, desc: str | None = None) -> ArtifactT:
+    def get_or_encode(
+        self, raw_input: RawInputT, *, desc: str | None = None
+    ) -> ArtifactT:
         item = self._hook.normalize_input(raw_input)  # noqa: leading-underscore
         key = self._hook.cache_key(item)  # noqa: leading-underscore
         if key is None:

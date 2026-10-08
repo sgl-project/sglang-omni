@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils import snake_beta
 
 
@@ -70,11 +71,13 @@ def test_fuse_vocoder_decoder_keeps_originals_on_prewarm_failure(
         (2, 4, 33),
     ],
 )
+@pytest.mark.parametrize("channels_last", [False, True])
 def test_fused_snake_beta_cuda_parity_uses_kernel(
     monkeypatch: pytest.MonkeyPatch,
     batch: int,
     channels: int,
     frames: int,
+    channels_last: bool,
 ) -> None:
     # note (db-ol): on the accelerator runner a missing Triton must fail
     # loudly, a skip here would hide the kernel from CI again.
@@ -83,11 +86,16 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
     torch.manual_seed(0)
     device = torch.device("cuda")
     original = StubSnakeBeta(channels).to(device=device, dtype=torch.bfloat16)
-    x = torch.randn(
-        (batch, channels, frames),
-        device=device,
-        dtype=torch.bfloat16,
-    )
+    if channels_last:
+        x = torch.randn(
+            (batch, frames, channels), device=device, dtype=torch.bfloat16
+        ).transpose(1, 2)
+    else:
+        x = torch.randn(
+            (batch, channels, frames),
+            device=device,
+            dtype=torch.bfloat16,
+        )
     expected = original(x)
     launches: list[tuple[int, int, int]] = []
     original_launch = snake_beta.launch
@@ -110,6 +118,7 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
     assert actual is not None
     assert launches == [(batch, channels, frames)]
     assert torch.equal(actual, expected)
+    assert actual.stride() == x.stride()
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -182,12 +191,17 @@ def test_shared_snake_cuda_falls_back_outside_envelope(kind: str) -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_shared_snake_bf16_encodings_and_denormals() -> None:
+@pytest.mark.parametrize("channels_last", [False, True])
+def test_shared_snake_bf16_encodings_and_denormals(channels_last: bool) -> None:
     original = StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     encodings = torch.arange(65536, device="cuda", dtype=torch.int32).to(torch.int16)
     values = encodings.view(torch.bfloat16)
     values = values[torch.isfinite(values)]
     x = values.repeat(96).reshape(1, 96, -1)
+    if channels_last:
+        x = x.transpose(1, 2).contiguous().transpose(1, 2)
+    else:
+        pass
     with torch.inference_mode():
         original.alpha.copy_(
             torch.tensor([-90.0, -80.0, 0.0], device="cuda").repeat(32)
@@ -209,6 +223,9 @@ def test_shared_snake_prewarm_covers_new_shapes_and_capture(
     snake_beta.prewarm(device)
     compile_kernel = Mock(side_effect=AssertionError("runtime Triton compilation"))
     monkeypatch.setattr(snake_beta.snake_beta_kernel, "compile", compile_kernel)
+    monkeypatch.setattr(
+        snake_beta.snake_beta_channels_last_kernel, "compile", compile_kernel
+    )
     with torch.inference_mode():
         for index, frames in enumerate(
             (1, 16, 33, 64, 65, 96, 128, 129, 192, 256, 257, 1024, 122880)
@@ -222,6 +239,10 @@ def test_shared_snake_prewarm_covers_new_shapes_and_capture(
             x = torch.randn(
                 batch, channels, frames, device=device, dtype=torch.bfloat16
             )
+            if index % 2:
+                x = x.transpose(1, 2).contiguous().transpose(1, 2)
+            else:
+                pass
             expected = original(x)
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph):
@@ -271,3 +292,36 @@ def test_shared_snake_graph_reads_current_inputs_and_parameters() -> None:
             original.beta.fill_(-value)
             graph.replay()
             assert torch.equal(actual, original(x))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("channels_last", [False, True])
+def test_fused_snake_beta_matches_eager_on_this_host(channels_last: bool) -> None:
+    """The parity tests above allocate CUDA tensors, so this is what exercises the
+    launch and its rounding options on a non-CUDA Triton device."""
+    device_type = current_platform.device_type
+    if device_type not in snake_beta.TRITON_DEVICE_TYPES:
+        pytest.skip(f"{device_type} has no Triton backend")
+    else:
+        pass
+    assert snake_beta.HAS_TRITON, "Triton is required on accelerator CI"
+    device_module = torch.get_device_module(device_type)
+    device = torch.device(device_type, device_module.current_device())
+    snake_beta.prewarm(device)
+
+    torch.manual_seed(0)
+    original = StubSnakeBeta(96).to(device=device, dtype=torch.bfloat16)
+    for frames in (2, 33, 1024):
+        if channels_last:
+            x = torch.randn(
+                (1, frames, 96), device=device, dtype=torch.bfloat16
+            ).transpose(1, 2)
+        else:
+            x = torch.randn((1, 96, frames), device=device, dtype=torch.bfloat16)
+        expected = original(x)
+        actual = snake_beta.fused_snake_beta(
+            x, original.alpha, original.beta, original.no_div_by_zero
+        )
+        assert actual is not None, frames
+        assert torch.equal(actual, expected), frames
+        assert actual.stride() == x.stride(), frames

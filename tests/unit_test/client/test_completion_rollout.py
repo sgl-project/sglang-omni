@@ -10,7 +10,7 @@ import pytest
 
 from sglang_omni.client import Client
 from sglang_omni.client.client import extract_inputs
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import GenerateChunk, GenerateRequest
 
 
 class SubmitStubCoordinator:
@@ -75,6 +75,40 @@ def test_speech_surfaces_finish_reason() -> None:
 
     assert result.finish_reason == "length"
     assert result.mime_type == "audio/pcm"
+
+    unreported = asyncio.run(
+        Client(
+            SubmitStubCoordinator({"audio_data": [0.0, 0.1], "sample_rate": 24000})
+        ).speech(GenerateRequest(prompt="hello"), request_id="speech-2")
+    )
+    assert unreported.finish_reason == "unknown"
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "stop", None])
+def test_speech_preserves_reason_provenance_through_typed_and_serialized_results(
+    finish_reason: str | None,
+) -> None:
+    typed = GenerateChunk(
+        request_id="speech-typed",
+        audio_data=[0.0, 0.1],
+        sample_rate=24000,
+        finish_reason=finish_reason,
+    )
+    raw = {"audio_data": [0.0, 0.1], "sample_rate": 24000}
+    if finish_reason is not None:
+        raw["finish_reason"] = finish_reason
+    else:
+        pass
+    adapted = Client.default_result_builder("speech-adapted", raw)
+    for payload in (typed, typed.to_dict(), adapted, adapted.to_dict()):
+        result = asyncio.run(
+            Client(SubmitStubCoordinator(payload)).speech(
+                GenerateRequest(prompt="hello"),
+                request_id="speech-1",
+                response_format="pcm",
+            )
+        )
+        assert result.finish_reason == (finish_reason or "unknown")
 
 
 def test_completion_surfaces_omni_rollout() -> None:
@@ -217,7 +251,7 @@ def test_extract_inputs_rejects_prompt_with_multimodal_train_inputs() -> None:
 
 
 def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
-    bundle = {"version": 1, "tensors": {}}
+    bundle: dict[str, object] = {"version": 1, "tensors": {}}
     request = GenerateRequest(
         prompt_token_ids=[1, 2, 3],
         multimodal_train_inputs=bundle,

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 from array import array
-from typing import Any
+from collections.abc import Mapping
 
 import torch
+from sglang.srt.dllm.config import DllmConfig
+from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.llada2_uni.components.preprocessor import (
     DUMMY_IMAGE_TOKEN_ID,
@@ -29,7 +31,7 @@ def build_encoder_request(
     state: LLaDA2UniPipelineState,
     *,
     stage_name: str,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Build encoder request dict from pipeline state."""
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:
@@ -47,7 +49,7 @@ def apply_encoder_result(
     state: LLaDA2UniPipelineState,
     *,
     stage_name: str,
-    result: Any,
+    result: dict[str, list[list[int]]],
 ) -> None:
     """Apply encoder result to pipeline state."""
     state.encoder_outs[stage_name] = result
@@ -121,10 +123,10 @@ def merge_image_tokens_for_thinker(state: LLaDA2UniPipelineState) -> None:
 def build_dllm_thinker_request(
     state: LLaDA2UniPipelineState,
     *,
-    params: dict[str, Any],
-    tokenizer: Any,
+    params: Mapping[str, object],
+    tokenizer: PreTrainedTokenizerBase,
     vocab_size: int,
-    dllm_config: Any,
+    dllm_config: DllmConfig,
     request_id: str | None = None,
 ) -> SGLangDLLMRequestData:
     """Build SGLangDLLMRequestData for the LLaDA2-Uni thinker."""
@@ -208,9 +210,9 @@ def apply_dllm_thinker_result(
 
 def make_dllm_thinker_scheduler_adapters(
     *,
-    tokenizer: Any,
+    tokenizer: PreTrainedTokenizerBase,
     vocab_size: int,
-    dllm_config: Any,
+    dllm_config: DllmConfig,
     stage_name: str = THINKER_STAGE,
 ):
     """Build StagePayload <-> scheduler adapters for the dLLM thinker."""

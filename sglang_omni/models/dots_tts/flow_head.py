@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from einops import rearrange
 from torch import nn
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+
+if TYPE_CHECKING:
+    from dots_tts.modules.backbone.dit_inference import DiTSolver, DiTSolverState
+    from dots_tts.modules.backbone.encoder_inference import (
+        SemanticEncoderDecodeState,
+        SemanticEncoderInference,
+    )
+
+    from sglang_omni.models.dots_tts.tail import DotsTtsAcousticTail
+else:
+    pass
 
 
 @dataclass
@@ -24,8 +35,8 @@ class DotsFlowState:
     g_cond: torch.Tensor | None
     rng_state: torch.Tensor | None = None
     fm_seq_len: int = 0
-    patch_encoder_state: Any = None
-    dit_state: Any = None
+    patch_encoder_state: SemanticEncoderDecodeState | None = None
+    dit_state: DiTSolverState | None = None
     prompt_patches: torch.Tensor | None = None
     drop_regenerated_prompt_patch: bool = False
     suppress_first_eos_check: bool = False
@@ -49,7 +60,7 @@ class DotsTTSFlowHead(nn.Module):
 
     def __init__(
         self,
-        config_dict: dict[str, Any],
+        config_dict: Mapping[str, object],
         *,
         llm_hidden_size: int,
         latent_stats_path: str,
@@ -101,9 +112,9 @@ class DotsTTSFlowHead(nn.Module):
             nn.Linear(int(llm_hidden_size), 2),
         )
         self.io = IOHelper(Path(latent_stats_path))
-        self.patch_inference: Any = None
-        self.dit_solver: Any = None
-        self.tail: Any = None
+        self.patch_inference: SemanticEncoderInference | None = None
+        self.dit_solver: DiTSolver | None = None
+        self.tail: DotsTtsAcousticTail | None = None
         self.batched_nfe: int | None = None
         self.eos_pinned: torch.Tensor | None = None
         self.eos_event: torch.cuda.Event | None = None
@@ -126,7 +137,7 @@ class DotsTTSFlowHead(nn.Module):
             f"dots.tts supports at most {self.LENGTH_BUCKETS[-1]} audio patches"
         )
 
-    def patch_encoder_inference(self):
+    def patch_encoder_inference(self) -> SemanticEncoderInference:
         if self.patch_inference is None:
             import_dots_tts()
             from dots_tts.modules.backbone.encoder_inference import (
@@ -138,14 +149,27 @@ class DotsTTSFlowHead(nn.Module):
             pass
         return self.patch_inference
 
-    def solver(self):
+    def solver(self) -> DiTSolver:
         if self.dit_solver is None:
             import_dots_tts()
             from dots_tts.modules.backbone.dit_inference import (
                 DiTInferenceContext,
                 DiTSolver,
             )
+            from dots_tts.modules.backbone.layers import RotaryEmbedding
 
+            device_type = next(self.parameters()).device.type
+            # note (yao-matrix): CUDA already disables rotary autocast in dots.tts.
+            if device_type not in ("cpu", "cuda"):
+                for module in self.modules():
+                    if isinstance(module, RotaryEmbedding):
+                        module.forward = torch.autocast(
+                            device_type=device_type, enabled=False
+                        )(module.forward)
+                    else:
+                        pass
+            else:
+                pass
             self.dit_solver = DiTSolver(
                 DiTInferenceContext.from_core(self),
                 optimize=self.optimize,
@@ -161,7 +185,7 @@ class DotsTTSFlowHead(nn.Module):
         return self.tail is not None
 
     @property
-    def batched_tail(self) -> Any | None:
+    def batched_tail(self) -> DotsTtsAcousticTail | None:
         return self.tail
 
     def init_batched_tail(
@@ -576,7 +600,7 @@ class DotsTTSFlowHead(nn.Module):
             torch.autocast(
                 device_type=device_type,
                 dtype=dtype,
-                enabled=device_type == "cuda"
+                enabled=device_type != "cpu"
                 and dtype in {torch.float16, torch.bfloat16},
             ),
         ):
@@ -806,30 +830,28 @@ class DotsTTSFlowHead(nn.Module):
         else:
             pass
         device = state.fm_sequence.device
-        cuda_device = None
-        if device.type == "cuda":
-            cuda_device = (
-                device.index
-                if device.index is not None
-                else torch.cuda.current_device()
-            )
+        if device.type == "cpu":
+            with torch.random.fork_rng(devices=[]):
+                torch.set_rng_state(state.rng_state)
+                try:
+                    yield
+                finally:
+                    state.rng_state = torch.get_rng_state()
+            return
         else:
             pass
-        with torch.random.fork_rng(
-            devices=[] if cuda_device is None else [cuda_device]
-        ):
-            if cuda_device is None:
-                torch.set_rng_state(state.rng_state)
-            else:
-                torch.cuda.set_rng_state(state.rng_state, cuda_device)
+        # Accelerator generators (CUDA, XPU, ...) keep their own Philox state;
+        # route through the device module so the state lands on that generator.
+        device_module = torch.get_device_module(device)
+        device_index = (
+            device.index if device.index is not None else device_module.current_device()
+        )
+        with torch.random.fork_rng(devices=[device_index], device_type=device.type):
+            device_module.set_rng_state(state.rng_state, device_index)
             try:
                 yield
             finally:
-                state.rng_state = (
-                    torch.get_rng_state()
-                    if cuda_device is None
-                    else torch.cuda.get_rng_state(cuda_device)
-                )
+                state.rng_state = device_module.get_rng_state(device_index)
 
     def patch_encoder_input(
         self, latents: torch.Tensor, *, already_normalized: bool = False

@@ -87,14 +87,15 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
-          TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
+          TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Upload non-streaming speed artifact
+        if: always() && !cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: tts-stage-nonstream-speed-results
-          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/**/speed_results.json
+          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/**/speed_results.json
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -104,7 +105,7 @@ jobs:
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: TTS stage 1 (non-streaming)
-          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
@@ -145,14 +146,15 @@ jobs:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
-          TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
+          TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Upload streaming speed artifact
+        if: always() && !cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: tts-stage-stream-speed-results
-          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/**/speed_results.json
+          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/**/speed_results.json
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -162,10 +164,75 @@ jobs:
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: TTS stage 2 (streaming)
-          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
+
+  stage-latency:
+    name: stage latency - streaming first audio
+    needs: stage-2-streaming
+    if: always() && !cancelled() && startsWith(inputs.tts_ci_model, 'qwen3-tts')
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 30
+    container:
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run TTS streaming first-audio latency stage
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_tts_latency_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OMNI_CI_MAX_ATTEMPTS: "1"
+          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
+          TTS_STAGE_OUTPUT_ROOT: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      # note (luojiaxuan): a run that trips a gate is the one whose numbers
+      # matter, so this uploads after a failure too; the run and attempt keyed
+      # root keeps an earlier push's results out of it. Missing files are an
+      # error only when the stage passed.
+      - name: Upload latency artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-stage-latency-results
+          path: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/**/speed_results.json
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
+          retention-days: 30
+          overwrite: true
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: TTS stage latency (streaming first audio)
+          artifact-search-root: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
+          artifact-path-globs: |
+            */speed_results.json
 
   stage-3-consistency:
     name: stage 3 - consistency
@@ -195,13 +262,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: tts-stage-nonstream-speed-results
-          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
+          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
 
       - name: Download streaming speed artifact
         uses: actions/download-artifact@v4
         with:
           name: tts-stage-stream-speed-results
-          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
+          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
 
       - name: Run consistency check
         shell: bash
@@ -212,8 +279,8 @@ jobs:
             pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
         env:
           TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
-          TTS_STAGE1_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
-          TTS_STAGE2_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
+          TTS_STAGE1_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
+          TTS_STAGE2_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           TTS_CONSISTENCY_CONCURRENCY: "16"
 
       - name: Post-stage cleanup

@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from queue import Queue
+from typing import Literal, Protocol
 
 IncomingMessageType = Literal["new_request", "stream_chunk", "stream_done", "abort"]
 
@@ -13,13 +14,29 @@ IncomingMessageType = Literal["new_request", "stream_chunk", "stream_done", "abo
 class IncomingMessage:
     request_id: str
     type: IncomingMessageType
-    data: Any = None
+    data: object = None
 
 
 @dataclass
 class OutgoingMessage:
     request_id: str
     type: Literal["result", "stream", "error", "kv_transfer", "admitted"]
-    data: Any = None
+    data: object = None
     target: str | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
+
+
+class StageScheduler(Protocol):
+    """Scheduler lifecycle and message queues consumed by a pipeline stage."""
+
+    @property
+    def inbox(self) -> Queue[IncomingMessage]: ...
+
+    @property
+    def outbox(self) -> Queue[OutgoingMessage]: ...
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def abort(self, request_id: str) -> None: ...

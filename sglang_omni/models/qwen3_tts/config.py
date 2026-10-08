@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar, TypedDict
 
 from sglang_omni.config import (
     CustomVoiceConfig,
@@ -19,6 +19,8 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
+from sglang_omni.platforms import current_platform
+from sglang_omni.utils.json import JsonValue
 
 _PKG = "sglang_omni.models.qwen3_tts"
 _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
@@ -27,6 +29,16 @@ _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
     "voice_design",
     "voicedesign",
 )
+
+
+class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
+    load_frontend: bool
+    max_concurrency: int
+    server_args_overrides: dict[str, bool]
+    enable_deterministic_inference: bool
+    initial_cuda_graph: bool
+    followup_cuda_graph: bool
+    async_decode: bool
 
 
 class Qwen3TTSPipelineConfig(PipelineConfig):
@@ -40,7 +52,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     }
 
     @classmethod
-    def generation_admission_defaults(cls) -> dict[str, Any]:
+    def generation_admission_defaults(cls) -> dict[str, int]:
         from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
         defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
@@ -88,12 +100,21 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         stages = {stage.name: stage for stage in self.stages}
         return stages["preprocessing"].process != stages["tts_engine"].process
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
+    def stage_factory_kwargs(self, stage_name: str) -> Qwen3TTSStageFactoryKwargs:
+        kwargs: Qwen3TTSStageFactoryKwargs = {}
         # Note (Jiaxin Deng): outside the engine process the preprocessing stage
         # loads its own prompt frontend and ships prepared tensors in the payload.
         if stage_name == "preprocessing" and self.preprocessing_in_own_process():
             kwargs["load_frontend"] = True
+        else:
+            pass
+        # The vocoder captures its decode graphs during the asynchronous decode
+        # warmup, so a platform that has not measured those captures starts
+        # without that path.
+        if stage_name == "vocoder" and (
+            not current_platform.enable_tts_vocoder_fast_path()
+        ):
+            kwargs["async_decode"] = False
         else:
             pass
         if not self.enable_deterministic_inference:
@@ -108,11 +129,15 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         else:
             pass
         if stage_name == "tts_engine":
-            return {"server_args_overrides": {"enable_deterministic_inference": True}}
+            return {
+                **kwargs,
+                "server_args_overrides": {"enable_deterministic_inference": True},
+            }
         else:
             pass
         if stage_name == "vocoder":
             return {
+                **kwargs,
                 "enable_deterministic_inference": True,
                 "initial_cuda_graph": False,
                 "followup_cuda_graph": False,
@@ -167,7 +192,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return None
 
 
-def load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
+def load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, JsonValue]:
     checkpoint_dir = Path(model_path).expanduser()
     if checkpoint_dir.is_dir():
         config_path = checkpoint_dir / "config.json"
@@ -179,7 +204,7 @@ def load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
         return json.load(handle)
 
 
-def normalize_qwen3_tts_model_type(raw: Any) -> str:
+def normalize_qwen3_tts_model_type(raw: object) -> str:
     normalized = str(raw or "base").replace("-", "_").strip().lower()
     if normalized == "customvoice":
         return "custom_voice"

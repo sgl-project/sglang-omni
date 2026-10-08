@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
+*.xcodeproj/xcshareddata/WorkspaceSettings.xcsettings
+
+# SwiftPM
+.build/
+Package.resolved
+!Voxt.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+# User settings
+*.swp
+*.swo
+*.tmp
+
+# App packaging
+*.dSYM
+*.ipa
+*.app
+
+# Local tools / references
+/tmp/
+build.log
+build2.log
+
+# Local release/agent workflow folders (keep local only)
+.codex/
+scripts/
+.repos/
+
+# Local signing overrides
+Config/Signing.local.xcconfig
+
+ThirdParty/

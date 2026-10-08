@@ -3,22 +3,42 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.server_args import ServerArgs
+from transformers import PreTrainedTokenizerBase, ProcessorMixin
 
 from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.models.moss_transcribe_diarize.request_builders import (
+    MossTranscribeDiarizeRequestData,
+)
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.engine_factory import (
+    AsrEngineBuilder,
+    GenerationDefaults,
+    SchedulerExtras,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
 
+if TYPE_CHECKING:
 
-class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
+    from sglang_omni.models.moss_transcribe_diarize.sglang_model import (
+        MossTranscribeDiarizeForConditionalGeneration,
+    )
+else:
+    pass
+
+
+class MossTranscribeDiarizeEngineBuilder(
+    AsrEngineBuilder[MossTranscribeDiarizeRequestData]
+):
     model_name = "MOSS-Transcribe-Diarize"
     model_arch_override = "MossTranscribeDiarizeForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = (
@@ -34,7 +54,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
         encoder_cache_size_bytes: int,
-        enable_torch_compile: bool,
+        enable_torch_compile: bool | None,
         torch_compile_max_bs: int,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
@@ -75,8 +95,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
         self.stream_emit_interval_s = stream_emit_interval_s
-        self.processor: Any = None
-        self.tokenizer: Any = None
+        self.processor: ProcessorMixin | None = None
+        self.tokenizer: PreTrainedTokenizerBase | None = None
         self.audio_encoder_service: BatchedAudioEncoderService | None = None
         self.max_new_tokens = 0
         self.context_length = 0
@@ -102,7 +122,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             else stages.default_context_length(checkpoint_dir)
         )
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         # note (Xinyu): cached-prefix extends commonly contain one or two new
         # tokens, so keep exact graph buckets below the shared ladder's 4-token
         # floor instead of failing the prefill padding-factor replay guard.
@@ -126,7 +146,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             "dtype": dtype,
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         # note (Dayuxiaoshui): context_length is an explicit server-args
         # parameter, so consume the operator override before the shared builder
         # expands overrides.
@@ -135,15 +155,15 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         else:
             pass
 
-    def customize_server_args(self, server_args: Any) -> None:
+    def customize_server_args(self, server_args: ServerArgs) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
         # ServerArgs, matching the pre-refactor factory behavior.
         self.context_length = int(server_args.context_length)
 
     def setup_model_resources(
         self,
-        model: Any,
-        server_args: Any,
+        model: MossTranscribeDiarizeForConditionalGeneration,
+        server_args: ServerArgs,
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
@@ -158,14 +178,21 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         model.init_encoder_cache(self.encoder_cache_size_bytes)
 
-    def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
+    def setup_runtime_resources(
+        self,
+        model: MossTranscribeDiarizeForConditionalGeneration,
+        server_args: ServerArgs,
+    ) -> None:
         del server_args
         self.audio_encoder_service = BatchedAudioEncoderService(
             model,
             max_batch_size=self.encoder_max_batch_size,
         )
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[[StagePayload], MossTranscribeDiarizeRequestData],
+        Callable[[MossTranscribeDiarizeRequestData], StagePayload],
+    ]:
         del model
         return request_builders.make_moss_transcribe_diarize_scheduler_adapters(
             processor=self.processor,
@@ -176,7 +203,9 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             audio_encoder_service=self.audio_encoder_service,
         )
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(
+        self,
+    ) -> SchedulerExtras[MossTranscribeDiarizeRequestData]:
         return {
             "stream_output_builder": (
                 request_builders.make_moss_transcribe_diarize_stream_output_builder(

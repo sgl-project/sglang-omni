@@ -4,23 +4,67 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING
+
+from typing_extensions import NotRequired, TypedDict
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorkerConfig
+from sglang_omni.scheduling.types import (
+    ModelRunnerOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxLaunch, MlxTpModelWorker
+    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+else:
+    pass
+
+
+MlxModelRunnerOptions = TypedDict(
+    "MlxModelRunnerOptions",
+    {
+        "model_path": str,
+        "trust_remote_code": bool,
+        "disable_radix_cache": bool,
+        "pool_size": NotRequired[int | None],
+        "mem_fraction_static": float,
+        "quantization": str | None,
+        "revision": str | None,
+        "enable_sampling": bool,
+        "sampling_rng_seed": int,
+        "deterministic_seeding": bool,
+    },
+)
 
 
 @dataclass(slots=True)
 class MlxSchedulerPendingStep:
-    launch: Any
-    reqs: list[Any]
-    scheduler_output: Any
-    schedule_batch: Any
+    launch: MlxLaunch
+    reqs: list[Req]
+    scheduler_output: SchedulerOutput
+    schedule_batch: ScheduleBatch
 
 
 class MlxSchedulerModelRunner(ModelRunner):
     """Bridge Omni's decode lookahead to SGLang's lazy MLX worker API."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    tp_worker: MlxTpModelWorker
+
+    def __init__(
+        self,
+        tp_worker: MlxTpModelWorker,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
         super().__init__(tp_worker, output_processor)
         import mlx.core as mx
 
@@ -37,7 +81,7 @@ class MlxSchedulerModelRunner(ModelRunner):
 
         return mx.stream(self.mlx_thread_stream)
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         if len(batch.reqs) != 1:
             return False
         else:
@@ -56,7 +100,9 @@ class MlxSchedulerModelRunner(ModelRunner):
             pass
         return super().lookahead_eligible(batch)
 
-    def build_forward_batch(self, scheduler_output: Any):
+    def build_forward_batch(
+        self, scheduler_output: SchedulerOutput
+    ) -> tuple[None, ScheduleBatch, bool] | None:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
@@ -69,10 +115,10 @@ class MlxSchedulerModelRunner(ModelRunner):
 
     def custom_prefill_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list[Any],
-    ) -> Any:
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
         del requests
         with self.mlx_stream_context():
             return self.tp_worker.forward_batch_generation(
@@ -82,10 +128,10 @@ class MlxSchedulerModelRunner(ModelRunner):
 
     def custom_decode_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list[Any],
-    ) -> Any:
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
         del requests
         with self.mlx_stream_context():
             return self.tp_worker.forward_batch_generation(
@@ -93,7 +139,9 @@ class MlxSchedulerModelRunner(ModelRunner):
                 forward_batch=forward_batch,
             )
 
-    def execute_launch(self, scheduler_output: Any):
+    def execute_launch(
+        self, scheduler_output: SchedulerOutput
+    ) -> MlxSchedulerPendingStep | None:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
@@ -150,7 +198,9 @@ class MlxSchedulerModelRunner(ModelRunner):
         self.last_mlx_pending = pending
         return pending
 
-    def execute_resolve(self, pending: MlxSchedulerPendingStep | None):
+    def execute_resolve(
+        self, pending: MlxSchedulerPendingStep | None
+    ) -> ModelRunnerOutput | None:
         if pending is None:
             return None
         else:
@@ -206,8 +256,8 @@ class MlxSchedulerModelRunner(ModelRunner):
 
 def create_mlx_model_worker(
     *,
-    config: Any,
-    server_args: Any,
+    config: ModelWorkerConfig,
+    server_args: ServerArgs,
     gpu_id: int,
     tp_rank: int = 0,
 ):
@@ -219,6 +269,10 @@ def create_mlx_model_worker(
         )
 
         make_runner_class = make_qwen3_asr_mlx_runner_class
+    elif model_arch == "ArkasrForConditionalGeneration":
+        from sglang_omni.models.arkasr.mlx.runner import make_arkasr_mlx_runner_class
+
+        make_runner_class = make_arkasr_mlx_runner_class
     elif model_arch == "FunCosyVoice3SGLangModel":
         from sglang_omni.models.fun_cosyvoice3.mlx.runner import (
             make_fun_cosyvoice3_mlx_runner_class,
@@ -227,14 +281,15 @@ def create_mlx_model_worker(
         make_runner_class = make_fun_cosyvoice3_mlx_runner_class
     else:
         raise NotImplementedError(
-            "Omni's MLX worker does not support model architecture " f"{model_arch!r}"
+            f"Omni's MLX worker does not support model architecture {model_arch!r}"
         )
 
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.distributed import bootstrap
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-    from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
     from sglang.srt.runtime_context import (
+        SpawnRanks,
         get_device,
         get_exec,
         get_memory,
@@ -242,15 +297,16 @@ def create_mlx_model_worker(
         get_parallel,
         get_schedule,
         publish,
+        spawn_world_rank,
     )
     from sglang.srt.server_args import PortArgs
 
     class OmniMlxWorker(MlxTpModelWorker):
         @property
         def tp_rank(self) -> int:
-            return self.ps.tp_rank
+            return get_parallel().tp_rank
 
-        def _init_model_runner(self):
+        def _init_model_runner(self) -> None:
             MlxModelRunnerStub.validate_startup_weight_load_mode()
             if model_arch == "FunCosyVoice3SGLangModel":
                 # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
@@ -270,7 +326,7 @@ def create_mlx_model_worker(
                 )
             else:
                 pass
-            init_kwargs = {
+            init_kwargs: MlxModelRunnerOptions = {
                 "model_path": mlx_model_path,
                 "trust_remote_code": get_model().trust_remote_code,
                 "disable_radix_cache": get_memory().disable_radix_cache,
@@ -296,7 +352,6 @@ def create_mlx_model_worker(
                 model_config=self.model_config,
                 mem_fraction_static=get_schedule().mem_fraction_static,
                 gpu_id=self.gpu_id,
-                ps=self.ps,
                 nccl_port=self.nccl_port,
                 server_args=self.server_args,
                 is_draft_worker=self.is_draft_worker,
@@ -317,45 +372,27 @@ def create_mlx_model_worker(
         def get_attention_tp_cpu_group(self):
             return self.model_runner.attention_tp_group.cpu_group
 
-    publish(server_args, role="scheduler")
-    attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
-        compute_dp_attention_world_info(
-            get_parallel().enable_dp_attention,
-            tp_rank,
-            get_parallel().tp_size,
-            get_parallel().dp_size,
-            get_parallel().attn_cp_size,
-        )
-    )
-    ps = ParallelState(
-        tp_rank=tp_rank,
-        tp_size=get_parallel().tp_size,
-        pp_rank=0,
-        pp_size=1,
-        dp_rank=None,
-        dp_size=get_parallel().dp_size,
-        attn_tp_rank=attn_tp_rank,
-        attn_tp_size=attn_tp_size,
-        attn_cp_rank=0,
-        attn_cp_size=get_parallel().attn_cp_size,
-        attn_dcp_rank=tp_rank % get_parallel().dcp_size,
-        attn_dcp_size=get_parallel().dcp_size,
-        attn_dp_rank=attn_dp_rank,
-        attn_dp_size=attn_dp_size,
-        moe_ep_rank=0,
-        moe_ep_size=1,
-        moe_dp_rank=None,
-        moe_dp_size=get_parallel().moe_dp_size,
-        gpu_id=gpu_id,
+    publish(
+        server_args,
+        role="scheduler",
+        ranks=SpawnRanks(
+            world_rank=spawn_world_rank(server_args, tp_rank=tp_rank, pp_rank=0),
+            gpu_id=gpu_id,
+        ),
     )
     nccl_port = config.nccl_port
     if nccl_port is None:
         nccl_port = PortArgs.init_new(server_args).nccl_port
     else:
         pass
+    bootstrap.init_parallel_runtime(
+        server_args=server_args,
+        device=get_device().device,
+        dist_port=nccl_port,
+    )
+    bootstrap.init_layer_runtime(model_config=ModelConfig.from_server_args(server_args))
     return OmniMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,
-        ps=ps,
         nccl_port=nccl_port,
     )

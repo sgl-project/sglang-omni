@@ -6,11 +6,17 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
+import torch
 from sglang.srt.runtime_context import get_exec, get_schedule
 
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_max_bs
+
+if TYPE_CHECKING:
+    from sglang.srt.model_executor.model_runner import ModelRunner
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +25,7 @@ logger = logging.getLogger(__name__)
 class BufferProbe:
     """Per-model ``(label, fn)`` extractors reading the allocated buffer first dim."""
 
-    extractors: tuple[tuple[str, Callable[[Any], int]], ...]
+    extractors: tuple[tuple[str, Callable[[torch.nn.Module], int]], ...]
     note: str = ""
 
 
@@ -291,7 +297,9 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
     return smallest, source
 
 
-def attest_prefill_cuda_graphs(model_runner: Any, *, operator_selected: bool) -> None:
+def attest_prefill_cuda_graphs(
+    model_runner: ModelRunner, *, operator_selected: bool
+) -> None:
     """Assert captured prefill graphs match an explicit or realized policy.
 
     An operator-selected backend must materialize or fail startup. A model

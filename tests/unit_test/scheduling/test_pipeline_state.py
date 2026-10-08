@@ -23,7 +23,7 @@ class DummyState(PipelineStateBase):
     value: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        data = {"value": self.value, "sample_rate": self.sample_rate}
+        data: dict[str, object] = {"value": self.value, "sample_rate": self.sample_rate}
         self.append_usage_fields(data)
         return data
 
@@ -115,6 +115,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         "prompt_tokens",
         "completion_tokens",
         "engine_time_s",
+        "finish_reason",
     }
 
     for state_cls in state_classes:

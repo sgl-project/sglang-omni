@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
     from sglang_omni.scheduling.types import SchedulerRequest
 else:
     pass
@@ -21,7 +22,8 @@ def create_talker_scheduler(
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
-) -> OmniScheduler:
+    session_mode: bool = False,
+) -> OmniScheduler[SGLangARRequestData]:
     """Create a codec scheduler with per-request condition embeddings."""
     from sglang.srt.arg_groups.model_override_base import resolved_view
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -32,6 +34,7 @@ def create_talker_scheduler(
     from sglang_omni.models.minicpm_o.talker_request import (
         make_talker_scheduler_adapters,
     )
+    from sglang_omni.models.minicpm_o.talker_session import TalkerAdapter
     from sglang_omni.scheduling.bootstrap import (
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
@@ -101,6 +104,7 @@ def create_talker_scheduler(
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
+        session_adapter=TalkerAdapter(model) if session_mode else None,
     )
 
 
@@ -114,7 +118,7 @@ def create_thinker_scheduler(
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
     speech_enabled: bool = False,
-) -> OmniScheduler:
+) -> OmniScheduler[SGLangARRequestData]:
     """Create a thinker scheduler with optional hidden-state capture for speech."""
     from sglang.srt.arg_groups.model_override_base import resolved_view
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -192,9 +196,14 @@ def create_thinker_scheduler(
         capture_hidden=speech_enabled,
         should_emit_hidden=_should_emit_hidden if speech_enabled else None,
     )
-    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc)
-
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
+    # note (ruinique): thinker chunks terminate on any of these tokens.
+    eos_token_ids = [
+        int(tokenizer.convert_tokens_to_ids(token))
+        for token in ("<|tts_eos|>", "<|im_end|>", "</s>")
+    ]
+    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc, eos_token_ids)
+
     request_builder, result_adapter = make_thinker_scheduler_adapters(
         tokenizer=tokenizer,
         vocab_size=model_config.vocab_size,

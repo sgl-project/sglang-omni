@@ -22,6 +22,7 @@ from sglang_omni.preprocessing.resource_connector import (
 )
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 logger = logging.getLogger(__name__)
 
@@ -324,8 +325,8 @@ def serve(
             "--allowed-local-media-path",
             "--allowed_local_media_path",
             help=(
-                "Directory that local media references in TTS requests must "
-                "resolve inside. file:// references are disabled when this is "
+                "Directory that local media references in chat and TTS requests "
+                "must resolve inside. file:// references are disabled when this is "
                 "omitted; bare local paths stay allowed by default but are also "
                 "restricted to this directory once it is configured."
             ),
@@ -387,6 +388,7 @@ def serve(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    configure_dependency_loggers()
 
     validate_colocate_cli_request(
         colocate=colocate,
