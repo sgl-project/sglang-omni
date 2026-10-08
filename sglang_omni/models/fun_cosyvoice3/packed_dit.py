@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 CONV_CONTEXT_FRAMES = 30
 # note (ratish, chenyang): a row's chunks share a key prefix, so FA3 pages are one frame.
 FA3_PAGE_SIZE = 1
+# note(ratish): the fused positional conv's tl.dot reduces at least 16 channels of a power
+# of two per group.
+GROUP_CONV_KERNEL_CHANNELS = (16, 32, 64, 128)
 FA3_DTYPES = (torch.float16, torch.bfloat16)
 # note(ratish): the first call benchmark runs at a warmup shape, not a serving one,
 # so its pick can change between boots; the heuristic config is the same on every boot.
@@ -367,6 +370,29 @@ class PackedDiT:
                 qkv_biases.append(qkv_bias)
         self.qkv_weights = tuple(qkv_weights)
         self.qkv_biases = tuple(qkv_biases)
+        self.positional_conv_weights: tuple[torch.Tensor, ...] | None = None
+        if device.type == "cuda":
+            conv_pos_embed = dit.input_embed.conv_pos_embed
+            convs = (conv_pos_embed.conv1[0], conv_pos_embed.conv2[0])
+            group_channels = convs[0].in_channels // convs[0].groups
+            if (
+                convs[0].weight.dtype in FA3_DTYPES
+                and group_channels in GROUP_CONV_KERNEL_CHANNELS
+            ):
+                # note(ratish): Triton ships only with CUDA builds, so the kernel's
+                # module is imported here.
+                from sglang_omni.models.fun_cosyvoice3.causal_conv import (
+                    pack_group_conv_weight,
+                )
+
+                self.positional_conv_weights = tuple(
+                    pack_group_conv_weight(conv) for conv in convs
+                )
+                conv_pos_embed.forward = self.native_conv_pos_embed
+            else:
+                pass
+        else:
+            pass
         logger.info(
             "Fun-CosyVoice3 Flow row attention on %s: %s",
             device,
@@ -479,19 +505,58 @@ class PackedDiT:
     def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
         # note(ratish): the padded call zero pads conv2's input, not conv1's output,
         # so conv2's gaps are gathered again.
-        module = self.dit.input_embed.conv_pos_embed
         first_input = torch.cat((h.new_zeros(1, h.shape[2]), h[0]))[
             rows.conv_input_index
         ]
-        first_output = module.conv1(first_input.T.unsqueeze(0))[0].T
+        first_output = self.positional_conv(first_input, 0)
         second_input = torch.cat(
             (
                 first_output.new_zeros(1, first_output.shape[1]),
                 first_output[rows.conv_output_index],
             )
         )[rows.conv_input_index]
-        second_output = module.conv2(second_input.T.unsqueeze(0))[0].T
+        second_output = self.positional_conv(second_input, 1)
         return second_output[rows.conv_output_index].unsqueeze(0)
+
+    def positional_conv(self, x: torch.Tensor, index: int) -> torch.Tensor:
+        """Positional conv index with its Mish over x: (frames, channels), each
+        output frame reading the CONV_CONTEXT_FRAMES frames before it."""
+        conv_pos_embed = self.dit.input_embed.conv_pos_embed
+        conv = (conv_pos_embed.conv1, conv_pos_embed.conv2)[index]
+        weights = self.positional_conv_weights
+        if weights is not None and x.dtype == weights[index].dtype:
+            return torch.ops.sglang_omni_fun_cosyvoice3.group_conv_mish(
+                x.unsqueeze(0), weights[index], conv[0].bias
+            )[0]
+        else:
+            return conv(x.T.unsqueeze(0))[0].T
+
+    def native_conv_pos_embed(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """The padded DiT's positional convs on the fused kernel. x: (batch,
+        frames, channels), mask: (batch, frames)."""
+        conv_pos_embed = self.dit.input_embed.conv_pos_embed
+        weights = self.positional_conv_weights
+        assert weights is not None
+        if x.dtype != weights[0].dtype:
+            return type(conv_pos_embed).forward(conv_pos_embed, x, mask)
+        elif mask is not None:
+            x = x.masked_fill(~mask[..., None], 0.0)
+        else:
+            pass
+        padding = (0, 0, CONV_CONTEXT_FRAMES, 0)
+        x = torch.ops.sglang_omni_fun_cosyvoice3.group_conv_mish(
+            F.pad(x, padding).contiguous(), weights[0], conv_pos_embed.conv1[0].bias
+        )
+        out = torch.ops.sglang_omni_fun_cosyvoice3.group_conv_mish(
+            F.pad(x, padding), weights[1], conv_pos_embed.conv2[0].bias
+        )
+        if mask is not None:
+            out = out.masked_fill(~mask[..., None], 0.0)
+        else:
+            pass
+        return out
 
     def rope_angles(self, frame_count: int) -> torch.Tensor:
         """RoPE angles of positions [0, frame_count), (1, frame_count, rotary
