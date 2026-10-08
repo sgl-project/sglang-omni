@@ -147,14 +147,14 @@ def multinomial_with_seed_and_token_ids(
         return multinomial_with_seed(
             logprobs, seed, positions, token_ids=token_ids
         ).view(-1)
-
-    seed = seed.to(torch.uint64)
-    hashed = murmur_hash32(seed, positions, token_ids)
-    noise = hashed.to(torch.float64) / torch.iinfo(torch.uint32).max
-    noise.log_().clamp_(min=torch.finfo(noise.dtype).min, max=-(2.0**-32)).neg_()
-    noise.log_().neg_()
-    noise.add_(logprobs.to(torch.float64))
-    return torch.argmax(noise, dim=1)
+    else:
+        seed = seed.to(torch.uint64)
+        hashed = murmur_hash32(seed, positions, token_ids)
+        noise = hashed.to(torch.float64) / torch.iinfo(torch.uint32).max
+        noise.log_().clamp_(min=torch.finfo(noise.dtype).min, max=-(2.0**-32)).neg_()
+        noise.log_().neg_()
+        noise.add_(logprobs.to(torch.float64))
+        return torch.argmax(noise, dim=1)
 
 
 _F64_MIN = tl.constexpr(-1.7976931348623157e308)
