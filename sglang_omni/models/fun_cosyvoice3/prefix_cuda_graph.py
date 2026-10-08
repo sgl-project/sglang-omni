@@ -8,7 +8,10 @@ import dataclasses
 import gc
 import logging
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Protocol
 
 import torch
 from sglang.srt.utils.common import get_available_gpu_memory
@@ -22,11 +25,64 @@ from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     forward_prefix,
     run_prefix_solve,
 )
-from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
+from sglang_omni.platforms.device_graph import (
+    DeviceGraphBackend,
+    DeviceGraphPool,
+    ReplayableGraph,
+)
 
 logger = logging.getLogger(__name__)
 
 CAPTURE_WARMUP_RUNS = 2
+
+
+class GraphSolve(Protocol):
+    def __call__(self) -> torch.Tensor: ...
+
+
+@contextmanager
+def frozen_gc() -> Iterator[None]:
+    # note (ratish): a collection during capture can free what a reference cycle holds,
+    # an onnxruntime session among them, and invalidate the graph.
+    gc.collect()
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
+        gc.collect()
+
+
+def capture_solve_graph(
+    solve: GraphSolve,
+    *,
+    backend: DeviceGraphBackend,
+    graph_pool: DeviceGraphPool,
+    stream: torch.Stream,
+    device: torch.device,
+    autocast_dtype: torch.dtype,
+) -> tuple[ReplayableGraph, torch.Tensor]:
+    """solve warmed on stream, then captured into graph_pool. Returns the graph
+    and the output its replays write."""
+    device_module = torch.get_device_module(device)
+    stream.wait_stream(device_module.current_stream(device))
+    with (
+        device_module.stream(stream),
+        torch.autocast(device_type=device.type, dtype=autocast_dtype),
+    ):
+        for _ in range(CAPTURE_WARMUP_RUNS):
+            solve()
+    device_module.current_stream(device).wait_stream(stream)
+    device_module.synchronize(device)
+    with (
+        backend.capture(
+            pool=graph_pool, stream=stream, thread_local_errors=True
+        ) as graph,
+        torch.autocast(device_type=device.type, dtype=autocast_dtype),
+    ):
+        output = solve()
+    device_module.synchronize(device)
+    return graph, output
 
 
 @dataclass(kw_only=True)
@@ -97,9 +153,7 @@ class PrefixCudaGraphRunner:
                     page_table_width=max_frames,
                 )
             )
-        angles, scale = estimator.dit.rotary_embed.forward_from_seq_len(max_frames)
-        assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
-        self.angles = angles
+        self.angles = estimator.rope_angles(max_frames)
         self.captured: list[CapturedPrefixSolve] = []
 
     @torch.inference_mode()
@@ -110,11 +164,7 @@ class PrefixCudaGraphRunner:
         graph_pool = self.backend.graph_pool_handle()
         stream = self.device_module.Stream(device=self.device)
         hidden_size = self.estimator.dit.input_embed.proj.out_features
-        # note(ratish): a collection during capture can free what a reference cycle holds,
-        # an onnxruntime session among them, and invalidate the graph.
-        gc.collect()
-        gc.freeze()
-        try:
+        with frozen_gc():
             for layout in reversed(self.layouts):
                 attention = PrefixRowAttention(
                     rows=[],
@@ -173,27 +223,14 @@ class PrefixCudaGraphRunner:
                         cfg_rate=self.cfg_rate,
                     )
 
-                stream.wait_stream(self.device_module.current_stream(self.device))
-                with (
-                    self.device_module.stream(stream),
-                    torch.autocast(
-                        device_type=self.device.type, dtype=self.autocast_dtype
-                    ),
-                ):
-                    for _ in range(CAPTURE_WARMUP_RUNS):
-                        solve()
-                self.device_module.current_stream(self.device).wait_stream(stream)
-                self.device_module.synchronize(self.device)
-                with (
-                    self.backend.capture(
-                        pool=graph_pool, stream=stream, thread_local_errors=True
-                    ) as graph,
-                    torch.autocast(
-                        device_type=self.device.type, dtype=self.autocast_dtype
-                    ),
-                ):
-                    output = solve()
-                self.device_module.synchronize(self.device)
+                graph, output = capture_solve_graph(
+                    solve,
+                    backend=self.backend,
+                    graph_pool=graph_pool,
+                    stream=stream,
+                    device=self.device,
+                    autocast_dtype=self.autocast_dtype,
+                )
                 self.captured.append(
                     CapturedPrefixSolve(
                         layout=layout,
@@ -209,9 +246,6 @@ class PrefixCudaGraphRunner:
                         output=output,
                     )
                 )
-        finally:
-            gc.unfreeze()
-            gc.collect()
         self.captured.reverse()
         after_mem = get_available_gpu_memory(self.device.type, self.device.index)
         logger.info(
