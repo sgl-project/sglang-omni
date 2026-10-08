@@ -372,8 +372,6 @@ def collect_benchmark_provenance(
             "device_type": device_type,
             "xpu_inventory": xpu_inventory,
             "ze_affinity_mask": os.environ.get("ZE_AFFINITY_MASK"),
-            "oneapi_device_selector": os.environ.get("ONEAPI_DEVICE_SELECTOR"),
-            "sycl_device_filter": os.environ.get("SYCL_DEVICE_FILTER"),
             "nvidia_smi_csv": (
                 _command(
                     "nvidia-smi",

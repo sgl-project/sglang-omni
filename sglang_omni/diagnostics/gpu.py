@@ -70,8 +70,6 @@ class GpuEnvironmentInfo(NvmlSystemInfo):
     device_type: Literal["cuda", "xpu"]
     xpu_available: bool
     ze_affinity_mask: str | None
-    oneapi_device_selector: str | None
-    sycl_device_filter: str | None
     cuda_visible_devices: str | None
     cuda_runtime_version: str | None
     pytorch_version: str | None
@@ -494,8 +492,6 @@ def collect_gpu_diagnostics(
             "device_type": device_type,
             "xpu_available": device_type == "xpu",
             "ze_affinity_mask": source_env.get("ZE_AFFINITY_MASK"),
-            "oneapi_device_selector": source_env.get("ONEAPI_DEVICE_SELECTOR"),
-            "sycl_device_filter": source_env.get("SYCL_DEVICE_FILTER"),
             "cuda_visible_devices": visible_value,
             **system,
             "cuda_runtime_version": (
@@ -526,8 +522,6 @@ def render_gpu_diagnostics(report: GpuDiagnosticsReport) -> str:
         lines.extend(
             [
                 f"ZE_AFFINITY_MASK: {environment['ze_affinity_mask'] or '<unset>'}",
-                f"ONEAPI_DEVICE_SELECTOR: {environment['oneapi_device_selector'] or '<unset>'}",
-                f"SYCL_DEVICE_FILTER: {environment['sycl_device_filter'] or '<unset>'}",
                 f"Driver: {environment['driver_version'] or 'unavailable'}",
                 f"PyTorch/XPU build: {environment['pytorch_version'] or 'unavailable'}",
             ]

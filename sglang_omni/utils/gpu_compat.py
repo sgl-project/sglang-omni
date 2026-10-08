@@ -226,14 +226,7 @@ def gpu_ids_support_p2p_mesh(
 
     source_env = os.environ if env is None else env
     if gpu_device_type() == "xpu":
-        if any(
-            source_env.get(name) != os.environ.get(name)
-            for name in (
-                "ZE_AFFINITY_MASK",
-                "ONEAPI_DEVICE_SELECTOR",
-                "SYCL_DEVICE_FILTER",
-            )
-        ):
+        if source_env.get("ZE_AFFINITY_MASK") != os.environ.get("ZE_AFFINITY_MASK"):
             return None
         else:
             pass
