@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import struct
 from collections.abc import Mapping
 from pathlib import Path
 
+import av
 import numpy as np
 import numpy.typing as npt
 import torch
@@ -20,11 +22,7 @@ from .resource_connector import await_media_cleanup
 
 
 def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
-    """Decode audio bytes using PyAV (supports WebM/Opus, MP3, OGG, FLAC, etc.)."""
-    import io
-
-    import av
-
+    """Decode audio bytes with PyAV (WebM/Opus, MP3, OGG, FLAC, etc.) to mono float at full scale."""
     container = av.open(io.BytesIO(data))
     try:
         audio_stream = next((s for s in container.streams if s.type == "audio"), None)
@@ -36,24 +34,22 @@ def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
         sample_rate = audio_stream.rate
         frames = []
         for frame in container.decode(audio_stream):
-            arr = frame.to_ndarray()
-            if np.issubdtype(arr.dtype, np.integer):
-                dtype_info = np.iinfo(arr.dtype)
-                if dtype_info.min == 0:
-                    midpoint = float(dtype_info.max + 1) / 2.0
-                    arr = (arr.astype(np.float32) - midpoint) / midpoint
-                else:
-                    scale = float(max(-int(dtype_info.min), int(dtype_info.max)))
-                    arr = arr.astype(np.float32) / scale
+            samples = frame.to_ndarray()
+            if np.issubdtype(samples.dtype, np.unsignedinteger):
+                midpoint = (np.iinfo(samples.dtype).max + 1) / 2
+                samples = (samples.astype(np.float32) - midpoint) / midpoint
+            elif np.issubdtype(samples.dtype, np.signedinteger):
+                full_scale = -float(np.iinfo(samples.dtype).min)
+                samples = samples.astype(np.float32) / full_scale
             else:
-                arr = arr.astype(np.float32, copy=False)
-
+                samples = samples.astype(np.float32, copy=False)
             channels = len(frame.layout.channels)
+            # note (ratish): a packed frame interleaves its channels in one row.
             if frame.format.is_planar:
-                arr = arr.reshape(channels, -1).mean(axis=0)
+                samples = samples.reshape(channels, -1).mean(axis=0)
             else:
-                arr = arr.reshape(-1, channels).mean(axis=1)
-            frames.append(arr.astype(np.float32, copy=False))
+                samples = samples.reshape(-1, channels).mean(axis=1)
+            frames.append(samples)
     finally:
         container.close()
 
