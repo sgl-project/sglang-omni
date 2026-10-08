@@ -506,7 +506,11 @@ class Client:
 
     @staticmethod
     def set_audio_data(chunk: GenerateChunk, data: Mapping[str, object]) -> None:
-        audio_data = data.get("audio_data") or data.get("audio")
+        audio_data = data.get("audio_data")
+        if audio_data is None:
+            audio_data = data.get("audio")
+        else:
+            pass
         if audio_data is None and data.get("audio_waveform") is not None:
             raw = data.get("audio_waveform")
             if isinstance(raw, memoryview):

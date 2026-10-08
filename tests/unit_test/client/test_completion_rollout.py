@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
+import numpy as np
 import pytest
+import torch
 
 from sglang_omni.client import Client
 from sglang_omni.client.client import extract_inputs
 from sglang_omni.client.types import GenerateChunk, GenerateRequest
+from sglang_omni.proto.messages import StreamMessage
 
 
 class SubmitStubCoordinator:
@@ -85,16 +88,36 @@ def test_speech_surfaces_finish_reason() -> None:
 
 
 @pytest.mark.parametrize("finish_reason", ["length", "stop", None])
+@pytest.mark.parametrize(
+    "audio_samples,expected_pcm",
+    [
+        pytest.param([0.0, 0.25, -0.25], b"\x00\x00\xff\x1f\x01\xe0", id="list"),
+        pytest.param(
+            np.array([0.0, 0.25, -0.25], dtype=np.float32),
+            b"\x00\x00\xff\x1f\x01\xe0",
+            id="numpy",
+        ),
+        pytest.param(
+            torch.tensor([0.0, 0.25, -0.25]),
+            b"\x00\x00\xff\x1f\x01\xe0",
+            id="torch-cpu",
+        ),
+        pytest.param(np.zeros(1, dtype=np.float32), b"\x00\x00", id="numpy-silence"),
+        pytest.param(torch.zeros(1), b"\x00\x00", id="torch-cpu-silence"),
+    ],
+)
 def test_speech_preserves_reason_provenance_through_typed_and_serialized_results(
     finish_reason: str | None,
+    audio_samples: list[float] | np.ndarray | torch.Tensor,
+    expected_pcm: bytes,
 ) -> None:
     typed = GenerateChunk(
         request_id="speech-typed",
-        audio_data=[0.0, 0.1],
+        audio_data=audio_samples,
         sample_rate=24000,
         finish_reason=finish_reason,
     )
-    raw = {"audio_data": [0.0, 0.1], "sample_rate": 24000}
+    raw = {"audio_data": audio_samples, "sample_rate": 24000}
     if finish_reason is not None:
         raw["finish_reason"] = finish_reason
     else:
@@ -109,6 +132,90 @@ def test_speech_preserves_reason_provenance_through_typed_and_serialized_results
             )
         )
         assert result.finish_reason == (finish_reason or "unknown")
+        assert result.audio_bytes == expected_pcm
+        assert result.sample_rate == 24000
+
+
+@pytest.mark.parametrize(
+    "audio_samples",
+    [np.array([0.0, 0.25, -0.25], dtype=np.float32), torch.tensor([0.0, 0.25, -0.25])],
+    ids=["numpy", "torch-cpu"],
+)
+@pytest.mark.parametrize("result_shape", ["multi_terminal", "streaming"])
+def test_generate_preserves_array_audio_from_pipeline_results(
+    audio_samples: np.ndarray | torch.Tensor,
+    result_shape: Literal["multi_terminal", "streaming"],
+) -> None:
+    audio_result = {"audio_data": audio_samples, "sample_rate": 24000}
+    if result_shape == "multi_terminal":
+        client = Client(
+            SubmitStubCoordinator(
+                {"decode": {"text": "hello"}, "code2wav": audio_result}
+            )
+        )
+    else:
+        client = Client(
+            StreamStubCoordinator(
+                [StreamMessage("audio-request", "code2wav", audio_result)]
+            )
+        )
+
+    async def generate() -> list[GenerateChunk]:
+        return [
+            chunk
+            async for chunk in client.generate(
+                GenerateRequest(prompt="hello", stream=result_shape == "streaming"),
+                request_id="audio-request",
+            )
+        ]
+
+    chunks = asyncio.run(generate())
+    assert len(chunks) == 1
+    np.testing.assert_array_equal(chunks[0].audio_data, audio_samples)
+    assert chunks[0].sample_rate == 24000
+    assert chunks[0].modality == "audio"
+
+
+@pytest.mark.parametrize("include_audio_data", [False, True])
+def test_speech_falls_back_to_audio_when_audio_data_is_absent(
+    include_audio_data: bool,
+) -> None:
+    audio_result = {"audio": np.array([0.25], dtype=np.float32), "sample_rate": 24000}
+    if include_audio_data:
+        audio_result["audio_data"] = None
+    else:
+        pass
+
+    result = asyncio.run(
+        Client(SubmitStubCoordinator(audio_result)).speech(
+            GenerateRequest(prompt="hello"),
+            request_id="audio-alias",
+            response_format="pcm",
+        )
+    )
+    assert result.audio_bytes == b"\xff\x1f"
+
+
+@pytest.mark.parametrize(
+    "audio_samples",
+    [np.zeros(1, dtype=np.float32), torch.zeros(1)],
+    ids=["numpy", "torch-cpu"],
+)
+def test_speech_preserves_silent_audio_data_over_audio_alias(
+    audio_samples: np.ndarray | torch.Tensor,
+) -> None:
+    result = asyncio.run(
+        Client(
+            SubmitStubCoordinator(
+                {"audio_data": audio_samples, "audio": [0.25], "sample_rate": 24000}
+            )
+        ).speech(
+            GenerateRequest(prompt="hello"),
+            request_id="audio-precedence",
+            response_format="pcm",
+        )
+    )
+    assert result.audio_bytes == b"\x00\x00"
 
 
 def test_completion_surfaces_omni_rollout() -> None:
@@ -200,8 +307,6 @@ def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
 
 
 def test_completion_concatenates_streamed_logprobs() -> None:
-    from sglang_omni.proto import StreamMessage
-
     messages = [
         StreamMessage(
             request_id="r1",
