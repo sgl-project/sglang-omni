@@ -270,7 +270,6 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
             gpu_index=args.gpu_index,
             interval_s=args.monitor_interval_s,
             gpu_process_pids=args.gpu_process_pids,
-            device_type=args.device_type,
         ).start()
     )
     sampler = None
@@ -280,7 +279,6 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
             sampler = UtilizationSampler(
                 gpu_ids=gpu_ids,
                 interval_s=args.util_interval,
-                device_type=args.device_type,
             )
             sampler.start()
         benchmark_result = await run_asr_seedtts_once(
@@ -664,12 +662,6 @@ def add_common_args(
         ),
     )
     parser.add_argument(
-        "--device-type",
-        choices=("cuda", "xpu"),
-        default=None,
-        help="Backend for local telemetry; defaults to the selected serving platform.",
-    )
-    parser.add_argument(
         "--util-gpu-ids",
         default="",
         help=(
@@ -845,10 +837,8 @@ def main() -> None:
             launch_command=args.launch_command,
             server_config=server_config,
             evaluation_input_sha256=evaluation_input_sha256,
-            device_type=args.device_type,
         ),
         "config": {
-            "device_type": args.device_type,
             "host": args.host,
             "port": args.port,
             "meta": args.meta,
@@ -877,9 +867,7 @@ def main() -> None:
         # The client fingerprint equals the server's only when both share one
         # host and checkout; the server block records what the server reports.
         payload["environment_fingerprint"] = {
-            "client": collect_environment_fingerprint(
-                args.model_path, device_type=args.device_type
-            ),
+            "client": collect_environment_fingerprint(args.model_path),
             "server": collect_server_identity(f"http://{args.host}:{args.port}"),
         }
     output_path = os.path.abspath(args.output)

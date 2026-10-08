@@ -11,7 +11,7 @@ import sys
 import time
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
-from typing import Literal, TypedDict
+from typing import TypedDict
 
 import requests
 
@@ -118,15 +118,13 @@ def collect_server_identity(base_url: str) -> ServerIdentity:
 
 def collect_environment_fingerprint(
     model_path: str | None = None,
-    *,
-    device_type: Literal["cuda", "xpu"] | None = None,
 ) -> EnvironmentFingerprint | ModelEnvironmentFingerprint:
     """Capture client code, dependency, and hardware identity.
 
     A missing tool yields None so fingerprinting never blocks a run.
     """
     pip_freeze = _run_command([sys.executable, "-m", "pip", "freeze"])
-    selected_backend = device_type or gpu_device_type()
+    selected_backend = gpu_device_type()
     fingerprint: EnvironmentFingerprint = {
         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "hostname": platform.node(),

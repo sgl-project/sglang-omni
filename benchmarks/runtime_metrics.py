@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import torch
 
@@ -51,7 +51,6 @@ class ResourceMonitor:
         gpu_index: int = 0,
         interval_s: float = 0.2,
         gpu_process_pids: list[int] | None = None,
-        device_type: Literal["cuda", "xpu"] | None = None,
     ) -> None:
         if gpu_index < 0:
             raise ValueError("gpu_index must be >= 0")
@@ -60,7 +59,6 @@ class ResourceMonitor:
         if any(pid <= 0 for pid in gpu_process_pids or []):
             raise ValueError("gpu_process_pids must contain only positive PIDs")
         self.gpu_index = gpu_index
-        self.device_type = device_type
         self.interval_s = interval_s
         self.gpu_process_pids = frozenset(gpu_process_pids or [])
         self.samples: list[ResourceSample] = []
@@ -133,7 +131,7 @@ class ResourceMonitor:
             try:
                 if psutil is None:
                     raise RuntimeError("psutil is required for resource sampling")
-                elif (self.device_type or gpu_device_type()) == "xpu":
+                elif gpu_device_type() == "xpu":
                     self.xpu_device = XpuDevice.from_logical_index(self.gpu_index)
                 else:
                     pynvml = try_import_pynvml()
@@ -328,7 +326,6 @@ def collect_benchmark_provenance(
     launch_command: str | None,
     server_config: dict[str, Any],
     evaluation_input_sha256: str | None = None,
-    device_type: Literal["cuda", "xpu"] | None = None,
 ) -> dict[str, Any]:
     dependency_inventory = _distribution_inventory()
     package_payload = json.dumps(
@@ -345,7 +342,7 @@ def collect_benchmark_provenance(
         torch_cuda = None
         cudnn_version = None
 
-    device_type = device_type or gpu_device_type()
+    device_type = gpu_device_type()
     xpu_inventory = (
         _best_effort(
             lambda: [

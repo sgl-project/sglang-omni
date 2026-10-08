@@ -111,6 +111,7 @@ def test_provenance_labels_server_configuration_as_declared(
 def test_xpu_provenance_records_capacity_clocks_and_power_without_nvidia_smi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(runtime_metrics, "gpu_device_type", lambda: "xpu")
     device = XpuDevice(
         physical_index=3,
         handle=c_void_p(4),
@@ -149,7 +150,6 @@ def test_xpu_provenance_records_capacity_clocks_and_power_without_nvidia_smi(
         dataset_revision=None,
         launch_command=None,
         server_config={},
-        device_type="xpu",
     )
     assert result["gpu"]["device_type"] == "xpu"
     assert result["gpu"]["nvidia_smi_csv"] is None
@@ -364,9 +364,7 @@ def test_xpu_monitor_filters_processes_and_preserves_unavailable_metrics(
     monkeypatch.setattr(XpuDevice, "power_watts", unavailable)
     monkeypatch.setattr(XpuDevice, "utilization_percent", unavailable)
 
-    monitor = ResourceMonitor(
-        interval_s=0.01, gpu_process_pids=[os.getpid()], device_type="xpu"
-    ).start()
+    monitor = ResourceMonitor(interval_s=0.01, gpu_process_pids=[os.getpid()]).start()
     result = monitor.stop()
     assert result["available"] is True
     assert result["gpu_memory_used_mib"]["max"] == 4.0
@@ -424,7 +422,6 @@ async def test_asr_repeat_stops_resource_monitor_when_request_fails(
         fail_request,
     )
     args = SimpleNamespace(
-        device_type=None,
         disable_resource_monitor=False,
         gpu_index=0,
         monitor_interval_s=0.2,

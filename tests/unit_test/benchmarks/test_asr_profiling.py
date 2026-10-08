@@ -217,7 +217,6 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
     lifecycle: dict[str, object] = {}
     repeat_call: dict[str, object] = {}
     args = SimpleNamespace(
-        device_type=None,
         profile_event_dir="/tmp/asr-profile",
         profile_urls="http://worker-0:8000,http://worker-1:8000",
     )
@@ -322,9 +321,7 @@ def test_utilization_sampler_summarizes_cpu_and_gpu(
     monkeypatch.setattr(
         asr_profiling,
         "_query_gpu_utilization",
-        lambda gpu_ids, device_type: {
-            "3": {"util_percent": 40.0, "memory_mib": 1024.0}
-        },
+        lambda gpu_ids: {"3": {"util_percent": 40.0, "memory_mib": 1024.0}},
     )
 
     sampler = UtilizationSampler(gpu_ids=[3], interval_s=0.01)
@@ -355,7 +352,7 @@ def test_environment_fingerprint_is_best_effort(
     assert "CUDA_VISIBLE_DEVICES" in environment["env"]
 
 
-def test_environment_fingerprint_selects_xpu_even_when_cuda_cli_is_available(
+def test_environment_fingerprint_detects_xpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     commands: list[list[str]] = []
@@ -369,7 +366,8 @@ def test_environment_fingerprint_selects_xpu_even_when_cuda_cli_is_available(
         )
 
     monkeypatch.setattr(fingerprint, "_run_command", run_command)
-    environment = collect_environment_fingerprint(device_type="xpu")
+    monkeypatch.setattr(fingerprint, "gpu_device_type", lambda: "xpu")
+    environment = collect_environment_fingerprint()
     assert environment["gpus"] == "0, Intel GPU, driver, 24480 MiB"
     assert commands[-1] == [
         "xpu-smi",
@@ -401,10 +399,14 @@ def test_utilization_query_uses_cli_units_and_filters_device_ids(
         )
 
     monkeypatch.setattr(asr_profiling.subprocess, "run", run)
+    monkeypatch.setattr(
+        asr_profiling,
+        "gpu_device_type",
+        lambda: "xpu" if executable == "xpu-smi" else "cuda",
+    )
     sampler = UtilizationSampler(
         gpu_ids=[2],
         interval_s=0.005,
-        device_type="xpu" if executable == "xpu-smi" else "cuda",
     )
     sampler.start()
     try:

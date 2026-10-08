@@ -22,7 +22,7 @@ families (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here
 
 The XPU dependencies include `pyzes>=0.1.2` for device diagnostics, process memory accounting, and benchmark resource sampling through Level Zero Sysman. `sgl-omni check-gpu --json` reports XPU UUIDs, PCI addresses, driver version, and free/total memory. Benchmark sampling also reads utilization and card power; those counters need the driver's telemetry permissions and become available after two samples. Unsupported or inaccessible metrics remain unavailable. Device mapping uses PyTorch UUIDs, respecting runtime device selection such as `ZE_AFFINITY_MASK`.
 
-The ASR benchmark's `--sample-util` and `--fingerprint` CLI paths use `xpu-smi` for an XPU platform selection. Install `xpu-smi` with `--query-gpu` support (tested with v2.0) on `PATH`. Use `--device-type xpu` when the benchmark client needs an explicit backend, including hosts with both CUDA and XPU. `--util-gpu-ids` selects the physical indices reported by the CLI; these may differ from PyTorch's logical indices.
+The ASR benchmark's `--sample-util` and `--fingerprint` CLI paths automatically detect the available PyTorch backend and use `xpu-smi` on XPU hosts. Install `xpu-smi` with `--query-gpu` support (tested with v2.0) on `PATH`. `--util-gpu-ids` selects the physical indices reported by the CLI; these may differ from PyTorch's logical indices.
 
 Benchmark provenance records Sysman memory capacity, GPU and memory clocks, and power limits with their domain, level, and enabled state. Unsupported counters are `null`. XPU peer access is checked through PyTorch using logical device indices; peer access does not enable SGLang's CUDA custom all-reduce kernels on XPU.
 

@@ -20,7 +20,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, TextIO
+from typing import Any, TextIO
 
 import requests
 
@@ -160,10 +160,8 @@ def _read_proc_stat() -> tuple[int, int] | None:
     return total - idle, total
 
 
-def _query_gpu_utilization(
-    gpu_ids: list[int], device_type: Literal["cuda", "xpu"] | None = None
-) -> dict[str, dict[str, float]]:
-    selected_backend = device_type or gpu_device_type()
+def _query_gpu_utilization(gpu_ids: list[int]) -> dict[str, dict[str, float]]:
+    selected_backend = gpu_device_type()
     try:
         raw = subprocess.run(
             [
@@ -200,12 +198,11 @@ class UtilizationSampler:
 
     CPU usage comes from /proc/stat deltas (Linux; None elsewhere) so the
     benchmark does not grow a psutil dependency. GPU stats come from a
-    selected backend's nvidia-smi or xpu-smi query and are empty when unavailable.
+    detected backend's nvidia-smi or xpu-smi query and are empty when unavailable.
     """
 
     gpu_ids: list[int] = field(default_factory=list)
     interval_s: float = 1.0
-    device_type: Literal["cuda", "xpu"] | None = None
     _samples: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _thread: threading.Thread | None = field(default=None, repr=False)
@@ -213,7 +210,6 @@ class UtilizationSampler:
     def start(self) -> None:
         if self._thread is not None:
             raise RuntimeError("UtilizationSampler already started")
-        self.device_type = self.device_type or gpu_device_type()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run, name="asr-bench-util-sampler", daemon=True
@@ -244,7 +240,7 @@ class UtilizationSampler:
                 # note (luojiaxuan): load average is optional telemetry and
                 # unavailable on some platforms (e.g. Windows); skip silently.
                 pass
-            gpu = _query_gpu_utilization(self.gpu_ids, self.device_type)
+            gpu = _query_gpu_utilization(self.gpu_ids)
             if gpu:
                 sample["gpu"] = gpu
             self._samples.append(sample)

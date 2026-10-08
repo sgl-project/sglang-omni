@@ -165,10 +165,8 @@ def main() -> None:
             launch_command=args.launch_command,
             server_config=server_config,
             evaluation_input_sha256=evaluation_input_sha256,
-            device_type=args.device_type,
         ),
         "config": {
-            "device_type": args.device_type,
             "host": args.host,
             "port": args.port,
             "repo_id": args.repo_id,

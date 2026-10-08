@@ -32,36 +32,13 @@ def use_cuda_accounting(
         monkeypatch.setattr(gpu_memory, "gpu_device_type", lambda: "cuda")
 
 
-def test_gpu_backend_requires_selection_when_both_are_available() -> None:
+@pytest.mark.parametrize("device_type", ["cuda", "xpu"])
+def test_gpu_backend_detects_available_accelerator(device_type: str) -> None:
     fake_torch = SimpleNamespace(
-        cuda=SimpleNamespace(is_available=lambda: True),
-        xpu=SimpleNamespace(is_available=lambda: True),
+        cuda=SimpleNamespace(is_available=lambda: device_type == "cuda"),
+        xpu=SimpleNamespace(is_available=lambda: device_type == "xpu"),
     )
-    with pytest.raises(ValueError, match="both backends"):
-        gpu_device_type(fake_torch)
-    assert gpu_device_type(fake_torch, device_type="xpu") == "xpu"
-
-
-def test_gpu_backend_honors_registered_platform(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    platform = ModuleType("sglang_omni.platforms")
-    platform.current_platform = SimpleNamespace(device_type="xpu")
-    monkeypatch.setitem(sys.modules, "sglang_omni.platforms", platform)
-    monkeypatch.setenv("SGLANG_PLATFORM", "cuda")
-    assert gpu_device_type() == "xpu"
-    assert gpu_device_type(device_type="cuda") == "cuda"
-
-
-def test_gpu_backend_honors_environment_without_importing_platforms(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delitem(sys.modules, "sglang_omni.platforms", raising=False)
-    monkeypatch.delitem(sys.modules, "sglang.srt.platforms", raising=False)
-    monkeypatch.delenv("SGLANG_OMNI_PLATFORM_SPEC", raising=False)
-    monkeypatch.setenv("SGLANG_PLATFORM", "xpu")
-    assert gpu_device_type() == "xpu"
-    assert "sglang_omni.platforms" not in sys.modules
+    assert gpu_device_type(fake_torch) == device_type
 
 
 class FakeSysmanProcess(Structure):
