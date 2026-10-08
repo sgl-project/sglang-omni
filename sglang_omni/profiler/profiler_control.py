@@ -1,9 +1,8 @@
-# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Mapping
 
 from sglang_omni.pipeline.control_plane import PushSocket
 from sglang_omni.proto import ProfilerStartMessage, ProfilerStopMessage
@@ -15,41 +14,42 @@ logger = logging.getLogger(__name__)
 class ProfilerControlClient:
     """Broadcast profiler control messages to stages (no coordinator object needed)."""
 
-    stage_endpoints: dict[
-        str, str
-    ]  # stage_name -> stage control_endpoint (PULL bound at stage)
-
-    _socks: dict[str, PushSocket] | None = None
+    stage_endpoints: dict[str, str]
+    socks: dict[str, PushSocket] | None = None
 
     async def start(self) -> None:
-        if self._socks is not None:
+        if self.socks is not None:
             return
-        self._socks = {}
+        else:
+            pass
+        self.socks = {}
         for stage_name, endpoint in self.stage_endpoints.items():
             sock = PushSocket(endpoint)
             await sock.connect()
-            self._socks[stage_name] = sock
-        logger.info("ProfilerControlClient connected to %d stages", len(self._socks))
+            self.socks[stage_name] = sock
+        logger.info("ProfilerControlClient connected to %d stages", len(self.socks))
 
     async def close(self) -> None:
-        if not self._socks:
+        if not self.socks:
             return
-        for sock in self._socks.values():
+        else:
+            pass
+        for sock in self.socks.values():
             sock.close()
-        self._socks = None
+        self.socks = None
 
     async def broadcast_start(
         self,
         run_id: str,
         trace_path_template: str,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, object] | None = None,
         stages: list[str] | None = None,
         event_dir: str | None = None,
         enable_torch: bool = True,
     ) -> None:
         await self.start()
-        assert self._socks is not None
-        targets = stages or list(self._socks.keys())
+        assert self.socks is not None
+        targets = stages or list(self.socks.keys())
         msg = ProfilerStartMessage(
             run_id=run_id,
             trace_path_template=trace_path_template,
@@ -57,9 +57,11 @@ class ProfilerControlClient:
             enable_torch=enable_torch,
         )
         for s in targets:
-            sock = self._socks.get(s)
+            sock = self.socks.get(s)
             if sock is None:
                 continue
+            else:
+                pass
             await sock.send(msg)
         logger.info(
             "Broadcast profiler_start run_id=%s event_dir=%s torch=%s to stages=%s",
@@ -70,18 +72,18 @@ class ProfilerControlClient:
         )
 
     async def broadcast_stop(
-        self,
-        run_id: str | None = None,
-        stages: list[str] | None = None,
+        self, run_id: str | None = None, stages: list[str] | None = None
     ) -> None:
         """Broadcast stop. ``run_id=None`` is a wildcard."""
         await self.start()
-        assert self._socks is not None
-        targets = stages or list(self._socks.keys())
+        assert self.socks is not None
+        targets = stages or list(self.socks.keys())
         msg = ProfilerStopMessage(run_id=run_id)
         for s in targets:
-            sock = self._socks.get(s)
+            sock = self.socks.get(s)
             if sock is None:
                 continue
+            else:
+                pass
             await sock.send(msg)
         logger.info("Broadcast profiler_stop run_id=%s to stages=%s", run_id, targets)

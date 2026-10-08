@@ -12,7 +12,7 @@ import torch
 pytestmark = pytest.mark.accelerator
 
 
-def _capture(monkeypatch, obj, method, output, key, *, argument=False, first=False):
+def capture(monkeypatch, obj, method, output, key, *, argument=False, first=False):
     original = getattr(obj, method)
 
     def wrapped(*args, **kwargs):
@@ -57,13 +57,18 @@ def models():
         qwen_path=qwen,
     )
     conditioning = create_conditioning_executor(
-        checkpoint, device="cuda:0", text_encoder_path=qwen
+        checkpoint, device="cuda", gpu_id=0, text_encoder_path=qwen
     )
-    engine = create_auk_engine_executor(checkpoint, device="cuda:0")
-    decode = create_decode_executor(checkpoint, device="cuda:0")
+    engine = create_auk_engine_executor(
+        checkpoint,
+        device="cuda",
+        gpu_id=0,
+        enable_dit_fused_qk_norm_rope=False,
+    )
+    decode = create_decode_executor(checkpoint, device="cuda", gpu_id=0)
 
     def generate(payload):
-        return decode._fn(engine._fn(conditioning._fn(payload)))
+        return decode.fn(engine.fn(conditioning.fn(payload)))
 
     return upstream, generate, checkpoint, Path(source)
 
@@ -71,7 +76,7 @@ def models():
 @pytest.mark.parametrize("reference", [False, True])
 def test_speech_matches_upstream(models, monkeypatch, reference):
     from sglang_omni.client.client import Client
-    from sglang_omni.models.auk.flow_matching import AuKFlowMatching
+    from sglang_omni.models.auk import stages
     from sglang_omni.models.auk.hf_config import make_runtime_config
     from sglang_omni.models.auk.request_builders import build_auk_state
     from sglang_omni.models.auk.vae import BigVGANFlowVAE
@@ -96,7 +101,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         default_model="tencent/AuK"
     ).build_generate_request(request)
     payload = StagePayload(
-        request_id="parity", request=Client._build_omni_request(generated), data={}
+        request_id="parity", request=Client.build_omni_request(generated), data={}
     )
     state = build_auk_state(payload, make_runtime_config(checkpoint))
     payload.data = state.to_dict()
@@ -112,7 +117,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
 
     expected = {}
     actual = {}
-    _capture(
+    capture(
         monkeypatch,
         upstream.vae_model,
         "encoding_and_normalization",
@@ -120,10 +125,10 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         "reference",
         first=True,
     )
-    _capture(
+    capture(
         monkeypatch, upstream.model, "encode_text", expected, "conditioning", first=True
     )
-    _capture(
+    capture(
         monkeypatch,
         upstream.vae_model,
         "denormalize",
@@ -133,7 +138,6 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
     )
 
     original_encode = BigVGANFlowVAE.encoding_and_normalization
-    original_fuse = AuKFlowMatching.fuse
     original_denormalize = BigVGANFlowVAE.denormalize
 
     def encode(self, *args, **kwargs):
@@ -141,18 +145,13 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         actual["reference"] = result[0].detach().float().cpu()
         return result
 
-    def fuse(self, *args, **kwargs):
-        result = original_fuse(self, *args, **kwargs)
-        actual["conditioning"] = result.detach().float().cpu()
-        return result
-
     def denormalize(self, latent):
         actual["latent"] = latent.detach().float().cpu()
         return original_denormalize(self, latent)
 
     monkeypatch.setattr(BigVGANFlowVAE, "encoding_and_normalization", encode)
-    monkeypatch.setattr(AuKFlowMatching, "fuse", fuse)
     monkeypatch.setattr(BigVGANFlowVAE, "denormalize", denormalize)
+    capture(monkeypatch, stages, "fuse_hidden_states", actual, "conditioning")
     torch.manual_seed(request.seed)
     expected["waveform"], sample_rate = upstream.generate(
         messages,

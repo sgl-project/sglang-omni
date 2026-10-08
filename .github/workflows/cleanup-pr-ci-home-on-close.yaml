@@ -1,7 +1,7 @@
 name: Cleanup PR CI Home On Close
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
 
 permissions:
@@ -16,11 +16,15 @@ jobs:
       image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: --rm -e NVIDIA_VISIBLE_DEVICES -e OMNI_CI_CPUSET -v /dev/shm:/dev/shm -v /data/omni-ci:/data/omni-ci
     steps:
-      - name: Checkout code
+      # Self-hosted runner: run the default-branch script, never the PR's.
+      - name: Checkout default branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
 
       - name: Remove PR CI home
         shell: bash
-        run: |
-          bash .github/scripts/cleanup_ci_pr_home.sh \
-            "/data/omni-ci/pr-${{ github.event.pull_request.number }}"
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/cleanup_ci_pr_home.sh "/data/omni-ci/pr-${PR_NUMBER}"

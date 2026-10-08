@@ -37,6 +37,7 @@ from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.asr import compute_text_audio_consistency_from_records
+from tests.test_model.omni_ci_config import OmniCiModelPreset
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
@@ -44,8 +45,6 @@ from tests.test_model.omni_router_utils import (
 from tests.utils import (
     QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
-    apply_slack,
-    apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
     persist_wer_in_benchmark_results,
@@ -61,22 +60,6 @@ SHORT_ANSWER_PROMPT = (
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
 )
 
-VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.6
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0483
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
-    VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX
-)
-VIDEOMME_TALKER_N_ABOVE_50_MAX = 1.0
-
-_VIDEOMME_TALKER_AUDIO_P95 = {
-    16: {
-        "throughput_qps": 1.017,
-        "output_tok_per_req_s": 4.3,
-        "latency_mean_s": 10.638,
-        "rtf_mean": 0.9035,
-    },
-}
-VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
 
 VIDEOMME_TALKER_DATASET_LABEL = format_benchmark_dataset_label(
     dataset="videomme-ci-50",
@@ -88,7 +71,7 @@ VIDEOMME_TALKER_WER_DATASET_LABEL = format_benchmark_dataset_label(
 )
 
 
-def _load_short_answer_samples() -> list[VideoMMESample]:
+def load_short_answer_samples() -> list[VideoMMESample]:
     samples = load_videomme_samples(
         max_samples=MAX_SAMPLES,
         repo_id=DATASETS["videomme-ci-50"],
@@ -99,7 +82,7 @@ def _load_short_answer_samples() -> list[VideoMMESample]:
 
 
 @dataclass
-class _TalkerEvalArtifacts:
+class TalkerEvalArtifacts:
     summary: dict
     speed: dict
     per_sample: list
@@ -109,13 +92,14 @@ class _TalkerEvalArtifacts:
 
 @pytest.fixture(scope="module")
 def talker_eval_artifacts(
-    qwen3_omni_bf16_disagg_server: ManagedRouterHandle,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
-) -> _TalkerEvalArtifacts:
+) -> TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("videomme_audio"))
     config = VideoEvalConfig(
-        model="qwen3-omni",
-        port=qwen3_omni_bf16_disagg_server.port,
+        model=omni_ci_model.name,
+        port=omni_ci_server.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,
@@ -131,13 +115,13 @@ def talker_eval_artifacts(
         timeout_s=500,
     )
     with router_worker_traffic_guard(
-        qwen3_omni_bf16_disagg_server,
-        label="Qwen3-Omni Video-MME Talker",
+        omni_ci_server,
+        label=f"{omni_ci_model.name} Video-MME Talker",
     ) as router_guard:
         results = asyncio.run(
             run_video_eval(
                 config,
-                samples=_load_short_answer_samples(),
+                samples=load_short_answer_samples(),
                 task_label="Video-MME",
                 output_filename="videomme_results.json",
                 audio_output_dir_default="results/videomme_audio",
@@ -147,7 +131,7 @@ def talker_eval_artifacts(
         router_guard.assert_served(
             min_total_requests=results["summary"].get("total_samples", 0)
         )
-    return _TalkerEvalArtifacts(
+    return TalkerEvalArtifacts(
         summary=results["summary"],
         speed=results["speed"],
         per_sample=results["per_sample"],
@@ -158,56 +142,66 @@ def talker_eval_artifacts(
 
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
-    qwen3_omni_bf16_disagg_server: ManagedRouterHandle,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
-) -> _TalkerEvalArtifacts:
+    omni_ci_server: ManagedRouterHandle,
+    talker_eval_artifacts: TalkerEvalArtifacts,
+) -> TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
-    qwen3_omni_bf16_disagg_server.stop()
+    omni_ci_server.stop()
     wait_for_gpu_memory_release()
     return talker_eval_artifacts
 
 
 @pytest.mark.benchmark
 def test_videomme_talker_accuracy_and_speed(
-    talker_eval_artifacts: _TalkerEvalArtifacts,
+    omni_ci_model: OmniCiModelPreset,
+    talker_eval_artifacts: TalkerEvalArtifacts,
 ) -> None:
     """Run Video-MME with Talker enabled and assert accuracy + speed."""
     summary = talker_eval_artifacts.summary
     print_videomme_accuracy_summary(
-        summary, "qwen3-omni", dataset=VIDEOMME_TALKER_DATASET_LABEL
+        summary, omni_ci_model.name, dataset=VIDEOMME_TALKER_DATASET_LABEL
     )
     print_speed_summary(
         talker_eval_artifacts.speed,
-        "qwen3-omni",
+        omni_ci_model.name,
         CONCURRENCY,
         title="Video-MME Talker Speed",
         dataset=VIDEOMME_TALKER_DATASET_LABEL,
     )
 
     accuracy = summary.get("accuracy")
+    thresholds = omni_ci_model.thresholds["videomme_talker"]
     checks = MetricCheckCollector("Video-MME Talker accuracy and speed")
+    if omni_ci_model.name == "minicpmo":
+        checks.check(
+            summary.get("failed", 0) == 0,
+            f"Video-MME had {summary.get('failed', 0)} failed requests",
+        )
     if accuracy is None:
         checks.fail("Video-MME Talker thinker-text accuracy missing from summary")
-    else:
+    elif thresholds.calibrated:
         checks.check(
-            accuracy >= VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY,
+            accuracy >= thresholds.accuracy,
             f"Video-MME Talker thinker-text accuracy {accuracy:.4f} "
             f"({accuracy * 100:.1f}%) < "
-            f"threshold {VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY} "
-            f"({VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)",
+            f"threshold {thresholds.accuracy} "
+            f"({thresholds.accuracy * 100:.0f}%)",
         )
-    assert_speed_thresholds(
-        talker_eval_artifacts.speed,
-        VIDEOMME_TALKER_THRESHOLDS,
-        CONCURRENCY,
-        collector=checks,
-    )
+    if thresholds.calibrated:
+        assert_speed_thresholds(
+            talker_eval_artifacts.speed,
+            thresholds.speed,
+            CONCURRENCY,
+            collector=checks,
+        )
+    thresholds.require_calibrated(omni_ci_model.name, "videomme_talker", checks)
     checks.assert_all()
 
 
 @pytest.mark.benchmark
 def test_videomme_talker_wer(
-    wer_eval_artifacts: _TalkerEvalArtifacts,
+    omni_ci_model: OmniCiModelPreset,
+    wer_eval_artifacts: TalkerEvalArtifacts,
     qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""
@@ -221,19 +215,25 @@ def test_videomme_talker_wer(
     )
     print_wer_summary(
         wer["summary"],
-        "qwen3-omni",
+        omni_ci_model.name,
         dataset=VIDEOMME_TALKER_WER_DATASET_LABEL,
     )
     persist_wer_in_benchmark_results(
         wer_eval_artifacts.audio_dir, wer, "videomme_results.json"
     )
+    thresholds = omni_ci_model.thresholds["videomme_talker"]
     checks = MetricCheckCollector("Video-MME Talker WER")
     assert_wer_partitioned(
         wer,
-        max_wer_below_50_corpus=VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD,
-        max_n_above_50=VIDEOMME_TALKER_N_ABOVE_50_MAX,
+        max_wer_below_50_corpus=(
+            thresholds.wer if thresholds.calibrated else float("inf")
+        ),
+        max_n_above_50=(
+            thresholds.n_above_50 if thresholds.calibrated else float("inf")
+        ),
         collector=checks,
     )
+    thresholds.require_calibrated(omni_ci_model.name, "videomme_talker", checks)
     checks.assert_all()
 
 

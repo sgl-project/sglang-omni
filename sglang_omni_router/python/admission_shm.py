@@ -55,7 +55,7 @@ logger = logging.getLogger("sglang_omni_router.python.admission_shm")
 _PLATFORM_WARNED = False
 
 
-def _warn_if_unverified_platform() -> None:
+def warn_if_unverified_platform() -> None:
     global _PLATFORM_WARNED
     if _PLATFORM_WARNED:
         return
@@ -242,7 +242,7 @@ class SharedAdmission:
     ) -> None:
         if not 0 <= own_index < slots:
             raise ValueError(f"own_index {own_index} outside {slots} slots")
-        _warn_if_unverified_platform()
+        warn_if_unverified_platform()
         self._codecs = [SlotCodec(buf, index) for index in range(slots)]
         self._retired_codec = SlotCodec(buf, retired_slot_index(slots))
         self._own = self._codecs[own_index]
@@ -256,9 +256,9 @@ class SharedAdmission:
         self._rejected_total = 0
         self._sibling_unstable = False
         self._sibling_probed_at = 0.0
-        self._write_own()  # claim the slot
+        self.write_own()  # claim the slot
 
-    def _write_own(self) -> None:
+    def write_own(self) -> None:
         self._own.write(
             inflight=self._inflight,
             peak_sum=self._peak_sum,
@@ -268,42 +268,42 @@ class SharedAdmission:
             heartbeat_ts=self._clock(),
         )
 
-    def _still_owner(self) -> bool:
+    def still_owner(self) -> bool:
         view = self._own.read(fail_fast=True)
         return view.generation == self._generation and view.pid == self._pid
 
-    def _fenced(self) -> None:
+    def fenced(self) -> None:
         if self._on_fenced is not None:
             self._on_fenced()
 
-    def _total_inflight(self) -> int:
+    def total_inflight(self) -> int:
         return sum(codec.read(fail_fast=True).inflight for codec in self._codecs)
 
-    def _shed_from_cached_unstable(self) -> bool:
+    def shed_from_cached_unstable(self) -> bool:
         return (
             self._sibling_unstable
             and self._clock() - self._sibling_probed_at < _UNSTABLE_REPROBE_SECS
         )
 
-    def _mark_sibling_unstable(self) -> None:
+    def mark_sibling_unstable(self) -> None:
         self._sibling_probed_at = self._clock()
         if not self._sibling_unstable:
             self._sibling_unstable = True
             logger.warning("sibling admission slot unstable; shedding until reclaim")
 
-    def _mark_sibling_stable(self) -> None:
+    def mark_sibling_stable(self) -> None:
         if self._sibling_unstable:
             self._sibling_unstable = False
             logger.warning("sibling admission slots readable again; resuming admission")
 
     @property
     def inflight(self) -> int:
-        return self._total_inflight()
+        return self.total_inflight()
 
     def try_acquire(self) -> bool:
         try:
-            if not self._still_owner():
-                self._fenced()
+            if not self.still_owner():
+                self.fenced()
                 return False
         except SeqlockUnstableError:
             # Note (Jiaxin Deng): own slot mid-fold by the supervisor; writing
@@ -313,33 +313,33 @@ class SharedAdmission:
         # Note (Jiaxin Deng): a sibling slot is stuck mid-write (writer
         # crashed); shed instead of blocking the event loop. The own slot is
         # intact, so the rejection is counted like any other shed.
-        if self._shed_from_cached_unstable():
+        if self.shed_from_cached_unstable():
             self._rejected_total += 1
-            self._write_own()
+            self.write_own()
             return False
         try:
-            total = self._total_inflight()
+            total = self.total_inflight()
         except SeqlockUnstableError:
-            self._mark_sibling_unstable()
+            self.mark_sibling_unstable()
             self._rejected_total += 1
-            self._write_own()
+            self.write_own()
             return False
-        self._mark_sibling_stable()
+        self.mark_sibling_stable()
         if total >= self._max_inflight:
             self._rejected_total += 1
-            self._write_own()
+            self.write_own()
             return False
         self._inflight += 1
         observed = total + 1
         if observed > self._peak_sum:
             self._peak_sum = observed
-        self._write_own()
+        self.write_own()
         return True
 
     def release(self) -> None:
         try:
-            if not self._still_owner():
-                self._fenced()
+            if not self.still_owner():
+                self.fenced()
                 return
         except SeqlockUnstableError:
             logger.warning("own admission slot unstable on release; skipping")
@@ -350,18 +350,18 @@ class SharedAdmission:
             logger.error("admission slot released with no in-flight request; ignoring")
             return
         self._inflight -= 1
-        self._write_own()
+        self.write_own()
 
     def touch(self) -> None:
         """Refresh the slot heartbeat (idle DPs otherwise never write)."""
-        if self._still_owner():
-            self._write_own()
+        if self.still_owner():
+            self.write_own()
 
     def to_dict(self) -> dict[str, int]:
-        return _aggregate_to_dict(self._codecs, self._retired_codec, self._max_inflight)
+        return aggregate_to_dict(self._codecs, self._retired_codec, self._max_inflight)
 
 
-def _aggregate_to_dict(
+def aggregate_to_dict(
     codecs: list[SlotCodec], retired_codec: SlotCodec, max_inflight: int
 ) -> dict[str, int]:
     # Note (Jiaxin Deng): a fold is a two-slot transfer the per-slot seqlocks
@@ -416,4 +416,4 @@ class AdmissionAggregateView:
         return result
 
     def to_dict(self, max_inflight: int) -> dict[str, int]:
-        return _aggregate_to_dict(self._codecs, self._retired_codec, max_inflight)
+        return aggregate_to_dict(self._codecs, self._retired_codec, max_inflight)

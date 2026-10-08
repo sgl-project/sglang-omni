@@ -62,7 +62,7 @@ def test_shared_sampler_receives_only_codec_shaping(with_sglang_state, dtype):
             acc_scaling_penalties=torch.ones(2, 4) if with_sglang_state else None,
         )
     )
-    result = runner._sample_next_token_ids(
+    result = runner.sample_next_token_ids(
         SimpleNamespace(next_token_logits=original.clone()),
         forward,
         SimpleNamespace(),

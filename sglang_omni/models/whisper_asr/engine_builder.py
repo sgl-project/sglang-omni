@@ -4,18 +4,37 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
 )
-from sglang_omni.models.whisper_asr.request_builders import MAX_PREV_CONTEXT_TOKENS
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.models.whisper_asr.request_builders import (
+    MAX_PREV_CONTEXT_TOKENS,
+    WhisperASRRequestData,
+)
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.engine_factory import (
+    AsrEngineBuilder,
+    GenerationDefaults,
+    SchedulerExtras,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.whisper_asr.sglang_model import (
+        WhisperForConditionalGeneration,
+    )
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +47,7 @@ _DECODER_PREFILL_TOKENS_PER_REQUEST = (
 )
 
 
-def _max_reachable_decoder_prefill_tokens(
+def max_reachable_decoder_prefill_tokens(
     *,
     budget: int,
     encoder_token_count: int,
@@ -61,8 +80,8 @@ def _max_reachable_decoder_prefill_tokens(
     return max(_DECODER_PREFILL_TOKENS_PER_REQUEST, lower_cap, upper_cap)
 
 
-def _reachable_prefill_cuda_graph_max_bs(
-    overrides: dict[str, Any],
+def reachable_prefill_cuda_graph_max_bs(
+    overrides: dict[str, object],
     *,
     encoder_token_count: int,
     max_running_requests: int | None,
@@ -75,13 +94,17 @@ def _reachable_prefill_cuda_graph_max_bs(
     max_prefill_tokens = overrides.get("max_prefill_tokens")
     if encoder_token_count < 1 or not max_prefill_tokens or int(max_prefill_tokens) < 1:
         return None
+    else:
+        pass
     budget = int(max_prefill_tokens)
     request_limit = max(1, budget // encoder_token_count)
     if max_running_requests is not None and int(max_running_requests) >= 1:
         request_limit = min(request_limit, int(max_running_requests))
+    else:
+        pass
 
     caps = [
-        _max_reachable_decoder_prefill_tokens(
+        max_reachable_decoder_prefill_tokens(
             budget=budget,
             encoder_token_count=encoder_token_count,
             request_limit=request_limit,
@@ -91,18 +114,20 @@ def _reachable_prefill_cuda_graph_max_bs(
         value = overrides.get(key)
         if value is not None and int(value) > 0:
             caps.append(int(value))
+        else:
+            pass
     cap = min(caps)
     overrides["cuda_graph_max_bs_prefill"] = cap
     return cap
 
 
-def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
+def normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
     values = _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS if buckets is None else buckets
     normalized = {int(value) for value in values}
     return tuple(sorted(value for value in normalized if value >= 1))
 
 
-def _resolve_encoder_graph_buckets(
+def resolve_encoder_graph_buckets(
     buckets: tuple[int, ...],
     *,
     enable_pre_lm_encoder: bool,
@@ -121,24 +146,34 @@ def _resolve_encoder_graph_buckets(
             raise ValueError(
                 f"max_prefill_tokens must be >= 1, got {max_prefill_tokens}"
             )
+        else:
+            pass
         if encoder_token_count < 1:
             raise ValueError(
                 f"encoder_token_count must be >= 1, got {encoder_token_count}"
             )
+        else:
+            pass
         capture_limit = max_prefill_tokens // encoder_token_count
     if max_running_requests is not None:
         if max_running_requests < 1:
             raise ValueError(
-                "max_running_requests must be >= 1, " f"got {max_running_requests}"
+                f"max_running_requests must be >= 1, got {max_running_requests}"
             )
+        else:
+            pass
         capture_limit = min(capture_limit, max_running_requests)
+    else:
+        pass
     resolved = {bucket for bucket in buckets if bucket <= capture_limit}
     if max_running_requests is not None and capture_limit >= 1:
         resolved.add(capture_limit)
+    else:
+        pass
     return tuple(sorted(resolved))
 
 
-class WhisperASREngineBuilder(AsrEngineBuilder):
+class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
     model_name = "Whisper ASR"
     model_arch_override = "WhisperForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True
@@ -171,16 +206,20 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             raise ValueError(
                 f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
             )
+        else:
+            pass
         if pre_lm_max_batch_wait_ms < 0:
             raise ValueError(
                 f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
             )
+        else:
+            pass
         self.max_running_requests = max_running_requests
         self.max_new_tokens = max_new_tokens
         self.mem_fraction_static = mem_fraction_static
         self.enable_encoder_cuda_graph = bool(enable_encoder_cuda_graph)
-        self._using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
-        self.encoder_graph_batch_buckets = _normalize_encoder_graph_buckets(
+        self.using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
+        self.encoder_graph_batch_buckets = normalize_encoder_graph_buckets(
             encoder_graph_batch_buckets
         )
         self.enable_async_decode = enable_async_decode
@@ -205,13 +244,13 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.pre_lm_max_batch_size = int(pre_lm_max_batch_size)
         self.pre_lm_max_batch_wait_ms = int(pre_lm_max_batch_wait_ms)
         self.pre_lm_cache_pin_host_memory = bool(pre_lm_cache_pin_host_memory)
-        self.processor: Any = None
-        self.tokenizer: Any = None
-        self.generation_config: Any = None
+        self.processor: WhisperProcessor | None = None
+        self.tokenizer: WhisperTokenizer | None = None
+        self.generation_config: GenerationConfig | None = None
         self.encoder_token_count = 0
         self.context_length = 0
         self.decoder_context_len = 0
-        self.audio_encoder_service: Any | None = None
+        self.audio_encoder_service: WhisperPreLMEncoderService | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -234,18 +273,20 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
     def setup_model_resources(
         self,
-        model: Any,
-        server_args: Any,
+        model: WhisperForConditionalGeneration | None,
+        server_args: object,
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
         if not self.enable_encoder_cuda_graph or not generation_cuda_graph_enabled:
             return
+        else:
+            pass
         from sglang.srt.runtime_context import get_schedule
 
         max_prefill_tokens = int(get_schedule().max_prefill_tokens)
         max_running_requests = int(get_schedule().max_running_requests)
-        resolved_buckets = _resolve_encoder_graph_buckets(
+        resolved_buckets = resolve_encoder_graph_buckets(
             self.encoder_graph_batch_buckets,
             enable_pre_lm_encoder=self.enable_pre_lm_encoder,
             pre_lm_max_batch_size=self.pre_lm_max_batch_size,
@@ -253,7 +294,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             encoder_token_count=self.encoder_token_count,
             max_running_requests=(
                 max_running_requests
-                if self._using_default_encoder_graph_buckets
+                if self.using_default_encoder_graph_buckets
                 else None
             ),
         )
@@ -273,10 +314,14 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             int(self.processor.feature_extractor.nb_max_frames),
         )
 
-    def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
+    def setup_runtime_resources(
+        self, model: WhisperForConditionalGeneration | None, server_args: object
+    ) -> None:
         del server_args
         if not self.enable_pre_lm_encoder:
             return
+        else:
+            pass
 
         self.audio_encoder_service = WhisperPreLMEncoderService(
             model,
@@ -306,12 +351,14 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             service.pin_host_memory,
         )
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(
                 "Whisper ASR requires chunked_prefill_size=0 because its encoder "
                 "prefix must be admitted atomically"
             )
+        else:
+            pass
         overrides["chunked_prefill_size"] = 0
         # Note (Akazaakane): Timestamped Whisper requests install an internal
         # per-request processor; this flag permits SGLang to execute it.
@@ -321,17 +368,21 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             or "cuda_graph_bs_prefill" in overrides
         ):
             return
+        else:
+            pass
 
-        cap = _reachable_prefill_cuda_graph_max_bs(
+        cap = reachable_prefill_cuda_graph_max_bs(
             overrides,
             encoder_token_count=self.encoder_token_count,
             max_running_requests=overrides.get("max_running_requests"),
         )
         if cap is None:
             return
+        else:
+            pass
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
@@ -345,7 +396,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[[StagePayload], WhisperASRRequestData],
+        Callable[[WhisperASRRequestData], StagePayload],
+    ]:
         del model
         from sglang_omni.models.whisper_asr.request_builders import (
             make_whisper_scheduler_adapters,
@@ -361,7 +415,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             audio_encoder_service=self.audio_encoder_service,
         )
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[WhisperASRRequestData]:
         return {
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
@@ -378,12 +432,16 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             ),
         }
 
-    def extra_scheduler_callbacks(self) -> dict[str, Any]:
+    def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
         if self.audio_encoder_service is None:
             return {}
+        else:
+            pass
         return {"shutdown_callback": self.audio_encoder_service.close}
 
     def cleanup_build_failure(self) -> None:
         if self.audio_encoder_service is not None:
             self.audio_encoder_service.close()
             self.audio_encoder_service = None
+        else:
+            pass

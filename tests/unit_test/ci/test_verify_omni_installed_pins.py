@@ -24,7 +24,7 @@ def verifier():
     return module
 
 
-def _write_project(tmp_path: Path) -> Path:
+def write_project(tmp_path: Path) -> Path:
     project = tmp_path / "pyproject.toml"
     project.write_text(
         """
@@ -78,7 +78,9 @@ def test_exact_pins_respect_platform_markers(
     verifier, tmp_path: Path, environment: dict[str, str], expected: dict[str, str]
 ) -> None:
     assert (
-        verifier._exact_pins(_write_project(tmp_path), environment=environment)
+        verifier._exact_pins(
+            write_project(tmp_path), environment=environment
+        )  # noqa: leading-underscore  # production name
         == expected
     )
 
@@ -99,15 +101,15 @@ override-dependencies = ["torch==2.12.0; sys_platform == 'linux'"]
         encoding="utf-8",
     )
 
-    assert verifier._exact_pins(
+    assert verifier._exact_pins(  # noqa: leading-underscore  # production name
         project,
         environment={"sys_platform": "linux", "platform_machine": "x86_64"},
     ) == {"torch": "2.12.0"}
 
 
 def test_exact_pins_select_non_arm_darwin_variant(verifier, tmp_path: Path) -> None:
-    pins = verifier._exact_pins(
-        _write_project(tmp_path),
+    pins = verifier._exact_pins(  # noqa: leading-underscore  # production name
+        write_project(tmp_path),
         environment={"sys_platform": "darwin", "platform_machine": "x86_64"},
     )
 

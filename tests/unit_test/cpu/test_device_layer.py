@@ -11,7 +11,7 @@ from __future__ import annotations
 import torch
 
 import sglang_omni.utils.device as dev
-from sglang_omni.platforms import _as_omni_platform, get_platform_spec
+from sglang_omni.platforms import as_omni_platform, get_platform_spec
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
 
@@ -54,7 +54,7 @@ def test_a_cpu_srt_platform_resolves_to_the_cpu_omni_platform():
         def is_xpu(self) -> bool:
             return False
 
-    resolved = _as_omni_platform(FakeCpuSRTPlatform())
+    resolved = as_omni_platform(FakeCpuSRTPlatform())
 
     assert isinstance(resolved, CPUOmniPlatform)
     assert get_platform_spec(resolved).endswith("CPUOmniPlatform")
@@ -115,10 +115,10 @@ def test_cpu_stages_need_no_process_env_overrides():
 
 
 def test_a_cpu_device_spec_never_gains_a_placement_index():
-    """``place_device_spec`` applies a stage's gpu_id to the caller's device. On
-    CPU that index has to be dropped, not appended: 'cpu:2' is not a valid device.
+    """A stage's gpu_id applied to a cpu device has to be dropped, not
+    appended: 'cpu:2' is not a valid device.
     """
-    assert dev.place_device_spec("cpu", 2) == "cpu"
-    assert dev.place_device_spec("cpu") == "cpu"
+    assert str(dev.resolve_concrete_device("cpu", 2)) == "cpu"
+    assert str(dev.resolve_concrete_device("cpu")) == "cpu"
     assert dev.resolve_device_spec("cpu", 5) == "cpu"
     assert dev.resolve_device_spec("cpu") == "cpu"

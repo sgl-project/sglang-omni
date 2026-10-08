@@ -208,7 +208,18 @@ YAML keys:
 |---|---|---|
 | `--audio_chunking.max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR you can only lower it: 30s is the hard edge of the model's mel window. |
 | `--audio_chunking.max_concurrent_chunks` | `8` | Per-request concurrency cap used while chunks are independent. When previous-text conditioning is enabled, one request's Whisper chunks decode in order while chunks from different requests can still batch together. |
-| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
+| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on one upload; you get HTTP 400 above it. It bounds a single decoded waveform, not the total across uploads; that is the next knob's job. |
+| `--audio_chunking.max_concurrent_long_audio_requests` | `max_running_requests // (2 × max_concurrent_chunks)`, at least 1; `4` with the stock defaults | How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated. The slot is taken before the upload is decoded and returned when its chunks are done. |
+
+The last knob is the aggregate guard: decoded waveforms held at once are at
+most `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4`
+bytes (decoding itself has transient peaks above that), and long audio holds
+at most
+`max_concurrent_long_audio_requests × max_concurrent_chunks` engine slots at
+once. The default keeps that product at half of
+`--asr.engine.max_running_requests`; an explicit value whose product reaches
+`max_running_requests` logs a warning at startup, since short requests would
+then queue behind long audio whenever it is saturated.
 
 The model properties are ClassVars on `WhisperASRPipelineConfig`; no
 configuration path reaches them:

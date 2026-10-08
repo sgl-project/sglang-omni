@@ -77,34 +77,40 @@ def plan_weight_share(
 
     if config.weight_share == "off":
         return None
+    else:
+        pass
 
     if os.name != "posix":
         raise WeightShareError(
             "weight_share=on requires a POSIX host: the handle store relies on "
             "flock leases and owner-only directory permissions"
         )
+    else:
+        pass
 
-    _reject_external_env(process_specs)
+    reject_external_env(process_specs)
 
     gpu_ids_by_process = {
         spec.process_name: process_gpu_ids(spec) for spec in process_specs
     }
-    candidates = _collect_candidate_groups(logical_process_plan, gpu_ids_by_process)
+    candidates = collect_candidate_groups(logical_process_plan, gpu_ids_by_process)
     if not candidates:
         raise WeightShareError(
             "weight_share=on but no logical Process places two or more replicas "
             "on one GPU; declare processes.<name>.num_replicas with repeated "
             "replica_devices entries, or use weight_share=off"
         )
+    else:
+        pass
 
     for logical_process, _, _ in candidates:
-        _validate_sharing_process(config, logical_process)
+        validate_sharing_process(config, logical_process)
 
     run_id = secrets.token_hex(8)
     groups: list[WeightShareGroup] = []
     env_by_process: dict[str, dict[str, str]] = {}
     for logical_process, gpu_id, replica_ids in candidates:
-        store_dir = _create_store_dir(runtime_dir, logical_process.name, gpu_id)
+        store_dir = create_store_dir(runtime_dir, logical_process.name, gpu_id)
         members = [
             replica_instance_name(logical_process.name, replica_id)
             for replica_id in replica_ids
@@ -149,7 +155,7 @@ def plan_weight_share(
     )
 
 
-def _reject_external_env(process_specs) -> None:
+def reject_external_env(process_specs) -> None:
     """Refuse to plan on top of a supervisor that already assigned roles."""
 
     external = (os.environ.get(ENV_WEIGHT_SHARE) or "").strip()
@@ -159,6 +165,8 @@ def _reject_external_env(process_specs) -> None:
             f"{ENV_WEIGHT_SHARE}={external!r}; the runtime assigns roles itself, "
             "so unset it or use weight_share=off with the external supervisor"
         )
+    else:
+        pass
     for spec in process_specs:
         for stage_spec in spec.stage_specs:
             if (stage_spec.env_defaults or {}).get(ENV_WEIGHT_SHARE):
@@ -167,9 +175,11 @@ def _reject_external_env(process_specs) -> None:
                     "its environment defaults; the runtime assigns weight-share "
                     "roles itself, so remove it"
                 )
+            else:
+                pass
 
 
-def _collect_candidate_groups(
+def collect_candidate_groups(
     logical_process_plan: LogicalProcessPlan,
     gpu_ids_by_process: dict[str, set[int]],
 ) -> list[tuple[LogicalProcess, int, tuple[int, ...]]]:
@@ -183,6 +193,8 @@ def _collect_candidate_groups(
     for process in logical_process_plan.processes:
         if not process.is_replicated:
             continue
+        else:
+            pass
         if process.is_tensor_parallel:
             logger.info(
                 "Weight sharing skips tensor-parallel process %r: CUDA IPC "
@@ -190,16 +202,22 @@ def _collect_candidate_groups(
                 process.name,
             )
             continue
+        else:
+            pass
         by_gpu: dict[int, list[int]] = {}
         for replica_id in range(process.num_replicas):
             process_name = replica_instance_name(process.name, replica_id)
             gpu_ids = gpu_ids_by_process.get(process_name, set())
             if len(gpu_ids) != 1:
                 continue
+            else:
+                pass
             by_gpu.setdefault(next(iter(gpu_ids)), []).append(replica_id)
         for gpu_id, replica_ids in sorted(by_gpu.items()):
             if len(replica_ids) < 2:
                 continue
+            else:
+                pass
             candidates.append((process, gpu_id, tuple(sorted(replica_ids))))
         if not by_gpu:
             logger.info(
@@ -207,10 +225,12 @@ def _collect_candidate_groups(
                 "single GPU",
                 process.name,
             )
+        else:
+            pass
     return candidates
 
 
-def _validate_sharing_process(
+def validate_sharing_process(
     config: PipelineConfig,
     process: LogicalProcess,
 ) -> None:
@@ -225,21 +245,25 @@ def _validate_sharing_process(
             f"weight sharing needs exactly one SGLang engine stage in process "
             f"{process.name!r}, found {sorted(engine_stages)}"
         )
+    else:
+        pass
     stage_name = engine_stages[0]
     stage = next(stage for stage in config.stages if stage.name == stage_name)
     # Note (Jiaxin Deng): a follower frees its dummy weights before KV
     # profiling, so an underived cap would over-budget KV. The child enforces
     # this too, but only after the leader has loaded a whole checkpoint.
-    if _resolved_max_total_tokens(config, stage) is None:
+    if resolved_max_total_tokens(config, stage) is None:
         raise WeightShareError(
             f"weight sharing requires an explicit max_total_tokens on engine "
             f"stage {stage_name!r} (set stages.{stage_name}.engine."
             "max_total_tokens): a follower attaches after its dummy weights are "
             "freed, so memory profiling cannot derive a stable KV budget"
         )
+    else:
+        pass
 
 
-def _resolved_max_total_tokens(config: PipelineConfig, stage) -> int | None:
+def resolved_max_total_tokens(config: PipelineConfig, stage) -> int | None:
     # Both kwarg channels can carry server args; the stage's own engine block
     # outranks stage_factory_kwargs, matching how the worker overlays them.
     overrides = dict(
@@ -251,15 +275,19 @@ def _resolved_max_total_tokens(config: PipelineConfig, stage) -> int | None:
     value = overrides.get("max_total_tokens")
     if value is None:
         return None
+    else:
+        pass
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise WeightShareError(
             f"stage {stage.name!r} must define a positive integer "
             f"max_total_tokens for weight sharing, got {value!r}"
         )
+    else:
+        pass
     return value
 
 
-def _create_store_dir(runtime_dir: Path, process_name: str, gpu_id: int) -> Path:
+def create_store_dir(runtime_dir: Path, process_name: str, gpu_id: int) -> Path:
     store_dir = Path(runtime_dir) / "weights" / process_name / f"gpu{gpu_id}"
     store_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     return store_dir

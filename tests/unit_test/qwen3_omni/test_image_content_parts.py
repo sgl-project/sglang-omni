@@ -8,29 +8,29 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import torch
 
-from sglang_omni.client.client import _extract_inputs
+from sglang_omni.client.client import extract_inputs
 from sglang_omni.client.types import GenerateRequest, Message
 from sglang_omni.models.qwen3_omni.components import preprocessor as preprocessor_mod
 from sglang_omni.preprocessing import normalize_messages
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-def _image(url):
+def image_part(url):
     return {"type": "image_url", "image_url": {"url": url}}
 
 
 @pytest.mark.parametrize("top_level", [None, "extra.png", ["extra.png"]])
 def test_image_parts_reach_processor_in_conversation_order(monkeypatch, top_level):
     messages = [
-        {"role": "user", "content": [_image("first.png")]},
+        {"role": "user", "content": [image_part("first.png")]},
         {"role": "assistant", "content": "The first image."},
         {
             "role": "user",
             "content": [
                 {"type": "text", "text": "Compare it with "},
-                _image("second.png"),
+                image_part("second.png"),
                 {"type": "text", "text": " and this image."},
-                _image("third.png"),
+                image_part("third.png"),
             ],
         },
     ]
@@ -40,7 +40,7 @@ def test_image_parts_reach_processor_in_conversation_order(monkeypatch, top_leve
         messages=[Message(**message) for message in messages],
         metadata={"images": top_level} if top_level is not None else {},
     )
-    inputs = _extract_inputs(request)
+    inputs = extract_inputs(request)
     if top_level is None:
         assert inputs == messages
     else:
@@ -75,7 +75,7 @@ def test_image_parts_reach_processor_in_conversation_order(monkeypatch, top_leve
         data={},
     )
 
-    asyncio.run(pre._call_impl(payload))
+    asyncio.run(pre.call_impl(payload))
 
     expected_images = ["first.png", "second.png", "third.png"]
     if top_level is not None:
@@ -107,8 +107,8 @@ def test_image_parts_reach_processor_in_conversation_order(monkeypatch, top_leve
     ["/tmp/image.png", "https://example.com/image.png", "data:image/png;base64,YQ=="],
 )
 def test_extracts_image_url_forms(url):
-    messages = [{"role": "user", "content": [_image(url)]}]
-    normalized, images = preprocessor_mod._extract_image_content_parts(messages)
+    messages = [{"role": "user", "content": [image_part(url)]}]
+    normalized, images = preprocessor_mod.extract_image_content_parts(messages)
     assert normalized == [{"role": "user", "content": [{"type": "image"}]}]
     assert images == [url]
 
@@ -117,10 +117,12 @@ def test_extracts_image_url_forms(url):
 @pytest.mark.parametrize("unknown_first", [False, True])
 def test_unknown_parts_retain_legacy_handling_atomically(unknown, unknown_first):
     parts = (
-        [unknown, _image("one.png")] if unknown_first else [_image("one.png"), unknown]
+        [unknown, image_part("one.png")]
+        if unknown_first
+        else [image_part("one.png"), unknown]
     )
     messages = [{"role": "user", "content": parts}]
-    normalized, images = preprocessor_mod._extract_image_content_parts(messages)
+    normalized, images = preprocessor_mod.extract_image_content_parts(messages)
     assert normalized == normalize_messages(messages)
     assert images == []
 
@@ -130,9 +132,9 @@ def test_unknown_parts_retain_legacy_handling_atomically(unknown, unknown_first)
     [
         ({"type": "image_url"}, "image_url.*non-empty url"),
         ({"type": "image_url", "image_url": {}}, "image_url.*non-empty url"),
-        (_image(""), "image_url.*non-empty url"),
-        (_image(None), "image_url.*non-empty url"),
-        (_image(3), "image_url.*non-empty url"),
+        (image_part(""), "image_url.*non-empty url"),
+        (image_part(None), "image_url.*non-empty url"),
+        (image_part(3), "image_url.*non-empty url"),
         ({"type": "text"}, "text.*string"),
         ({"type": "text", "text": 3}, "text.*string"),
     ],
@@ -143,18 +145,18 @@ def test_malformed_known_parts_are_rejected_regardless_of_order(
 ):
     parts = [{"type": "private"}, part] if unknown_first else [part]
     with pytest.raises(ValueError, match=error):
-        preprocessor_mod._extract_image_content_parts(
+        preprocessor_mod.extract_image_content_parts(
             [{"role": "user", "content": parts}]
         )
 
 
 def test_existing_top_level_media_precedes_plain_text():
     pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
-    messages, images = preprocessor_mod._extract_image_content_parts(
+    messages, images = preprocessor_mod.extract_image_content_parts(
         [{"role": "user", "content": "Describe the media."}]
     )
     assert images == []
-    assert pre._build_multimodal_messages(
+    assert pre.build_multimodal_messages(
         messages, num_images=1, num_audios=1, num_videos=1
     ) == [
         {

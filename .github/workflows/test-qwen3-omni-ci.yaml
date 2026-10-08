@@ -1,8 +1,13 @@
-name: Qwen3-Omni CI
+name: Omni model CI
 
 on:
   workflow_call:
     inputs:
+      omni_ci_model:
+        description: Omni model preset selected by the parent workflow.
+        type: string
+        required: false
+        default: qwen3-omni
       omni_ci_home:
         description: PR-scoped CI home from the parent omni-ci workflow.
         type: string
@@ -15,6 +20,7 @@ permissions:
   pull-requests: read
 
 env:
+  OMNI_CI_MODEL: ${{ inputs.omni_ci_model }}
   OMNI_CI_HOME: >-
     ${{ inputs.omni_ci_home != ''
         && inputs.omni_ci_home
@@ -128,7 +134,7 @@ jobs:
             */speed_results.json
             */wer_results.json
             */similarity_results.json
-          artifact-upload-name: qwen3-omni-tts-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-tts-results
           artifact-upload-path: /tmp/**/*_results.json
 
   stage-3-mmmu:
@@ -174,7 +180,7 @@ jobs:
           stage-label: MMMU (accuracy + speed)
           artifact-path-globs: |
             */mmmu/mmmu_results.json
-          artifact-upload-name: qwen3-omni-mmmu-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmmu-results
           artifact-upload-path: /tmp/**/mmmu_results.json
 
   stage-4-mmmu-talker:
@@ -220,7 +226,7 @@ jobs:
           stage-label: MMMU Talker (WER + speed)
           artifact-path-globs: |
             */mmmu_audio*/mmmu_results.json
-          artifact-upload-name: qwen3-omni-mmmu-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmmu-talker-results
           artifact-upload-path: /tmp/**/mmmu_audio*/mmmu_results.json
 
   stage-5-mmsu:
@@ -266,7 +272,7 @@ jobs:
           stage-label: MMSU (accuracy + speed, summary only)
           artifact-path-globs: |
             */mmsu/mmsu_results.json
-          artifact-upload-name: qwen3-omni-mmsu-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmsu-results
           artifact-upload-path: /tmp/**/mmsu/mmsu_results.json
           summary-only: "true"
 
@@ -313,7 +319,7 @@ jobs:
           stage-label: MMSU Talker (WER + speed)
           artifact-path-globs: |
             */mmsu_audio*/mmsu_results.json
-          artifact-upload-name: qwen3-omni-mmsu-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmsu-talker-results
           artifact-upload-path: /tmp/**/mmsu_audio*/mmsu_results.json
 
   stage-7-videomme:
@@ -359,7 +365,7 @@ jobs:
           stage-label: Video-MME (accuracy + speed)
           artifact-path-globs: |
             */videomme/videomme_results.json
-          artifact-upload-name: qwen3-omni-videomme-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videomme-results
           artifact-upload-path: /tmp/**/videomme/videomme_results.json
 
   stage-8-videomme-talker:
@@ -405,7 +411,7 @@ jobs:
           stage-label: Video-MME Talker (WER + speed)
           artifact-path-globs: |
             */videomme_audio*/videomme_results.json
-          artifact-upload-name: qwen3-omni-videomme-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videomme-talker-results
           artifact-upload-path: /tmp/**/videomme_audio*/videomme_results.json
 
   stage-9-videoamme:
@@ -451,11 +457,11 @@ jobs:
           stage-label: Video-AMME (accuracy + speed)
           artifact-path-globs: |
             */videoamme/videoamme_results.json
-          artifact-upload-name: qwen3-omni-videoamme-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videoamme-results
           artifact-upload-path: /tmp/**/videoamme/videoamme_results.json
 
   stage-10-videoamme-talker-tp2:
-    name: stage 10 - FP8 Thinker TP=2 (Video-AMME Talker)
+    name: stage 10 - Video-AMME Talker
     needs: stage-9-videoamme
     if: always() && !cancelled()
     runs-on: [self-hosted, h100]
@@ -496,16 +502,16 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: FP8 Thinker TP=2 (Video-AMME Talker accuracy + WER + speed)
+          stage-label: Video-AMME Talker (accuracy + WER + speed)
           artifact-path-globs: |
             */videoamme_audio*/videoamme_results.json
-          artifact-upload-name: qwen3-omni-videoamme-talker-tp2-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videoamme-talker-results
           artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
 
   stage-11-process-replicas:
     name: stage 11 - process replicas
     needs: stage-10-videoamme-talker-tp2
-    if: always() && !cancelled()
+    if: always() && !cancelled() && inputs.omni_ci_model == 'qwen3-omni'
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
