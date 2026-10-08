@@ -199,13 +199,12 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 
 #### CustomVoice
 
-`CustomVoice` checkpoints synthesize speech with built-in speakers and need no reference audio. Use the matching config and select a speaker in the request. This example uses `mem_fraction_static=0.60` to reduce KV-cache allocation:
+`CustomVoice` checkpoints synthesize speech with built-in speakers and need no reference audio. Use the matching config and select a speaker in the request:
 
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
   --config examples/configs/qwen3_tts_1_7b_customvoice.yaml \
-  --tts_engine.engine.mem_fraction_static 0.60 \
   --host 0.0.0.0 --port 8000
 curl -s -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
@@ -216,13 +215,12 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 
 #### VoiceDesign
 
-`VoiceDesign` checkpoint synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config. This example uses `mem_fraction_static=0.60` to reduce KV-cache allocation:
+The `VoiceDesign` checkpoint synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config:
 
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
   --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
-  --tts_engine.engine.mem_fraction_static 0.60 \
   --host 0.0.0.0 --port 8000
 # VoiceDesign requires task_type and non-empty instructions:
 curl -s -X POST http://localhost:8000/v1/audio/speech \
