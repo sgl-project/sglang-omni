@@ -121,7 +121,7 @@ class PackedRows:
     starts: torch.Tensor
     row_ids: torch.Tensor
     positions: torch.Tensor
-    # note(ratish): the positional convs read the packed frames with CONV_CONTEXT_FRAMES
+    # note (ratish): the positional convs read the packed frames with CONV_CONTEXT_FRAMES
     # zero frames before every row. Index 0 is the zero frame, 1 + i packed frame i.
     conv_input_index: torch.Tensor
     conv_output_index: torch.Tensor
@@ -477,7 +477,7 @@ class PackedDiT:
         return dit.proj_out(h)
 
     def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
-        # note(ratish): the padded call zero pads conv2's input, not conv1's output,
+        # note (ratish): the padded call zero pads conv2's input, not conv1's output,
         # so conv2's gaps are gathered again.
         module = self.dit.input_embed.conv_pos_embed
         first_input = torch.cat((h.new_zeros(1, h.shape[2]), h[0]))[
@@ -555,10 +555,9 @@ def solve_flow_euler_packed(
     *,
     cfg_rate: float,
 ) -> torch.Tensor:
-    """Euler steps over a packed sequence with classifier free guidance: the
-    conditional rows and their unconditional twins share one DiT call.
-    noise, mu, cond: (1, total, channels). spks: (rows, channels). twin_rows
-    packs the rows, then their twins. angles: RoPE angles past the widest row."""
+    """Euler steps with classifier free guidance, the rows and their twins in one
+    DiT call. noise, mu, cond: (1, total, channels), spks: (rows, channels),
+    twin_rows the rows then their twins, angles covering the widest row."""
     total = noise.shape[1]
     mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=1)
     cond_cfg = torch.cat((cond, torch.zeros_like(cond)), dim=1)

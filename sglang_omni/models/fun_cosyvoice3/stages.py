@@ -804,10 +804,9 @@ def generate_flow_packed(
     streaming: bool,
     finalize: bool,
 ) -> torch.Tensor:
-    """Eager Flow call over the rows packed along the sequence: every per
-    token module pays for each row's own frames, attention still for the
-    widest row. Returns the padded (rows, channels, frames) layout the mel
-    split reads."""
+    """Flow call over the rows packed along the sequence, a final replayed from the
+    final graphs when one holds its rows. Returns the padded (rows, channels,
+    frames) layout the mel split reads."""
     conditioning = prepare_flow_conditioning(flow, packed, finalize=finalize)
     token_condition = conditioning.token_condition
     device = token_condition.device
