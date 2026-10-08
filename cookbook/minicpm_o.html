@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.7" />
-    <meta name="docbuild:last-update" content="Oct 07, 2026"/>
+    <meta name="docbuild:last-update" content="Oct 08, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -502,12 +502,10 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#chat-with-a-cloned-voice">Chat with a cloned voice</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-conversation">Full-duplex conversation</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice">Voice</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#camera-frames">Camera frames</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-limits">Server limits</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#normal-usage">Normal Usage</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-ability">Native Full-Duplex Ability</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#browser-demo">Browser demo</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-protocol">Full-duplex protocol</a></li>
 </ul>
 </li>
 </ul>
@@ -523,7 +521,7 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="minicpm-o">
 <h1>MiniCPM-o<a class="headerlink" href="#minicpm-o" title="Link to this heading">#</a></h1>
-<p><a class="reference external" href="https://huggingface.co/openbmb/MiniCPM-o-4_5">MiniCPM-o 4.5</a> understands text, images, audio and video, and answers in text and speech. SGLang-Omni serves it in two ways:</p>
+<p><a class="reference external" href="https://huggingface.co/openbmb/MiniCPM-o-4_5">MiniCPM-o 4.5</a> is a Gemini 2.5 Flash level model for vision, speech, and full-duplex live streaming. SGLang-Omni serves it in two ways:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Mode</p></th>
@@ -554,31 +552,16 @@
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>openbmb/MiniCPM-o-4_5<span class="w"> </span>--text-only<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>Full duplex:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>openbmb/MiniCPM-o-4_5<span class="w"> </span>--local-dir<span class="w"> </span>models/MiniCPM-o-4_5
-
-python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/full_duplex/minicpmo.yaml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>models/MiniCPM-o-4_5<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--enable-realtime<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-</pre></div>
-</div>
-<p>The full-duplex server is ready when this returns JSON containing <code class="docutils literal notranslate"><span class="pre">&quot;native_full_duplex&quot;:true</span></code>:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--fail<span class="w"> </span>http://localhost:8000/v1/realtime/capabilities
-</pre></div>
-</div>
-<p>Full duplex has been tested on one H200. For a browser page with microphone and camera, see <span class="xref myst">playground/realtime</span>.</p>
 </section>
-<section id="chat-with-a-cloned-voice">
-<h2>Chat with a cloned voice<a class="headerlink" href="#chat-with-a-cloned-voice" title="Link to this heading">#</a></h2>
-<p>Pass a reference recording in <code class="docutils literal notranslate"><span class="pre">audio.ref_audio</span></code> and the reply is spoken in that voice:</p>
+<section id="normal-usage">
+<h2>Normal Usage<a class="headerlink" href="#normal-usage" title="Link to this heading">#</a></h2>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">base64</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">openai</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpenAI</span>
 
 <span class="n">client</span> <span class="o">=</span> <span class="n">OpenAI</span><span class="p">(</span><span class="n">base_url</span><span class="o">=</span><span class="s2">"http://localhost:8000/v1"</span><span class="p">,</span> <span class="n">api_key</span><span class="o">=</span><span class="s2">"unused"</span><span class="p">)</span>
-<span class="n">reference</span> <span class="o">=</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="s2">"reference.wav"</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">())</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">"ascii"</span><span class="p">)</span>
+<span class="n">reference</span> <span class="o">=</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="s2">"docs/_static/audio/male-voice.wav"</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">())</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">"ascii"</span><span class="p">)</span>
 <span class="n">response</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">chat</span><span class="o">.</span><span class="n">completions</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
     <span class="n">model</span><span class="o">=</span><span class="s2">"MiniCPM-o-4_5"</span><span class="p">,</span>
     <span class="n">messages</span><span class="o">=</span><span class="p">[{</span><span class="s2">"role"</span><span class="p">:</span> <span class="s2">"user"</span><span class="p">,</span> <span class="s2">"content"</span><span class="p">:</span> <span class="s2">"Please say hello."</span><span class="p">}],</span>
@@ -588,234 +571,37 @@ python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span cla
         <span class="s2">"ref_audio"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"data:audio/wav;base64,</span><span class="si">{</span><span class="n">reference</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
     <span class="p">},</span>
 <span class="p">)</span>
+<span class="n">message</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">choices</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">message</span>
+<span class="n">Path</span><span class="p">(</span><span class="s2">"reply.wav"</span><span class="p">)</span><span class="o">.</span><span class="n">write_bytes</span><span class="p">(</span><span class="n">base64</span><span class="o">.</span><span class="n">b64decode</span><span class="p">(</span><span class="n">message</span><span class="o">.</span><span class="n">audio</span><span class="o">.</span><span class="n">data</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">message</span><span class="o">.</span><span class="n">audio</span><span class="o">.</span><span class="n">transcript</span> <span class="ow">or</span> <span class="n">message</span><span class="o">.</span><span class="n">content</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>The reference must be sent as a base64 audio data URI; paths and HTTP URLs are not fetched. Without a reference, the model speaks in the checkpoint’s default voice. Audio inside <code class="docutils literal notranslate"><span class="pre">messages</span></code> is something for the model to listen to and does not change its voice.</p>
 </section>
-<section id="full-duplex-conversation">
-<h2>Full-duplex conversation<a class="headerlink" href="#full-duplex-conversation" title="Link to this heading">#</a></h2>
-<p>Open a WebSocket to <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>, send microphone audio as it is captured, and play the audio that comes back. The model works in units of one second: after each second of audio it decides whether to keep listening or to speak, and a spoken unit carries up to one second of reply.</p>
+<section id="native-full-duplex-ability">
+<h2>Native Full-Duplex Ability<a class="headerlink" href="#native-full-duplex-ability" title="Link to this heading">#</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/full_duplex/minicpmo.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>openbmb/MiniCPM-o-4_5<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--enable-realtime<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>We provide two demonstrative config files.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p></p></th>
-<th class="head"><p>Format</p></th>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Use it for</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>Input audio</p></td>
-<td><p>mono PCM16, 16 kHz, base64 in <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo.yaml</span></code></p></td>
+<td><p>Normal serving. Sampling matches the MiniCPM-o demo</p></td>
 </tr>
-<tr class="row-odd"><td><p>Output audio</p></td>
-<td><p>mono PCM16, 24 kHz, base64 in <code class="docutils literal notranslate"><span class="pre">response.output_audio.delta</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p>Output text</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">response.output_audio_transcript.delta</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo-parity.yaml</span></code></p></td>
+<td><p>Repeatable output for regression and parity recordings. Differs only in greedy sampling and <code class="docutils literal notranslate"><span class="pre">top_k:</span> <span class="pre">100</span></code></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>A session goes through these steps:</p>
-<ol class="arabic simple">
-<li><p>The server sends <code class="docutils literal notranslate"><span class="pre">session.created</span></code>.</p></li>
-<li><p>Send <code class="docutils literal notranslate"><span class="pre">session.update</span></code> with the prompt and any settings from the sections below. The server answers <code class="docutils literal notranslate"><span class="pre">session.updated</span></code>.</p></li>
-<li><p>Send audio with <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code> at the pace it is captured. Replies arrive while you send.</p></li>
-<li><p>Send <code class="docutils literal notranslate"><span class="pre">sglang.input_audio.end</span></code> when there is no more audio, and wait for <code class="docutils literal notranslate"><span class="pre">sglang.input_audio.drained</span></code>.</p></li>
-<li><p>Send <code class="docutils literal notranslate"><span class="pre">session.close</span></code>.</p></li>
-</ol>
-<p>This client plays a 16 kHz mono WAV file to the model and saves what it says:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">base64</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">wave</span>
-
-<span class="kn">import</span><span class="w"> </span><span class="nn">websockets</span>
-
-<span class="n">PACKET_SAMPLES</span> <span class="o">=</span> <span class="mi">1280</span>  <span class="c1"># 80 ms at 16 kHz</span>
-
-
-<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-    <span class="k">with</span> <span class="n">wave</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">"question.wav"</span><span class="p">,</span> <span class="s2">"rb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">source</span><span class="p">:</span>
-        <span class="n">pcm</span> <span class="o">=</span> <span class="n">source</span><span class="o">.</span><span class="n">readframes</span><span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">getnframes</span><span class="p">())</span>
-    <span class="n">pcm</span> <span class="o">+=</span> <span class="sa">b</span><span class="s2">"</span><span class="se">\x00\x00</span><span class="s2">"</span> <span class="o">*</span> <span class="mi">16000</span> <span class="o">*</span> <span class="mi">5</span>  <span class="c1"># five seconds of silence so the model can answer</span>
-    <span class="n">reply</span> <span class="o">=</span> <span class="nb">bytearray</span><span class="p">()</span>
-    <span class="k">async</span> <span class="k">with</span> <span class="n">websockets</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
-        <span class="s2">"ws://localhost:8000/v1/realtime"</span><span class="p">,</span> <span class="n">max_size</span><span class="o">=</span><span class="mi">16</span> <span class="o">*</span> <span class="mi">1024</span> <span class="o">*</span> <span class="mi">1024</span>
-    <span class="p">)</span> <span class="k">as</span> <span class="n">websocket</span><span class="p">:</span>
-        <span class="k">async</span> <span class="k">for</span> <span class="n">message</span> <span class="ow">in</span> <span class="n">websocket</span><span class="p">:</span>
-            <span class="n">event</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">message</span><span class="p">)</span>
-            <span class="k">if</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"session.created"</span><span class="p">:</span>
-                <span class="k">await</span> <span class="n">websocket</span><span class="o">.</span><span class="n">send</span><span class="p">(</span>
-                    <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span>
-                        <span class="p">{</span>
-                            <span class="s2">"type"</span><span class="p">:</span> <span class="s2">"session.update"</span><span class="p">,</span>
-                            <span class="s2">"event_id"</span><span class="p">:</span> <span class="s2">"config"</span><span class="p">,</span>
-                            <span class="s2">"session"</span><span class="p">:</span> <span class="p">{</span>
-                                <span class="s2">"instructions"</span><span class="p">:</span> <span class="s2">"You are a helpful voice assistant."</span><span class="p">,</span>
-                                <span class="s2">"output_modalities"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"audio"</span><span class="p">],</span>
-                            <span class="p">},</span>
-                        <span class="p">}</span>
-                    <span class="p">)</span>
-                <span class="p">)</span>
-            <span class="k">elif</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"session.updated"</span><span class="p">:</span>
-                <span class="n">packet_bytes</span> <span class="o">=</span> <span class="n">PACKET_SAMPLES</span> <span class="o">*</span> <span class="mi">2</span>
-                <span class="k">for</span> <span class="n">sequence</span><span class="p">,</span> <span class="n">offset</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">pcm</span><span class="p">),</span> <span class="n">packet_bytes</span><span class="p">)):</span>
-                    <span class="k">await</span> <span class="n">websocket</span><span class="o">.</span><span class="n">send</span><span class="p">(</span>
-                        <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span>
-                            <span class="p">{</span>
-                                <span class="s2">"type"</span><span class="p">:</span> <span class="s2">"input_audio_buffer.append"</span><span class="p">,</span>
-                                <span class="s2">"event_id"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"audio-</span><span class="si">{</span><span class="n">sequence</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
-                                <span class="s2">"audio"</span><span class="p">:</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span>
-                                    <span class="n">pcm</span><span class="p">[</span><span class="n">offset</span> <span class="p">:</span> <span class="n">offset</span> <span class="o">+</span> <span class="n">packet_bytes</span><span class="p">]</span>
-                                <span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(),</span>
-                                <span class="s2">"sglang"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"seq"</span><span class="p">:</span> <span class="n">sequence</span><span class="p">},</span>
-                            <span class="p">}</span>
-                        <span class="p">)</span>
-                    <span class="p">)</span>
-                    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">PACKET_SAMPLES</span> <span class="o">/</span> <span class="mi">16000</span><span class="p">)</span>
-                <span class="k">await</span> <span class="n">websocket</span><span class="o">.</span><span class="n">send</span><span class="p">(</span>
-                    <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s2">"type"</span><span class="p">:</span> <span class="s2">"sglang.input_audio.end"</span><span class="p">,</span> <span class="s2">"event_id"</span><span class="p">:</span> <span class="s2">"end"</span><span class="p">})</span>
-                <span class="p">)</span>
-            <span class="k">elif</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"response.output_audio_transcript.delta"</span><span class="p">:</span>
-                <span class="nb">print</span><span class="p">(</span><span class="n">event</span><span class="p">[</span><span class="s2">"delta"</span><span class="p">],</span> <span class="n">end</span><span class="o">=</span><span class="s2">""</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-            <span class="k">elif</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"response.output_audio.delta"</span><span class="p">:</span>
-                <span class="n">reply</span> <span class="o">+=</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64decode</span><span class="p">(</span><span class="n">event</span><span class="p">[</span><span class="s2">"delta"</span><span class="p">])</span>
-            <span class="k">elif</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"sglang.input_audio.drained"</span><span class="p">:</span>
-                <span class="k">await</span> <span class="n">websocket</span><span class="o">.</span><span class="n">send</span><span class="p">(</span>
-                    <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s2">"type"</span><span class="p">:</span> <span class="s2">"session.close"</span><span class="p">,</span> <span class="s2">"event_id"</span><span class="p">:</span> <span class="s2">"close"</span><span class="p">})</span>
-                <span class="p">)</span>
-            <span class="k">elif</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"session.closed"</span><span class="p">:</span>
-                <span class="k">break</span>
-            <span class="k">elif</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"error"</span><span class="p">:</span>
-                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="n">event</span><span class="p">[</span><span class="s2">"error"</span><span class="p">])</span>
-    <span class="k">with</span> <span class="n">wave</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">"reply.wav"</span><span class="p">,</span> <span class="s2">"wb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">output</span><span class="p">:</span>
-        <span class="n">output</span><span class="o">.</span><span class="n">setparams</span><span class="p">((</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">24000</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">"NONE"</span><span class="p">,</span> <span class="s2">"not compressed"</span><span class="p">))</span>
-        <span class="n">output</span><span class="o">.</span><span class="n">writeframes</span><span class="p">(</span><span class="nb">bytes</span><span class="p">(</span><span class="n">reply</span><span class="p">))</span>
-
-
-<span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">main</span><span class="p">())</span>
-</pre></div>
-</div>
-<p>All settings below go in <code class="docutils literal notranslate"><span class="pre">session.update</span></code> before the first audio packet and stay fixed for the session. Start a new session to change them.</p>
-<section id="voice">
-<h3>Voice<a class="headerlink" href="#voice" title="Link to this heading">#</a></h3>
-<p>Send a reference recording to choose the voice for one session:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">reference</span> <span class="o">=</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="s2">"reference.wav"</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">())</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">"ascii"</span><span class="p">)</span>
-<span class="n">update</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">"type"</span><span class="p">:</span> <span class="s2">"session.update"</span><span class="p">,</span>
-    <span class="s2">"event_id"</span><span class="p">:</span> <span class="s2">"voice"</span><span class="p">,</span>
-    <span class="s2">"session"</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">"sglang"</span><span class="p">:</span> <span class="p">{</span>
-            <span class="s2">"reference_audio"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"media_type"</span><span class="p">:</span> <span class="s2">"audio/wav"</span><span class="p">,</span> <span class="s2">"data"</span><span class="p">:</span> <span class="n">reference</span><span class="p">}</span>
-        <span class="p">}</span>
-    <span class="p">},</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<p>The reference must be a PCM16 WAV file, mono or stereo, 8 to 48 kHz, at most 30 seconds and 1 MiB. Without one, the session uses the server’s <code class="docutils literal notranslate"><span class="pre">reference_audio</span></code> from the config file, or the checkpoint’s default voice. An optional <code class="docutils literal notranslate"><span class="pre">tts_reference_audio</span></code> with the same structure changes only the output voice.</p>
-</section>
-<section id="sampling">
-<h3>Sampling<a class="headerlink" href="#sampling" title="Link to this heading">#</a></h3>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"session.update"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"event_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sampling"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"session"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"sglang"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"sampling"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"temperature"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.7</span><span class="p">,</span><span class="w"> </span><span class="nt">"top_p"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.8</span><span class="p">}}}</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Field</p></th>
-<th class="head"><p>Default</p></th>
-<th class="head"><p>Range</p></th>
-<th class="head"><p>Effect</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">greedy</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p></p></td>
-<td><p>Always pick the most likely token</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
-<td><p>0.7</p></td>
-<td><p>0 to 2</p></td>
-<td><p>Randomness of the reply text; 0 picks the most likely token</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
-<td><p>20</p></td>
-<td><p>-1 or more</p></td>
-<td><p>Sample from the k most likely tokens; -1 or 0 turns it off</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
-<td><p>0.8</p></td>
-<td><p>above 0, up to 1</p></td>
-<td><p>Nucleus sampling</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code></p></td>
-<td><p>1.05</p></td>
-<td><p>1 or more</p></td>
-<td><p>Discourage repeated text</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_window_size</span></code></p></td>
-<td><p>512</p></td>
-<td><p>1 or more</p></td>
-<td><p>How many recent tokens the penalty looks at</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">listen_prob_scale</span></code></p></td>
-<td><p>1.0</p></td>
-<td><p>0 or more</p></td>
-<td><p>Above 1 makes the model listen more and speak less</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">force_listen_count</span></code></p></td>
-<td><p>3</p></td>
-<td><p>0 or more</p></td>
-<td><p>Units (3 = the first 3 s) in which the model only listens at the start of a session</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens_per_unit</span></code></p></td>
-<td><p>20</p></td>
-<td><p>1 or more</p></td>
-<td><p>Most text tokens produced in one unit (1 s)</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">talker_temperature</span></code></p></td>
-<td><p>0.8</p></td>
-<td><p>0 to 2</p></td>
-<td><p>Randomness of the voice</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">talker_repetition_penalty</span></code></p></td>
-<td><p>1.05</p></td>
-<td><p>1 or more</p></td>
-<td><p>Discourage repeated sounds in the voice</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Fields you leave out keep the server defaults, which come from the <code class="docutils literal notranslate"><span class="pre">sampling</span></code> section of <code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo.yaml</span></code>. Unknown fields are rejected.</p>
-</section>
-<section id="camera-frames">
-<h3>Camera frames<a class="headerlink" href="#camera-frames" title="Link to this heading">#</a></h3>
-<p>Send JPEG or PNG frames while audio is flowing, and the model sees them together with the audio of the same unit:</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sglang.input_image.append"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"event_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"frame-1"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"image"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&lt;base64 JPEG or PNG&gt;"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"sglang"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"t_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">1500</span><span class="p">}</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<p><code class="docutils literal notranslate"><span class="pre">t_ms</span></code> is the frame’s time on the audio timeline, counted from the first audio sample. A frame is at most 512 KiB and 4096 × 4096 pixels. By default a session accepts up to 4 frames per unit (1 s of audio); a frame whose unit has already been processed is rejected.</p>
-<p>For more detail in each frame, ask for HD slicing before the first audio packet:</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"session.update"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"event_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"vision"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"session"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"sglang"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"max_slice_nums"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">}}</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<p>A higher slice count lowers the number of frames accepted per unit. The reply to <code class="docutils literal notranslate"><span class="pre">session.update</span></code> reports the limit in <code class="docutils literal notranslate"><span class="pre">sglang.granted.input_image_format.max_frames_per_unit</span></code>.</p>
-</section>
-<section id="server-limits">
-<h3>Server limits<a class="headerlink" href="#server-limits" title="Link to this heading">#</a></h3>
-<p>These are set in <code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo.yaml</span></code>:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Setting</p></th>
@@ -826,7 +612,7 @@ python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span cla
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_sessions</span></code></p></td>
 <td><p>2</p></td>
-<td><p>Conversations served at the same time</p></td>
+<td><p>Conversations at the same time. Further connections get HTTP 503</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reference_audio</span></code></p></td>
 <td><p>checkpoint default</p></td>
@@ -834,21 +620,73 @@ python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span cla
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">speech_state_bytes_per_session</span></code></p></td>
 <td><p>2 GiB</p></td>
-<td><p>Memory the speech stage may hold per conversation; a conversation that needs more is closed and the others keep running</p></td>
+<td><p>Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">vision.max_frames_per_unit</span></code></p></td>
-<td><p>4</p></td>
-<td><p>Frames accepted per unit (1 s of audio)</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sampling</span></code></p></td>
+<td><p>see the config</p></td>
+<td><p>Default sampling when a session does not set its own</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">vision.max_slice_nums_limit</span></code></p></td>
-<td><p>9</p></td>
-<td><p>Highest slice count a session may request</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">vision</span></code></p></td>
+<td><p>see the config</p></td>
+<td><p>Camera-frame limits per unit (1 s of audio)</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>One conversation can hold 8192 tokens of history, which is the model’s limit. When a conversation fills it, the server sends a <code class="docutils literal notranslate"><span class="pre">context_exhausted</span></code> error and closes the session. Start a new session to continue.</p>
-<p>For repeatable output, start the server from <code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo-parity.yaml</span></code>, which uses greedy sampling.</p>
+<p>A session holds at most 8192 tokens of history, which is the model’s trained context length. When that fills, the server sends <code class="docutils literal notranslate"><span class="pre">context_exhausted</span></code> and closes the session.</p>
+<p>The full-duplex server is ready when this returns JSON containing <code class="docutils literal notranslate"><span class="pre">&quot;native_full_duplex&quot;:true</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--fail<span class="w"> </span>http://localhost:8000/v1/realtime/capabilities
+</pre></div>
+</div>
+<p>The results should be as follows:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">"model"</span><span class="p">:</span><span class="s2">"openbmb/MiniCPM-o-4_5"</span><span class="p">,</span><span class="nt">"interaction"</span><span class="p">:</span><span class="s2">"native"</span><span class="p">,</span><span class="nt">"native_full_duplex"</span><span class="p">:</span><span class="kc">true</span><span class="p">,</span><span class="nt">"proactive_output"</span><span class="p">:</span><span class="kc">false</span><span class="p">,</span><span class="nt">"turn_control"</span><span class="p">:[</span><span class="kc">null</span><span class="p">],</span><span class="nt">"client_commit"</span><span class="p">:</span><span class="kc">false</span><span class="p">,</span><span class="nt">"input_modalities"</span><span class="p">:[</span><span class="s2">"audio"</span><span class="p">,</span><span class="s2">"image"</span><span class="p">],</span><span class="nt">"output_modalities"</span><span class="p">:[</span><span class="s2">"audio"</span><span class="p">,</span><span class="s2">"text"</span><span class="p">],</span><span class="nt">"input_audio_format"</span><span class="p">:{</span><span class="nt">"type"</span><span class="p">:</span><span class="s2">"audio/pcm"</span><span class="p">,</span><span class="nt">"rate"</span><span class="p">:</span><span class="mi">16000</span><span class="p">},</span><span class="nt">"output_audio_format"</span><span class="p">:{</span><span class="nt">"type"</span><span class="p">:</span><span class="s2">"audio/pcm"</span><span class="p">,</span><span class="nt">"rate"</span><span class="p">:</span><span class="mi">24000</span><span class="p">},</span><span class="nt">"native_unit_ms"</span><span class="p">:</span><span class="mi">1000</span><span class="p">,</span><span class="nt">"first_unit_ms"</span><span class="p">:</span><span class="mi">1000</span><span class="p">,</span><span class="nt">"microturn_ms"</span><span class="p">:</span><span class="s2">"variable"</span><span class="p">,</span><span class="nt">"tail_policy"</span><span class="p">:</span><span class="s2">"pad"</span><span class="p">,</span><span class="nt">"supports_server_interrupt"</span><span class="p">:</span><span class="kc">false</span><span class="p">,</span><span class="nt">"supports_truncate"</span><span class="p">:</span><span class="kc">false</span><span class="p">,</span><span class="nt">"supports_resume"</span><span class="p">:</span><span class="kc">false</span><span class="p">,</span><span class="nt">"partial_style"</span><span class="p">:</span><span class="s2">"append_only"</span><span class="p">,</span><span class="nt">"pressure_policy"</span><span class="p">:</span><span class="s2">"reject"</span><span class="p">,</span><span class="nt">"strict_order"</span><span class="p">:</span><span class="kc">true</span><span class="p">,</span><span class="nt">"sampling_parameters"</span><span class="p">:[</span><span class="s2">"greedy"</span><span class="p">,</span><span class="s2">"temperature"</span><span class="p">,</span><span class="s2">"top_k"</span><span class="p">,</span><span class="s2">"top_p"</span><span class="p">,</span><span class="s2">"repetition_penalty"</span><span class="p">,</span><span class="s2">"listen_prob_scale"</span><span class="p">,</span><span class="s2">"force_listen_count"</span><span class="p">,</span><span class="s2">"max_new_tokens_per_unit"</span><span class="p">,</span><span class="s2">"repetition_window_size"</span><span class="p">,</span><span class="s2">"talker_temperature"</span><span class="p">,</span><span class="s2">"talker_repetition_penalty"</span><span class="p">],</span><span class="nt">"supports_reference_audio"</span><span class="p">:</span><span class="kc">true</span><span class="p">,</span><span class="nt">"input_image_format"</span><span class="p">:{</span><span class="nt">"types"</span><span class="p">:[</span><span class="s2">"image/jpeg"</span><span class="p">,</span><span class="s2">"image/png"</span><span class="p">],</span><span class="nt">"max_bytes"</span><span class="p">:</span><span class="mi">524288</span><span class="p">,</span><span class="nt">"max_frames_per_unit"</span><span class="p">:</span><span class="mi">4</span><span class="p">,</span><span class="nt">"max_slice_nums"</span><span class="p">:</span><span class="mi">9</span><span class="p">},</span><span class="nt">"limits"</span><span class="p">:{</span><span class="nt">"max_input_bytes"</span><span class="p">:</span><span class="mi">1920000</span><span class="p">,</span><span class="nt">"max_output_bytes"</span><span class="p">:</span><span class="mi">4194304</span><span class="p">,</span><span class="nt">"max_output_events"</span><span class="p">:</span><span class="mi">256</span><span class="p">,</span><span class="nt">"max_history_chars"</span><span class="p">:</span><span class="mi">65536</span><span class="p">,</span><span class="nt">"cleanup_timeout_s"</span><span class="p">:</span><span class="mi">30</span><span class="p">}}</span><span class="err">#</span>
+</pre></div>
+</div>
+<p>The duplex server only accepts <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code> requests; other chat completions or voice cloning against it fail.</p>
+<section id="browser-demo">
+<h3>Browser demo<a class="headerlink" href="#browser-demo" title="Link to this heading">#</a></h3>
+<p>With the full-duplex server running, start the demo page in another terminal:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>playground/realtime/app.py<span class="w"> </span>--api-base<span class="w"> </span>http://127.0.0.1:8000<span class="w"> </span>--port<span class="w"> </span><span class="m">8080</span>
+</pre></div>
+</div>
+<p>Thanks to the OpenMoss team for the demo page.</p>
+<p>Once the terminal prints <code class="docutils literal notranslate"><span class="pre">Running</span> <span class="pre">on</span></code>, open <a class="reference external" href="http://localhost:8080">http://localhost:8080</a> and click <strong>Start talking</strong> to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-N</span> <span class="pre">-L</span> <span class="pre">8080:127.0.0.1:8080</span> <span class="pre">USER&#64;SERVER</span></code> on your own machine. Open the page through <code class="docutils literal notranslate"><span class="pre">localhost</span></code>, or the browser will not grant microphone access.</p>
+<p>The settings panel switches between English and Chinese, changes the voice and adjusts sampling. The download button in the top bar saves the conversation trace; attach it when reporting a problem.</p>
+</section>
+<section id="full-duplex-protocol">
+<h3>Full-duplex protocol<a class="headerlink" href="#full-duplex-protocol" title="Link to this heading">#</a></h3>
+<p>Clients connect to <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code> over WebSocket. They send 16 kHz mono PCM16 audio in <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code>; the server returns 24 kHz audio in <code class="docutils literal notranslate"><span class="pre">response.output_audio.delta</span></code> and text in <code class="docutils literal notranslate"><span class="pre">response.output_audio_transcript.delta</span></code>. The model decides once per second of audio whether to keep listening or to speak.</p>
+<ol class="arabic simple">
+<li><p>After <code class="docutils literal notranslate"><span class="pre">session.created</span></code>, send <code class="docutils literal notranslate"><span class="pre">session.update</span></code> and wait for <code class="docutils literal notranslate"><span class="pre">session.updated</span></code>.</p></li>
+<li><p>Send audio with <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code> at the pace it is captured; replies arrive while you send.</p></li>
+<li><p>When the audio ends, send <code class="docutils literal notranslate"><span class="pre">sglang.input_audio.end</span></code>, wait for <code class="docutils literal notranslate"><span class="pre">sglang.input_audio.drained</span></code>, then send <code class="docutils literal notranslate"><span class="pre">session.close</span></code>.</p></li>
+</ol>
+<p>For a Python client, see <code class="docutils literal notranslate"><span class="pre">warmup</span></code> in <code class="docutils literal notranslate"><span class="pre">playground/realtime/app.py</span></code>.</p>
+<p>Session settings go in the <code class="docutils literal notranslate"><span class="pre">sglang</span></code> field of <code class="docutils literal notranslate"><span class="pre">session.update</span></code>, before the first audio packet, and stay fixed for the session:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Field</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Voice</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">reference_audio</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{&quot;media_type&quot;:</span> <span class="pre">&quot;audio/wav&quot;,</span> <span class="pre">&quot;data&quot;:</span> <span class="pre">&quot;&lt;base64&gt;&quot;}</span></code>, a PCM16 WAV of at most 30 s and 1 MiB; <code class="docutils literal notranslate"><span class="pre">tts_reference_audio</span></code> changes only the output voice</p></td>
+</tr>
+<tr class="row-odd"><td><p>Sampling</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sampling</span></code></p></td>
+<td><p>For example <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">listen_prob_scale</span></code>; unset fields keep the defaults in <code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo.yaml</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Image detail</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">max_slice_nums</span></code></p></td>
+<td><p>Higher is sharper but accepts fewer frames per second</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Send camera frames with <code class="docutils literal notranslate"><span class="pre">sglang.input_image.append</span></code>: a base64 JPEG or PNG in <code class="docutils literal notranslate"><span class="pre">image</span></code>, and its position on the audio timeline in <code class="docutils literal notranslate"><span class="pre">sglang.t_ms</span></code>. By default up to 4 frames per second are accepted; <code class="docutils literal notranslate"><span class="pre">session.updated</span></code> reports the actual limit.</p>
 </section>
 </section>
 </section>
@@ -901,12 +739,10 @@ python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span cla
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#chat-with-a-cloned-voice">Chat with a cloned voice</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-conversation">Full-duplex conversation</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice">Voice</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#camera-frames">Camera frames</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-limits">Server limits</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#normal-usage">Normal Usage</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-ability">Native Full-Duplex Ability</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#browser-demo">Browser demo</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-protocol">Full-duplex protocol</a></li>
 </ul>
 </li>
 </ul>
@@ -942,7 +778,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Oct 07, 2026.
+  Last updated on Oct 08, 2026.
   <br/>
 </p>
   </div>
