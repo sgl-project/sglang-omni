@@ -110,8 +110,12 @@ class FakeFishReq:
     ) -> None:
         self.rid = rid
         self.inflight_middle_chunks = inflight_middle_chunks
-        self.extend_range = SimpleNamespace(length=extend_len)
         self.prefix_indices = prefix_indices or []
+        self.extend_range = SimpleNamespace(
+            start=len(self.prefix_indices),
+            end=len(self.prefix_indices) + extend_len,
+            length=extend_len,
+        )
 
 
 class FakeFishModel:

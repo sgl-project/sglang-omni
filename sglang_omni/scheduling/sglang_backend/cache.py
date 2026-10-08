@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 
+import torch
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
@@ -59,3 +61,15 @@ def create_tree_cache(
         return StreamingSession(cache)
     else:
         return cache
+
+
+def prompt_cache_key(model_name: str, *tensors: torch.Tensor | None) -> str:
+    digest = hashlib.sha256()
+    for tensor in tensors:
+        if tensor is None:
+            digest.update(b"None;")
+        else:
+            tensor = tensor.detach().cpu().contiguous()
+            digest.update(f"{tensor.dtype}:{tuple(tensor.shape)};".encode())
+            digest.update(tensor.reshape(-1).view(torch.uint8).numpy().tobytes())
+    return f"{model_name}:prompt:v1:{digest.hexdigest()}"

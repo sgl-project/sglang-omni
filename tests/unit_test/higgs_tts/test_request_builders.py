@@ -36,6 +36,23 @@ def test_higgs_reference_audio_namespaces_radix_cache() -> None:
         )
 
 
+@pytest.mark.parametrize("reference_codes", [None, [[1, 2], [3, 4]]])
+def test_higgs_radix_key_shares_identical_reference(
+    reference_codes: list[list[int]] | None,
+) -> None:
+    state = HiggsTtsState(
+        prompt_token_ids=[42], reference_codes_delayed=reference_codes
+    )
+    first = request_builders.build_sglang_higgs_request(state, request_id="reused")
+    second = request_builders.build_sglang_higgs_request(state, request_id="reused")
+
+    assert first.req.use_private_radix_on_retract
+    assert (
+        first.req._omni_prompt_only_radix
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
+    assert first.req.extra_key == second.req.extra_key
+
+
 def test_higgs_scheduler_adapters_clamp_cap_and_record_engine_time(
     monkeypatch,
 ) -> None:

@@ -4,13 +4,23 @@ from __future__ import annotations
 
 import dataclasses
 import random
+from array import array
+from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.common import maybe_cache_unfinished_req
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey
+from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.scheduling import omni_scheduler
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend.cache import prompt_cache_key
 from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
     EvictHeapRadixCache,
 )
@@ -160,3 +170,179 @@ def test_reset_then_reuse():
     result = cache.evict(EvictParams(num_tokens=1 << 20))
     assert result.num_tokens_evicted == 2
     assert not cache.evictable_leaves
+
+
+@pytest.mark.parametrize("page_size", [1, 4])
+def test_shared_prompt_switches_to_private_chunked_replay(
+    page_size: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two requests share a prompt, decode, retract, replay in two chunks under private keys,
+    retract again, and the allocator ends where it started."""
+    allocator = PagedTokenToKVPoolAllocator(
+        size=64,
+        page_size=page_size,
+        dtype=torch.bfloat16,
+        device="cpu",
+        kvcache=None,
+        need_sort=False,
+    )
+    request_pool = ReqToTokenPool(2, 32, "cpu", enable_memory_saver=False)
+    cache = EvictHeapRadixCache(
+        CacheInitParams(
+            disable=False,
+            req_to_token_pool=request_pool,
+            token_to_kv_pool_allocator=allocator,
+            page_size=page_size,
+        )
+    )
+    scheduler = OmniScheduler.__new__(OmniScheduler)
+    queued = []
+    monkeypatch.setattr(
+        omni_scheduler._Upstream,  # noqa: leading-underscore  # Existing request or scheduler interface.
+        "_add_request_to_queue",
+        lambda scheduler, request, is_retracted=False: queued.append(request),
+    )
+    monkeypatch.setattr(
+        omni_scheduler._Upstream,  # noqa: leading-underscore  # Existing request or scheduler interface.
+        "process_batch_result",
+        lambda scheduler, batch, result: [
+            maybe_cache_unfinished_req(request, cache) for request in batch.reqs
+        ],
+    )
+    prompt = array("q", [1, 2, 3, 4, 5])
+    initial_available = allocator.available_size()
+    requests = []
+    for index in range(2):
+        request = Req(
+            rid=str(index),
+            origin_input_text="",
+            origin_input_ids=prompt,
+            sampling_params=SamplingParams(max_new_tokens=8),
+            extra_key="same-reference",
+        )
+        request._omni_prompt_only_radix = (
+            True  # noqa: leading-underscore  # Existing request or scheduler interface.
+        )
+        request.use_private_radix_on_retract = True
+        request.omni_data = SimpleNamespace(decode_input_embeds=[])
+        request.full_untruncated_fill_ids = prompt[:]
+        request.set_extend_range(0, len(prompt))
+        request.kv.req_pool_idx = index + 1
+        request.kv.kv_allocated_len = request.kv.kv_committed_len = 9
+        request.last_node = cache.root_node
+        allocated = allocator.alloc((9 + page_size - 1) // page_size * page_size)
+        request_pool.write((index + 1, slice(0, 9)), allocated[:9])
+        request.output_ids.append(6)
+        scheduler.process_batch_result(SimpleNamespace(reqs=[request]), None)
+        assert request.skip_radix_cache_insert
+        request.output_ids.extend([7, 8, 9, 10])
+        request.full_untruncated_fill_ids = prompt + request.output_ids
+        request.set_extend_range(len(prompt), 9)
+        maybe_cache_unfinished_req(request, cache)
+        requests.append(request)
+    shared_length = len(prompt) // page_size * page_size
+    assert cache.total_size() == shared_length
+    assert torch.equal(
+        requests[0].prefix_indices[:shared_length],
+        requests[1].prefix_indices[:shared_length],
+    )
+    private_keys = []
+    for index, request in enumerate(requests):
+        cache.free_kv_row(
+            request.kv, [(request.kv.cache_protected_len, request.kv.kv_committed_len)]
+        )
+        cache.unpin(request)
+        request.kv.req_pool_idx = None
+        request.kv.mark_kv_released()
+        request.reset_for_retract()
+        scheduler._add_request_to_queue(
+            request, is_retracted=True
+        )  # noqa: leading-underscore  # Existing request or scheduler interface.
+        private_key = request.extra_key
+        assert private_key != "same-reference"
+        assert not request.skip_radix_cache_insert
+        assert (
+            not request._omni_prompt_only_radix
+        )  # noqa: leading-underscore  # Existing request or scheduler interface.
+        assert not request.use_private_radix_on_retract
+        private_keys.append(private_key)
+        request.init_next_round_input(cache)
+        assert len(request.prefix_indices) == 0
+        request.kv.req_pool_idx = index + 1
+        request.kv.kv_allocated_len = request.kv.kv_committed_len = 10
+        request.is_retracted = False
+        allocated = allocator.alloc((10 + page_size - 1) // page_size * page_size)
+        request_pool.write((index + 1, slice(0, 10)), allocated[:10])
+        request.set_extend_range(0, 8)
+        maybe_cache_unfinished_req(request, cache, chunked=True)
+        scheduler.process_batch_result(SimpleNamespace(reqs=[request]), None)
+        request.init_next_round_input()
+        assert len(request.prefix_indices) == 8
+        assert not request.skip_radix_cache_insert
+        request.set_extend_range(8, 10)
+        maybe_cache_unfinished_req(request, cache, chunked=True)
+        assert len(request.prefix_indices) == 10
+        cache.free_kv_row(
+            request.kv, [(request.kv.cache_protected_len, request.kv.kv_committed_len)]
+        )
+        cache.unpin(request)
+        request.kv.req_pool_idx = None
+        request.kv.mark_kv_released()
+        request.reset_for_retract()
+        scheduler._add_request_to_queue(
+            request, is_retracted=True
+        )  # noqa: leading-underscore  # Existing request or scheduler interface.
+        assert request.extra_key == private_key
+        assert not request.skip_radix_cache_insert
+        request.init_next_round_input(cache)
+        assert len(request.prefix_indices) == 9 // page_size * page_size
+    assert private_keys[0] != private_keys[1]
+    assert len(queued) == 4
+    cache.evict(EvictParams(num_tokens=64))
+    assert allocator.available_size() == initial_available
+    free_pages = allocator.get_all_free_pages()
+    assert len(free_pages.unique()) == len(free_pages)
+
+
+def test_private_retract_policy_does_not_change_other_prompt_cache_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = Req(
+        rid="legacy",
+        origin_input_text="",
+        origin_input_ids=array("q", [1]),
+        sampling_params=SamplingParams(max_new_tokens=8),
+        extra_key="legacy-prompt",
+    )
+    request._omni_prompt_only_radix = (
+        True  # noqa: leading-underscore  # Existing request or scheduler interface.
+    )
+    request.skip_radix_cache_insert = True
+    request.omni_data = SimpleNamespace(decode_input_embeds=[])
+    request.reset_for_retract()
+    monkeypatch.setattr(
+        omni_scheduler._Upstream,  # noqa: leading-underscore  # Existing request or scheduler interface.
+        "_add_request_to_queue",
+        lambda scheduler, request, is_retracted=False: None,
+    )
+    scheduler = OmniScheduler.__new__(OmniScheduler)
+    scheduler._add_request_to_queue(
+        request, is_retracted=True
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
+    assert request.extra_key == "legacy-prompt"
+    assert request.skip_radix_cache_insert
+    assert (
+        request._omni_prompt_only_radix
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
+
+
+def test_prompt_fingerprint_covers_shape_dtype_and_all_codebooks() -> None:
+    codes = torch.tensor([[1, 2], [3, 4]])
+    key = prompt_cache_key("audio", codes)
+    assert key == prompt_cache_key("audio", codes.clone())
+    assert key != prompt_cache_key("audio", codes.reshape(1, 4))
+    assert key != prompt_cache_key("audio", codes.float())
+    changed = codes.clone()
+    changed[0, 1] = 5
+    assert key != prompt_cache_key("audio", changed)
+    assert key != prompt_cache_key("audio", codes, torch.ones(2))

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Callable, TypedDict
@@ -23,6 +22,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.cache import prompt_cache_key
 from sglang_omni.scheduling.streaming_vocoder import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     resolve_initial_codec_chunk_frames,
@@ -66,28 +66,6 @@ def perf_counter() -> float:
     return time.perf_counter()
 
 
-def ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
-    """Stable hash of the full N-codebook ref-audio sequence.
-
-    Returned as a short hex string used as ``Req.extra_key``. ``None`` for
-    zero-shot (no ref audio) so all zero-shot requests share the radix subtree.
-    Each codec value packs into 2 bytes (range 0..1025) so the hash is
-    sensitive to every codebook, not just cb0.
-    """
-    if not codes:
-        return None
-    else:
-        pass
-    buf = bytearray(2 * sum(len(row) for row in codes))
-    i = 0
-    for row in codes:
-        for c in row:
-            buf[i] = c & 0xFF
-            buf[i + 1] = (c >> 8) & 0xFF
-            i += 2
-    return hashlib.blake2b(bytes(buf), digest_size=16).hexdigest()
-
-
 def build_sglang_higgs_request(
     state: HiggsTtsState, *, request_id: str = ""
 ) -> HiggsSGLangRequestData:
@@ -117,16 +95,18 @@ def build_sglang_higgs_request(
     sampling_params.normalize(tokenizer=None)
 
     # vocab_size = backbone text vocab so cb0 rides sglang's standard sampler path.
-    # extra_key namespaces the radix cache per ref-audio fingerprint so prompts
-    # sharing the -100 placeholder prefix can never cross-contaminate KV.
     req = Req(
         rid=request_id,
         origin_input_text="",
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=151_936,
-        extra_key=ref_audio_fingerprint(state.reference_codes_delayed),
+        extra_key=prompt_cache_key(
+            "higgs", torch.tensor(state.reference_codes_delayed or [], dtype=torch.long)
+        ),
     )
+    req._omni_prompt_only_radix = True  # noqa: leading-underscore
+    req.use_private_radix_on_retract = True
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
     req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     req._input_embeds_are_projected = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 import torch
+from sglang.srt.managers.schedule_batch import Req
 
 from sglang_omni.models.moss_tts.request_builders import (
     normalize_moss_tts_inputs,
@@ -182,7 +183,6 @@ def marker_row(cfg, tok: int) -> torch.Tensor:
 def build_sglang_zonos2_request(
     payload: StagePayload, *, model: "Zonos2SGLangModel"
 ) -> Zonos2SGLangRequestData:
-    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     cfg = model.config
@@ -225,8 +225,14 @@ def build_sglang_zonos2_request(
         sampling_params=sp,
         eos_token_ids={RADIX_HASH_SPACE},
         vocab_size=RADIX_HASH_SPACE + 1,
-        extra_key=state.speaker_fingerprint,
+        extra_key=(
+            "zonos2:prompt:v1"
+            if state.speaker_fingerprint is None
+            else f"zonos2:prompt:v1:{state.speaker_fingerprint}"
+        ),
     )
+    req._omni_prompt_only_radix = True  # noqa: leading-underscore
+    req.use_private_radix_on_retract = True
     req.tokenizer = None
 
     data = Zonos2SGLangRequestData(

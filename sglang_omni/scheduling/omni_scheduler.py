@@ -26,6 +26,7 @@ from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 from itertools import islice
 from typing import TYPE_CHECKING, Callable, Generic
+from uuid import uuid4
 
 import torch
 from sglang.srt.configs.model_config import ModelConfig
@@ -41,7 +42,11 @@ from sglang.srt.managers.schedule_batch import (
     ScheduleBatch,
     retract_all,
 )
-from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.managers.scheduler import (
+    TEST_RETRACT,
+    TEST_RETRACT_INTERVAL,
+    GenerationBatchResult,
+)
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
@@ -2989,6 +2994,14 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def _add_request_to_queue(self, req: Req, is_retracted: bool = False) -> None:
         if req.is_retracted:
+            if getattr(req, "use_private_radix_on_retract", False):
+                # note (0xtoward): chunked replay needs inserts, so use a private key.
+                req.extra_key = f"{req.extra_key}:retract:{uuid4().hex}"
+                req.skip_radix_cache_insert = False
+                req._omni_prompt_only_radix = False  # noqa: leading-underscore
+                req.use_private_radix_on_retract = False
+            else:
+                pass
             compact_decode_input_history(
                 req.omni_data
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -3453,6 +3466,21 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         return batch if batch.reqs else None
+
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        if (
+            self.async_pending is not None
+            and not batch.is_empty()
+            and (
+                (TEST_RETRACT and self.forward_ct % TEST_RETRACT_INTERVAL == 0)
+                or not batch.check_decode_mem()
+            )
+        ):
+            # note (0xtoward): commit acoustic outputs before retract frees their KV.
+            self.resolve_pending_async()
+        else:
+            pass
+        return _Upstream.update_running_batch(self, batch)
 
     def event_loop_async_decode(self) -> None:
         """One-step-lookahead decode loop (single stream + CUDA event).

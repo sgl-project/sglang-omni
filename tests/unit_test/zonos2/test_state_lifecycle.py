@@ -355,15 +355,25 @@ def test_release_resets_reused_row_without_touching_mixed_batch_survivor() -> No
     assert len(owned_rows) + len(free_rows) == pool.padding_row
 
 
-def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
+@pytest.mark.parametrize("state", ["active", "retracted", "finished"])
+def test_resolve_collects_only_active_metadata_without_releasing_state(
+    state: str,
+) -> None:
     request_id = "req-resolve"
     model, pool = model_and_pool()
     row = pool.acquire_row(request_id)
 
     runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
     runner.model = model
+    runner.decode_requests = {}
     runner.copy_stream = FakeCopyStream()
-    data = SimpleNamespace(output_codes=[], eos_frame=None)
+    data = SimpleNamespace(
+        output_codes=[],
+        eos_frame=None,
+        req=SimpleNamespace(
+            is_retracted=state == "retracted", finished=lambda: state == "finished"
+        ),
+    )
     request = SimpleNamespace(request_id=request_id, data=data)
     codes = list(range(N_CODEBOOKS))
     packed = torch.tensor([codes + [1, 5]], dtype=torch.int64)
@@ -373,11 +383,191 @@ def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
 
     runner.collect_resolve(launch_buf, result)
 
-    assert data.output_codes[0].tolist() == codes
-    assert data.eos_frame == 5
+    if state == "active":
+        assert data.output_codes[0].tolist() == codes
+        assert data.eos_frame == 5
+    else:
+        assert data.output_codes == []
+        assert data.eos_frame is None
     assert torch.equal(result.next_token_ids, next_ids)
     assert pool.row_for(request_id) == row
     assert row not in pool.free_rows
+
+
+@pytest.mark.parametrize("start,has_eos", [(0, True), (1, False), (3, True)])
+def test_reprefill_replays_full_frames_and_rebuilds_decode_state(
+    start: int, has_eos: bool
+) -> None:
+    prompt = torch.arange(2 * FRAME_WIDTH).reshape(2, FRAME_WIDTH)
+    codes = torch.arange(3 * N_CODEBOOKS).reshape(3, N_CODEBOOKS)
+    if has_eos:
+        codes[1, 2] = 99
+    else:
+        pass
+    model = SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(weight=torch.zeros(2, FRAME_WIDTH)),
+        n_codebooks=N_CODEBOOKS,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        config=SimpleNamespace(text_vocab=100, eoa_id=99),
+        embed_frames=lambda rows: rows.float(),
+    )
+    pool = Zonos2DecodeStatePool(model)
+    model.decode_state_pool = pool
+    row = pool.acquire_row("replay")
+    poison_row(pool, row)
+    survivor = pool.acquire_row("survivor")
+    poison_row(pool, survivor, 11)
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=start, end=5, length=5 - start),
+            output_ids=[1, 2, 3],
+        ),
+        prompt_rows=prompt,
+        output_codes=list(codes.unbind()),
+        speaker_emb=None,
+    )
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model = model
+    runner.decode_requests = {}
+
+    actual = runner.build_prefill_embeds(
+        None, [SimpleNamespace(request_id="replay", data=data)]
+    )
+
+    expected = torch.cat([prompt, torch.cat([codes, torch.full((3, 1), 100)], dim=1)])
+    assert torch.equal(actual, expected[start:].float())
+    assert int(pool.generation_step[row]) == 3
+    assert int(pool.rep_len[row]) == 3
+    assert torch.equal(pool.rep_hist[row, -3:], codes)
+    assert torch.all(pool.rep_hist[row, :-3] == -1)
+    assert bool(pool.eos_frame_set[row]) == has_eos
+    assert int(pool.eos_frame_val[row]) == 0
+    assert int(pool.eos_countdown[row]) == (8 if has_eos else 0)
+    assert torch.count_nonzero(pool.feedback_embeds[row]) == 0
+    assert int(pool.generation_step[survivor]) == 11
+    assert torch.all(pool.rep_hist[survivor] == 11)
+
+
+def test_reprefill_without_generated_frames_fails_loudly() -> None:
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model, _ = model_and_pool()
+    runner.decode_requests = {}
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=0, end=5, length=5),
+            output_ids=[1, 2, 3],
+        ),
+        prompt_rows=torch.zeros(2, FRAME_WIDTH, dtype=torch.long),
+        output_codes=[],
+        speaker_emb=None,
+    )
+
+    with pytest.raises(AssertionError, match="frame history does not match"):
+        runner.build_prefill_embeds(
+            None, [SimpleNamespace(request_id="replay", data=data)]
+        )
+
+
+def test_full_pool_reclaims_waiting_owners_before_prefill_and_reentry() -> None:
+    model = SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(weight=torch.zeros(1, FRAME_WIDTH)),
+        n_codebooks=N_CODEBOOKS,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        config=SimpleNamespace(text_vocab=100, eoa_id=99),
+        embed_frames=lambda rows: rows.float(),
+    )
+    pool = Zonos2DecodeStatePool(model)
+    model.decode_state_pool = pool
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model = model
+    runner.decode_requests = {}
+    for request_id in ["waiting", "finished", "survivor-a", "survivor-b"]:
+        row = pool.acquire_row(request_id)
+        poison_row(pool, row, 11)
+        runner.decode_requests[request_id] = SimpleNamespace(
+            is_retracted=request_id == "waiting",
+            finished=lambda request_id=request_id: request_id == "finished",
+        )
+    assert not pool.free_rows
+    survivor_row = pool.row_for("survivor-a")
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=0, end=1, length=1),
+            output_ids=[],
+            is_retracted=False,
+            finished=lambda: False,
+        ),
+        prompt_rows=torch.zeros(1, FRAME_WIDTH, dtype=torch.long),
+        output_codes=[],
+        speaker_emb=None,
+        _stream_emit_idx=0,
+    )
+    request = SimpleNamespace(request_id="fresh", data=data)
+
+    runner.build_prefill_embeds(None, [request])
+
+    assert set(pool.rid_to_row) == {"fresh", "survivor-a", "survivor-b"}
+    assert set(runner.decode_requests) == set(pool.rid_to_row)
+    assert int(pool.generation_step[survivor_row]) == 11
+    assert torch.all(pool.feedback_embeds[survivor_row] == 11)
+    codes = torch.arange(2 * N_CODEBOOKS).reshape(2, N_CODEBOOKS)
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=1, end=3, length=2),
+            output_ids=[1, 2],
+            is_retracted=False,
+            finished=lambda: False,
+        ),
+        prompt_rows=data.prompt_rows,
+        output_codes=list(codes.unbind()),
+        speaker_emb=None,
+        _stream_emit_idx=2,
+    )
+    request = SimpleNamespace(request_id="waiting", data=data)
+
+    embeddings = runner.build_prefill_embeds(None, [request])
+
+    expected = torch.cat([codes, torch.full((2, 1), 100)], dim=1).float()
+    torch.testing.assert_close(embeddings, expected)
+    assert int(pool.generation_step[pool.row_for("waiting")]) == 2
+    assert (
+        data._stream_emit_idx == 2
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
+    assert len(data.output_codes) == 2
+    assert int(pool.generation_step[survivor_row]) == 11
+    runner.on_request_finished("waiting", data)
+    runner.on_request_finished("waiting", data)
+    assert "waiting" not in runner.decode_requests
+
+
+def test_zonos2_radix_namespace_is_shared_across_prompt_texts() -> None:
+    from sglang.srt.mem_cache.radix_cache import RadixKey
+
+    def build(request_id: str, rows: torch.Tensor):
+        payload = StagePayload(
+            request_id=request_id,
+            request=OmniRequest(inputs=""),
+            data=Zonos2State(input_ids=rows).to_dict(),
+        )
+        model = SimpleNamespace(config=SimpleNamespace(n_codebooks=N_CODEBOOKS))
+        return request_builders.build_sglang_zonos2_request(payload, model=model)
+
+    first = build("first", torch.zeros(2, FRAME_WIDTH, dtype=torch.long))
+    second = build("second", torch.zeros(2, FRAME_WIDTH, dtype=torch.long))
+    other_text = build("other-text", torch.ones(3, FRAME_WIDTH, dtype=torch.long))
+    assert first.req.use_private_radix_on_retract
+    assert (
+        first.req._omni_prompt_only_radix
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
+    # note (0xtoward): row keys already hash every prompt row, so the namespace must not
+    # depend on the text or different prompts lose their shared speaker prefix.
+    assert first.req.extra_key == second.req.extra_key == other_text.req.extra_key
+    assert (
+        RadixKey(first.req.origin_input_ids, first.req.extra_key).child_key()
+        == RadixKey(second.req.origin_input_ids, second.req.extra_key).child_key()
+    )
 
 
 def test_resolve_takes_its_stream_from_the_tensors_own_accelerator(
@@ -405,7 +595,11 @@ def test_resolve_takes_its_stream_from_the_tensors_own_accelerator(
     runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
     runner.model, _ = model_and_pool()
     runner.copy_stream = None
-    data = SimpleNamespace(output_codes=[], eos_frame=None)
+    data = SimpleNamespace(
+        output_codes=[],
+        eos_frame=None,
+        req=SimpleNamespace(is_retracted=False, finished=lambda: False),
+    )
     request = SimpleNamespace(request_id="req-stream", data=data)
     packed = OffDeviceTensor()
     event = FakeEvent()
