@@ -67,6 +67,35 @@ The response follows the Images API shape:
 `size` dimensions must be positive multiples of 32. The current route supports
 one image per request, base64 PNG output, and `think_mode=false`.
 
+## Cache-DiT Acceleration
+
+Cache-DiT is off by default. Enable it for all requests in the pipeline config
+or at launch, and optionally tune the five DBCache parameters:
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path "$MODEL_PATH" \
+  --generate.factory.enable_cache_dit true \
+  --generate.factory.cache_dit_params '{"residual_diff_threshold": 0.1}'
+```
+
+Individual image requests can override the server setting with
+`enable_cache_dit` and `cache_dit_params`. The edits endpoint accepts the same
+fields as multipart form data, with `cache_dit_params` encoded as a JSON
+object. Only `Fn_compute_blocks`, `Bn_compute_blocks`, `max_warmup_steps`,
+`residual_diff_threshold`, and `max_continuous_cached_steps` are supported.
+
+The cache wraps the Qwen decoder only during pure image denoising. Prefix,
+Think, text, and KV-cache updates continue through the original decoder. Three
+branch image guidance and timestep-gated CFG run without Cache-DiT. In a
+dynamic T2I batch, requests with different cache settings are dispatched in
+separate batches.
+
+Cache parameters are validated after resolving the server default and request
+override. Disabled requests and unsupported guidance schedules ignore cache
+parameters. When caching is enabled, unsupported names and invalid values are
+rejected.
+
 ## Edit an Image
 
 The same server exposes the native SenseNova image-to-image (I2I) path through
@@ -98,9 +127,10 @@ still required to prove kernel execution.
 ## Dynamic Batching
 
 Batching is opt-in until hardware validation establishes safe memory limits.
-Only T2I requests with equal width, height, inference steps, and guidance scale
-share a model batch. Prompts and seeds remain per request. Incompatible requests
-are dispatched separately, and image-edit requests remain single-item.
+Only T2I requests with equal width, height, inference steps, guidance scale,
+and Cache-DiT settings share a model batch. Prompts and seeds remain per
+request. Incompatible requests are dispatched separately, and image-edit
+requests remain single-item.
 
 For two concurrent `1024x1024`, 10-step requests with CFG enabled, the following
 cost limit admits exactly two requests (`width * height * steps * 2` per

@@ -301,6 +301,8 @@ class ImageGenerationRequest(BaseModel):
     seed: int = Field(default=42, ge=0)
     num_inference_steps: int = Field(default=50, ge=1)
     guidance_scale: float = Field(default=4.0, ge=0, allow_inf_nan=False)
+    enable_cache_dit: bool | None = None
+    cache_dit_params: dict[str, object] | None = None
 
 
 class ImageGenerationData(BaseModel):

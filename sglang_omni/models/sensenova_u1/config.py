@@ -18,7 +18,7 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
             name="generate",
             process="sensenova_generate",
             factory_path="sglang_omni.models.sensenova_u1.stages.create_generation_executor",
-            factory=FactoryArgs(dtype="bfloat16"),
+            factory=FactoryArgs(dtype="bfloat16", enable_cache_dit=False),
             gpu=0,
             terminal=True,
         )
