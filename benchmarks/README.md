@@ -20,6 +20,57 @@ benchmarks/
 
 PersonaPlex reference comparisons: [evaluation setup and limits](eval/personaplex.md).
 
+## Offline audio signal diagnostics
+
+Inspect existing WAV files without a model, server, or accelerator:
+
+```bash
+python -m benchmarks.eval.benchmark_audio_signal \
+    benchmarks/results/music --output benchmarks/results/audio_signal.json
+```
+
+Pass one or more files or directories; directories are searched recursively for
+WAV files, with duplicate paths removed. The command needs only NumPy and
+SoundFile, both existing project dependencies. To run it from a checkout without
+installing the serving stack:
+
+```bash
+uv run --no-project --python 3.12 --with numpy --with soundfile \
+    python -m benchmarks.eval.benchmark_audio_signal recording.wav
+```
+
+The JSON report records decoded format/subtype, sample rate, channel count, PCM
+frame count, duration, and per-channel sample peak, DC offset, and full-scale
+sample count. Audio is decoded as float64 at its native rate without downmixing
+or amplitude normalization. Supported containers are WAV, WAVEX, and RF64 with
+PCM_U8/16/24/32 or FLOAT/DOUBLE samples.
+
+`full_scale_sample_count` is a **possible clipping diagnostic**, not proof of
+distortion. Integer PCM counts samples at either representable rail: the negative
+rail is -1 and the positive rail is `1 - 2**(1 - bits)`. FLOAT/DOUBLE counts
+samples at or beyond -1/+1 and preserves excursions above full scale. Sample
+peaks and DC offsets are linear amplitudes relative to full scale.
+
+Silence uses non-overlapping RMS windows, defaulting to `--silence-window-ms 20`
+and `--silence-threshold-dbfs -60` (0 dBFS is amplitude 1). A window is silent
+only when **every channel** meets the threshold. Window length is rounded to the
+nearest PCM frame, with ties to even and a minimum of one frame. The final partial
+window uses its actual length. `silent_window_ratio` counts windows equally;
+`silent_duration_s` uses their actual frame counts. Adjacent silent windows merge
+into regions with inclusive start and exclusive end frame/time boundaries.
+
+All measurements are report-only: silence, large DC offsets, and full-scale
+samples never make the command fail. Empty, non-finite, unreadable, or unsupported
+audio produces a per-file error and exit status 1; other files are still analyzed.
+Invalid command options or an empty directory selection produce status 2. JSON
+goes to stdout when `--output` is omitted, and an input file cannot be used as the
+output destination.
+
+This first slice of [#1994](https://github.com/sgl-project/sglang-omni/issues/1994)
+does not estimate inter-sample true peaks, compare reference runs, or score music
+quality. PCM frame counts do not establish whether an autoregressive generation
+frame cap was reached.
+
 ## Quick Start
 
 ```bash
