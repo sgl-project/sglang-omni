@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The final step's Euler solve replayed from CUDA graphs, one per frame tier."""
+"""The Euler solve over each row's whole history replayed from CUDA graphs, one per
+frame tier."""
 
 from __future__ import annotations
 
 import bisect
-import logging
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import torch
-from sglang.srt.utils.common import get_available_gpu_memory
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
@@ -18,32 +16,12 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     pack_rows,
     solve_flow_euler_packed,
 )
-from sglang_omni.models.fun_cosyvoice3.prefix_cuda_graph import (
-    capture_solve_graph,
-    frozen_gc,
-)
-from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
-
-logger = logging.getLogger(__name__)
-
-# note (ratish): frames per CFG half, from measured replay times: coarse below 1,024
-# where a replay costs its kernel count, 256 apart above, none past 4,096 where a final
-# is device bound.
-FINAL_TIER_FRAMES = (
-    64,
-    128,
-    256,
-    384,
-    512,
-    640,
-    768,
-    1024,
-    *range(1280, 4097, 256),
-)
+from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
+from sglang_omni.platforms.device_graph import ReplayableGraph
 
 
 @dataclass(kw_only=True)
-class CapturedFinalSolve:
+class CapturedWholeHistorySolve:
     tier_frames: int
     graph: ReplayableGraph
     noise: torch.Tensor
@@ -55,14 +33,12 @@ class CapturedFinalSolve:
     output: torch.Tensor
 
 
-class FinalCudaGraphRunner:
+class WholeHistoryCudaGraphRunner:
     def __init__(
         self,
         estimator: PackedDiT,
         *,
-        backend: DeviceGraphBackend,
-        device: torch.device,
-        autocast_dtype: torch.dtype,
+        graphs: SolveGraphCapture,
         frame_dtype: torch.dtype,
         speaker_dtype: torch.dtype,
         cfg_rate: float,
@@ -74,10 +50,8 @@ class FinalCudaGraphRunner:
         max_frames: int,
     ) -> None:
         self.estimator = estimator
-        self.backend = backend
-        self.device = device
-        self.device_module = torch.get_device_module(device)
-        self.autocast_dtype = autocast_dtype
+        self.graphs = graphs
+        self.device = graphs.device
         self.frame_dtype = frame_dtype
         self.speaker_dtype = speaker_dtype
         self.cfg_rate = cfg_rate
@@ -87,7 +61,7 @@ class FinalCudaGraphRunner:
         self.max_rows = max_rows
         self.tier_frames = sorted(tier_frames)
         self.angles = estimator.rope_angles(max_frames)
-        self.captured: list[CapturedFinalSolve] = []
+        self.captured: list[CapturedWholeHistorySolve] = []
 
     def slot_lengths(self, lengths: Sequence[int], tier_frames: int) -> list[int]:
         """Frames per CFG half of a step's rows, empty rows up to the row slots,
@@ -101,11 +75,7 @@ class FinalCudaGraphRunner:
     @torch.inference_mode()
     def capture(self) -> None:
         """Largest tier first, so the smaller ones reuse its pool memory."""
-        started = time.perf_counter()
-        before_mem = get_available_gpu_memory(self.device.type, self.device.index)
-        graph_pool = self.backend.graph_pool_handle()
-        stream = self.device_module.Stream(device=self.device)
-        with frozen_gc():
+        with self.graphs.capture_session("whole history", self.tier_frames):
             for tier_frames in reversed(self.tier_frames):
                 twin_rows = pack_rows(
                     self.slot_lengths([], tier_frames) * 2, self.device
@@ -148,16 +118,9 @@ class FinalCudaGraphRunner:
                         cfg_rate=self.cfg_rate,
                     )
 
-                graph, output = capture_solve_graph(
-                    solve,
-                    backend=self.backend,
-                    graph_pool=graph_pool,
-                    stream=stream,
-                    device=self.device,
-                    autocast_dtype=self.autocast_dtype,
-                )
+                graph, output = self.graphs.capture(solve)
                 self.captured.append(
-                    CapturedFinalSolve(
+                    CapturedWholeHistorySolve(
                         tier_frames=tier_frames,
                         graph=graph,
                         noise=noise,
@@ -170,12 +133,6 @@ class FinalCudaGraphRunner:
                     )
                 )
         self.captured.reverse()
-        after_mem = get_available_gpu_memory(self.device.type, self.device.index)
-        logger.info(
-            f"Fun-CosyVoice3 final solve graphs captured: tiers={self.tier_frames} "
-            f"frames, elapsed={time.perf_counter() - started:.2f} s, "
-            f"mem usage={before_mem - after_mem:.2f} GB, avail mem={after_mem:.2f} GB."
-        )
 
     @torch.inference_mode()
     def run(
@@ -218,5 +175,5 @@ class FinalCudaGraphRunner:
         ):
             destination.copy_(source)
         captured.graph.replay()
-        # note (ratish): the next replay of any tier overwrites the shared pool.
+        # note (ratish): the next replay of any solve graph overwrites the shared pool.
         return captured.output[:, :frame_count].clone()
