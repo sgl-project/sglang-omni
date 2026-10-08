@@ -81,6 +81,8 @@ struct Preferences: Codable, Equatable {
     var uiLanguage: String?
     // Note (Jiaxin Deng): Remember prior grants to distinguish invalidated permissions from first use.
     var accessibilityWasTrusted: Bool?
+    // Note (Yifei Leng): nil keeps the detailed popup and keeps older libraries decodable.
+    var compactPopup: Bool?
 
     static func combinedInstructions(_ defaults: String, _ app: String) throws -> String {
         guard [defaults, app].allSatisfy({ $0.unicodeScalars.count <= 1000 && !$0.contains("\0") }) else {
