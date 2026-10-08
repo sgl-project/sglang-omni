@@ -17,7 +17,12 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from sglang_omni.utils.gpu_backend import gpu_device_type
-from sglang_omni.utils.xpu_management import SysmanError, XpuDevice
+from sglang_omni.utils.xpu_management import (
+    SysmanError,
+    get_xpu_device_info,
+    get_xpu_memory_bytes,
+    get_xpu_processes,
+)
 
 if TYPE_CHECKING:
 
@@ -95,7 +100,7 @@ def is_process_scoped_memory_available() -> bool:
 
     if gpu_device_type() == "xpu":
         try:
-            XpuDevice.from_logical_index(0).processes()
+            get_xpu_processes(get_xpu_device_info(0)["handle"])
             return True
         except (SysmanError, ValueError) as exc:
             logger.debug(f"Sysman process memory is unavailable: {exc}")
@@ -126,7 +131,7 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
 
     if gpu_device_type() == "xpu":
         try:
-            processes = XpuDevice.from_logical_index(logical_gpu_id).processes()
+            processes = get_xpu_processes(get_xpu_device_info(logical_gpu_id)["handle"])
             return sum(
                 process.memory_bytes
                 for process in processes
@@ -206,12 +211,12 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
     )
     if gpu_device_type() == "xpu":
         try:
-            device = XpuDevice.from_logical_index(logical_gpu_id)
-            _, total_memory_bytes = device.memory_bytes()
+            device = get_xpu_device_info(logical_gpu_id)
+            _, total_memory_bytes = get_xpu_memory_bytes(device["handle"])
             return GpuDeviceInfo(
                 logical_gpu_id=logical_gpu_id,
-                device_id=device.uuid,
-                name=device.name,
+                device_id=device["uuid"],
+                name=device["name"],
                 total_memory_bytes=total_memory_bytes,
             )
         except (SysmanError, ValueError) as exc:

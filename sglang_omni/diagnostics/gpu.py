@@ -20,7 +20,11 @@ from sglang_omni.utils.gpu_memory import (
     shutdown_nvml,
     try_import_pynvml,
 )
-from sglang_omni.utils.xpu_management import SysmanError, XpuDevice
+from sglang_omni.utils.xpu_management import (
+    SysmanError,
+    enumerate_xpu_devices,
+    get_xpu_memory_bytes,
+)
 
 if TYPE_CHECKING:
     from torch._C import _CudaDeviceProperties
@@ -427,14 +431,14 @@ def collect_gpu_diagnostics(
     if device_type == "xpu":
         warnings: list[str] = []
         try:
-            sysman_devices = XpuDevice.enumerate_devices()
+            sysman_devices = enumerate_xpu_devices()
         except SysmanError as exc:
             warnings.append(str(exc))
             sysman_devices = []
-        by_uuid = {device.uuid: device for device in sysman_devices}
+        by_uuid = {device["uuid"]: device for device in sysman_devices}
         system: NvmlSystemInfo = {
             "driver_version": (
-                sysman_devices[0].driver_version if sysman_devices else None
+                sysman_devices[0]["driver_version"] if sysman_devices else None
             ),
             "cuda_driver_api_version": None,
         }
@@ -447,7 +451,9 @@ def collect_gpu_diagnostics(
             total_memory_bytes = int(properties.total_memory)
             if device is not None:
                 try:
-                    free_memory_bytes, total_memory_bytes = device.memory_bytes()
+                    free_memory_bytes, total_memory_bytes = get_xpu_memory_bytes(
+                        device["handle"]
+                    )
                 except SysmanError as exc:
                     warnings.append(f"XPU {logical_index} memory query failed: {exc}")
             else:
@@ -459,11 +465,11 @@ def collect_gpu_diagnostics(
                     "logical_index": logical_index,
                     "visible_device": device_uuid,
                     "physical_index": (
-                        device.physical_index if device is not None else None
+                        device["physical_index"] if device is not None else None
                     ),
                     "uuid": device_uuid,
-                    "pci_bus_id": device.pci_bus_id if device is not None else None,
-                    "name": device.name if device is not None else properties.name,
+                    "pci_bus_id": device["pci_bus_id"] if device is not None else None,
+                    "name": device["name"] if device is not None else properties.name,
                     "compute_capability": None,
                     "total_memory_bytes": total_memory_bytes,
                     "free_memory_bytes": free_memory_bytes,

@@ -4,10 +4,12 @@ import sys
 import threading
 import time
 from ctypes import c_void_p
+from itertools import count
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
+import sglang_omni.utils.xpu_management as xpu_management
 from benchmarks import runtime_metrics
 from benchmarks.eval import benchmark_asr_seedtts
 from benchmarks.runtime_metrics import (
@@ -15,7 +17,7 @@ from benchmarks.runtime_metrics import (
     ResourceSample,
     summarize_resource_samples,
 )
-from sglang_omni.utils.xpu_management import SysmanError, XpuDevice, XpuProcessMemory
+from sglang_omni.utils.xpu_management import SysmanError, XpuProcessMemory
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +114,7 @@ def test_xpu_provenance_records_capacity_clocks_and_power_without_nvidia_smi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(runtime_metrics, "gpu_device_type", lambda: "xpu")
-    device = XpuDevice(
+    device = dict(
         physical_index=3,
         handle=c_void_p(4),
         uuid="a",
@@ -120,15 +122,19 @@ def test_xpu_provenance_records_capacity_clocks_and_power_without_nvidia_smi(
         driver_version="1",
         pci_bus_id="0000:3d:00.0",
     )
-    monkeypatch.setattr(XpuDevice, "enumerate_devices", lambda: [device])
+    monkeypatch.setattr(runtime_metrics, "enumerate_xpu_devices", lambda: [device])
     monkeypatch.setattr(
-        XpuDevice, "memory_bytes", lambda self: (8 * 1024**3, 24 * 1024**3)
+        xpu_management,
+        "get_xpu_memory_bytes",
+        lambda handle: (8 * 1024**3, 24 * 1024**3),
     )
-    monkeypatch.setattr(XpuDevice, "clock_megahertz", lambda self: {"gpu": 1200.0})
     monkeypatch.setattr(
-        XpuDevice,
-        "power_limits",
-        lambda self: [
+        xpu_management, "get_xpu_clocks_megahertz", lambda handle: {"gpu": 1200.0}
+    )
+    monkeypatch.setattr(
+        xpu_management,
+        "get_xpu_power_limits",
+        lambda handle: [
             {
                 "domain": 1,
                 "level": 2,
@@ -165,10 +171,10 @@ def test_xpu_provenance_records_capacity_clocks_and_power_without_nvidia_smi(
 def test_xpu_metadata_preserves_identity_when_optional_queries_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unavailable(self: XpuDevice) -> None:
+    def unavailable(handle: c_void_p) -> None:
         raise SysmanError("unsupported query")
 
-    device = XpuDevice(
+    device = dict(
         physical_index=0,
         handle=c_void_p(1),
         uuid="a",
@@ -176,9 +182,13 @@ def test_xpu_metadata_preserves_identity_when_optional_queries_fail(
         driver_version="1",
         pci_bus_id=None,
     )
-    for name in ("memory_bytes", "clock_megahertz", "power_limits"):
-        monkeypatch.setattr(XpuDevice, name, unavailable)
-    metadata = device.benchmark_metadata()
+    for name in (
+        "get_xpu_memory_bytes",
+        "get_xpu_clocks_megahertz",
+        "get_xpu_power_limits",
+    ):
+        monkeypatch.setattr(xpu_management, name, unavailable)
+    metadata = xpu_management.get_xpu_benchmark_metadata(device)
     assert metadata["name"] == "Intel"
     assert metadata["memory_total_bytes"] is None
     assert metadata["gpu_clock_megahertz"] is None
@@ -332,12 +342,14 @@ def test_resource_monitor_keeps_nvml_calls_on_sampler_thread(
     assert len(set(nvml_threads)) == 1
 
 
-def test_xpu_monitor_filters_processes_and_preserves_unavailable_metrics(
+@pytest.mark.parametrize("counters_available", [False, True])
+def test_xpu_monitor_filters_processes_and_calculates_optional_metrics(
     monkeypatch: pytest.MonkeyPatch,
+    counters_available: bool,
 ) -> None:
     monkeypatch.setattr(runtime_metrics, "gpu_device_type", lambda: "xpu")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    device = XpuDevice(
+    device = dict(
         physical_index=3,
         handle=c_void_p(4),
         uuid="uuid-a",
@@ -345,24 +357,45 @@ def test_xpu_monitor_filters_processes_and_preserves_unavailable_metrics(
         driver_version="1",
         pci_bus_id=None,
     )
-    monkeypatch.setattr(XpuDevice, "from_logical_index", lambda index: device)
+    monkeypatch.setattr(runtime_metrics, "get_xpu_device_info", lambda index: device)
     monkeypatch.setattr(
-        XpuDevice, "memory_bytes", lambda self: (8 * 1024**2, 12 * 1024**2)
+        runtime_metrics,
+        "get_xpu_memory_bytes",
+        lambda handle: (8 * 1024**2, 12 * 1024**2),
     )
     monkeypatch.setattr(
-        XpuDevice,
-        "processes",
-        lambda self: [
+        runtime_metrics,
+        "get_xpu_processes",
+        lambda handle: [
             XpuProcessMemory(pid=os.getpid(), memory_bytes=2 * 1024**2),
             XpuProcessMemory(pid=1, memory_bytes=3 * 1024**2),
         ],
     )
 
-    def unavailable(self: XpuDevice) -> None:
+    def unavailable(handle: c_void_p) -> None:
         raise SysmanError("insufficient permissions")
 
-    monkeypatch.setattr(XpuDevice, "power_watts", unavailable)
-    monkeypatch.setattr(XpuDevice, "utilization_percent", unavailable)
+    activity_samples = count(1)
+    energy_samples = count(1)
+
+    def activity_microseconds(handle: c_void_p) -> tuple[int, int]:
+        sample_index = next(activity_samples)
+        return 1000 * sample_index, 4000 * sample_index
+
+    def energy_microjoules(handle: c_void_p) -> tuple[int, int]:
+        sample_index = next(energy_samples)
+        return 10_000_000 * sample_index, 250_000 * sample_index
+
+    monkeypatch.setattr(
+        runtime_metrics,
+        "get_xpu_energy_microjoules",
+        energy_microjoules if counters_available else unavailable,
+    )
+    monkeypatch.setattr(
+        runtime_metrics,
+        "get_xpu_activity_microseconds",
+        activity_microseconds if counters_available else unavailable,
+    )
 
     monitor = ResourceMonitor(interval_s=0.01, gpu_process_pids=[os.getpid()]).start()
     result = monitor.stop()
@@ -371,8 +404,14 @@ def test_xpu_monitor_filters_processes_and_preserves_unavailable_metrics(
     assert result["gpu_memory_free_mib"]["min"] == 8.0
     assert result["gpu_process_memory_mib"]["max"] == 2.0
     assert result["gpu_process_pids"] == [os.getpid()]
-    assert result["gpu_util_percent"] is None
-    assert result["power_w"] is None
+    assert monitor.samples[0].gpu_util_percent is None
+    assert monitor.samples[0].power_w is None
+    if counters_available:
+        assert result["gpu_util_percent"]["max"] == 25.0
+        assert result["power_w"]["max"] == 40.0
+    else:
+        assert result["gpu_util_percent"] is None
+        assert result["power_w"] is None
     assert result["error"] is None
 
 

@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 import sglang_omni.diagnostics.gpu as gpu_diagnostics
 from sglang_omni.cli import app
-from sglang_omni.utils.xpu_management import SysmanError, XpuDevice
+from sglang_omni.utils.xpu_management import SysmanError
 
 
 class FakeCuda:
@@ -134,7 +134,7 @@ def test_xpu_diagnostics_maps_uuid_and_strict_accepts_visible_xpu(monkeypatch) -
     fake_torch.cuda.is_available = lambda: False
     fake_torch.xpu = FakeCuda()
     devices = [
-        XpuDevice(
+        dict(
             physical_index=index,
             handle=c_void_p(index + 1),
             uuid=uuid,
@@ -144,9 +144,11 @@ def test_xpu_diagnostics_maps_uuid_and_strict_accepts_visible_xpu(monkeypatch) -
         )
         for index, uuid in enumerate(("uuid-b", "uuid-a"))
     ]
-    monkeypatch.setattr(XpuDevice, "enumerate_devices", lambda: devices)
+    monkeypatch.setattr(gpu_diagnostics, "enumerate_xpu_devices", lambda: devices)
     monkeypatch.setattr(
-        XpuDevice, "memory_bytes", lambda self: (8 * 1024**3, 24 * 1024**3)
+        gpu_diagnostics,
+        "get_xpu_memory_bytes",
+        lambda handle: (8 * 1024**3, 24 * 1024**3),
     )
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
 
@@ -182,7 +184,7 @@ def test_xpu_diagnostics_keeps_torch_metadata_without_sysman(monkeypatch) -> Non
     def unavailable() -> None:
         raise SysmanError("Level Zero unavailable")
 
-    monkeypatch.setattr(XpuDevice, "enumerate_devices", unavailable)
+    monkeypatch.setattr(gpu_diagnostics, "enumerate_xpu_devices", unavailable)
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
     report = gpu_diagnostics.collect_gpu_diagnostics(torch_module=fake_torch, env={})
     assert len(report["gpus"]) == 2

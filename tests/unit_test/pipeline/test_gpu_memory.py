@@ -13,7 +13,7 @@ import torch
 import sglang_omni.utils.gpu_memory as gpu_memory
 import sglang_omni.utils.xpu_management as xpu_management
 from sglang_omni.utils.gpu_backend import gpu_device_type
-from sglang_omni.utils.xpu_management import SysmanError, XpuDevice, XpuProcessMemory
+from sglang_omni.utils.xpu_management import SysmanError, XpuProcessMemory
 
 ACCELERATOR_ONLY = pytest.mark.skipif(
     not (
@@ -82,7 +82,7 @@ def test_xpu_process_query_retries_growth(
             zesDeviceProcessesGetState=query,
         ),
     )
-    device = XpuDevice(
+    device = dict(
         physical_index=0,
         handle=c_void_p(1),
         uuid="a",
@@ -90,7 +90,7 @@ def test_xpu_process_query_retries_growth(
         driver_version="1",
         pci_bus_id=None,
     )
-    assert device.processes() == [
+    assert xpu_management.get_xpu_processes(device["handle"]) == [
         XpuProcessMemory(pid=123, memory_bytes=2048),
         XpuProcessMemory(pid=456, memory_bytes=4096),
     ]
@@ -116,7 +116,7 @@ def test_xpu_process_query_does_not_report_zero_for_an_unstable_list(
             zesDeviceProcessesGetState=query,
         ),
     )
-    device = XpuDevice(
+    device = dict(
         physical_index=0,
         handle=c_void_p(1),
         uuid="a",
@@ -125,7 +125,7 @@ def test_xpu_process_query_does_not_report_zero_for_an_unstable_list(
         pci_bus_id=None,
     )
     with pytest.raises(SysmanError, match="kept changing"):
-        device.processes()
+        xpu_management.get_xpu_processes(device["handle"])
 
 
 class FakeNVML(ModuleType):
@@ -360,7 +360,7 @@ def test_xpu_memory_uses_current_process_and_ignores_cuda_visibility(
 ) -> None:
     monkeypatch.setattr(gpu_memory, "gpu_device_type", lambda: "xpu")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    device = XpuDevice(
+    device = dict(
         physical_index=3,
         handle=c_void_p(4),
         uuid="uuid-a",
@@ -368,16 +368,18 @@ def test_xpu_memory_uses_current_process_and_ignores_cuda_visibility(
         driver_version="1",
         pci_bus_id=None,
     )
-    monkeypatch.setattr(XpuDevice, "from_logical_index", lambda index: device)
+    monkeypatch.setattr(gpu_memory, "get_xpu_device_info", lambda index: device)
     monkeypatch.setattr(
-        XpuDevice,
-        "processes",
-        lambda self: [
+        gpu_memory,
+        "get_xpu_processes",
+        lambda handle: [
             XpuProcessMemory(pid=os.getpid(), memory_bytes=4096),
             XpuProcessMemory(pid=os.getpid() + 1, memory_bytes=8192),
         ],
     )
-    monkeypatch.setattr(XpuDevice, "memory_bytes", lambda self: (8192, 16384))
+    monkeypatch.setattr(
+        gpu_memory, "get_xpu_memory_bytes", lambda handle: (8192, 16384)
+    )
 
     def refuse_nvml() -> None:
         raise AssertionError("XPU must not query NVML")
@@ -390,7 +392,7 @@ def test_xpu_memory_uses_current_process_and_ignores_cuda_visibility(
     assert metadata.name == "Intel GPU"
     assert metadata.device_id == "uuid-a"
     assert metadata.total_memory_bytes == 16384
-    monkeypatch.setattr(XpuDevice, "processes", lambda self: [])
+    monkeypatch.setattr(gpu_memory, "get_xpu_processes", lambda handle: [])
     assert gpu_memory.get_process_gpu_memory_bytes(0) == 0
 
 
@@ -413,7 +415,7 @@ def test_xpu_mapping_uses_uuid_instead_of_sysman_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     devices = [
-        XpuDevice(
+        dict(
             physical_index=index,
             handle=c_void_p(index + 1),
             uuid=uuid,
@@ -423,19 +425,19 @@ def test_xpu_mapping_uses_uuid_instead_of_sysman_order(
         )
         for index, uuid in enumerate(("uuid-b", "uuid-a"))
     ]
-    monkeypatch.setattr(XpuDevice, "enumerate_devices", lambda: devices)
+    monkeypatch.setattr(xpu_management, "enumerate_xpu_devices", lambda: devices)
     monkeypatch.setattr(torch.xpu, "device_count", lambda: 1)
     monkeypatch.setattr(
         torch.xpu, "get_device_properties", lambda index: SimpleNamespace(uuid="uuid-a")
     )
-    assert XpuDevice.from_logical_index(0).physical_index == 1
+    assert xpu_management.get_xpu_device_info(0)["physical_index"] == 1
     monkeypatch.setattr(
         torch.xpu,
         "get_device_properties",
         lambda index: SimpleNamespace(uuid="unknown"),
     )
     with pytest.raises(SysmanError, match="not found"):
-        XpuDevice.from_logical_index(0)
+        xpu_management.get_xpu_device_info(0)
 
 
 @pytest.mark.accelerator
