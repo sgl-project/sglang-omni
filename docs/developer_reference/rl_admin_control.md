@@ -46,7 +46,10 @@ requests are present, the update is rejected unless the request sets
 `abort_all_requests=true` or generation was already paused with `mode=retract`.
 
 `/init_weights_update_group` and `/destroy_weights_update_group` manage the
-SGLang/Miles distributed update process group. `/update_weights_from_distributed`
+SGLang/Miles distributed update process group. Without a `backend`, the group
+uses the server platform's collective library (`nccl` on NVIDIA and AMD, `xccl`
+on Intel XPU, `hccl` on Ascend, `gloo` on CPU), and the trainer must join it
+with the same one. `/update_weights_from_distributed`
 then sends metadata (`names`, `dtypes`, `shapes`, `group_name`, and optional
 `load_format` / `weight_version`) through the admin control plane while the
 actual tensors move over the distributed group. The distributed update path uses
