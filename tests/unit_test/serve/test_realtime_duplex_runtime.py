@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -122,21 +123,39 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_exhaustion_closes_session() -> None:
-    message = "context_exhausted: thinker context length 8192 tokens exhausted"
-
+@pytest.mark.parametrize(
+    ("message", "code"),
+    [
+        (
+            "context_exhausted: the session reached the thinker context length",
+            "context_exhausted",
+        ),
+        ("talker step failed", "internal"),
+    ],
+)
+async def test_unit_failure_closes_session(
+    message: str, code: str, caplog: pytest.LogCaptureFixture
+) -> None:
     class FailingAdapter(GatedAdapter):
         async def process(self, unit: Unit) -> int:
             raise RuntimeError(message)
 
-    runtime = await open_runtime(FailingAdapter([]))
-    await runtime.append(b"\1" * UNIT_BYTES, 0, None, "append")
-    envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.serve.realtime.runtime"):
+        runtime = await open_runtime(FailingAdapter([]))
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "append")
+        envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
     failures = [entry.event for entry in envelopes if isinstance(entry.event, Failure)]
     assert len(failures) == 1
-    assert failures[0].code == "context_exhausted"
+    assert failures[0].code == code
     assert failures[0].is_fatal
     assert message in failures[0].message
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "sglang_omni.serve.realtime.runtime"
+    ]
+    assert len(records) == 1
+    assert (records[0].exc_info is not None) == (code == "internal")
 
 
 def test_output_budget_counts_outbound_events_only() -> None:
