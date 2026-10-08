@@ -13,9 +13,8 @@ from dataclasses import dataclass
 import torch
 from sglang.srt.utils.common import get_available_gpu_memory
 
-from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT
+from sglang_omni.models.fun_cosyvoice3.packed_dit import CONV_CONTEXT_FRAMES, PackedDiT
 from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
-    CONV_CONTEXT_FRAMES,
     PrefixCacheRow,
     PrefixKVPool,
     PrefixRowAttention,

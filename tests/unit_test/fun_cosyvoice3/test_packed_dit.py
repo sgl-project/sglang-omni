@@ -9,8 +9,10 @@ import torch
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
+    PackedRows,
     RaggedRowAttention,
     RowAttention,
+    WholeRowAttention,
     chunk_causal_mask,
     gather_rows,
     pack_rows,
@@ -81,6 +83,11 @@ def packed_inputs(padded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 
 def valid(padded: torch.Tensor) -> list[torch.Tensor]:
     return [padded[index, :, :length] for index, length in enumerate(LENGTHS)]
+
+
+def rope(estimator: PackedDiT, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
+    angles = estimator.rope_angles(rows.width)[:, rows.positions]
+    return angles.cos(), angles.sin()
 
 
 def test_pack_rows_describes_each_token_by_row_and_position() -> None:
@@ -187,7 +194,7 @@ def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
             packed["t"],
             packed["rows"],
             attention,
-            estimator.rope(packed["rows"]),
+            rope(estimator, packed["rows"]),
         )
     out = scatter_rows(out, packed["rows"], 19).transpose(1, 2)
 
@@ -249,6 +256,9 @@ def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
     time_span = 1 - torch.cos(unit_span * 0.5 * torch.pi)
     noise = torch.randn(1, CHANNELS, 19, dtype=torch.float64).expand(4, -1, -1)
 
+    estimator = PackedDiT(dit, device=CPU)
+    twin_rows = pack_rows(LENGTHS * 2, CPU)
+
     with torch.inference_mode():
         expected = solve_flow_euler(
             decoder,
@@ -261,15 +271,18 @@ def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
             streaming=streaming,
         )
         out = solve_flow_euler_packed(
-            PackedDiT(dit, device=CPU),
+            estimator,
             gather_rows(noise.transpose(1, 2), packed["rows"]),
             time_span,
             packed["mu"],
             padded["spks"],
             packed["cond"],
-            packed["rows"],
+            twin_rows,
+            estimator.row_attention(
+                twin_rows, streaming=streaming, dtype=torch.float64
+            ),
+            estimator.rope_angles(twin_rows.width),
             cfg_rate=0.7,
-            streaming=streaming,
         )
     out = scatter_rows(out, packed["rows"], 19).transpose(1, 2)
 
@@ -306,36 +319,47 @@ def test_packed_compile_requires_ragged_half_precision(monkeypatch) -> None:
     ]
 
 
-def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
+@pytest.mark.parametrize("streaming", [True, False])
+def test_rows_packed_beside_an_empty_and_a_trailing_row_are_unchanged(
+    streaming: bool,
+) -> None:
     dit = tiny_dit()
     padded = padded_inputs()
     packed = packed_inputs(padded)
     estimator = PackedDiT(dit, device=CPU)
+    torch.manual_seed(5)
+    trailing = 23
+    filler = {
+        name: torch.randn(1, trailing, CHANNELS, dtype=torch.float64)
+        for name in ("x", "mu", "cond", "spks")
+    }
+    rows = pack_rows((*LENGTHS[:2], 0, *LENGTHS[2:], trailing), CPU)
+    together_inputs = [
+        torch.cat((packed[name], filler[name]), dim=1)
+        for name in ("x", "mu", "spks", "cond")
+    ]
 
     with torch.inference_mode():
         together = estimator.forward(
-            packed["x"],
-            packed["mu"],
-            packed["spks"],
-            packed["cond"],
+            *together_inputs,
             packed["t"],
-            packed["rows"],
-            estimator.row_attention(
-                packed["rows"], streaming=True, dtype=packed["x"].dtype
-            ),
-            estimator.rope(packed["rows"]),
+            rows,
+            estimator.row_attention(rows, streaming=streaming, dtype=torch.float64),
+            rope(estimator, rows),
         )
         for index, length in enumerate(LENGTHS):
-            rows = pack_rows((length,), CPU)
+            alone_rows = pack_rows((length,), CPU)
             alone = estimator.forward(
                 padded["x"][index : index + 1, :, :length].transpose(1, 2),
                 padded["mu"][index : index + 1, :, :length].transpose(1, 2),
                 padded["spks"][index : index + 1].expand(length, -1).unsqueeze(0),
                 padded["cond"][index : index + 1, :, :length].transpose(1, 2),
                 padded["t"],
-                rows,
-                estimator.row_attention(rows, streaming=True, dtype=packed["x"].dtype),
-                estimator.rope(rows),
+                alone_rows,
+                estimator.row_attention(
+                    alone_rows, streaming=streaming, dtype=torch.float64
+                ),
+                rope(estimator, alone_rows),
             )
             start = int(packed["rows"].starts_host[index])
             torch.testing.assert_close(
@@ -344,8 +368,12 @@ def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.parametrize("chunk_size", [CHUNK, None])
-def test_the_ragged_read_matches_the_padded_read(chunk_size: int | None) -> None:
+@pytest.mark.parametrize(
+    "chunk_size, max_frames_scale", [(CHUNK, 1), (None, 1), (None, 4)]
+)
+def test_the_ragged_read_matches_the_padded_read(
+    chunk_size: int | None, max_frames_scale: int
+) -> None:
     from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 
     device = torch.device("cuda")
@@ -354,15 +382,24 @@ def test_the_ragged_read_matches_the_padded_read(chunk_size: int | None) -> None
     torch.manual_seed(2)
     heads = 2
     head_dim = 64
-    rows = pack_rows(LENGTHS, device)
+    rows = pack_rows((*LENGTHS[:2], 0, *LENGTHS[2:]), device)
     query, key, value = (
         torch.randn(
             1, rows.total, heads * head_dim, device=device, dtype=torch.bfloat16
         )
         for _ in range(3)
     )
-    ragged = RaggedRowAttention(
-        rows, chunk_size=chunk_size, heads=heads, head_dim=head_dim
-    )(query, key, value)
+    if chunk_size is None:
+        attention = WholeRowAttention(
+            rows,
+            heads=heads,
+            head_dim=head_dim,
+            max_frames=max_frames_scale * rows.width,
+        )
+    else:
+        attention = RaggedRowAttention(
+            rows, chunk_size=chunk_size, heads=heads, head_dim=head_dim
+        )
+    ragged = attention(query, key, value)
     padded = RowAttention(rows, chunk_size=chunk_size, heads=heads)(query, key, value)
     torch.testing.assert_close(ragged, padded, rtol=2e-2, atol=2e-2)

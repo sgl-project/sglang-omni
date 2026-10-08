@@ -39,12 +39,17 @@ else:
     pass
 
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
+from sglang_omni.models.fun_cosyvoice3.final_cuda_graph import (
+    FINAL_TIER_FRAMES,
+    FinalCudaGraphRunner,
+)
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
 )
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     DIT_INDUCTOR_OPTIONS,
+    FA3_DTYPES,
     PackedDiT,
     gather_rows,
     pack_rows,
@@ -805,18 +810,43 @@ def generate_flow_packed(
     split reads."""
     conditioning = prepare_flow_conditioning(flow, packed, finalize=finalize)
     token_condition = conditioning.token_condition
-    rows = pack_rows(conditioning.mel_lengths, token_condition.device)
-    generated = solve_flow_euler_packed(
-        flow.packed_estimator,
-        gather_rows(conditioning.noisy_mel.transpose(1, 2), rows),
-        conditioning.time_span,
-        gather_rows(token_condition.transpose(1, 2), rows),
-        conditioning.speaker_embedding,
-        gather_rows(conditioning.prompt_mel.transpose(1, 2), rows),
-        rows,
-        cfg_rate=flow.decoder.inference_cfg_rate,
-        streaming=streaming,
-    )
+    device = token_condition.device
+    rows = pack_rows(conditioning.mel_lengths, device)
+    noise = gather_rows(conditioning.noisy_mel.transpose(1, 2), rows)
+    mu = gather_rows(token_condition.transpose(1, 2), rows)
+    mel_conditioning = gather_rows(conditioning.prompt_mel.transpose(1, 2), rows)
+    if streaming or flow.final_cuda_graph_runner is None:
+        generated = None
+    else:
+        generated = flow.final_cuda_graph_runner.run(
+            noise=noise,
+            time_span=conditioning.time_span,
+            mu=mu,
+            speaker_embeddings=conditioning.speaker_embedding,
+            mel_conditioning=mel_conditioning,
+            lengths=rows.lengths,
+        )
+    if generated is None:
+        estimator = flow.packed_estimator
+        twin_rows = pack_rows(rows.lengths * 2, device)
+        generated = solve_flow_euler_packed(
+            estimator,
+            noise,
+            conditioning.time_span,
+            mu,
+            conditioning.speaker_embedding,
+            mel_conditioning,
+            twin_rows,
+            estimator.row_attention(
+                twin_rows,
+                streaming=streaming,
+                dtype=conditioning.speaker_embedding.dtype,
+            ),
+            estimator.rope_angles(twin_rows.width),
+            cfg_rate=flow.decoder.inference_cfg_rate,
+        )
+    else:
+        pass
     return scatter_rows(generated, rows, token_condition.shape[2]).transpose(1, 2)
 
 
@@ -867,6 +897,7 @@ class FunCosyVoice3Flow:
         self.packed_estimator = packed_estimator
         self.prefix_pool: PrefixKVPool | None = None
         self.prefix_cuda_graph_runner: PrefixCudaGraphRunner | None = None
+        self.final_cuda_graph_runner: FinalCudaGraphRunner | None = None
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.flow, name)
@@ -2566,6 +2597,7 @@ def create_vocoder_executor(
     enable_dit_torch_compile: bool = True,
     enable_flow_cuda_graph: bool = True,
     enable_flow_prefix_cuda_graph: bool,
+    enable_flow_final_cuda_graph: bool,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
     hift_dtype: str = "float32",
@@ -2722,15 +2754,18 @@ def create_vocoder_executor(
         scheduler.warmup_packed_dit_compile()
     else:
         pass
-    if enable_flow_prefix_cuda_graph and flow.prefix_pool is not None:
+    has_prefix_graphs = enable_flow_prefix_cuda_graph and flow.prefix_pool is not None
+    has_final_graphs = (
+        enable_flow_final_cuda_graph
+        and device_obj.type == "cuda"
+        and flow.packed_estimator is not None
+        and flow.packed_estimator.is_ragged
+        and autocast_dtype in FA3_DTYPES
+    )
+    if has_prefix_graphs or has_final_graphs:
         graph_backend = current_platform.get_device_graph_backend(device_obj)
         assert graph_backend is not None and flow.packed_estimator is not None
         assert autocast_dtype is not None
-        token_mel_ratio = flow.token_mel_ratio
-        if disable_hop_growth:
-            longest_hop_tokens = token_hop_len
-        else:
-            longest_hop_tokens = token_max_hop_len
         # note(ratish): a graph replays its captured dtypes; under autocast a hop's frames
         # keep the token embedding's dtype and its speaker embedding does not.
         with (
@@ -2744,6 +2779,14 @@ def create_vocoder_executor(
                 ),
                 finalize=False,
             )
+    else:
+        pass
+    if has_prefix_graphs:
+        token_mel_ratio = flow.token_mel_ratio
+        if disable_hop_growth:
+            longest_hop_tokens = token_hop_len
+        else:
+            longest_hop_tokens = token_max_hop_len
         prefix_cuda_graph_runner = PrefixCudaGraphRunner(
             flow.packed_estimator,
             flow.prefix_pool,
@@ -2761,6 +2804,26 @@ def create_vocoder_executor(
         )
         prefix_cuda_graph_runner.capture()
         flow.prefix_cuda_graph_runner = prefix_cuda_graph_runner
+    else:
+        pass
+    if has_final_graphs:
+        final_cuda_graph_runner = FinalCudaGraphRunner(
+            flow.packed_estimator,
+            backend=graph_backend,
+            device=device_obj,
+            autocast_dtype=autocast_dtype,
+            frame_dtype=conditioning.noisy_mel.dtype,
+            speaker_dtype=conditioning.speaker_embedding.dtype,
+            cfg_rate=flow.decoder.inference_cfg_rate,
+            euler_steps=FLOW_EULER_STEPS,
+            mel_channels=flow.output_size,
+            speaker_channels=flow.spk_embed_affine_layer.out_features,
+            max_rows=max_batch_size,
+            tier_frames=FINAL_TIER_FRAMES,
+            max_frames=flow.decoder.rand_noise.shape[2],
+        )
+        final_cuda_graph_runner.capture()
+        flow.final_cuda_graph_runner = final_cuda_graph_runner
     else:
         pass
     scheduler.warmup_now()

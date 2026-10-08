@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Hops over a cached prefix reproduce the whole-history causal solve."""
+"""Hops over a cached prefix reproduce the whole-history causal solve, and
+graph replayed hops and finals their eager solves."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ import copy
 import pytest
 import torch
 
+from sglang_omni.models.fun_cosyvoice3.final_cuda_graph import FinalCudaGraphRunner
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
     gather_rows,
@@ -111,6 +113,7 @@ def test_prefix_hops_are_bit_identical_to_whole_history_hops(
     with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
         for total in totals:
             packed = pack_rows([total] * rows, device)
+            twin_rows = pack_rows([total] * 2 * rows, device)
             reference = solve_flow_euler_packed(
                 estimator,
                 gather_rows(noise[:, :, :total].transpose(1, 2), packed),
@@ -118,9 +121,10 @@ def test_prefix_hops_are_bit_identical_to_whole_history_hops(
                 gather_rows(mu[:, :, :total].transpose(1, 2), packed),
                 spks,
                 gather_rows(cond[:, :, :total].transpose(1, 2), packed),
-                packed,
+                twin_rows,
+                estimator.row_attention(twin_rows, streaming=True, dtype=dtype),
+                estimator.rope_angles(total),
                 cfg_rate=0.7,
-                streaming=True,
             )
             for pair in caches:
                 assert grow_rows(pool, list(pair), [total, total])
@@ -235,6 +239,7 @@ def test_compiled_prefix_hops_follow_each_row_across_batches() -> None:
             for name, start, total in zip(names, starts, totals):
                 stream = streams[name]
                 packed = pack_rows([total], device)
+                twin_rows = pack_rows([total, total], device)
 
                 def whole_history(
                     model: PackedDiT, value_dtype: torch.dtype
@@ -251,9 +256,12 @@ def test_compiled_prefix_hops_follow_each_row_across_batches() -> None:
                         rows_of("mu"),
                         stream["speaker_embeddings"][None].to(value_dtype),
                         rows_of("mel_conditioning"),
-                        packed,
+                        twin_rows,
+                        model.row_attention(
+                            twin_rows, streaming=True, dtype=value_dtype
+                        ),
+                        model.rope_angles(total),
                         cfg_rate=0.7,
-                        streaming=True,
                     )[0, emitted[name] : total]
 
                 eager = whole_history(estimator, dtype)
@@ -438,3 +446,78 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
         for pool, pair in zip(pools, pair_per_pool):
             release_rows(pool, list(pair))
     assert all(len(pool.free_blocks) == 64 for pool in pools)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("compile_packed", [False, True], ids=["eager", "compiled"])
+def test_final_graph_replays_equal_the_eager_solve(compile_packed: bool) -> None:
+    """Replays with empty row slots and a padding row, after other steps left
+    their frames in the tier's buffers, equal the eager solve of the rows alone.
+    Steps above the largest tier or past the row slots are refused."""
+    estimator = make_estimator()
+    device = torch.device("cuda", torch.cuda.current_device())
+    dtype = torch.bfloat16
+    unit = torch.linspace(0, 1, 11, device=device, dtype=dtype)
+    time_span = (1 - torch.cos(unit * 0.5 * torch.pi)).float()
+
+    def step_inputs(lengths: tuple[int, ...]) -> dict[str, torch.Tensor]:
+        generator = torch.Generator(device=device).manual_seed(sum(lengths))
+        frames = (1, sum(lengths), CHANNELS)
+        return dict(
+            noise=torch.randn(frames, device=device, generator=generator),
+            time_span=time_span,
+            mu=torch.randn(frames, device=device, generator=generator),
+            speaker_embeddings=torch.randn(
+                len(lengths), CHANNELS, device=device, generator=generator
+            ).to(dtype),
+            mel_conditioning=torch.randn(frames, device=device, generator=generator),
+        )
+
+    def eager_solve(lengths: tuple[int, ...]) -> torch.Tensor:
+        inputs = step_inputs(lengths)
+        twin_rows = pack_rows(lengths * 2, device)
+        return solve_flow_euler_packed(
+            estimator,
+            inputs["noise"],
+            inputs["time_span"],
+            inputs["mu"],
+            inputs["speaker_embeddings"],
+            inputs["mel_conditioning"],
+            twin_rows,
+            estimator.row_attention(twin_rows, streaming=False, dtype=dtype),
+            estimator.rope_angles(twin_rows.width),
+            cfg_rate=0.7,
+        )
+
+    if compile_packed:
+        assert estimator.compile(dtype)
+        with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+            for lengths in ((53,), (53, 78)):
+                eager_solve(lengths)
+    else:
+        pass
+    backend = current_platform.get_device_graph_backend(device)
+    assert backend is not None
+    runner = FinalCudaGraphRunner(
+        estimator,
+        backend=backend,
+        device=device,
+        autocast_dtype=dtype,
+        frame_dtype=torch.float32,
+        speaker_dtype=dtype,
+        cfg_rate=0.7,
+        euler_steps=10,
+        mel_channels=CHANNELS,
+        speaker_channels=CHANNELS,
+        max_rows=3,
+        tier_frames=(128, 256),
+        max_frames=1024,
+    )
+    runner.capture()
+
+    with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        for lengths in ((40, 70), (100, 90, 50), (60,), (128,), (200, 56), (40, 70)):
+            replayed = runner.run(**step_inputs(lengths), lengths=lengths)
+            assert torch.equal(replayed, eager_solve(lengths)), lengths
+        for lengths in ((150, 150), (20, 20, 20, 20)):
+            assert runner.run(**step_inputs(lengths), lengths=lengths) is None

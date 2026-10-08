@@ -923,6 +923,7 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
         "model",
         flow_prefix_cache_gb=0.0,
         enable_flow_prefix_cuda_graph=True,
+        enable_flow_final_cuda_graph=True,
         device="cpu",
         flow_batch_admission_frames=2000,
         enable_dit_torch_compile=False,
@@ -960,6 +961,7 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         enable_dit_torch_compile=False,
         flow_prefix_cache_gb=0.0,
         enable_flow_prefix_cuda_graph=True,
+        enable_flow_final_cuda_graph=True,
     )
 
     assert scheduler.max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
@@ -1002,6 +1004,7 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         "model",
         flow_prefix_cache_gb=0.0,
         enable_flow_prefix_cuda_graph=True,
+        enable_flow_final_cuda_graph=True,
         device="cpu",
         enable_dit_torch_compile=False,
         dtype="float16",
@@ -1052,6 +1055,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
         "model",
         flow_prefix_cache_gb=0.0,
         enable_flow_prefix_cuda_graph=True,
+        enable_flow_final_cuda_graph=True,
         device="cpu",
         max_batch_size=4,
         enable_dit_torch_compile=False,
@@ -1092,6 +1096,7 @@ def create_scheduler_recording_native_compile(
         device="cpu",
         flow_prefix_cache_gb=0.0,
         enable_flow_prefix_cuda_graph=True,
+        enable_flow_final_cuda_graph=True,
         **kwargs,
     )
     return compiled, scheduler
@@ -1201,6 +1206,7 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
         "model",
         flow_prefix_cache_gb=0.0,
         enable_flow_prefix_cuda_graph=True,
+        enable_flow_final_cuda_graph=True,
         device="cuda",
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_cuda_graph=True,
@@ -1234,6 +1240,7 @@ def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
             "model",
             flow_prefix_cache_gb=0.0,
             enable_flow_prefix_cuda_graph=True,
+            enable_flow_final_cuda_graph=True,
             enable_dit_torch_compile=True,
             enable_flow_estimator_trt=True,
         )
@@ -1372,6 +1379,7 @@ def test_create_vocoder_executor_rejects_non_positive_admission_budget(
             "model",
             flow_prefix_cache_gb=0.0,
             enable_flow_prefix_cuda_graph=True,
+            enable_flow_final_cuda_graph=True,
             device="cpu",
             flow_batch_admission_frames=0,
             enable_dit_torch_compile=False,
@@ -1394,6 +1402,7 @@ def test_pipeline_config_sets_flow_batch_admission_by_default() -> None:
         "max_batch_wait_ms": 30,
         "enable_flow_cuda_graph": True,
         "enable_flow_prefix_cuda_graph": True,
+        "enable_flow_final_cuda_graph": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
