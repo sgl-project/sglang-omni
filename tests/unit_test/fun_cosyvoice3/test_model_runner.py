@@ -37,6 +37,7 @@ def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:
     assert requests[0].data.output_codes == []
     assert [code.item() for code in requests[1].data.output_codes] == [13]
     assert requests[1].data.output_codes[0].dtype == torch.long
+    assert runner.resolve_host_token_ids(result).tolist() == [EOS_ID, 13]
 
 
 def test_cosyvoice3_runner_skips_all_control_tokens() -> None:
