@@ -515,9 +515,13 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-asr-nano-speech-to-text-single-xpu">Fun-ASR-Nano (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-3-5-asr-speech-to-text-single-xpu">Nemotron 3.5 ASR (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-text-to-speech-single-xpu">Qwen3-TTS (text-to-speech, single XPU)</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#base">Base</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#customvoice">CustomVoice</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#voicedesign">VoiceDesign</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#codec-decoding-on-xpu">Codec decoding on XPU</a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auk-speech-generation-and-editing-single-xpu">AuK (speech generation and editing, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-cosyvoice3-text-to-speech-single-xpu">Fun-CosyVoice3 (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dots-tts-text-to-speech-single-xpu">dots.tts (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zonos2-moe-tts-single-xpu">ZONOS2 (MoE TTS, single XPU)</a></li>
@@ -550,7 +554,7 @@ XPU wheel index.</p>
 <p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code> resolves the CUDA <a class="reference download internal" download="" href="../_downloads/079962c730e6e61f3f9971f670e9cf70/pyproject.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></span></a>, whose torch
 family and CUDA-only wheels would replace the <code class="docutils literal notranslate"><span class="pre">+xpu</span></code> stack.
 <a class="reference download internal" download="" href="../_downloads/e6282636738987ea324fd398b24bcb06/pyproject_xpu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code></span></a> encodes the XPU replacements.</p>
-<p>Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts) plus the API server;
+<p>Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
 <code class="docutils literal notranslate"><span class="pre">[eval]</span></code> adds SeedTTS/WER tooling and <code class="docutils literal notranslate"><span class="pre">[all]</span></code> aliases it. <code class="docutils literal notranslate"><span class="pre">[fun-cosyvoice3]</span></code> adds
 that model’s CosyVoice dependencies — see
 <a class="reference internal" href="#fun-cosyvoice3-text-to-speech-single-xpu"><span class="std std-ref">Fun-CosyVoice3</span></a>. ZONOS2 also serves here,
@@ -711,6 +715,8 @@ pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="
 pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="w"> </span>qwen-tts<span class="o">==</span><span class="m">0</span>.1.1
 </pre></div>
 </div>
+<section id="base">
+<h4>Base<a class="headerlink" href="#base" title="Link to this heading">#</a></h4>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Qwen3-TTS-12Hz-1.7B-Base<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 <span class="c1"># Base checkpoint clones a reference voice — pass ref_audio (+ ref_text):</span>
 curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
@@ -720,6 +726,38 @@ curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>
 <span class="s1">       "response_format":"wav"}'</span><span class="w"> </span>-o<span class="w"> </span>out.wav
 </pre></div>
 </div>
+</section>
+<section id="customvoice">
+<h4>CustomVoice<a class="headerlink" href="#customvoice" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">CustomVoice</span></code> checkpoints synthesize speech with built-in speakers and need no reference audio. Use the matching config and select a speaker in the request:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b_customvoice.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice","input":"Hello from Intel XPU.",</span>
+<span class="s1">       "voice":"Ryan","task_type":"CustomVoice","language":"English",</span>
+<span class="s1">       "instructions":"Speak clearly and calmly.","response_format":"wav"}'</span><span class="w"> </span>-o<span class="w"> </span>out.wav
+</pre></div>
+</div>
+</section>
+<section id="voicedesign">
+<h4>VoiceDesign<a class="headerlink" href="#voicedesign" title="Link to this heading">#</a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">VoiceDesign</span></code> checkpoint synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b_voicedesign.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+<span class="c1"># VoiceDesign requires task_type and non-empty instructions:</span>
+curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign","input":"Hello, how are you?",</span>
+<span class="s1">       "voice":"default","task_type":"VoiceDesign",</span>
+<span class="s1">       "instructions":"A warm, natural young adult voice.","response_format":"wav"}'</span><span class="w"> </span>-o<span class="w"> </span>out.wav
+</pre></div>
+</div>
+</section>
 <section id="codec-decoding-on-xpu">
 <h4>Codec decoding on XPU<a class="headerlink" href="#codec-decoding-on-xpu" title="Link to this heading">#</a></h4>
 <p>The stateful incremental codec decoder runs, but the pipeline starts it with
@@ -746,6 +784,29 @@ startup:</p>
 <p>An explicit stage value wins over the pipeline default. See the platform-neutral
 defaults in <a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">docs/cookbook/qwen3_tts.md</span></a>.</p>
 </section>
+</section>
+<section id="auk-speech-generation-and-editing-single-xpu">
+<h3>AuK (speech generation and editing, single XPU)<a class="headerlink" href="#auk-speech-generation-and-editing-single-xpu" title="Link to this heading">#</a></h3>
+<p>Run one checkpoint at a time:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>tencent/AuK<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>tencent/AuK-Flash<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>With either server, generate a 24 kHz WAV from text and voice instructions. Without reference audio, <code class="docutils literal notranslate"><span class="pre">stage_params.auk_engine.gen_seconds</span></code> is required:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"input":"Welcome home.","instructions":"A warm, relaxed voice.",</span>
+<span class="s1">       "stage_params":{"auk_engine":{"gen_seconds":3}},</span>
+<span class="s1">       "seed":1234,"response_format":"wav"}'</span><span class="w"> </span>-o<span class="w"> </span>out.wav
+</pre></div>
+</div>
+<p>AuK uses 32 sampling steps by default; AuK-Flash uses its fixed four-step recipe. See the <a class="reference internal" href="../cookbook/auk.html"><span class="std std-doc">AuK cookbook</span></a> for voice cloning and speech editing through <code class="docutils literal notranslate"><span class="pre">/generate</span></code>.</p>
 </section>
 <section id="fun-cosyvoice3-text-to-speech-single-xpu">
 <h3>Fun-CosyVoice3 (text-to-speech, single XPU)<a class="headerlink" href="#fun-cosyvoice3-text-to-speech-single-xpu" title="Link to this heading">#</a></h3>
@@ -957,8 +1018,8 @@ in a graph.</p>
 </div></blockquote>
 <blockquote>
 <div><p>✅ Support status: <strong>Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
-Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts all serve end-to-end on Intel XPU</strong>
-(Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex and dots.tts single-card;
+Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU</strong>
+(Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
 ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 </div></blockquote>
@@ -1027,9 +1088,13 @@ Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-asr-nano-speech-to-text-single-xpu">Fun-ASR-Nano (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-3-5-asr-speech-to-text-single-xpu">Nemotron 3.5 ASR (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-text-to-speech-single-xpu">Qwen3-TTS (text-to-speech, single XPU)</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#base">Base</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#customvoice">CustomVoice</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#voicedesign">VoiceDesign</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#codec-decoding-on-xpu">Codec decoding on XPU</a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auk-speech-generation-and-editing-single-xpu">AuK (speech generation and editing, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-cosyvoice3-text-to-speech-single-xpu">Fun-CosyVoice3 (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dots-tts-text-to-speech-single-xpu">dots.tts (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zonos2-moe-tts-single-xpu">ZONOS2 (MoE TTS, single XPU)</a></li>
