@@ -6,7 +6,6 @@ from sglang_omni.comm.data_ref import (
     DataKind,
     DataLayout,
     DataRef,
-    MetadataTensorRef,
     TensorMeta,
     TransportKind,
 )
@@ -31,7 +30,6 @@ __all__ = [
     "KVPool",
     "KVReceiver",
     "CommRouter",
-    "MetadataTensorRef",
     "TensorMeta",
     "DataRef",
     "DataLayout",

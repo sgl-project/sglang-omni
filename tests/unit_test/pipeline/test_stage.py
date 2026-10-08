@@ -420,7 +420,7 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
         msg = control_plane.sent_to_stage[0][2]
         stream_ref = DataRef.from_dict(msg.data_ref)
         assert stream_ref.metadata["token_id"] == 1
-        assert [ref.path for ref in stream_ref.metadata_tensors] == ["hidden"]
+        assert [entry.path for entry in stream_ref.tensors] == ["hidden"]
 
     asyncio.run(run())
 
