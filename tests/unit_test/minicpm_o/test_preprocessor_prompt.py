@@ -479,6 +479,52 @@ def test_audio_content_reaches_processor_in_turn_order(
         np.testing.assert_array_equal(actual_waveform, expected_waveform)
 
 
+def test_audio_cache_identity_includes_turn_grouping(
+    media_preprocessor: MiniCPMOPreprocessor,
+    recording_processor: RecordingProcessor,
+) -> None:
+    first_waveform = np.zeros(16000, dtype=np.float32)
+    second_waveform = np.ones(8000, dtype=np.float32)
+    same_turn_payload = StagePayload(
+        request_id="same-turn-audio",
+        request=OmniRequest(
+            inputs=[{"role": "user", "content": [first_waveform, second_waveform]}]
+        ),
+        data=None,
+    )
+    separate_turns_payload = StagePayload(
+        request_id="separate-turns-audio",
+        request=OmniRequest(
+            inputs=[
+                {"role": "user", "content": [first_waveform]},
+                {"role": "assistant", "content": "OK."},
+                {"role": "user", "content": [second_waveform]},
+            ]
+        ),
+        data=None,
+    )
+
+    same_turn_result = asyncio.run(media_preprocessor(same_turn_payload))
+    assert recording_processor.audio_parts == [[0, 0]]
+    separate_turns_result = asyncio.run(media_preprocessor(separate_turns_payload))
+    assert recording_processor.audio_parts == [[0, 2]]
+
+    same_turn_cache_key = same_turn_result.data["encoder_inputs"]["audio_encoder"][
+        "cache_key"
+    ]
+    separate_turns_cache_key = separate_turns_result.data["encoder_inputs"][
+        "audio_encoder"
+    ]["cache_key"]
+    assert same_turn_cache_key != separate_turns_cache_key
+    assert (
+        same_turn_result.data["mm_inputs"]["audio"]["cache_key"] == same_turn_cache_key
+    )
+    assert (
+        separate_turns_result.data["mm_inputs"]["audio"]["cache_key"]
+        == separate_turns_cache_key
+    )
+
+
 def test_text_parts_follow_chat_newline_separator(
     media_preprocessor: MiniCPMOPreprocessor,
 ) -> None:

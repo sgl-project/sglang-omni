@@ -89,7 +89,10 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
 
     def load_file(self, video_path: Path) -> TimedVideo:
         if VideoReader is None or cpu is None:
-            raise RuntimeError("MiniCPM-o video input requires decord==0.6.0")
+            raise RuntimeError(
+                "MiniCPM-o timed video input requires decord==0.6.0; "
+                "its prebuilt Linux wheel supports x86_64 only"
+            )
         else:
             video_reader = VideoReader(str(video_path), ctx=cpu(0))
         try:

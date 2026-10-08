@@ -406,6 +406,10 @@ class MiniCPMOPreprocessor:
         else:
             pass
         audio_cache_key = compute_audio_cache_key(audios)
+        if audio_cache_key is not None and audio_turn_indices is not None:
+            audio_cache_key = f"{audio_cache_key}|parts={audio_turn_indices}"
+        else:
+            pass
 
         cache_keys = [
             cache_key for cache_key in (image_cache_key, video_cache_key) if cache_key
