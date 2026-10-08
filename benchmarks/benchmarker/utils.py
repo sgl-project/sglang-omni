@@ -35,7 +35,7 @@ STREAM_SERVER_LOGS_ENV = "OMNI_CI_STREAM_SERVER_LOGS"
 
 @contextmanager
 def disable_proxy() -> Generator[None, None, None]:
-    """Temporarily disable proxy env vars for loopback requests."""
+    """Temporarily bypass proxies for loopback requests."""
     proxy_vars = (
         "HTTP_PROXY",
         "HTTPS_PROXY",
@@ -49,6 +49,8 @@ def disable_proxy() -> Generator[None, None, None]:
     saved_env = {k: os.environ[k] for k in proxy_vars if k in os.environ}
     for k in proxy_vars:
         os.environ.pop(k, None)
+    # note (PansaLegrand): Empty proxy variables still expose macOS system proxies.
+    os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
     try:
         yield
     finally:
