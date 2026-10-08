@@ -32,6 +32,7 @@ from sglang_omni.models.minicpm_o.talker_request import (
     build_talker_request,
 )
 from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
+from sglang_omni.models.minicpm_o.prompt_frontend import render_ordered_chat
 from sglang_omni.proto import OmniRequest, StagePayload
 
 # The generation suffix from MiniCPM-o-4_5's tokenizer template.
@@ -383,3 +384,93 @@ def test_speech_prefill_advances_by_chunk_in_its_own_cache_namespace() -> None:
     first.set_extend_range(0, 2)
     maybe_cache_unfinished_req(first, chunk_cache, chunked=True)
     assert first.prefix_indices.tolist() == [0, 1]
+
+
+def test_ordered_inline_media_preserves_turns_and_text_separators(
+    media_preprocessor: MiniCPMOPreprocessor,
+) -> None:
+    first_image = Image.new("RGB", (2, 2), "red")
+    second_image = Image.new("RGB", (2, 2), "blue")
+    messages = [
+        {"role": "user", "content": ["Before", first_image, "After"]},
+        {"role": "assistant", "content": "Remembered."},
+        {
+            "role": "user",
+            "content": [second_image, {"type": "text", "text": "Compare."}],
+        },
+    ]
+    payload = StagePayload(
+        request_id="inline-turns", request=OmniRequest(inputs=messages), data=None
+    )
+    result = asyncio.run(media_preprocessor(payload))
+    prompt = result.data["prompt"]["prompt_text"]
+    assert prompt.startswith(
+        f"<|im_start|>user\nBefore\n{IMAGE_PLACEHOLDER}\nAfter<|im_end|>\n"
+        "<|im_start|>assistant\nRemembered.<|im_end|>\n"
+        f"<|im_start|>user\n{IMAGE_PLACEHOLDER}\nCompare.<|im_end|>\n"
+    )
+    assert len(result.data["encoder_inputs"]["image_encoder"]["pixel_values"]) == 2
+
+
+def test_audio_content_retains_turn_grouping() -> None:
+    audio = np.zeros(1600, dtype=np.float32)
+    rendered = asyncio.run(
+        render_ordered_chat(
+            [
+                {"role": "user", "content": [audio, "Next", audio]},
+                {"role": "assistant", "content": "OK."},
+                {"role": "user", "content": ["Finally", audio]},
+            ]
+        )
+    )
+    assert rendered.audio_turn_indices == [0, 0, 2]
+    assert (
+        rendered.messages[0]["content"]
+        == f"{AUDIO_PLACEHOLDER}\nNext\n{AUDIO_PLACEHOLDER}"
+    )
+    assert rendered.messages[2]["content"] == f"Finally\n{AUDIO_PLACEHOLDER}"
+
+
+def test_text_parts_follow_chat_newline_separator(media_preprocessor) -> None:
+    prompt = media_preprocessor.render_chat_template(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "A"},
+                    {"type": "text", "text": "B"},
+                ],
+            }
+        ]
+    )
+    assert prompt.startswith("<|im_start|>user\nA\nB<|im_end|>\n")
+
+
+@pytest.mark.parametrize("top_level", ["images", "audios", "videos"])
+def test_inline_and_top_level_media_are_rejected(media_preprocessor, top_level) -> None:
+    payload = StagePayload(
+        request_id="mixed-media",
+        request=OmniRequest(
+            inputs={
+                "messages": [
+                    {"role": "user", "content": [Image.new("RGB", (2, 2)), "Describe."]}
+                ],
+                top_level: ["media"],
+            }
+        ),
+        data=None,
+    )
+    with pytest.raises(ValueError, match="Inline media cannot be combined"):
+        asyncio.run(media_preprocessor(payload))
+
+
+def test_unknown_inline_content_is_rejected(media_preprocessor) -> None:
+    payload = StagePayload(
+        request_id="unknown-part",
+        request=OmniRequest(
+            inputs=[{"role": "user", "content": [{"type": "unknown"}]}]
+        ),
+        data=None,
+    )
+    with pytest.raises(ValueError, match="Unsupported MiniCPM-o content type"):
+        asyncio.run(media_preprocessor(payload))

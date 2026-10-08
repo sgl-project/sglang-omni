@@ -21,6 +21,12 @@ from sglang_omni.models.minicpm_o.payload_types import (
     ModalityInputs,
     StreamState,
 )
+from sglang_omni.models.minicpm_o.prompt_frontend import (
+    AUDIO_PLACEHOLDER,
+    IMAGE_PLACEHOLDER,
+    has_inline_media,
+    render_ordered_chat,
+)
 from sglang_omni.models.minicpm_o.routing import should_generate_audio_output
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import (
@@ -53,9 +59,6 @@ TALKER_SPEECH_SAMPLING_FIELDS = (
     "top_k",
     "repetition_penalty",
 )
-
-IMAGE_PLACEHOLDER = "<image>./</image>"
-AUDIO_PLACEHOLDER = "<audio>./</audio>"
 
 # note (MayDomine): task prompts match the checkpoint's audio-understanding template.
 ASR_PROMPT_ZH = "请仔细听这段音频片段，并将其内容逐字记录。"
@@ -203,6 +206,8 @@ class MiniCPMOPreprocessor:
         use_audio_in_video = False
         video_params: dict[str, object] = {}
         media_placeholders_placed = False
+        audio_turn_indices: list[int] | None = None
+        has_inline_video = False
         if isinstance(inputs, dict) and inputs.get("audio_bytes") is not None:
             messages, raw_audios = self.speech_to_text_inputs(payload, inputs)
             media_placeholders_placed = True
@@ -240,6 +245,74 @@ class MiniCPMOPreprocessor:
         else:
             pass
 
+        if raw_videos and use_audio_in_video and not has_inline_media(messages):
+            if (
+                not isinstance(messages, list)
+                or not messages
+                or messages[-1].get("role") != "user"
+            ):
+                raise ValueError("Top-level video inputs require a final user message")
+            else:
+                image_contents = await ensure_image_list_async(raw_images)
+                audio_contents = await ensure_audio_list_async(
+                    raw_audios, target_sr=16000
+                )
+                video_sources = (
+                    raw_videos if isinstance(raw_videos, list) else [raw_videos]
+                )
+                if not all(isinstance(source, str) for source in video_sources):
+                    raise ValueError(
+                        "Video audio interleaving requires file or URL video sources"
+                    )
+                else:
+                    content = messages[-1].get("content", "")
+                    text_contents = content if isinstance(content, list) else [content]
+                    messages = [
+                        *messages[:-1],
+                        {
+                            **messages[-1],
+                            "content": [
+                                *image_contents,
+                                *audio_contents,
+                                *[
+                                    {
+                                        "type": "video_url",
+                                        "video_url": {"url": source, "use_audio": True},
+                                    }
+                                    for source in video_sources
+                                ],
+                                *text_contents,
+                            ],
+                        },
+                    ]
+                    raw_images = raw_audios = raw_videos = None
+        else:
+            pass
+
+        if has_inline_media(messages):
+            if raw_images or raw_audios or raw_videos:
+                raise ValueError(
+                    "Inline media cannot be combined with top-level images, audios or videos"
+                )
+            else:
+                rendered = await render_ordered_chat(
+                    messages,
+                    use_audio_in_video=use_audio_in_video,
+                    video_fps=video_params.get("video_fps"),
+                    video_max_frames=video_params.get("video_max_frames"),
+                    video_min_pixels=video_params.get("video_min_pixels"),
+                    video_max_pixels=video_params.get("video_max_pixels"),
+                    video_total_pixels=video_params.get("video_total_pixels"),
+                )
+                messages = rendered.messages
+                raw_images = rendered.images
+                raw_audios = rendered.audios
+                audio_turn_indices = rendered.audio_turn_indices
+                media_placeholders_placed = True
+                has_inline_video = rendered.has_video
+        else:
+            pass
+
         if raw_images or raw_audios or raw_videos:
             return await self.preprocess_multimodal(
                 payload,
@@ -250,6 +323,8 @@ class MiniCPMOPreprocessor:
                 use_audio_in_video=use_audio_in_video,
                 video_params=video_params,
                 media_placeholders_placed=media_placeholders_placed,
+                audio_turn_indices=audio_turn_indices,
+                has_inline_video=has_inline_video,
             )
         else:
             pass
@@ -342,11 +417,19 @@ class MiniCPMOPreprocessor:
                 pass
             content = message.get("content", "")
             if isinstance(content, list):
-                content = "".join(
-                    str(part.get("text", ""))
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
+                pieces = []
+                for part in content:
+                    if isinstance(part, str):
+                        pieces.append(part)
+                    elif (
+                        isinstance(part, dict)
+                        and part.get("type") == "text"
+                        and isinstance(part.get("text"), str)
+                    ):
+                        pieces.append(part["text"])
+                    else:
+                        raise ValueError("Unsupported MiniCPM-o text content part")
+                content = "\n".join(pieces)
             else:
                 pass
             normalized.append({**message, "content": content})
@@ -385,6 +468,8 @@ class MiniCPMOPreprocessor:
         use_audio_in_video: bool,
         video_params: Mapping[str, object],
         media_placeholders_placed: bool,
+        audio_turn_indices: list[int] | None = None,
+        has_inline_video: bool = False,
     ) -> StagePayload:
         video_kwargs = {
             key.removeprefix("video_"): value for key, value in video_params.items()
@@ -432,12 +517,19 @@ class MiniCPMOPreprocessor:
 
         # Match the checkpoint's video recipe; the policy covers mixed images too.
         video_options = (
-            {"max_slice_nums": 1, "use_image_id": False} if raw_videos else {}
+            {"max_slice_nums": 1, "use_image_id": False}
+            if raw_videos or has_inline_video
+            else {}
         )
         processed = self.processor(
             prompt_text,
             images=[images] if images else None,
             audios=[audios] if audios else None,
+            **(
+                {"audio_parts": [audio_turn_indices]}
+                if audio_turn_indices is not None
+                else {}
+            ),
             return_tensors="pt",
             **video_options,
         )

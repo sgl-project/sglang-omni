@@ -14,6 +14,8 @@ from transformers import AutoProcessor, ProcessorMixin
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
 from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
+from sglang_omni.models.minicpm_o.prompt_frontend import render_ordered_chat
+from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -48,11 +50,14 @@ class FakeProcessor:
 
 
 async def empty_images(images):
-    return []
+    return images if images and isinstance(images[0], Image.Image) else []
 
 
 async def explicit_audios(_audios, *, target_sr):
-    return [np.array([0.25, 0.5], dtype=np.float32)] if _audios else []
+    if _audios and isinstance(_audios[0], np.ndarray):
+        return _audios
+    else:
+        return [np.array([0.25, 0.5], dtype=np.float32)] if _audios else []
 
 
 @pytest.mark.parametrize("use_audio_in_video", [None, False, True])
@@ -95,6 +100,27 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
     monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", empty_images)
     monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", explicit_audios)
     monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", videos)
+
+    async def timed_video(source, **options):
+        captured_video_kwargs.update(
+            fps=options["fps"],
+            max_frames=options["max_frames"],
+            min_pixels=options["min_pixels"],
+            max_pixels=options["max_pixels"],
+            total_pixels=options["total_pixels"],
+            extract_audio=options["use_audio"],
+            audio_target_sr=16000,
+        )
+        return TimedVideo(
+            frames=[Image.new("RGB", (2, 2)) for _ in range(2)],
+            audio_segments=[np.array([1.0, 2.0], dtype=np.float32)] * 2,
+            timestamps_seconds=[0, 1],
+            duration_seconds=2,
+        )
+
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.prompt_frontend.load_timed_video", timed_video
+    )
     monkeypatch.setattr(
         preprocessor_mod,
         "compute_video_cache_key",
@@ -131,8 +157,11 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
         "audio_target_sr": 16000,
     }
     assert len(fake_processor.images[0]) == 2
-    assert fake_processor.options == {"max_slice_nums": 1, "use_image_id": False}
-    expected_audio_count = int(explicit_audio) + int(bool(use_audio_in_video))
+    expected_options = {"max_slice_nums": 1, "use_image_id": False}
+    expected_audio_count = int(explicit_audio) + 2 * int(bool(use_audio_in_video))
+    if use_audio_in_video:
+        expected_options["audio_parts"] = [[0] * expected_audio_count]
+    assert fake_processor.options == expected_options
     if expected_audio_count:
         assert len(fake_processor.audios[0]) == expected_audio_count
         if explicit_audio:
@@ -386,3 +415,83 @@ def test_cpu_processor_preserves_reference(
     )
     reference_process_image = checkpoint_processor.process_image
     assert preprocessor.processor.process_image == reference_process_image
+
+
+def test_inline_video_interleaves_audio_and_keeps_surrounding_text(monkeypatch) -> None:
+    frames = [Image.new("RGB", (2, 2), "red"), Image.new("RGB", (2, 2), "blue")]
+    segments = [np.zeros(16000, dtype=np.float32), np.ones(16000, dtype=np.float32)]
+
+    async def load_video(source, **options):
+        assert source == "clip.mp4"
+        return TimedVideo(
+            frames=frames,
+            audio_segments=segments,
+            timestamps_seconds=[0, 1],
+            duration_seconds=2,
+        )
+
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.prompt_frontend.load_timed_video", load_video
+    )
+    rendered = asyncio.run(
+        render_ordered_chat(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        "Before\n",
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": "clip.mp4", "use_audio": True},
+                        },
+                        "After",
+                    ],
+                },
+            ]
+        )
+    )
+    assert (
+        rendered.messages[0]["content"]
+        == "Before\n<image>./</image><audio>./</audio><image>./</image><audio>./</audio>After"
+    )
+    assert rendered.audio_turn_indices == [0, 0]
+    assert rendered.omni_mode
+    assert rendered.has_video
+    assert rendered.images == frames
+    for actual, expected in zip(rendered.audios, segments):
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_video_decoder_preserves_audio_timeline(tmp_path, monkeypatch) -> None:
+    from fractions import Fraction
+
+    import av
+
+    video_path = tmp_path / "timeline.mp4"
+    with av.open(str(video_path), "w") as container:
+        stream = container.add_stream("libx264", rate=10)
+        stream.width = 64
+        stream.height = 64
+        stream.pix_fmt = "yuv420p"
+        for index in range(23):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((64, 64, 3), index, dtype=np.uint8), format="rgb24"
+            )
+            frame.pts = index
+            frame.time_base = Fraction(1, 10)
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    waveform = np.arange(36800, dtype=np.float32)
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.video_frontend.librosa.load",
+        lambda path, sr, mono: (waveform, sr),
+    )
+    video = MiniCPMVideoIO(use_audio=True).load_file(video_path)
+    assert video.timestamps_seconds == [0, 1, 2]
+    assert [len(segment) for segment in video.audio_segments] == [16000, 16000, 4800]
+    for index, segment in enumerate(video.audio_segments):
+        np.testing.assert_array_equal(
+            segment, waveform[index * 16000 : (index + 1) * 16000]
+        )
