@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import wave
 from types import SimpleNamespace
+from typing import Literal, TypedDict
 
 import numpy as np
 import numpy.typing as npt
@@ -32,7 +34,6 @@ from sglang_omni.models.minicpm_o.talker_request import (
     build_talker_request,
 )
 from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
-from sglang_omni.models.minicpm_o.prompt_frontend import render_ordered_chat
 from sglang_omni.proto import OmniRequest, StagePayload
 
 # The generation suffix from MiniCPM-o-4_5's tokenizer template.
@@ -100,16 +101,34 @@ CHAT_TEMPLATE = (
 )
 
 
-class FakeProcessor:
+class ProcessorOutput(TypedDict):
+    input_ids: torch.Tensor
+    image_bound: list[list[torch.Tensor]]
+    pixel_values: list[list[torch.Tensor]]
+    tgt_sizes: list[list[torch.Tensor]]
+    audio_bounds: list[list[torch.Tensor]]
+    audio_feature_lens: list[list[torch.Tensor]]
+    audio_features: list[torch.Tensor]
+
+
+class RecordingProcessor:
+    def __init__(self) -> None:
+        self.images: list[list[Image.Image]] | None = None
+        self.audios: list[list[npt.NDArray[np.float32]]] | None = None
+        self.audio_parts: list[list[int]] | None = None
+
     def __call__(
         self,
         prompt_text: str,
         *,
         images: list[list[Image.Image]] | None,
         audios: list[list[npt.NDArray[np.float32]]] | None,
-        return_tensors: str,
-        **options: object,
-    ) -> dict[str, object]:
+        return_tensors: Literal["pt"],
+        audio_parts: list[list[int]] | None = None,
+    ) -> ProcessorOutput:
+        self.images = images
+        self.audios = audios
+        self.audio_parts = audio_parts
         image_count = len(images[0]) if images else 0
         return {
             "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
@@ -127,16 +146,30 @@ async def images_as_given(raw_images: list[Image.Image] | None) -> list[Image.Im
 
 
 async def silent_audios(
-    raw_audios: list[object] | None, *, target_sr: int
+    raw_audios: list[str | npt.NDArray[np.float32]] | None, *, target_sr: int
 ) -> list[npt.NDArray[np.float32]]:
-    return [np.zeros(target_sr // 10, dtype=np.float32) for _ in raw_audios or []]
+    return [
+        (
+            waveform
+            if isinstance(waveform, np.ndarray)
+            else np.zeros(target_sr // 10, dtype=np.float32)
+        )
+        for waveform in raw_audios or []
+    ]
 
 
 @pytest.fixture
-def media_preprocessor(monkeypatch: pytest.MonkeyPatch) -> MiniCPMOPreprocessor:
+def recording_processor() -> RecordingProcessor:
+    return RecordingProcessor()
+
+
+@pytest.fixture
+def media_preprocessor(
+    monkeypatch: pytest.MonkeyPatch, recording_processor: RecordingProcessor
+) -> MiniCPMOPreprocessor:
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor._processor = (
-        FakeProcessor()  # noqa: leading-underscore  # production name
+        recording_processor  # noqa: leading-underscore  # production name
     )
     preprocessor.speech_enabled = False
     preprocessor.tokenizer = PreTrainedTokenizerBase(chat_template=CHAT_TEMPLATE)
@@ -388,6 +421,7 @@ def test_speech_prefill_advances_by_chunk_in_its_own_cache_namespace() -> None:
 
 def test_ordered_inline_media_preserves_turns_and_text_separators(
     media_preprocessor: MiniCPMOPreprocessor,
+    recording_processor: RecordingProcessor,
 ) -> None:
     first_image = Image.new("RGB", (2, 2), "red")
     second_image = Image.new("RGB", (2, 2), "blue")
@@ -403,36 +437,52 @@ def test_ordered_inline_media_preserves_turns_and_text_separators(
         request_id="inline-turns", request=OmniRequest(inputs=messages), data=None
     )
     result = asyncio.run(media_preprocessor(payload))
-    prompt = result.data["prompt"]["prompt_text"]
-    assert prompt.startswith(
+    prompt_text = result.data["prompt"]["prompt_text"]
+    assert prompt_text.startswith(
         f"<|im_start|>user\nBefore\n{IMAGE_PLACEHOLDER}\nAfter<|im_end|>\n"
         "<|im_start|>assistant\nRemembered.<|im_end|>\n"
         f"<|im_start|>user\n{IMAGE_PLACEHOLDER}\nCompare.<|im_end|>\n"
     )
-    assert len(result.data["encoder_inputs"]["image_encoder"]["pixel_values"]) == 2
+    assert recording_processor.images == [[first_image, second_image]]
 
 
-def test_audio_content_retains_turn_grouping() -> None:
-    audio = np.zeros(1600, dtype=np.float32)
-    rendered = asyncio.run(
-        render_ordered_chat(
-            [
-                {"role": "user", "content": [audio, "Next", audio]},
+def test_audio_content_reaches_processor_in_turn_order(
+    media_preprocessor: MiniCPMOPreprocessor,
+    recording_processor: RecordingProcessor,
+) -> None:
+    first_waveform = np.zeros(1600, dtype=np.float32)
+    second_waveform = np.ones(1600, dtype=np.float32)
+    third_waveform = np.full(1600, 0.5, dtype=np.float32)
+    request_payload = StagePayload(
+        request_id="audio-turns",
+        request=OmniRequest(
+            inputs=[
+                {"role": "user", "content": [first_waveform, "Next", second_waveform]},
                 {"role": "assistant", "content": "OK."},
-                {"role": "user", "content": ["Finally", audio]},
+                {"role": "user", "content": ["Finally", third_waveform]},
             ]
-        )
+        ),
+        data=None,
     )
-    assert rendered.audio_turn_indices == [0, 0, 2]
-    assert (
-        rendered.messages[0]["content"]
-        == f"{AUDIO_PLACEHOLDER}\nNext\n{AUDIO_PLACEHOLDER}"
+    result = asyncio.run(media_preprocessor(request_payload))
+    assert result.data["prompt"]["prompt_text"].startswith(
+        f"<|im_start|>user\n{AUDIO_PLACEHOLDER}\nNext\n{AUDIO_PLACEHOLDER}<|im_end|>\n"
+        "<|im_start|>assistant\nOK.<|im_end|>\n"
+        f"<|im_start|>user\nFinally\n{AUDIO_PLACEHOLDER}<|im_end|>\n"
     )
-    assert rendered.messages[2]["content"] == f"Finally\n{AUDIO_PLACEHOLDER}"
+    assert recording_processor.audio_parts == [[0, 0, 2]]
+    for actual_waveform, expected_waveform in zip(
+        recording_processor.audios[0],
+        [first_waveform, second_waveform, third_waveform],
+        strict=True,
+    ):
+        np.testing.assert_array_equal(actual_waveform, expected_waveform)
 
 
-def test_text_parts_follow_chat_newline_separator(media_preprocessor) -> None:
-    prompt = media_preprocessor.render_chat_template(
+def test_text_parts_follow_chat_newline_separator(
+    media_preprocessor: MiniCPMOPreprocessor,
+) -> None:
+    prompt_text = media_preprocessor.render_chat_template(
         [
             {
                 "role": "user",
@@ -443,11 +493,15 @@ def test_text_parts_follow_chat_newline_separator(media_preprocessor) -> None:
             }
         ]
     )
-    assert prompt.startswith("<|im_start|>user\nA\nB<|im_end|>\n")
+    assert prompt_text.startswith("<|im_start|>user\nA\nB<|im_end|>\n")
 
 
-@pytest.mark.parametrize("top_level", ["images", "audios", "videos"])
-def test_inline_and_top_level_media_are_rejected(media_preprocessor, top_level) -> None:
+@pytest.mark.parametrize(
+    "top_level_media_name", ["images", "audios", "audio", "videos", "video"]
+)
+def test_inline_and_top_level_media_are_rejected(
+    media_preprocessor: MiniCPMOPreprocessor, top_level_media_name: str
+) -> None:
     payload = StagePayload(
         request_id="mixed-media",
         request=OmniRequest(
@@ -455,7 +509,7 @@ def test_inline_and_top_level_media_are_rejected(media_preprocessor, top_level) 
                 "messages": [
                     {"role": "user", "content": [Image.new("RGB", (2, 2)), "Describe."]}
                 ],
-                top_level: ["media"],
+                top_level_media_name: ["media"],
             }
         ),
         data=None,
@@ -464,7 +518,9 @@ def test_inline_and_top_level_media_are_rejected(media_preprocessor, top_level) 
         asyncio.run(media_preprocessor(payload))
 
 
-def test_unknown_inline_content_is_rejected(media_preprocessor) -> None:
+def test_unknown_inline_content_is_rejected(
+    media_preprocessor: MiniCPMOPreprocessor,
+) -> None:
     payload = StagePayload(
         request_id="unknown-part",
         request=OmniRequest(
@@ -474,3 +530,56 @@ def test_unknown_inline_content_is_rejected(media_preprocessor) -> None:
     )
     with pytest.raises(ValueError, match="Unsupported MiniCPM-o content type"):
         asyncio.run(media_preprocessor(payload))
+
+
+@pytest.mark.parametrize("audio_part_type", ["audio_url", "input_audio"])
+def test_openai_inline_media_decode_in_original_order(
+    media_preprocessor: MiniCPMOPreprocessor,
+    recording_processor: RecordingProcessor,
+    audio_part_type: Literal["audio_url", "input_audio"],
+) -> None:
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(image_buffer, format="PNG")
+    image_url = "data:image/png;base64," + base64.b64encode(
+        image_buffer.getvalue()
+    ).decode("ascii")
+    audio_buffer = io.BytesIO()
+    with wave.open(audio_buffer, "wb") as audio_file:
+        audio_file.setnchannels(1)
+        audio_file.setsampwidth(2)
+        audio_file.setframerate(16000)
+        audio_file.writeframes(np.full(1600, 8192, dtype="<i2").tobytes())
+    encoded_audio = base64.b64encode(audio_buffer.getvalue()).decode("ascii")
+    audio_source = (
+        {"url": "data:audio/wav;base64," + encoded_audio}
+        if audio_part_type == "audio_url"
+        else {"data": encoded_audio, "format": "wav"}
+    )
+    request_payload = StagePayload(
+        request_id="openai-media",
+        request=OmniRequest(
+            inputs=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Before"},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                        {"type": "text", "text": "Between"},
+                        {"type": audio_part_type, audio_part_type: audio_source},
+                        {"type": "text", "text": "After"},
+                    ],
+                }
+            ]
+        ),
+        data=None,
+    )
+    result = asyncio.run(media_preprocessor(request_payload))
+    assert result.data["prompt"]["prompt_text"].startswith(
+        f"<|im_start|>user\nBefore\n{IMAGE_PLACEHOLDER}\nBetween\n{AUDIO_PLACEHOLDER}\nAfter<|im_end|>\n"
+    )
+    np.testing.assert_array_equal(
+        np.asarray(recording_processor.images[0][0]),
+        np.full((4, 4, 3), [255, 0, 0], dtype=np.uint8),
+    )
+    np.testing.assert_allclose(recording_processor.audios[0][0], 0.25)
+    assert recording_processor.audio_parts == [[0]]
