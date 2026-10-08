@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import aiohttp
@@ -12,6 +15,9 @@ from aiohttp import web
 import benchmarks.benchmarker.runner as runner_module
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
+from benchmarks.benchmarker.utils import save_json_results
+from benchmarks.metrics.performance import compute_speed_metrics
+from sglang_omni.utils.json import JsonValue
 
 
 @pytest.mark.asyncio
@@ -300,3 +306,75 @@ def test_run_config_preserves_positional_arrival_seed() -> None:
     config = RunConfig(4, 2.0, 0, True, 60, 42)
     assert config.arrival_seed == 42
     assert config.trust_env is False
+
+
+def reject_nonfinite_json_constant(token: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {token}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_rate", [float("inf"), 200.0])
+async def test_benchmark_results_are_strict_json(
+    tmp_path: Path, request_rate: float
+) -> None:
+    async def send(session: aiohttp.ClientSession, sample_id: str) -> RequestResult:
+        assert isinstance(session, aiohttp.ClientSession)
+        return RequestResult(
+            request_id=sample_id, is_success=True, latency_s=0.25, completion_tokens=4
+        )
+
+    config = RunConfig(request_rate=request_rate, warmup=0, disable_tqdm=True)
+    runner = BenchmarkRunner(config)
+    outputs = await runner.run(["one", "two"], send)
+    speed = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
+    results = {
+        "config": asdict(config),
+        "speed": speed,
+        "per_request": [asdict(output) for output in outputs],
+    }
+    path = save_json_results(results, str(tmp_path), "results.json")
+    saved = json.loads(
+        Path(path).read_text(), parse_constant=reject_nonfinite_json_constant
+    )
+    assert saved["config"]["request_rate"] == (
+        "inf" if request_rate == float("inf") else request_rate
+    )
+    assert saved["speed"] == speed
+    assert len(saved["per_request"]) == 2
+    assert results["config"]["request_rate"] == request_rate
+
+
+def test_nested_sweep_results_are_strict_json(tmp_path: Path) -> None:
+    run = {"config": {"request_rate": float("inf")}, "speed": {"throughput_qps": 2.5}}
+    results = {"runs": [{"repeats": [run]}], "combined": {"generate": run}}
+    path = save_json_results(results, str(tmp_path), "sweep.json")
+    saved = json.loads(
+        Path(path).read_text(), parse_constant=reject_nonfinite_json_constant
+    )
+    expected = {"config": {"request_rate": "inf"}, "speed": {"throughput_qps": 2.5}}
+    assert saved == {
+        "runs": [{"repeats": [expected]}],
+        "combined": {"generate": expected},
+    }
+    assert run["config"]["request_rate"] == float("inf")
+
+
+@pytest.mark.parametrize(
+    "invalid_result",
+    [
+        {"speed": {"latency_mean_s": float("nan")}},
+        {"speed": {"latency_mean_s": float("inf")}},
+        {"speed": {"latency_mean_s": float("-inf")}},
+        {"config": {"request_rate": float("nan")}},
+        {"config": {"request_rate": float("-inf")}},
+    ],
+)
+def test_invalid_benchmark_results_preserve_existing_artifact(
+    tmp_path: Path, invalid_result: dict[str, JsonValue]
+) -> None:
+    path = tmp_path / "results.json"
+    previous_results = '{"speed": {"completed_requests": 3}}\n'
+    path.write_text(previous_results)
+    with pytest.raises(ValueError, match="Out of range float values"):
+        save_json_results({"runs": [invalid_result]}, str(tmp_path), path.name)
+    assert path.read_text() == previous_results

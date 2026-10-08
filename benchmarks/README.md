@@ -240,6 +240,10 @@ warmup and every measured repeat, and records talker sampling knobs.
 `--seed` so rollouts differ but stay reproducible. The realtime ASR client
 base64-encodes packets before the first-send timestamp.
 
+Artifacts written by the shared JSON result writer record an unlimited
+`request_rate` as the string `"inf"`; finite rates remain numbers. Other
+non-finite numeric values are rejected before replacing an existing result file.
+
 `benchmark_omni_seedtts.py` documents local vs CI GPU usage in its module
 docstring (sequential phases on CI to reduce OOM risk).
 
