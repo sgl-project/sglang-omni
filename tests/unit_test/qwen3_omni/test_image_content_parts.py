@@ -1,17 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Image content parts must retain their place in the chat template."""
+"""Chat content parts must retain their place in the chat template."""
 
 import asyncio
 from copy import deepcopy
 from unittest.mock import AsyncMock, Mock
 
+import numpy as np
 import pytest
 import torch
 
 from sglang_omni.client.client import extract_inputs
 from sglang_omni.client.types import GenerateRequest, Message
 from sglang_omni.models.qwen3_omni.components import preprocessor as preprocessor_mod
-from sglang_omni.preprocessing import normalize_messages
+from sglang_omni.preprocessing.chat_content import split_content_parts
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -102,60 +103,119 @@ def test_image_parts_reach_processor_in_conversation_order(monkeypatch, top_leve
     assert messages == original
 
 
-@pytest.mark.parametrize(
-    "url",
-    ["/tmp/image.png", "https://example.com/image.png", "data:image/png;base64,YQ=="],
-)
-def test_extracts_image_url_forms(url):
-    messages = [{"role": "user", "content": [image_part(url)]}]
-    normalized, images = preprocessor_mod.extract_image_content_parts(messages)
-    assert normalized == [{"role": "user", "content": [{"type": "image"}]}]
-    assert images == [url]
+class ProcessorCalled(Exception):
+    pass
 
 
-@pytest.mark.parametrize("unknown", [{"type": "model_private", "value": "keep"}, 7])
-@pytest.mark.parametrize("unknown_first", [False, True])
-def test_unknown_parts_retain_legacy_handling_atomically(unknown, unknown_first):
-    parts = (
-        [unknown, image_part("one.png")]
-        if unknown_first
-        else [image_part("one.png"), unknown]
+def bare_preprocessor(processor: Mock) -> preprocessor_mod.Qwen3OmniPreprocessor:
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    pre.processor = processor
+    pre.max_seq_len = None
+    for field in (
+        "default_video_fps",
+        "default_video_max_frames",
+        "default_video_min_pixels",
+        "default_video_max_pixels",
+        "default_video_total_pixels",
+    ):
+        setattr(pre, field, None)
+    return pre
+
+
+def test_audio_and_video_parts_reach_processor_in_placeholder_order(monkeypatch):
+    """With use_audio_in_video each video's audio is read where its placeholder stands."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio_url", "audio_url": {"url": "question.wav"}},
+                {"type": "video_url", "video_url": {"url": "clip.mp4"}},
+                {"type": "text", "text": "Answer the question about the clip."},
+            ],
+        }
+    ]
+    question, clip_track, top_level = (
+        np.full(4, value, dtype=np.float32) for value in (1.0, 2.0, 3.0)
     )
-    messages = [{"role": "user", "content": parts}]
-    normalized, images = preprocessor_mod.extract_image_content_parts(messages)
-    assert normalized == normalize_messages(messages)
-    assert images == []
+    video_loader = AsyncMock(return_value=(["clip frames"], None, [clip_track]))
+    audio_loader = AsyncMock(return_value=[question, top_level])
+    monkeypatch.setattr(
+        preprocessor_mod, "ensure_image_list_async", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", video_loader)
+    monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", audio_loader)
+    for name in (
+        "compute_audio_cache_key",
+        "compute_image_cache_key",
+        "compute_video_cache_key",
+    ):
+        monkeypatch.setattr(preprocessor_mod, name, lambda media: None)
+    processor = Mock(side_effect=ProcessorCalled)
+    processor.apply_chat_template.return_value = "chat prompt"
+    payload = StagePayload(
+        request_id="audio-video-parts",
+        request=OmniRequest(
+            inputs={
+                "messages": messages,
+                "audios": ["top.wav"],
+                "use_audio_in_video": True,
+            },
+            params={"max_new_tokens": 2},
+        ),
+        data={},
+    )
+
+    with pytest.raises(ProcessorCalled):
+        asyncio.run(bare_preprocessor(processor).call_impl(payload))
+
+    assert video_loader.await_args.args == (["clip.mp4"],)
+    assert audio_loader.await_args.args == (["question.wav", "top.wav"],)
+    assert processor.apply_chat_template.call_args.args[0] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio"},
+                {"type": "video"},
+                {"type": "text", "text": "Answer the question about the clip."},
+                {"type": "audio"},
+            ],
+        }
+    ]
+    assert [audio[0] for audio in processor.call_args.kwargs["audio"]] == [
+        1.0,
+        2.0,
+        3.0,
+    ]
 
 
-@pytest.mark.parametrize(
-    "part, error",
-    [
-        ({"type": "image_url"}, "image_url.*non-empty url"),
-        ({"type": "image_url", "image_url": {}}, "image_url.*non-empty url"),
-        (image_part(""), "image_url.*non-empty url"),
-        (image_part(None), "image_url.*non-empty url"),
-        (image_part(3), "image_url.*non-empty url"),
-        ({"type": "text"}, "text.*string"),
-        ({"type": "text", "text": 3}, "text.*string"),
-    ],
-)
-@pytest.mark.parametrize("unknown_first", [False, True])
-def test_malformed_known_parts_are_rejected_regardless_of_order(
-    part, error, unknown_first
-):
-    parts = [{"type": "private"}, part] if unknown_first else [part]
-    with pytest.raises(ValueError, match=error):
-        preprocessor_mod.extract_image_content_parts(
-            [{"role": "user", "content": parts}]
-        )
+def test_unknown_parts_are_rejected_before_any_media_loads(monkeypatch):
+    loader = AsyncMock(return_value=[])
+    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", loader)
+    payload = StagePayload(
+        request_id="unknown-part",
+        request=OmniRequest(
+            inputs=[
+                {
+                    "role": "user",
+                    "content": [image_part("one.png"), {"type": "model_private"}],
+                }
+            ],
+            params={},
+        ),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="Unsupported chat content part type"):
+        asyncio.run(bare_preprocessor(Mock()).call_impl(payload))
+    loader.assert_not_awaited()
 
 
 def test_existing_top_level_media_precedes_plain_text():
     pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
-    messages, images = preprocessor_mod.extract_image_content_parts(
+    messages, media = split_content_parts(
         [{"role": "user", "content": "Describe the media."}]
     )
-    assert images == []
+    assert media.images == []
     assert pre.build_multimodal_messages(
         messages, num_images=1, num_audios=1, num_videos=1
     ) == [

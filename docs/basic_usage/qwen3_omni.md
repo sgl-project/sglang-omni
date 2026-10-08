@@ -76,8 +76,9 @@ result = resp.json()
 print(result["choices"][0]["message"]["content"])
 ```
 
-Images may also use the OpenAI multi-content form. The `url` can be an HTTP(S)
-URL, a data URL, or a local path visible to the server:
+Messages may also use OpenAI content parts: `text`, `image_url`, `video_url`,
+`audio_url`, and `input_audio` (base64 `wav` or `mp3`). A `url` can be an
+HTTP(S) URL, a data URL, or a local path visible to the server:
 
 ```json
 {
@@ -89,10 +90,11 @@ URL, a data URL, or a local path visible to the server:
 }
 ```
 
-Inline images retain their message and content order across conversation turns.
-When combined with the top-level `images` field, top-level images follow inline
-images in the final user message. The optional `detail` field does not override
-the model's image preprocessing settings.
+Media parts keep their message and their place in it across conversation turns.
+With the top-level `images`, `videos`, or `audios` fields as well, the top-level
+media follow the parts of the final user message. Any other part type is
+rejected with a 400. The optional `detail` field does not override the model's
+image preprocessing settings.
 
 ### Audio and Image Input
 

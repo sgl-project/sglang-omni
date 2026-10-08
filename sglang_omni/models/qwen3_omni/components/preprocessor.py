@@ -41,6 +41,7 @@ from sglang_omni.preprocessing import (
     ensure_video_list_async,
     normalize_messages,
 )
+from sglang_omni.preprocessing.chat_content import ContentMedia, split_content_parts
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     ResourceHTTPConnection,
@@ -146,59 +147,16 @@ def merge_extracted_video_audio(
     return [*extracted_audios, *explicit], True
 
 
-def extract_image_content_parts(
-    messages: object,
-) -> tuple[list[Mapping[str, object]], list[str]]:
-    """Keep chat image placeholders in their originating message and order."""
-    if not isinstance(messages, list):
-        return normalize_messages(messages), []
+def with_content_media(content_urls: list[str], top_level: object) -> object:
+    """Content-part media first, then the top-level field's: their placeholder order."""
+    if not content_urls:
+        return top_level
+    elif isinstance(top_level, list):
+        return [*content_urls, *top_level]
+    elif top_level is not None:
+        return [*content_urls, top_level]
     else:
-        pass
-    normalized: list[Mapping[str, object]] = []
-    images: list[str] = []
-    for message in messages:
-        if isinstance(message, dict) and isinstance(message.get("content"), list):
-            parts: list[MediaPlaceholderPart | TextContentPart] = []
-            message_images: list[str] = []
-            supported = True
-            for part in message["content"]:
-                if not isinstance(part, dict):
-                    supported = False
-                elif part.get("type") == "text":
-                    text = part.get("text")
-                    if not isinstance(text, str):
-                        raise ValueError(
-                            "text content part requires a string text field"
-                        )
-                    else:
-                        pass
-                    parts.append({"type": "text", "text": text})
-                elif part.get("type") == "image_url":
-                    url = part.get("image_url")
-                    if isinstance(url, dict):
-                        url = url.get("url")
-                    else:
-                        pass
-                    if not isinstance(url, str) or not url:
-                        raise ValueError(
-                            "image_url content part requires a non-empty url"
-                        )
-                    else:
-                        pass
-                    parts.append({"type": "image"})
-                    message_images.append(url)
-                else:
-                    supported = False
-            if supported:
-                normalized.append(
-                    {"role": message.get("role", "user"), "content": parts}
-                )
-                images.extend(message_images)
-            else:
-                normalized.extend(normalize_messages([message]))
-        else:
-            normalized.extend(normalize_messages([message]))
-    return normalized, images
+        return list(content_urls)
 
 
 # Special-token attributes the HF Qwen3OmniMoeProcessor reads off the tokenizer.
@@ -487,8 +445,7 @@ class Qwen3OmniPreprocessor:
                 for _ in range(num_audios):
                     content_parts.append({"type": "audio"})
                 if isinstance(content, list):
-                    # Inline images have already been extracted in conversation
-                    # order; top-level media follows them in the processor input.
+                    # Content-part media stay where they stood; top-level media follow.
                     content_parts = [*content, *content_parts]
                 else:
                     content_parts.append({"type": "text", "text": content})
@@ -672,7 +629,7 @@ class Qwen3OmniPreprocessor:
             inputs = {"messages": inputs}
         else:
             pass
-        content_images: list[str] = []
+        content_media = ContentMedia()
         if isinstance(inputs, dict):
             multimodal_train_inputs = inputs.get("multimodal_train_inputs")
             if multimodal_train_inputs is not None:
@@ -683,20 +640,8 @@ class Qwen3OmniPreprocessor:
                 )
             else:
                 pass
-            messages, content_images = extract_image_content_parts(
-                inputs.get("messages", [])
-            )
+            messages, content_media = split_content_parts(inputs.get("messages", []))
             raw_images = inputs.get("images")
-            if content_images:
-                if isinstance(raw_images, list):
-                    top_level_images = raw_images
-                elif raw_images is not None:
-                    top_level_images = [raw_images]
-                else:
-                    top_level_images = []
-                raw_images = [*content_images, *top_level_images]
-            else:
-                pass
             raw_videos = inputs.get("videos")
             if raw_videos is None:
                 raw_videos = inputs.get("video")
@@ -762,10 +707,14 @@ class Qwen3OmniPreprocessor:
             else:
                 pass
 
+            request_images = with_content_media(content_media.images, raw_images)
+            request_videos = with_content_media(content_media.videos, raw_videos)
+            request_audios = with_content_media(content_media.audios, raw_audios)
+
             # Use async versions for concurrent loading
             # If we need audio from video, extract it during video loading to avoid duplicate downloads
             extract_audio_from_video_flag = bool(
-                use_audio_in_video and raw_videos is not None
+                use_audio_in_video and request_videos is not None
             )
 
             # Worker requests run on separate event loops. Keep pooled HTTP
@@ -773,9 +722,9 @@ class Qwen3OmniPreprocessor:
             connection = ResourceHTTPConnection()
             connector = MultiModalResourceConnector(connection=connection)
             loaders = [
-                ensure_image_list_async(raw_images, media_connector=connector),
+                ensure_image_list_async(request_images, media_connector=connector),
                 ensure_video_list_async(
-                    raw_videos,
+                    request_videos,
                     fps=resolved_video_fps,
                     max_frames=resolved_video_max_frames,
                     min_pixels=resolved_video_min_pixels,
@@ -786,7 +735,9 @@ class Qwen3OmniPreprocessor:
                     resource_connector=connector,
                 ),
                 ensure_audio_list_async(
-                    raw_audios, target_sr=audio_target_sr, resource_connector=connector
+                    request_audios,
+                    target_sr=audio_target_sr,
+                    resource_connector=connector,
                 ),
             ]
             tasks = [asyncio.create_task(loader) for loader in loaders]
@@ -843,6 +794,34 @@ class Qwen3OmniPreprocessor:
             resolved_video_seconds_per_chunk = None
             resolved_video_position_id_per_seconds = None
 
+        # Insert placeholders:
+        # - Explicit audio files get independent audio placeholders
+        # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
+        messages_mm = self.build_multimodal_messages(
+            messages,
+            num_images=len(images) - len(content_media.images),
+            num_audios=num_explicit_audios,
+            num_videos=len(videos) - len(content_media.videos),
+        )
+        if audio_from_video and (content_media.audios or content_media.videos):
+            # note (ratish): the processor reads one audio per audio placeholder and per video
+            # placeholder in text order; only content parts can put an audio before a video.
+            video_audios = iter(audios[: len(videos)])
+            placeholder_audios = iter(audios[len(videos) :])
+            audios = [
+                (
+                    next(video_audios)
+                    if part["type"] == "video"
+                    else next(placeholder_audios)
+                )
+                for message in messages_mm
+                if isinstance(message["content"], list)
+                for part in message["content"]
+                if part["type"] in ("audio", "video")
+            ]
+        else:
+            pass
+
         # Note (wenyao): URLs can change content and sampled hashes can miss edits,
         # so audio cache keys include every decoded sample, including video tracks.
         audio_cache_key = compute_audio_cache_key(audios)
@@ -850,16 +829,6 @@ class Qwen3OmniPreprocessor:
         image_cache_key = compute_image_cache_key(images)
         video_cache_key = compute_video_cache_key(videos)
 
-        # Insert placeholders:
-        # - Explicit audio files get independent audio placeholders
-        # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
-        num_audios_for_placeholder = num_explicit_audios
-        messages_mm = self.build_multimodal_messages(
-            messages,
-            num_images=len(images) - len(content_images),
-            num_audios=num_audios_for_placeholder,
-            num_videos=len(videos),
-        )
         prompt_text = self.processor.apply_chat_template(
             messages_mm,
             add_generation_prompt=True,
