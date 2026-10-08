@@ -424,8 +424,8 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 The result JSON includes the applied dataset revision, declared model revision,
 an effective evaluation-input content hash, normalization, repository and
 dependency fingerprints, complete sample counts, and latency/RTF/throughput.
-When local NVML and `psutil` sampling are available, it also includes CPU use,
-power, and peak/steady GPU memory. Pass each server GPU PID reported by NVML via
+When local NVML (CUDA) or `pyzes` (Intel XPU) and `psutil` sampling are available, it also includes CPU use,
+power, and peak/steady GPU memory. Pass each server GPU PID reported by the device management API via
 `--gpu-process-pid`; without explicit PIDs, process-specific metrics remain
 unavailable rather than including unrelated workloads on the same GPU. In a
 Docker container, use the host PID namespace (`--pid=host`) to collect process

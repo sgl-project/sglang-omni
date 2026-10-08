@@ -13,7 +13,18 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+import torch
+
+from sglang_omni.utils.gpu_backend import gpu_device_type
+from sglang_omni.utils.gpu_memory import try_import_pynvml
+from sglang_omni.utils.xpu_management import XpuDevice
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 _NVML_SESSION_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +51,7 @@ class ResourceMonitor:
         gpu_index: int = 0,
         interval_s: float = 0.2,
         gpu_process_pids: list[int] | None = None,
+        device_type: Literal["cuda", "xpu"] | None = None,
     ) -> None:
         if gpu_index < 0:
             raise ValueError("gpu_index must be >= 0")
@@ -48,6 +60,7 @@ class ResourceMonitor:
         if any(pid <= 0 for pid in gpu_process_pids or []):
             raise ValueError("gpu_process_pids must contain only positive PIDs")
         self.gpu_index = gpu_index
+        self.device_type = device_type
         self.interval_s = interval_s
         self.gpu_process_pids = frozenset(gpu_process_pids or [])
         self.samples: list[ResourceSample] = []
@@ -61,10 +74,11 @@ class ResourceMonitor:
         self._psutil: Any = None
         self._processes: dict[int, Any] = {}
         self._inaccessible_process_pids: set[int] = set()
+        self.xpu_device: XpuDevice | None = None
 
     def start(self) -> "ResourceMonitor":
         if not _NVML_SESSION_LOCK.acquire(blocking=False):
-            self.error = "another NVML resource monitor is still active"
+            self.error = "another GPU resource monitor is still active"
             self._ready_event.set()
             return self
         self._started_at = time.perf_counter()
@@ -91,7 +105,7 @@ class ResourceMonitor:
         process_error = None
         if not self.gpu_process_pids:
             process_error = (
-                "GPU process metrics require at least one explicit NVML PID; "
+                "GPU process metrics require at least one explicit device PID; "
                 "pass --gpu-process-pid"
             )
         elif missing_pids := self.gpu_process_pids - {
@@ -99,13 +113,13 @@ class ResourceMonitor:
         }:
             pids = ", ".join(map(str, sorted(missing_pids)))
             process_error = (
-                f"target NVML PID(s) {pids} were not observed on GPU "
+                f"target device PID(s) {pids} were not observed on GPU "
                 f"{self.gpu_index}"
             )
         elif self._inaccessible_process_pids:
             pids = ", ".join(map(str, sorted(self._inaccessible_process_pids)))
             process_error = (
-                f"GPU process CPU metrics unavailable for NVML PID(s) {pids}; "
+                f"GPU process CPU metrics unavailable for device PID(s) {pids}; "
                 "use the host PID namespace (for Docker, --pid=host)"
             )
         return summarize_resource_samples(
@@ -117,13 +131,22 @@ class ResourceMonitor:
     def _run(self) -> None:
         try:
             try:
-                import psutil
-                import pynvml
-
-                pynvml.nvmlInit()
-                self._pynvml = pynvml
+                if psutil is None:
+                    raise RuntimeError("psutil is required for resource sampling")
+                elif (self.device_type or gpu_device_type()) == "xpu":
+                    self.xpu_device = XpuDevice.from_logical_index(self.gpu_index)
+                else:
+                    pynvml = try_import_pynvml()
+                    if pynvml is None:
+                        raise RuntimeError(
+                            "pynvml is required for CUDA resource sampling"
+                        )
+                    else:
+                        pass
+                    pynvml.nvmlInit()
+                    self._pynvml = pynvml
+                    self._handle = _resolve_nvml_handle(pynvml, self.gpu_index)
                 self._psutil = psutil
-                self._handle = _resolve_nvml_handle(pynvml, self.gpu_index)
                 psutil.cpu_percent(interval=None)
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"
@@ -141,24 +164,44 @@ class ResourceMonitor:
 
     def _sample_once(self) -> None:
         try:
-            pynvml = self._pynvml
-            memory = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
-            all_nvml_processes = _nvml_compute_processes(pynvml, self._handle)
-            nvml_processes = (
+            if self.xpu_device is not None:
+                memory_free_bytes, memory_total_bytes = self.xpu_device.memory_bytes()
+                memory_used_bytes = memory_total_bytes - memory_free_bytes
+                all_gpu_processes = _best_effort(self.xpu_device.processes)
+                utilization = _best_effort(self.xpu_device.utilization_percent)
+                power_w = _best_effort(self.xpu_device.power_watts)
+            else:
+                pynvml = self._pynvml
+                memory = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
+                memory_used_bytes, memory_free_bytes = memory.used, memory.free
+                all_gpu_processes = _nvml_compute_processes(pynvml, self._handle)
+                utilization = _best_effort(
+                    lambda: float(
+                        pynvml.nvmlDeviceGetUtilizationRates(self._handle).gpu
+                    )
+                )
+                power_w = _best_effort(
+                    lambda: float(pynvml.nvmlDeviceGetPowerUsage(self._handle)) / 1000.0
+                )
+            gpu_processes = (
                 [
                     process
-                    for process in all_nvml_processes
+                    for process in all_gpu_processes
                     if int(process.pid) in self.gpu_process_pids
                 ]
-                if all_nvml_processes is not None and self.gpu_process_pids
+                if all_gpu_processes is not None and self.gpu_process_pids
                 else None
             )
-            process_memory_bytes: int | None = 0 if nvml_processes is not None else None
+            process_memory_bytes: int | None = 0 if gpu_processes is not None else None
             process_pids: set[int] = set()
-            for process in nvml_processes or []:
+            for process in gpu_processes or []:
                 process_pids.add(int(process.pid))
                 try:
-                    used = process.usedGpuMemory
+                    used = (
+                        process.memory_bytes
+                        if self.xpu_device is not None
+                        else process.usedGpuMemory
+                    )
                 except AttributeError:
                     process_memory_bytes = None
                     continue
@@ -168,18 +211,12 @@ class ResourceMonitor:
                 if process_memory_bytes is not None:
                     process_memory_bytes += used
 
-            utilization = _best_effort(
-                lambda: float(pynvml.nvmlDeviceGetUtilizationRates(self._handle).gpu)
-            )
-            power_w = _best_effort(
-                lambda: float(pynvml.nvmlDeviceGetPowerUsage(self._handle)) / 1000.0
-            )
             system_cpu = _best_effort(
                 lambda: float(self._psutil.cpu_percent(interval=None))
             )
             process_cpu = (
                 self._gpu_process_cpu_percent(process_pids)
-                if nvml_processes is not None
+                if gpu_processes is not None
                 else None
             )
             process_memory_mib = (
@@ -190,8 +227,8 @@ class ResourceMonitor:
             self.samples.append(
                 ResourceSample(
                     elapsed_s=time.perf_counter() - self._started_at,
-                    gpu_memory_used_mib=float(memory.used) / (1024**2),
-                    gpu_memory_free_mib=float(memory.free) / (1024**2),
+                    gpu_memory_used_mib=float(memory_used_bytes) / (1024**2),
+                    gpu_memory_free_mib=float(memory_free_bytes) / (1024**2),
                     gpu_process_memory_mib=process_memory_mib,
                     gpu_util_percent=utilization,
                     power_w=power_w,
@@ -291,6 +328,7 @@ def collect_benchmark_provenance(
     launch_command: str | None,
     server_config: dict[str, Any],
     evaluation_input_sha256: str | None = None,
+    device_type: Literal["cuda", "xpu"] | None = None,
 ) -> dict[str, Any]:
     dependency_inventory = _distribution_inventory()
     package_payload = json.dumps(
@@ -301,14 +339,22 @@ def collect_benchmark_provenance(
     repository_status = _git_command("status", "--porcelain")
 
     try:
-        import torch
-
         torch_cuda = torch.version.cuda
         cudnn_version = torch.backends.cudnn.version()
     except Exception:
         torch_cuda = None
         cudnn_version = None
 
+    device_type = device_type or gpu_device_type()
+    xpu_inventory = (
+        _best_effort(
+            lambda: [
+                device.benchmark_metadata() for device in XpuDevice.enumerate_devices()
+            ]
+        )
+        if device_type == "xpu"
+        else None
+    )
     return {
         "schema_version": 1,
         "repository": {
@@ -323,11 +369,20 @@ def collect_benchmark_provenance(
             "memory_total_kib": _first_prefixed_line("/proc/meminfo", "MemTotal"),
         },
         "gpu": {
-            "nvidia_smi_csv": _command(
-                "nvidia-smi",
-                "--query-gpu=index,name,uuid,memory.total,driver_version,pstate,"
-                "power.limit,clocks.sm,clocks.mem,compute_cap",
-                "--format=csv,noheader,nounits",
+            "device_type": device_type,
+            "xpu_inventory": xpu_inventory,
+            "ze_affinity_mask": os.environ.get("ZE_AFFINITY_MASK"),
+            "oneapi_device_selector": os.environ.get("ONEAPI_DEVICE_SELECTOR"),
+            "sycl_device_filter": os.environ.get("SYCL_DEVICE_FILTER"),
+            "nvidia_smi_csv": (
+                _command(
+                    "nvidia-smi",
+                    "--query-gpu=index,name,uuid,memory.total,driver_version,pstate,"
+                    "power.limit,clocks.sm,clocks.mem,compute_cap",
+                    "--format=csv,noheader,nounits",
+                )
+                if device_type == "cuda"
+                else None
             ),
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "torch_cuda_build": torch_cuda,

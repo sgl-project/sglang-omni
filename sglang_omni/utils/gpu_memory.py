@@ -16,6 +16,9 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
 
+from sglang_omni.utils.gpu_backend import gpu_device_type
+from sglang_omni.utils.xpu_management import SysmanError, XpuDevice
+
 if TYPE_CHECKING:
 
     from pynvml import struct_c_nvmlDevice_t
@@ -88,8 +91,17 @@ def resolve_visible_device_id(
 
 
 def is_process_scoped_memory_available() -> bool:
-    """Return whether NVML process-scoped memory queries are available."""
+    """Return whether the accelerator reports process-scoped memory."""
 
+    if gpu_device_type() == "xpu":
+        try:
+            XpuDevice.from_logical_index(0).processes()
+            return True
+        except (SysmanError, ValueError) as exc:
+            logger.debug(f"Sysman process memory is unavailable: {exc}")
+            return False
+    else:
+        pass
     pynvml = try_import_pynvml()
     if pynvml is None:
         return False
@@ -105,13 +117,28 @@ def is_process_scoped_memory_available() -> bool:
 
 
 def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
-    """Return current-process GPU memory on a CUDA logical device.
+    """Return current-process memory on an accelerator logical device.
 
-    The returned value is in bytes. None means NVML is unavailable or the
+    The returned value is in bytes. None means management APIs are unavailable or the
     process-scoped query failed. Invalid device mappings raise RuntimeError
     because those are launch/configuration errors.
     """
 
+    if gpu_device_type() == "xpu":
+        try:
+            processes = XpuDevice.from_logical_index(logical_gpu_id).processes()
+            return sum(
+                process.memory_bytes
+                for process in processes
+                if process.pid == os.getpid()
+            )
+        except ValueError as exc:
+            raise InvalidGpuDeviceError(str(exc)) from exc
+        except SysmanError as exc:
+            logger.debug(f"Sysman process memory is unavailable: {exc}")
+            return None
+    else:
+        pass
     visible_devices = parse_cuda_visible_devices()
     device_id = resolve_visible_device_id(logical_gpu_id, visible_devices)
 
@@ -165,11 +192,10 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
 
 
 def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
-    """Return best-effort CUDA device metadata.
+    """Return best-effort accelerator device metadata.
 
-    NVML is preferred because it follows CUDA_VISIBLE_DEVICES mappings for
-    physical ids and UUIDs. If NVML metadata is unavailable, PyTorch CUDA
-    metadata is used for total memory when possible.
+    Management APIs follow the runtime's physical device mapping. PyTorch
+    supplies total memory when management metadata is unavailable.
     """
 
     info = GpuDeviceInfo(
@@ -178,6 +204,21 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
         name=None,
         total_memory_bytes=None,
     )
+    if gpu_device_type() == "xpu":
+        try:
+            device = XpuDevice.from_logical_index(logical_gpu_id)
+            _, total_memory_bytes = device.memory_bytes()
+            return GpuDeviceInfo(
+                logical_gpu_id=logical_gpu_id,
+                device_id=device.uuid,
+                name=device.name,
+                total_memory_bytes=total_memory_bytes,
+            )
+        except (SysmanError, ValueError) as exc:
+            logger.debug(f"Sysman metadata is unavailable: {exc}")
+            return get_torch_gpu_device_info(logical_gpu_id, None)
+    else:
+        pass
     visible_devices = parse_cuda_visible_devices()
     try:
         device_id = resolve_visible_device_id(logical_gpu_id, visible_devices)
@@ -324,11 +365,17 @@ def get_gpu_startup_lock_path(
     env: dict[str, str] | None = None,
     base_dir: str | Path | None = None,
 ) -> Path:
-    """Return the launch-time lock path for a CUDA logical GPU id."""
+    """Return the launch-time lock path for an accelerator logical GPU id."""
 
     source_env = env if env is not None else os.environ
-    visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
-    visible_device = resolve_visible_device_id(logical_gpu_id, visible_devices)
+    if gpu_device_type() == "xpu":
+        torch = importlib.import_module("torch")
+        visible_device = f"xpu_{torch.xpu.get_device_properties(logical_gpu_id).uuid}"
+    else:
+        visible_devices = parse_cuda_visible_devices(
+            source_env.get("CUDA_VISIBLE_DEVICES")
+        )
+        visible_device = resolve_visible_device_id(logical_gpu_id, visible_devices)
     safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(visible_device)).strip("_")
     if not safe_device:
         safe_device = str(logical_gpu_id)

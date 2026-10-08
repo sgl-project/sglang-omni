@@ -11,13 +11,18 @@ import sys
 import time
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import requests
+
+from sglang_omni.utils.gpu_backend import gpu_device_type
 
 _NO_PROXIES = {"http": None, "https": None}
 _FINGERPRINT_ENV_KEYS = (
     "CUDA_VISIBLE_DEVICES",
+    "ZE_AFFINITY_MASK",
+    "ONEAPI_DEVICE_SELECTOR",
+    "SYCL_DEVICE_FILTER",
     "HF_HOME",
     "HF_ENDPOINT",
     "TORCHINDUCTOR_CACHE_DIR",
@@ -115,12 +120,15 @@ def collect_server_identity(base_url: str) -> ServerIdentity:
 
 def collect_environment_fingerprint(
     model_path: str | None = None,
+    *,
+    device_type: Literal["cuda", "xpu"] | None = None,
 ) -> EnvironmentFingerprint | ModelEnvironmentFingerprint:
     """Capture client code, dependency, and hardware identity.
 
     A missing tool yields None so fingerprinting never blocks a run.
     """
     pip_freeze = _run_command([sys.executable, "-m", "pip", "freeze"])
+    selected_backend = device_type or gpu_device_type()
     fingerprint: EnvironmentFingerprint = {
         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "hostname": platform.node(),
@@ -142,7 +150,7 @@ def collect_environment_fingerprint(
         ),
         "gpus": _run_command(
             [
-                "nvidia-smi",
+                "xpu-smi" if selected_backend == "xpu" else "nvidia-smi",
                 "--query-gpu=index,name,driver_version,memory.total",
                 "--format=csv,noheader",
             ]

@@ -9,6 +9,9 @@ import os
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 
+import torch
+
+from sglang_omni.utils.gpu_backend import gpu_device_type
 from sglang_omni.utils.gpu_memory import (
     get_device_handle,
     parse_cuda_visible_devices,
@@ -211,20 +214,39 @@ def gpu_ids_support_p2p_mesh(
     logical_gpu_ids: Sequence[int],
     env: Mapping[str, str] | None = None,
 ) -> bool | None:
-    """Return whether the given logical GPUs form a full peer-to-peer mesh.
+    """Query all ordered peer pairs using NVML or PyTorch XPU logical indices.
 
-    Custom (P2P/NVLink) all-reduce only works when every tensor-parallel rank can
-    directly access every other rank's memory. This queries NVML's pairwise P2P
-    status (so it does not create a CUDA context in the caller) for all ordered
-    pairs of the given logical GPU ids (resolved through ``CUDA_VISIBLE_DEVICES``).
-
-    Returns ``True`` only when every pair reports P2P-capable, ``False`` when any
-    pair is not, and ``None`` when the topology cannot be determined (pynvml
-    missing, NVML query error, or fewer than two distinct GPUs).
+    Return None when peer access cannot be determined, including changed XPU masks.
     """
     ids = list(dict.fromkeys(int(g) for g in logical_gpu_ids))
     if len(ids) < 2:
         return None
+    else:
+        pass
+
+    source_env = os.environ if env is None else env
+    if gpu_device_type() == "xpu":
+        if any(
+            source_env.get(name) != os.environ.get(name)
+            for name in (
+                "ZE_AFFINITY_MASK",
+                "ONEAPI_DEVICE_SELECTOR",
+                "SYCL_DEVICE_FILTER",
+            )
+        ):
+            return None
+        else:
+            pass
+        try:
+            return all(
+                torch.xpu.can_device_access_peer(source, destination)
+                for source in ids
+                for destination in ids
+                if source != destination
+            )
+        except (AttributeError, RuntimeError, ValueError, AssertionError) as exc:
+            logger.debug(f"XPU peer access query failed for devices={ids}: {exc}")
+            return None
     else:
         pass
 
@@ -249,7 +271,6 @@ def gpu_ids_support_p2p_mesh(
     else:
         pass
 
-    source_env = os.environ if env is None else env
     visible_devices = parse_cuda_visible_devices(
         source_env.get("CUDA_VISIBLE_DEVICES") or ""
     )
@@ -284,15 +305,9 @@ def should_disable_custom_all_reduce_for_gpus(
     logical_gpu_ids: Sequence[int] | None,
     env: Mapping[str, str] | None = None,
 ) -> bool:
-    """Whether to disable SGLang custom all-reduce for a TP thinker.
-
-    Custom all-reduce requires a direct P2P mesh between the tensor-parallel GPUs;
-    on topologies without it (or that can't be confirmed) it must fall back to
-    NCCL. This returns ``True`` (disable) unless NVML confirms a full P2P mesh,
-    so the safe default is preserved and custom all-reduce is only enabled on
-    capable topologies (e.g. NVLink).
-    """
-    if not logical_gpu_ids:
+    """Keep custom all-reduce disabled without a supported backend and full mesh."""
+    # note (yao-matrix): SGLang's custom all-reduce kernels do not support XPU.
+    if not logical_gpu_ids or gpu_device_type() != "cuda":
         return True
     else:
         pass

@@ -4,12 +4,16 @@ from __future__ import annotations
 import fcntl
 import os
 import sys
+from ctypes import POINTER, Array, Structure, c_uint32, c_uint64, c_void_p, cast
 from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
 
 import sglang_omni.utils.gpu_memory as gpu_memory
+import sglang_omni.utils.xpu_management as xpu_management
+from sglang_omni.utils.gpu_backend import gpu_device_type
+from sglang_omni.utils.xpu_management import SysmanError, XpuDevice, XpuProcessMemory
 
 ACCELERATOR_ONLY = pytest.mark.skipif(
     not (
@@ -18,6 +22,133 @@ ACCELERATOR_ONLY = pytest.mark.skipif(
     ),
     reason="requires cuda or xpu",
 )
+
+
+@pytest.fixture(autouse=True)
+def use_cuda_accounting(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if request.node.get_closest_marker("accelerator") is None:
+        monkeypatch.setattr(gpu_memory, "gpu_device_type", lambda: "cuda")
+
+
+def test_gpu_backend_requires_selection_when_both_are_available() -> None:
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: True),
+        xpu=SimpleNamespace(is_available=lambda: True),
+    )
+    with pytest.raises(ValueError, match="both backends"):
+        gpu_device_type(fake_torch)
+    assert gpu_device_type(fake_torch, device_type="xpu") == "xpu"
+
+
+def test_gpu_backend_honors_registered_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform = ModuleType("sglang_omni.platforms")
+    platform.current_platform = SimpleNamespace(device_type="xpu")
+    monkeypatch.setitem(sys.modules, "sglang_omni.platforms", platform)
+    monkeypatch.setenv("SGLANG_PLATFORM", "cuda")
+    assert gpu_device_type() == "xpu"
+    assert gpu_device_type(device_type="cuda") == "cuda"
+
+
+def test_gpu_backend_honors_environment_without_importing_platforms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "sglang_omni.platforms", raising=False)
+    monkeypatch.delitem(sys.modules, "sglang.srt.platforms", raising=False)
+    monkeypatch.delenv("SGLANG_OMNI_PLATFORM_SPEC", raising=False)
+    monkeypatch.setenv("SGLANG_PLATFORM", "xpu")
+    assert gpu_device_type() == "xpu"
+    assert "sglang_omni.platforms" not in sys.modules
+
+
+class FakeSysmanProcess(Structure):
+    _fields_ = [
+        ("stype", c_uint32),
+        ("processId", c_uint32),
+        ("memSize", c_uint64),
+    ]
+
+
+@pytest.mark.parametrize("initial_count", [0, 1])
+@pytest.mark.parametrize("invalid_size", [False, True])
+def test_xpu_process_query_retries_growth(
+    monkeypatch: pytest.MonkeyPatch, initial_count: int, invalid_size: bool
+) -> None:
+    fetches = 0
+
+    def query(
+        handle: c_void_p, count: c_void_p, processes: Array[FakeSysmanProcess] | None
+    ) -> int:
+        nonlocal fetches
+        count_pointer = cast(count, POINTER(c_uint32))
+        if processes is None:
+            count_pointer.contents.value = initial_count if fetches == 0 else 2
+            return 0
+        fetches += 1
+        count_pointer.contents.value = 2
+        if len(processes) < 2:
+            return 99 if invalid_size else 0
+        processes[0].processId, processes[0].memSize = 123, 2048
+        processes[1].processId, processes[1].memSize = 456, 4096
+        return 0
+
+    monkeypatch.setattr(
+        xpu_management,
+        "pyzes",
+        SimpleNamespace(
+            zes_process_state_t=FakeSysmanProcess,
+            ZES_STRUCTURE_TYPE_PROCESS_STATE=1,
+            ZE_RESULT_ERROR_INVALID_SIZE=99,
+            zesDeviceProcessesGetState=query,
+        ),
+    )
+    device = XpuDevice(
+        physical_index=0,
+        handle=c_void_p(1),
+        uuid="a",
+        name="Intel",
+        driver_version="1",
+        pci_bus_id=None,
+    )
+    assert device.processes() == [
+        XpuProcessMemory(pid=123, memory_bytes=2048),
+        XpuProcessMemory(pid=456, memory_bytes=4096),
+    ]
+    assert fetches == 2
+
+
+def test_xpu_process_query_does_not_report_zero_for_an_unstable_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def query(
+        handle: c_void_p, count: c_void_p, processes: Array[FakeSysmanProcess] | None
+    ) -> int:
+        cast(count, POINTER(c_uint32)).contents.value = 0 if processes is None else 1
+        return 0
+
+    monkeypatch.setattr(
+        xpu_management,
+        "pyzes",
+        SimpleNamespace(
+            zes_process_state_t=FakeSysmanProcess,
+            ZES_STRUCTURE_TYPE_PROCESS_STATE=1,
+            ZE_RESULT_ERROR_INVALID_SIZE=99,
+            zesDeviceProcessesGetState=query,
+        ),
+    )
+    device = XpuDevice(
+        physical_index=0,
+        handle=c_void_p(1),
+        uuid="a",
+        name="Intel",
+        driver_version="1",
+        pci_bus_id=None,
+    )
+    with pytest.raises(SysmanError, match="kept changing"):
+        device.processes()
 
 
 class FakeNVML(ModuleType):
@@ -245,6 +376,100 @@ def test_get_process_gpu_memory_returns_none_on_query_failure(
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     assert gpu_memory.get_process_gpu_memory_bytes(0) is None
+
+
+def test_xpu_memory_uses_current_process_and_ignores_cuda_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpu_memory, "gpu_device_type", lambda: "xpu")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    device = XpuDevice(
+        physical_index=3,
+        handle=c_void_p(4),
+        uuid="uuid-a",
+        name="Intel GPU",
+        driver_version="1",
+        pci_bus_id=None,
+    )
+    monkeypatch.setattr(XpuDevice, "from_logical_index", lambda index: device)
+    monkeypatch.setattr(
+        XpuDevice,
+        "processes",
+        lambda self: [
+            XpuProcessMemory(pid=os.getpid(), memory_bytes=4096),
+            XpuProcessMemory(pid=os.getpid() + 1, memory_bytes=8192),
+        ],
+    )
+    monkeypatch.setattr(XpuDevice, "memory_bytes", lambda self: (8192, 16384))
+
+    def refuse_nvml() -> None:
+        raise AssertionError("XPU must not query NVML")
+
+    monkeypatch.setattr(gpu_memory, "try_import_pynvml", refuse_nvml)
+
+    assert gpu_memory.is_process_scoped_memory_available()
+    assert gpu_memory.get_process_gpu_memory_bytes(0) == 4096
+    metadata = gpu_memory.get_gpu_device_info(0)
+    assert metadata.name == "Intel GPU"
+    assert metadata.device_id == "uuid-a"
+    assert metadata.total_memory_bytes == 16384
+    monkeypatch.setattr(XpuDevice, "processes", lambda self: [])
+    assert gpu_memory.get_process_gpu_memory_bytes(0) == 0
+
+
+def test_xpu_unavailable_management_keeps_memory_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpu_memory, "gpu_device_type", lambda: "xpu")
+    monkeypatch.setattr(xpu_management, "pyzes", None)
+    monkeypatch.setattr(torch.xpu, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        torch.xpu, "get_device_properties", lambda index: SimpleNamespace(uuid="uuid-a")
+    )
+    assert not gpu_memory.is_process_scoped_memory_available()
+    assert gpu_memory.get_process_gpu_memory_bytes(0) is None
+    with pytest.raises(gpu_memory.InvalidGpuDeviceError, match="Invalid XPU"):
+        gpu_memory.get_process_gpu_memory_bytes(1)
+
+
+def test_xpu_mapping_uses_uuid_instead_of_sysman_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    devices = [
+        XpuDevice(
+            physical_index=index,
+            handle=c_void_p(index + 1),
+            uuid=uuid,
+            name="Intel GPU",
+            driver_version="1",
+            pci_bus_id=None,
+        )
+        for index, uuid in enumerate(("uuid-b", "uuid-a"))
+    ]
+    monkeypatch.setattr(XpuDevice, "enumerate_devices", lambda: devices)
+    monkeypatch.setattr(torch.xpu, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        torch.xpu, "get_device_properties", lambda index: SimpleNamespace(uuid="uuid-a")
+    )
+    assert XpuDevice.from_logical_index(0).physical_index == 1
+    monkeypatch.setattr(
+        torch.xpu,
+        "get_device_properties",
+        lambda index: SimpleNamespace(uuid="unknown"),
+    )
+    with pytest.raises(SysmanError, match="not found"):
+        XpuDevice.from_logical_index(0)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.xpu.is_available(), reason="requires XPU and Sysman")
+def test_process_memory_reports_real_xpu_allocation() -> None:
+    pytest.importorskip("pyzes")
+    allocation = torch.ones(1024 * 1024, dtype=torch.float32, device="xpu:0")
+    torch.xpu.synchronize()
+    memory_bytes = gpu_memory.get_process_gpu_memory_bytes(0)
+    assert memory_bytes is not None
+    assert memory_bytes >= allocation.numel() * allocation.element_size()
 
 
 def test_get_gpu_device_info_falls_back_to_torch_when_nvml_import_fails(
