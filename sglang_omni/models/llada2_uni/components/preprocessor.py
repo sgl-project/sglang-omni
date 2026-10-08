@@ -221,9 +221,10 @@ class LLaDA2Preprocessor:
                 image_counts_per_msg = None
 
         self.validate_messages(messages)
-        image_cache_key = compute_image_cache_key(raw_images)
-
+        # note (Richard Wang): load first, so the media policy refuses a path
+        # before the cache key reads the file.
         images = await ensure_image_list_async(raw_images) if raw_images else []
+        image_cache_key = compute_image_cache_key(raw_images)
 
         encoder_inputs: dict[str, ImageEncoderInputs | SkippedEncoderInputs] = {}
         image_token_counts: list[int] = []

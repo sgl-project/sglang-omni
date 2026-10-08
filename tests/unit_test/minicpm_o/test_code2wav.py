@@ -325,6 +325,7 @@ def build_code2wav_stage(
         max_batch_wait_ms=factory.max_batch_wait_ms,
         batch_wait_when_idle=factory.batch_wait_when_idle,
         enable_dit_torch_compile=factory.enable_dit_torch_compile,
+        enable_hift_torch_compile=factory.enable_hift_torch_compile,
         enable_flow_variable_length=factory.enable_flow_variable_length,
         reference_workers=factory.reference_workers,
         prompt_cache_capacity=factory.prompt_cache_capacity,
@@ -482,6 +483,7 @@ def compiled_vocoder() -> Iterator[MiniCPMOCode2Wav]:
         device=str(device),
         dtype=factory.dtype,
         enable_dit_torch_compile=True,
+        enable_hift_torch_compile=True,
         enable_flow_variable_length=factory.enable_flow_variable_length,
         reference_workers=factory.reference_workers,
         prompt_cache_capacity=factory.prompt_cache_capacity,
@@ -519,6 +521,24 @@ def test_compiled_flow_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None
     with torch.compiler.set_stance("force_eager"):
         eager = compiled_vocoder.flow_mel(tokens, token_lengths, prompts).float()
     assert relative_rms_error(compiled, eager) < 5e-3
+
+
+@pytest.mark.accelerator
+def test_compiled_hift_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None:
+    device = compiled_vocoder.token2wav.device
+    tokens = torch.tensor(
+        [CHECKPOINT_CODEC_TOKENS * 7], dtype=torch.int32, device=device
+    )
+    token_lengths = torch.tensor([tokens.shape[1]], dtype=torch.int32, device=device)
+    prompts = compiled_vocoder.prepare_references([None])
+    hift = compiled_vocoder.token2wav.hift
+    with torch.inference_mode():
+        mel = compiled_vocoder.flow_mel(tokens, token_lengths, prompts).float()
+        _, source = hift(speech_feat=mel)
+        compiled = hift.decode(mel, source)
+        with torch.compiler.set_stance("force_eager"):
+            eager = hift.decode(mel, source)
+    assert relative_rms_error(compiled, eager) < 1e-2
 
 
 def test_dit_torch_compile_rejects_non_cuda_device() -> None:
@@ -602,6 +622,7 @@ def test_speech_pipeline_colocates_batched_code2wav_with_talker_by_default() -> 
     assert factory.batch_wait_when_idle is False
     assert factory.dtype == "float16"
     assert factory.enable_dit_torch_compile is True
+    assert factory.enable_hift_torch_compile is True
     assert factory.enable_flow_variable_length is False
     assert factory.reference_workers == 8
     assert factory.prompt_cache_capacity == 32

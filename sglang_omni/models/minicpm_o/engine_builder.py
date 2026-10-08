@@ -46,6 +46,8 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
             sampling_backend="pytorch",
             mem_fraction_static=0.45,
             trust_remote_code=False,
+            # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+            enable_torch_compile=False,
         )
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:

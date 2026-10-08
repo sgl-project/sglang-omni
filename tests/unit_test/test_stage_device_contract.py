@@ -77,9 +77,6 @@ def factory_parameters(dotted: str) -> dict[str, object]:
 # note (lennox): these factories raise on torch.cuda.is_available() before
 # this test's mocks run, so they need a static accelerator mark (tests/README.md).
 REQUIRES_REAL_ACCELERATOR = {
-    ("dots_tts", "reference_encode"),
-    ("dots_tts", "latent_engine"),
-    ("dots_tts", "vocoder"),
     ("minimax_music3", "minimax_music3_ar"),
     ("minimax_music3", "dit_dav"),
     ("zonos2", "tts_engine"),
@@ -331,9 +328,9 @@ ENGINE_FACTORIES = {
 }
 
 
-# note (lennox): same three CUDA-only models as REQUIRES_REAL_ACCELERATOR,
+# note (lennox): same CUDA-only models as REQUIRES_REAL_ACCELERATOR,
 # at this test's per-model (not per-stage) granularity.
-ACCELERATOR_ONLY_ENGINE_MODELS = {"dots_tts", "minimax_music3", "zonos2"}
+ACCELERATOR_ONLY_ENGINE_MODELS = {"minimax_music3", "zonos2"}
 
 
 def engine_factory_ids():

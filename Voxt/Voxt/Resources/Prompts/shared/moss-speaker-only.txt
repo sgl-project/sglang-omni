@@ -1,0 +1,1 @@
+Transcribe the audio as text using speaker labels such as [S01], [S02], and [S03].

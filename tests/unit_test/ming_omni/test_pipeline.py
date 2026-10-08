@@ -1280,3 +1280,48 @@ def test_ming_image_encoder_forward_skips_video_when_grid_thw_missing() -> None:
     )
     assert "video_embeds" not in out
     assert "video_grid_thw" not in out
+
+
+def test_ming_audio_paths_follow_the_server_media_policy(monkeypatch, tmp_path) -> None:
+    import asyncio
+
+    from sglang_omni.models.ming_omni.components import preprocessor as mod
+    from sglang_omni.preprocessing import resource_connector
+    from sglang_omni.proto import OmniRequest, StagePayload
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    inside, outside = allowed / "inside.wav", tmp_path / "outside.wav"
+    for path in (inside, outside):
+        path.write_bytes(b"RIFF" + b"\0" * 64)
+    monkeypatch.setenv(resource_connector.ALLOWED_LOCAL_MEDIA_PATH_ENV, str(allowed))
+    monkeypatch.setenv(resource_connector.ALLOWED_MEDIA_DOMAINS_ENV, "")
+    monkeypatch.setattr(resource_connector, "_global_connector", None)
+    reads = []
+
+    def load_audio(path, target_sr):
+        reads.append(Path(path))
+        return np.zeros(1600, dtype=np.float32)
+
+    monkeypatch.setattr(mod, "load_audio_path", load_audio)
+    monkeypatch.setattr(
+        mod, "compute_mel_features_for_waveform", lambda *_: (torch.zeros(1, 2), 1, 1)
+    )
+    pre = mod.MingPreprocessor.__new__(mod.MingPreprocessor)
+    pre.audio_config = SimpleNamespace()
+    pre.build_prompt = lambda messages, **counts: ("prompt", [1, 2, 3], [1])
+
+    def run(path: Path) -> None:
+        inputs = {
+            "messages": [{"role": "user", "content": "Describe this."}],
+            "audios": [str(path)],
+        }
+        payload = StagePayload(
+            request_id="ming-policy", request=OmniRequest(inputs=inputs), data=None
+        )
+        asyncio.run(pre(payload))
+
+    run(inside)
+    with pytest.raises(ValueError, match="not within allowed directory"):
+        run(outside)
+    assert reads == [inside.resolve()]

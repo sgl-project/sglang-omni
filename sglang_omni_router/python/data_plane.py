@@ -526,10 +526,10 @@ def create_data_plane_app(
 _FORWARDED_CP_ROUTES: tuple[tuple[str, tuple[str, ...], str, bool], ...] = (
     ("/health", ("GET",), "health", False),
     ("/workers", ("GET",), "list_workers", False),
-    ("/workers", ("POST",), "create_worker", False),
+    ("/workers", ("POST",), "create_worker", True),
     ("/workers/{worker_id:path}", ("GET",), "get_worker", False),
-    ("/workers/{worker_id:path}", ("PUT",), "update_worker", False),
-    ("/workers/{worker_id:path}", ("DELETE",), "delete_worker", False),
+    ("/workers/{worker_id:path}", ("PUT",), "update_worker", True),
+    ("/workers/{worker_id:path}", ("DELETE",), "delete_worker", True),
     ("/model_info", ("GET",), "model_info", True),
     ("/model_info", ("POST",), "model_info_post", True),
     ("/pause_generation", ("POST",), "pause_generation", True),

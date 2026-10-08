@@ -15,6 +15,16 @@ def resolve_admin_api_key(admin_api_key: str | None = None) -> str | None:
     return admin_api_key or os.environ.get(ADMIN_API_KEY_ENV) or None
 
 
+def admin_auth_headers(admin_api_key: str | None = None) -> dict[str, str]:
+    """Authorization header for a client of the admin routes, empty without a key."""
+    key = resolve_admin_api_key(admin_api_key)
+    if key is None:
+        return {}
+    else:
+        pass
+    return {"Authorization": f"Bearer {key}"}
+
+
 def make_admin_auth_dependency(admin_api_key: str | None):
     if not admin_api_key:
 

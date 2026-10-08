@@ -283,7 +283,8 @@ async def ensure_audio_list_async(
                     normalized.append(None)  # note (Teery): Placeholder
                 else:
                     # note (Teery): Local path - can be loaded synchronously
-                    normalized.append(load_audio_path(item, target_sr=target_sr))
+                    path = resource_connector.local_media_path(item)
+                    normalized.append(load_audio_path(path, target_sr=target_sr))
             else:
                 # note (Teery): Already processed (numpy array, etc.)
                 normalized.append(item)

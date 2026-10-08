@@ -125,6 +125,7 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
             # wider mantissa keeps the mel closer to FP32 than BF16 does.
             dtype="float16",
             enable_dit_torch_compile=True,
+            enable_hift_torch_compile=True,
             # note (Dayuxiaoshui): the compiled dense DiT beats the eager packed
             # path even on mixed-length, mixed-reference batches.
             enable_flow_variable_length=False,

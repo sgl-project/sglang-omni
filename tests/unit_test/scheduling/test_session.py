@@ -116,6 +116,9 @@ def test_state_budget_is_per_session():
     invoke("one", "append")
     with pytest.raises(QueueFullError):
         invoke("one", "append")
+    # note (Junnan Li): The failed session is released at once, so a unit queued behind it cannot run.
+    with pytest.raises(ValueError, match="unknown session"):
+        invoke("one", "append")
     # note (Junnan Li): Session two stays within its own budget while session one outgrows it.
     invoke("two", "append")
     scheduler.stop()

@@ -38,14 +38,16 @@ from types import FrameType
 from typing import TypedDict
 
 import uvicorn
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from sglang_omni.client import Client
 from sglang_omni.client.types import GenerateChunk
 from sglang_omni.config import PipelineConfig
+from sglang_omni.http import admin_auth
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+from sglang_omni.preprocessing.resource_connector import export_media_policy
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
@@ -334,7 +336,8 @@ def default_event_dir(profiler_dir: str, run_id: str) -> str:
 def mount_profiler_routes(
     app, profiler_ctl: ProfilerControlClient, profiler_dir: str | None
 ) -> None:
-    router = APIRouter()
+    auth = admin_auth.make_admin_auth_dependency(admin_auth.resolve_admin_api_key())
+    router = APIRouter(dependencies=[Depends(auth)])
 
     @router.post("/start_profile")
     async def start(req: StartReq):
@@ -477,6 +480,7 @@ async def run_server(
 
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
+    export_media_policy(allowed_local_media_path, allowed_media_domains)
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
 
