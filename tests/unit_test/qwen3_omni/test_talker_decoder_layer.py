@@ -13,6 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import torch.nn as nn
 
 import sglang_omni.models.qwen3_omni.components.thinker_model as thinker_module
 from sglang_omni.models.qwen3_omni.components.talker import (
@@ -73,27 +74,43 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
     a thinker MoE block on the side (the pre-#2358 discarded-experts path)."""
 
     built: list = []
+    attention_calls: list = []
+    thinker_moe_built: list = []
 
-    class RecordingMoe:
+    # Module-valued fakes must be real nn.Modules so they land in _modules
+    # exactly like the production submodules they stand in for.
+    class RecordingMoe(nn.Module):
         def __init__(self, **kwargs) -> None:
+            super().__init__()
             self.kwargs = kwargs
             built.append(self)
 
-    class FakeLayerCommunicator:
+    class FakeAttention(nn.Module):
         def __init__(self, **kwargs) -> None:
+            super().__init__()
             self.kwargs = kwargs
+            attention_calls.append(kwargs)
+
+    class FakeLayerCommunicator(nn.Module):
+        def __init__(self, **kwargs) -> None:
+            super().__init__()
+            self.kwargs = kwargs
+
+    class FakeRMSNorm(nn.Module):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__()
 
     class FakeScatterModes:
         @staticmethod
         def init_new(**kwargs) -> object:
             return object()
 
+    def record_thinker_moe_init(self, *args, **kwargs) -> None:
+        thinker_moe_built.append((args, kwargs))
+
     config = fake_config()
-    attention_calls: list = []
     monkeypatch.setattr(
-        thinker_module,
-        "Qwen3OmniMoeThinkerTextAttention",
-        lambda **kw: attention_calls.append(kw) or object(),
+        thinker_module, "Qwen3OmniMoeThinkerTextAttention", FakeAttention
     )
     monkeypatch.setattr(
         thinker_module,
@@ -102,9 +119,15 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
     )
     monkeypatch.setattr(thinker_module, "LayerScatterModes", FakeScatterModes)
     monkeypatch.setattr(thinker_module, "LayerCommunicator", FakeLayerCommunicator)
-    monkeypatch.setattr(thinker_module, "RMSNorm", lambda *a, **kw: object())
+    monkeypatch.setattr(thinker_module, "RMSNorm", FakeRMSNorm)
     monkeypatch.setattr(
         Qwen3OmniMoeTalkerDecoderLayer, "sparse_moe_block_cls", RecordingMoe
+    )
+    # The talker sparse block subclasses the thinker one, so patching the
+    # thinker __init__ catches every real-MoE instantiation path, including
+    # a discarded pre-#2358-style side build.
+    monkeypatch.setattr(
+        Qwen3OmniMoeThinkerTextSparseMoeBlock, "__init__", record_thinker_moe_init
     )
 
     layer = Qwen3OmniMoeTalkerDecoderLayer(config=config, layer_id=1)
@@ -114,6 +137,7 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
     assert layer.mlp.kwargs["layer_id"] == 1
     assert layer.mlp.kwargs["config"] is config
     assert layer.mlp.kwargs["prefix"] == "mlp"
+    assert thinker_moe_built == []
 
     # A non-empty weight prefix must propagate to both submodule paths.
     prefixed = Qwen3OmniMoeTalkerDecoderLayer(
@@ -124,3 +148,4 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
     assert prefixed.mlp.kwargs["layer_id"] == 2
     assert prefixed.mlp.kwargs["prefix"] == "talker.layers.2.mlp"
     assert attention_calls[-1]["prefix"] == "talker.layers.2.self_attn"
+    assert thinker_moe_built == []
