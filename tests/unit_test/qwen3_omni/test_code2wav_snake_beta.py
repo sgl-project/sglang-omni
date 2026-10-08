@@ -90,8 +90,8 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     graph_keys = tuple(
         dict.fromkeys(
-            code2wav_scheduler.batched_graph_keys(10, 25, 16)
-            + code2wav_scheduler.batched_graph_keys(10, 25, 16, 2)
+            code2wav_scheduler.window_graph_keys(10, 25, 8)
+            + code2wav_scheduler.window_graph_keys(10, 25, 8, 2)
         )
     )
     shapes = sorted(

@@ -171,3 +171,10 @@ class FakeCode2WavModel:
         samples = int(codes.shape[-1]) * self.total_upsample - self.output_deficit
         base = codes.to(dtype=torch.float32).flatten(1).sum(dim=1).view(-1, 1, 1)
         return torch.arange(samples, dtype=torch.float32).view(1, 1, samples) + base
+
+
+def deliver_code2wav_chunk(scheduler: Any, request_id: str, item: Any) -> None:
+    """One chunk in the serving loop's order: ingested, then every ready window decoded."""
+    scheduler.handle_stream_chunk(request_id, item)
+    while scheduler.has_ready_work():
+        scheduler.run_ready_step()

@@ -181,10 +181,9 @@ These shapes can use the captured serial windows when CUDA Graph is enabled.
 An early prefix of 12 with this serial configuration instead produces
 22- and 32-frame windows that fall back to eager execution.
 
-With Code2Wav batching enabled, `initial_codec_chunk_frames=2`, and
-`stream_chunk_size=10`, explicitly set `codec_coalesce_early_frames=12` to
-make the first two windows eligible
-at generated frames 2 and 12.
+With `initial_codec_chunk_frames=2` and `stream_chunk_size=10`, explicitly set
+`codec_coalesce_early_frames=12` to make the first two windows eligible at
+generated frames 2 and 12.
 Uniform groups of 10 (`early_frames=0`, `first_frames=0`) instead publish the
 first group at step 11: the sender retains the newest row until the next step
 can exclude EOS, or the request finishes. For a request that continues past
@@ -256,6 +255,14 @@ stages:
     factory:
       fused_snake_activation: false
 ```
+
+Code2Wav takes every queued codec chunk before it decodes, then decodes the
+ready windows of one length in one replay, up to `max_replay_rows` (default 8)
+under `stages.code2wav.factory`, each row count a captured graph. A request
+alone still gets one window per replay; under load, the windows that several
+requests complete on the same talker step share one. A row of a shared replay
+can differ from the same window decoded alone in its last bits, since the
+convolution kernels depend on the batch.
 
 Output overlap is also enabled by default on CUDA devices: each threshold
 window's waveform readback runs as an asynchronous device-to-host copy into a

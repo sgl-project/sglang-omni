@@ -530,7 +530,10 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
         Code2WavScheduler,
     )
     from sglang_omni.pipeline.stage.stream_queue import StreamItem
-    from tests.unit_test.fixtures.qwen_fakes import make_qwen_payload
+    from tests.unit_test.fixtures.qwen_fakes import (
+        deliver_code2wav_chunk,
+        make_qwen_payload,
+    )
 
     class TinyCode2WavModel(torch.nn.Module):
         total_upsample = 1
@@ -564,7 +567,8 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
         scheduler.stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
         scheduler.get_or_create_stream_state("req-1")
         for i in range(21):
-            scheduler.handle_stream_chunk(
+            deliver_code2wav_chunk(
+                scheduler,
                 "req-1",
                 StreamItem(
                     i,
