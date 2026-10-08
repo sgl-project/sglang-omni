@@ -27,6 +27,49 @@ hf download OpenMOSS-Team/MOSS-TTS-v1.5
 The processor ships with the checkpoint, so no extra TTS package is needed. Decoding base64
 (data-URI) reference audio additionally requires `soundfile` (`uv pip install soundfile`).
 
+## Ascend NPU
+
+Single-card inference was tested on Ascend910_9362 with PyTorch/torch_npu 2.10,
+CANN 9.0, and SGLang 0.5.19. Use an existing compatible Ascend environment;
+the CUDA installation above does not prepare that environment.
+
+Apply the [MOSS runtime backport](../../patches/sglang/ascend-moss-runtime-0.5.19.patch)
+to a clean SGLang checkout at `0bcd822377da7b5718e674eaf9c870d349424dd1`.
+It preserves the seeded sampling formula on NPU, uses the configured
+PagedAttention operation during decode graphs, and updates its temporary
+workspace for the actual sequence lengths. Decode graphs remain enabled.
+The six resulting files match the corresponding files in the audited
+[runtime commit](https://github.com/celestial-micha/sglang/commit/c47189533a254c6639bcba50d2b71a272cda6914).
+
+Run these commands from this PR's checkout in the compatible environment:
+
+```bash
+OMNI_NPU_ROOT="$(pwd)"
+git clone --branch release/v0.5.19 --single-branch \
+  https://github.com/sgl-project/sglang.git sglang-npu-runtime
+git -C sglang-npu-runtime checkout --detach 0bcd822377da7b5718e674eaf9c870d349424dd1
+git -C sglang-npu-runtime apply --check \
+  "$OMNI_NPU_ROOT/patches/sglang/ascend-moss-runtime-0.5.19.patch"
+git -C sglang-npu-runtime apply \
+  "$OMNI_NPU_ROOT/patches/sglang/ascend-moss-runtime-0.5.19.patch"
+export PYTHONPATH="$OMNI_NPU_ROOT:$OMNI_NPU_ROOT/sglang-npu-runtime/python:${PYTHONPATH:-}"
+python -c 'import sglang, sglang_omni; print(sglang.__file__); print(sglang_omni.__file__)'
+python -m pytest -q -rs tests/unit_test/moss_tts \
+  sglang-npu-runtime/test/registered/ops/test_npu_graph_update.py \
+  sglang-npu-runtime/test/registered/ops/test_seeded_murmur_hash.py
+python -m sglang_omni.cli serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+  --config examples/configs/moss_tts.yaml --port 8000
+```
+
+The import paths must point into those two checkouts. Keep the existing CANN
+entries in `PYTHONPATH` and use the same shell for tests and serving. The
+backport must be applied once to the clean revision above; it cannot be
+stacked with the Whisper runtime backport, which changes some of the same
+files. These instructions reproduce this model's tested dependency and do
+not imply an upstream SGLang release. The general Omni NPU installer currently
+accepts 0.5.18 and is not used for this 0.5.19 setup.
+
 ## Server Configuration
 
 The pipeline is `preprocessing → tts_engine → vocoder`. By default the vocoder
