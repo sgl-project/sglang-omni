@@ -24,6 +24,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import time
 import uuid
 from contextlib import aclosing, suppress
@@ -267,7 +268,11 @@ def create_app(
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[
+            origin.strip()
+            for origin in os.environ.get("SGLANG_CORS_ORIGINS", "*").split(",")
+            if origin.strip()
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
