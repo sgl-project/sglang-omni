@@ -468,6 +468,49 @@ def test_overlap_windows_wait_and_send_in_launch_order(
     assert sent_request_ids == ["req-b", "req-a", "req-b", "req-a"]
 
 
+def test_overlap_zero_context_window_leaves_after_its_pending_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without left context a first window and a later one have one length; the
+    later one still leaves after its request's pending window."""
+
+    def run(*, overlap: bool) -> list[tuple]:
+        scheduler = make_scheduler(overlap=overlap, left_context_size=0)
+        if overlap:
+            force_pipeline(scheduler, monkeypatch)
+        else:
+            pass
+        seed(scheduler, "req-a")
+        seed(scheduler, "req-b")
+        feed(scheduler, "req-b", range(20))
+        if overlap:
+            slot_event(scheduler.stream_states["req-b"].pending.slot).complete = False
+        else:
+            pass
+        for index in range(10):
+            scheduler.handle_stream_chunk(
+                "req-a",
+                StreamItem(
+                    index, make_chunk(index), "talker", metadata={"stream": True}
+                ),
+            )
+        scheduler.has_ready_work()
+        for index in range(20, 30):
+            scheduler.handle_stream_chunk(
+                "req-b",
+                StreamItem(
+                    index, make_chunk(index), "talker", metadata={"stream": True}
+                ),
+            )
+        while scheduler.has_ready_work():
+            scheduler.run_ready_step()
+        scheduler.handle_stream_done("req-a")
+        scheduler.handle_stream_done("req-b")
+        return sorted(drain_snapshot(scheduler), key=lambda entry: entry[0])
+
+    assert run(overlap=True) == run(overlap=False)
+
+
 @pytest.mark.parametrize("is_copy_complete", [False, True])
 def test_overlap_nonstreaming_window_is_neither_waited_on_nor_sent(
     monkeypatch: pytest.MonkeyPatch, is_copy_complete: bool

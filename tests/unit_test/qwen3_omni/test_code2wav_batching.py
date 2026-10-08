@@ -169,9 +169,12 @@ def test_every_row_of_a_replay_is_its_window_decoded_alone() -> None:
     assert [shape[0] for shape in together_model.calls] == [3, 3, 3]
 
 
-def test_first_windows_go_ahead_of_later_windows_that_waited_longer() -> None:
+@pytest.mark.parametrize("left_context_size", [CONTEXT_FRAMES, 0])
+def test_first_windows_go_ahead_of_later_windows_that_waited_longer(
+    left_context_size: int,
+) -> None:
     model = FakeCode2WavModel(total_upsample=2)
-    scheduler = make_scheduler(model)
+    scheduler = make_scheduler(model, left_context_size=left_context_size)
     open_request(scheduler, "early")
     open_request(scheduler, "late")
     deliver_code2wav_chunk(scheduler, "early", item(frames(1, 2)))
@@ -179,10 +182,11 @@ def test_first_windows_go_ahead_of_later_windows_that_waited_longer() -> None:
     scheduler.has_ready_work()
     queue_chunk(scheduler, "late", frames(5, 6))
 
+    # without left context both windows have one length, and still never share a replay
     scheduler.run_ready_step()
     assert model.calls[-1] == (1, 2, CHUNK_FRAMES), "the newcomer's first window"
     scheduler.run_ready_step()
-    assert model.calls[-1] == (1, 2, CONTEXT_FRAMES + CHUNK_FRAMES)
+    assert model.calls[-1] == (1, 2, left_context_size + CHUNK_FRAMES)
     assert not scheduler.has_ready_work()
 
 

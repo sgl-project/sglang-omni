@@ -922,23 +922,28 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             return bool(self.ready_streams())
 
     def ready_window_group(self) -> list[tuple[str, Code2WavStreamState]]:
-        """The ready windows the next replay decodes: the longest waiting window's length, oldest first."""
+        """The ready windows the next replay decodes: first windows before later ones, then the
+        longest waiting window's length, oldest first."""
         streams = self.ready_streams()
         if not streams:
             return []
         else:
             pass
         # note (ratish): a first window carries its request's time to first audio, so it goes
-        # ahead of every later window whatever their wait.
+        # ahead of every later window whatever their wait. It replays only with first windows:
+        # those reach the host at once, while a later window leaves after its request's pending
+        # one, and without left context both have one length.
         anchor = min(
             streams, key=lambda stream: (stream[1].emitted > 0, stream[1].ready_since)
         )
         window_frames = self.window_length(anchor[1])
+        follows_a_window = anchor[1].emitted > 0
         group = sorted(
             (
                 stream
                 for stream in streams
                 if self.window_length(stream[1]) == window_frames
+                and (stream[1].emitted > 0) == follows_a_window
             ),
             key=lambda stream: stream[1].ready_since,
         )
