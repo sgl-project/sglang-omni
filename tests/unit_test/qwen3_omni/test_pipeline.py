@@ -13,6 +13,10 @@ import pytest
 import torch
 import typer
 from sglang.srt.arg_groups.overrides import resolution_result
+from sglang.srt.layers.rotary_embedding.mrope_rope_index import (
+    get_rope_index_qwen3_omni,
+)
+from tokenizers.normalizers import NFC
 
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.cli.serve import (
@@ -38,12 +42,14 @@ from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechPipelineConfig,
 )
 from sglang_omni.models.qwen3_omni.merge import decode_events, merge_for_thinker
+from sglang_omni.models.qwen3_omni.mrope_positions import feat_extract_output_lengths
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     apply_thinker_result,
     build_sglang_thinker_request,
+    compute_mrope_positions,
     merge_for_talker,
-    project_mm_aggregate_to_talker_ar,
+    project_encoder_to_talker_ar,
     project_preprocessing_to_mm_aggregate,
     project_talker_to_code2wav,
     project_thinker_to_decode,
@@ -57,6 +63,7 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
@@ -64,6 +71,17 @@ from tests.unit_test.fixtures.qwen_fakes import (
     make_qwen_state,
 )
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
+from tests.unit_test.qwen3_omni.test_mrope_positions import (
+    AUDIO_START_TOKEN_ID,
+    AUDIO_TOKEN_ID,
+    IMAGE_TOKEN_ID,
+    POSITION_ID_PER_SECONDS,
+    SPATIAL_MERGE_SIZE,
+    VIDEO_TOKEN_ID,
+    VISION_START_TOKEN_ID,
+    audio_in_video_span,
+    thinker_config_ns,
+)
 
 
 def make_stage(config: PipelineConfig, name: str):
@@ -620,7 +638,11 @@ def test_qwen_preprocessor_retries_without_special_token_compat(
         if "extra_special_tokens" in kwargs:
             raise TypeError("old transformers does not accept extra_special_tokens")
         return SimpleNamespace(
-            tokenizer=SimpleNamespace(chat_template=None),
+            tokenizer=SimpleNamespace(
+                chat_template=None,
+                get_vocab=lambda: {"token": 0},
+                backend_tokenizer=SimpleNamespace(normalizer=NFC()),
+            ),
             chat_template=None,
         )
 
@@ -638,6 +660,58 @@ def test_qwen_preprocessor_retries_without_special_token_compat(
         "audio_token": "<|audio_pad|>",
     }
     assert "extra_special_tokens" not in calls[1]
+
+
+@pytest.mark.parametrize(
+    ("prompt_text", "fits"),
+    [
+        pytest.param("x" * 221, False, id="normalized"),
+        pytest.param("x" * 100_000, False, id="past-the-nfc-bound"),
+        pytest.param("e\u0301" * 220, True, id="decomposed-text-that-nfc-halves"),
+    ],
+)
+def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
+    prompt_text: str, fits: bool
+) -> None:
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+
+    tokenized_prompts: list[str] = []
+
+    class FakeProcessor:
+        def apply_chat_template(self, *_args, **_kwargs):
+            return prompt_text
+
+        def __call__(self, *, text, **_kwargs):
+            tokenized_prompts.append(text)
+            return {"input_ids": torch.tensor([[1, 2]])}
+
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    # Room for (64 - 8 - 1) * 4 = 220 characters of NFC prompt text.
+    pre.max_seq_len = 64
+    pre.max_token_chars = 4
+    pre.normalizer = NFC()
+    for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
+        setattr(pre, "default_video_" + name, None)
+    pre.processor = FakeProcessor()
+    payload = StagePayload(
+        request_id="long-text",
+        request=OmniRequest(
+            inputs={"messages": [{"role": "user", "content": "hello"}]},
+            params={"max_new_tokens": 8},
+        ),
+        data={},
+    )
+
+    if fits:
+        asyncio.run(pre.call_impl(payload))
+        assert tokenized_prompts == [prompt_text]
+    else:
+        with pytest.raises(ValueError) as exc_info:
+            asyncio.run(pre.call_impl(payload))
+        assert is_bad_request_error(exc_info.value)
+        assert tokenized_prompts == []
 
 
 def test_qwen_talker_to_code2wav_projection_keeps_only_request_latch() -> None:
@@ -1651,46 +1725,127 @@ def test_qwen_speech_preprocessing_route_excludes_talker_for_text_output() -> No
     ]
 
 
-def test_qwen_merge_for_talker_matches_projected_thinker_merge() -> None:
-    def payloads() -> dict[str, StagePayload]:
-        state = make_qwen_state(
-            encoder_inputs={
-                "image_encoder": {
-                    "cache_key": "image-cache",
-                    "pixel_values": torch.ones((2, 3)),
-                },
+def test_qwen_talker_merge_carries_mrope_metadata_without_features() -> None:
+    state = make_qwen_state(
+        encoder_inputs={
+            "image_encoder": {
+                "cache_key": "image-cache",
+                "pixel_values": torch.ones((2, 3)),
             },
-        )
-        image_state = Qwen3OmniPipelineState(
-            encoder_outs={
-                "image_encoder": {
-                    "image_embeds": torch.ones((2, 2)),
-                    "deepstack_visual_embeds_image": [torch.ones((2, 2))],
-                }
+        },
+    )
+    image_state = Qwen3OmniPipelineState(
+        encoder_outs={
+            "image_encoder": {
+                "image_embeds": torch.ones((2, 2)),
+                "image_grid_thw": torch.ones((1, 3), dtype=torch.long),
+                "deepstack_visual_embeds_image": [torch.ones((2, 2))],
             }
-        )
-        return {
+        }
+    )
+
+    talker_merged = merge_for_talker(
+        {
             "preprocessing": project_preprocessing_to_mm_aggregate(
                 make_qwen_payload(state)
             ),
-            "image_encoder": make_qwen_payload(image_state),
+            "image_encoder": project_encoder_to_talker_ar(
+                make_qwen_payload(image_state)
+            ),
         }
-
-    talker_merged = merge_for_talker(payloads())
-    expected = project_mm_aggregate_to_talker_ar(merge_for_thinker(payloads()))
+    )
 
     talker_state = Qwen3OmniPipelineState.from_dict(talker_merged.data)
-    expected_state = Qwen3OmniPipelineState.from_dict(expected.data)
-    assert sorted(talker_state.thinker_inputs["model_inputs"]) == sorted(
-        expected_state.thinker_inputs["model_inputs"]
-    )
-    model_inputs = talker_state.thinker_inputs["model_inputs"]
-    assert "image_embeds" in model_inputs
-    assert "deepstack_visual_embeds" not in model_inputs
-    assert "image_deepstack_visual_embeds" not in model_inputs
+    assert list(talker_state.thinker_inputs["model_inputs"]) == ["image_grid_thw"]
     assert talker_state.prompt["input_ids"].tolist() == [11, 12, 13]
     assert talker_state.encoder_outs == {}
     assert talker_state.mm_inputs == {}
+
+
+def test_qwen_talker_merge_of_audio_in_video_gives_the_reference_positions() -> None:
+    grid, audio_feature_length, seconds_per_grid = [4, 4, 4], 300, 0.37
+    input_ids = torch.tensor(
+        [7, 8] + audio_in_video_span(grid, audio_feature_length) + [9], dtype=torch.long
+    )
+    video_tokens = (grid[0] * grid[1] * grid[2]) // SPATIAL_MERGE_SIZE**2
+    audio_tokens = feat_extract_output_lengths(audio_feature_length)
+    state = make_qwen_state(
+        prompt={
+            "prompt_text": "watch",
+            "input_ids": input_ids,
+            "attention_mask": torch.ones(len(input_ids), dtype=torch.long),
+        },
+        mm_inputs={
+            "video": {
+                "video_grid_thw": torch.tensor([grid], dtype=torch.long),
+                "video_second_per_grid": torch.tensor([seconds_per_grid]),
+                "use_audio_in_video": True,
+            },
+            "audio": {
+                "feature_attention_mask": torch.ones(
+                    (1, audio_feature_length), dtype=torch.long
+                ),
+                "audio_feature_lengths": torch.tensor([audio_feature_length]),
+            },
+        },
+    )
+    video_state = Qwen3OmniPipelineState(
+        encoder_outs={
+            "image_encoder": {
+                "video_embeds": torch.ones((video_tokens, 2)),
+                "video_grid_thw": torch.tensor([grid], dtype=torch.long),
+                "deepstack_visual_embeds_video": [torch.ones((video_tokens, 2))],
+            }
+        }
+    )
+    audio_state = Qwen3OmniPipelineState(
+        encoder_outs={
+            "audio_encoder": {
+                "audio_embeds": torch.ones((audio_tokens, 2)),
+                "audio_feature_lengths": torch.tensor([audio_feature_length]),
+                "audio_output_lengths": torch.tensor([audio_tokens]),
+            }
+        }
+    )
+
+    talker_merged = merge_for_talker(
+        {
+            "preprocessing": project_preprocessing_to_mm_aggregate(
+                make_qwen_payload(state)
+            ),
+            "image_encoder": project_encoder_to_talker_ar(
+                make_qwen_payload(video_state)
+            ),
+            "audio_encoder": project_encoder_to_talker_ar(
+                make_qwen_payload(audio_state)
+            ),
+        }
+    )
+
+    talker_state = Qwen3OmniPipelineState.from_dict(talker_merged.data)
+    model_inputs = talker_state.thinker_inputs["model_inputs"]
+    positions, delta = compute_mrope_positions(
+        talker_state.prompt["input_ids"], model_inputs, thinker_config_ns()
+    )
+    reference_positions, reference_delta = get_rope_index_qwen3_omni(
+        spatial_merge_size=SPATIAL_MERGE_SIZE,
+        image_token_id=IMAGE_TOKEN_ID,
+        video_token_id=VIDEO_TOKEN_ID,
+        vision_start_token_id=VISION_START_TOKEN_ID,
+        tokens_per_second=None,
+        input_ids=input_ids.unsqueeze(0),
+        image_grid_thw=None,
+        video_grid_thw=torch.tensor([grid], dtype=torch.long),
+        second_per_grid_ts=torch.tensor([seconds_per_grid]),
+        audio_token_id=AUDIO_TOKEN_ID,
+        audio_start_token_id=AUDIO_START_TOKEN_ID,
+        position_id_per_seconds=POSITION_ID_PER_SECONDS,
+        use_audio_in_video=True,
+        audio_seqlens=torch.tensor([audio_feature_length]),
+    )
+    assert not any(key.endswith("embeds") for key in model_inputs)
+    assert torch.equal(positions.float(), reference_positions.squeeze(1).float())
+    assert torch.equal(delta.float(), reference_delta.float())
 
 
 def test_qwen_thinker_request_and_decode_contracts() -> None:

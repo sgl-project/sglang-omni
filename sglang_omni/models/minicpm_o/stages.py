@@ -137,6 +137,8 @@ def create_sglang_talker_executor_from_config(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+        enable_torch_compile=False,
         sampling_backend="pytorch",
     )
     overrides.setdefault("trust_remote_code", False)
@@ -256,6 +258,7 @@ def create_code2wav_executor(
     decode_stream_priority: int,
     enable_flow_block_compile: bool,
     enable_dit_torch_compile: bool,
+    enable_hift_torch_compile: bool,
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
@@ -266,6 +269,7 @@ def create_code2wav_executor(
         device=str(resolve_concrete_device(device, gpu_id)),
         dtype=dtype,
         enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_hift_torch_compile=enable_hift_torch_compile,
         enable_flow_variable_length=enable_flow_variable_length,
         reference_workers=reference_workers,
         prompt_cache_capacity=prompt_cache_capacity,
@@ -343,6 +347,8 @@ def create_sglang_thinker_executor_from_config(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+        enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
         sampling_backend="pytorch",

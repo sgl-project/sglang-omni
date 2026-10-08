@@ -53,7 +53,6 @@ def default_stream_for_cufft(
 
 
 class ConvRNNF0Predictor(nn.Module):
-
     def __init__(
         self, num_class: int = 1, in_channels: int = 80, cond_channels: int = 512
     ) -> None:
@@ -92,7 +91,6 @@ class ConvRNNF0Predictor(nn.Module):
 
 
 class HiFTGenerator(nn.Module):
-
     def __init__(
         self,
         in_channels: int = 80,
@@ -158,7 +156,8 @@ class HiFTGenerator(nn.Module):
         self.source_downs = nn.ModuleList()
         self.source_resblocks = nn.ModuleList()
         downsample_rates = (1,) + upsample_rates[::-1][:-1]
-        downsample_cum_rates = np.cumprod(downsample_rates)
+        # note (0xtoward): Python ints stay constants under Dynamo's symbolic lengths.
+        downsample_cum_rates = np.cumprod(downsample_rates).tolist()
         for i, (u, k, d) in enumerate(
             zip(
                 downsample_cum_rates[::-1],
@@ -242,6 +241,15 @@ class HiFTGenerator(nn.Module):
     def decode(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         s_stft_real, s_stft_imag = self.stft(s.squeeze(1))
         s_stft = torch.cat([s_stft_real, s_stft_imag], dim=1)
+        magnitude, phase = self.decode_body(x, s_stft)
+        x = self.istft(magnitude, phase)
+        x = torch.clamp(x, -self.audio_limit, self.audio_limit)
+        return x
+
+    def decode_body(
+        self, x: torch.Tensor, s_stft: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Waveform STFT magnitude and phase; everything between the two STFTs."""
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, self.lrelu_slope)
@@ -264,9 +272,7 @@ class HiFTGenerator(nn.Module):
         x = self.conv_post(x)
         magnitude = torch.exp(x[:, : self.istft_params["n_fft"] // 2 + 1, :])
         phase = torch.sin(x[:, self.istft_params["n_fft"] // 2 + 1 :, :])
-        x = self.istft(magnitude, phase)
-        x = torch.clamp(x, -self.audio_limit, self.audio_limit)
-        return x
+        return magnitude, phase
 
     @torch.inference_mode()
     def forward(

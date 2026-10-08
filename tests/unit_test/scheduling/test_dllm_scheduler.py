@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import queue
+import threading
 from array import array
 from types import SimpleNamespace
 
@@ -10,6 +12,7 @@ from sglang.srt.managers.schedule_batch import ReqKvInfo
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 class ReqDouble:
@@ -316,3 +319,34 @@ def test_sync_dllm_result_commits_generated_suffix() -> None:
     assert req.full_untruncated_fill_ids == array("q", [1, 2, -1, -1, 10, 11])
     assert req.output_ids == [10, 11]
     assert req.accepted_lengths == [2]
+
+
+def test_request_that_fails_to_build_gets_an_error_and_the_next_is_queued() -> None:
+    scheduler = make_scheduler(fdfo=False)
+    scheduler.abort_lock = threading.Lock()
+    scheduler.aborted_request_ids = set()
+    scheduler.waiting_queue = []
+    scheduler.staging_queue = []
+    scheduler.inbox = queue.Queue()
+    outbox = []
+    scheduler.outbox = SimpleNamespace(put=outbox.append)
+    build_error = ValueError("temperature must be a non-negative finite number")
+
+    def request_builder(payload: str) -> SimpleNamespace:
+        if payload == "bad":
+            raise build_error
+        else:
+            return SimpleNamespace(req=ReqDouble(rid="good"))
+
+    scheduler.request_builder = request_builder
+    for request_id in ("bad", "good"):
+        scheduler.inbox.put(
+            IncomingMessage(request_id=request_id, type="new_request", data=request_id)
+        )
+
+    scheduler.drain_and_purge()
+
+    assert [(m.request_id, m.type, m.data) for m in outbox] == [
+        ("bad", "error", build_error)
+    ]
+    assert [req.rid for req in scheduler.waiting_queue] == ["good"]

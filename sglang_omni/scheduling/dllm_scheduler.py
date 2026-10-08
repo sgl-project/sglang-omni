@@ -143,7 +143,18 @@ class DllmScheduler:
                 pass
 
             if msg.type == "new_request":
-                req_data = self.request_builder(msg.data)
+                try:
+                    req_data = self.request_builder(msg.data)
+                except Exception as exc:
+                    logger.exception(
+                        f"DllmScheduler: request builder failed for {msg.request_id}"
+                    )
+                    self.outbox.put(
+                        OutgoingMessage(
+                            request_id=msg.request_id, type="error", data=exc
+                        )
+                    )
+                    continue
                 req = req_data.req
                 self.rid_to_req_data[req.rid] = req_data
                 self.waiting_queue.append(req)

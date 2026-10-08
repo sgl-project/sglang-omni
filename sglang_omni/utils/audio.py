@@ -297,6 +297,19 @@ def decode_audio_data_uri(value: str) -> bytes | None:
         raise AudioDecodeError("Invalid base64 audio data URI") from exc
 
 
+def audio_request_timeout() -> int:
+    """Seconds an audio URL fetch may take, from REQUEST_TIMEOUT."""
+    try:
+        timeout = int(os.getenv("REQUEST_TIMEOUT", str(_DEFAULT_REQUEST_TIMEOUT)))
+    except ValueError:
+        return _DEFAULT_REQUEST_TIMEOUT
+    if timeout <= 0:
+        return _DEFAULT_REQUEST_TIMEOUT
+    else:
+        pass
+    return timeout
+
+
 def load_audio(
     source: object,
     source_name: str = "audio",
@@ -318,17 +331,9 @@ def load_audio(
         if decoded is not None:
             source = decoded
         elif source.startswith(("http://", "https://")):
-            try:
-                timeout = int(
-                    os.getenv("REQUEST_TIMEOUT", str(_DEFAULT_REQUEST_TIMEOUT))
-                )
-                if timeout <= 0:
-                    timeout = _DEFAULT_REQUEST_TIMEOUT
-                else:
-                    pass
-            except ValueError:
-                timeout = _DEFAULT_REQUEST_TIMEOUT
-            response = httpx.get(source, timeout=timeout, follow_redirects=True)
+            response = httpx.get(
+                source, timeout=audio_request_timeout(), follow_redirects=True
+            )
             response.raise_for_status()
             source = response.content
         elif source.startswith("file://"):

@@ -7,6 +7,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal, TypedDict, TypeGuard
@@ -15,6 +16,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 import xxhash
+from tokenizers.normalizers import NFC
 from transformers import BatchFeature, PreTrainedTokenizerBase
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
@@ -200,6 +202,8 @@ def contextualize_cache_key(base_key: str | None, **context: object) -> str | No
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 QWEN3_OMNI_CHAT_TEMPLATE_FALLBACK_MODEL = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+# U+1F82 decomposes into four code points, the most that NFC recomposes into one.
+MAX_NFC_COMPOSITION_LENGTH = 4
 
 
 def validate_prompt_seq_len(
@@ -334,6 +338,9 @@ class Qwen3OmniPreprocessor:
             )
             self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
         self.tokenizer: PreTrainedTokenizerBase = self.processor.tokenizer
+        self.max_token_chars = max(len(token) for token in self.tokenizer.get_vocab())
+        self.normalizer = self.tokenizer.backend_tokenizer.normalizer
+        assert isinstance(self.normalizer, NFC), self.normalizer
         ensure_chat_template(
             self.tokenizer,
             model_path=self.model_dir,
@@ -345,6 +352,49 @@ class Qwen3OmniPreprocessor:
             self.processor.chat_template = self.tokenizer.chat_template
         else:
             pass
+
+    def validate_prompt_text_len(
+        self,
+        prompt_text: str,
+        *,
+        max_new_tokens: int,
+        request_id: str,
+    ) -> None:
+        """Reject prompt text that cannot fit before the tokenizer spends time on it.
+
+        A token spans at most max_token_chars characters of the NFC text the
+        tokenizer encodes, and NFC keeps at least a quarter of its input
+        characters, so these counts bound the token count from below.
+        """
+        if self.max_seq_len is None:
+            return
+        else:
+            pass
+        max_prompt_chars = (
+            self.max_seq_len - int(max_new_tokens) - 1
+        ) * self.max_token_chars
+        if len(prompt_text) <= max_prompt_chars:
+            return
+        elif len(prompt_text) > MAX_NFC_COMPOSITION_LENGTH * max_prompt_chars:
+            normalized_chars = math.ceil(len(prompt_text) / MAX_NFC_COMPOSITION_LENGTH)
+        else:
+            normalized_chars = len(self.normalizer.normalize_str(prompt_text))
+        if normalized_chars <= max_prompt_chars:
+            return
+        else:
+            pass
+        min_prompt_tokens = math.ceil(normalized_chars / self.max_token_chars)
+        logger.info(
+            f"rejecting request {request_id}: prompt text of {len(prompt_text)} "
+            f"characters needs at least {min_prompt_tokens} tokens"
+        )
+        raise ValueError(
+            f"Requested token count exceeds the model's maximum context length "
+            f"of {self.max_seq_len} tokens. The input messages need at least "
+            f"{min_prompt_tokens} tokens and the completion requests "
+            f"{int(max_new_tokens)}. Please reduce the length of the input "
+            f"messages or the completion to fit within the limit."
+        )
 
     def build_multimodal_messages(
         self,
@@ -733,6 +783,14 @@ class Qwen3OmniPreprocessor:
             add_generation_prompt=True,
             tokenize=False,
         )
+        max_new_tokens = payload.request.params.get(
+            "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+        )
+        self.validate_prompt_text_len(
+            prompt_text,
+            max_new_tokens=max_new_tokens,
+            request_id=payload.request_id,
+        )
 
         videos_kwargs: VideoProcessorKwargs = {}
         if sampled_video_fps:
@@ -809,9 +867,7 @@ class Qwen3OmniPreprocessor:
         validate_prompt_seq_len(
             input_ids,
             max_seq_len=self.max_seq_len,
-            max_new_tokens=payload.request.params.get(
-                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
-            ),
+            max_new_tokens=max_new_tokens,
             request_id=payload.request_id,
         )
 

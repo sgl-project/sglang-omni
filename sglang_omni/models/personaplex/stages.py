@@ -34,7 +34,10 @@ from sglang_omni.models.personaplex.prompts import (
 )
 from sglang_omni.models.personaplex.request_builders import stage_request_params
 from sglang_omni.models.weight_loader import resolve_model_path
-from sglang_omni.preprocessing.transcription import resolve_audio_source
+from sglang_omni.preprocessing.transcription import (
+    police_request_audio,
+    resolve_audio_source,
+)
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
@@ -92,7 +95,8 @@ def create_preprocessing_executor(
         # Note (wilsonzheng0327): Channel 0, not a downmix: in a two-party recording the
         # agent is on channel 1.
         channels = load_channels(
-            caller_audio_source(payload), source_name="PersonaPlex"
+            police_request_audio(caller_audio_source(payload)),
+            source_name="PersonaPlex",
         )
         caller = torch.as_tensor(channels[0], dtype=torch.float32)
 

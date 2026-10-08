@@ -16,6 +16,7 @@ from sglang_omni.models.personaplex.prompts import (
     VoicePrompt,
     tokenize_text_prompt,
 )
+from sglang_omni.preprocessing import resource_connector
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.serve.openai_errors import is_bad_request_error
@@ -120,6 +121,25 @@ def test_chat_completions_audios_supply_the_caller(preprocess):
     with pytest.raises(ValueError, match="one caller recording") as error:
         preprocess(inputs={"messages": [], "audios": ["a.wav", "b.wav"]})
     assert is_bad_request_error(error.value)
+
+
+def test_caller_audio_follows_the_server_media_policy(
+    preprocess, monkeypatch, tmp_path
+):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"RIFF")
+    monkeypatch.setenv(resource_connector.ALLOWED_LOCAL_MEDIA_PATH_ENV, str(allowed))
+    monkeypatch.setattr(resource_connector, "_global_connector", None)
+
+    for inputs in (
+        {"audio_path": str(outside)},
+        {"messages": [], "audios": [str(outside)]},
+    ):
+        with pytest.raises(ValueError, match="not within allowed directory"):
+            preprocess(inputs=inputs)
+    assert preprocess.sources == []
 
 
 def test_engine_context_length_reaches_the_builder(monkeypatch):

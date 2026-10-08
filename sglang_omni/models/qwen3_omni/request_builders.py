@@ -341,17 +341,9 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return payload_with_state(payload, projected)
 
 
-# note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack.
-_TALKER_UNUSED_MODEL_INPUT_KEYS = (
-    "image_deepstack_visual_embeds",
-    "video_deepstack_visual_embeds",
-    "deepstack_visual_embeds",
-)
-
-_TALKER_UNUSED_ENCODER_OUT_KEYS = (
-    "deepstack_visual_embeds_image",
-    "deepstack_visual_embeds_video",
-)
+# note (ratish): the talker projects zeros at multimodal prompt rows, so of the encoder
+# outputs it reads only what its MRoPE positions need.
+TALKER_ENCODER_OUT_KEYS = ("image_grid_thw", "video_grid_thw", "audio_feature_lengths")
 
 
 def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
@@ -360,9 +352,7 @@ def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
     encoder_out = state.encoder_outs.get(stage_name, {})
     if isinstance(encoder_out, dict):
         encoder_out = {
-            k: v
-            for k, v in encoder_out.items()
-            if k not in _TALKER_UNUSED_ENCODER_OUT_KEYS
+            k: v for k, v in encoder_out.items() if k in TALKER_ENCODER_OUT_KEYS
         }
     else:
         pass
@@ -379,21 +369,9 @@ def merge_for_talker(payloads: dict[str, StagePayload]) -> StagePayload:
 def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
     """Early-submit projection: ship prompt + thinker_inputs to the talker."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    thinker_inputs = (
-        dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
-    )
-    model_inputs = thinker_inputs.get("model_inputs")
-    if isinstance(model_inputs, dict):
-        thinker_inputs["model_inputs"] = {
-            k: v
-            for k, v in model_inputs.items()
-            if k not in _TALKER_UNUSED_MODEL_INPUT_KEYS
-        }
-    else:
-        pass
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
-        thinker_inputs=thinker_inputs,
+        thinker_inputs=dict(state.thinker_inputs),
     )
     return payload_with_state(payload, projected)
 
