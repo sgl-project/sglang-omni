@@ -664,10 +664,7 @@ def add_common_args(
     parser.add_argument(
         "--util-gpu-ids",
         default="",
-        help=(
-            "Comma-separated physical GPU indices reported by nvidia-smi or "
-            "xpu-smi (empty = all reported devices)."
-        ),
+        help="Comma-separated GPU indices to sample (empty = all visible).",
     )
     parser.add_argument(
         "--util-interval",
