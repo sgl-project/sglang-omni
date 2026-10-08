@@ -158,6 +158,7 @@ async def test_unit_failure_closes_session_and_logs_once(
         record for record in caplog.records if record.name == RUNTIME_LOGGER_NAME
     ]
     assert len(runtime_records) == 1
+    assert runtime_records[0].levelno == logging.ERROR
     assert (runtime_records[0].exc_info is not None) == has_traceback
 
 
