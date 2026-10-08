@@ -13,6 +13,7 @@ from pathlib import Path
 import av
 import numpy as np
 import numpy.typing as npt
+import soundfile
 import torch
 
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
@@ -59,6 +60,18 @@ def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
         pass
 
     return np.concatenate(frames), int(sample_rate)
+
+
+def decode_audio_bytes(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
+    """Decode audio bytes to mono float as the reference loader does: libsndfile, then
+    PyAV for the containers libsndfile does not read (MP4, WebM, AAC)."""
+    try:
+        audio, sample_rate = soundfile.read(
+            io.BytesIO(data), dtype="float32", always_2d=True
+        )
+    except soundfile.LibsndfileError:
+        return decode_audio_bytes_av(data)
+    return audio.mean(axis=1), int(sample_rate)
 
 
 def parse_wav_bytes(
@@ -178,11 +191,8 @@ def load_audio_path(
 ) -> npt.NDArray[np.float32]:
     with open(path, "rb") as f:
         data = f.read()
-    try:
-        audio, sr = parse_wav_bytes(data, source=str(path))
-    except ValueError:
-        audio, sr = decode_audio_bytes_av(data)
-    return resample_linear(audio, sr, target_sr)
+    audio, sample_rate = decode_audio_bytes(data)
+    return resample_linear(audio, sample_rate, target_sr)
 
 
 class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
@@ -201,11 +211,8 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
 
     def load_bytes(self, data: bytes) -> tuple[npt.NDArray[np.float32], float]:
         """Load audio from raw bytes (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
-        try:
-            audio, sr = parse_wav_bytes(data, source="bytes")
-        except ValueError:
-            audio, sr = decode_audio_bytes_av(data)
-        resampled = resample_linear(audio, sr, self.target_sr)
+        audio, sample_rate = decode_audio_bytes(data)
+        resampled = resample_linear(audio, sample_rate, self.target_sr)
         return resampled, float(self.target_sr)
 
     def load_base64(
@@ -220,11 +227,8 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
         """Load audio from a local file path (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
         with open(filepath, "rb") as f:
             data = f.read()
-        try:
-            audio, sr = parse_wav_bytes(data, source=str(filepath))
-        except ValueError:
-            audio, sr = decode_audio_bytes_av(data)
-        resampled = resample_linear(audio, sr, self.target_sr)
+        audio, sample_rate = decode_audio_bytes(data)
+        resampled = resample_linear(audio, sample_rate, self.target_sr)
         return resampled, float(self.target_sr)
 
 
