@@ -100,6 +100,8 @@ class ConfigManager:
             elif cur_key is None and cur_value is None:
                 cur_key = arg
             elif cur_key is not None and cur_value is None:
+                if arg.startswith("--"):
+                    raise ValueError(f"Missing value for argument: {cur_key}")
                 # record the key value pair
                 cur_value = arg
             else:
