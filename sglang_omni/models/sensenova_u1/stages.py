@@ -8,6 +8,7 @@ import binascii
 import io
 import logging
 import time
+from contextlib import nullcontext
 from typing import Any
 
 from sglang_omni.models.sensenova_u1.sampling import (
@@ -341,6 +342,11 @@ def create_generation_executor(
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 0,
     max_batch_cost: int | None = None,
+    dit_layerwise_offload: bool = False,
+    dit_offload_prefetch_size: int = 1,
+    dit_layerwise_resident_layers: int = 0,
+    dit_layerwise_residency_policy: str = "leading",
+    pin_cpu_memory: bool = False,
 ):
     """Load the model once and optionally batch compatible T2I requests."""
     from transformers import AutoModel, AutoTokenizer
@@ -350,14 +356,34 @@ def create_generation_executor(
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
+    resolved_device = resolve_concrete_device(device, gpu_id)
+    offload_config = None
+    if dit_layerwise_offload:
+        from sglang_omni.models.sensenova_u1.offload import (
+            LayerwiseOffloadConfig,
+            SenseNovaLayerwiseOffload,
+        )
+
+        if resolved_device.type != "cuda":
+            raise ValueError("SenseNova layerwise offload currently requires CUDA")
+        offload_config = LayerwiseOffloadConfig(
+            prefetch_size=dit_offload_prefetch_size,
+            resident_layers=dit_layerwise_resident_layers,
+            residency_policy=dit_layerwise_residency_policy,
+            pin_cpu_memory=pin_cpu_memory,
+        )
+
     load_started = time.perf_counter()
     register()
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = AutoModel.from_pretrained(
         model_path, torch_dtype=resolve_dtype(dtype)
     ).eval()
-    resolved_device = resolve_concrete_device(device, gpu_id)
-    model = model.to(resolved_device)
+    offload = None
+    if offload_config is not None:
+        offload = SenseNovaLayerwiseOffload(model, resolved_device, offload_config)
+    else:
+        model = model.to(resolved_device)
     logger.info(
         "SenseNova-U1 loaded on %s with dtype=%s in %.2f seconds",
         resolved_device,
@@ -389,10 +415,12 @@ def create_generation_executor(
     batch_enabled = max_batch_size > 1
 
     def _generate(payload: StagePayload) -> StagePayload:
-        return generate_image(payload, model, tokenizer)
+        with offload.request() if offload is not None else nullcontext():
+            return generate_image(payload, model, tokenizer)
 
     def _generate_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        return generate_images(payloads, model, tokenizer)
+        with offload.request() if offload is not None else nullcontext():
+            return generate_images(payloads, model, tokenizer)
 
     return SimpleScheduler(
         _generate,
@@ -402,4 +430,5 @@ def create_generation_executor(
         batch_key_fn=image_generation_batch_key if batch_enabled else None,
         request_cost_fn=image_generation_request_cost if batch_enabled else None,
         max_batch_cost=max_batch_cost if batch_enabled else None,
+        shutdown_callback=offload.close if offload is not None else None,
     )
