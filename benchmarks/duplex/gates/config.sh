@@ -12,7 +12,7 @@ OMNI_ROOT=${OMNI_ROOT:-$HOME/omni}  # holds models/, logs/, src/ (mounted at /mo
 IMAGE=${IMAGE:-docker.io/lmsysorg/sglang:v0.5.21-cu130}
 # Cards to use, the container of each card, and the cores its recorder clients are pinned to (same order).
 CARDS=${CARDS:-"0 1 2"}
-CONTAINERS=${CONTAINERS:-"sglang-omni-junnan sglang-omni-junnan-1 sglang-omni-junnan-2"}
+CONTAINERS=${CONTAINERS:-"sglang-omni-gate sglang-omni-gate-1 sglang-omni-gate-2"}
 CLIENT_CPUS_LIST=${CLIENT_CPUS_LIST:-"56-83 112-125,140-153 126-139,154-167"}
 UNIT_CPUS=${UNIT_CPUS:-176-223}  # CPU unit tests; keep them off the client cores
 PIP_PINS=${PIP_PINS:-"sglang==0.5.21 flashinfer_python[cu13]==0.6.18"}

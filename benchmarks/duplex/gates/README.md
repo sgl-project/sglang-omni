@@ -20,13 +20,13 @@ Scripts that set up a GPU node and run the gates used for the MiniCPM-o native d
 From a checkout that has the commits (the node needs no credentials; trees travel as `git archive` tarballs):
 
 ```bash
-export NODE=lijrjyan@47.74.68.185
+export NODE=<user>@<host>            # the GPU node, reachable by ssh without a password
 benchmarks/duplex/gates/gate.sh push base:8eee6add1 P9:8792c85bc   # also pushes $BENCH_TREE
 ssh $NODE 'setsid nohup bash ~/omni/src/harness/setup_node.sh base > ~/omni/setup.log 2>&1 < /dev/null &'
 ssh $NODE 'tail -3 ~/omni/setup.log'                                  # wait for SETUP_DONE (about 15 minutes)
 ```
 
-`setup_node.sh base` installs the dependencies of the pushed tree `base` into the first container, commits it and clones it for the other cards. Cards, container names and client cores come from `CARDS`, `CONTAINERS` and `CLIENT_CPUS_LIST` (defaults: cards 0–2, `sglang-omni-junnan`, `-1`, `-2`). It is idempotent: rerun it after a partial failure.
+`setup_node.sh base` installs the dependencies of the pushed tree `base` into the first container, commits it and clones it for the other cards. Cards, container names and client cores come from `CARDS`, `CONTAINERS` and `CLIENT_CPUS_LIST` (defaults: cards 0–2, `sglang-omni-gate`, `-1`, `-2`). It is idempotent: rerun it after a partial failure.
 
 The recorder and serving clients (`benchmarks/eval/benchmark_duplex_v10.py`, `benchmarks/duplex/serving.py`) are not on main yet; they come from `BENCH_TREE` (default `bench:88ad7b44d`, branch `bench/minicpmo-duplex-serving`), which `push` sends along.
 
@@ -132,7 +132,7 @@ Model options of the recorder live in `frame_hook/model_client.py` (the recorder
 
 ## Example: audio and video sweeps of the speech-flow-graphs tree
 
-2026-10-07, node 47.74.68.185, H200 cards 0–2, image `lmsysorg/sglang:v0.5.21-cu130`. Tree `P9` = `perf/minicpmo-speech-flow-graphs` at `8792c85bc` (eight commits on main `8eee6add1`). Audio: `gate.sh sweep P9:8792c85bc` (doubling ladder, 2 runs per level) plus a zoom `--sessions 52,56,60`. Video: `--frames-per-unit 1 --sessions 1,2,4,8,16,32,48 --runs 3 --runs-above-target 1`, plus a repeat `--sessions 8,32 --runs 3`. Both with the tuned speech block and graphs on; the tables merge each sweep with its follow-up (`report.py sweep <sweep> <zoom>`).
+One H200 node, cards 0–2, image `lmsysorg/sglang:v0.5.21-cu130`. Tree `P9` = `perf/minicpmo-speech-flow-graphs` (eight commits on main `8eee6add1`). Audio: `gate.sh sweep P9:8792c85bc` (doubling ladder, 2 runs per level) plus a zoom `--sessions 52,56,60`. Video: `--frames-per-unit 1 --sessions 1,2,4,8,16,32,48 --runs 3 --runs-above-target 1`, plus a repeat `--sessions 8,32 --runs 3`. Both with the tuned speech block and graphs on; the tables merge each sweep with its follow-up (`report.py sweep <sweep> <zoom>`).
 
 | sessions | audio: runs | audio: miss mean / max | audio: lag p95 | audio: peak memory | video: runs | video: miss mean / max | video: lag p95 | video: peak memory |
 |---|---|---|---|---|---|---|---|---|
