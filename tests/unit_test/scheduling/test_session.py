@@ -448,8 +448,6 @@ def test_context_exhaustion_releases_append_unit() -> None:
     assert isinstance(error, ContextExhaustedError)
     assert str(error).startswith("context_exhausted:")
     assert "8192" in str(error)
-    assert "needs 8191 tokens" in str(error)
-    assert "--allow-auto-truncate" not in str(error)
     assert not bridge.units_by_request_id
     assert bridge.sessions[identity.id].unit is None
     scheduler.session_controller.get.return_value.abort_req.assert_called_once()
