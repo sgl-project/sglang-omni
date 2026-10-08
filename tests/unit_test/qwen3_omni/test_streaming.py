@@ -390,6 +390,23 @@ def test_utf8_multibyte_hold_then_emit():
     assert out[0].data["text"] == "hello"
 
 
+def test_literal_replacement_character_does_not_hold_later_text():
+    """Only an incomplete UTF-8 suffix holds; a complete U+FFFD streams with what follows."""
+    tok = ByteTokenizer(
+        vocab={1: "\ufffd".encode(), 2: b" next", 3: b"\xe4", 4: b"\xbd\xa0"},
+    )
+    sched = StreamingDetokenizeScheduler(tokenizer=tok, eos_token_id=None)
+
+    sched.on_stream_chunk("req-1", FakeStreamItem(data=1))
+    sched.on_stream_chunk("req-1", FakeStreamItem(data=2))
+    assert [m.data["text"] for m in drain_outbox(sched)] == ["\ufffd next"]
+
+    sched.on_stream_chunk("req-1", FakeStreamItem(data=3))
+    assert drain_outbox(sched) == [], "an incomplete character still holds"
+    sched.on_stream_chunk("req-1", FakeStreamItem(data=4))
+    assert [m.data["text"] for m in drain_outbox(sched)] == ["你"]
+
+
 def test_special_tokens_emit_no_delta():
     """A token in the special set must not produce a stream chunk."""
     tok = ByteTokenizer(
