@@ -117,33 +117,6 @@ def serial_window_frames(
     return tuple(frames)
 
 
-def final_window_frames(
-    stream_chunk_size: int, left_context_size: int, initial_chunk_frames: int = 0
-) -> tuple[int, ...]:
-    """Window lengths a finished stream's last decode can take, in walk order.
-
-    A stream ends 1 to step - 1 frames past its last threshold window, read with
-    the context it holds by then.
-    """
-    initial = min(max(int(initial_chunk_frames), 0), stream_chunk_size)
-    frames: list[int] = []
-    emitted = 0
-    while True:
-        step = initial if emitted == 0 and initial else stream_chunk_size
-        context = min(left_context_size, emitted)
-        for new_frames in range(1, step):
-            if context + new_frames not in frames:
-                frames.append(context + new_frames)
-            else:
-                pass
-        if context + step == left_context_size + stream_chunk_size:
-            break
-        else:
-            pass
-        emitted += step
-    return tuple(frames)
-
-
 def serial_threshold_graph_keys(
     stream_chunk_size: int, left_context_size: int, initial_chunk_frames: int = 0
 ) -> tuple[GraphKey, ...]:
@@ -1466,13 +1439,14 @@ def create_code2wav_scheduler(
             graph_keys = serial_threshold_graph_keys(
                 stream_chunk_size, left_context_size, initial_codec_chunk_frames
             )
+        # note (ratish): every length up to a full window is a threshold window or the
+        # last window of some stream length, so the lengths the threshold keys miss
+        # are exactly the final windows.
         final_window_keys = tuple(
             key
             for key in (
                 GraphKey(batch_size=1, frames=frames)
-                for frames in final_window_frames(
-                    stream_chunk_size, left_context_size, initial_codec_chunk_frames
-                )
+                for frames in range(1, left_context_size + stream_chunk_size + 1)
             )
             if key not in graph_keys
         )
