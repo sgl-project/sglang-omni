@@ -50,7 +50,6 @@ class WholeHistoryCudaGraphRunner:
         speaker_channels: int,
         max_rows: int,
         tier_frames: Sequence[int],
-        max_frames: int,
     ) -> None:
         self.estimator = estimator
         self.graphs = graphs
@@ -63,7 +62,9 @@ class WholeHistoryCudaGraphRunner:
         self.speaker_channels = speaker_channels
         self.max_rows = max_rows
         self.tier_frames = sorted(tier_frames)
-        self.angles = estimator.rope_angles(max_frames)
+        # note (ratish): positions restart in every row, and no row a replay holds, the
+        # padding row included, is longer than the largest tier.
+        self.angles = estimator.rope_angles(self.tier_frames[-1])
         self.captured: list[CapturedWholeHistorySolve] = []
 
     def slot_lengths(self, lengths: Sequence[int], tier_frames: int) -> list[int]:

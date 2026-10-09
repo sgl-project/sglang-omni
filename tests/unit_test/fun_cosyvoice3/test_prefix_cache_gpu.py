@@ -358,7 +358,6 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
         speaker_channels=CHANNELS,
         max_rows=2,
         tier_frames=(512,),
-        max_frames=1024,
     )
     runner.capture()
     whole_history.capture()
@@ -486,9 +485,10 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
     compile_packed: bool,
 ) -> None:
     """Replays with empty row slots and a padding row, after other steps left their
-    frames in the tier's buffers, equal the eager solve of the rows alone, also for
-    steps past the largest tier or the row slots, replayed as groups of rows. A row
-    alone past the largest tier is refused."""
+    frames in the tier's buffers, equal the eager solve of the rows alone, also
+    through a tier whose padding row is longer than any row, and for steps past the
+    largest tier or the row slots, replayed as groups of rows. A row alone past the
+    largest tier is refused."""
     estimator = make_estimator()
     device = torch.device("cuda", torch.cuda.current_device())
     dtype = torch.bfloat16
@@ -543,8 +543,7 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
         mel_channels=CHANNELS,
         speaker_channels=CHANNELS,
         max_rows=3,
-        tier_frames=(128, 256),
-        max_frames=1024,
+        tier_frames=(128, 256, 2048),
     )
     runner.capture()
 
@@ -558,8 +557,10 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
             (150, 150),
             (20, 20, 20, 20),
             (200, 90, 100, 30, 70),
+            (900, 900),
+            (900, 900, 400),
             (40, 70),
         ):
             replayed = runner.run(**step_inputs(lengths), lengths=lengths)
             assert torch.equal(replayed, eager_solve(lengths)), lengths
-        assert runner.run(**step_inputs((300,)), lengths=(300,)) is None
+        assert runner.run(**step_inputs((2100,)), lengths=(2100,)) is None
