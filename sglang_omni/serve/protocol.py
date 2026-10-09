@@ -289,14 +289,14 @@ class GenerateResponse(BaseModel):
 
 
 class ImageGenerationRequest(BaseModel):
-    """First-pass SenseNova T2I request (base64 PNG only)."""
+    """SenseNova T2I request with native multi-output generation (base64 PNG)."""
 
     model_config = ConfigDict(extra="forbid")
 
     model: str | None = None
     prompt: str = Field(min_length=1)
     size: str = "2048x2048"
-    n: int = Field(default=1, ge=1, le=1)
+    n: int = Field(default=1, ge=1, le=10)
     response_format: Literal["b64_json"] = "b64_json"
     seed: int = Field(default=42, ge=0)
     num_inference_steps: int = Field(default=50, ge=1)

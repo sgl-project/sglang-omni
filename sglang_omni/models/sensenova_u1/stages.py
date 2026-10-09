@@ -45,6 +45,9 @@ def generate_images(
             results[index] = _generate_image_edit(payload, model, tokenizer)
             continue
         options = _text_to_image_options(payload)
+        if options.n > 1:
+            results[index] = _generate_text_to_image(payload, model, tokenizer)
+            continue
         signature = (
             options.width,
             options.height,
@@ -89,9 +92,13 @@ def _generate_text_to_image(
         images = model.t2i_generate(
             tokenizer,
             prompt,
-            batch_size=1,
+            batch_size=options.n,
             thinking_backend=None,
-            seed=options.seed,
+            seed=(
+                options.seed
+                if options.n == 1
+                else [options.seed + index for index in range(options.n)]
+            ),
             image_size=(options.width, options.height),
             cfg_scale=options.guidance_scale,
             cfg_norm="none",
@@ -102,7 +109,25 @@ def _generate_text_to_image(
             t_eps=0.02,
             think_mode=False,
         )
-    return _encode_image(payload, images, options.width, options.height)
+    if options.n == 1:
+        return _encode_image(payload, images, options.width, options.height)
+    if not isinstance(images, torch.Tensor) or images.shape != (
+        options.n,
+        3,
+        options.height,
+        options.width,
+    ):
+        raise ValueError("SenseNova-U1 returned an invalid multi-output image tensor")
+    encoded = []
+    for index in range(options.n):
+        _encode_image(payload, images[index : index + 1], options.width, options.height)
+        encoded.append(payload.data["image_b64"])
+    payload.data = {
+        "images_b64": encoded,
+        "modality": "image",
+        "finish_reason": "stop",
+    }
+    return payload
 
 
 def _generate_text_to_image_batch(
@@ -314,7 +339,14 @@ def image_generation_request_cost(payload: StagePayload) -> int:
     else:
         options = _text_to_image_options(payload)
         branches = 1 + int(options.guidance_scale > 1)
-    return options.width * options.height * options.num_inference_steps * branches
+    outputs = options.n if isinstance(options, SenseNovaU1Sampling) else 1
+    return (
+        outputs
+        * options.width
+        * options.height
+        * options.num_inference_steps
+        * branches
+    )
 
 
 def image_generation_batch_key(payload: StagePayload) -> tuple[Any, ...]:
@@ -323,6 +355,8 @@ def image_generation_batch_key(payload: StagePayload) -> tuple[Any, ...]:
     if isinstance(inputs, dict) and inputs.get("task") == "image_edit":
         return ("image_edit", payload.request_id)
     options = _text_to_image_options(payload)
+    if options.n > 1:
+        return ("text_to_image_multi_output", payload.request_id)
     return (
         "text_to_image",
         options.width,
