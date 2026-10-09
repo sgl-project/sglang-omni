@@ -13,6 +13,8 @@ from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
     import torch
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.server_args import ServerArgs
     from torch.nn.attention import SDPBackend
 
     from sglang_omni.comm.data_ref import TransportKind
@@ -119,6 +121,10 @@ class OmniPlatform(DeviceMixin):
     def enable_code2wav_graph(self):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
+
+    def cross_attention_backend(self) -> str | None:
+        """Attention backend for encoder-decoder cross attention, if required."""
+        return None
 
     def enable_codec_decode_graph(self) -> bool:
         """Check if current platform captures decode graphs for the Higgs TTS codec"""

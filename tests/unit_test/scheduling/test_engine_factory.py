@@ -147,6 +147,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
+    monkeypatch.setattr(platforms.current_platform, "is_cpu", lambda: False)
 
     events: list[str] = []
     build_kwargs: dict[str, Any] = {}

@@ -136,7 +136,6 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         server_args_overrides: Mapping[str, object] | None = None,
         total_gpu_memory_fraction: float | None = None,
     ) -> "OmniScheduler[RequestDataT]":
-        from sglang_omni.platforms import current_platform
         from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
         from sglang_omni.scheduling import sglang_backend
         from sglang_omni.utils.device import resolve_concrete_device
@@ -152,7 +151,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
 
         self.pre_infra_setup(checkpoint_dir)
 
-        if current_platform.is_cpu():
+        if concrete_device.type == "cpu":
             # A stage default asking for a graph would otherwise fail inside
             # capture rather than at configuration time.
             server_args_overrides = dict(server_args_overrides or {})

@@ -14,10 +14,12 @@ import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
 import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
+from sglang_omni import platforms
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import engine_builder as whisper_asr_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -331,6 +333,7 @@ def test_whisper_async_decode_dotted_overrides() -> None:
 
 
 def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
+    monkeypatch.setattr(platforms, "current_platform", CUDAOmniPlatform())
     build_kwargs: dict[str, object] = {}
     scheduler_kwargs: dict[str, object] = {}
     graph_init_calls: list[object] = []
@@ -449,6 +452,8 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
 
     whisper_asr_stages.create_sglang_whisper_asr_executor(
         "dummy",
+        device="cuda",
+        gpu_id=0,
         enable_pre_lm_encoder=False,
         enable_async_decode=False,
         async_decode_min_batch_size=4,

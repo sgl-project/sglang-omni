@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
+from sglang_omni import platforms
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
@@ -17,6 +18,7 @@ from sglang_omni.models.whisper_asr.request_builders import (
     MAX_PREV_CONTEXT_TOKENS,
     WhisperASRRequestData,
 )
+from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
@@ -251,6 +253,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.context_length = 0
         self.decoder_context_len = 0
         self.audio_encoder_service: WhisperPreLMEncoderService | None = None
+        self.device: str | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -383,7 +386,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
-        return {
+        defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -395,6 +398,15 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        stage_platform = (
+            CPUOmniPlatform() if self.device == "cpu" else platforms.current_platform
+        )
+        cross_attention_backend = stage_platform.cross_attention_backend()
+        if cross_attention_backend is not None:
+            defaults["attention_backend"] = cross_attention_backend
+        else:
+            pass
+        return defaults
 
     def make_adapters(self, model: object) -> tuple[
         Callable[[StagePayload], WhisperASRRequestData],
