@@ -2770,12 +2770,18 @@ def create_vocoder_executor(
     else:
         pass
     has_prefix_graphs = enable_flow_prefix_cuda_graph and flow.prefix_pool is not None
+    # note(ratish): sglang's ladder starts at 4 frames, so a smaller admission budget
+    # has no tier and every final keeps the eager solve.
+    whole_history_tier_frames = generate_prefill_cuda_graph_batch_sizes(
+        flow_batch_admission_frames
+    )
     has_whole_history_graphs = (
         enable_flow_whole_history_cuda_graph
         and device_obj.type == "cuda"
         and flow.packed_estimator is not None
         and flow.packed_estimator.is_ragged
         and autocast_dtype in FA3_DTYPES
+        and len(whole_history_tier_frames) > 0
     )
     if has_prefix_graphs or has_whole_history_graphs:
         graph_backend = current_platform.get_device_graph_backend(device_obj)
@@ -2834,9 +2840,7 @@ def create_vocoder_executor(
             mel_channels=flow.output_size,
             speaker_channels=flow.spk_embed_affine_layer.out_features,
             max_rows=max_batch_size,
-            tier_frames=generate_prefill_cuda_graph_batch_sizes(
-                flow_batch_admission_frames
-            ),
+            tier_frames=whole_history_tier_frames,
         )
         whole_history_cuda_graph_runner.capture()
         flow.whole_history_cuda_graph_runner = whole_history_cuda_graph_runner

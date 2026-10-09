@@ -941,6 +941,48 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     assert scheduler.next_message() == second
 
 
+def test_admission_budget_below_the_first_tier_keeps_finals_eager(monkeypatch) -> None:
+    fake_flow = RunnableFakeFlow()
+    fake_flow.packed_estimator.is_ragged = True
+    flow = stages.FunCosyVoice3Flow(
+        fake_flow, packed_estimator=fake_flow.packed_estimator
+    )
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cuda")
+    )
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(
+        stages,
+        "load_cosyvoice3_flow_hift",
+        lambda checkpoint_dir, device, fp16, **kwargs: (flow, FakeHiFT()),
+    )
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        dtype="float16",
+        flow_prefix_cache_gb=0.0,
+        enable_flow_cuda_graph=False,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
+        flow_batch_admission_frames=3,
+        enable_dit_torch_compile=False,
+    )
+    long_state = make_state(prompt_tokens=0)
+    long_state.audio_codes = make_codes(2200)
+    first = IncomingMessage("long", "new_request", make_payload(long_state))
+    warmup_calls = len(fake_flow.packed_estimator.calls)
+
+    mels = scheduler.vocoder.leftover_batch([scheduler.make_warmup_flow_input(2200)])
+
+    final_calls = fake_flow.packed_estimator.calls[warmup_calls:]
+    assert flow.whole_history_cuda_graph_runner is None
+    assert scheduler.collect_new_request_batch(first) == [first]
+    assert len(mels) == 1
+    assert final_calls
+    assert {call["streaming"] for call in final_calls} == {False}
+
+
 def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
