@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
 import torch
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    PretrainedConfig,
+    PreTrainedTokenizerBase,
+)
 
 from sglang_omni.models.moss_tts.audio_tokenizer import (
     load_moss_audio_vocoder,
@@ -16,11 +21,10 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
 from sglang_omni.models.moss_tts.hf_loading import moss_transformers_processor_compat
 from sglang_omni.models.moss_tts_local.config import resolve_vocoder_cuda_graph
 from sglang_omni.models.moss_tts_local.stages import (
-    _BatchedReferenceEncoder,
-    _configure_pipeline_threads,
-    _MossLocalReferenceEncoder,
-    _resolve_codec_device,
-    _validate_loaded_process_memory_budget,
+    BatchedReferenceEncoder,
+    MossLocalReferenceEncoder,
+    configure_pipeline_threads,
+    validate_loaded_process_memory_budget,
 )
 from sglang_omni.models.moss_tts_local.streaming_vocoder import (
     MossTTSLocalStreamingVocoderScheduler,
@@ -31,11 +35,14 @@ from sglang_omni.models.moss_tts_nano.audio_tokenizer import (
 )
 from sglang_omni.models.moss_tts_nano.payload_types import MossTTSNanoState
 from sglang_omni.models.moss_tts_nano.request_builders import (
+    MossTTSNanoSGLangRequestData,
     cleanup_prepared_moss_tts_nano_request,
     preprocess_moss_tts_nano_payload,
     set_moss_tts_nano_preprocessing_context,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.device import resolve_concrete_device
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +53,10 @@ _INSTALL_HINT = (
 )
 
 
-def _load_moss_tts_nano_config_and_tokenizer(model_path: str) -> tuple[Any, Any]:
+def load_moss_tts_nano_config_and_tokenizer(
+    model_path: str,
+) -> tuple[PretrainedConfig, PreTrainedTokenizerBase]:
     try:
-        from transformers import AutoConfig, AutoTokenizer
-
         with moss_transformers_processor_compat():
             model_config = AutoConfig.from_pretrained(
                 model_path,
@@ -64,22 +71,22 @@ def _load_moss_tts_nano_config_and_tokenizer(model_path: str) -> tuple[Any, Any]
     return model_config, tokenizer
 
 
-def _load_moss_tts_nano_config(model_path: str) -> Any:
+def load_moss_tts_nano_config(model_path: str) -> PretrainedConfig:
     try:
-        from transformers import AutoConfig
-
         with moss_transformers_processor_compat():
             return AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     except Exception as exc:
         raise RuntimeError(_INSTALL_HINT) from exc
 
 
-def _resolve_audio_tokenizer_model_path(
-    model_config: Any,
+def resolve_audio_tokenizer_model_path(
+    model_config: PretrainedConfig,
     codec_model_path: str | None,
 ) -> str:
     if codec_model_path is not None:
         return codec_model_path
+    else:
+        pass
     return str(
         getattr(
             model_config,
@@ -105,7 +112,7 @@ def create_preprocessing_executor(
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
 ) -> SimpleScheduler:
     worker_count = max(int(max_concurrency), 1)
-    intraop_threads = _configure_pipeline_threads(worker_count)
+    intraop_threads = configure_pipeline_threads(worker_count)
     logger.info(
         "MOSS-TTS-Nano pipeline uses %d preprocessing workers, %d shared "
         "intra-op threads",
@@ -121,33 +128,39 @@ def create_preprocessing_executor(
             "off",
             "",
         )
+    else:
+        pass
 
-    device = _resolve_codec_device(device, gpu_id)
-    model_config, tokenizer = _load_moss_tts_nano_config_and_tokenizer(model_path)
+    device = str(resolve_concrete_device(device, gpu_id))
+    model_config, tokenizer = load_moss_tts_nano_config_and_tokenizer(model_path)
     resolved_compute_dtype = resolve_moss_audio_dtype(
         compute_dtype,
         name="compute_dtype",
         allow_none=True,
     )
     audio_tokenizer = load_moss_tts_nano_audio_tokenizer(
-        _resolve_audio_tokenizer_model_path(model_config, codec_model_path),
+        resolve_audio_tokenizer_model_path(model_config, codec_model_path),
         device=device,
         compute_dtype=resolved_compute_dtype,
         attention_backend=attention_backend,
     )
-    reference_encoder: Any = _BatchedReferenceEncoder(
-        audio_tokenizer,
-        n_vq=int(model_config.n_vq),
-        max_batch_size=encode_batch_size,
-        max_batch_wait_ms=encode_batch_wait_ms,
+    reference_encoder: BatchedReferenceEncoder | MossLocalReferenceEncoder = (
+        BatchedReferenceEncoder(
+            audio_tokenizer,
+            n_vq=int(model_config.n_vq),
+            max_batch_size=encode_batch_size,
+            max_batch_wait_ms=encode_batch_wait_ms,
+        )
     )
     if ref_audio_cache:
-        reference_encoder = _MossLocalReferenceEncoder(
+        reference_encoder = MossLocalReferenceEncoder(
             reference_encoder,
             n_vq=int(model_config.n_vq),
             max_items=ref_audio_cache_max_items,
             max_bytes=ref_audio_cache_max_bytes,
         )
+    else:
+        pass
     set_moss_tts_nano_preprocessing_context(
         tokenizer=tokenizer,
         model_config=model_config,
@@ -163,10 +176,10 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: dict[str, object] | None = None,
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
     prefill_coalesce_requests: int = 0,
@@ -174,7 +187,7 @@ def create_sglang_tts_engine_executor(
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
     codec_mem_reserve: float = 0.0,
-) -> Any:
+) -> OmniScheduler[MossTTSNanoSGLangRequestData]:
     from sglang_omni.models.moss_tts_nano.engine_builder import MossTtsNanoEngineBuilder
 
     return MossTtsNanoEngineBuilder(
@@ -222,8 +235,8 @@ def create_vocoder_executor(
         vocoder_cuda_graph,
         model_name="MOSS-TTS-Nano",
     )
-    device = _resolve_codec_device(device, gpu_id)
-    model_config = _load_moss_tts_nano_config(model_path)
+    device = str(resolve_concrete_device(device, gpu_id))
+    model_config = load_moss_tts_nano_config(model_path)
     decoder_dtype = resolve_moss_audio_dtype(dtype, name="dtype", allow_none=False)
     assert decoder_dtype is not None
     resolved_compute_dtype = resolve_moss_audio_dtype(
@@ -232,7 +245,7 @@ def create_vocoder_executor(
         allow_none=True,
     )
     audio_vocoder = load_moss_audio_vocoder(
-        _resolve_audio_tokenizer_model_path(model_config, codec_model_path),
+        resolve_audio_tokenizer_model_path(model_config, codec_model_path),
         device=device,
         decoder_dtype=decoder_dtype,
         compute_dtype=resolved_compute_dtype,
@@ -257,7 +270,7 @@ def create_vocoder_executor(
     )
     scheduler.warmup_now()
     device_index = torch.device(device).index
-    _validate_loaded_process_memory_budget(
+    validate_loaded_process_memory_budget(
         stage_name="MOSS-TTS-Nano vocoder",
         gpu_id=(
             int(device_index)

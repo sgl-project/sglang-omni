@@ -43,12 +43,16 @@ class MossTTSNanoAudioTokenizer(MossAudioEncoder):
                     orig_freq=int(sample_rate),
                     new_freq=self.sample_rate,
                 )
+            else:
+                pass
             waveforms.append((waveform, self.sample_rate))
         return waveforms
 
-    def _prepare_waveform(self, wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
+    def prepare_waveform(self, wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
         if wav.ndim == 1:
             wav = wav.unsqueeze(0)
+        else:
+            pass
         if int(sample_rate) != self.sample_rate:
             import torchaudio
 
@@ -57,6 +61,8 @@ class MossTTSNanoAudioTokenizer(MossAudioEncoder):
                 orig_freq=int(sample_rate),
                 new_freq=self.sample_rate,
             )
+        else:
+            pass
         if int(wav.shape[0]) == self.number_channels:
             pass
         elif int(wav.shape[0]) == 1 and self.number_channels > 1:

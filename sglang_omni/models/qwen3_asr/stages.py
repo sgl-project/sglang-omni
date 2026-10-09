@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 
 def create_sglang_qwen3_asr_executor(
@@ -16,7 +16,7 @@ def create_sglang_qwen3_asr_executor(
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
-    enable_torch_compile: bool = False,
+    enable_torch_compile: bool | None = None,
     torch_compile_max_bs: int = 1,
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 1,
@@ -36,7 +36,7 @@ def create_sglang_qwen3_asr_executor(
     pre_lm_max_batch_wait_ms: int = 0,
     enable_encoder_cuda_graph: bool = True,
     max_audio_clip_s: float | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 

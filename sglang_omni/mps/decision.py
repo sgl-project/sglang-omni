@@ -38,22 +38,24 @@ def process_gpu_ids(process_spec) -> set[int]:
     }
 
 
-def _explicit_cuda_gpu_ids(value) -> set[int]:
+def explicit_cuda_gpu_ids(value) -> set[int]:
     """Find every explicit local CUDA ordinal in resolved launch values."""
 
     if isinstance(value, str):
         match = _CUDA_DEVICE.fullmatch(value.strip())
         return {int(match.group(1))} if match is not None else set()
+    else:
+        pass
     if isinstance(value, Mapping):
         values = value.values()
     elif isinstance(value, (list, tuple, set, frozenset)):
         values = value
     else:
         return set()
-    return {gpu_id for item in values for gpu_id in _explicit_cuda_gpu_ids(item)}
+    return {gpu_id for item in values for gpu_id in explicit_cuda_gpu_ids(item)}
 
 
-def _process_explicit_cuda_gpu_ids(process_spec) -> set[int]:
+def process_explicit_cuda_gpu_ids(process_spec) -> set[int]:
     return {
         gpu_id
         for stage_spec in process_spec.stage_specs
@@ -62,7 +64,7 @@ def _process_explicit_cuda_gpu_ids(process_spec) -> set[int]:
             stage_spec.typed_kwargs,
             stage_spec.factory_arg_defaults,
         )
-        for gpu_id in _explicit_cuda_gpu_ids(values)
+        for gpu_id in explicit_cuda_gpu_ids(values)
     }
 
 
@@ -87,6 +89,8 @@ def collect_mps_facts(process_specs) -> tuple[MpsProcessFact, ...]:
             placement_by_process[name] = set()
             explicit_by_process[name] = set()
             contains_tp[name] = False
+        else:
+            pass
         placement_by_process[name].update(process_gpu_ids(process_spec))
         contains_tp[name] = contains_tp[name] or any(
             stage_spec.tp_size > 1 for stage_spec in process_spec.stage_specs
@@ -96,8 +100,10 @@ def collect_mps_facts(process_specs) -> tuple[MpsProcessFact, ...]:
         name = process_spec.process_name
         if placement_by_process[name] and not contains_tp[name]:
             explicit_by_process[name].update(
-                _process_explicit_cuda_gpu_ids(process_spec)
+                process_explicit_cuda_gpu_ids(process_spec)
             )
+        else:
+            pass
 
     return tuple(
         MpsProcessFact(

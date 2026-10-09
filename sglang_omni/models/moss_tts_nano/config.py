@@ -9,17 +9,19 @@ from pydantic import Field
 
 from sglang_omni.config import StageConfig
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
-from sglang_omni.models.moss_tts_local.config import _stages as _local_stages
+from sglang_omni.models.moss_tts_local.config import stages as local_stages
 
 _PKG = "sglang_omni.models.moss_tts_nano"
 
 
-def _stages() -> list[StageConfig]:
-    stages = _local_stages(codec_device="cuda:0", colocated=True)
+def stages() -> list[StageConfig]:
+    stages = local_stages(codec_gpu=0, colocated=True)
     for stage in stages:
         stage.factory_path = f"{_PKG}.stages.create_{stage.name}_executor"
         if stage.name in {"preprocessing", "vocoder"}:
             stage.factory.compute_dtype = "float32"
+        else:
+            pass
     return stages
 
 
@@ -44,7 +46,7 @@ class MossTTSNanoPipelineConfig(MossTTSLocalPipelineConfig):
         }
     )
 
-    stages: list[StageConfig] = Field(default_factory=_stages)
+    stages: list[StageConfig] = Field(default_factory=stages)
 
 
 EntryClass = MossTTSNanoPipelineConfig

@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from transformers import GPT2Config, PretrainedConfig
 
 MOSS_TTS_NANO_MODEL_CONFIG_PARSER = "moss_tts_nano"
@@ -21,19 +19,25 @@ def adapt_moss_tts_nano_hf_config(config: PretrainedConfig) -> PretrainedConfig:
             "MOSS-TTS-Nano requires model_type='moss_tts_nano'; got "
             f"{getattr(config, 'model_type', None)!r}"
         )
-    gpt2_config: Any = getattr(config, "gpt2_config", None)
+    else:
+        pass
+    gpt2_config = getattr(config, "gpt2_config", None)
     if isinstance(gpt2_config, dict):
         gpt2_config = GPT2Config(**gpt2_config)
         config.gpt2_config = gpt2_config
+    else:
+        pass
     if gpt2_config is None:
         raise ValueError("MOSS-TTS-Nano config is missing gpt2_config")
+    else:
+        pass
 
     config.language_config = gpt2_config
     config.architectures = [MOSS_TTS_NANO_MODEL_ARCH_OVERRIDE]
     return config
 
 
-def select_moss_tts_nano_model_config_parser(overrides: dict[str, Any]) -> None:
+def select_moss_tts_nano_model_config_parser(overrides: dict[str, object]) -> None:
     """Resolve the required parser before SGLang freezes ``ServerArgs``."""
 
     selected_parser = overrides.get("model_config_parser")
@@ -46,6 +50,8 @@ def select_moss_tts_nano_model_config_parser(overrides: dict[str, Any]) -> None:
             "MOSS-TTS-Nano requires model_config_parser="
             f"{MOSS_TTS_NANO_MODEL_CONFIG_PARSER!r}; got {selected_parser!r}"
         )
+    else:
+        pass
     register_moss_tts_nano_model_config_parser()
     overrides["model_config_parser"] = MOSS_TTS_NANO_MODEL_CONFIG_PARSER
 
@@ -56,6 +62,8 @@ def register_moss_tts_nano_model_config_parser() -> None:
     global _moss_tts_nano_parser_registered
     if _moss_tts_nano_parser_registered:
         return
+    else:
+        pass
 
     from sglang.srt.configs.model_config_parser_registry import (
         register_model_config_parser,
@@ -64,8 +72,16 @@ def register_moss_tts_nano_model_config_parser() -> None:
 
     @register_model_config_parser(MOSS_TTS_NANO_MODEL_CONFIG_PARSER)
     class MossTTSNanoModelConfigParser(HfModelConfigParser):
-        def parse(self, *args: Any, **kwargs: Any) -> PretrainedConfig:
-            return adapt_moss_tts_nano_hf_config(super().parse(*args, **kwargs))
+        def parse(
+            self,
+            model: str,
+            trust_remote_code: bool,
+            revision: str | None = None,
+            **kwargs: object,
+        ) -> PretrainedConfig:
+            return adapt_moss_tts_nano_hf_config(
+                super().parse(model, trust_remote_code, revision=revision, **kwargs)
+            )
 
     _moss_tts_nano_parser_registered = True
 

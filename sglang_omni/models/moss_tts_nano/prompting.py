@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
 
 import torch
+from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
 USER_ROLE_PREFIX = "user\n"
 USER_TEMPLATE_REFERENCE_PREFIX = "<user_inst>\n- Reference(s):\n"
@@ -23,7 +24,7 @@ ASSISTANT_TURN_PREFIX = "\n"
 ASSISTANT_ROLE_PREFIX = "assistant\n"
 
 
-def encode_text(tokenizer: Any, text: str) -> list[int]:
+def encode_text(tokenizer: PreTrainedTokenizerBase, text: str) -> list[int]:
     try:
         return list(tokenizer.encode(text, add_special_tokens=False))
     except TypeError:
@@ -43,6 +44,8 @@ def build_text_rows(
     )
     if token_ids:
         rows[:, 0] = torch.tensor(list(token_ids), dtype=torch.long)
+    else:
+        pass
     return rows
 
 
@@ -58,6 +61,8 @@ def build_audio_rows(
             f"MOSS-TTS-Nano reference codes must have shape [T, {n_vq}], "
             f"got {tuple(codes.shape)}"
         )
+    else:
+        pass
     rows = torch.empty((int(codes.shape[0]), n_vq + 1), dtype=torch.long)
     rows[:, 0] = int(slot_token_id)
     rows[:, 1:] = codes
@@ -66,8 +71,8 @@ def build_audio_rows(
 
 def build_prompt_rows(
     *,
-    tokenizer: Any,
-    config: Any,
+    tokenizer: PreTrainedTokenizerBase,
+    config: PretrainedConfig,
     text: str,
     reference_codes: torch.Tensor | None,
 ) -> torch.Tensor:
@@ -75,6 +80,8 @@ def build_prompt_rows(
 
     if not str(text).strip():
         raise ValueError("MOSS-TTS-Nano text must not be empty")
+    else:
+        pass
 
     n_vq = int(config.n_vq)
     audio_pad = int(config.audio_pad_token_id)

@@ -14,7 +14,7 @@ import sglang_omni.models.moss_tts.vocoder as vocoder_module
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.models.moss_tts.vocoder import (
     MossTTSVocoder,
-    _copy_valid_waveforms_to_cpu,
+    copy_valid_waveforms_to_cpu,
 )
 from sglang_omni.models.moss_tts.vocoder_quantizer import (
     MossAudioTokenizerQuantizerDecoder,
@@ -22,7 +22,7 @@ from sglang_omni.models.moss_tts.vocoder_quantizer import (
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-def _make_payload(request_id: str) -> StagePayload:
+def make_payload(request_id: str) -> StagePayload:
     return StagePayload(
         request_id=request_id,
         request=OmniRequest(inputs=request_id, params={}),
@@ -30,7 +30,7 @@ def _make_payload(request_id: str) -> StagePayload:
     )
 
 
-class _AlwaysPackedVocoderDecoder(nn.Module):
+class AlwaysPackedVocoderDecoder(nn.Module):
     @classmethod
     def from_module(cls, source: nn.Module):
         return cls(source)
@@ -63,13 +63,13 @@ class _AlwaysPackedVocoderDecoder(nn.Module):
         return x, input_lengths
 
 
-class _NeverPackedVocoderDecoder(_AlwaysPackedVocoderDecoder):
+class NeverPackedVocoderDecoder(AlwaysPackedVocoderDecoder):
     def supports_packed_attention(self, device, dtype) -> bool:
         del device, dtype
         return False
 
 
-class _FakeCodebookQuantizer(nn.Module):
+class FakeCodebookQuantizer(nn.Module):
     def __init__(
         self,
         *,
@@ -86,12 +86,12 @@ class _FakeCodebookQuantizer(nn.Module):
         return self.out_proj(embedded).float()
 
 
-class _FakeResidualQuantizer(nn.Module):
+class FakeResidualQuantizer(nn.Module):
     def __init__(self, *, num_quantizers: int = 4) -> None:
         super().__init__()
         self.quantizers = nn.ModuleList(
             [
-                _FakeCodebookQuantizer(
+                FakeCodebookQuantizer(
                     codebook_size=16,
                     codebook_dim=3,
                     output_dim=8,
@@ -112,7 +112,7 @@ class _FakeResidualQuantizer(nn.Module):
 @pytest.mark.parametrize("num_quantizers", [1, 3, 4])
 def test_cached_quantizer_matches_source_decode(num_quantizers: int) -> None:
     torch.manual_seed(0)
-    source = _FakeResidualQuantizer()
+    source = FakeResidualQuantizer()
     decoder = MossAudioTokenizerQuantizerDecoder(source)
     codes = torch.randint(0, 16, (num_quantizers, 2, 7))
 
@@ -123,7 +123,7 @@ def test_cached_quantizer_matches_source_decode(num_quantizers: int) -> None:
 
 
 def test_cached_quantizer_rejects_invalid_codebook_count() -> None:
-    decoder = MossAudioTokenizerQuantizerDecoder(_FakeResidualQuantizer())
+    decoder = MossAudioTokenizerQuantizerDecoder(FakeResidualQuantizer())
 
     with pytest.raises(ValueError, match="codebook count"):
         decoder.decode_codes(torch.empty((0, 2, 3), dtype=torch.long))
@@ -140,7 +140,7 @@ def test_moss_tts_vocoder_copies_only_valid_waveforms() -> None:
         dtype=torch.bfloat16,
     )
 
-    waveforms = _copy_valid_waveforms_to_cpu(audio, [2, 3])
+    waveforms = copy_valid_waveforms_to_cpu(audio, [2, 3])
 
     assert [waveform.dtype for waveform in waveforms] == [
         torch.float32,
@@ -211,7 +211,7 @@ def test_moss_tts_vocoder_batches_mixed_length_segments_across_requests(
         audio_tokenizer=None,
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=24000),
     )
-    monkeypatch.setattr(stages, "_load_moss_processor", lambda *args: processor)
+    monkeypatch.setattr(stages, "load_moss_processor", lambda *args: processor)
     monkeypatch.setattr(
         stages,
         "load_moss_audio_vocoder",
@@ -220,7 +220,7 @@ def test_moss_tts_vocoder_batches_mixed_length_segments_across_requests(
     monkeypatch.setattr(
         vocoder_module,
         "MossAudioTokenizerVocoderDecoder",
-        _AlwaysPackedVocoderDecoder,
+        AlwaysPackedVocoderDecoder,
     )
 
     scheduler = stages.create_vocoder_executor(
@@ -229,14 +229,14 @@ def test_moss_tts_vocoder_batches_mixed_length_segments_across_requests(
         max_batch_size=4,
         compute_dtype="bfloat16",
     )
-    first = _make_payload("first")
+    first = make_payload("first")
     first.data = MossTTSState(
         delayed_audio_codes=torch.tensor(
             [[1, 1024], [2, 3], [1024, 4], [1024, 1024]],
             dtype=torch.long,
         )
     ).to_dict()
-    second = _make_payload("second")
+    second = make_payload("second")
     second.data = MossTTSState(
         delayed_audio_codes=torch.tensor(
             [[5, 1024], [6, 7], [9, 8], [1024, 10], [1024, 1024]],
@@ -244,7 +244,7 @@ def test_moss_tts_vocoder_batches_mixed_length_segments_across_requests(
         )
     ).to_dict()
 
-    results = asyncio.run(scheduler._batch_fn([first, second]))
+    results = asyncio.run(scheduler.batch_fn([first, second]))
 
     assert codec.quantizer.decode_shapes == [(2, 2, 3)]
     assert codec.quantizer.autocast_enabled == [False]
@@ -301,7 +301,7 @@ def test_moss_tts_vocoder_uses_standalone_codec_without_packed_flash(
     processor = SimpleNamespace(
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
     )
-    monkeypatch.setattr(stages, "_load_moss_processor", lambda *args: processor)
+    monkeypatch.setattr(stages, "load_moss_processor", lambda *args: processor)
     monkeypatch.setattr(
         stages,
         "load_moss_audio_vocoder",
@@ -310,7 +310,7 @@ def test_moss_tts_vocoder_uses_standalone_codec_without_packed_flash(
     monkeypatch.setattr(
         vocoder_module,
         "MossAudioTokenizerVocoderDecoder",
-        _NeverPackedVocoderDecoder,
+        NeverPackedVocoderDecoder,
     )
 
     scheduler = stages.create_vocoder_executor(
@@ -321,7 +321,7 @@ def test_moss_tts_vocoder_uses_standalone_codec_without_packed_flash(
     )
     payloads = []
     for request_id, offset in (("first", 0), ("second", 4)):
-        payload = _make_payload(request_id)
+        payload = make_payload(request_id)
         payload.data = MossTTSState(
             delayed_audio_codes=torch.tensor(
                 [
@@ -335,9 +335,9 @@ def test_moss_tts_vocoder_uses_standalone_codec_without_packed_flash(
         ).to_dict()
         payloads.append(payload)
 
-    results = asyncio.run(scheduler._batch_fn(payloads))
+    results = asyncio.run(scheduler.batch_fn(payloads))
 
-    assert scheduler._vocoder._nonstream_decoder is None
+    assert scheduler.vocoder.nonstream_decoder is None
     assert audio_vocoder.model.quantizer.codebook.dtype is torch.bfloat16
     assert audio_vocoder.decode_calls == 2
     assert audio_vocoder.decode_shapes == [[(2, 2)], [(2, 2)]]
@@ -378,7 +378,7 @@ def test_moss_tts_vocoder_autocasts_low_precision_standalone_codec() -> None:
         dtype=torch.long,
     )
 
-    waveform, sample_rate = vocoder._decode_audio(state, delayed_codes)
+    waveform, sample_rate = vocoder.decode_audio(state, delayed_codes)
 
     assert audio_vocoder.autocast_enabled == [True]
     assert waveform.dtype is torch.float32
@@ -409,7 +409,7 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
             _, batch_size, frames = audio_codes.shape
             return torch.ones(batch_size, 1, frames, dtype=torch.float32)
 
-    class FailingPackedDecoder(_AlwaysPackedVocoderDecoder):
+    class FailingPackedDecoder(AlwaysPackedVocoderDecoder):
         def __init__(self, source: nn.Module) -> None:
             super().__init__(source)
             self.calls = 0
@@ -449,7 +449,7 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
     processor = SimpleNamespace(
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
     )
-    monkeypatch.setattr(stages, "_load_moss_processor", lambda *args: processor)
+    monkeypatch.setattr(stages, "load_moss_processor", lambda *args: processor)
     monkeypatch.setattr(
         stages,
         "load_moss_audio_vocoder",
@@ -479,7 +479,7 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
     )
 
     def make_vocoder_payload(request_id: str, offset: int) -> StagePayload:
-        payload = _make_payload(request_id)
+        payload = make_payload(request_id)
         payload.data = MossTTSState(
             delayed_audio_codes=torch.tensor(
                 [
@@ -494,16 +494,14 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
         return payload
 
     first_results = asyncio.run(
-        scheduler._batch_fn(
+        scheduler.batch_fn(
             [
                 make_vocoder_payload("first", 0),
                 make_vocoder_payload("second", 4),
             ]
         )
     )
-    second_results = asyncio.run(
-        scheduler._batch_fn([make_vocoder_payload("third", 8)])
-    )
+    second_results = asyncio.run(scheduler.batch_fn([make_vocoder_payload("third", 8)]))
 
     quantizer = audio_vocoder.model.quantizer
     assert packed_decoders[0].calls == 1
@@ -511,7 +509,7 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
     assert quantizer.autocast_enabled == [False]
     assert quantizer.codebook.dtype is torch.float32
     assert released_markers == [True]
-    assert scheduler._vocoder._nonstream_decoder is None
+    assert scheduler.vocoder.nonstream_decoder is None
     assert audio_vocoder.decode_calls == 3
     assert audio_vocoder.decode_shapes == [[(2, 2)], [(2, 2)], [(2, 2)]]
     assert np.frombuffer(
@@ -542,7 +540,7 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
     processor = SimpleNamespace(
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
     )
-    monkeypatch.setattr(stages, "_load_moss_processor", lambda *args: processor)
+    monkeypatch.setattr(stages, "load_moss_processor", lambda *args: processor)
     monkeypatch.setattr(
         stages,
         "load_moss_audio_vocoder",
@@ -551,7 +549,7 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
     monkeypatch.setattr(
         vocoder_module,
         "MossAudioTokenizerVocoderDecoder",
-        lambda *_args, **_kwargs: pytest.fail(
+        lambda *args, **_kwargs: pytest.fail(
             "disabled batched decode must not construct the decoder wrapper"
         ),
     )
@@ -561,7 +559,7 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
         device="cpu",
         compute_dtype=compute_dtype,
     )
-    payload = _make_payload("baseline")
+    payload = make_payload("baseline")
     payload.data = MossTTSState(
         delayed_audio_codes=torch.tensor(
             [[1, 1024], [2, 3], [1024, 4], [1024, 1024]],
@@ -569,7 +567,7 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
         )
     ).to_dict()
 
-    [result] = asyncio.run(scheduler._batch_fn([payload]))
+    [result] = asyncio.run(scheduler.batch_fn([payload]))
 
     assert np.frombuffer(result.data["audio_waveform"], dtype=np.float32).tolist() == [
         1.0,

@@ -17,36 +17,37 @@ is imported by `sglang_omni/`, and no CI job runs them.
 
 | Skill | What it does | Who can run it |
 |---|---|---|
-| [`tune-ci-thresholds`](tune-ci-thresholds/SKILL.md) | Recalibrates the numeric CI gates for ASR, TTS and Qwen3-Omni: repeats each stage until it has enough clean observations, rejects rounds poisoned by host contention, and emits an apply plan. | Maintainers on the shared H100 CI host. Needs a host profile in [`hosts/`](tune-ci-thresholds/hosts/); today only `sglang-h100-ci` exists. |
 | [`running-eval-suite`](running-eval-suite/SKILL.md) | Reruns every reference benchmark under `benchmarks/eval/` and rewrites the reference-table cells in `benchmark_*.py` for the hardware it detects. Commits locally, never pushes. | Any sglang-omni dev container with free GPUs and the `omni` venv. |
 
-Both skills expect the CI-equivalent environment (the `omni` venv,
-`HF_HOME` populated, `source .github/scripts/ci_env.sh`). Their prechecks
-verify this and stop with an actionable message rather than fixing it for you.
-Neither skill will ever kill another user's processes: busy GPUs are a hard
+The evaluation skill expects the CI-equivalent environment (the `omni` venv,
+`HF_HOME` populated, `source .github/scripts/ci_env.sh`). Its precheck
+verifies this and stops with an actionable message rather than fixing it for you.
+The skill never kills another user's processes: busy GPUs are a hard
 stop.
+
+CI threshold calibration is maintained separately in the private
+[`sglang-omni-calibration` repository](https://github.com/zhaochenyang20/sglang-omni-calibration/tree/main/skills/calibrate-h100-ci).
+Maintainers with access can find `calibrate-h100-ci`, its tests, and calibration
+instructions there.
 
 ## Running one
 
 Type the slash command in Claude Code from the repo root:
 
 ```
-/tune-ci-thresholds
 /running-eval-suite --benchmarks mmsu
 ```
 
-Read the skill's `SKILL.md` first — both want a supervision terminal open
-alongside the job, and `tune-ci-thresholds` additionally wants you to read its
-`CONTRACT.md`, `AGENT-PRECHECK.md` and `OPERATIONS.md` before a calibration.
+Read the skill's `SKILL.md` first and keep a supervision terminal open
+alongside the job.
 
 You can also drive the underlying tools directly, without an agent:
 
 ```bash
-python .claude/skills/tune-ci-thresholds/tune.py --model omni precheck --output-dir "$RUN"
 python .claude/skills/running-eval-suite/runner.py --model qwen3-omni precheck --output-dir "$RUN"
 ```
 
-Run artifacts land in `.tune-runs/` and `.eval-runs/`, both gitignored.
+Run artifacts land in `.eval-runs/`, which is gitignored.
 
 ## Adding a skill
 
@@ -65,7 +66,7 @@ whether to reach for the skill, so lead with the trigger, then the mechanism:
 
 ```yaml
 ---
-name: tune-ci-thresholds
-description: Use when a CI threshold needs recalibrating after a model, kernel or host change — recalibrates ASR/TTS/Qwen3-Omni gates from repeated clean observations and emits an apply plan for review.
+name: running-eval-suite
+description: Run the reference benchmarks under benchmarks/eval/ and refresh their reference-table cells for the detected hardware.
 ---
 ```

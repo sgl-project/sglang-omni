@@ -8,7 +8,7 @@ import torch
 from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
 
 
-class _FutureMap:
+class FutureMap:
     def __init__(self) -> None:
         self.stashed = None
         self.published = None
@@ -20,28 +20,28 @@ class _FutureMap:
         self.published = (indices, seq_lens)
 
 
-class _SpecAlgorithm:
+class SpecAlgorithm:
     def __init__(self, *, is_none: bool = True) -> None:
-        self._is_none = is_none
+        self.is_none_value = is_none
 
     def is_none(self) -> bool:
-        return self._is_none
+        return self.is_none_value
 
 
-def _make_bridge() -> tuple[SGLangExecutionBridge, _FutureMap]:
-    future_map = _FutureMap()
+def make_bridge() -> tuple[SGLangExecutionBridge, FutureMap]:
+    future_map = FutureMap()
     worker = SimpleNamespace(model_runner=SimpleNamespace())
     bridge = SGLangExecutionBridge(
         device=torch.device("cpu"),
         worker=worker,
-        spec_algorithm=_SpecAlgorithm(),
+        spec_algorithm=SpecAlgorithm(),
         future_map=future_map,
     )
     return bridge, future_map
 
 
 def test_publish_next_tokens_uses_future_map_and_retires_input_ids() -> None:
-    bridge, future_map = _make_bridge()
+    bridge, future_map = make_bridge()
     batch = SimpleNamespace(
         req_pool_indices=torch.tensor([4, 7]),
         seq_lens=torch.tensor([12, 19]),
@@ -62,7 +62,7 @@ def test_publish_next_tokens_uses_future_map_and_retires_input_ids() -> None:
 def test_forward_context_resolves_inputs_without_copying_sampling_info(
     monkeypatch,
 ) -> None:
-    bridge, _ = _make_bridge()
+    bridge, _ = make_bridge()
     original_sampling_info = SimpleNamespace(
         copy_for_forward=lambda: "forward-only-sampling-info"
     )
@@ -88,7 +88,7 @@ def test_forward_context_resolves_inputs_without_copying_sampling_info(
 
 
 def test_forward_context_isolates_sampling_info_for_lookahead(monkeypatch) -> None:
-    bridge, _ = _make_bridge()
+    bridge, _ = make_bridge()
     original_sampling_info = SimpleNamespace(
         copy_for_forward=lambda: "forward-only-sampling-info"
     )
@@ -98,7 +98,7 @@ def test_forward_context_isolates_sampling_info_for_lookahead(monkeypatch) -> No
     )
     monkeypatch.setattr(
         "sglang.srt.managers.overlap_utils.resolve_forward_inputs",
-        lambda *_args: None,
+        lambda *args: None,
     )
 
     with bridge.forward_context(batch, isolate_sampling=True):
@@ -108,7 +108,7 @@ def test_forward_context_isolates_sampling_info_for_lookahead(monkeypatch) -> No
 
 
 def test_forward_context_resolves_mixed_prefill(monkeypatch) -> None:
-    bridge, _ = _make_bridge()
+    bridge, _ = make_bridge()
     batch = SimpleNamespace(
         sampling_info=None,
         mix_running_indices=torch.tensor([1]),
@@ -116,7 +116,7 @@ def test_forward_context_resolves_mixed_prefill(monkeypatch) -> None:
     resolved = []
     monkeypatch.setattr(
         "sglang.srt.managers.overlap_utils.resolve_forward_inputs",
-        lambda *_args: resolved.append(True),
+        lambda *args: resolved.append(True),
     )
 
     with bridge.forward_context(batch):
@@ -126,13 +126,13 @@ def test_forward_context_resolves_mixed_prefill(monkeypatch) -> None:
 
 
 def test_execution_bridge_rejects_speculative_decoding() -> None:
-    future_map = _FutureMap()
+    future_map = FutureMap()
     worker = SimpleNamespace(model_runner=SimpleNamespace())
 
     with pytest.raises(NotImplementedError, match="speculative decoding"):
         SGLangExecutionBridge(
             device=torch.device("cpu"),
             worker=worker,
-            spec_algorithm=_SpecAlgorithm(is_none=False),
+            spec_algorithm=SpecAlgorithm(is_none=False),
             future_map=future_map,
         )

@@ -28,6 +28,8 @@ def derive_sampling_seed(
     parts = [namespace, str(public_seed)]
     if label is not None:
         parts.append(label)
+    else:
+        pass
     digest = hashlib.blake2b(":".join(parts).encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "little") & SAMPLING_SEED_MASK
 
@@ -37,6 +39,8 @@ def resolve_row_seed(public_seed: int | None) -> int:
     unseeded rows stay random."""
     if public_seed is None:
         return new_random_sampling_seed()
+    else:
+        pass
     return int(public_seed) & SAMPLING_SEED_MASK
 
 

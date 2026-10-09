@@ -73,7 +73,7 @@ def test_auk_validation_reaches_http_as_bad_request(params, caplog):
         async def speech(self, request, *, request_id, **kwargs):
             payload = StagePayload(
                 request_id=request_id,
-                request=Client._build_omni_request(request),
+                request=Client.build_omni_request(request),
                 data={},
             )
             try:

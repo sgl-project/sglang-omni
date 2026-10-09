@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local / Nano, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local / Nano, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Nemotron 3.5 ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -67,6 +67,9 @@ Supported Models
    * - `AutoArk-AI/ARK-ASR-3B <https://huggingface.co/AutoArk-AI/ARK-ASR-3B>`_
      - ASR
      - Multilingual ARK-ASR
+   * - `nvidia/nemotron-3.5-asr-streaming-0.6b <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>`_
+     - ASR
+     - Multilingual RNN-T transcription; internal native PCM streaming runtime (see `cookbook <cookbook/nemotron3_5_asr.html>`_)
    * - `OpenMOSS-Team/MOSS-Transcribe-Diarize <https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize>`_
      - ASR
      - Multi-speaker transcription + diarization + timestamps
@@ -74,6 +77,9 @@ Supported Models
      - ASR
      - Experimental transcription and speech-to-English translation routes; see the `audio translation support matrix <basic_usage/audio_translations.html>`_
    * - `Qwen/Qwen3-Omni-30B-A3B-Instruct <https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct>`_
+     - Omni
+     - Text, image, audio, video → text + audio
+   * - `openbmb/MiniCPM-o-4_5 <https://huggingface.co/openbmb/MiniCPM-o-4_5>`_
      - Omni
      - Text, image, audio, video → text + audio
    * - `inclusionAI/Ming-flash-omni-2.0 <https://huggingface.co/inclusionAI/Ming-flash-omni-2.0>`_
@@ -92,6 +98,7 @@ Supported Models
    get_started/installation_npu.md
    get_started/installation_xpu.md
    get_started/installation_cpu.md
+   get_started/installation_musa.md
 
 
 .. toctree::
@@ -112,10 +119,14 @@ Supported Models
    cookbook/qwen3_asr.md
    cookbook/fun_asr.md
    cookbook/arkasr.md
+   cookbook/nemotron3_5_asr.md
    cookbook/moss_transcribe_diarize.md
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md
+   cookbook/minicpm_o.md
    cookbook/ming_omni.md
+   cookbook/nemotron_voicechat.md
+   cookbook/personaplex.md
    cookbook/llada2_uni.md
    cookbook/fun_cosyvoice3.md
    cookbook/auk.md
@@ -139,6 +150,7 @@ Supported Models
    :caption: Benchmarks
 
    benchmarks/relay.md
+   benchmarks/qwen3_tts_leading_silence.md
 
 
 .. toctree::

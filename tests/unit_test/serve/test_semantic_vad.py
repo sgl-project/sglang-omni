@@ -49,7 +49,7 @@ class FakeEOU:
         return value
 
 
-def _pcm_frames(count: int) -> bytes:
+def pcm_frames(count: int) -> bytes:
     return b"\x00\x00" * VAD_FRAME_SAMPLES * count
 
 
@@ -91,7 +91,7 @@ def test_medium_eagerness_uses_confidence_windows(
         speech_model=speech,
     )
 
-    emits = detector.process(_pcm_frames(1 + silence_frames))
+    emits = detector.process(pcm_frames(1 + silence_frames))
 
     assert emits == [
         Emit(VADEvent.SPEECH_STARTED, 0),
@@ -109,7 +109,7 @@ def test_resumed_speech_discards_pause_decision():
         speech_model=FakeSpeechModel(decisions),
     )
 
-    emits = detector.process(_pcm_frames(len(decisions)))
+    emits = detector.process(pcm_frames(len(decisions)))
 
     assert [event.event_type for event in emits] == [
         VADEvent.SPEECH_STARTED,
@@ -129,7 +129,7 @@ def test_inference_failure_uses_fixed_silence_fallback(caplog):
     )
 
     with caplog.at_level(logging.WARNING):
-        emits = detector.process(_pcm_frames(len(decisions)))
+        emits = detector.process(pcm_frames(len(decisions)))
 
     assert "fixed-silence fallback" in caplog.text
     assert emits[-1] == Emit(VADEvent.SPEECH_STOPPED, VAD_FRAME_SAMPLES)

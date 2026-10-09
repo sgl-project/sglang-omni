@@ -3,23 +3,21 @@
 
 from __future__ import annotations
 
-import torch
-
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-from sglang_omni.models.moss_tts_local.radix_hash import gpu_radix_row_hash
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 
 class MossTTSNanoModelRunner(MossTTSLocalModelRunner):
     """Reuse the local-frame scheduler with Nano-safe radix token ids."""
 
-    def _row_radix_token_ids(
-        self,
-        rows: torch.Tensor,
-        next_text: torch.Tensor,
-        end_id: int,
-    ) -> torch.Tensor:
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
+        super().__init__(tp_worker, output_processor)
         config = self.model.config
-        hash_offset = (
+        self.radix_hash_space = int(config.vocab_size)
+        self.radix_hash_offset = (
             max(
                 int(config.pad_token_id),
                 int(config.im_start_token_id),
@@ -30,13 +28,6 @@ class MossTTSNanoModelRunner(MossTTSLocalModelRunner):
                 int(config.audio_assistant_slot_token_id),
             )
             + 1
-        )
-        return gpu_radix_row_hash(
-            rows,
-            next_text,
-            end_id,
-            hash_space=int(config.vocab_size),
-            hash_offset=hash_offset,
         )
 
 

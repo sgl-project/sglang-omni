@@ -31,6 +31,8 @@ htmlcov/
 # Logs
 *.log
 *.txt
+# Build definitions are sources, not logs.
+!CMakeLists.txt
 output.wav
 
 # OS
@@ -39,12 +41,14 @@ Thumbs.db
 .ruff_cache/
 uv.lock
 results/
+benchmarks/cache/
 .humanize/
 .benchmark-data/
 
 .tune-runs/
 .eval-runs/
 .profiling-runs/
+.e2e-cosyvoice-ab/
 benchmarks/eval/*.edit.lock
 asr_seedtts_results.json
 .claude/*

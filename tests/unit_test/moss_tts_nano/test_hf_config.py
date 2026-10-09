@@ -153,7 +153,7 @@ def test_model_worker_registers_nano_parser_before_model_config(monkeypatch) -> 
     )
     worker.model_arch_override = MOSS_TTS_NANO_MODEL_ARCH_OVERRIDE
 
-    worker._init_model_config()
+    worker.init_model_config()
 
     assert call_order == ["register", "from_server_args"]
     assert (

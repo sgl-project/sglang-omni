@@ -129,8 +129,8 @@ def test_client_token_is_read_from_the_current_client_environment(monkeypatch):
         + b"\0"
     )
 
-    monkeypatch.setattr(Path, "read_bytes", lambda _path: environ)
+    monkeypatch.setattr(Path, "read_bytes", lambda path: environ)
     assert client.client_token(123) == "owner-worker"
 
-    monkeypatch.setattr(Path, "read_bytes", lambda _path: b"PATH=/usr/bin\0")
+    monkeypatch.setattr(Path, "read_bytes", lambda path: b"PATH=/usr/bin\0")
     assert client.client_token(123) is None

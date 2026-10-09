@@ -61,8 +61,12 @@ class LowPassFilter1d(nn.Module):
         super().__init__()
         if cutoff < -0.0:
             raise ValueError("Minimum cutoff must be larger than zero.")
+        else:
+            pass
         if cutoff > 0.5:
             raise ValueError("A cutoff above 0.5 does not make sense.")
+        else:
+            pass
         self.kernel_size = kernel_size
         if causal:
             self.pad_left = kernel_size - 1
@@ -84,6 +88,8 @@ class LowPassFilter1d(nn.Module):
             x = torch.nn.functional.pad(
                 x, (self.pad_left, self.pad_right), mode=self.padding_mode
             )
+        else:
+            pass
         return torch.nn.functional.conv1d(
             x, self.filter.expand(channels, -1, -1), stride=self.stride, groups=channels
         )
@@ -125,6 +131,8 @@ class UpSample1d(nn.Module):
         )
         if self.causal:
             return x[..., : -(self.kernel_size - self.stride)]
+        else:
+            pass
         return x[..., self.pad_left : -self.pad_right]
 
 
@@ -190,6 +198,8 @@ class SnakeBeta(nn.Module):
         if self.alpha_logscale:
             alpha = torch.exp(alpha)
             beta = torch.exp(beta)
+        else:
+            pass
         return x + (1.0 / (beta + self.no_div_by_zero)) * torch.pow(
             torch.sin(x * alpha), 2
         )
@@ -201,6 +211,8 @@ class SnakeBeta(nn.Module):
 def init_weights(m: nn.Module, mean: float = 0.0, std: float = 0.01) -> None:
     if m.__class__.__name__.find("Conv") != -1:
         m.weight.data.normal_(mean, std)
+    else:
+        pass
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
@@ -231,6 +243,8 @@ class Conv1d(nn.Conv1d):
                 self.left_padding = dilation * (kernel_size - 1)
             else:
                 padding = get_padding(kernel_size, dilation)
+        else:
+            pass
 
         super().__init__(
             in_channels,
@@ -251,10 +265,14 @@ class Conv1d(nn.Conv1d):
             assert x.size(2) == self.in_channels
             x = x.transpose(1, 2)
             self.transpose = True
+        else:
+            pass
         if self.causal:
             x = torch.nn.functional.pad(
                 x.unsqueeze(2), (self.left_padding, 0, 0, 0)
             ).squeeze(2)
+        else:
+            pass
         out = super().forward(x)
         return out.transpose(1, 2) if self.transpose else out
 
@@ -277,11 +295,15 @@ class ConvTranspose1d(nn.ConvTranspose1d):
     ):
         if padding is None:
             padding = 0 if causal else (kernel_size - stride) // 2
+        else:
+            pass
         if causal:
             assert padding == 0, "padding is not allowed in causal ConvTranspose1d."
             assert (
                 kernel_size == 2 * stride
             ), "kernel_size must equal 2*stride when causal."
+        else:
+            pass
         super().__init__(
             in_channels,
             out_channels,
@@ -303,9 +325,13 @@ class ConvTranspose1d(nn.ConvTranspose1d):
             assert x.size(2) == self.in_channels
             x = x.transpose(1, 2)
             self.transpose = True
+        else:
+            pass
         x = super().forward(x)
         if self.causal:
             x = x[:, :, : -self.stride]
+        else:
+            pass
         return x.transpose(1, 2) if self.transpose else x
 
 
@@ -338,11 +364,15 @@ class Conv1dS(nn.Module):
             nn.init.orthogonal_(self.layer.weight)
         elif init_type == "normal":
             nn.init.normal_(self.layer.weight, mean=0.0, std=0.01)
+        else:
+            pass
 
         if norm_type == "weight_norm":
             self.layer = weight_norm(self.layer)
         elif norm_type == "spectral_norm":
             self.layer = torch.nn.utils.spectral_norm(self.layer)
+        else:
+            pass
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.layer(inputs)
@@ -391,6 +421,8 @@ class WN(nn.Module):
                 Conv1d(gin_channels, 2 * hidden_channels * n_layers, 1, causal=causal),
                 name="weight",
             )
+        else:
+            pass
 
         for i in range(n_layers):
             dilation = dilation_rate**i
@@ -422,6 +454,8 @@ class WN(nn.Module):
 
         if g is not None:
             g = self.cond_layer(g)
+        else:
+            pass
 
         for i in range(self.n_layers):
             x_in = self.in_layers[i](x)
@@ -446,6 +480,8 @@ class WN(nn.Module):
     def remove_weight_norm(self):
         if self.gin_channels != 0:
             remove_weight_norm(self.cond_layer)
+        else:
+            pass
         for layer in self.in_layers:
             remove_weight_norm(layer)
         for layer in self.res_skip_layers:
@@ -458,6 +494,8 @@ class Flip(nn.Module):
         if not reverse:
             logdet = torch.zeros(x.size(0)).to(dtype=x.dtype, device=x.device)
             return x, logdet
+        else:
+            pass
         return x
 
 
@@ -510,6 +548,8 @@ class ResidualCouplingLayer(nn.Module):
             x1 = m + x1 * torch.exp(logs) * x_mask
             x = torch.cat([x0, x1], 1)
             return x, torch.sum(logs, [1, 2])
+        else:
+            pass
         x1 = (x1 - m) * torch.exp(-logs) * x_mask
         return torch.cat([x0, x1], 1)
 
@@ -607,12 +647,18 @@ class Encoder(nn.Module):
         super().__init__()
         if channels is None:
             channels = [12, 24, 48, 96, 192, 384, 768]
+        else:
+            pass
         if down_sample_factors is None:
             down_sample_factors = [2, 2, 2, 3, 4, 5]
+        else:
+            pass
 
         act_slope = 0.2
         if use_vae:
             out_channels = out_channels * 2
+        else:
+            pass
 
         layers = [
             Conv1dS(in_channels, base_channels, kernel_size=proj_kernel_size, stride=1),
@@ -819,6 +865,8 @@ class BigVGANFlowVAE(nn.Module):
                 sample_lengths = torch.LongTensor(
                     [sample.size(-1)] * sample.size(0)
                 ).to(sample.device)
+            else:
+                pass
             latent_lens = sample_lengths // self.hop_size
             mean, log_std = latent_stats.chunk(2, 1)
             noise = torch.randn(

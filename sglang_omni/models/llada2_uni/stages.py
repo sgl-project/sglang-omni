@@ -4,14 +4,41 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+from typing_extensions import NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    import torch
+else:
+    pass
 
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
 
 logger = logging.getLogger(__name__)
 
 
-def _event_to_dict(event) -> dict[str, Any]:
+class LLaDA2UniEventDict(TypedDict):
+    type: str
+    modality: str
+    payload: dict[str, str | list[str]]
+    is_final: bool
+
+
+LLaDA2UniDecodeResult = TypedDict(
+    "LLaDA2UniDecodeResult",
+    {
+        "events": list[LLaDA2UniEventDict],
+        "text": NotRequired[str | list[str]],
+        "modality": NotRequired[str],
+        "usage": NotRequired[dict[str, int]],
+        "finish_reason": NotRequired[object],
+    },
+)
+
+
+def event_to_dict(event) -> LLaDA2UniEventDict:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -38,8 +65,9 @@ def create_preprocessing_executor(
 def create_image_encoder_executor(
     model_path: str,
     *,
-    device: str = "cuda",
-    dtype: Any = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    dtype: "str | torch.dtype | None" = None,
 ):
     import torch
 
@@ -54,8 +82,10 @@ def create_image_encoder_executor(
     )
     from sglang_omni.models.weight_loader import resolve_dtype
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.utils.device import resolve_concrete_device
 
     dtype = resolve_dtype(dtype)
+    device = str(resolve_concrete_device(device, gpu_id))
 
     model = LLaDA2ImageEncoder(model_path=model_path, device=device, dtype=dtype)
 
@@ -82,22 +112,31 @@ def create_image_encoder_executor(
 def create_sglang_dllm_thinker_executor_from_config(
     model_path: str,
     *,
-    gpu_id: int = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
     from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
-    from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
+    from sglang_omni.scheduling.sglang_backend import (
+        build_sglang_server_args,
+        pin_resolved_device_type,
+    )
+    from sglang_omni.utils.device import resolve_concrete_device
 
-    overrides: dict[str, Any] = {
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    resolved_gpu_id = concrete_device.index or 0
+
+    overrides: dict[str, object] = {
         "attention_backend": "flashinfer",
         "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
     }
     overrides.update(server_args_overrides or {})
+    pin_resolved_device_type(overrides, concrete_device.type)
 
     server_args = build_sglang_server_args(
         model_path,
@@ -115,7 +154,7 @@ def create_sglang_dllm_thinker_executor_from_config(
         cfg.dllm_algorithm,
         cfg.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, gpu_id)
+    return create_dllm_thinker_scheduler(server_args, resolved_gpu_id)
 
 
 def create_decode_executor(model_path: str):
@@ -139,21 +178,27 @@ def create_decode_executor(model_path: str):
                 "output_ids": [],
                 "is_final": True,
             }
+        else:
+            pass
 
         events = decode_events(
             thinker_out=thinker_out,
             tokenizer=tokenizer,
         )
-        event_dicts = [_event_to_dict(event) for event in events]
+        event_dicts = [event_to_dict(event) for event in events]
 
-        result: dict[str, Any] = {"events": event_dicts}
+        result: LLaDA2UniDecodeResult = {"events": event_dicts}
         if events:
             result.update(events[0].payload)
             result.setdefault("modality", events[0].modality)
+        else:
+            pass
 
         finish_reason = thinker_out.get("finish_reason")
         if finish_reason is not None:
             result.setdefault("finish_reason", finish_reason)
+        else:
+            pass
 
         input_ids = (
             state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None

@@ -1,0 +1,146 @@
+name: XPU Docker Release
+
+# Publishes the XPU docker image to Docker Hub after every merge to main
+# that changes docker/xpu.Dockerfile or pyproject_xpu.toml -- the same
+# inputs that force omni-xpu-ci.yaml onto its build path, so the published
+# image tracks whatever PR CI just verified.
+#
+# Design:
+#   * Trigger on push to main, paths scoped to the two files that go into
+#     the image. workflow_dispatch is available as a manual escape hatch
+#     (also used to seed the first image before any inputs change).
+#   * Build on the same self-hosted runner PR CI uses. BuildKit's persistent
+#     cache from PR CI's pre-merge build is expected to hit for every layer,
+#     keeping the "rebuild" in seconds-to-minutes. Reproducibility comes
+#     from the pinned base image / pinned SGLang / pinned sgl-kernel-xpu
+#     ref inside the Dockerfile, not from --no-cache.
+#   * Sudo-clean the workspace before checkout so root-owned droppings left
+#     by any prior PR container's bind-mount don't fail actions/checkout on
+#     this shared runner. Mirrors the same step in omni-xpu-ci.yaml.
+#   * Build and push only the immutable content tag ":img-<fp>", where
+#     <fp> is a 12-char sha256 of docker/xpu.Dockerfile +
+#     pyproject_xpu.toml. Then, in a separate step, promote that manifest
+#     to ":latest" and ":dev-xpu-bmg-<YYYYMMDD>-<sha>" via
+#     `docker buildx imagetools create --tag <target> <source>`, which is
+#     a registry-side digest-preserving retag -- no layers re-upload, no
+#     local ":latest" tag ever exists on the runner. PR CI pulls the
+#     fingerprint tag, not ":latest", so an unfinished or failed promote
+#     never leaks stale XPU deps into PR testing, and no concurrent PR
+#     CI pull can retarget the release job's local ":latest" between
+#     build and push (there is nothing to retarget).
+#   * Push and promote with exponential backoff -- registry ops are noisy.
+#   * Repo + branch guard so forks and feature branches cannot publish:
+#     if: github.repository == 'sgl-project/sglang-omni' AND
+#         github.ref == 'refs/heads/main'. Checkout pins
+#     ref: ${{ github.sha }} -- the exact triggering commit -- so
+#     workflow_dispatch can never build a feature branch's Dockerfile
+#     as production ":latest", and a push event that queues while main
+#     advances still builds the commit it was triggered by (content,
+#     fingerprint, and dated tag all bind to the same sha).
+#
+# Prerequisites (fleet-side, not enforced by this workflow):
+#   * self-hosted runner labeled [self-hosted, intel-omni-bmg] with docker
+#     daemon reachable to the runner user;
+#   * `prod` GitHub Environment configured on the repo, with
+#     DOCKERHUB_INTEL_USERNAME and DOCKERHUB_INTEL_TOKEN scoped to it
+#     (ideally gated with a required reviewer). Uses the intel/* scoped
+#     credential pair, matching sglang upstream's release workflows;
+#   * `intel/sglang-omni-xpu-dev` repository on Docker Hub with the token above
+#     granted push access.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/xpu.Dockerfile"
+      - "pyproject_xpu.toml"
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel a mid-flight release push -- half-written registry state
+  # is worse than a slightly delayed publish.
+  group: xpu-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish-xpu
+    if: github.repository == 'sgl-project/sglang-omni' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, intel-omni-bmg]
+    environment: prod
+    timeout-minutes: 90
+    env:
+      IMAGE_NAME: intel/sglang-omni-xpu-dev
+    steps:
+      - name: Force-clean workspace (root-owned files from prior PR runs)
+        shell: bash
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.[!.]* 2>/dev/null || true
+
+      - name: Checkout main at triggering commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Compute image tags
+        shell: bash
+        run: |
+          set -euxo pipefail
+          fp=$(sha256sum docker/xpu.Dockerfile pyproject_xpu.toml | sha256sum | cut -c1-12)
+          echo "TAG_FP=img-${fp}" >> "$GITHUB_ENV"
+          echo "TAG_DATED=dev-xpu-bmg-$(date -u +%Y%m%d)-${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_INTEL_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_INTEL_TOKEN }}
+
+      - name: Build XPU image (fingerprint tag only)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker build -f docker/xpu.Dockerfile \
+            -t "${IMAGE_NAME}:${TAG_FP}" \
+            .
+
+      - name: Push fingerprint tag to Docker Hub
+        shell: bash
+        run: |
+          set -euxo pipefail
+          push_with_retry() {
+            for i in 1 2 3 4 5; do
+              docker push "$1" && return 0
+              echo "push failed (attempt $i), retrying in $((i*15))s..."
+              sleep $((i*15))
+            done
+            return 1
+          }
+          push_with_retry "${IMAGE_NAME}:${TAG_FP}"
+
+      - name: Promote fingerprint to latest and dated tag
+        shell: bash
+        run: |
+          set -euxo pipefail
+          promote_with_retry() {
+            for i in 1 2 3 4 5; do
+              docker buildx imagetools create \
+                --tag "${IMAGE_NAME}:latest" \
+                --tag "${IMAGE_NAME}:${TAG_DATED}" \
+                "${IMAGE_NAME}:${TAG_FP}" && return 0
+              echo "promote failed (attempt $i), retrying in $((i*15))s..."
+              sleep $((i*15))
+            done
+            return 1
+          }
+          promote_with_retry
+
+      - name: Cleanup local tags
+        if: always()
+        shell: bash
+        run: |
+          set -eux
+          docker rmi -f "${IMAGE_NAME}:${TAG_FP}" || true

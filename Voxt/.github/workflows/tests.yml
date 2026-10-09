@@ -1,0 +1,116 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  macos-tests:
+    timeout-minutes: 60
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Audit model stack source
+        run: python3 -B -m unittest discover -s tools -p 'test_*.py' -v
+
+      - name: Collect read-only source review inventory
+        run: python3 -B tools/audit_source_inventory.py --output "$RUNNER_TEMP/source-review-inventory.json"
+
+      - name: Configure consistent build and MLX JIT toolchain
+        run: source tools/configure_xcode.sh --select-system
+
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Reset SwiftPM binary artifact cache
+        run: |
+          SPM_CACHE_PATH="$RUNNER_TEMP/spm-cache"
+          SPM_CLONE_PATH="$RUNNER_TEMP/spm-source-packages"
+          rm -rf ~/Library/Caches/org.swift.swiftpm
+          rm -rf "$SPM_CACHE_PATH" "$SPM_CLONE_PATH"
+          mkdir -p "$SPM_CACHE_PATH" "$SPM_CLONE_PATH"
+
+      - name: Resolve Swift packages
+        run: |
+          SPM_CACHE_PATH="$RUNNER_TEMP/spm-cache"
+          SPM_CLONE_PATH="$RUNNER_TEMP/spm-source-packages"
+          bash tools/resolve_dependencies.sh \
+            -clonedSourcePackagesDirPath "$SPM_CLONE_PATH" \
+            -packageCachePath "$SPM_CACHE_PATH" \
+            -disablePackageRepositoryCache \
+            -skipPackagePluginValidation
+
+      - name: Preserve resolved dependency graph
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-dependencies
+          path: Voxt.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+          if-no-files-found: error
+
+      - name: Run tests
+        run: |
+          SPM_CACHE_PATH="$RUNNER_TEMP/spm-cache"
+          SPM_CLONE_PATH="$RUNNER_TEMP/spm-source-packages"
+          set -o pipefail
+          /usr/bin/time -l xcodebuild test \
+            -project Voxt.xcodeproj \
+            -scheme Voxt \
+            -destination 'platform=macOS' \
+            -clonedSourcePackagesDirPath "$SPM_CLONE_PATH" \
+            -packageCachePath "$SPM_CACHE_PATH" \
+            -disablePackageRepositoryCache \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -skipPackagePluginValidation \
+            -derivedDataPath "$RUNNER_TEMP/VoxtDerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/VoxtTests.xcresult" \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
+            -showBuildTimingSummary \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/debug-test.log"
+
+      - name: Build Release without signing
+        run: |
+          set -o pipefail
+          /usr/bin/time -l xcodebuild build \
+            -project Voxt.xcodeproj \
+            -scheme Voxt \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm-source-packages" \
+            -packageCachePath "$RUNNER_TEMP/spm-cache" \
+            -disablePackageRepositoryCache \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -skipPackagePluginValidation \
+            -derivedDataPath "$RUNNER_TEMP/VoxtDerivedData" \
+            -showBuildTimingSummary \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/release-build.log"
+
+      - name: Export test discovery and summary
+        if: always()
+        run: |
+          if [[ -d "$RUNNER_TEMP/VoxtTests.xcresult" ]]; then
+            xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/VoxtTests.xcresult" > "$RUNNER_TEMP/test-summary.json" || true
+            xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/VoxtTests.xcresult" > "$RUNNER_TEMP/test-discovery.json" || true
+          fi
+
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-evidence
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/VoxtTests.xcresult
+            ${{ runner.temp }}/test-summary.json
+            ${{ runner.temp }}/test-discovery.json
+            ${{ runner.temp }}/source-review-inventory.json
+            ${{ runner.temp }}/debug-test.log
+            ${{ runner.temp }}/release-build.log

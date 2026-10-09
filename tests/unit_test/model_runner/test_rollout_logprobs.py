@@ -21,7 +21,7 @@ def test_rollout_logprobs_record_sampler_values_not_raw_logits() -> None:
     data = SimpleNamespace(return_logprob=True, output_token_logprobs=[])
     request = SimpleNamespace(data=data)
 
-    runner._record_rollout_logprobs(
+    runner.record_rollout_logprobs(
         torch.tensor([sampler_logprob]), token_ids, [request]
     )
 
@@ -37,7 +37,7 @@ def test_rollout_logprobs_align_per_request_at_batch_2() -> None:
     data1 = SimpleNamespace(return_logprob=True, output_token_logprobs=[])
     requests = [SimpleNamespace(data=data0), SimpleNamespace(data=data1)]
 
-    runner._record_rollout_logprobs(
+    runner.record_rollout_logprobs(
         torch.tensor([-0.5, -1.5]), torch.tensor([11, 22]), requests
     )
 
@@ -54,7 +54,7 @@ def test_rollout_logprobs_raises_on_batch_size_mismatch() -> None:
 
     # more logprobs than requests => batching assumption broke => fail loud
     with pytest.raises(RuntimeError, match="batch-size mismatch"):
-        runner._record_rollout_logprobs(
+        runner.record_rollout_logprobs(
             torch.tensor([-0.5, -1.5]),
             torch.tensor([11, 22]),
             [SimpleNamespace(data=data)],
@@ -68,7 +68,7 @@ def test_rollout_logprobs_raises_on_malformed_sampler_shape() -> None:
     data = SimpleNamespace(return_logprob=True, output_token_logprobs=[])
 
     with pytest.raises(RuntimeError, match="Failed to convert"):
-        runner._record_rollout_logprobs(
+        runner.record_rollout_logprobs(
             [[-0.5, -0.7]],
             torch.tensor([11]),
             [SimpleNamespace(data=data)],
@@ -82,7 +82,7 @@ def test_rollout_logprobs_raises_when_sampler_omits_token_ids() -> None:
     data = SimpleNamespace(return_logprob=True, output_token_logprobs=[])
 
     with pytest.raises(RuntimeError, match="next_token_ids"):
-        runner._record_rollout_logprobs(
+        runner.record_rollout_logprobs(
             torch.tensor([-0.5]),
             None,
             [SimpleNamespace(data=data)],
@@ -94,7 +94,7 @@ def test_rollout_logprobs_raises_when_sampler_omits_token_ids() -> None:
 def test_enable_sampler_logprobs_initializes_missing_forward_batch_fields() -> None:
     forward_batch = SimpleNamespace(top_logprobs_nums=None, token_ids_logprobs=None)
 
-    ModelRunner._enable_sampler_logprobs(forward_batch, batch_size=2)
+    ModelRunner.enable_sampler_logprobs(forward_batch, batch_size=2)
 
     assert forward_batch.return_logprob is True
     assert forward_batch.top_logprobs_nums == [0, 0]
@@ -105,7 +105,7 @@ def test_record_rollout_logprobs_skips_without_return_flag() -> None:
     runner = object.__new__(ModelRunner)
     data = SimpleNamespace(return_logprob=False, output_token_logprobs=[])
 
-    runner._record_rollout_logprobs(
+    runner.record_rollout_logprobs(
         torch.tensor([-0.25]), torch.tensor([33]), [SimpleNamespace(data=data)]
     )
 
@@ -117,7 +117,7 @@ def test_record_rollout_logprobs_requires_output_list() -> None:
     data = SimpleNamespace(return_logprob=True)
 
     with pytest.raises(AttributeError, match="output_token_logprobs"):
-        runner._record_rollout_logprobs(
+        runner.record_rollout_logprobs(
             torch.tensor([-0.25]), torch.tensor([33]), [SimpleNamespace(data=data)]
         )
 
@@ -129,14 +129,14 @@ def test_record_rollout_logprobs_requires_return_flag() -> None:
     data = SimpleNamespace(output_token_logprobs=[])
 
     with pytest.raises(AttributeError, match="return_logprob"):
-        runner._record_rollout_logprobs(
+        runner.record_rollout_logprobs(
             torch.tensor([-0.25]), torch.tensor([33]), [SimpleNamespace(data=data)]
         )
 
 
 def test_sample_next_token_ids_requires_sampler_logprobs_when_requested() -> None:
     runner = object.__new__(ModelRunner)
-    runner._apply_codec_suppress_tokens = lambda *args: None
+    runner.apply_codec_suppress_tokens = lambda *args: None
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(
             sample=lambda _logits_output, _forward_batch: torch.tensor([44])
@@ -153,7 +153,7 @@ def test_sample_next_token_ids_requires_sampler_logprobs_when_requested() -> Non
     logits_output = SimpleNamespace()
 
     with pytest.raises(RuntimeError, match="next_token_logprobs"):
-        runner._sample_next_token_ids(
+        runner.sample_next_token_ids(
             logits_output,
             forward_batch,
             SimpleNamespace(),

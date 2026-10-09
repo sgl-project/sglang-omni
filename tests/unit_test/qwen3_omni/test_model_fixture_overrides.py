@@ -14,7 +14,7 @@ from tests.test_model.conftest import (
 )
 
 
-def _speech_config() -> PipelineConfig:
+def speech_config() -> PipelineConfig:
     names = [
         "preprocessing",
         "image_encoder",
@@ -54,7 +54,7 @@ def test_full_model_fixture_context_override_targets_thinker_not_decode(
         if token.startswith("--preprocessing.") or token.startswith("--thinker."):
             stage_tokens.extend((token, tokens[index + 1]))
 
-    manager = ConfigManager(_speech_config())
+    manager = ConfigManager(speech_config())
     merged = manager.merge_config(manager.parse_extra_args(stage_tokens))
     stages = {stage.name: stage for stage in merged.stages}
 

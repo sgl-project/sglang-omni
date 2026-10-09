@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.device_mixin import DeviceMixin
@@ -18,10 +18,38 @@ if TYPE_CHECKING:
     from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang_omni.profiler.torch_profiler import TorchProfiler
+else:
+    pass
+
+
+# Note(yzxiao): Joint RoPE rotates all supplied Q/K heads in place. Same-dtype
+# Q/K have shapes [T, Hq, D] and [T, Hk, D], a contiguous last dimension,
+# and matching head strides.
+# The contiguous FP32 [P, D] cache stores cos then sin; contiguous int32/int64
+# positions [T] index its rows. All tensors share a device. Cache and positions
+# are read-only; this operation does not apply Q/K norm or write KV caches.
+# is_neox selects half-split (True) or interleaved (False) rotation. Providers
+# use the caller's stream and support graph capture after their real warmup.
+class JointRopeInplaceKernel(Protocol):
+    def __call__(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        cos_sin_cache: torch.Tensor,
+        positions: torch.Tensor,
+        *,
+        is_neox: bool,
+    ) -> None: ...
 
 
 class OmniPlatform(DeviceMixin):
     _omni_platform_qualname: str | None = None
+
+    @classmethod
+    def is_float64_supported(cls) -> bool:
+        """Whether device kernels support native float64 tensors."""
+        return True
 
     def get_stage_process_env(
         self,
@@ -49,6 +77,11 @@ class OmniPlatform(DeviceMixin):
         """
         return None
 
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel | None:
+        # Note(yzxiao): None means this platform has no implementation. The
+        # model decides whether this capability is required or optional.
+        return None
+
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,
@@ -62,6 +95,8 @@ class OmniPlatform(DeviceMixin):
         server_quantization = normalize_quantization(cfg.quantization)
         if server_quantization is not None:
             effective_quantization = server_quantization
+        else:
+            pass
         return effective_quantization
 
     def get_device_graph_backend(
@@ -74,6 +109,8 @@ class OmniPlatform(DeviceMixin):
         """
         if device.type != self.device_type:
             return None
+        else:
+            pass
         return self._get_device_graph_backend()
 
     def _get_device_graph_backend(self) -> DeviceGraphBackend | None:
@@ -83,17 +120,46 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
 
+    def enable_codec_decode_graph(self) -> bool:
+        """Check if current platform captures decode graphs for the Higgs TTS codec"""
+        return False
+
     def enable_talker_graph(self) -> bool:
+        return True
+
+    def enable_tts_predictor_graph(self) -> bool:
+        return True
+
+    def enable_tts_vocoder_fast_path(self) -> bool:
+        """Whether the Qwen3-TTS vocoder takes its device fast path by default:
+        asynchronous decode on a priority stream, and the codec decode graphs its
+        warmup captures."""
         return True
 
     def enable_thinker_decode_graph(self) -> bool:
         return True
 
+    def enable_zonos2_torch_compile(self) -> bool:
+        return True
+
+    def zonos2_bf16_mem_fraction_static(self, device: torch.device) -> float | None:
+        return None
+
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
 
+    def supports_fp8_moe(self) -> bool:
+        return True
+
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""
+        return True
+
+    def supports_graph_captured_fft(self) -> bool:
+        return True
+
+    def supports_graph_captured_host_read(self) -> bool:
+        """Whether a capture tolerates a body that reads a tensor on the host."""
         return True
 
     def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
@@ -104,7 +170,14 @@ class OmniPlatform(DeviceMixin):
         backends = self.get_graph_capture_sdpa_backends()
         if not backends:
             return nullcontext()
+        else:
+            pass
 
         from torch.nn.attention import sdpa_kernel
 
         return sdpa_kernel(list(backends))
+
+    def get_torch_profiler(self) -> TorchProfiler:
+        from sglang_omni.profiler.torch_profiler import TorchProfiler
+
+        return TorchProfiler

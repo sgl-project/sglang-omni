@@ -36,8 +36,8 @@ from tests.test_model.omni_router_utils import (
 )
 from tests.utils import MetricCheckCollector
 
-_MODEL_NAME, _PRESET = select_asr_ci_preset()
-_THRESHOLDS = _PRESET.thresholds
+MODEL_NAME, PRESET = select_asr_ci_preset()
+THRESHOLDS = PRESET.thresholds
 
 ASR_CI_CONCURRENCY = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
 ASR_CI_WARMUP_REQUESTS = ASR_CI_CONCURRENCY * 2
@@ -52,7 +52,7 @@ ZH_RESULTS_BASENAME = "asr_seedtts_zh_results.json"
 STARTUP_TIMEOUT = 600
 
 
-def _require_cuda() -> None:
+def require_cuda() -> None:
     import torch
 
     if not torch.cuda.is_available():
@@ -83,8 +83,8 @@ def asr_router_server(
 ) -> ManagedRouterHandle:
     with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
-        model_path=_PRESET.resolved_model_path(),
-        model_name=_PRESET.model_path,
+        model_path=PRESET.resolved_model_path(),
+        model_name=PRESET.model_path,
         worker_extra_args="",
         router_topology=CiRouterTopology.ASR,
         wait_timeout=STARTUP_TIMEOUT,
@@ -93,7 +93,7 @@ def asr_router_server(
         yield router
 
 
-def _format_high_wer_sample(sample: dict) -> str:
+def format_high_wer_sample(sample: dict) -> str:
     return "\n".join(
         [
             f"sample_id={sample['id']}",
@@ -106,9 +106,9 @@ def _format_high_wer_sample(sample: dict) -> str:
     )
 
 
-def _collect_high_wer_samples(results: dict, threshold: float) -> list[str]:
+def collect_high_wer_samples(results: dict, threshold: float) -> list[str]:
     return [
-        _format_high_wer_sample(sample)
+        format_high_wer_sample(sample)
         for sample in results["per_sample"]
         if sample["is_success"]
         and sample["wer"] is not None
@@ -116,9 +116,9 @@ def _collect_high_wer_samples(results: dict, threshold: float) -> list[str]:
     ]
 
 
-def _print_report_only_notice(split: str) -> None:
+def print_report_only_notice(split: str) -> None:
     print(
-        f"[ASR CI] {_PRESET.display_name} {split} report-only: "
+        f"[ASR CI] {PRESET.display_name} {split} report-only: "
         "threshold assertions skipped pending calibration"
     )
 
@@ -129,8 +129,8 @@ def test_asr_matches_seedtts_reference_text_en(
     asr_router_server: ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    _require_cuda()
-    checks = MetricCheckCollector(f"{_PRESET.display_name} EN correctness and speed")
+    require_cuda()
+    checks = MetricCheckCollector(f"{PRESET.display_name} EN correctness and speed")
     checks.check(
         len(seedtts_en_samples) == SEEDTTS_ASR_EN_SAMPLES,
         f"Expected {SEEDTTS_ASR_EN_SAMPLES} SeedTTS samples, "
@@ -141,14 +141,14 @@ def test_asr_matches_seedtts_reference_text_en(
 
     with router_worker_traffic_guard(
         asr_router_server,
-        label=f"{_PRESET.display_name} SeedTTS EN",
+        label=f"{PRESET.display_name} SeedTTS EN",
     ) as router_guard:
         results = asyncio.run(
             run_asr_seedtts_once(
                 seedtts_en_samples,
                 host="127.0.0.1",
                 port=asr_router_server.port,
-                model_path=_PRESET.model_path,
+                model_path=PRESET.model_path,
                 lang="en",
                 concurrency=ASR_CI_CONCURRENCY,
                 warmup=ASR_CI_WARMUP_REQUESTS,
@@ -158,20 +158,16 @@ def test_asr_matches_seedtts_reference_text_en(
     summary = results["summary"]
     speed = results["speed"]
 
-    high_wer_samples = _collect_high_wer_samples(results, _THRESHOLDS.en_sample_wer_max)
+    high_wer_samples = collect_high_wer_samples(results, THRESHOLDS.en_sample_wer_max)
 
-    print_asr_wer_summary(
-        summary, _PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL
-    )
-    print_asr_speed_summary(
-        speed, _PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL
-    )
+    print_asr_wer_summary(summary, PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL)
+    print_asr_speed_summary(speed, PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL)
 
     results_path = tmp_path_factory.getbasetemp() / EN_RESULTS_BASENAME
     results_path.write_text(
         json.dumps(
             {
-                "model_path": _PRESET.model_path,
+                "model_path": PRESET.model_path,
                 "summary": summary,
                 "speed": speed,
                 "router_ready_s": asr_router_server.router_ready_s,
@@ -195,47 +191,47 @@ def test_asr_matches_seedtts_reference_text_en(
     )
     checks.check(
         evaluated == total_samples,
-        f"{_PRESET.display_name} EN transcribed only {evaluated}/{total_samples} "
+        f"{PRESET.display_name} EN transcribed only {evaluated}/{total_samples} "
         "samples, failed requests are excluded from WER scoring",
     )
-    if _PRESET.gate_thresholds:
+    if PRESET.gate_thresholds:
         checks.check(
-            corpus_wer <= _THRESHOLDS.en_corpus_wer_max,
-            f"{_PRESET.display_name} EN corpus WER {corpus_wer:.4f} exceeds "
-            f"{_THRESHOLDS.en_corpus_wer_max:.4f}",
+            corpus_wer <= THRESHOLDS.en_corpus_wer_max,
+            f"{PRESET.display_name} EN corpus WER {corpus_wer:.4f} exceeds "
+            f"{THRESHOLDS.en_corpus_wer_max:.4f}",
         )
         checks.check(
             not high_wer_samples,
-            f"{_PRESET.display_name} high-WER SeedTTS EN samples:\n"
+            f"{PRESET.display_name} high-WER SeedTTS EN samples:\n"
             + "\n\n".join(high_wer_samples),
         )
         checks.check(
-            throughput_samples_per_s >= _THRESHOLDS.throughput_min,
-            f"{_PRESET.display_name} throughput {throughput_samples_per_s:.3f} "
-            f"samples/s is below {_THRESHOLDS.throughput_min:.3f}",
+            throughput_samples_per_s >= THRESHOLDS.throughput_min,
+            f"{PRESET.display_name} throughput {throughput_samples_per_s:.3f} "
+            f"samples/s is below {THRESHOLDS.throughput_min:.3f}",
         )
         checks.check(
-            latency_mean_s <= _THRESHOLDS.latency_mean_max_s,
-            f"{_PRESET.display_name} mean latency {latency_mean_s:.3f}s exceeds "
-            f"{_THRESHOLDS.latency_mean_max_s:.3f}s",
+            latency_mean_s <= THRESHOLDS.latency_mean_max_s,
+            f"{PRESET.display_name} mean latency {latency_mean_s:.3f}s exceeds "
+            f"{THRESHOLDS.latency_mean_max_s:.3f}s",
         )
         checks.check(
-            latency_p95_s <= _THRESHOLDS.latency_p95_max_s,
-            f"{_PRESET.display_name} p95 latency {latency_p95_s:.3f}s exceeds "
-            f"{_THRESHOLDS.latency_p95_max_s:.3f}s",
+            latency_p95_s <= THRESHOLDS.latency_p95_max_s,
+            f"{PRESET.display_name} p95 latency {latency_p95_s:.3f}s exceeds "
+            f"{THRESHOLDS.latency_p95_max_s:.3f}s",
         )
         checks.check(
-            rtf_mean <= _THRESHOLDS.rtf_mean_max,
-            f"{_PRESET.display_name} mean RTF {rtf_mean:.4f} exceeds "
-            f"{_THRESHOLDS.rtf_mean_max:.4f}",
+            rtf_mean <= THRESHOLDS.rtf_mean_max,
+            f"{PRESET.display_name} mean RTF {rtf_mean:.4f} exceeds "
+            f"{THRESHOLDS.rtf_mean_max:.4f}",
         )
         checks.check(
-            rtf_p95 <= _THRESHOLDS.rtf_p95_max,
-            f"{_PRESET.display_name} p95 RTF {rtf_p95:.4f} exceeds "
-            f"{_THRESHOLDS.rtf_p95_max:.4f}",
+            rtf_p95 <= THRESHOLDS.rtf_p95_max,
+            f"{PRESET.display_name} p95 RTF {rtf_p95:.4f} exceeds "
+            f"{THRESHOLDS.rtf_p95_max:.4f}",
         )
     else:
-        _print_report_only_notice("EN")
+        print_report_only_notice("EN")
     router_guard.assert_served(
         min_total_requests=len(seedtts_en_samples),
         min_worker_share=0.40,
@@ -249,8 +245,8 @@ def test_asr_matches_seedtts_reference_text_zh(
     asr_router_server: ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    _require_cuda()
-    checks = MetricCheckCollector(f"{_PRESET.display_name} ZH correctness")
+    require_cuda()
+    checks = MetricCheckCollector(f"{PRESET.display_name} ZH correctness")
     checks.check(
         len(seedtts_zh_samples) == SEEDTTS_ASR_ZH_SAMPLES,
         f"Expected {SEEDTTS_ASR_ZH_SAMPLES} SeedTTS samples, "
@@ -261,14 +257,14 @@ def test_asr_matches_seedtts_reference_text_zh(
 
     with router_worker_traffic_guard(
         asr_router_server,
-        label=f"{_PRESET.display_name} SeedTTS ZH",
+        label=f"{PRESET.display_name} SeedTTS ZH",
     ) as router_guard:
         results = asyncio.run(
             run_asr_seedtts_once(
                 seedtts_zh_samples,
                 host="127.0.0.1",
                 port=asr_router_server.port,
-                model_path=_PRESET.model_path,
+                model_path=PRESET.model_path,
                 lang="zh",
                 concurrency=ASR_CI_CONCURRENCY,
                 warmup=ASR_CI_WARMUP_REQUESTS,
@@ -278,20 +274,16 @@ def test_asr_matches_seedtts_reference_text_zh(
     summary = results["summary"]
     speed = results["speed"]
 
-    high_wer_samples = _collect_high_wer_samples(results, _THRESHOLDS.zh_sample_wer_max)
+    high_wer_samples = collect_high_wer_samples(results, THRESHOLDS.zh_sample_wer_max)
 
-    print_asr_wer_summary(
-        summary, _PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL
-    )
-    print_asr_speed_summary(
-        speed, _PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL
-    )
+    print_asr_wer_summary(summary, PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL)
+    print_asr_speed_summary(speed, PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL)
 
     results_path = tmp_path_factory.getbasetemp() / ZH_RESULTS_BASENAME
     results_path.write_text(
         json.dumps(
             {
-                "model_path": _PRESET.model_path,
+                "model_path": PRESET.model_path,
                 "summary": summary,
                 "speed": speed,
             },
@@ -309,22 +301,22 @@ def test_asr_matches_seedtts_reference_text_zh(
     )
     checks.check(
         evaluated == total_samples,
-        f"{_PRESET.display_name} ZH transcribed only {evaluated}/{total_samples} "
+        f"{PRESET.display_name} ZH transcribed only {evaluated}/{total_samples} "
         "samples, failed requests are excluded from WER scoring",
     )
-    if _PRESET.gate_thresholds:
+    if PRESET.gate_thresholds:
         checks.check(
-            corpus_wer <= _THRESHOLDS.zh_corpus_wer_max,
-            f"{_PRESET.display_name} ZH corpus WER {corpus_wer:.4f} exceeds "
-            f"{_THRESHOLDS.zh_corpus_wer_max:.4f}",
+            corpus_wer <= THRESHOLDS.zh_corpus_wer_max,
+            f"{PRESET.display_name} ZH corpus WER {corpus_wer:.4f} exceeds "
+            f"{THRESHOLDS.zh_corpus_wer_max:.4f}",
         )
         checks.check(
             not high_wer_samples,
-            f"{_PRESET.display_name} high-WER SeedTTS ZH samples:\n"
+            f"{PRESET.display_name} high-WER SeedTTS ZH samples:\n"
             + "\n\n".join(high_wer_samples),
         )
     else:
-        _print_report_only_notice("ZH")
+        print_report_only_notice("ZH")
     router_guard.assert_served(
         min_total_requests=len(seedtts_zh_samples),
         min_worker_share=0.40,

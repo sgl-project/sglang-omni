@@ -4,16 +4,16 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.runtime_context import get_parallel
 from torch import nn
 from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
 from sglang_omni.vendor.sglang.layers import (
     AttentionType,
     MergedColumnParallelLinear,
@@ -54,7 +54,7 @@ class LLaDA2MoeAttention(nn.Module):
         self.head_dim = config.head_dim
         self.use_qk_norm = config.use_qk_norm
 
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_size = get_parallel().tp_size
         self.num_heads_per_tp = self.num_heads // tp_size
         self.num_kv_heads_per_tp = max(1, self.num_kv_heads // tp_size)
         self.q_size = self.num_heads_per_tp * self.head_dim
@@ -86,6 +86,8 @@ class LLaDA2MoeAttention(nn.Module):
         if self.use_qk_norm:
             self.query_layernorm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
             self.key_layernorm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        else:
+            pass
 
         # RoPE - using partial rotary factor
         self.rotary_emb = get_rope(
@@ -119,6 +121,8 @@ class LLaDA2MoeAttention(nn.Module):
             q, k = apply_qk_norm(
                 q, k, self.query_layernorm, self.key_layernorm, self.head_dim
             )
+        else:
+            pass
 
         # RoPE — sglang's rotary_emb handles partial rotation internally
         # via cos_sin_cache whose width equals rotary_dim (< head_dim).
@@ -198,6 +202,8 @@ class LLaDA2MoeGate(nn.Module):
         super().__init__()
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
+        else:
+            pass
         self.params_dtype = params_dtype
         self.weight = nn.Parameter(
             torch.empty(
@@ -293,7 +299,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             scores_for_routing = scores
 
         # Group-limited top-k selection
-        topk_weights, topk_ids = self._group_limited_topk(scores_for_routing)
+        topk_weights, topk_ids = self.group_limited_topk(scores_for_routing)
 
         # Gather actual scores (without bias) for the selected experts
         topk_weights = torch.gather(scores, dim=1, index=topk_ids)
@@ -303,6 +309,8 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             topk_weights = topk_weights / (
                 topk_weights.sum(dim=-1, keepdim=True) + 1e-20
             )
+        else:
+            pass
         topk_weights = topk_weights * self.routed_scaling_factor
 
         topk_output = StandardTopKOutput(
@@ -315,10 +323,12 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         # Add shared expert output
         if self.shared_experts is not None:
             y = y + self.shared_experts(identity)
+        else:
+            pass
 
         return y
 
-    def _group_limited_topk(
+    def group_limited_topk(
         self, scores: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Group-limited top-k expert selection."""
@@ -467,15 +477,23 @@ class LLaDA2MoeTextModel(nn.Module):
             prefix = "model."
             if name.startswith(prefix):
                 name = name[len(prefix) :]
+            else:
+                pass
 
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 if weight_name not in name:
                     continue
+                else:
+                    pass
                 if "mlp.experts" in name:
                     continue
+                else:
+                    pass
                 name = name.replace(weight_name, param_name)
                 if name not in params_dict:
                     continue
+                else:
+                    pass
 
                 param = params_dict[name]
                 weight_loader = param.weight_loader
@@ -486,9 +504,13 @@ class LLaDA2MoeTextModel(nn.Module):
                     param_name, weight_name, expert_id, shard_id = mapping
                     if weight_name not in name:
                         continue
+                    else:
+                        pass
                     name = name.replace(weight_name, param_name)
                     if name not in params_dict:
                         continue
+                    else:
+                        pass
                     param = params_dict[name]
                     weight_loader = param.weight_loader
                     weight_loader(
@@ -502,6 +524,8 @@ class LLaDA2MoeTextModel(nn.Module):
                 else:
                     if name not in params_dict:
                         continue
+                    else:
+                        pass
 
                     param = params_dict[name]
                     weight_loader = getattr(
@@ -522,9 +546,9 @@ class LLaDA2MoeModelLM(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
-    ):
+    ) -> None:
         super().__init__()
         self.config = config
 
@@ -576,7 +600,11 @@ class LLaDA2MoeModelLM(nn.Module):
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, tensor)
+                else:
+                    pass
                 continue
+            else:
+                pass
 
             model_weights.append((name, tensor))
 

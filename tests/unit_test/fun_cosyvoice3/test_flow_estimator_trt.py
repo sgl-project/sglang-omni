@@ -13,16 +13,16 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     _PROFILE_MAX_TIME,
     _PROFILE_MIN_TIME,
     FlowEstimatorTRTModule,
-    _cfg_pair_shapes,
-    _dynamic_shapes,
-    _require_cfg_pair_inputs,
+    cfg_pair_shapes,
+    dynamic_shapes,
     execute_flow_estimator,
     is_flow_estimator_trt,
+    require_cfg_pair_inputs,
     resolve_flow_estimator_onnx,
 )
 
 
-class _ExecuteTRT:
+class ExecuteTRT:
     def __init__(self, max_batch: int) -> None:
         self.max_batch = max_batch
         self.calls: list[torch.Tensor] = []
@@ -56,7 +56,7 @@ def test_resolve_flow_estimator_onnx_missing(tmp_path: Path) -> None:
 
 def test_dynamic_shapes_keep_official_cfg_batch() -> None:
     for time in (_PROFILE_MIN_TIME, 500, _PROFILE_MAX_TIME):
-        shapes = _dynamic_shapes(time)
+        shapes = dynamic_shapes(time)
         assert list(shapes) == ["x", "mask", "mu", "cond"]
         assert all(shape[0] == _CFG_BATCH for shape in shapes.values())
         assert shapes["x"] == (_CFG_BATCH, _MEL_DIM, time)
@@ -64,7 +64,7 @@ def test_dynamic_shapes_keep_official_cfg_batch() -> None:
 
 
 def test_cfg_pair_shapes_match_official_layout() -> None:
-    shapes = _cfg_pair_shapes(16)
+    shapes = cfg_pair_shapes(16)
     assert shapes["t"] == (_CFG_BATCH,)
     assert shapes["spks"] == (_CFG_BATCH, _MEL_DIM)
     assert shapes["x"] == (_CFG_BATCH, _MEL_DIM, 16)
@@ -78,7 +78,7 @@ def test_require_cfg_pair_inputs_accepts_official_layout() -> None:
     t = torch.zeros(_CFG_BATCH)
     spks = torch.zeros(_CFG_BATCH, _MEL_DIM)
     cond = torch.zeros_like(x)
-    assert _require_cfg_pair_inputs(x, mask, mu, t, spks, cond) == _cfg_pair_shapes(
+    assert require_cfg_pair_inputs(x, mask, mu, t, spks, cond) == cfg_pair_shapes(
         frames
     )
 
@@ -90,23 +90,21 @@ def test_require_cfg_pair_inputs_rejects_wrong_t_or_spks() -> None:
     mu = torch.zeros_like(x)
     cond = torch.zeros_like(x)
     with pytest.raises(ValueError, match=r"input t has shape"):
-        _require_cfg_pair_inputs(
+        require_cfg_pair_inputs(
             x, mask, mu, torch.zeros(4), torch.zeros(_CFG_BATCH, _MEL_DIM), cond
         )
     with pytest.raises(ValueError, match=r"input spks has shape"):
-        _require_cfg_pair_inputs(
+        require_cfg_pair_inputs(
             x, mask, mu, torch.zeros(_CFG_BATCH), torch.zeros(4, _MEL_DIM), cond
         )
 
 
 def test_canonicalize_device_equates_cuda_and_cuda0(monkeypatch) -> None:
-    from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
-        _canonicalize_device,
-    )
+    from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import canonicalize_device
 
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    assert _canonicalize_device("cuda") == torch.device("cuda:0")
-    assert _canonicalize_device("cuda:0") == torch.device("cuda:0")
+    assert canonicalize_device("cuda") == torch.device("cuda:0")
+    assert canonicalize_device("cuda:0") == torch.device("cuda:0")
 
 
 def test_execute_flow_estimator_rejects_odd_cfg_batch() -> None:
@@ -115,11 +113,11 @@ def test_execute_flow_estimator_rejects_odd_cfg_batch() -> None:
     t = torch.zeros(3)
     spks = torch.zeros(3, 4)
     with pytest.raises(ValueError, match="even and >= 2"):
-        execute_flow_estimator(_ExecuteTRT(2), x, dummy, dummy, t, spks, dummy)
+        execute_flow_estimator(ExecuteTRT(2), x, dummy, dummy, t, spks, dummy)
 
 
 def test_execute_flow_estimator_expands_broadcast_timestep() -> None:
-    estimator = _ExecuteTRT(max_batch=2)
+    estimator = ExecuteTRT(max_batch=2)
     x = torch.tensor([[[1.0]], [[-1.0]]])
     mask = torch.ones_like(x)
     mu = torch.zeros_like(x)
@@ -134,7 +132,7 @@ def test_execute_flow_estimator_expands_broadcast_timestep() -> None:
 
 
 def test_execute_flow_estimator_chunks_cfg_pairs_not_raw_rows() -> None:
-    estimator = _ExecuteTRT(max_batch=2)
+    estimator = ExecuteTRT(max_batch=2)
     x = torch.tensor(
         [
             [[10.0]],
@@ -162,7 +160,7 @@ def test_execute_flow_estimator_chunks_cfg_pairs_not_raw_rows() -> None:
 
 
 def test_execute_flow_estimator_skips_chunking_when_engine_fits() -> None:
-    estimator = _ExecuteTRT(max_batch=8)
+    estimator = ExecuteTRT(max_batch=8)
     x = torch.arange(8, dtype=torch.float32).reshape(8, 1, 1)
     mask = torch.ones_like(x)
     mu = torch.zeros_like(x)
@@ -178,28 +176,28 @@ def test_execute_flow_estimator_skips_chunking_when_engine_fits() -> None:
 
 
 def test_is_flow_estimator_trt_accepts_execute_wrapper() -> None:
-    class _Execute:
+    class Execute:
         def execute(self, *args, **kwargs):
             del args, kwargs
             return None
 
-    assert is_flow_estimator_trt(_Execute()) is True
+    assert is_flow_estimator_trt(Execute()) is True
     assert is_flow_estimator_trt(object()) is False
     assert is_flow_estimator_trt(torch.nn.Linear(1, 1)) is False
 
 
-class _FakeTRTEngine:
+class FakeTRTEngine:
     max_batch = 2
 
 
-class _FallbackDiT(torch.nn.Module):
+class FallbackDiT(torch.nn.Module):
     def forward(self, x, mask, mu, t, spks, cond, streaming=False):
         del mask, mu, t, spks, cond, streaming
         return x * 2.0
 
 
 def test_is_flow_estimator_trt_accepts_module_wrapper() -> None:
-    module = FlowEstimatorTRTModule(_FakeTRTEngine())
+    module = FlowEstimatorTRTModule(FakeTRTEngine())
     assert is_flow_estimator_trt(module) is True
     assert isinstance(module, torch.nn.Module)
 
@@ -215,7 +213,7 @@ def test_flow_estimator_trt_module_forwards_in_profile(monkeypatch) -> None:
         return x + 1.0
 
     monkeypatch.setattr(trt_mod, "execute_flow_estimator", fake_execute)
-    engine = _FakeTRTEngine()
+    engine = FakeTRTEngine()
     module = FlowEstimatorTRTModule(engine)
     frames = 16
     x = torch.zeros(_CFG_BATCH, _MEL_DIM, frames)
@@ -233,8 +231,8 @@ def test_flow_estimator_trt_module_forwards_in_profile(monkeypatch) -> None:
 
 def test_flow_estimator_trt_module_falls_back_outside_profile() -> None:
     module = FlowEstimatorTRTModule(
-        _FakeTRTEngine(),
-        fallback=_FallbackDiT(),
+        FakeTRTEngine(),
+        fallback=FallbackDiT(),
         min_time=4,
         max_time=10,
     )
@@ -252,7 +250,7 @@ def test_flow_estimator_trt_module_falls_back_outside_profile() -> None:
 
 
 def test_flow_estimator_trt_module_raises_without_fallback() -> None:
-    module = FlowEstimatorTRTModule(_FakeTRTEngine(), min_time=4, max_time=10)
+    module = FlowEstimatorTRTModule(FakeTRTEngine(), min_time=4, max_time=10)
     frames = 20
     x = torch.zeros(_CFG_BATCH, _MEL_DIM, frames)
     mask = torch.ones(_CFG_BATCH, 1, frames)
@@ -268,7 +266,7 @@ def test_flow_estimator_trt_module_raises_without_fallback() -> None:
 
 
 def test_execute_flow_estimator_requires_max_batch() -> None:
-    class _NoBatch:
+    class NoBatch:
         def execute(self, *args, **kwargs):
             del args, kwargs
             raise AssertionError("must fail on max_batch")
@@ -277,5 +275,5 @@ def test_execute_flow_estimator_requires_max_batch() -> None:
     dummy = torch.zeros_like(x)
     with pytest.raises(AttributeError, match="max_batch"):
         execute_flow_estimator(
-            _NoBatch(), x, dummy, dummy, torch.zeros(2), torch.zeros(2, 1), dummy
+            NoBatch(), x, dummy, dummy, torch.zeros(2), torch.zeros(2, 1), dummy
         )

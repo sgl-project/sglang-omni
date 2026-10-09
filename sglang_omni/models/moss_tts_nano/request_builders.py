@@ -6,23 +6,28 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
+from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
 from sglang_omni.models.moss_tts.request_builders import (
     _DATA_URI_RE,
-    _new_moss_tts_sampling_seed,
-    _validate_moss_tts_generation_kwargs,
     build_row_cache_key_ids,
     derive_moss_tts_sampling_seed,
+    new_moss_tts_sampling_seed,
     normalize_moss_tts_inputs,
     resolve_moss_reference,
+    validate_moss_tts_generation_kwargs,
 )
 from sglang_omni.models.moss_tts_local.request_builders import (
     MOSS_STREAM_TRANSPORT_BATCH_FRAMES,
     MossTTSLocalSGLangRequestData,
     build_moss_tts_local_stream_metadata,
+)
+from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
+from sglang_omni.models.moss_tts_local.stages import (
+    BatchedReferenceEncoder,
+    MossLocalReferenceEncoder,
 )
 from sglang_omni.models.moss_tts_nano.payload_types import MossTTSNanoState
 from sglang_omni.models.moss_tts_nano.prompting import build_prompt_rows
@@ -49,26 +54,31 @@ class MossTTSNanoPreparedRequest:
     input_ids_list: list[int]
     input_ids: torch.Tensor
     prompt_rows: torch.Tensor
-    gen_kwargs: dict[str, Any]
+    gen_kwargs: dict[str, int | float]
 
 
 @dataclass
-class _PreprocessingContext:
-    tokenizer: Any
-    model_config: Any
-    reference_encoder: Any = None
+class PreprocessingContext:
+    tokenizer: PreTrainedTokenizerBase
+    model_config: PretrainedConfig
+    reference_encoder: BatchedReferenceEncoder | MossLocalReferenceEncoder | None = None
 
 
-_QUEUE: PreparedRequestQueue[_PreprocessingContext, MossTTSNanoPreparedRequest] = (
+_QUEUE: PreparedRequestQueue[PreprocessingContext, MossTTSNanoPreparedRequest] = (
     PreparedRequestQueue()
 )
 
 
 def set_moss_tts_nano_preprocessing_context(
-    *, tokenizer: Any, model_config: Any, reference_encoder: Any = None
+    *,
+    tokenizer: PreTrainedTokenizerBase,
+    model_config: PretrainedConfig,
+    reference_encoder: (
+        BatchedReferenceEncoder | MossLocalReferenceEncoder | None
+    ) = None,
 ) -> None:
     _QUEUE.set_context(
-        _PreprocessingContext(
+        PreprocessingContext(
             tokenizer=tokenizer,
             model_config=model_config,
             reference_encoder=reference_encoder,
@@ -91,20 +101,24 @@ def pop_prepared_moss_tts_nano_request(
     marker = data.get(_MOSS_TTS_NANO_PREPARED_MARKER)
     if marker is None:
         return None
+    else:
+        pass
     prepared = _QUEUE.pop(str(marker))
     if prepared is None:
         raise RuntimeError(
             "MOSS-TTS-Nano preprocessing state is missing for prepared payload "
             f"{marker!r}; the AR scheduler must not rebuild it"
         )
+    else:
+        pass
     return prepared
 
 
 def build_generation_kwargs(
-    params: dict[str, Any],
+    params: dict[str, object],
     *,
-    tts_params: dict[str, Any],
-) -> dict[str, Any]:
+    tts_params: dict[str, object],
+) -> dict[str, int | float]:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
         explicit_fields = {str(field) for field in explicit_generation_params}
@@ -122,7 +136,7 @@ def build_generation_kwargs(
     else:
         max_new_tokens = int(raw_max_new_tokens)
 
-    generation_kwargs: dict[str, Any] = {
+    generation_kwargs: dict[str, int | float] = {
         "max_new_tokens": max_new_tokens,
         "text_temperature": 1.0,
         "text_top_p": 1.0,
@@ -136,12 +150,18 @@ def build_generation_kwargs(
     if "temperature" in explicit_fields and params.get("temperature") is not None:
         generation_kwargs["text_temperature"] = float(params["temperature"])
         generation_kwargs["audio_temperature"] = float(params["temperature"])
+    else:
+        pass
     if "top_p" in explicit_fields and params.get("top_p") is not None:
         generation_kwargs["text_top_p"] = float(params["top_p"])
         generation_kwargs["audio_top_p"] = float(params["top_p"])
+    else:
+        pass
     if "top_k" in explicit_fields and params.get("top_k") is not None:
         generation_kwargs["text_top_k"] = int(params["top_k"])
         generation_kwargs["audio_top_k"] = int(params["top_k"])
+    else:
+        pass
     if (
         "repetition_penalty" in explicit_fields
         and params.get("repetition_penalty") is not None
@@ -149,6 +169,8 @@ def build_generation_kwargs(
         generation_kwargs["audio_repetition_penalty"] = float(
             params["repetition_penalty"]
         )
+    else:
+        pass
 
     for source in (tts_params, params):
         for field_name in (
@@ -162,6 +184,8 @@ def build_generation_kwargs(
         ):
             if source.get(field_name) is None:
                 continue
+            else:
+                pass
             value = source[field_name]
             generation_kwargs[field_name] = (
                 int(value) if field_name.endswith("top_k") else float(value)
@@ -170,10 +194,14 @@ def build_generation_kwargs(
     seed = tts_params.get("seed")
     if seed is None:
         seed = params.get("seed")
+    else:
+        pass
     if seed is not None:
         generation_kwargs["seed"] = seed
+    else:
+        pass
 
-    _validate_moss_tts_generation_kwargs(generation_kwargs)
+    validate_moss_tts_generation_kwargs(generation_kwargs)
     return generation_kwargs
 
 
@@ -184,18 +212,26 @@ def build_moss_tts_nano_state(payload: StagePayload) -> MossTTSNanoState:
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    else:
+        pass
 
     text, references = normalize_moss_tts_inputs(inputs)
     if len(references) > 1:
         raise ValueError("MOSS-TTS-Nano accepts at most one reference audio")
+    else:
+        pass
     ref_audio, ref_text = resolve_moss_reference(references, tts_params)
     if isinstance(ref_text, str) and ref_text.strip():
         raise ValueError(
             "MOSS-TTS-Nano voice cloning does not accept a reference transcript"
         )
+    else:
+        pass
     instructions = tts_params.get("instructions") or params.get("instructions")
     if isinstance(instructions, str) and instructions.strip():
         raise ValueError("MOSS-TTS-Nano does not support instructions")
+    else:
+        pass
     return MossTTSNanoState(
         text=text,
         ref_audio=ref_audio,
@@ -204,35 +240,50 @@ def build_moss_tts_nano_state(payload: StagePayload) -> MossTTSNanoState:
     )
 
 
-def _encode_reference(
-    ref_audio: Any | None, reference_encoder: Any
+def encode_reference(
+    ref_audio: str | os.PathLike[str] | torch.Tensor | list[list[int]] | None,
+    reference_encoder: BatchedReferenceEncoder | MossLocalReferenceEncoder | None,
 ) -> torch.Tensor | None:
     if ref_audio is None:
         return None
+    else:
+        pass
     if isinstance(ref_audio, os.PathLike):
         ref_audio = os.fsdecode(ref_audio)
+    else:
+        pass
     if isinstance(ref_audio, torch.Tensor):
         return ref_audio
+    else:
+        pass
     if not isinstance(ref_audio, str):
         return torch.as_tensor(ref_audio, dtype=torch.long)
+    else:
+        pass
     if reference_encoder is None:
         raise RuntimeError(
             "MOSS-TTS-Nano reference audio requires an initialized audio encoder"
         )
+    else:
+        pass
     if _DATA_URI_RE.match(ref_audio) is not None:
         return reference_encoder.encode_data_uri(ref_audio)
+    else:
+        pass
     return reference_encoder.encode(ref_audio)
 
 
-def _prepare_moss_tts_nano_request(
+def prepare_moss_tts_nano_request(
     payload: StagePayload,
     *,
-    tokenizer: Any,
-    model_config: Any,
-    reference_encoder: Any = None,
+    tokenizer: PreTrainedTokenizerBase,
+    model_config: PretrainedConfig,
+    reference_encoder: (
+        BatchedReferenceEncoder | MossLocalReferenceEncoder | None
+    ) = None,
 ) -> MossTTSNanoPreparedRequest:
     state = build_moss_tts_nano_state(payload)
-    reference_codes = _encode_reference(state.ref_audio, reference_encoder)
+    reference_codes = encode_reference(state.ref_audio, reference_encoder)
     prompt_rows = build_prompt_rows(
         tokenizer=tokenizer,
         config=model_config,
@@ -257,8 +308,10 @@ def preprocess_moss_tts_nano_payload(payload: StagePayload) -> StagePayload:
             "MOSS-TTS-Nano preprocessing context is not initialized; "
             "create_preprocessing_executor must register it before requests run"
         )
+    else:
+        pass
     try:
-        prepared = _prepare_moss_tts_nano_request(
+        prepared = prepare_moss_tts_nano_request(
             payload,
             tokenizer=context.tokenizer,
             model_config=context.model_config,
@@ -271,6 +324,8 @@ def preprocess_moss_tts_nano_payload(payload: StagePayload) -> StagePayload:
     data = prepared.state.to_dict()
     if published:
         data[_MOSS_TTS_NANO_PREPARED_MARKER] = payload.request_id
+    else:
+        pass
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
@@ -281,7 +336,7 @@ def preprocess_moss_tts_nano_payload(payload: StagePayload) -> StagePayload:
 def build_sglang_moss_tts_nano_request(
     payload: StagePayload,
     *,
-    model: Any,
+    model: MossTTSLocalSGLangModel,
 ) -> MossTTSNanoSGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
@@ -292,6 +347,8 @@ def build_sglang_moss_tts_nano_request(
             "MOSS-TTS-Nano AR request builder requires a payload prepared by "
             "preprocess_moss_tts_nano_payload"
         )
+    else:
+        pass
 
     cfg = model.config
     gen_kwargs = prepared.gen_kwargs
@@ -317,10 +374,18 @@ def build_sglang_moss_tts_nano_request(
         extra_key="moss_tts_nano:prompt:v1",
     )
     req.tokenizer = None
-    req._input_embeds_are_projected = True
-    req._omni_prompt_only_radix = True
-    req._omni_prompt_cache_key = req.extra_key
-    req._codec_suppress_tokens = None
+    req._input_embeds_are_projected = (
+        True  # noqa: leading-underscore  # SGLang request metadata.
+    )
+    req._omni_prompt_only_radix = (
+        True  # noqa: leading-underscore  # SGLang request metadata.
+    )
+    req._omni_prompt_cache_key = (
+        req.extra_key
+    )  # noqa: leading-underscore  # SGLang request metadata.
+    req._codec_suppress_tokens = (
+        None  # noqa: leading-underscore  # SGLang request metadata.
+    )
 
     data = MossTTSNanoSGLangRequestData(
         input_ids=prepared.input_ids,
@@ -342,7 +407,7 @@ def build_sglang_moss_tts_nano_request(
         sampling_seed=(
             derive_moss_tts_sampling_seed(gen_kwargs["seed"])
             if gen_kwargs.get("seed") is not None
-            else _new_moss_tts_sampling_seed()
+            else new_moss_tts_sampling_seed()
         ),
         engine_start_s=time.perf_counter(),
         stream_metadata=build_moss_tts_local_stream_metadata(
@@ -380,7 +445,7 @@ def apply_sglang_moss_tts_nano_result(
     )
 
 
-def make_moss_tts_nano_scheduler_adapters(*, model: Any):
+def make_moss_tts_nano_scheduler_adapters(*, model: MossTTSLocalSGLangModel):
     def request_builder(payload: StagePayload) -> MossTTSNanoSGLangRequestData:
         return build_sglang_moss_tts_nano_request(payload, model=model)
 

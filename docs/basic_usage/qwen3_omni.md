@@ -19,6 +19,13 @@ sgl-omni serve \
   --port 8008
 ```
 
+Multimodal preprocessing (tokenization, image/video/audio feature extraction)
+runs serially by default. Add `--preprocessing.factory.max_concurrency 4` to
+run it on a thread pool when CPU preprocessing is the bottleneck under
+concurrent load. Threaded preprocessing changes how requests arrive at the
+thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
+keep the default when comparing accuracy across runs.
+
 For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
 process:
@@ -160,6 +167,40 @@ print(result["choices"][0]["message"]["content"])
 Speech mode runs the full eight-stage pipeline on one or more GPUs. It produces
 both text (from the thinker) and audio (from the talker) output.
 
+### Codec Coalescing and First-Audio Latency
+
+The speech pipeline sets `codec_coalesce_frames=10`,
+`codec_coalesce_early_frames=10`, and `codec_coalesce_first_frames=0` under
+`stages.talker_ar.factory`. The first 10 codec frames are sent individually;
+later frames are coalesced into groups of 10. Omitting a YAML override keeps
+these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to
+disable the early prefix. This aligns with the default serial Code2Wav
+10-frame threshold: the first three windows contain 10, 20, and 30 frames,
+and subsequent full windows contain 35 frames including left context.
+These shapes can use the captured serial windows when CUDA Graph is enabled.
+An early prefix of 12 with this serial configuration instead produces
+22- and 32-frame windows that fall back to eager execution.
+
+With Code2Wav batching enabled, `initial_codec_chunk_frames=2`, and
+`stream_chunk_size=10`, explicitly set `codec_coalesce_early_frames=12` to
+make the first two windows eligible
+at generated frames 2 and 12.
+Uniform groups of 10 (`early_frames=0`, `first_frames=0`) instead publish the
+first group at step 11: the sender retains the newest row until the next step
+can exclude EOS, or the request finishes. For a request that continues past
+step 10, first-window input readiness therefore moves from step 2 to step 11,
+adding nine Talker decode intervals. If the interval is approximately `d` ms,
+the added input wait is approximately `9d` ms. With the serial 10-frame first
+window, readiness instead moves from step 10 to step 11. The default 10-frame
+early prefix preserves readiness at step 10; the next two windows become
+ready at steps 21 and 31. The extra step after the prefix retains the newest
+row for EOS detection, compared with steps 20 and 30 without coalescing.
+
+This is an input-readiness estimate, not a measured end-to-end TTFA delta or
+nine frames of audio playback time. Actual TTFA also depends on transport,
+queueing, and vocoder execution; the overall coalescing benchmark does not
+isolate the early-prefix setting.
+
 ### Launch the Server
 
 Speech mode can run as a colocated one-GPU worker using the colocated config:
@@ -195,6 +236,22 @@ The feature derives the exact `B=1` threshold windows from
 `stream_chunk_size` and `left_context_size`; the defaults capture
 `T{10,20,30,35}`. Unsupported shapes and final stream tails run eagerly.
 Capture-time incompatibilities also fall back to eager execution.
+
+The SnakeBeta activation of the Code2Wav decoder runs as one fused Triton
+kernel by default on CUDA devices, shared with the Qwen3-TTS vocoder. The
+kernel keeps the checkpoint parameters and every BF16 rounding step of the
+eager activation, so its output is bitwise identical, and it is compiled
+before graph capture, with or without CUDA Graph replay. Inputs outside its
+contract (a dtype other than BF16, a non-contiguous layout, or rows longer
+than 65535 x 1024 samples) run the eager arithmetic, and if the kernel cannot
+be compiled the eager modules stay installed. To keep the eager activation:
+
+```yaml
+stages:
+  code2wav:
+    factory:
+      fused_snake_activation: false
+```
 
 Output overlap is also enabled by default on CUDA devices: each threshold
 window's waveform readback runs as an asynchronous device-to-host copy into a

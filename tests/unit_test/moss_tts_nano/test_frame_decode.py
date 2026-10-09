@@ -13,26 +13,26 @@ import torch
 from torch import nn
 
 
-def _package(name: str) -> ModuleType:
+def package(name: str) -> ModuleType:
     module = ModuleType(name)
     module.__path__ = []
     return module
 
 
 @contextmanager
-def _nano_sglang_model_class() -> Iterator[type]:
+def nano_sglang_model_class() -> Iterator[type]:
     class FakeLocalModel(nn.Module):
         @property
         def dtype(self) -> torch.dtype:
             return torch.float32
 
-        def _audio_embedding_weight(self, channel: int) -> torch.Tensor:
+        def audio_embedding_weight(self, channel: int) -> torch.Tensor:
             return self.embedding_list[channel + 1].weight[
                 : int(self.config.audio_vocab_size)
             ]
 
     stub_modules: dict[str, ModuleType] = {
-        name: _package(name)
+        name: package(name)
         for name in (
             "sglang",
             "sglang.srt",
@@ -42,7 +42,6 @@ def _nano_sglang_model_class() -> Iterator[type]:
         )
     }
     module_attrs: dict[str, dict[str, object]] = {
-        "sglang.srt.distributed": {"get_pp_group": lambda: None},
         "sglang.srt.layers.activation": {"NewGELU": object},
         "sglang.srt.layers.linear": {
             "ColumnParallelLinear": object,
@@ -65,7 +64,8 @@ def _nano_sglang_model_class() -> Iterator[type]:
             "PPProxyTensors": object,
         },
         "sglang.srt.runtime_context": {
-            "get_parallel": lambda: SimpleNamespace(tp_size=1)
+            "get_parallel": lambda: SimpleNamespace(tp_size=1, pp_group=None),
+            "get_schedule": lambda: SimpleNamespace(max_running_requests=1),
         },
         "sglang.srt.utils": {"add_prefix": lambda name, prefix: name},
         "sglang_omni.models.moss_tts_local.sglang_model": {
@@ -103,7 +103,7 @@ def _nano_sglang_model_class() -> Iterator[type]:
                 sys.modules[name] = old_module
 
 
-class _RecordingLocalTransformer(nn.Module):
+class RecordingLocalTransformer(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.calls: list[tuple[int, torch.Tensor]] = []
@@ -113,7 +113,7 @@ class _RecordingLocalTransformer(nn.Module):
         return hidden_states
 
 
-def _make_model(model_cls: type) -> nn.Module:
+def make_model(model_cls: type) -> nn.Module:
     model = object.__new__(model_cls)
     nn.Module.__init__(model)
     model.n_vq = 3
@@ -129,14 +129,14 @@ def _make_model(model_cls: type) -> nn.Module:
         for table_index, embedding in enumerate(model.embedding_list):
             values = torch.arange(embedding.weight.numel(), dtype=torch.float32)
             embedding.weight.copy_(values.reshape_as(embedding.weight) + table_index)
-    model.local_transformer = _RecordingLocalTransformer()
+    model.local_transformer = RecordingLocalTransformer()
     model.local_text_lm_head = nn.Linear(4, 2, bias=False)
     return model
 
 
 def test_eager_frame_decode_feeds_text_choice_before_audio_codebooks() -> None:
-    with _nano_sglang_model_class() as model_cls:
-        model = _make_model(model_cls)
+    with nano_sglang_model_class() as model_cls:
+        model = make_model(model_cls)
         hidden_states = torch.arange(8, dtype=torch.float32).reshape(2, 4)
 
         stop_choice, codes = model.decode_frame(
@@ -167,8 +167,8 @@ def test_eager_frame_decode_feeds_text_choice_before_audio_codebooks() -> None:
 
 
 def test_graphable_frame_decode_uses_the_same_local_step_sequence() -> None:
-    with _nano_sglang_model_class() as model_cls:
-        model = _make_model(model_cls)
+    with nano_sglang_model_class() as model_cls:
+        model = make_model(model_cls)
         hidden_states = torch.arange(8, dtype=torch.float32).reshape(2, 4)
         audio_call = 0
 
@@ -180,8 +180,8 @@ def test_graphable_frame_decode_uses_the_same_local_step_sequence() -> None:
             audio_call += 1
             return torch.full((2,), audio_call, dtype=torch.long)
 
-        model._sample_seeded_branchless = sample
-        stop_choice, codes, feedback = model._decode_frame_graphable(
+        model.sample_seeded_branchless = sample
+        stop_choice, codes, feedback = model.decode_frame_graphable(
             hidden_states,
             text_temperature=torch.ones(2),
             text_top_p=torch.ones(2),

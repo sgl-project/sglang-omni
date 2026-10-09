@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import os
 from typing import ClassVar
 
+import torch
 from pydantic import Field
 
 from sglang_omni.config import (
@@ -15,21 +15,15 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 from .constants import DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
 
 _PKG = "sglang_omni.models.minimax_music3"
 
 
-def _visible_gpu_count() -> int:
-    """GPUs this process could place a stage on, without initializing CUDA."""
-    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if visible is not None:
-        entries = [entry.strip() for entry in visible.split(",")]
-        return len([entry for entry in entries if entry and entry != "-1"])
-    import torch
-
-    return torch.cuda.device_count()
+def visible_gpu_count() -> int:
+    return torch.get_device_module(current_platform.device_type).device_count()
 
 
 class DitDavFactoryArgs(FactoryArgs):
@@ -47,7 +41,7 @@ class DitDavStageConfig(StageConfig):
     factory: DitDavFactoryArgs = Field(default_factory=DitDavFactoryArgs)
 
 
-def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
+def stages(*, acoustic_gpu: int) -> list[StageConfig]:
     return [
         StageConfig(
             name="preprocessing",
@@ -84,15 +78,15 @@ def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
     ]
 
 
-def _colocated_stages() -> list[StageConfig]:
-    return _stages(acoustic_gpu=0)
+def colocated_stages() -> list[StageConfig]:
+    return stages(acoustic_gpu=0)
 
 
-def _two_gpu_stages() -> list[StageConfig]:
-    return _stages(acoustic_gpu=1)
+def two_gpu_stages() -> list[StageConfig]:
+    return stages(acoustic_gpu=1)
 
 
-def _colocated_placement() -> PlacementConfig:
+def colocated_placement() -> PlacementConfig:
     return PlacementConfig(require_memory_fraction_for_colocation=False)
 
 
@@ -109,12 +103,12 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: (
-            _two_gpu_stages() if _visible_gpu_count() >= 2 else _colocated_stages()
+            two_gpu_stages() if visible_gpu_count() >= 2 else colocated_stages()
         )
     )
     placement: PlacementConfig = Field(
         default_factory=lambda: (
-            PlacementConfig() if _visible_gpu_count() >= 2 else _colocated_placement()
+            PlacementConfig() if visible_gpu_count() >= 2 else colocated_placement()
         )
     )
 
@@ -126,15 +120,15 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
 class MiniMaxMusic3SingleGPUPipelineConfig(MiniMaxMusic3PipelineConfig):
     """Both stages on one GPU. Acoustic DIT/DAV is FP32, same as dual-GPU."""
 
-    placement: PlacementConfig = Field(default_factory=_colocated_placement)
-    stages: list[StageConfig] = Field(default_factory=_colocated_stages)
+    placement: PlacementConfig = Field(default_factory=colocated_placement)
+    stages: list[StageConfig] = Field(default_factory=colocated_stages)
 
 
 class MiniMaxMusic3DualGPUPipelineConfig(MiniMaxMusic3PipelineConfig):
     """DIT/DAV on a second GPU. Acoustic DIT/DAV is FP32, same as single-GPU."""
 
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
-    stages: list[StageConfig] = Field(default_factory=_two_gpu_stages)
+    stages: list[StageConfig] = Field(default_factory=two_gpu_stages)
 
 
 EntryClass = MiniMaxMusic3PipelineConfig
