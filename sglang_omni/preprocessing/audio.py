@@ -23,7 +23,7 @@ from .resource_connector import await_media_cleanup
 
 
 def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
-    """Decode audio bytes with PyAV (WebM/Opus, MP3, OGG, FLAC, etc.) to mono float at full scale."""
+    """Decode audio bytes with PyAV to mono float at full scale."""
     container = av.open(io.BytesIO(data))
     try:
         audio_stream = next((s for s in container.streams if s.type == "audio"), None)

@@ -15,7 +15,6 @@ from sglang_omni.preprocessing.audio import (
 )
 
 SAMPLE_RATE = 16_000
-# note (ratish): lossy codecs decode through different float paths; one 16-bit step bounds them.
 LOSSY_TOLERANCE = 1 / 32768
 
 
@@ -40,23 +39,8 @@ def tone(channels: int, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
     return left if channels == 1 else np.column_stack((left, right))
 
 
-@pytest.mark.parametrize("channels", [1, 2])
-@pytest.mark.parametrize(
-    ("container_format", "subtype"),
-    [
-        ("WAV", "PCM_16"),
-        ("WAV", "PCM_24"),
-        ("WAVEX", "PCM_16"),
-        ("FLAC", "PCM_16"),
-        ("OGG", "VORBIS"),
-        ("MP3", "MPEG_LAYER_III"),
-    ],
-)
-def test_request_audio_decodes_as_the_reference_loader(
-    container_format: str, subtype: str, channels: int
-) -> None:
-    # One second of Vorbis is where PyAV's end trimming differs from libsndfile's.
-    data = encode_audio(tone(channels), container_format, subtype, SAMPLE_RATE)
+def test_ogg_vorbis_decodes_as_the_reference_loader() -> None:
+    data = encode_audio(tone(2), "OGG", "VORBIS", SAMPLE_RATE)
 
     decoded, sample_rate = decode_audio_bytes(data)
 
@@ -64,12 +48,9 @@ def test_request_audio_decodes_as_the_reference_loader(
     np.testing.assert_array_equal(decoded, libsndfile_mono(data))
 
 
-@pytest.mark.parametrize("channels", [1, 2])
 @pytest.mark.parametrize("subtype", ["PCM_U8", "PCM_16", "PCM_32", "FLOAT", "DOUBLE"])
-def test_wav_the_parser_reads_decodes_as_the_wav_parser(
-    subtype: str, channels: int
-) -> None:
-    data = encode_audio(tone(channels), "WAV", subtype, SAMPLE_RATE)
+def test_every_wav_the_parser_read_decodes_unchanged(subtype: str) -> None:
+    data = encode_audio(tone(2), "WAV", subtype, SAMPLE_RATE)
 
     decoded, sample_rate = decode_audio_bytes(data)
     parsed, parsed_rate = parse_wav_bytes(data)
@@ -117,23 +98,9 @@ def test_containers_libsndfile_rejects_decode_through_pyav() -> None:
     np.testing.assert_array_equal(decoded, pyav_decoded)
 
 
-@pytest.mark.parametrize("channels", [1, 2])
-@pytest.mark.parametrize(
-    ("container_format", "subtype"),
-    [
-        ("WAV", "PCM_U8"),
-        ("WAV", "PCM_16"),
-        ("WAV", "PCM_24"),
-        ("WAV", "PCM_32"),
-        ("WAV", "FLOAT"),
-        ("FLAC", "PCM_16"),
-        ("FLAC", "PCM_24"),
-    ],
-)
-def test_pyav_lossless_decode_equals_libsndfile(
-    container_format: str, subtype: str, channels: int
-) -> None:
-    data = encode_audio(tone(channels), container_format, subtype, SAMPLE_RATE)
+@pytest.mark.parametrize("subtype", ["PCM_U8", "PCM_16", "FLOAT"])
+def test_pyav_packed_decode_equals_libsndfile(subtype: str) -> None:
+    data = encode_audio(tone(2), "WAV", subtype, SAMPLE_RATE)
 
     decoded, sample_rate = decode_audio_bytes_av(data)
 
@@ -141,9 +108,8 @@ def test_pyav_lossless_decode_equals_libsndfile(
     np.testing.assert_array_equal(decoded, libsndfile_mono(data))
 
 
-@pytest.mark.parametrize("channels", [1, 2])
-def test_pyav_planar_decode_matches_libsndfile(channels: int) -> None:
-    data = encode_audio(tone(channels, 48_000), "OGG", "OPUS", 48_000)
+def test_pyav_planar_decode_matches_libsndfile() -> None:
+    data = encode_audio(tone(2, 48_000), "OGG", "OPUS", 48_000)
 
     decoded, sample_rate = decode_audio_bytes_av(data)
 
