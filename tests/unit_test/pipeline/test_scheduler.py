@@ -158,6 +158,11 @@ def test_route_session_input_records_authoritative_ar_bypass(
     monkeypatch.setattr(
         omni_scheduler_module, "emit_session_stage_bypassed", emit_bypassed
     )
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "_get_active_stage",
+        lambda: "ar-stage",
+    )
     identity = SessionIdentity("session-route", 1)
     operation = SessionOperation(
         operation="append",
