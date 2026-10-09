@@ -11,7 +11,6 @@ import uuid
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 
-from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
@@ -55,6 +54,7 @@ from sglang_omni.serve.realtime.types import (
     ProtocolError,
     RuntimeLimits,
     Unit,
+    failure_code,
 )
 
 logger = logging.getLogger(__name__)
@@ -617,15 +617,14 @@ class SessionRuntime:
         except ProtocolError as exc:
             self.fail(str(exc), exc.code)
         except Exception as exc:
-            if ContextExhaustedError.matches(exc):
-                logger.error(f"Realtime session {self.session_id} closed: {exc}")
-                failure_code = ContextExhaustedError.CODE
-            else:
+            code = failure_code(exc)
+            if code == "internal":
                 logger.exception(
                     f"Realtime session {self.session_id} input pump failed"
                 )
-                failure_code = CLOSE_REASON_INTERNAL
-            self.fail(str(exc), failure_code)
+            else:
+                logger.error(f"Realtime session {self.session_id} closed: {exc}")
+            self.fail(str(exc), code)
 
     async def watch_activity(self) -> None:
         # note (Haiyang Luo): OPEN has no wake-up event; cap waits at the idle timeout.

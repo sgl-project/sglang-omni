@@ -23,6 +23,7 @@ from sglang_omni.serve.realtime.output import (
 from sglang_omni.serve.realtime.types import (
     PCM16_BYTES_PER_SAMPLE,
     Envelope,
+    OutputBudgetError,
     RuntimeLimits,
     Unit,
 )
@@ -75,7 +76,7 @@ class OutputBuffer:
     def enqueue(self, envelope: Envelope) -> None:
         size_bytes = envelope_size_bytes(envelope)
         if self.queued_bytes + size_bytes > self.limits.max_output_bytes:
-            raise RuntimeError("outbound event budget exhausted")
+            raise OutputBudgetError("outbound event budget exhausted")
         else:
             pass
         self.append_unbounded(envelope, size_bytes)

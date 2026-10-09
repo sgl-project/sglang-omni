@@ -7,13 +7,18 @@ from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
+from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.pipeline.sessions import (
+    SessionIdleTimeoutError,
+    SessionOutputBudgetError,
+)
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.session import (
     DEFAULT_IDLE_TIMEOUT_S,
     DEFAULT_SESSION_UPDATE_TIMEOUT_S,
 )
 from sglang_omni.serve.realtime.control import ControlEvent
-from sglang_omni.serve.realtime.output import OutputEvent
+from sglang_omni.serve.realtime.output import ContextLimitError, OutputEvent
 from sglang_omni.serve.realtime.schema import (
     GrantedCapabilities,
     Interaction,
@@ -34,6 +39,30 @@ class ProtocolError(ValueError):
         self.code = code
         self.param = param
         super().__init__(message)
+
+
+class OutputBudgetError(RuntimeError):
+    """Session output outgrew its bounded buffer."""
+
+    CODE = "output_budget_exhausted"
+
+
+def failure_code(exc: Exception) -> str:
+    """Client-facing error code of a server-side session failure."""
+    if isinstance(
+        exc,
+        (
+            ContextLimitError,
+            OutputBudgetError,
+            SessionIdleTimeoutError,
+            SessionOutputBudgetError,
+        ),
+    ):
+        return exc.CODE
+    elif ContextExhaustedError.matches(exc):
+        return ContextExhaustedError.CODE
+    else:
+        return "internal"
 
 
 def samples_to_ms(sample_count: int, sample_rate_hz: int) -> float:

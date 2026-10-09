@@ -34,7 +34,11 @@ from sglang_omni.serve.realtime.schema import (
     SessionUpdateEvent,
 )
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
-from sglang_omni.serve.realtime.types import ProtocolError
+from sglang_omni.serve.realtime.types import (
+    OutputBudgetError,
+    ProtocolError,
+    failure_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,12 +186,12 @@ class SharedRealtimeSession:
                     self.runtime.notify(
                         Failure(exc.code, str(exc), False, event_id, exc.param)
                     )
-                except RuntimeError:
-                    self.runtime.fail("outbound event budget exhausted")
+                except OutputBudgetError as budget_error:
+                    self.runtime.fail(str(budget_error), budget_error.CODE)
                     return False
             except Exception as exc:
                 logger.exception(f"Realtime session {self.session_id} dispatch failed")
-                self.runtime.fail(str(exc), event_id=event_id)
+                self.runtime.fail(str(exc), failure_code(exc), event_id=event_id)
                 return False
         return False
 

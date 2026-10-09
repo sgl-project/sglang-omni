@@ -35,6 +35,7 @@ from sglang_omni.serve.realtime.manager import (
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    ContextLimitError,
     OutputEvent,
     ResponseFinished,
     ResponseProgress,
@@ -49,11 +50,12 @@ from sglang_omni.serve.realtime.output_buffer import (
 from sglang_omni.serve.realtime.projection import ServerEvent
 from sglang_omni.serve.realtime.protocol import SharedRealtimeSession
 from sglang_omni.serve.realtime.runtime import SessionRuntime
-from sglang_omni.serve.realtime.schema import SessionConfiguration
+from sglang_omni.serve.realtime.schema import JsonObject, SessionConfiguration
 from sglang_omni.serve.realtime.types import (
     Capabilities,
     Envelope,
     InteractionAdapter,
+    OutputBudgetError,
     OutputSink,
     ProtocolError,
     RuntimeLimits,
@@ -66,6 +68,7 @@ SAMPLE_RATE = 16000
 NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
 RUNTIME_LOGGER_NAME = "sglang_omni.serve.realtime.runtime"
+MAX_STALLED_FRAMES = 16
 CANCELLED_RESPONSE_ID = "resp_1"
 CANCELLED_ITEM_ID = "item_1"
 ACTIVITY_TIMEOUT_SECONDS = 0.5
@@ -174,6 +177,30 @@ class RejectedOpenAdapter(GatedAdmissionAdapter):
     async def close(self) -> None:
         self.cleanup_started.set()
         await self.cleanup_release.wait()
+
+
+class StalledClientWebSocket:
+    """Plays scripted frames, yielding between them like a socket read, and holds
+    every server frame until it reads."""
+
+    def __init__(self, frames: list[str]) -> None:
+        self.frames = frames
+        self.sent_events: list[JsonObject] = []
+        self.is_reading = asyncio.Event()
+
+    async def receive(self) -> dict[str, str]:
+        await asyncio.sleep(0)
+        if self.frames:
+            return {"type": "websocket.receive", "text": self.frames.pop(0)}
+        else:
+            return {"type": "websocket.disconnect"}
+
+    async def send_text(self, text: str) -> None:
+        await self.is_reading.wait()
+        self.sent_events.append(json.loads(text))
+
+    async def close(self) -> None:
+        pass
 
 
 class GatedWebSocketTransport:
@@ -436,25 +463,33 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("failure_message", "failure_code", "has_traceback"),
+    ("error", "code", "has_traceback"),
     [
         (
-            "context_exhausted: the session reached the thinker context length",
+            RuntimeError(
+                "context_exhausted: the session reached the thinker context length"
+            ),
             "context_exhausted",
             False,
         ),
-        ("talker step failed", "internal", True),
+        (RuntimeError("talker step failed"), "internal", True),
+        (
+            OutputBudgetError("outbound event budget exhausted"),
+            "output_budget_exhausted",
+            False,
+        ),
+        (ContextLimitError("response text context limit"), "context_limit", False),
     ],
 )
 async def test_unit_failure_closes_session_and_logs_once(
-    failure_message: str,
-    failure_code: str,
+    error: Exception,
+    code: str,
     has_traceback: bool,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class FailingAdapter(GatedAdapter):
         async def process(self, unit: Unit) -> int:
-            raise RuntimeError(failure_message)
+            raise error
 
     with caplog.at_level(logging.WARNING, logger=RUNTIME_LOGGER_NAME):
         async with open_runtime(FailingAdapter([])) as runtime:
@@ -462,9 +497,9 @@ async def test_unit_failure_closes_session_and_logs_once(
             envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
     failures = [entry.event for entry in envelopes if isinstance(entry.event, Failure)]
     assert len(failures) == 1
-    assert failures[0].code == failure_code
+    assert failures[0].code == code
     assert failures[0].is_fatal
-    assert failure_message in failures[0].message
+    assert failures[0].message == str(error)
     runtime_records = [
         record for record in caplog.records if record.name == RUNTIME_LOGGER_NAME
     ]
@@ -538,16 +573,64 @@ def test_an_audio_delta_is_sized_by_its_base64_audio_and_the_envelope() -> None:
     assert envelope_size_bytes(envelope) == len(base64.b64encode(pcm)) + ENVELOPE_BYTES
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type", "client_reads", "fatal_codes"),
+    [
+        ("input_audio_buffer.append", False, ["output_budget_exhausted"]),
+        ("unsupported", False, ["output_budget_exhausted"]),
+        ("input_audio_buffer.append", True, []),
+    ],
+)
+async def test_client_that_stops_reading_fails_with_the_output_budget_code(
+    event_type: str, client_reads: bool, fatal_codes: list[str]
+) -> None:
+    runtime = SessionRuntime(
+        MODEL_NAME,
+        Capabilities(),
+        lambda: GatedAdapter([]),
+        RuntimeLimits(max_output_bytes=3 * ENVELOPE_BYTES),
+    )
+    update = {"type": "session.update", "event_id": "update", "session": {}}
+    frames = [
+        {
+            "type": event_type,
+            "event_id": f"frame_{sequence}",
+            "audio": base64.b64encode(b"\1\0").decode("ascii"),
+            "sglang": {"seq": sequence},
+        }
+        for sequence in range(MAX_STALLED_FRAMES)
+    ]
+    websocket = StalledClientWebSocket(
+        [json.dumps(frame) for frame in [update, *frames]]
+    )
+    if client_reads:
+        websocket.is_reading.set()
+    else:
+        pass
+    run_task = asyncio.create_task(SharedRealtimeSession(websocket, runtime).run())
+    while runtime.close_task is None:
+        await asyncio.sleep(0)
+    websocket.is_reading.set()
+    await asyncio.wait_for(run_task, 5)
+
+    assert [
+        event["error"]["code"]
+        for event in websocket.sent_events
+        if event["type"] == "error" and event["sglang"]["fatal"]
+    ] == fatal_codes
+
+
 def test_output_budget_counts_outbound_events_only() -> None:
     buffer = OutputBuffer(RuntimeLimits(max_output_bytes=3 * ENVELOPE_BYTES))
     unit = Unit(0, 0, bytes(32000), 16000, images=(bytes(512 * 1024),) * 4)
     completed = Envelope(event=UnitCompleted(unit.unit_id), unit=unit)
     buffer.enqueue(completed)
-    with pytest.raises(RuntimeError, match="outbound event budget exhausted"):
+    with pytest.raises(OutputBudgetError, match="outbound event budget exhausted"):
         buffer.enqueue(Envelope(event=AudioDelta("response", "item", bytes(2048))))
     buffer.enqueue(completed)
     buffer.enqueue(completed)
-    with pytest.raises(RuntimeError, match="outbound event budget exhausted"):
+    with pytest.raises(OutputBudgetError, match="outbound event budget exhausted"):
         buffer.enqueue(completed)
     assert buffer.queued_bytes == 3 * ENVELOPE_BYTES
     assert [buffer.dequeue() for _ in range(4)] == [completed] * 3 + [None]

@@ -50,6 +50,8 @@ Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
 
+A session that receives no audio for 300 seconds is closed with `session_idle_timeout`. A session whose pending server events outgrow the server's output buffers is closed with `output_budget_exhausted`; this happens when the client stops reading events, or sends audio much faster than real time. A single response whose transcript outgrows `max_history_chars` is closed with `context_limit`.
+
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
 
 ```bash

@@ -113,4 +113,4 @@ OutputEvent = (
 
 
 class ContextLimitError(RuntimeError):
-    code = "context_limit"
+    CODE = "context_limit"
