@@ -2823,7 +2823,7 @@ def create_vocoder_executor(
             max_rows=max_batch_size,
             # note (ratish): SGLang's prefill graph ladder capped at the buffered Flow
             # admission budget, as SGLang caps it at its chunked prefill size. Stream
-            # steps have no frame budget, so the runner replays larger ones in groups.
+            # steps have no frame budget, so a larger step runs eagerly.
             tier_frames=generate_prefill_cuda_graph_batch_sizes(
                 flow_batch_admission_frames
             ),
