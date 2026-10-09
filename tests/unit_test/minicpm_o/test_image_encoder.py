@@ -34,24 +34,50 @@ def checkpoint_dir() -> Path | None:
     return None
 
 
-def test_padding_does_not_change_image_embeddings() -> None:
-    batch_size = 2
+@pytest.mark.parametrize("num_slices", [3, 4, 5, 8])
+def test_padding_does_not_change_image_embeddings(num_slices: int) -> None:
     encoder = object.__new__(MiniCPMOImageEncoder)
     torch.nn.Module.__init__(encoder)
     encoder.device = torch.device("cpu")
     encoder.dtype = torch.float32
-    encoder.vision_batch_size = batch_size
+    encoder.vision_batch_size = 4
 
-    def run_vpm(pixel_values, patch_attn_mask, tgt_sizes, patch_counts_cpu):
-        features = pixel_values.mean(dim=1)
-        pooled = (features * patch_attn_mask).sum(dim=-1) / patch_attn_mask.sum(dim=-1)
-        return pooled.unsqueeze(-1)
+    def run_vpm(
+        pixel_values: torch.Tensor,
+        patch_attn_mask: torch.Tensor,
+        tgt_sizes: torch.Tensor,
+        patch_counts_cpu: torch.Tensor,
+    ) -> torch.Tensor:
+        patch_size = pixel_values.shape[2]
+        features = pixel_values.unfold(-1, patch_size, patch_size).mean(dim=(1, 2, 4))
+        features = features + tgt_sizes[:, :1]
+        valid = torch.arange(features.shape[1])[None, :] < patch_counts_cpu[:, None]
+        return (features * patch_attn_mask[:, 0] * valid).unsqueeze(-1)
+
+    def resample(features: torch.Tensor, tgt_sizes: torch.Tensor) -> torch.Tensor:
+        patch_counts = tgt_sizes.prod(dim=1)
+        valid = torch.arange(features.shape[1])[None, :] < patch_counts[:, None]
+        features = features[:, :, 0] * valid
+        return torch.stack(
+            (
+                features.sum(dim=1) / patch_counts,
+                features.square().sum(dim=1) / patch_counts,
+            ),
+            dim=1,
+        ).unsqueeze(-1)
 
     encoder.run_vpm = run_vpm
-    encoder.resampler = lambda features, tgt_sizes: features
-    tgt_sizes = torch.tensor([[1, 6], [1, 1], [1, 4]], dtype=torch.int32)
+    encoder.resampler = resample
+    tgt_sizes = torch.tensor(
+        [[2, 3], [1, 1], [1, 4], [2, 2], [1, 2], [3, 3], [1, 3], [1, 5]][:num_slices],
+        dtype=torch.int32,
+    )
+    patch_values = [
+        torch.arange(1, height * width + 1, dtype=torch.float32) * (i + 1)
+        for i, (height, width) in enumerate(tgt_sizes.tolist())
+    ]
     pixel_values = [
-        torch.full((3, 1, count), float(i + 1)) for i, count in enumerate([6, 1, 4])
+        values.repeat_interleave(2).expand(3, 2, -1) for values in patch_values
     ]
 
     batched = encoder(pixel_values=pixel_values, tgt_sizes=tgt_sizes)["image_embeds"]
@@ -64,8 +90,16 @@ def test_padding_does_not_change_image_embeddings() -> None:
         ]
     )
 
+    expected = torch.stack(
+        [
+            torch.stack(((values + height).mean(), (values + height).square().mean()))
+            for values, (height, _) in zip(patch_values, tgt_sizes.tolist())
+        ]
+    ).reshape(num_slices * 2, 1)
+    assert batched.shape == (num_slices * 2, 1)
+    assert batched.dtype == torch.float32
     torch.testing.assert_close(batched, individual)
-    torch.testing.assert_close(batched[:, 0], torch.tensor([1.0, 2.0, 3.0]))
+    torch.testing.assert_close(batched, expected)
 
 
 def build_remote_encoder(checkpoint: Path, device: torch.device, dtype: torch.dtype):
@@ -134,16 +168,14 @@ def remote_forward(vpm, resampler, pixel_values, tgt_sizes, device, dtype):
     return resampler(vision_embedding, tgt_sizes)
 
 
-def test_golden_parity_vs_remote_code() -> None:
+@pytest.mark.accelerator
+@pytest.mark.parametrize("vision_batch_size", [1, 2, 3, 16])
+def test_golden_parity_vs_remote_code(vision_batch_size: int) -> None:
     checkpoint = checkpoint_dir()
     if checkpoint is None:
         pytest.skip("no MiniCPM-o checkpoint with weights")
     if not torch.cuda.is_available():
         pytest.skip("srt vision attention requires CUDA")
-
-    from sglang_omni.models.minicpm_o.components.image_encoder import (
-        MiniCPMOImageEncoder,
-    )
 
     # srt VisionAttention's flash-attn backend only supports fp16/bf16, so the
     # srt encoder cannot run an fp32 bitwise-parity pass. Instead, both the
@@ -179,12 +211,14 @@ def test_golden_parity_vs_remote_code() -> None:
     torch.cuda.empty_cache()
 
     native = MiniCPMOImageEncoder(str(checkpoint), device="cuda", dtype="bfloat16")
+    native.vision_batch_size = vision_batch_size
     with torch.no_grad():
-        got = (
-            native(pixel_values=pixel_values, tgt_sizes=tgt_sizes)["image_embeds"]
-            .float()
-            .view(golden.shape)
-        )
+        image_embeds = native(pixel_values=pixel_values, tgt_sizes=tgt_sizes)[
+            "image_embeds"
+        ]
+    assert image_embeds.shape == (golden.shape[0] * golden.shape[1], golden.shape[2])
+    assert image_embeds.dtype == torch.bfloat16
+    got = image_embeds.float().view(golden.shape)
 
     remote_err = (remote_bf16 - golden).abs()
     native_err = (got - golden).abs()
