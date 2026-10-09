@@ -635,7 +635,7 @@ enabled, override the ASR stage:</p>
 </section>
 <section id="async-decode">
 <h2>Async Decode<a class="headerlink" href="#async-decode" title="Link to this heading">#</a></h2>
-<p>Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step’s GPU work with the previous step’s host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 64. Disable async decode on the stage to compare against synchronous decode or diagnose a request lifecycle issue:</p>
+<p>Whisper enables the shared one-step-lookahead decode path at every batch size, including a single request. It overlaps the current decode step’s GPU work with the previous step’s host-side result processing. The default running-request limit is 64. Disable async decode on the stage to compare against synchronous decode or diagnose a request lifecycle issue:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>openai/whisper-large-v3<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--asr.factory.enable_async_decode<span class="w"> </span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
