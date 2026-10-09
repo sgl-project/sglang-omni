@@ -37,7 +37,7 @@ TINY_ENCODER = {
 
 @pytest.fixture(autouse=True)
 def mlx_on_cpu():
-    # note (Tongyu Yang): MLX's GPU fp32 matmul rounds more coarsely than PyTorch; CPU keeps
+    # MLX's GPU fp32 matmul rounds more coarsely than PyTorch; CPU keeps
     # the comparison tight enough to catch layout or math mistakes.
     previous = mx.default_device()
     mx.set_default_device(mx.cpu)
@@ -181,7 +181,7 @@ def test_greedy_decode_matches_transformers_generate(architecture: str) -> None:
         for row, length in enumerate(np.array(lengths)):
             assert decoded[row] == sequences[row, :length].tolist()
     else:
-        # note (Tongyu Yang): compare against one-utterance generate calls; batched
+        # Compare against one-utterance generate calls; batched
         # Transformers transducer decoding reads past a short row's last frame.
         drop = {config.blank_token_id, config.pad_token_id}
         expected = []

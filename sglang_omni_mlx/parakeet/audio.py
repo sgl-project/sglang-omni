@@ -23,7 +23,7 @@ MAX_CHUNK_SECONDS = 120.0
 CUT_SEARCH_SECONDS = 2.0
 CUT_ENERGY_WINDOW = 1600
 MAX_AUDIO_SECONDS = 3600.0
-# note (Tongyu Yang): a chunk whose peak stays below -60 dBFS holds no speech,
+# A chunk whose peak stays below -60 dBFS holds no speech,
 # and decoding it anyway can emit hallucinated tokens.
 SILENT_PEAK = 1e-3
 

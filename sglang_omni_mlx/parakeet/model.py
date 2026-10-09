@@ -22,7 +22,7 @@ from sglang_omni_mlx.checkpoint import load_weights, read_weights
 from sglang_omni_mlx.transcription import CancelCheck, TranscriptionCancelled
 
 ARCHITECTURES = ("ParakeetForCTC", "ParakeetForRNNT", "ParakeetForTDT")
-# note (Tongyu Yang): finite instead of -inf so fully padded query rows stay finite; a NaN
+# Finite instead of -inf so fully padded query rows stay finite; a NaN
 # there would leak into valid frames through the depthwise convolution.
 ATTENTION_MASK_VALUE = -1e9
 
