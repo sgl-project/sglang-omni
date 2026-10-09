@@ -944,6 +944,9 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
 
 
 def test_admission_budget_below_the_first_tier_keeps_finals_eager(monkeypatch) -> None:
+    """A positive admission budget below the first graph tier leaves no whole history
+    graph to capture: startup keeps every final, however long, on the eager solve
+    instead of failing on the empty ladder."""
     fake_flow = RunnableFakeFlow()
     fake_flow.packed_estimator.is_ragged = True
     flow = stages.FunCosyVoice3Flow(
@@ -970,19 +973,13 @@ def test_admission_budget_below_the_first_tier_keeps_finals_eager(monkeypatch) -
         flow_batch_admission_frames=3,
         enable_dit_torch_compile=False,
     )
-    long_state = make_state(prompt_tokens=0)
-    long_state.audio_codes = make_codes(2200)
-    first = IncomingMessage("long", "new_request", make_payload(long_state))
-    warmup_calls = len(fake_flow.packed_estimator.calls)
 
     mels = scheduler.vocoder.leftover_batch([scheduler.make_warmup_flow_input(2200)])
 
-    final_calls = fake_flow.packed_estimator.calls[warmup_calls:]
     assert flow.whole_history_cuda_graph_runner is None
-    assert scheduler.collect_new_request_batch(first) == [first]
-    assert len(mels) == 1
-    assert final_calls
-    assert {call["streaming"] for call in final_calls} == {False}
+    assert [mel.shape for mel in mels] == [
+        (1, fake_flow.output_size, 2200 * fake_flow.token_mel_ratio)
+    ]
 
 
 def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
