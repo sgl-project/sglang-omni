@@ -103,16 +103,20 @@ class TalkerPromptPrefill(TypedDict):
 def resolve_speaker_id(
     params: Mapping[str, object], speaker_map: dict[str, int]
 ) -> int:
-    speaker_name = str(params.get("speaker", "Ethan")).lower()
+    requested_speaker = params.get("speaker")
+    speaker_name = str(requested_speaker or "Ethan").lower()
     if speaker_name in speaker_map:
         return speaker_map[speaker_name]
-    else:
-        pass
-    if speaker_map:
+    elif requested_speaker is not None and speaker_map:
+        supported = ", ".join(sorted(speaker_map))
+        raise ValueError(
+            f"Unsupported Qwen3-Omni speaker {requested_speaker!r}. "
+            f"Supported speakers: {supported}"
+        )
+    elif speaker_map:
         return next(iter(speaker_map.values()))
     else:
-        pass
-    return int(params.get("speaker_id", 0))
+        return int(params.get("speaker_id", 0))
 
 
 class TalkerPrefillBuilder:

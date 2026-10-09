@@ -1168,7 +1168,7 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         explicit_generation_params(req),
     )
 
-    extra_params: dict[str, int | float] = {}
+    extra_params: dict[str, int | float | str] = {}
     for field_name, value in (
         ("talker_temperature", req.talker_temperature),
         ("talker_top_p", req.talker_top_p),
@@ -1180,6 +1180,11 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
             extra_params[field_name] = value
         else:
             pass
+    # note (Chen Cheng): talkers read the voice from params["speaker"], not from metadata.
+    if req.audio is not None and req.audio.get("voice") is not None:
+        extra_params["speaker"] = str(req.audio["voice"])
+    else:
+        pass
 
     return GenerateRequest(
         model=req.model,
