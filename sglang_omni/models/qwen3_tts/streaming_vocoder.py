@@ -1341,7 +1341,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         codes_ready = state.pending_codes_ready
         state.pending_codes_ready = None
         if codes_ready is None and supports_device_streams(codes.device):
-            codes_ready = self.device_module.Event()
+            codes_ready = torch.get_device_module(codes.device).Event()
             codes_ready.record()
         else:
             pass
