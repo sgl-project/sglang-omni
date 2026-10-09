@@ -35,6 +35,7 @@ final class WorkerClient: ObservableObject {
     private var exitStatus: Int32?
     private var timeoutTask: Task<Void, Never>?
     private var exitTask: Task<Void, Never>?
+    private var shutdownTask: Task<Void, Never>?
     private let maximumLineBytes = 1_048_576
     // Note (Yucheng Hu): Long enough for the worker to stop its model server. Injectable so a test
     // can exercise the escalation to SIGKILL without waiting the production period out.
@@ -48,20 +49,20 @@ final class WorkerClient: ObservableObject {
         let requestID = UUID().uuidString
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
+            var message = payload
+            message["id"] = requestID
+            guard JSONSerialization.isValidJSONObject(message) else {
+                throw Failure("worker.badRequest")
+            }
+            var data = try JSONSerialization.data(withJSONObject: message)
+            guard data.count < 256 * 1_024 else {
+                throw Failure("worker.tooLarge")
+            }
+            data.append(0x0A)
+            try await ensureProcess(python: python)
             return try await withCheckedThrowingContinuation { continuation in
                 do {
                     guard pending == nil else { throw Failure("worker.busy") }
-                    var message = payload
-                    message["id"] = requestID
-                    guard JSONSerialization.isValidJSONObject(message) else {
-                        throw Failure("worker.badRequest")
-                    }
-                    var data = try JSONSerialization.data(withJSONObject: message)
-                    guard data.count < 256 * 1_024 else {
-                        throw Failure("worker.tooLarge")
-                    }
-                    data.append(0x0A)
-                    try ensureProcess(python: python)
                     guard let input else { throw Failure("worker.noInput") }
                     pending = Pending(id: requestID, continuation: continuation)
                     statusText = payload["op"] as? String == "prepare" ? L("worker.preparing") : L("worker.processing")
@@ -104,10 +105,16 @@ final class WorkerClient: ObservableObject {
         statusText = nil; showingReady = false
     }
 
-    private func ensureProcess(python: String) throws {
+    private func ensureProcess(python: String) async throws {
         let executable = try resolvePython(python)
+        guard pending == nil else { throw Failure("worker.busy") }
         if let process, process.isRunning, pythonPath == executable.path { return }
-        shutdown()
+        if process != nil { shutdown() }
+        let stoppedGeneration = generation
+        // Note (Codex): Let the old worker release its model before a replacement can load another copy.
+        await shutdownTask?.value
+        try Task.checkCancellation()
+        guard generation == stoppedGeneration else { throw CancellationError() }
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("backend/worker.py")
         let overridden = ProcessInfo.processInfo.environment["OMNITYPER_WORKER"].map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
@@ -287,7 +294,8 @@ final class WorkerClient: ObservableObject {
             child.terminate()
         }
         // Note (Codex): Keep stdin open and drain output so EOF cannot race SIGTERM during cleanup.
-        Task { [gracePeriod] in
+        shutdownTask = Task { [gracePeriod] in
+            defer { shutdownTask = nil }
             let killTask = Task {
                 do { try await Task.sleep(nanoseconds: gracePeriod) }
                 catch { return }
