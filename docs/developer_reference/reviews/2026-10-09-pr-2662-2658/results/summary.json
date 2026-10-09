@@ -1,0 +1,90 @@
+{
+  "python": "3.12.3 (main, Jul 15 2026, 23:46:41) [GCC 13.3.0]",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "cudnn": 92000,
+  "gpu": "NVIDIA H200",
+  "visible_devices": "GPU-166288d3-a850-bcc1-8716-96c33d3a5679",
+  "suites": [
+    {
+      "id": "00_cpu",
+      "returncode": 0,
+      "seconds": 33.51434540748596,
+      "command": [
+        "/data/runtime/bin/python",
+        "-m",
+        "pytest",
+        "tests/unit_test/moss_tts/test_reference_encoding.py",
+        "tests/unit_test/moss_tts/test_encoder.py",
+        "tests/unit_test/moss_tts/test_audio_tokenizer.py",
+        "tests/unit_test/moss_tts/test_pipeline.py",
+        "tests/unit_test/moss_tts_local/test_pipeline.py",
+        "-m",
+        "not accelerator and not benchmark",
+        "-q",
+        "-ra",
+        "--tb=short",
+        "--junitxml=/data/outputs/00_cpu.xml"
+      ]
+    },
+    {
+      "id": "00_gpu",
+      "returncode": 0,
+      "seconds": 44.9174017906189,
+      "command": [
+        "/data/runtime/bin/python",
+        "-m",
+        "pytest",
+        "tests/unit_test/moss_tts/test_reference_encoding.py",
+        "tests/unit_test/moss_tts/test_encoder.py",
+        "tests/unit_test/moss_tts/test_audio_tokenizer.py",
+        "tests/unit_test/moss_tts/test_pipeline.py",
+        "tests/unit_test/moss_tts_local/test_pipeline.py",
+        "-m",
+        "accelerator and not benchmark",
+        "-q",
+        "-ra",
+        "--tb=short",
+        "--junitxml=/data/outputs/00_gpu.xml"
+      ]
+    },
+    {
+      "id": "01_cpu",
+      "returncode": 0,
+      "seconds": 34.747711420059204,
+      "command": [
+        "/data/runtime/bin/python",
+        "-m",
+        "pytest",
+        "tests/unit_test/qwen3_tts/test_incremental_codec.py",
+        "tests/unit_test/qwen3_tts/test_incremental_codec_cuda_graph.py",
+        "tests/unit_test/qwen3_tts/test_pipeline.py",
+        "-m",
+        "not accelerator and not benchmark",
+        "-q",
+        "-ra",
+        "--tb=short",
+        "--junitxml=/data/outputs/01_cpu.xml"
+      ]
+    },
+    {
+      "id": "01_gpu",
+      "returncode": 0,
+      "seconds": 37.56412148475647,
+      "command": [
+        "/data/runtime/bin/python",
+        "-m",
+        "pytest",
+        "tests/unit_test/qwen3_tts/test_incremental_codec.py",
+        "tests/unit_test/qwen3_tts/test_incremental_codec_cuda_graph.py",
+        "tests/unit_test/qwen3_tts/test_pipeline.py",
+        "-m",
+        "accelerator and not benchmark",
+        "-q",
+        "-ra",
+        "--tb=short",
+        "--junitxml=/data/outputs/01_gpu.xml"
+      ]
+    }
+  ]
+}

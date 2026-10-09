@@ -1,0 +1,9 @@
+{
+  "python": "3.12.3 (main, Jul 15 2026, 23:46:41) [GCC 13.3.0]",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "cudnn": 92000,
+  "gpu": "NVIDIA H200",
+  "visible_devices": "GPU-166288d3-a850-bcc1-8716-96c33d3a5679",
+  "suites": []
+}

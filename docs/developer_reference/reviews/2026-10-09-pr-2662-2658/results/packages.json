@@ -1,0 +1,11 @@
+{
+  "torch": "2.13.0+cu130",
+  "torchaudio": "2.11.0+cu130",
+  "transformers": "5.12.1",
+  "sglang": "0.5.21",
+  "qwen-tts": "0.1.1",
+  "triton": "3.7.1",
+  "pytest": "9.1.1",
+  "sglang_module": "/data/runtime/lib/python3.12/site-packages/sglang/__init__.py",
+  "python": "3.12.3 (main, Jul 15 2026, 23:46:41) [GCC 13.3.0]"
+}
