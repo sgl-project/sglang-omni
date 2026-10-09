@@ -152,6 +152,9 @@ def make_gpu_scheduler(
             num_quantizers=2,
             total_gpu_memory_fraction=1.0,
             graph_keys=code2wav_scheduler.serial_threshold_graph_keys(10, 1),
+            best_effort_keys=tuple(
+                GraphKey(batch_size=1, frames=frames) for frames in range(2, 10)
+            ),
             model_footprint_bytes=0,
             decode_stream=decode_stream,
         )
@@ -1139,11 +1142,9 @@ def test_overlap_gpu_real_pinned_event_bitwise(
         scheduler.handle_stream_done("req-1")
         if cuda_graph:
             runtime = scheduler.cuda_graph_runner.stats()["runtime"]
-            assert runtime["graph_replays"] == n_chunks // 10
+            assert runtime["graph_replays"] == (n_chunks + 9) // 10
             assert runtime["replay_failures"] == 0
-            assert runtime["fallback_counts"] == (
-                {"ineligible": 1} if n_chunks % 10 else {}
-            ), "only the stream-done tail may run eagerly"
+            assert runtime["fallback_counts"] == {}, "the stream-done tail replays too"
         return drain_snapshot(scheduler)
 
     overlap_snapshot = run(overlap=True)

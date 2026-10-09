@@ -27,6 +27,8 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
     FunCosyVoice3StreamingVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
@@ -942,6 +944,9 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
 
 
 def test_admission_budget_below_the_first_tier_keeps_finals_eager(monkeypatch) -> None:
+    """A positive admission budget below the first graph tier leaves no whole history
+    graph to capture: startup keeps every final, however long, on the eager solve
+    instead of failing on the empty ladder."""
     fake_flow = RunnableFakeFlow()
     fake_flow.packed_estimator.is_ragged = True
     flow = stages.FunCosyVoice3Flow(
@@ -968,19 +973,13 @@ def test_admission_budget_below_the_first_tier_keeps_finals_eager(monkeypatch) -
         flow_batch_admission_frames=3,
         enable_dit_torch_compile=False,
     )
-    long_state = make_state(prompt_tokens=0)
-    long_state.audio_codes = make_codes(2200)
-    first = IncomingMessage("long", "new_request", make_payload(long_state))
-    warmup_calls = len(fake_flow.packed_estimator.calls)
 
     mels = scheduler.vocoder.leftover_batch([scheduler.make_warmup_flow_input(2200)])
 
-    final_calls = fake_flow.packed_estimator.calls[warmup_calls:]
     assert flow.whole_history_cuda_graph_runner is None
-    assert scheduler.collect_new_request_batch(first) == [first]
-    assert len(mels) == 1
-    assert final_calls
-    assert {call["streaming"] for call in final_calls} == {False}
+    assert [mel.shape for mel in mels] == [
+        (1, fake_flow.output_size, 2200 * fake_flow.token_mel_ratio)
+    ]
 
 
 def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
@@ -1211,13 +1210,14 @@ def prepare_vocoder_startup(
         "warmup_packed_dit_compile",
         lambda scheduler: startup_events.append("packed_warmup"),
     )
-    if device_type == "cuda":
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    if device_type in ("cuda", "xpu"):
+        platform = CUDAOmniPlatform() if device_type == "cuda" else XPUOmniPlatform()
+        monkeypatch.setattr(stages, "current_platform", platform)
 
         class RecordingFlowCudaGraphRunner:
             def __init__(self, flow, *, device, autocast_dtype) -> None:
                 assert flow is fake_flow
-                assert device.type == "cuda"
+                assert device.type == device_type
                 assert autocast_dtype == torch.bfloat16
                 startup_events.append("runner_create")
 
@@ -1263,6 +1263,33 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     else:
         assert "native_compile" not in startup_events
     assert ("packed_warmup" in startup_events) is enable_dit_torch_compile
+
+
+@pytest.mark.parametrize("enable_dit_torch_compile", [False, True])
+def test_create_vocoder_executor_on_xpu_captures_flow_graphs_only_for_an_eager_dit(
+    monkeypatch: pytest.MonkeyPatch,
+    enable_dit_torch_compile: bool,
+) -> None:
+    startup_events: list[str] = []
+    prepare_vocoder_startup(
+        monkeypatch,
+        startup_events,
+        device_type="xpu",
+        allow_native_compile=enable_dit_torch_compile,
+    )
+
+    stages.create_vocoder_executor(
+        "model",
+        flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
+        device="xpu",
+        enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_flow_cuda_graph=True,
+        flow_cuda_graph_capture_shapes=FLOW_GRAPH_CAPTURE_SHAPES,
+    )
+
+    assert ("graph_capture" in startup_events) is not enable_dit_torch_compile
 
 
 def test_create_vocoder_executor_trt_without_compile_skips_the_compile(

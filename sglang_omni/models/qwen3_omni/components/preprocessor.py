@@ -388,6 +388,13 @@ class Qwen3OmniPreprocessor:
             f"rejecting request {request_id}: prompt text of {len(prompt_text)} "
             f"characters needs at least {min_prompt_tokens} tokens"
         )
+        if min_prompt_tokens >= self.max_seq_len:
+            raise ValueError(
+                f"The input (at least {min_prompt_tokens} tokens) is longer than "
+                f"the model's context length ({self.max_seq_len} tokens)."
+            )
+        else:
+            pass
         raise ValueError(
             f"Requested token count exceeds the model's maximum context length "
             f"of {self.max_seq_len} tokens. The input messages need at least "
