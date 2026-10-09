@@ -29,7 +29,10 @@ class TestSenseNovaSampling(unittest.TestCase):
             {"seed": True},
             {"guidance_scale": float("nan")},
             {"think_mode": True},
-            {"n": 2},
+            {"n": 0},
+            {"n": 11},
+            {"n": True},
+            {"n": 2.0},
         ):
             with self.subTest(params=params), self.assertRaises(ValueError):
                 SenseNovaU1Sampling.from_params(params)
@@ -50,6 +53,9 @@ class TestSenseNovaSampling(unittest.TestCase):
         )
         self.assertEqual((options.width, options.height), (512, 768))
         self.assertEqual(options.img_cfg_scale, 2.0)
+
+    def test_multiple_t2i_outputs(self):
+        self.assertEqual(SenseNovaU1Sampling.from_params({"n": 4}).n, 4)
 
     def test_image_edit_rejects_invalid_options(self):
         for params in (

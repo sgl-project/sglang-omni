@@ -15,10 +15,16 @@ class SenseNovaU1Sampling:
     num_inference_steps: int = 50
     guidance_scale: float = 4.0
     seed: int = 42
+    n: int = 1
 
     @classmethod
     def from_params(cls, params: dict[str, Any]) -> SenseNovaU1Sampling:
-        return cls(**_validated_values(cls, params, ("guidance_scale",)))
+        n = params.get("n", 1)
+        if type(n) is not int or not 1 <= n <= 10:
+            raise ValueError("SenseNova-U1 n must be an integer between 1 and 10")
+        return cls(
+            n=n, **_validated_values(cls, {**params, "n": 1}, ("guidance_scale",))
+        )
 
 
 @dataclass(frozen=True)

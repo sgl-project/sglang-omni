@@ -539,6 +539,11 @@ class Client:
             image_b64 = result.get("image_b64")
             if isinstance(image_b64, str):
                 chunk.image_b64 = image_b64
+            images_b64 = result.get("images_b64")
+            if isinstance(images_b64, list) and all(
+                isinstance(item, str) for item in images_b64
+            ):
+                chunk.images_b64 = images_b64
             chunk.usage = Client._build_usage_info(result)
             return chunk
         if isinstance(result, str):
