@@ -72,6 +72,10 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
             # 5.98 GiB KV pool.
             return 0.85
 
+    def get_dllm_attention_backend(self) -> str:
+        # intel_xpu builds no page table for a DLLM_EXTEND forward.
+        return "triton"
+
     def _get_device_graph_backend(self) -> DeviceGraphBackend:
         from sglang_omni.platforms.device_graph import XpuDeviceGraphBackend
 

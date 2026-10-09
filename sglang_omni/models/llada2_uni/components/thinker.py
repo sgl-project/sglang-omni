@@ -8,6 +8,7 @@ from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.layers.moe.utils import reduce_moe_output
 from sglang.srt.runtime_context import get_parallel
 from torch import nn
 from transformers import PretrainedConfig
@@ -170,6 +171,7 @@ class LLaDA2MoeMLP(nn.Module):
         config: PretrainedConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
+        reduce_results: bool = True,
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
@@ -183,6 +185,7 @@ class LLaDA2MoeMLP(nn.Module):
             config.hidden_size,
             bias=False,
             quant_config=quant_config,
+            reduce_results=reduce_results,
         )
         self.act_fn = SiluAndMul()
 
@@ -275,7 +278,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 config.moe_intermediate_size * config.num_shared_experts
             )
             self.shared_experts = LLaDA2MoeMLP(
-                config, shared_intermediate, quant_config
+                config, shared_intermediate, quant_config, reduce_results=False
             )
         else:
             self.shared_experts = None
@@ -326,7 +329,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         else:
             pass
 
-        return y
+        return reduce_moe_output(y)
 
     def group_limited_topk(
         self, scores: torch.Tensor

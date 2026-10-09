@@ -15,6 +15,7 @@ else:
     pass
 
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
+from sglang_omni.platforms import current_platform
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +115,13 @@ def create_sglang_dllm_thinker_executor_from_config(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
     max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
+    total_gpu_memory_fraction: float | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
@@ -131,11 +136,13 @@ def create_sglang_dllm_thinker_executor_from_config(
     resolved_gpu_id = concrete_device.index or 0
 
     overrides: dict[str, object] = {
-        "attention_backend": "flashinfer",
+        "attention_backend": current_platform.get_dllm_attention_backend()
+        or "flashinfer",
         "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
     }
     overrides.update(server_args_overrides or {})
+    overrides["tp_size"] = tp_size
     pin_resolved_device_type(overrides, concrete_device.type)
 
     server_args = build_sglang_server_args(
@@ -154,7 +161,13 @@ def create_sglang_dllm_thinker_executor_from_config(
         cfg.dllm_algorithm,
         cfg.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, resolved_gpu_id)
+    return create_dllm_thinker_scheduler(
+        server_args,
+        resolved_gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+    )
 
 
 def create_decode_executor(model_path: str):

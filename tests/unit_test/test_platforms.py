@@ -294,6 +294,11 @@ def test_xpu_serves_the_zonos2_moe_experts_without_fp8() -> None:
     assert OmniPlatform().supports_fp8_moe() is True
 
 
+def test_xpu_denoises_dllm_blocks_with_triton() -> None:
+    assert XPUOmniPlatform().get_dllm_attention_backend() == "triton"
+    assert OmniPlatform().get_dllm_attention_backend() is None
+
+
 def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
     assert OmniPlatform().enable_thinker_decode_graph() is True

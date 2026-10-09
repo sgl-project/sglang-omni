@@ -5,11 +5,17 @@ import queue
 import threading
 from array import array
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.managers.schedule_policy import AddReqResult
+from sglang.srt.runtime_context import get_context
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.pipeline.tp_control import TPLeaderFanout
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 from sglang_omni.scheduling.message import IncomingMessage
@@ -210,6 +216,83 @@ def test_dllm_staging_admission_uses_dllm_config(
     assert created["batch_reqs"] == [req]
 
 
+@pytest.mark.parametrize(
+    ("round_is_full", "kv_fits_request"), [(True, True), (False, False), (False, True)]
+)
+def test_only_an_admitted_waiting_request_keeps_its_dllm_initialization(
+    monkeypatch: pytest.MonkeyPatch, round_is_full: bool, kv_fits_request: bool
+) -> None:
+    scheduler = make_scheduler(fdfo=True)
+    scheduler.tree_cache = None
+    scheduler.token_to_kv_pool_allocator = None
+    scheduler.req_to_token_pool = None
+    scheduler.chunked_prefill_size = 16
+    staging = SimpleNamespace(rid="staging", init_next_round_input=lambda: None)
+    waiting = SimpleNamespace(rid="waiting", dllm_initialized=False)
+    waiting.init_next_round_input = lambda tree_cache: setattr(
+        waiting, "dllm_initialized", True
+    )
+    scheduler.staging_queue = [staging] if round_is_full else []
+    scheduler.waiting_queue = [waiting]
+
+    class Adder:
+        def __init__(
+            self,
+            page_size: int,
+            tree_cache: None,
+            token_to_kv_pool_allocator: None,
+            running_batch: None,
+            new_token_ratio: float,
+            rem_input_tokens: int,
+            rem_chunk_tokens: int,
+            *,
+            prefill_max_requests: int,
+            dllm_config: SimpleNamespace,
+        ) -> None:
+            self.prefill_max_requests = prefill_max_requests
+            self.can_run_list: list[SimpleNamespace] = []
+
+        def add_dllm_staging_req(self, request: SimpleNamespace) -> AddReqResult:
+            self.can_run_list.append(request)
+            return AddReqResult.CONTINUE
+
+        def add_one_req(
+            self,
+            request: SimpleNamespace,
+            has_chunked_req: bool,
+            truncation_align_size: int | None,
+        ) -> AddReqResult:
+            if len(self.can_run_list) >= self.prefill_max_requests:
+                return AddReqResult.OTHER
+            elif kv_fits_request:
+                self.can_run_list.append(request)
+                return AddReqResult.NO_TOKEN
+            else:
+                return AddReqResult.NO_TOKEN
+
+    class Batch:
+        @staticmethod
+        def init_new(
+            reqs: list[SimpleNamespace],
+            req_to_token_pool: None,
+            token_to_kv_pool_allocator: None,
+            tree_cache: None,
+            model_config: SimpleNamespace,
+            enable_overlap: bool,
+            spec_algorithm: SpeculativeAlgorithm,
+            dllm_config: SimpleNamespace,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(reqs=reqs, prepare_for_extend=lambda: None)
+
+    monkeypatch.setattr(dllm_scheduler_module, "PrefillAdder", Adder)
+    monkeypatch.setattr(dllm_scheduler_module, "ScheduleBatch", Batch)
+
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=16):
+        scheduler.schedule_next_batch()
+
+    assert waiting.dllm_initialized is (kv_fits_request and not round_is_full)
+
+
 def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
     scheduler = make_scheduler(fdfo=True)
     req = ReqDouble()
@@ -350,3 +433,36 @@ def test_request_that_fails_to_build_gets_an_error_and_the_next_is_queued() -> N
         ("bad", "error", build_error)
     ]
     assert [req.rid for req in scheduler.waiting_queue] == ["good"]
+
+
+@pytest.mark.asyncio
+async def test_leader_stage_fans_dllm_work_out_to_follower_ranks() -> None:
+    scheduler = DllmScheduler(
+        tp_worker=None,
+        tree_cache=None,
+        req_to_token_pool=None,
+        token_to_kv_pool_allocator=None,
+        server_args=None,
+        model_config=None,
+        dllm_config=SimpleNamespace(block_size=4),
+        request_builder=None,
+        result_adapter=None,
+    )
+    tp_fanout = MagicMock(spec=TPLeaderFanout)
+    stage = Stage(
+        name="thinker",
+        role="leader",
+        get_next=lambda name: [],
+        gpu_id=0,
+        endpoints={},
+        control_plane=MagicMock(),
+        relay=MagicMock(),
+        scheduler=scheduler,
+        tp_fanout=tp_fanout,
+    )
+    payload = SimpleNamespace(request_id="req")
+
+    await stage.execute(payload)
+
+    tp_fanout.fanout_work.assert_called_once_with(payload)
+    assert scheduler.inbox.get_nowait().data is payload

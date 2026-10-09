@@ -489,13 +489,27 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 The config's AudioVAE streaming graph runs eager on XPU, since oneMKL's FFT cannot be recorded
 in a graph.
 
+### LLaDA2.0-Uni (dLLM-MoE, two XPUs)
+
+The bf16 thinker does not fit one 24 GB card, so it runs with TP=2, one process per rank. Text
+output for text and image input is supported; on XPU the thinker uses the triton attention backend.
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni \
+  --thinker.process thinker --thinker.gpu "[0, 1]" --thinker.tp_size 2 \
+  --thinker.gpu_memory_fraction 0.80 --image_encoder.gpu_memory_fraction 0.12 \
+  --host 0.0.0.0 --port 8000
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"inclusionAI/LLaDA2.0-Uni","messages":[{"role":"user","content":"What is the capital of France?"}],"max_tokens":64}'
+```
+
 Health check for any of the above: `curl http://localhost:8000/v1/models`.
 
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash, dots.tts and LLaDA2.0-Uni all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
-> ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
+> ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and LLaDA2.0-Uni need two cards;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).

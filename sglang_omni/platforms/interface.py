@@ -145,6 +145,9 @@ class OmniPlatform(DeviceMixin):
     def zonos2_bf16_mem_fraction_static(self, device: torch.device) -> float | None:
         return None
 
+    def get_dllm_attention_backend(self) -> str | None:
+        return None
+
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
 

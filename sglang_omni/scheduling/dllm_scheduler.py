@@ -65,6 +65,8 @@ class DllmScheduler:
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        # Holds no TP group, so the stage fans the leader's work out.
+        self.requires_tp_work_fanout: bool = True
 
         self.request_builder = request_builder
         self.result_adapter = result_adapter
@@ -226,6 +228,11 @@ class DllmScheduler:
                     )
                     != AddReqResult.CONTINUE
                 ):
+                    if req not in adder.can_run_list:
+                        # A refused request must not advance its dLLM block offset.
+                        req.dllm_initialized = False
+                    else:
+                        pass
                     break
                 else:
                     pass
