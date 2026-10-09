@@ -192,7 +192,10 @@ def split_content_parts(
                         raise ValueError(
                             "input_audio chat content part requires base64 data"
                         )
-                    elif inline.get("format") not in INPUT_AUDIO_MIME_TYPES:
+                    elif (
+                        not isinstance(inline.get("format"), str)
+                        or inline["format"] not in INPUT_AUDIO_MIME_TYPES
+                    ):
                         raise ValueError(
                             "input_audio chat content part format must be one of "
                             f"{sorted(INPUT_AUDIO_MIME_TYPES)}, got {inline.get('format')!r}"

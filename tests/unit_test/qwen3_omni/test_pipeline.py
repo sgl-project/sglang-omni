@@ -2680,6 +2680,10 @@ def test_chat_content_parts_become_placeholders_where_they_stood() -> None:
             [{"type": "input_audio", "input_audio": {"data": "AA", "format": "flac"}}],
             "input_audio chat content part format must be one of",
         ),
+        (
+            [{"type": "input_audio", "input_audio": {"data": "AA", "format": []}}],
+            "input_audio chat content part format must be one of",
+        ),
         ([{"type": "input_audio", "input_audio": {}}], "requires base64 data"),
         ({"type": "text", "text": "a dict"}, "a list of chat content parts"),
     ],

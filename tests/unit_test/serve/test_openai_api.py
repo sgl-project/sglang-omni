@@ -1412,20 +1412,32 @@ def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
 
 
 @pytest.mark.parametrize("use_audio_in_video", [True, False])
-def test_chat_request_forwards_embedded_video_audio_flag(
+@pytest.mark.parametrize(
+    ("content", "videos"),
+    [
+        ("hello", ["clip.mp4"]),
+        ([{"type": "video_url", "video_url": {"url": "clip.mp4"}}], None),
+    ],
+)
+def test_chat_request_forwards_video_options(
+    content: str | list[dict[str, object]],
+    videos: list[str] | None,
     use_audio_in_video: bool,
 ) -> None:
     req = ChatCompletionRequest(
         model="qwen3-omni",
-        messages=[{"role": "user", "content": "hello"}],
-        videos=["clip.mp4"],
+        messages=[{"role": "user", "content": content}],
+        videos=videos,
         use_audio_in_video=use_audio_in_video,
+        video_fps=4.0,
+        video_max_frames=8,
     )
 
-    gen_req = build_chat_generate_request(req)
+    inputs = extract_inputs(build_chat_generate_request(req))
 
-    assert gen_req.metadata["use_audio_in_video"] is use_audio_in_video
-    assert extract_inputs(gen_req)["use_audio_in_video"] is use_audio_in_video
+    assert inputs["use_audio_in_video"] is use_audio_in_video
+    assert inputs["video_fps"] == 4.0
+    assert inputs["video_max_frames"] == 8
 
 
 def test_chat_request_preserves_explicit_default_sampling_values() -> None:
