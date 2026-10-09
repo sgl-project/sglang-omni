@@ -29,6 +29,7 @@ dependencies = [
     "huggingface-hub[hf_xet]>=0.36.0",# HF model downloads with Xet transport
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
+    "prometheus-client>=0.20.0",  # /metrics exposition
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
     # note (yexiaodong): SGLang's PyPI wheel has unconditional CUDA dependencies,
     # so Apple Silicon installs this exact tag from source with the all_mps extra.

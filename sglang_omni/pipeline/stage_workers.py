@@ -79,6 +79,7 @@ class StageLaunchConfig:
     factory_arg_defaults: dict[str, str | int | float | None] = field(
         default_factory=dict
     )
+    runtime_server_args_overrides: dict[str, object] = field(default_factory=dict)
     require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
     # Note (Jiaxin Deng): the byte budgets are first-class fields, never
@@ -999,6 +1000,7 @@ def construct_scheduler(
         factory,
         factory_args,
         defaults=spec.factory_arg_defaults,
+        runtime_server_args_overrides=spec.runtime_server_args_overrides,
         require_gpu_id=spec.require_factory_gpu_id,
         stage_name=spec.stage_name,
     )

@@ -1601,6 +1601,9 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         req = req_data.req
+        if self.metrics_reporter.enable_metrics:
+            req.metrics_collector = self.metrics_collector
+            req.time_stats.set_metrics_collector(self.metrics_collector)
         self.normalize_req_token_arrays(req)
         req_id = req.rid
         # Session appends are checked after history restore, as SGLang does.

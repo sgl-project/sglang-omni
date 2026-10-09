@@ -45,6 +45,7 @@ from sglang_omni.client import Client
 from sglang_omni.client.types import GenerateChunk
 from sglang_omni.config import PipelineConfig
 from sglang_omni.http import admin_auth
+from sglang_omni.metrics.runtime import RuntimeMetrics
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.preprocessing.resource_connector import export_media_policy
@@ -472,6 +473,7 @@ async def run_server(
     log_level: str = "info",
     client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
+    enable_metrics: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -484,7 +486,15 @@ async def run_server(
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
 
-    mp_runner = MultiProcessPipelineRunner(pipeline_config)
+    served_model_name = model_name or pipeline_config.name
+    if enable_metrics:
+        from sglang.srt.utils import set_prometheus_multiproc_dir
+
+        set_prometheus_multiproc_dir()
+        metrics = RuntimeMetrics()
+    else:
+        metrics = None
+    mp_runner = MultiProcessPipelineRunner(pipeline_config, metrics=metrics)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
     await mp_runner.start(timeout=startup_timeout)
     coordinator = mp_runner.coordinator
@@ -522,7 +532,8 @@ async def run_server(
             realtime_deployment = None
         app = create_app(
             client,
-            model_name=model_name or pipeline_config.name,
+            metrics=metrics,
+            model_name=served_model_name,
             requires_uploaded_voice_for_named_voice=(
                 pipeline_config.requires_uploaded_voice_for_named_voice()
             ),
@@ -636,6 +647,7 @@ def launch_server(
     log_level: str = "info",
     client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
+    enable_metrics: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -653,6 +665,7 @@ def launch_server(
             :class:`~sglang_omni.client.Client`.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
+        enable_metrics: Enable Prometheus collection and the /metrics endpoint.
         allowed_local_media_path: Directory that local media references in TTS
             requests must resolve inside. ``file://`` references are disabled
             when omitted; bare local paths remain allowed by default but are
@@ -680,6 +693,7 @@ def launch_server(
             log_level=log_level,
             client_kwargs=client_kwargs,
             enable_realtime=enable_realtime,
+            enable_metrics=enable_metrics,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,

@@ -347,11 +347,14 @@ class Client:
             else:
                 pass
 
+        sample_count = max(to_numpy(audio_data).shape)
         return SpeechResult(
             audio_bytes=audio_bytes,
             mime_type=mime_type,
             format=actual_format,
             sample_rate=sample_rate,
+            duration_s=max(round(sample_count / speed), 1)
+            / (sample_rate or DEFAULT_SAMPLE_RATE),
             usage=last_chunk.usage if last_chunk else None,
             finish_reason=(
                 (last_chunk.reported_finish_reason or UNKNOWN_FINISH_REASON)

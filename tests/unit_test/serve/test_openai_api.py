@@ -17,6 +17,7 @@ from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.client import extract_inputs
 from sglang_omni.client.types import GenerateRequest, UsageInfo
+from sglang_omni.metrics.runtime import RuntimeMetrics
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
     EXPLICIT_GENERATION_PARAMS_KEY,
@@ -1121,6 +1122,24 @@ def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
     }
 
 
+def test_metrics_endpoint_is_disabled_by_default() -> None:
+    app = create_app(object())
+
+    assert "/metrics" not in {route.path for route in app.routes}
+    assert app.state.metrics is None
+
+
+def test_metrics_endpoint_is_enabled_with_runtime_metrics() -> None:
+    metrics = RuntimeMetrics()
+    app = create_app(object(), metrics=metrics)
+
+    response = TestClient(app).get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert app.state.metrics is metrics
+
+
 def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
     async def run() -> None:
         client, coordinator, control_plane = streaming_client()
@@ -1636,9 +1655,12 @@ def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None
 def test_speech_sse_stream_sends_deltas_then_done_with_usage(
     usage_first: bool,
 ) -> None:
+    metrics = RuntimeMetrics()
     client = TestClient(
         create_app(
-            TwoChunkStreamingSpeechClient(usage_first=usage_first), model_name="tts"
+            TwoChunkStreamingSpeechClient(usage_first=usage_first),
+            model_name="tts",
+            metrics=metrics,
         )
     )
 
@@ -1669,11 +1691,16 @@ def test_speech_sse_stream_sends_deltas_then_done_with_usage(
         "output_tokens": 2,
         "total_tokens": 5,
     }
+    snapshot = metrics.render().decode()
+    assert "sglang_omni:audio_e2e_latency_s_count 1.0" in snapshot
+    assert "sglang_omni:audio_ttfp_s_count 1.0" in snapshot
+    assert "sglang_omni:audio_chunk_interval_s_count 1.0" in snapshot
 
 
 def test_speech_sse_stream_failure_ends_with_error_event() -> None:
     speech_client = TwoChunkStreamingSpeechClient(fail_after_first_chunk=True)
-    client = TestClient(create_app(speech_client, model_name="tts"))
+    metrics = RuntimeMetrics()
+    client = TestClient(create_app(speech_client, model_name="tts", metrics=metrics))
 
     response = client.post(
         "/v1/audio/speech",
@@ -1690,6 +1717,9 @@ def test_speech_sse_stream_failure_ends_with_error_event() -> None:
     assert events[1]["error"]["type"] == "server_error"
     assert "vocoder failed" in events[1]["error"]["message"]
     assert len(speech_client.aborted) == 1
+    snapshot = metrics.render().decode()
+    assert "sglang_omni:audio_ttfp_s_count 1.0" in snapshot
+    assert "sglang_omni:audio_e2e_latency_s_count 0.0" in snapshot
 
 
 def test_sse_speech_response_close_aborts_inner_speech_stream() -> None:

@@ -33,6 +33,7 @@ from sglang_omni.config.schema import (
     parse_replica_instance_name,
 )
 from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
+from sglang_omni.metrics.runtime import RuntimeMetrics
 from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
 from sglang_omni.pipeline import Coordinator
 from sglang_omni.pipeline.replicas import ReplicaTopology
@@ -116,6 +117,7 @@ class StageLaunchKwargs(TypedDict):
     gpu_stage_names: set[str]
     stage_gpu_ids: dict[str, tuple[int, ...]]
     require_factory_gpu_id: bool
+    runtime_server_args_overrides: dict[str, object]
     same_process_targets: set[str]
     is_stream_receiver: bool
     can_accept_stream_before_payload: bool
@@ -132,6 +134,7 @@ def build_stage_groups(
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
     replica_topology: ReplicaTopology | None = None,
+    enable_metrics: bool = False,
 ) -> list[StageGroup]:
     """Build lifecycle groups from prepared endpoints and process topology.
 
@@ -175,7 +178,7 @@ def build_stage_groups(
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
-        logical_stage_name, _ = parse_replica_instance_name(stage_cfg.name)
+        logical_stage_name, replica_id = parse_replica_instance_name(stage_cfg.name)
         tp_size = stage_cfg.tp_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
@@ -193,6 +196,23 @@ def build_stage_groups(
         # must construct anyway.
         base_factory_kwargs = resolve_stage_factory_kwargs(stage_cfg, config)
         typed_kwargs = resolve_stage_typed_kwargs(stage_cfg)
+        stage_config_cls = type(config).stage_config_cls(logical_stage_name)
+        runtime_server_args_overrides: dict[str, object]
+        if enable_metrics and stage_config_cls.engine_stage:
+            extra_metric_labels = (
+                {"omni_stage": logical_stage_name}
+                if replica_id is None
+                else {
+                    "omni_stage": logical_stage_name,
+                    "replica": str(replica_id),
+                }
+            )
+            runtime_server_args_overrides = {
+                "enable_metrics": True,
+                "extra_metric_labels": extra_metric_labels,
+            }
+        else:
+            runtime_server_args_overrides = {}
 
         stage_kwargs: StageLaunchKwargs = dict(
             stage_name=stage_cfg.name,
@@ -218,6 +238,7 @@ def build_stage_groups(
             gpu_stage_names=gpu_stage_names,
             stage_gpu_ids=stage_gpu_ids,
             require_factory_gpu_id=requires_factory_gpu_id(stage_cfg, config),
+            runtime_server_args_overrides=runtime_server_args_overrides,
             same_process_targets=same_process_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
@@ -592,8 +613,14 @@ def wave_stage_names(wave: list[StageGroup]) -> list[str]:
 
 class MultiProcessPipelineRunner:
 
-    def __init__(self, config: PipelineConfig) -> None:
+    def __init__(
+        self,
+        config: PipelineConfig,
+        *,
+        metrics: RuntimeMetrics | None = None,
+    ) -> None:
         self.config = config
+        self.metrics = metrics
         self._coordinator: Coordinator | None = (
             None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
@@ -672,6 +699,7 @@ class MultiProcessPipelineRunner:
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
                 replica_topology=prep.replica_topology,
+                enable_metrics=self.metrics is not None,
             )
             apply_cpu_thread_plan(groups)
 
