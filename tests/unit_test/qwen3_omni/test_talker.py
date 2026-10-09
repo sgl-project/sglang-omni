@@ -23,7 +23,10 @@ from sglang_omni.models.qwen3_omni.components.talker import (
     bind_default_weight_loaders,
 )
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
-from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.components.talker_prefill import (
+    TalkerPrefillBuilder,
+    resolve_speaker_id,
+)
 from sglang_omni.models.qwen3_omni.config import (
     ENABLE_TALKER_START_TOPOLOGY,
     TALKER_START_MIN_CHUNKS,
@@ -43,6 +46,7 @@ from sglang_omni.scheduling.pending_text_queue import (
     coerce_pending_text_queue,
 )
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.fixtures.qwen_fakes import FakeQwenTokenizer
 from tests.unit_test.fixtures.qwen_predictor import (
     build_real_step_predictor_graph_talker,
@@ -86,6 +90,16 @@ def take_decode_input(sched_req: SimpleNamespace) -> torch.Tensor | None:
         device=torch.device("cpu"),
         dtype=torch.float32,
     )
+
+
+def test_talker_speaker_resolution_rejects_an_unknown_requested_voice() -> None:
+    speaker_map = {"chelsie": 2301, "ethan": 2302, "aiden": 2303}
+
+    assert resolve_speaker_id({"speaker": "Aiden"}, speaker_map) == 2303
+    assert resolve_speaker_id({}, speaker_map) == 2302
+    with pytest.raises(ValueError) as error:
+        resolve_speaker_id({"speaker": "NotAVoice"}, speaker_map)
+    assert is_bad_request_error(error.value)
 
 
 def test_configure_talker_server_args_writes_through_the_mutation_guard() -> None:

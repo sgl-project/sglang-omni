@@ -68,6 +68,7 @@ _BAD_REQUEST_PATTERNS = (
     ),
     re.compile(r"^Qwen3-TTS task_type must be one of "),
     re.compile(r"^Unsupported Qwen3-TTS CustomVoice speaker "),
+    re.compile(r"^Unsupported Qwen3-Omni speaker "),
 )
 
 
