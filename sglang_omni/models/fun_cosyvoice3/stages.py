@@ -2821,12 +2821,12 @@ def create_vocoder_executor(
             mel_channels=flow.output_size,
             speaker_channels=flow.spk_embed_affine_layer.out_features,
             max_rows=max_batch_size,
-            # note (ratish): SGLang's prefill graph ladder up to the largest Flow step
-            # the vocoder admits, as SGLang caps it at its largest prefill step.
+            # note (ratish): SGLang's prefill graph ladder capped at the buffered Flow
+            # admission budget, as SGLang caps it at its chunked prefill size. Stream
+            # steps have no frame budget, so the runner replays larger ones in groups.
             tier_frames=generate_prefill_cuda_graph_batch_sizes(
                 flow_batch_admission_frames
             ),
-            max_frames=flow.decoder.rand_noise.shape[2],
         )
         whole_history_cuda_graph_runner.capture()
         flow.whole_history_cuda_graph_runner = whole_history_cuda_graph_runner
