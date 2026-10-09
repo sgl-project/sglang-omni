@@ -70,6 +70,17 @@ def test_wav_whose_header_states_no_data_decodes_to_its_end() -> None:
     np.testing.assert_array_equal(decoded, libsndfile_mono(data))
 
 
+def test_flac_whose_header_states_no_length_decodes_to_its_end() -> None:
+    data = encode_audio(tone(2), "FLAC", "PCM_16", SAMPLE_RATE)
+    streaminfo = int.from_bytes(data[18:26], "big")
+    unsized = data[:18] + (streaminfo & ~((1 << 36) - 1)).to_bytes(8, "big") + data[26:]
+
+    decoded, sample_rate = decode_audio_bytes(unsized)
+
+    assert sample_rate == SAMPLE_RATE
+    np.testing.assert_array_equal(decoded, libsndfile_mono(data))
+
+
 def test_wav_without_samples_is_an_error() -> None:
     data = encode_audio(np.zeros(0, dtype=np.float32), "WAV", "PCM_16", SAMPLE_RATE)
 

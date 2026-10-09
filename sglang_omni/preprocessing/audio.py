@@ -21,6 +21,9 @@ from sglang_omni.preprocessing.resource_connector import MultiModalResourceConne
 from .base import MediaIO, is_url
 from .resource_connector import await_media_cleanup
 
+# note (ratish): the frame count libsndfile reports when a header does not state one.
+LIBSNDFILE_UNKNOWN_FRAMES = 2**63 - 1
+
 
 def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
     """Decode audio bytes with PyAV to mono float at full scale."""
@@ -66,17 +69,18 @@ def decode_audio_bytes(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
     """Decode audio bytes to mono float as the reference loader does: libsndfile, then
     PyAV for the containers libsndfile does not read (MP4, WebM, AAC)."""
     try:
-        audio, sample_rate = soundfile.read(
-            io.BytesIO(data), dtype="float32", always_2d=True
-        )
+        sound_file = soundfile.SoundFile(io.BytesIO(data))
     except soundfile.LibsndfileError:
         return decode_audio_bytes_av(data)
-    if len(audio) > 0:
-        return audio.mean(axis=1), int(sample_rate)
-    else:
-        # note (ratish): libsndfile reads the frames a WAV header states, which a writer
-        # that could not seek back leaves at 0; FFmpeg reads to the end of the data.
-        return decode_audio_bytes_av(data)
+    with sound_file:
+        if 0 < sound_file.frames < LIBSNDFILE_UNKNOWN_FRAMES:
+            audio = sound_file.read(dtype="float32", always_2d=True)
+            return audio.mean(axis=1), int(sound_file.samplerate)
+        else:
+            pass
+    # note (ratish): libsndfile reads the frames a header states; a writer that could not
+    # seek back leaves them at 0 or unknown, and FFmpeg reads to the end of the data.
+    return decode_audio_bytes_av(data)
 
 
 def parse_wav_bytes(
