@@ -29,8 +29,8 @@ MOSS 覆盖共享 reference encode、缓存、重复请求合并、异常隔离�
 
 ## 复现
 
-将两个固定 SHA 的源码分别解压至 code/00 与 code/01，将 runner.py 复制为 main.py，与 config.json 放在同一目录。准备上述依赖并只暴露一张 CUDA GPU后，执行 python main.py。每组测试由独立 Python 进程从对应源码目录运行；输出写入 outputs/。
+将两个固定 SHA 的源码分别解压至 code/00 与 code/01，将 runner.py 复制为 main.py，与 config.json 放在同一目录。准备上述依赖并只暴露一张 CUDA GPU 后，执行 python main.py。每组测试由独立 Python 进程从对应源码目录运行；输出写入 outputs/。
 
 ## 资源状态
 
-测试已结束，结果已回收。租约释放状态见 cleanup.json。
+测试已结束，结果已回收并提交 Git。任务容器与 map 记录已删除；Radix 确认租约已释放，账户无活跃分配。释放回执见 cleanup.json。
