@@ -39,7 +39,6 @@ from sglang_omni.preprocessing import (
     ensure_chat_template,
     ensure_image_list_async,
     ensure_video_list_async,
-    normalize_messages,
 )
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
@@ -47,7 +46,6 @@ from sglang_omni.preprocessing.resource_connector import (
     await_media_cleanup,
 )
 from sglang_omni.preprocessing.text import (
-    ContentMedia,
     MediaPlaceholderPart,
     TextContentPart,
     split_content_parts,
@@ -624,7 +622,6 @@ class Qwen3OmniPreprocessor:
             inputs = {"messages": inputs}
         else:
             pass
-        content_media = ContentMedia()
         if isinstance(inputs, dict):
             multimodal_train_inputs = inputs.get("multimodal_train_inputs")
             if multimodal_train_inputs is not None:
@@ -764,30 +761,7 @@ class Qwen3OmniPreprocessor:
                 else None
             )
         else:
-            messages = normalize_messages(inputs)
-            images = []
-            videos = []
-            audios = []
-            audio_target_sr = 16000
-            video_fps = self.default_video_fps
-            video_max_frames = self.default_video_max_frames
-            video_min_pixels = self.default_video_min_pixels
-            video_max_pixels = self.default_video_max_pixels
-            video_total_pixels = self.default_video_total_pixels
-            sampled_video_fps = None
-            use_audio_in_video = None
-            effective_use_audio_in_video = None
-            video_seconds_per_chunk = None
-            video_position_id_per_seconds = None
-            audio_from_video = False
-            num_explicit_audios = 0
-            resolved_video_fps = None
-            resolved_video_max_frames = None
-            resolved_video_min_pixels = None
-            resolved_video_max_pixels = None
-            resolved_video_total_pixels = None
-            resolved_video_seconds_per_chunk = None
-            resolved_video_position_id_per_seconds = None
+            raise ValueError("Preprocessing expects a list of chat messages")
 
         # Insert placeholders:
         # - Explicit audio files get independent audio placeholders
