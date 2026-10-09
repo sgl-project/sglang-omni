@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -146,7 +147,10 @@ def build_sglang_thinker_request(
     else:
         model_inputs = dict(model_inputs)
 
-    max_new_tokens = params.get("max_new_tokens", 2048)
+    known_tts_output_ids = prompt.get("known_tts_output_ids")
+    max_new_tokens = (
+        1 if known_tts_output_ids is not None else params.get("max_new_tokens", 2048)
+    )
     temperature = params.get("temperature", 0.0)
     thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
     length_penalty = thinker_params.get("length_penalty", 1.0)
@@ -187,6 +191,11 @@ def build_sglang_thinker_request(
         sampling_params=sampling_params,
         vocab_size=vocab_size,
     )
+    if known_tts_output_ids is not None:
+        # Avoid prefix hits: the talker needs the hidden state of every text row.
+        req.extra_key = f"minicpmo-known-tts:{uuid.uuid4().hex}"
+    else:
+        pass
     req.tokenizer = tokenizer
 
     req.omni_model_inputs = model_inputs if model_inputs else None
@@ -215,7 +224,13 @@ def apply_thinker_result(
     stage_name: str,
     result: SGLangARRequestData,
 ) -> ThinkerOutput:
-    output_ids = list(result.output_ids)
+    prompt = state.prompt or {}
+    known_tts_output_ids = prompt.get("known_tts_output_ids")
+    output_ids = (
+        list(known_tts_output_ids)
+        if known_tts_output_ids is not None
+        else list(result.output_ids)
+    )
     thinker_out: ThinkerOutput = {
         "output_ids": output_ids,
         "step": len(output_ids),

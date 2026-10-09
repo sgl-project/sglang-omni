@@ -3,11 +3,10 @@
 
 from __future__ import annotations
 
-import enum
+import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
 import mlx.core as mx
 import numpy as np
@@ -22,7 +21,9 @@ from tokenizers import (
 )
 
 from sglang_omni_mlx.qwen3_asr.audio import AudioLayout, log_mel, token_count
-from sglang_omni_mlx.qwen3_asr.model import KVCache, Qwen3ASR, load_qwen3_asr
+from sglang_omni_mlx.qwen3_asr.model import Qwen3ASR, load_qwen3_asr
+from sglang_omni_mlx.text_decoder import greedy_tokens
+from sglang_omni_mlx.transcription import CancelCheck, FinishReason
 
 # Qwen2's pre-tokenization split, as the checkpoint's tokenizer defines it.
 QWEN2_SPLIT_PATTERN = (
@@ -52,11 +53,6 @@ LANGUAGE_NAME_BY_CASEFOLD = {
 }
 
 
-class FinishReason(enum.Enum):
-    STOP = "stop"
-    LENGTH = "length"
-
-
 @dataclass(frozen=True, kw_only=True)
 class TranscriptionOptions:
     language: str | None = None
@@ -76,14 +72,6 @@ class TranscriptionResult:
     language: str | None
     generated_token_count: int
     finish_reason: FinishReason
-
-
-class CancelCheck(Protocol):
-    def is_set(self) -> bool: ...
-
-
-class TranscriptionCancelled(Exception):
-    """The caller gave up on the transcription."""
 
 
 def normalize_language(language: str) -> str | None:
@@ -218,22 +206,12 @@ class Qwen3ASRTranscriber:
             if options.stop_at_end_of_text
             else {self.im_end_id}
         )
-        caches = self.model.new_caches()
-        next_token = mx.argmax(self.model.model(embeddings, caches))
-        mx.async_eval(next_token)
+        tokens = greedy_tokens(
+            self.model.model, embeddings, self.model.new_caches(), cancel
+        )
         output_ids: list[int] = []
         finish_reason = FinishReason.LENGTH
-        while len(output_ids) < max_new_tokens:
-            if cancel.is_set():
-                raise TranscriptionCancelled()
-            else:
-                pass
-            token = next_token
-            # Queue the following step before reading this token, so the GPU
-            # decodes while Python checks the stop rules.
-            next_token = self.next_token(token, caches)
-            mx.async_eval(next_token)
-            token_id = int(token.item())
+        for token_id in itertools.islice(tokens, max_new_tokens):
             output_ids.append(token_id)
             if token_id in stop_ids:
                 finish_reason = FinishReason.STOP
@@ -250,12 +228,6 @@ class Qwen3ASRTranscriber:
             language=language,
             generated_token_count=len(output_ids) - int(ended_on_stop),
             finish_reason=finish_reason,
-        )
-
-    def next_token(self, token: mx.array, caches: list[KVCache]) -> mx.array:
-        """Greedy token after token, appending its keys and values to caches."""
-        return mx.argmax(
-            self.model.model(self.model.model.embed_tokens(token.reshape(1, 1)), caches)
         )
 
     def split_output(
