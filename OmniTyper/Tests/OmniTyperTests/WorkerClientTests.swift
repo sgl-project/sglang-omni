@@ -101,9 +101,9 @@ struct WorkerClientTests {
         }
 
         do {
-            _ = try await client.request(["op": "echo", "text": String(repeating: "汉", count: 90_000)], python: python)
-            Issue.record("Requests over the worker's 256 KiB limit must fail before sending")
-        } catch { #expect(error.localizedDescription.contains("256 KiB")) }
+            _ = try await client.request(["op": "echo", "text": String(repeating: "汉", count: 720_000)], python: python)
+            Issue.record("Requests over the worker's 2 MiB limit must fail before sending")
+        } catch { #expect(error.localizedDescription.contains("2 MiB")) }
         #expect(!client.isRunning)
 
         let first = try await client.request(["op": "echo"], python: python)
