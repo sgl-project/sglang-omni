@@ -1621,9 +1621,11 @@ class OmniScheduler(Generic[RequestDataT]):
             if error_msg:
                 if session_unit is not None:
                     error = ContextExhaustedError(
-                        f"{ContextExhaustedError.CODE}: thinker context length "
-                        f"{self.server_args.context_length} tokens exhausted "
-                        f"(effective input limit={self.max_req_input_len}). {error_msg}"
+                        f"{ContextExhaustedError.CODE}: the session reached the "
+                        f"thinker context length of {self.server_args.context_length} "
+                        f"tokens (the next unit needs {len(req.origin_input_ids)} "
+                        f"tokens, limit {self.max_req_input_len}). "
+                        "Start a new session."
                     )
                 else:
                     error = ValueError(error_msg)

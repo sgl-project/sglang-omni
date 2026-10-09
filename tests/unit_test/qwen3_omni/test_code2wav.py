@@ -368,6 +368,67 @@ def test_qwen_code2wav_serial_threshold_graph_keys_follow_scheduler_windows(
     ) == tuple(GraphKey(batch_size=1, frames=frames) for frames in expected_frames)
 
 
+@pytest.mark.parametrize(
+    ("stream_chunk_size", "left_context_size", "initial_chunk_frames"),
+    [(10, 25, 0), (20, 25, 0), (10, 25, 4), (6, 0, 0), (10, 0, 4), (10, 1, 0)],
+)
+def test_qwen_code2wav_factory_captures_the_last_window_of_every_stream_length(
+    monkeypatch,
+    stream_chunk_size: int,
+    left_context_size: int,
+    initial_chunk_frames: int,
+) -> None:
+    """Streams of every length end on a window the factory captures, and its final keys hold no other length."""
+    final_lengths: set[int] = set()
+    for stream_frames in range(1, left_context_size + 3 * stream_chunk_size + 1):
+        emitted = 0
+        while True:
+            step = (
+                initial_chunk_frames
+                if emitted == 0 and initial_chunk_frames
+                else stream_chunk_size
+            )
+            if stream_frames - emitted >= step:
+                emitted += step
+            else:
+                break
+        if stream_frames > emitted:
+            final_lengths.add(min(left_context_size, emitted) + stream_frames - emitted)
+        else:
+            pass
+
+    pin_cuda_platform(monkeypatch)
+    captured: dict[str, tuple[GraphKey, ...]] = {}
+
+    def build(built_model, *, graph_keys, best_effort_keys, **kwargs):
+        captured.update(graph_keys=graph_keys, best_effort_keys=best_effort_keys)
+        return SimpleNamespace(stats=lambda: {"enabled": True, "disable_reason": None})
+
+    monkeypatch.setattr(
+        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: FactoryModel()
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler.Code2WavCudaGraphRunner, "build", staticmethod(build)
+    )
+
+    code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cuda",
+        gpu_id=0,
+        stream_chunk_size=stream_chunk_size,
+        left_context_size=left_context_size,
+        initial_codec_chunk_frames=initial_chunk_frames,
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.02,
+    )
+
+    threshold_frames = {key.frames for key in captured["graph_keys"]}
+    final_keys = captured["best_effort_keys"]
+    assert all(key.batch_size == 1 for key in final_keys)
+    assert len(final_keys) == len(set(final_keys))
+    assert {key.frames for key in final_keys} == final_lengths - threshold_frames
+
+
 def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
     monkeypatch,
     caplog,
@@ -447,6 +508,11 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
         "num_quantizers": 12,
         "total_gpu_memory_fraction": 0.02,
         "graph_keys": expected_graph_keys,
+        "best_effort_keys": tuple(
+            GraphKey(batch_size=1, frames=frames)
+            for frames in range(1, 45)
+            if frames not in (20, 40, 45)
+        ),
         "model_footprint_bytes": 3 * 4 + 2 * 8,
         "decode_stream": scheduler.decode_stream,
     }
@@ -560,7 +626,7 @@ def test_qwen_code2wav_threshold_context_windows_hit_cuda_graph(monkeypatch) -> 
     ]
 
 
-def test_qwen_code2wav_stream_done_tail_is_eager_when_shape_matches_graph(
+def test_qwen_code2wav_stream_done_tail_replays_the_graph_of_its_shape(
     monkeypatch,
 ) -> None:
     model = FakeCode2WavModel(total_upsample=2)
@@ -588,16 +654,16 @@ def test_qwen_code2wav_stream_done_tail_is_eager_when_shape_matches_graph(
         )
     scheduler.handle_stream_done("req-1")
 
-    assert runner.calls == [((1, 2, 6), True), ((1, 2, 10), False)]
+    assert runner.calls == [((1, 2, 6), True), ((1, 2, 10), True)]
     decode_ends = [
         event for event in events if event["event_name"] == "code2wav_decode_end"
     ]
     tail_metadata = decode_ends[-1]["metadata"]
     assert tail_metadata["trigger"] == "stream_done"
     assert tail_metadata["window_frames"] == 10
-    assert tail_metadata["execution_mode"] == "eager"
-    assert tail_metadata["graph_key"] is None
-    assert tail_metadata["fallback_reason"] == "ineligible"
+    assert tail_metadata["execution_mode"] == "cuda_graph"
+    assert tail_metadata["graph_key"] == {"batch_size": 1, "frames": 10}
+    assert tail_metadata["fallback_reason"] is None
 
 
 def test_qwen_code2wav_request_events_are_symmetric_and_keep_start_metadata(
@@ -767,7 +833,7 @@ def test_qwen_code2wav_graph_output_protocol_matches_eager_exactly() -> None:
         for item in graph_snapshot
         if item[0] == "stream"
     ] == [20, 2]
-    assert runner.calls == [((1, 2, 10), True), ((1, 2, 2), False)]
+    assert runner.calls == [((1, 2, 10), True), ((1, 2, 2), True)]
 
 
 def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
