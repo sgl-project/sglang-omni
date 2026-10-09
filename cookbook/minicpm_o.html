@@ -598,7 +598,7 @@
 <td><p>Normal serving. Sampling matches the MiniCPM-o demo</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo-parity.yaml</span></code></p></td>
-<td><p>Repeatable output for regression and parity recordings. Differs only in greedy sampling and <code class="docutils literal notranslate"><span class="pre">top_k:</span> <span class="pre">100</span></code></p></td>
+<td><p>Repeatable output for regression and parity recordings. Differs in greedy sampling, <code class="docutils literal notranslate"><span class="pre">top_k:</span> <span class="pre">100</span></code>, and running the thinker and talker without CUDA graphs</p></td>
 </tr>
 </tbody>
 </table>
@@ -613,7 +613,7 @@
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_sessions</span></code></p></td>
 <td><p>2</p></td>
-<td><p>Conversations at the same time. Further connections get HTTP 503</p></td>
+<td><p>Conversations at the same time. Further connections get HTTP 503. The thinker and talker reserve GPU memory for this many full-length conversations, so raise it only as far as the GPU has room. Startup warms up perception at each batch size up to this value</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reference_audio</span></code></p></td>
 <td><p>checkpoint default</p></td>
@@ -622,6 +622,22 @@
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">speech_state_bytes_per_session</span></code></p></td>
 <td><p>2 GiB</p></td>
 <td><p>Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">speech.dtype</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">float32</span></code></p></td>
+<td><p>Precision of the voice decoder’s flow model: <code class="docutils literal notranslate"><span class="pre">float32</span></code>, <code class="docutils literal notranslate"><span class="pre">float16</span></code> or <code class="docutils literal notranslate"><span class="pre">bfloat16</span></code>; the lower precisions change the voice slightly</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">speech.enable_dit_torch_compile</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Compile the voice decoder’s flow model with <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> while the server starts; CUDA only</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">speech.n_timesteps</span></code></p></td>
+<td><p>10</p></td>
+<td><p>Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stages.thinker/talker.engine.enable_torch_compile</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Compiles every decode graph batch size; adds minutes to startup</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sampling</span></code></p></td>
 <td><p>see the config</p></td>
@@ -634,6 +650,7 @@
 </tbody>
 </table>
 </div>
+<p>While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or <code class="docutils literal notranslate"><span class="pre">max_sessions</span></code> if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice’s is decoded without them.</p>
 <p>A session holds at most 8192 tokens of history, which is the model’s trained context length. When that fills, the server sends <code class="docutils literal notranslate"><span class="pre">context_exhausted</span></code> and closes the session.</p>
 <p>The full-duplex server is ready when this returns JSON containing <code class="docutils literal notranslate"><span class="pre">&quot;native_full_duplex&quot;:true</span></code>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--fail<span class="w"> </span>http://localhost:8000/v1/realtime/capabilities
