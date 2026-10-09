@@ -8,7 +8,6 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import TypeAlias
 
 import torch
 import torch._dynamo as dynamo
@@ -36,7 +35,6 @@ PACKED_INDUCTOR_OPTIONS: dict[str, bool] = {
     **DIT_INDUCTOR_OPTIONS,
     "emulate_precision_casts": True,
 }
-PackedRowAttention: TypeAlias = "RowAttention | RaggedRowAttention | WholeRowAttention"
 
 
 def ragged_fa3(
@@ -325,6 +323,9 @@ class WholeRowAttention:
             self.max_frames,
         )
         return out.reshape(1, -1, self.heads * self.head_dim)
+
+
+PackedRowAttention = RowAttention | RaggedRowAttention | WholeRowAttention
 
 
 class PackedDiT:
