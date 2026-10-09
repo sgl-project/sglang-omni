@@ -610,7 +610,19 @@ def test_connections_over_capacity_are_denied_before_upgrade() -> None:
     assert exc_info.value.status_code == 503
 
 
-def test_connection_without_update_is_closed_and_frees_its_slot() -> None:
+@pytest.mark.parametrize(
+    ("first_update", "codes"),
+    [
+        (None, ["session_update_timeout"]),
+        (
+            {"sglang": {"sampling": {"temperature": 3.5}}},
+            ["invalid_request", "session_update_timeout"],
+        ),
+    ],
+)
+def test_connection_that_never_opens_is_closed_and_frees_its_slot(
+    first_update: JsonObject | None, codes: list[str]
+) -> None:
     client = build_test_client(
         ScriptedAdapter(),
         limits=RuntimeLimits(session_update_timeout_s=0.1),
@@ -618,11 +630,15 @@ def test_connection_without_update_is_closed_and_frees_its_slot() -> None:
     )
 
     with client.websocket_connect("/v1/realtime") as websocket:
+        if first_update is not None:
+            send_event(websocket, "session.update", session=first_update)
+        else:
+            pass
         events = receive_until(websocket, "session.closed")
         with client.websocket_connect("/v1/realtime") as reopened_socket:
             reopened = reopened_socket.receive_json()
 
     errors = events_of_type(events, "error")
-    assert [error["error"]["code"] for error in errors] == ["session_update_timeout"]
-    assert errors[0]["sglang"]["fatal"] is True
+    assert [error["error"]["code"] for error in errors] == codes
+    assert errors[-1]["sglang"]["fatal"] is True
     assert reopened["type"] == "session.created"
