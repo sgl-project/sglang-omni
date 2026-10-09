@@ -508,6 +508,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-protocol">Full-duplex protocol</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a></li>
 </ul>
             </nav>
         </div>
@@ -689,6 +690,19 @@
 <p>Send camera frames with <code class="docutils literal notranslate"><span class="pre">sglang.input_image.append</span></code>: a base64 JPEG or PNG in <code class="docutils literal notranslate"><span class="pre">image</span></code>, and its position on the audio timeline in <code class="docutils literal notranslate"><span class="pre">sglang.t_ms</span></code>. By default up to 4 frames per second are accepted; <code class="docutils literal notranslate"><span class="pre">session.updated</span></code> reports the actual limit.</p>
 </section>
 </section>
+<section id="text-to-speech">
+<h2>Text to speech<a class="headerlink" href="#text-to-speech" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> reads the given text aloud. MiniCPM-o prefills the text in one Thinker pass and conditions the Talker on each of its tokens, instead of generating the same words one token at a time. Set <code class="docutils literal notranslate"><span class="pre">language</span></code> to <code class="docutils literal notranslate"><span class="pre">Chinese</span></code> for Chinese text, and pass a base64 audio data URI as <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> to clone a voice.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">audio</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">audio</span><span class="o">.</span><span class="n">speech</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+    <span class="n">model</span><span class="o">=</span><span class="s2">"MiniCPM-o-4_5"</span><span class="p">,</span>
+    <span class="n">voice</span><span class="o">=</span><span class="s2">"default"</span><span class="p">,</span>
+    <span class="nb">input</span><span class="o">=</span><span class="s2">"Hello!"</span><span class="p">,</span>
+    <span class="n">extra_body</span><span class="o">=</span><span class="p">{</span><span class="s2">"language"</span><span class="p">:</span> <span class="s2">"English"</span><span class="p">},</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>The speech output is non-streaming. The sampling fields you set, such as <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>, apply to the Talker, which generates the speech; the rest keep the Talker’s defaults.</p>
+</section>
 </section>
 
 
@@ -745,6 +759,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-protocol">Full-duplex protocol</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a></li>
 </ul>
   </nav></div>
 
