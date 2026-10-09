@@ -1069,11 +1069,16 @@ def _register_image_generations(app: FastAPI) -> None:
             async for chunk in app.state.client.generate(
                 request, request_id=request_id
             ):
-                if chunk.image_b64 is None:
-                    raise RuntimeError("SenseNova-U1 generated no image")
+                images = chunk.images_b64 or (
+                    [chunk.image_b64] if chunk.image_b64 is not None else []
+                )
+                if len(images) != req.n:
+                    raise RuntimeError(
+                        f"SenseNova-U1 expected {req.n} images, got {len(images)}"
+                    )
                 return ImageGenerationResponse(
                     created=int(time.time()),
-                    data=[ImageGenerationData(b64_json=chunk.image_b64)],
+                    data=[ImageGenerationData(b64_json=item) for item in images],
                 )
         except Exception as exc:
             logger.exception("Image generation failed for request %s", request_id)

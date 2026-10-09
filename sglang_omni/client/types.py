@@ -144,6 +144,7 @@ class GenerateChunk:
     audio_data: Any = None
     sample_rate: int | None = None
     image_b64: str | None = None
+    images_b64: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -164,6 +165,7 @@ class GenerateChunk:
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
             "image_b64": self.image_b64,
+            "images_b64": self.images_b64,
         }
 
 

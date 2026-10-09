@@ -26,6 +26,31 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.serve.openai_api import create_app
 
 
+def test_t2i_api_returns_all_outputs_in_one_request():
+    class MultiClient:
+        calls = 0
+
+        async def generate(self, request, request_id):
+            self.calls += 1
+            assert request.extra_params["n"] == 3
+            yield GenerateChunk(request_id=request_id, images_b64=["a", "b", "c"])
+
+    backend = MultiClient()
+    client = TestClient(
+        create_app(backend, model_name="sensenova", architectures=["NEOChatModel"])
+    )
+    response = client.post("/v1/images/generations", json={"prompt": "a cat", "n": 3})
+    assert response.status_code == 200
+    assert response.json()["data"] == [{"b64_json": value} for value in ("a", "b", "c")]
+    assert backend.calls == 1
+    assert (
+        client.post(
+            "/v1/images/generations", json={"prompt": "a cat", "n": 11}
+        ).status_code
+        == 422
+    )
+
+
 def test_t2i_stage_encodes_real_png_and_passes_source_arguments():
     model = Mock()
     model.t2i_generate.return_value = torch.zeros((1, 3, 32, 64))
@@ -578,3 +603,11 @@ def test_client_preserves_generated_image():
     )
     assert chunk.image_b64 == "cG5n"
     assert chunk.modality == "image"
+
+
+def test_client_preserves_multiple_generated_images():
+    chunk = Client._default_result_builder(
+        "multi", {"images_b64": ["a", "b"], "modality": "image"}
+    )
+    assert chunk.images_b64 == ["a", "b"]
+    assert chunk.to_dict()["images_b64"] == ["a", "b"]
