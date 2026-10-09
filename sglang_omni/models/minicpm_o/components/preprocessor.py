@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from concurrent.futures import Executor
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -130,6 +131,8 @@ class MiniCPMOPreprocessor:
         model_path: str,
         *,
         speech_enabled: bool = False,
+        video_resize_executor: Executor | None = None,
+        video_resize_workers: int = 1,
     ) -> None:
         local_dir = str(resolve_model_path(model_path))
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -139,6 +142,8 @@ class MiniCPMOPreprocessor:
         self.model_dir = local_dir
         self._processor = None  # noqa: leading-underscore
         self.speech_enabled = speech_enabled
+        self.video_resize_executor = video_resize_executor
+        self.video_resize_workers = video_resize_workers
 
     def speech_to_text_inputs(
         self, payload: StagePayload, inputs: Mapping[str, object]
@@ -387,6 +392,8 @@ class MiniCPMOPreprocessor:
                 **video_kwargs,
                 extract_audio=use_audio_in_video,
                 audio_target_sr=16000,
+                resize_executor=self.video_resize_executor,
+                resize_workers=self.video_resize_workers,
             )
         else:
             videos, video_audios = [], None

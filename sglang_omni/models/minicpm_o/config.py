@@ -17,14 +17,25 @@ from sglang_omni.config import (
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
 
 PKG = "sglang_omni.models.minicpm_o"
+PREPROCESSING_STAGE = "preprocessing"
 THINKER_STAGE = "thinker"
 # PyTorch gives a smaller value higher priority, so this runs ahead of the default stream.
 CODE2WAV_DECODE_STREAM_PRIORITY = -1
 
 
-def preprocessing_stage(*, process: str) -> StageConfig:
-    return StageConfig(
-        name="preprocessing",
+class MiniCPMOPreprocessingFactoryArgs(FactoryArgs):
+    video_resize_workers: int = Field(default=8, ge=0)
+
+
+class MiniCPMOPreprocessingStageConfig(StageConfig):
+    factory: MiniCPMOPreprocessingFactoryArgs = Field(
+        default_factory=MiniCPMOPreprocessingFactoryArgs
+    )
+
+
+def preprocessing_stage(*, process: str) -> MiniCPMOPreprocessingStageConfig:
+    return MiniCPMOPreprocessingStageConfig(
+        name=PREPROCESSING_STAGE,
         process=process,
         factory_path=f"{PKG}.stages.create_preprocessing_executor",
         next=["image_encoder", "audio_encoder", "thinker"],
@@ -178,6 +189,7 @@ class MiniCPMOPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MiniCPMO"
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        PREPROCESSING_STAGE: MiniCPMOPreprocessingStageConfig,
         THINKER_STAGE: EngineStageConfig,
     }
 
@@ -189,6 +201,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
     """Text and speech pipeline producing one waveform per request."""
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        PREPROCESSING_STAGE: MiniCPMOPreprocessingStageConfig,
         THINKER_STAGE: EngineStageConfig,
         "talker": EngineStageConfig,
     }
