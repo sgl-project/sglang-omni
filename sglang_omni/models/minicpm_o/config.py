@@ -15,6 +15,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.flow_graph_shapes import (
+    SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES,
     build_default_flow_cuda_graph_shapes,
 )
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
@@ -121,6 +122,9 @@ class MiniCPMOCode2WavFactoryArgs(FactoryArgs):
     enable_flow_cuda_graph: bool = True
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = Field(
         default_factory=build_default_flow_cuda_graph_shapes
+    )
+    packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = (
+        SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES
     )
 
 

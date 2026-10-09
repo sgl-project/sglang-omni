@@ -483,6 +483,7 @@ def create_speech_scheduler(
         enable_flow_variable_length=False,
         enable_flow_cuda_graph=False,
         flow_cuda_graph_capture_shapes=(),
+        packed_dit_cuda_graph_capture_shapes=(),
         reference_workers=1,
         prompt_cache_capacity=max_open_sessions,
         decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,

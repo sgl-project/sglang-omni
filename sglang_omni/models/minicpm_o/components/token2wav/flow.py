@@ -35,8 +35,16 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
     ConformerState,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT, DiTState
+from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
+    FixedPackedLayout,
+    build_fixed_packed_layout,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    CapturedPackedFlowGraph,
     FlowCudaGraphRunner,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    CapturedPackedDiTGraph,
 )
 
 # note (Junnan Li): Classifier-free guidance runs the estimator on all conditioned rows, then all unconditioned rows, so a stream's estimator caches hold its two rows on this axis.
@@ -109,6 +117,8 @@ class CausalConditionalCFM(torch.nn.Module):
         speaker_embeddings: torch.Tensor,
         mel_conditioning: torch.Tensor,
         states: list[DiTState] | None = None,
+        *,
+        packed_valid_frames: int | None = None,
     ) -> tuple[torch.Tensor, list[DiTState] | None]:
         t = t_span[0].expand(x.size(0))
         dt = t_span[1] - t_span[0]
@@ -122,14 +132,34 @@ class CausalConditionalCFM(torch.nn.Module):
             [mel_conditioning, torch.zeros_like(mel_conditioning)], dim=0
         )
         graph_runner = self.graph_runner if states is None else None
+        packed_runner = self.estimator.packed_graph_runner if states is None else None
         next_states: list[DiTState] = []
         is_packed = self.estimator.enable_variable_length and x.shape[0] > 1
-        graph_shape = (
-            graph_runner.fit(x, t_span)
-            if graph_runner is not None and not is_packed
+        packed_capacity = (
+            packed_runner.fit(x.shape[0], x.shape[2], packed_valid_frames)
+            if packed_runner is not None and is_packed
             else None
         )
-        with graph_runner.lock if graph_shape is not None else nullcontext():
+        graph_shape = (
+            graph_runner.fit(x, t_span)
+            if graph_runner is not None
+            and (not is_packed or packed_capacity is not None)
+            else None
+        )
+        packed_layout = (
+            build_fixed_packed_layout(
+                paired_mask.bool().squeeze(1).sum(dim=1, dtype=torch.int32),
+                graph_shape[1] if graph_shape is not None else x.shape[2],
+                packed_capacity,
+                self.estimator.blocks[0].conv.kernel_size - 1,
+            )
+            if packed_capacity is not None
+            else None
+        )
+        with (
+            graph_runner.lock if graph_shape is not None else nullcontext(),
+            packed_runner.lock if packed_layout is not None else nullcontext(),
+        ):
             captured_flow = (
                 graph_runner.prepare(
                     graph_shape,
@@ -138,8 +168,14 @@ class CausalConditionalCFM(torch.nn.Module):
                     paired_mask,
                     paired_speaker_embeddings,
                     paired_mel_conditioning,
+                    packed_layout,
                 )
                 if graph_shape is not None
+                else None
+            )
+            captured_packed = (
+                packed_runner.prepare(packed_layout)
+                if packed_layout is not None
                 else None
             )
             for step in range(1, len(t_span)):
@@ -158,6 +194,10 @@ class CausalConditionalCFM(torch.nn.Module):
                         (1.0 + self.inference_cfg_rate) * conditional
                         - self.inference_cfg_rate * unconditional
                     )
+                elif isinstance(captured_flow, CapturedPackedFlowGraph):
+                    graph_runner.run_packed_step(
+                        captured_flow, packed_runner, captured_packed, t, dt
+                    )
                 elif captured_flow is not None:
                     graph_runner.run_step(captured_flow, t, dt)
                 else:
@@ -169,6 +209,8 @@ class CausalConditionalCFM(torch.nn.Module):
                         paired_mask,
                         paired_speaker_embeddings,
                         paired_mel_conditioning,
+                        packed_layout=packed_layout,
+                        packed_graph=captured_packed,
                     )
                 t = t + dt
                 if step < len(t_span) - 1:
@@ -191,6 +233,9 @@ class CausalConditionalCFM(torch.nn.Module):
         paired_mask: torch.Tensor,
         paired_speaker_embeddings: torch.Tensor,
         paired_mel_conditioning: torch.Tensor,
+        *,
+        packed_layout: FixedPackedLayout | None = None,
+        packed_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
         derivative = self.estimator.forward(
             torch.cat([x, x], dim=0),
@@ -199,6 +244,8 @@ class CausalConditionalCFM(torch.nn.Module):
             torch.cat([t, t], dim=0),
             paired_speaker_embeddings,
             paired_mel_conditioning,
+            packed_layout=packed_layout,
+            packed_graph=packed_graph,
         )
         conditional_derivative, unconditional_derivative = derivative.chunk(2, dim=0)
         guided_derivative = (
@@ -218,6 +265,8 @@ class CausalConditionalCFM(torch.nn.Module):
         temperature: float = 1.0,
         states: list[DiTState] | None = None,
         noise_offsets: list[int] | None = None,
+        *,
+        packed_valid_frames: int | None = None,
     ) -> tuple[torch.Tensor, list[DiTState] | None]:
         if n_timesteps <= 0:
             raise ValueError("n_timesteps must be positive")
@@ -235,6 +284,7 @@ class CausalConditionalCFM(torch.nn.Module):
             speaker_embeddings,
             mel_conditioning,
             states,
+            packed_valid_frames=packed_valid_frames,
         )
 
     def draw_noise(
@@ -586,12 +636,27 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             prompt_frames = prompt_length * self.up_rate
             mel_conditioning[i, :prompt_frames] = prompt_mel[i, :prompt_frames]
         mel_conditioning = mel_conditioning.transpose(1, 2).contiguous()
+        packed_valid_frames = (
+            2
+            * sum(
+                min(
+                    (prompt_length + token_length) * self.up_rate,
+                    hidden_states.shape[1],
+                )
+                for prompt_length, token_length in zip(
+                    prompt_row_lengths, generated_row_lengths, strict=True
+                )
+            )
+            if len(generated_row_lengths) > 1
+            else None
+        )
         predicted_mel, _ = self.decoder.forward(
             mu=hidden_states.transpose(1, 2).contiguous(),
             mask=frame_mask.unsqueeze(1),
             speaker_embeddings=speaker_embeddings,
             mel_conditioning=mel_conditioning,
             n_timesteps=n_timesteps,
+            packed_valid_frames=packed_valid_frames,
         )
         generated = [
             predicted_mel[

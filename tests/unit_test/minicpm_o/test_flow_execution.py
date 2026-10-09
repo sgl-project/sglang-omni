@@ -3,16 +3,23 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 import torch
 import torch.nn.functional as F
 
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT, DiTState
+from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
+    build_fixed_packed_layout,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.flow import CausalConditionalCFM
 from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    CapturedPackedFlowGraph,
     FlowCudaGraphRunner,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    CapturedPackedDiTGraph,
 )
 
 
@@ -42,7 +49,12 @@ def flow_inputs(
 
 def test_flow_graph_fit_uses_nearest_mel_bucket() -> None:
     decoder = small_decoder()
-    runner = FlowCudaGraphRunner(decoder.euler_step, decoder.rand_noise)
+    runner = FlowCudaGraphRunner(
+        decoder.euler_step,
+        decoder.rand_noise,
+        estimator=decoder.estimator,
+        inference_cfg_rate=decoder.inference_cfg_rate,
+    )
     runner.device = torch.device("cpu")
     runner.graphs = {(1, 64): MagicMock(), (1, 32): MagicMock(), (2, 32): MagicMock()}
     assert runner.fit(torch.zeros(1, 4, 31), torch.zeros(2)) == (1, 32)
@@ -67,6 +79,53 @@ def test_right_padding_preserves_valid_flow_frames() -> None:
         F.pad(mel_conditioning, (0, 3)),
     )
     torch.testing.assert_close(padded[:, :, :13], eager, atol=1e-5, rtol=1e-5)
+
+
+def test_packed_flow_prepares_state_and_orders_replays() -> None:
+    decoder = small_decoder()
+    runner = FlowCudaGraphRunner(
+        decoder.euler_step,
+        decoder.rand_noise,
+        estimator=decoder.estimator,
+        inference_cfg_rate=decoder.inference_cfg_rate,
+    )
+    runner.device = torch.device("cpu")
+    inputs = runner.capture_inputs(2, 32, is_packed=True)
+    replay_order = MagicMock()
+    captured = CapturedPackedFlowGraph(
+        pre_graph=replay_order.pre,
+        post_graph=replay_order.post,
+        inputs=inputs,
+        output=inputs[0],
+        positions=torch.empty(128, dtype=torch.long),
+        padding_mask=torch.empty(128, dtype=torch.bool),
+    )
+    runner.graphs[(2, 32)] = captured
+    packed_graph = MagicMock(spec=CapturedPackedDiTGraph)
+    for frames in (31, 29):
+        x = torch.randn(2, 4, frames)
+        conditioning = torch.randn(4, 4, frames)
+        mask = torch.ones(4, 1, frames)
+        speakers = torch.randn(4, 4)
+        layout = build_fixed_packed_layout(
+            torch.full((4,), frames, dtype=torch.int32), 32, 128, 2
+        )
+        runner.prepare((2, 32), x, conditioning, mask, speakers, conditioning, layout)
+        torch.testing.assert_close(inputs[0], F.pad(x, (0, 32 - frames)))
+        torch.testing.assert_close(inputs[4], F.pad(mask, (0, 32 - frames)))
+        t, dt = torch.tensor(0.3), torch.tensor(0.1)
+        runner.run_packed_step(captured, replay_order.packed, packed_graph, t, dt)
+        torch.testing.assert_close(inputs[1], t.expand(2))
+        torch.testing.assert_close(inputs[2], dt)
+    assert (
+        replay_order.mock_calls
+        == [
+            call.pre.replay(),
+            call.packed.replay(packed_graph),
+            call.post.replay(),
+        ]
+        * 2
+    )
 
 
 def test_streaming_flow_bypasses_graph_runners() -> None:
@@ -110,7 +169,12 @@ def test_flow_graph_replays_changed_inputs_and_falls_back(
             )
     else:
         pass
-    runner = FlowCudaGraphRunner(decoder.euler_step, decoder.rand_noise)
+    runner = FlowCudaGraphRunner(
+        decoder.euler_step,
+        decoder.rand_noise,
+        estimator=decoder.estimator,
+        inference_cfg_rate=decoder.inference_cfg_rate,
+    )
     runner.capture(((batch_size, 16),))
     assert set(runner.graphs) == {(batch_size, 16)}
 

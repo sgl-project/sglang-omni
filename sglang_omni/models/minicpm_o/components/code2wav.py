@@ -52,6 +52,7 @@ class MiniCPMOCode2Wav(nn.Module):
         enable_flow_block_compile: bool,
         enable_flow_cuda_graph: bool,
         flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
+        packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
@@ -221,6 +222,7 @@ class MiniCPMOCode2Wav(nn.Module):
             with self.device_context:
                 self.token2wav.capture_flow_graphs(
                     flow_cuda_graph_capture_shapes,
+                    packed_dit_cuda_graph_capture_shapes,
                 )
         else:
             pass
