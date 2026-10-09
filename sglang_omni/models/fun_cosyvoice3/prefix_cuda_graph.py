@@ -18,10 +18,7 @@ from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     forward_prefix,
     run_prefix_solve,
 )
-from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import (
-    SolveGraphCapture,
-    replay_in_groups,
-)
+from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
 from sglang_omni.platforms.device_graph import ReplayableGraph
 
 
@@ -67,7 +64,6 @@ class PrefixCudaGraphRunner:
         self.euler_steps = len(pool.keys)
         self.mel_channels = mel_channels
         self.speaker_channels = speaker_channels
-        self.max_rows = max_rows
         row_ladder = sorted(
             {
                 rows
@@ -187,46 +183,14 @@ class PrefixCudaGraphRunner:
         new_frames: list[int],
         caches: list[tuple[PrefixCacheRow, PrefixCacheRow]],
     ) -> torch.Tensor | None:
-        """The solve replayed from the tier graphs, a step past the largest tier as
-        consecutive groups of rows that fit it; None when a row alone passes it."""
-        if max(new_frames) > self.tier_frames[-1]:
+        """The solve replayed from the smallest tier holding the step's new frames;
+        None above the largest tier."""
+        frame_count = sum(new_frames)
+        tier = bisect.bisect_left(self.tier_frames, frame_count)
+        if tier == len(self.tier_frames):
             return None
         else:
-            pass
-
-        def replay_rows(rows: slice, frames: slice) -> torch.Tensor:
-            return self.replay(
-                noise=noise[:, frames],
-                time_span=time_span,
-                mu=mu[:, frames],
-                speaker_embeddings=speaker_embeddings[rows],
-                mel_conditioning=mel_conditioning[:, frames],
-                new_frames=new_frames[rows],
-                caches=caches[rows],
-            )
-
-        return replay_in_groups(
-            replay_rows,
-            new_frames,
-            max_frames=self.tier_frames[-1],
-            max_rows=self.max_rows,
-        )
-
-    def replay(
-        self,
-        *,
-        noise: torch.Tensor,
-        time_span: torch.Tensor,
-        mu: torch.Tensor,
-        speaker_embeddings: torch.Tensor,
-        mel_conditioning: torch.Tensor,
-        new_frames: list[int],
-        caches: list[tuple[PrefixCacheRow, PrefixCacheRow]],
-    ) -> torch.Tensor:
-        """The solve of rows within the largest tier, replayed from the smallest tier
-        holding their new frames."""
-        frame_count = sum(new_frames)
-        captured = self.captured[bisect.bisect_left(self.tier_frames, frame_count)]
+            captured = self.captured[tier]
         row_count = len(new_frames)
         row_slots = captured.layout.row_slots
         assert row_count <= row_slots, "every row adds at least the shortest hop"

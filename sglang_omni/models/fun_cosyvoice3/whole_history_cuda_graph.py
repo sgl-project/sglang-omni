@@ -16,10 +16,7 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     pack_rows,
     solve_flow_euler_packed,
 )
-from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import (
-    SolveGraphCapture,
-    replay_in_groups,
-)
+from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
 from sglang_omni.platforms.device_graph import ReplayableGraph
 
 
@@ -149,45 +146,14 @@ class WholeHistoryCudaGraphRunner:
         mel_conditioning: torch.Tensor,
         lengths: Sequence[int],
     ) -> torch.Tensor | None:
-        """The solve replayed from the tier graphs, a step past the largest tier or the
-        row slots as consecutive groups of rows that fit them; None when a row alone
-        passes the largest tier."""
-        if max(lengths) > self.tier_frames[-1]:
+        """The solve replayed from the smallest tier holding the step's frames,
+        None above the largest tier or past the row slots."""
+        frame_count = sum(lengths)
+        tier = bisect.bisect_left(self.tier_frames, frame_count)
+        if tier == len(self.tier_frames) or len(lengths) > self.max_rows:
             return None
         else:
-            pass
-
-        def replay_rows(rows: slice, frames: slice) -> torch.Tensor:
-            return self.replay(
-                noise=noise[:, frames],
-                time_span=time_span,
-                mu=mu[:, frames],
-                speaker_embeddings=speaker_embeddings[rows],
-                mel_conditioning=mel_conditioning[:, frames],
-                lengths=lengths[rows],
-            )
-
-        return replay_in_groups(
-            replay_rows,
-            lengths,
-            max_frames=self.tier_frames[-1],
-            max_rows=self.max_rows,
-        )
-
-    def replay(
-        self,
-        *,
-        noise: torch.Tensor,
-        time_span: torch.Tensor,
-        mu: torch.Tensor,
-        speaker_embeddings: torch.Tensor,
-        mel_conditioning: torch.Tensor,
-        lengths: Sequence[int],
-    ) -> torch.Tensor:
-        """The solve of rows within the largest tier and the row slots, replayed from
-        the smallest tier holding their frames."""
-        frame_count = sum(lengths)
-        captured = self.captured[bisect.bisect_left(self.tier_frames, frame_count)]
+            captured = self.captured[tier]
         assert (
             noise.dtype == self.frame_dtype
             and speaker_embeddings.dtype == self.speaker_dtype

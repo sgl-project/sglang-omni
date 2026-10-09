@@ -304,9 +304,8 @@ def test_grow_rows_takes_nothing_on_a_shortfall() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("compile_prefix", [False, True], ids=["eager", "compiled"])
 def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> None:
-    """Replays with padding frames and unused row slots equal the eager solve, also
-    for a step past the largest tier, replayed as groups of rows, when they resume
-    from a step that ran eagerly because a row alone passed the largest tier, and
+    """Replays with padding frames and unused row slots equal the eager solve,
+    also when they resume from a step above the largest tier that ran eagerly and
     when a whole-history graph replays from the same pool between hops."""
     estimator = make_estimator()
     device = torch.device("cuda", torch.cuda.current_device())
@@ -317,7 +316,7 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
             euler_steps=10,
             head_num=HEADS,
             head_dim=HEAD_DIM,
-            capacity_frames=96 * BLOCK_FRAMES,
+            capacity_frames=64 * BLOCK_FRAMES,
             device=device,
             dtype=dtype,
         )
@@ -371,7 +370,7 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
         lengths=(300, 200),
     )
     streams = {}
-    for name, prompt_frames in (("a", 100), ("b", 50), ("c", 50), ("d", 100)):
+    for name, prompt_frames in (("a", 100), ("b", 50), ("c", 50)):
         mel_conditioning = torch.zeros(CHANNELS, 650, device=device, dtype=dtype)
         mel_conditioning[:, :prompt_frames] = torch.randn(
             CHANNELS, prompt_frames, device=device, dtype=dtype
@@ -391,8 +390,8 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
         [("a", 150)],
         [("b", 100), ("a", 250)],
         [("a", 450), ("c", 70), ("b", 200)],
-        [("c", 150), ("b", 400), ("d", 450)],
-        [("a", 600), ("b", 600), ("c", 300), ("d", 550)],
+        [("c", 150), ("b", 400)],
+        [("a", 600), ("b", 600), ("c", 300)],
         [("a", 650)],
     ]
     with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
@@ -429,7 +428,7 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
                     ),
                     mel_conditioning=take("mel_conditioning"),
                 )
-                if pool is graph_pool and max(new_frames) <= runner.tier_frames[-1]:
+                if pool is graph_pool and sum(new_frames) <= runner.tier_frames[-1]:
                     generated = runner.run(
                         **inputs, new_frames=new_frames, caches=pairs
                     )
@@ -476,7 +475,7 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
     for pair_per_pool in caches.values():
         for pool, pair in zip(pools, pair_per_pool):
             release_rows(pool, list(pair))
-    assert all(len(pool.free_blocks) == 96 for pool in pools)
+    assert all(len(pool.free_blocks) == 64 for pool in pools)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -486,9 +485,8 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
 ) -> None:
     """Replays with empty row slots and a padding row, after other steps left their
     frames in the tier's buffers, equal the eager solve of the rows alone, also
-    through a tier whose padding row is longer than any row, and for steps past the
-    largest tier or the row slots, replayed as groups of rows. A row alone past the
-    largest tier is refused."""
+    through a tier whose padding row is longer than any row. Steps above the
+    largest tier or past the row slots are refused."""
     estimator = make_estimator()
     device = torch.device("cuda", torch.cuda.current_device())
     dtype = torch.bfloat16
@@ -554,13 +552,10 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
             (60,),
             (128,),
             (200, 56),
-            (150, 150),
-            (20, 20, 20, 20),
-            (200, 90, 100, 30, 70),
             (900, 900),
-            (900, 900, 400),
             (40, 70),
         ):
             replayed = runner.run(**step_inputs(lengths), lengths=lengths)
             assert torch.equal(replayed, eager_solve(lengths)), lengths
-        assert runner.run(**step_inputs((2100,)), lengths=(2100,)) is None
+        for lengths in ((900, 900, 400), (20, 20, 20, 20)):
+            assert runner.run(**step_inputs(lengths), lengths=lengths) is None
