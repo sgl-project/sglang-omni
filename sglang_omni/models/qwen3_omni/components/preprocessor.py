@@ -10,7 +10,7 @@ import logging
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal, TypedDict, TypeGuard
+from typing import TypedDict, TypeGuard
 
 import numpy as np
 import numpy.typing as npt
@@ -41,11 +41,16 @@ from sglang_omni.preprocessing import (
     ensure_video_list_async,
     normalize_messages,
 )
-from sglang_omni.preprocessing.chat_content import ContentMedia, split_content_parts
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     ResourceHTTPConnection,
     await_media_cleanup,
+)
+from sglang_omni.preprocessing.text import (
+    ContentMedia,
+    MediaPlaceholderPart,
+    TextContentPart,
+    split_content_parts,
 )
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
@@ -63,15 +68,6 @@ class VideoProcessorKwargs(TypedDict, total=False):
     seconds_per_chunk: float
     position_id_per_seconds: float
     device: str
-
-
-class MediaPlaceholderPart(TypedDict):
-    type: Literal["image", "video", "audio"]
-
-
-class TextContentPart(TypedDict):
-    type: Literal["text"]
-    text: object
 
 
 class ProcessorKwargs(TypedDict, total=False):
@@ -445,7 +441,6 @@ class Qwen3OmniPreprocessor:
                 for _ in range(num_audios):
                     content_parts.append({"type": "audio"})
                 if isinstance(content, list):
-                    # Content-part media stay where they stood; top-level media follow.
                     content_parts = [*content, *content_parts]
                 else:
                     content_parts.append({"type": "text", "text": content})
