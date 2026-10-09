@@ -1285,6 +1285,7 @@ def test_create_vocoder_executor_on_xpu_captures_flow_graphs_only_for_an_eager_d
         "model",
         flow_prefix_cache_gb=0.0,
         enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
         device="xpu",
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_cuda_graph=True,
