@@ -30,6 +30,11 @@ def capture_session_unit_ready() -> SessionUnitReadyObservation | None:
     return SessionUnitReadyObservation(timestamp_ns=timestamp_ns, run_id=run_id)
 
 
+def capture_session_stage_start() -> tuple[str, int] | None:
+    """Capture one shared stage-start observation only for active profiling."""
+    return get_recorder().capture_active_run_timestamp_ns()
+
+
 def session_identity_metadata(
     session_identity: SessionIdentity,
     input_chunk: TimedChunk,
@@ -89,6 +94,57 @@ def emit_session_unit_ready_event(
         metadata=session_identity_metadata(session_identity, input_chunk),
         timestamp_ns=ready_timestamp_ns,
         expected_run_id=ready_run_id,
+    )
+
+
+def emit_session_stage_started(
+    *,
+    request_id: str,
+    session_identity: SessionIdentity,
+    input_chunk: TimedChunk,
+    stage: str | None = None,
+    timestamp_ns: int | None = None,
+    expected_run_id: str | None = None,
+) -> None:
+    """Emit one append start boundary, optionally at a shared batch timestamp."""
+    recorder = get_recorder()
+    if not recorder.is_active():
+        return
+    else:
+        pass
+    recorder.emit(
+        request_id=request_id,
+        stage=stage,
+        event_name="session_stage_started",
+        metadata=session_identity_metadata(session_identity, input_chunk),
+        timestamp_ns=timestamp_ns,
+        expected_run_id=expected_run_id,
+    )
+
+
+def emit_session_stage_bypassed(
+    *,
+    request_id: str,
+    session_identity: SessionIdentity,
+    input_chunk: TimedChunk,
+    reason: str,
+    stage: str | None = None,
+    timestamp_ns: int | None = None,
+) -> None:
+    """Record an authoritative stage bypass decision for one append Unit."""
+    recorder = get_recorder()
+    if not recorder.is_active():
+        return
+    else:
+        pass
+    metadata = session_identity_metadata(session_identity, input_chunk)
+    metadata["reason"] = reason
+    recorder.emit(
+        request_id=request_id,
+        stage=stage,
+        event_name="session_stage_bypassed",
+        metadata=metadata,
+        timestamp_ns=timestamp_ns,
     )
 
 

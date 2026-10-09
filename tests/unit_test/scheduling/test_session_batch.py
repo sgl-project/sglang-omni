@@ -2,9 +2,15 @@
 """Batched appends across sessions on one stage scheduler."""
 
 import threading
+from pathlib import Path
 from typing import Literal
+from unittest.mock import Mock
 
+import pytest
+
+import sglang_omni.scheduling.session as session_module
 from sglang_omni.admission import QueueFullError
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -153,6 +159,120 @@ def test_backlog_appends_of_distinct_sessions_share_one_hook_call():
         "c0": 0,
     }
     assert all(out.type == "result" for out in outputs.values())
+
+
+def test_batched_appends_emit_one_shared_stage_start_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    recorder = get_recorder()
+    recorder.start("batch-start-test", str(tmp_path), "stage")
+    emit_stage_started = Mock()
+    monkeypatch.setattr(
+        session_module, "emit_session_stage_started", emit_stage_started
+    )
+    time_ns = Mock(return_value=123)
+    monkeypatch.setattr(session_module.time, "time_ns", time_ns)
+
+    try:
+        hooks = RecordingHooks()
+        scheduler = SessionScheduler(hooks)
+        outputs = run_backlog(
+            scheduler,
+            opens("a", "b")
+            + [message("a0", "append", "a"), message("b0", "append", "b")],
+        )
+    finally:
+        recorder.stop()
+
+    assert outputs["a0"].type == outputs["b0"].type == "result"
+    assert time_ns.call_count == 1
+    assert emit_stage_started.call_count == 2
+    assert {
+        call.kwargs["request_id"] for call in emit_stage_started.call_args_list
+    } == {
+        "a0",
+        "b0",
+    }
+    assert {
+        call.kwargs["timestamp_ns"] for call in emit_stage_started.call_args_list
+    } == {123}
+    assert {
+        call.kwargs["expected_run_id"] for call in emit_stage_started.call_args_list
+    } == {"batch-start-test"}
+
+
+def test_batched_appends_skip_stage_start_clock_when_profiler_inactive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = get_recorder()
+    recorder.stop()
+    emit_stage_started = Mock()
+    monkeypatch.setattr(
+        session_module, "emit_session_stage_started", emit_stage_started
+    )
+    time_ns = Mock(return_value=456)
+    monkeypatch.setattr(session_module.time, "time_ns", time_ns)
+
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    outputs = run_backlog(
+        scheduler,
+        opens("a", "b") + [message("a0", "append", "a"), message("b0", "append", "b")],
+    )
+
+    assert outputs["a0"].type == outputs["b0"].type == "result"
+    assert time_ns.call_count == 0
+    assert emit_stage_started.call_count == 0
+
+
+def test_scalar_append_emits_stage_start_before_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emit_stage_started = Mock()
+    monkeypatch.setattr(
+        session_module, "emit_session_stage_started", emit_stage_started
+    )
+
+    class ObservingHooks(SequentialHooks):
+        def append(
+            self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+        ) -> StagePayload:
+            assert emit_stage_started.call_count == 1
+            assert (
+                emit_stage_started.call_args.kwargs["request_id"] == payload.request_id
+            )
+            return super().append(chunk, payload, context)
+
+    scheduler = SessionScheduler(ObservingHooks())
+    outputs = run_backlog(scheduler, opens("a") + [message("a0", "append", "a")])
+
+    assert outputs["a0"].type == "result"
+    assert emit_stage_started.call_count == 1
+
+
+def test_batched_appends_skip_start_event_for_invalid_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emit_stage_started = Mock()
+    monkeypatch.setattr(
+        session_module, "emit_session_stage_started", emit_stage_started
+    )
+    time_ns = Mock(return_value=456)
+    monkeypatch.setattr(session_module.time, "time_ns", time_ns)
+
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    outputs = run_backlog(
+        scheduler,
+        opens("a")
+        + [message("a0", "append", "a"), message("missing0", "append", "missing")],
+    )
+
+    assert outputs["a0"].type == "result"
+    assert outputs["missing0"].type == "error"
+    assert time_ns.call_count == 0
+    assert emit_stage_started.call_count == 0
 
 
 def test_open_and_close_run_alone_in_arrival_order():
