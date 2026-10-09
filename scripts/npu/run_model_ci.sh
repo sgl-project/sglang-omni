@@ -43,7 +43,7 @@ cp "$NPU_CI_DATA_DIR/configs/$NPU_CI_MODEL.yaml" "$run_dir/serving-config.yaml"
 if [[ "$NPU_CI_MODEL" == qwen3-tts ]]; then
   export OMNI_NPU_TTS_MODEL="$NPU_CI_DATA_DIR/models/qwen3-tts"
   export OMNI_NPU_TTS_CONFIG="$NPU_CI_DATA_DIR/configs/qwen3-tts.yaml"
-  export OMNI_NPU_TTS_TASK=CustomVoice OMNI_NPU_TTS_OUTPUT="$run_dir/tts"
+  export OMNI_NPU_TTS_OUTPUT="$run_dir/tts"
   suite=tests/test_model/test_npu_tts.py
 else
   export OMNI_NPU_ASR_MODEL="$NPU_CI_DATA_DIR/models/qwen3-asr"

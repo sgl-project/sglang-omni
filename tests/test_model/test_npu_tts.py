@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in NPU TTS serving regressions, independent of GPU speed baselines."""
+"""Qwen3-TTS CustomVoice NPU serving regressions."""
 
 from __future__ import annotations
 
@@ -60,8 +60,6 @@ def tts_server(tmp_path_factory):
     assert (model / "config.json").is_file(), "A complete local model is required"
     assert (model / "speech_tokenizer").is_dir(), "Include speech_tokenizer weights"
     assert config.is_file(), "Supply the model's NPU serving config"
-    task = os.environ.get("OMNI_NPU_TTS_TASK", "CustomVoice")
-    assert task in {"CustomVoice", "Base", "VoiceDesign"}
     configured_port = os.environ.get("OMNI_NPU_TTS_PORT")
     port = int(configured_port) if configured_port else find_available_port_range(1)
     output = Path(
@@ -84,35 +82,23 @@ def tts_server(tmp_path_factory):
             response = session.get(base_url + "/v1/models", timeout=10)
             response.raise_for_status()
             assert response.json()["data"]
-        yield base_url, task, output
+        yield base_url, output
 
 
-def speech_payload(task: str, language: str = "English") -> dict:
-    payload = {
+def speech_payload(language: str = "English") -> dict[str, str | int]:
+    return {
         "input": (
             "Hello, this is a speech synthesis test on Ascend."
             if language == "English"
             else "你好，欢迎使用语音合成服务。"
         ),
         "language": language,
-        "task_type": task,
+        "task_type": "CustomVoice",
+        "voice": "Ryan" if language == "English" else "Vivian",
         "seed": 123456,
         "max_new_tokens": 256,
         "response_format": "wav",
     }
-    if task == "CustomVoice":
-        payload["voice"] = "Ryan" if language == "English" else "Vivian"
-    elif task == "VoiceDesign":
-        payload["instructions"] = "A warm, clear female voice with a calm delivery."
-    elif task == "Base":
-        reference = Path(os.environ["OMNI_NPU_TTS_REFERENCE"]).resolve()
-        assert reference.is_file()
-        transcript = os.environ["OMNI_NPU_TTS_REFERENCE_TEXT"]
-        assert transcript.strip()
-        payload["references"] = [{"audio_path": str(reference), "text": transcript}]
-    else:
-        raise ValueError(f"Unsupported task: {task}")
-    return payload
 
 
 def request_speech(base_url, payload, output, name, stream=False):
@@ -156,23 +142,23 @@ def request_speech(base_url, payload, output, name, stream=False):
 
 @pytest.mark.parametrize("language", ["English", "Chinese"])
 def test_nonstream_speech(tts_server, language):
-    base_url, task, output = tts_server
-    request_speech(base_url, speech_payload(task, language), output, language.lower())
+    base_url, output = tts_server
+    request_speech(base_url, speech_payload(language), output, language.lower())
 
 
 def test_stream_speech(tts_server):
-    base_url, task, output = tts_server
-    request_speech(base_url, speech_payload(task), output, "stream", stream=True)
+    base_url, output = tts_server
+    request_speech(base_url, speech_payload(), output, "stream", stream=True)
 
 
 def test_concurrent_requests(tts_server):
-    base_url, task, output = tts_server
+    base_url, output = tts_server
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
             pool.submit(
                 request_speech,
                 base_url,
-                speech_payload(task),
+                speech_payload(),
                 output,
                 f"concurrent-{i}",
             )
@@ -183,9 +169,9 @@ def test_concurrent_requests(tts_server):
 
 
 def test_valid_request_after_rejection(tts_server):
-    base_url, task, output = tts_server
+    base_url, output = tts_server
     with requests.Session() as session:
         session.trust_env = False
         response = session.post(base_url + "/v1/audio/speech", json={}, timeout=10)
         assert response.status_code in {400, 422}, response.text
-    request_speech(base_url, speech_payload(task), output, "after-rejection")
+    request_speech(base_url, speech_payload(), output, "after-rejection")
