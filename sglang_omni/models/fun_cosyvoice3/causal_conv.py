@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.utils.custom_op import register_custom_op
 
 try:
     import triton
@@ -89,10 +90,17 @@ def pack_group_conv_weight(conv: torch.nn.Conv1d) -> torch.Tensor:
     )
 
 
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::group_conv_mish",
-    mutates_args=(),
-    device_types="cuda",
+def fake_group_conv_mish(
+    x: torch.Tensor, packed_weight: torch.Tensor, bias: torch.Tensor
+) -> torch.Tensor:
+    batch, in_frames, channels = x.shape
+    return x.new_empty(batch, in_frames - packed_weight.shape[1] + 1, channels)
+
+
+@register_custom_op(
+    op_name="fun_cosyvoice3_group_conv_mish",
+    mutates_args=[],
+    fake_impl=fake_group_conv_mish,
 )
 def group_conv_mish(
     x: torch.Tensor, packed_weight: torch.Tensor, bias: torch.Tensor
@@ -122,14 +130,6 @@ def group_conv_mish(
     return out
 
 
-@group_conv_mish.register_fake
-def fake_group_conv_mish(
-    x: torch.Tensor, packed_weight: torch.Tensor, bias: torch.Tensor
-) -> torch.Tensor:
-    batch, in_frames, channels = x.shape
-    return x.new_empty(batch, in_frames - packed_weight.shape[1] + 1, channels)
-
-
 class FusedConvPositionEmbedding(torch.nn.Module):
     """CosyVoice's CausalConvPositionEmbedding with each conv and its Mish in one launch,
     the module's own convs for frames outside the packed weights' dtype, as in a float
@@ -151,9 +151,7 @@ class FusedConvPositionEmbedding(torch.nn.Module):
         conv = (self.conv1, self.conv2)[conv_index]
         packed_weight = self.packed_weights[conv_index]
         if x.dtype == packed_weight.dtype:
-            return torch.ops.sglang_omni_fun_cosyvoice3.group_conv_mish(
-                x, packed_weight, conv[0].bias
-            )
+            return group_conv_mish(x, packed_weight, conv[0].bias)
         else:
             return conv(x.transpose(1, 2)).transpose(1, 2)
 
