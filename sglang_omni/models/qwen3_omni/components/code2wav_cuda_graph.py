@@ -245,16 +245,17 @@ class Code2WavCudaGraphRunner:
     """Exact-shape device graph runner for ``[B, Q, T]`` long codes.
 
     One instance is permanently bound to one model, device, quantizer
-    count, ``torch.long`` input dtype, and owner process. ``batch_size == 1``
-    keys form an atomic tier with the original semantics: any failure there
-    disables the complete runner and leaves no partial matrix published.
-    ``batch_size > 1`` keys are best-effort. All keys share one mempool, whose
+    count, ``torch.long`` input dtype, and owner process. The ``batch_size == 1``
+    members of graph_keys form an atomic tier with the original semantics: any
+    failure there disables the complete runner and leaves no partial matrix
+    published. ``batch_size > 1`` members and every best_effort_keys member are
+    best-effort. All keys share one mempool, whose
     total stays near the largest member's peak instead of paying that peak
     once per pool; because pool memory is only reclaimable as a whole, the
-    retry unit is a whole capture attempt. Each attempt captures the batched
+    retry unit is a whole capture attempt. Each attempt captures the best-effort
     keys first — largest-first, each followed by a budget check while the pool
     holds nothing serving depends on — then closes with the atomic tier, so an
-    oversized batched graph can never take down the single-request tier that
+    oversized best-effort graph can never take down the atomic tier that
     serving already relies on.
     """
 
@@ -267,6 +268,7 @@ class Code2WavCudaGraphRunner:
         device: str | torch.device,
         num_quantizers: int,
         graph_keys: tuple[GraphKey, ...],
+        best_effort_keys: tuple[GraphKey, ...],
         decode_stream: torch.Stream | None,
         device_api: TorchDeviceApi,
     ) -> None:
@@ -291,9 +293,12 @@ class Code2WavCudaGraphRunner:
             raise ValueError("Code2Wav graphs require a positive quantizer count")
         else:
             pass
-        self.graph_keys = graph_keys
+        assert not set(graph_keys) & set(best_effort_keys)
+        self.graph_keys = graph_keys + best_effort_keys
         self.tier0_keys = tuple((k for k in graph_keys if k.batch_size == 1))
-        self.tier1_keys = tuple((k for k in graph_keys if k.batch_size > 1))
+        self.tier1_keys = (
+            tuple((k for k in graph_keys if k.batch_size > 1)) + best_effort_keys
+        )
         self.owner_pid = os.getpid()
         self.graphs: dict[GraphKey, CapturedGraph] = {}
         self.sizes_by_frames: dict[int, tuple[int, ...]] = {}
@@ -321,6 +326,7 @@ class Code2WavCudaGraphRunner:
         graph_keys: tuple[GraphKey, ...],
         model_footprint_bytes: int,
         decode_stream: torch.Stream | None,
+        best_effort_keys: tuple[GraphKey, ...] = (),
         device_api: TorchDeviceApi | None = None,
     ) -> Code2WavCudaGraphRunner:
         """Build the configured serving-reachable serial graphs.
@@ -333,6 +339,7 @@ class Code2WavCudaGraphRunner:
             device=device,
             num_quantizers=num_quantizers,
             graph_keys=graph_keys,
+            best_effort_keys=best_effort_keys,
             decode_stream=decode_stream,
             device_api=TorchDeviceApi() if device_api is None else device_api,
         )
@@ -425,7 +432,7 @@ class Code2WavCudaGraphRunner:
         self.build_stats["published_graph_count"] = len(self.graphs)
         if self.tier1_keys:
             tier1_info["published_key_count"] = sum(
-                (1 for key in self.graphs if key.batch_size > 1)
+                (1 for key in self.tier1_keys if key in self.graphs)
             )
             tier1_info["skipped_keys"] = [
                 {"batch_size": key.batch_size, "frames": key.frames}

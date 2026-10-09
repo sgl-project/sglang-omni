@@ -10,11 +10,10 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from sglang_omni_mlx.qwen3_asr.transcriber import (
-    FinishReason,
-    TranscriptionCancelled,
     TranscriptionOptions,
     TranscriptionResult,
 )
+from sglang_omni_mlx.transcription import FinishReason, TranscriptionCancelled
 
 
 @dataclass

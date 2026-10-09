@@ -18,6 +18,9 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import engine_builder as whisper_asr_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -182,6 +185,28 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
 
     with pytest.raises(ValueError, match="encoder prefix must be admitted atomically"):
         builder.adjust_overrides({"chunked_prefill_size": 4096})
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "expected_backend"),
+    [(XPUOmniPlatform, "torch_native"), (CUDAOmniPlatform, None)],
+)
+def test_whisper_encoder_decoder_attention_backend_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_type: type[OmniPlatform],
+    expected_backend: str | None,
+) -> None:
+    monkeypatch.setattr(whisper_asr_builder, "current_platform", platform_type())
+    defaults = whisper_asr_builder.WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    ).generation_defaults(dtype="float16")
+
+    if expected_backend is None:
+        assert "attention_backend" not in defaults
+    else:
+        assert defaults["attention_backend"] == expected_backend
 
 
 def test_whisper_breakable_prefill_graph_policy() -> None:

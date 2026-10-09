@@ -13,10 +13,10 @@ pytest.importorskip("mlx.core")
 
 from sglang_omni_mlx.qwen3_asr import worker as worker_module  # noqa: E402
 from sglang_omni_mlx.qwen3_asr.transcriber import (  # noqa: E402
-    FinishReason,
     TranscriptionOptions,
     TranscriptionResult,
 )
+from sglang_omni_mlx.transcription import FinishReason  # noqa: E402
 
 
 class GatedTranscriber:

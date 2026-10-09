@@ -432,8 +432,8 @@ private final class BenchmarkWriter {
     }
 }
 
-/// Physical footprint of this process plus every descendant (the Omni supervisor,
-/// its lifeline and the server's stage processes), sampled every 100 ms.
+/// Physical footprint of this process plus every descendant (the Omni server
+/// process), sampled every 100 ms.
 private final class ProcessTreeFootprintSampler: @unchecked Sendable {
     struct Snapshot {
         let current: UInt64

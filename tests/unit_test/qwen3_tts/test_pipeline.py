@@ -3685,6 +3685,7 @@ def test_qwen3_tts_ingest_keeps_the_newest_chunk_event() -> None:
     assert state.codes_ready is None
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_qwen3_tts_ingest_records_readiness_for_a_device_chunk_without_an_event() -> (
     None
@@ -3713,6 +3714,7 @@ def test_qwen3_tts_ingest_records_readiness_for_a_device_chunk_without_an_event(
     assert state.code_chunks == [codes]
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_qwen3_tts_worker_plan_reads_a_device_chunk_after_the_producer_wrote_it() -> (
     None
