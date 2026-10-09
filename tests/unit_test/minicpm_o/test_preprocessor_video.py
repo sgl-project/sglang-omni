@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from fractions import Fraction
 from pathlib import Path
 from typing import Literal
@@ -23,6 +24,7 @@ from sglang_omni.models.minicpm_o.components.image_processing import CUDAImagePr
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.prompt_frontend import video_to_images
 from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
+from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
     CHAT_TEMPLATE,
@@ -207,6 +209,120 @@ def test_top_level_video_audio_follows_explicit_media(
     assert video_processor.audio_parts == [[0] * len(expected_waveforms)]
 
 
+@pytest.mark.parametrize("video_alias", ["video", "videos"])
+@pytest.mark.parametrize("use_audio", [False, True])
+@pytest.mark.parametrize("include_text", [False, True])
+def test_top_level_video_matches_inline_reference_policy(
+    video_preprocessor: MiniCPMOPreprocessor,
+    video_processor: VideoRecordingProcessor,
+    decoded_video: TimedVideo,
+    video_alias: str,
+    use_audio: bool,
+    include_text: bool,
+) -> None:
+    messages = [
+        {"role": "user", "content": ["Hello", "World"]},
+        {"role": "assistant", "content": "OK"},
+        {"role": "user", "content": ["Describe.", "Details."] if include_text else ""},
+    ]
+    top_level_result = asyncio.run(
+        video_preprocessor(
+            StagePayload(
+                request_id="top-level-policy",
+                request=OmniRequest(
+                    inputs={
+                        "messages": messages,
+                        video_alias: "clip.mp4",
+                        "use_audio_in_video": use_audio,
+                    }
+                ),
+                data=None,
+            )
+        )
+    )
+    inline_result = asyncio.run(
+        video_preprocessor(
+            StagePayload(
+                request_id="inline-policy",
+                request=OmniRequest(
+                    inputs=[
+                        *messages[:-1],
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "video_url",
+                                    "video_url": {
+                                        "url": "clip.mp4",
+                                        "use_audio": use_audio,
+                                    },
+                                },
+                                *(messages[-1]["content"] if include_text else []),
+                            ],
+                        },
+                    ]
+                ),
+                data=None,
+            )
+        )
+    )
+    assert (
+        top_level_result.data["prompt"]["prompt_text"]
+        == inline_result.data["prompt"]["prompt_text"]
+    )
+    for modality_name, top_level_modality in top_level_result.data["mm_inputs"].items():
+        inline_modality = inline_result.data["mm_inputs"][modality_name]
+        assert top_level_modality["cache_key"] == inline_modality["cache_key"]
+        torch.testing.assert_close(
+            top_level_modality["bounds"], inline_modality["bounds"]
+        )
+    assert video_processor.images == [decoded_video.frames]
+    if use_audio:
+        assert video_processor.audio_parts == [[2, 2]]
+    else:
+        assert video_processor.audios is None
+    assert video_processor.max_slice_nums == 1
+
+
+@pytest.mark.parametrize("include_video_file", [False, True])
+def test_top_level_video_preserves_predecoded_tensor_support(
+    video_preprocessor: MiniCPMOPreprocessor,
+    video_processor: VideoRecordingProcessor,
+    encoded_video_path: Path,
+    include_video_file: bool,
+) -> None:
+    frames = torch.zeros((2, 3, 64, 64), dtype=torch.uint8)
+    frames[0, 0] = 255
+    frames[1, 2] = 255
+    result = asyncio.run(
+        video_preprocessor(
+            StagePayload(
+                request_id="predecoded-video",
+                request=OmniRequest(
+                    inputs={
+                        "messages": [{"role": "user", "content": "Describe."}],
+                        "videos": (
+                            [encoded_video_path, frames]
+                            if include_video_file
+                            else [frames]
+                        ),
+                    }
+                ),
+                data=None,
+            )
+        )
+    )
+    frame_count = 5 if include_video_file else 2
+    expected_content = "\n".join(["<image>./</image>"] * frame_count + ["Describe."])
+    assert result.data["prompt"]["prompt_text"].startswith(
+        f"<|im_start|>user\n{expected_content}<|im_end|>"
+    )
+    assert len(video_processor.images[0]) == frame_count
+    assert video_processor.images[0][-2].getpixel((0, 0)) == (255, 0, 0)
+    assert video_processor.images[0][-1].getpixel((0, 0)) == (0, 0, 255)
+    assert video_processor.audios is None
+
+
 def test_silent_video_keeps_chat_separators_and_omits_audio(
     video_preprocessor: MiniCPMOPreprocessor,
     video_processor: VideoRecordingProcessor,
@@ -238,6 +354,131 @@ def test_silent_video_keeps_chat_separators_and_omits_audio(
         "<|im_start|>user\nFirst\nSecond<|im_end|>\n"
     )
     assert video_processor.audios is None
+
+
+def test_omni_video_joins_text_parts_in_preceding_turns(
+    video_preprocessor: MiniCPMOPreprocessor,
+    video_processor: VideoRecordingProcessor,
+    decoded_video: TimedVideo,
+) -> None:
+    payload = StagePayload(
+        request_id="omni-video-turns",
+        request=OmniRequest(
+            inputs=[
+                {"role": "user", "content": ["Hello", "World"]},
+                {"role": "assistant", "content": "OK"},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": "clip.mp4", "use_audio": True},
+                        }
+                    ],
+                },
+            ]
+        ),
+        data=None,
+    )
+    result = asyncio.run(video_preprocessor(payload))
+    assert result.data["prompt"]["prompt_text"].startswith(
+        "<|im_start|>user\nHelloWorld<|im_end|>\n<|im_start|>assistant\nOK<|im_end|>\n"
+    )
+    assert video_processor.audio_parts == [[2, 2]]
+
+
+@pytest.mark.parametrize("use_audio", [False, True])
+@pytest.mark.parametrize("include_image", [False, True])
+def test_image_cache_distinguishes_video_processing_policy(
+    video_preprocessor: MiniCPMOPreprocessor,
+    decoded_video: TimedVideo,
+    use_audio: bool,
+    include_image: bool,
+) -> None:
+    image = Image.new("RGB", (896, 896), "red")
+    decoded_video.frames = [image]
+    decoded_video.audio_segments = [np.zeros(16000, dtype=np.float32)]
+    image_count = 2 if include_image else 1
+
+    def preprocess(as_video: bool) -> StagePayload:
+        content = (
+            ([image] if include_image else [])
+            + [
+                {
+                    "type": "video_url",
+                    "video_url": {"url": "clip.mp4", "use_audio": use_audio},
+                }
+            ]
+            if as_video
+            else [image] * image_count
+        )
+        return asyncio.run(
+            video_preprocessor(
+                StagePayload(
+                    request_id="image-policy",
+                    request=OmniRequest(inputs=[{"role": "user", "content": content}]),
+                    data=None,
+                )
+            )
+        )
+
+    image_result = preprocess(False)
+    video_result = preprocess(True)
+    image_cache_key = image_result.data["encoder_inputs"]["image_encoder"]["cache_key"]
+    video_cache_key = video_result.data["encoder_inputs"]["image_encoder"]["cache_key"]
+    assert image_cache_key is not None and video_cache_key is not None
+    assert image_cache_key != video_cache_key
+    assert image_result.data["mm_inputs"]["image"]["cache_key"] == image_cache_key
+    assert video_result.data["mm_inputs"]["image"]["cache_key"] == video_cache_key
+    assert (
+        preprocess(False).data["encoder_inputs"]["image_encoder"]["cache_key"]
+        == image_cache_key
+    )
+    assert (
+        preprocess(True).data["encoder_inputs"]["image_encoder"]["cache_key"]
+        == video_cache_key
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_local_timed_video_drains_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    released = threading.Event()
+    finished = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def decode(self: MiniCPMVideoIO, video_path: Path) -> TimedVideo:
+        loop.call_soon_threadsafe(started.set)
+        try:
+            if not released.wait(timeout=5):
+                raise TimeoutError("decoder was not released")
+            else:
+                return TimedVideo()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_file", decode)
+    monkeypatch.setattr(
+        video_frontend, "get_global_resource_connector", MultiModalResourceConnector
+    )
+    task = asyncio.create_task(
+        video_frontend.load_timed_video("clip.mp4", use_audio=True)
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        released.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert finished.is_set()
+    finally:
+        released.set()
 
 
 @pytest.fixture

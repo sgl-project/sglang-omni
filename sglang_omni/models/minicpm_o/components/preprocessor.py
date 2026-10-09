@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
 import torch
+from PIL import Image
 from transformers import AutoProcessor, AutoTokenizer, ProcessorMixin
 
 from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
@@ -33,7 +35,10 @@ from sglang_omni.models.minicpm_o.prompt_frontend import (
     video_to_images,
 )
 from sglang_omni.models.minicpm_o.routing import should_generate_audio_output
-from sglang_omni.models.minicpm_o.video_frontend import VideoProcessingOptions
+from sglang_omni.models.minicpm_o.video_frontend import (
+    VideoProcessingOptions,
+    load_timed_video,
+)
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import (
     AudioMediaIO,
@@ -44,10 +49,7 @@ from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
 )
-from sglang_omni.preprocessing.video import (
-    compute_video_cache_key,
-    ensure_video_list_async,
-)
+from sglang_omni.preprocessing.video import compute_video_cache_key
 from sglang_omni.proto import StagePayload
 
 TTS_READ_PROMPT_EN = "Please read the following text out loud in English: "
@@ -194,8 +196,18 @@ class MiniCPMOPreprocessor:
         else:
             pass
 
-        if raw_videos and use_audio_in_video and not has_inline_media(messages):
-            if (
+        if raw_videos and not has_inline_media(messages):
+            video_sources = raw_videos if isinstance(raw_videos, list) else [raw_videos]
+            has_only_video_sources = all(
+                isinstance(source, str) for source in video_sources
+            )
+            if use_audio_in_video and not has_only_video_sources:
+                raise ValueError(
+                    "Video audio interleaving requires file or URL video sources"
+                )
+            elif not has_only_video_sources:
+                pass
+            elif (
                 not isinstance(messages, list)
                 or not messages
                 or messages[-1].get("role") != "user"
@@ -206,35 +218,34 @@ class MiniCPMOPreprocessor:
                 audio_contents = await ensure_audio_list_async(
                     raw_audios, target_sr=16000
                 )
-                video_sources = (
-                    raw_videos if isinstance(raw_videos, list) else [raw_videos]
+                content = messages[-1].get("content", "")
+                text_contents = (
+                    content
+                    if isinstance(content, list)
+                    else ([] if content == "" else [content])
                 )
-                if not all(isinstance(source, str) for source in video_sources):
-                    raise ValueError(
-                        "Video audio interleaving requires file or URL video sources"
-                    )
-                else:
-                    content = messages[-1].get("content", "")
-                    text_contents = content if isinstance(content, list) else [content]
-                    messages = [
-                        *messages[:-1],
-                        {
-                            **messages[-1],
-                            "content": [
-                                *image_contents,
-                                *audio_contents,
-                                *[
-                                    {
-                                        "type": "video_url",
-                                        "video_url": {"url": source, "use_audio": True},
-                                    }
-                                    for source in video_sources
-                                ],
-                                *text_contents,
+                messages = [
+                    *messages[:-1],
+                    {
+                        **messages[-1],
+                        "content": [
+                            *image_contents,
+                            *audio_contents,
+                            *[
+                                {
+                                    "type": "video_url",
+                                    "video_url": {
+                                        "url": source,
+                                        "use_audio": use_audio_in_video,
+                                    },
+                                }
+                                for source in video_sources
                             ],
-                        },
-                    ]
-                    raw_images = raw_audios = raw_videos = None
+                            *text_contents,
+                        ],
+                    },
+                ]
+                raw_images = raw_audios = raw_videos = None
         else:
             pass
 
@@ -269,7 +280,6 @@ class MiniCPMOPreprocessor:
                 raw_images=raw_images,
                 raw_audios=raw_audios,
                 raw_videos=raw_videos,
-                use_audio_in_video=use_audio_in_video,
                 video_options=video_options,
                 media_placeholders_placed=media_placeholders_placed,
                 audio_turn_indices=audio_turn_indices,
@@ -359,7 +369,6 @@ class MiniCPMOPreprocessor:
         raw_images: object,
         raw_audios: object,
         raw_videos: object,
-        use_audio_in_video: bool,
         video_options: VideoProcessingOptions,
         media_placeholders_placed: bool,
         audio_turn_indices: list[int] | None = None,
@@ -372,18 +381,24 @@ class MiniCPMOPreprocessor:
             else await ensure_image_list_async(raw_images)
         )
         if raw_videos:
-            videos, _, video_audios = await ensure_video_list_async(
-                raw_videos,
-                fps=video_options.video_fps,
-                max_frames=video_options.video_max_frames,
-                min_pixels=video_options.video_min_pixels,
-                max_pixels=video_options.video_max_pixels,
-                total_pixels=video_options.video_total_pixels,
-                extract_audio=use_audio_in_video,
-                audio_target_sr=16000,
-            )
+            video_sources = raw_videos if isinstance(raw_videos, list) else [raw_videos]
+            videos: list[list[Image.Image]] = []
+            for source in video_sources:
+                if isinstance(source, (str, Path)):
+                    video = await load_timed_video(
+                        str(source),
+                        use_audio=False,
+                        fps=video_options.video_fps,
+                        max_frames=video_options.video_max_frames,
+                        min_pixels=video_options.video_min_pixels,
+                        max_pixels=video_options.video_max_pixels,
+                        total_pixels=video_options.video_total_pixels,
+                    )
+                    videos.append(video.frames)
+                else:
+                    videos.append(video_to_images(source))
         else:
-            videos, video_audios = [], None
+            videos = []
         # note (Yuhao Chen): image and video cache identities use separate source media.
         image_cache_key = compute_image_cache_key(images)
         video_cache_key = compute_video_cache_key(
@@ -401,10 +416,6 @@ class MiniCPMOPreprocessor:
             if rendered_chat is not None
             else await ensure_audio_list_async(raw_audios, target_sr=16000)
         )
-        if video_audios:
-            audios.extend(audio for audio in video_audios if audio is not None)
-        else:
-            pass
         audio_cache_key = compute_audio_cache_key(audios)
         if audio_cache_key is not None and audio_turn_indices is not None:
             audio_cache_key = f"{audio_cache_key}|parts={audio_turn_indices}"
@@ -415,6 +426,19 @@ class MiniCPMOPreprocessor:
             cache_key for cache_key in (image_cache_key, video_cache_key) if cache_key
         ]
         image_cache_key = "|".join(cache_keys) if cache_keys else None
+        # note (Yuhao Chen): slicing policy changes cached embeddings for identical pixels.
+        processor_video_options = (
+            {"max_slice_nums": 1, "use_image_id": False}
+            if raw_videos or has_inline_video
+            else {}
+        )
+        if image_cache_key is not None:
+            image_processing_policy = (
+                "video-v1" if processor_video_options else "default-v1"
+            )
+            image_cache_key = f"{image_cache_key}|policy={image_processing_policy}"
+        else:
+            pass
 
         if (
             not media_placeholders_placed
@@ -431,12 +455,6 @@ class MiniCPMOPreprocessor:
             use_tts_template=bool(audios) or self.should_use_tts_template(payload),
         )
 
-        # note (Yuhao Chen): video requests use one slice per frame, including mixed images.
-        processor_video_options = (
-            {"max_slice_nums": 1, "use_image_id": False}
-            if raw_videos or has_inline_video
-            else {}
-        )
         processed = self.processor(
             prompt_text,
             images=[images] if images else None,

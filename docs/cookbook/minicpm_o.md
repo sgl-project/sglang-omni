@@ -48,6 +48,20 @@ Path("reply.wav").write_bytes(base64.b64decode(message.audio.data))
 print(message.audio.transcript or message.content)
 ```
 
+## Video Chat Inputs
+
+Chat accepts inline video_url content and top-level video or videos fields.
+File and URL inputs use the same MiniCPM sampling and resizing policy in both
+forms. Set use_audio on an inline video, or use_audio_in_video on a top-level
+request, to include interleaved audio. Top-level media is placed before the
+final user message's text. Predecoded video tensors remain supported without
+audio interleaving.
+
+Sampled frames retain native resolution by default; the MiniCPM image processor
+performs the final resize. video_max_frames limits the sampled frame count,
+while video_max_pixels and video_total_pixels resize frames after decoding.
+Those pixel options do not bound the initial native-resolution allocation.
+
 ## Native Full-Duplex Ability
 
 ```bash

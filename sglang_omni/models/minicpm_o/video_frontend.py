@@ -20,7 +20,11 @@ from pydantic import BaseModel
 from qwen_vl_utils.vision_process import smart_resize
 
 from sglang_omni.preprocessing.base import MediaIO, is_url
-from sglang_omni.preprocessing.resource_connector import get_global_resource_connector
+from sglang_omni.preprocessing.resource_connector import (
+    await_media_cleanup,
+    get_global_resource_connector,
+    global_thread_pool,
+)
 from sglang_omni.preprocessing.video import extract_audio_from_path
 
 try:
@@ -254,4 +258,14 @@ async def load_timed_video(
         return await resource_connector.load_resource_async(media_url, video_decoder)
     else:
         video_path = Path(resource_connector.local_media_path(media_url))
-        return await asyncio.to_thread(video_decoder.load_file, video_path)
+        decode_future = asyncio.get_running_loop().run_in_executor(
+            global_thread_pool, video_decoder.load_file, video_path
+        )
+
+        async def cleanup_video_decoder() -> None:
+            await asyncio.gather(decode_future, return_exceptions=True)
+
+        try:
+            return await asyncio.shield(decode_future)
+        finally:
+            await await_media_cleanup(cleanup_video_decoder())
