@@ -31,6 +31,9 @@ from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
     FlowCudaGraphRunner,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    PackedDiTCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
 )
@@ -192,17 +195,32 @@ class Token2Wav(torch.nn.Module):
 
     @torch.inference_mode()
     def capture_flow_graphs(
-        self, flow_capture_shapes: tuple[tuple[int, int], ...]
+        self,
+        flow_capture_shapes: tuple[tuple[int, int], ...],
+        packed_capture_shapes: tuple[tuple[int, int], ...],
     ) -> None:
-        """Capture after the caller materializes compiled dense DiT blocks."""
+        """Capture dense steps or compose Flow boundaries around eager packed DiT."""
         decoder = self.flow.decoder
-        shapes = tuple(
-            shape
-            for shape in flow_capture_shapes
-            if shape[0] == 1 or not decoder.estimator.enable_variable_length
+        estimator = decoder.estimator
+        if estimator.enable_variable_length and packed_capture_shapes:
+            packed_runner = PackedDiTCudaGraphRunner(
+                estimator.run_packed_blocks,
+                device=self.device,
+                hidden_size=estimator.in_proj.out_features,
+                output_channels=estimator.out_channels,
+                convolution_guard_frames=estimator.blocks[0].conv.kernel_size - 1,
+            )
+            packed_runner.capture(packed_capture_shapes)
+            estimator.packed_graph_runner = packed_runner
+        else:
+            pass
+        runner = FlowCudaGraphRunner(
+            decoder.euler_step,
+            decoder.rand_noise,
+            estimator=estimator,
+            inference_cfg_rate=decoder.inference_cfg_rate,
         )
-        runner = FlowCudaGraphRunner(decoder.euler_step, decoder.rand_noise)
-        runner.capture(shapes)
+        runner.capture(flow_capture_shapes)
         decoder.graph_runner = runner
 
     @torch.inference_mode()
