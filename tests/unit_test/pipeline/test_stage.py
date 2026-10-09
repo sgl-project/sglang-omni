@@ -24,6 +24,7 @@ from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
+    FakeOp,
     FakeRelay,
     FakeScheduler,
     RecordingStageControlPlane,
@@ -421,6 +422,207 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
         stream_ref = DataRef.from_dict(msg.data_ref)
         assert stream_ref.metadata["token_id"] == 1
         assert [ref.path for ref in stream_ref.metadata_tensors] == ["hidden"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.bool,
+        torch.uint8,
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+        torch.float64,
+        torch.complex64,
+        torch.complex128,
+    ],
+)
+@pytest.mark.parametrize("noncontiguous", [False, True])
+def test_relay_payload_round_trip_preserves_dtype_and_shape(
+    dtype: torch.dtype, noncontiguous: bool
+) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(12).reshape(3, 4).to(dtype=dtype)
+        if dtype.is_complex:
+            tensor += tensor * 0.5j
+        else:
+            pass
+        if noncontiguous:
+            tensor = tensor.t()
+        else:
+            pass
+        payload = make_stage_payload(data={"tensor": tensor})
+        data_ref, _ = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.SHM
+        )
+        restored = await stage_io.read_payload(relay, payload.request_id, data_ref)
+
+        received = restored.data["tensor"]
+        assert received.dtype == tensor.dtype
+        assert received.shape == tensor.shape
+        assert torch.equal(received, tensor)
+
+    asyncio.run(run())
+
+
+def test_relay_payload_round_trip_preserves_mixed_alignment_and_empty_tensors() -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        payload = make_stage_payload(
+            data={
+                "flag": torch.tensor([True]),
+                "wide": torch.tensor([1 + 2j, 3 - 4j], dtype=torch.complex128),
+                "empty": torch.empty(0, 3),
+                "nested": [torch.arange(6, dtype=torch.int16).reshape(2, 3).t()],
+            }
+        )
+        data_ref, _ = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.SHM
+        )
+        restored = await stage_io.read_payload(relay, payload.request_id, data_ref)
+
+        assert tensor_equal(restored.data, payload.data)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("empty_tensor", [False, True])
+def test_relay_payload_round_trip_preserves_empty_payload(empty_tensor: bool) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        if empty_tensor:
+            payload = make_stage_payload(data={"tensor": torch.empty(0, 3)})
+        else:
+            payload = make_stage_payload(data={"label": "no tensors", "items": []})
+        data_ref, _ = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.SHM
+        )
+        restored = await stage_io.read_payload(relay, payload.request_id, data_ref)
+
+        assert tensor_equal(restored.data, payload.data)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("noncontiguous", [False, True])
+@pytest.mark.parametrize("multiple_tensors", [False, True])
+@pytest.mark.parametrize(
+    "source_device,target_device",
+    [
+        ("cpu", "cpu"),
+        *[
+            pytest.param(
+                source_device,
+                target_device,
+                marks=[
+                    pytest.mark.accelerator,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(), reason="requires CUDA"
+                    ),
+                ],
+            )
+            for source_device, target_device in [
+                ("cpu", "cuda:0"),
+                ("cuda:0", "cpu"),
+                ("cuda:0", "cuda"),
+            ]
+        ],
+        *[
+            pytest.param(
+                source_device,
+                "cuda:1",
+                marks=[
+                    pytest.mark.accelerator,
+                    pytest.mark.skipif(
+                        torch.cuda.device_count() < 2, reason="requires two GPUs"
+                    ),
+                ],
+            )
+            for source_device in ["cuda:0", "cuda:1"]
+        ],
+    ],
+)
+def test_relay_payload_snapshots_tensors_before_waiting_for_slot(
+    monkeypatch: pytest.MonkeyPatch,
+    noncontiguous: bool,
+    multiple_tensors: bool,
+    source_device: str,
+    target_device: str,
+) -> None:
+    async def run() -> None:
+        relay = FakeRelay(device=target_device)
+        waiting = asyncio.Event()
+        release = asyncio.Event()
+        put_async = relay.put_async
+
+        async def wait_for_slot(
+            tensor: torch.Tensor,
+            request_id: str | None = None,
+            dst_rank: int | None = None,
+            receiver_id: str | None = None,
+        ) -> FakeOp:
+            waiting.set()
+            await release.wait()
+            return await put_async(tensor, request_id, dst_rank, receiver_id)
+
+        monkeypatch.setattr(relay, "put_async", wait_for_slot)
+        tensor = torch.arange(24, dtype=torch.float32, device=source_device).reshape(
+            4, 6
+        )
+        if noncontiguous:
+            tensor = tensor.t()
+        else:
+            pass
+        tensors = {"tensor": tensor}
+        if multiple_tensors:
+            tensors["other"] = torch.tensor(
+                [7], dtype=torch.uint8, device=source_device
+            )
+        else:
+            pass
+        expected = {path: source.cpu().clone() for path, source in tensors.items()}
+        payload = make_stage_payload(data=tensors)
+        write_task = asyncio.create_task(
+            stage_io.write_payload(
+                relay, payload.request_id, payload, transport=TransportKind.SHM
+            )
+        )
+        await asyncio.wait_for(waiting.wait(), timeout=1.0)
+        for source in tensors.values():
+            source.zero_()
+        release.set()
+        data_ref, _ = await asyncio.wait_for(write_task, timeout=1.0)
+        restored = await stage_io.read_payload(relay, payload.request_id, data_ref)
+
+        received = {path: tensor.cpu() for path, tensor in restored.data.items()}
+        assert tensor_equal(received, expected)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("length_delta", [-1, 1])
+def test_relay_payload_rejects_mismatched_transfer_length(length_delta: int) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        payload = make_tensor_payload()
+        data_ref, _ = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.SHM
+        )
+        wire_ref = data_ref.to_dict()
+        wire_ref["buffer"]["length"] += length_delta
+        relay.fail_get = AssertionError("malformed transfer reached the relay")
+
+        with pytest.raises(ValueError, match="buffer length .* transfer size"):
+            await stage_io.read_payload(
+                relay, payload.request_id, DataRef.from_dict(wire_ref)
+            )
 
     asyncio.run(run())
 
