@@ -8,6 +8,21 @@ playback sample rate. SGLang-Omni serves two checkpoints — `0.6B` and `1.7B` �
 `preprocessing → tts_engine → vocoder` pipeline and the OpenAI-compatible `/v1/audio/speech`
 endpoint.
 
+## Reusing a reference across streaming requests
+
+For repeated Base voice-cloning requests, opt in with
+`--vocoder.factory.reference_codec_cache_size 16`. The value bounds the number of
+reference codec states; `0` (the default) disables caching. It requires the
+asynchronous stateful codec path and is bypassed in deterministic inference mode.
+
+The vocoder saves the decoder state immediately after the reference codes, then
+restores it for later requests with identical codes. Generated speech never
+enters the cache. The cache is local to one vocoder instance and uses LRU eviction.
+With the current BF16 codec, each entry uses about 2.49 MiB; storage, including one
+scratch entry, is reserved before the engine sizes its KV pool. Cache misses pay
+reference initialization cost, so this is intended for repeated references.
+Changing the first decode's chunk boundary can introduce BF16 rounding differences.
+
 ## Prerequisites
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
