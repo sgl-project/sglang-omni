@@ -1,0 +1,52 @@
+{
+  "suites": [
+    {
+      "id": "00_cpu",
+      "pr": 2662,
+      "paths": [
+        "tests/unit_test/moss_tts/test_reference_encoding.py",
+        "tests/unit_test/moss_tts/test_encoder.py",
+        "tests/unit_test/moss_tts/test_audio_tokenizer.py",
+        "tests/unit_test/moss_tts/test_pipeline.py",
+        "tests/unit_test/moss_tts_local/test_pipeline.py"
+      ],
+      "marker": "not accelerator and not benchmark",
+      "source": "00"
+    },
+    {
+      "id": "00_gpu",
+      "pr": 2662,
+      "paths": [
+        "tests/unit_test/moss_tts/test_reference_encoding.py",
+        "tests/unit_test/moss_tts/test_encoder.py",
+        "tests/unit_test/moss_tts/test_audio_tokenizer.py",
+        "tests/unit_test/moss_tts/test_pipeline.py",
+        "tests/unit_test/moss_tts_local/test_pipeline.py"
+      ],
+      "marker": "accelerator and not benchmark",
+      "source": "00"
+    },
+    {
+      "id": "01_cpu",
+      "pr": 2658,
+      "paths": [
+        "tests/unit_test/qwen3_tts/test_incremental_codec.py",
+        "tests/unit_test/qwen3_tts/test_incremental_codec_cuda_graph.py",
+        "tests/unit_test/qwen3_tts/test_pipeline.py"
+      ],
+      "marker": "not accelerator and not benchmark",
+      "source": "01"
+    },
+    {
+      "id": "01_gpu",
+      "pr": 2658,
+      "paths": [
+        "tests/unit_test/qwen3_tts/test_incremental_codec.py",
+        "tests/unit_test/qwen3_tts/test_incremental_codec_cuda_graph.py",
+        "tests/unit_test/qwen3_tts/test_pipeline.py"
+      ],
+      "marker": "accelerator and not benchmark",
+      "source": "01"
+    }
+  ]
+}

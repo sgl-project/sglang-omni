@@ -1,0 +1,43 @@
+{
+  "prs": [
+    {
+      "number": 2662,
+      "head_sha": "9855cdd76c00290e738304f4d9d7755a45f992a8",
+      "base_sha": "8e33e31d77d96e43706cca1ad8ec77ff65664538",
+      "archive_sha256": "b054c84f6dbf6afffd3d4e6ea7537b93601f5523e8e51463f1dea57e94c013e1"
+    },
+    {
+      "number": 2658,
+      "head_sha": "e91214430bb6dc8997bfde192399094620def779",
+      "base_sha": "64d9b96bc4e927ef64463be42b3373d58d18cc93",
+      "archive_sha256": "0180d2c9dcb1323d7f03e55f376bfa547c195afbf1636409a5859a0dc027cebf"
+    }
+  ],
+  "scope": "Targeted GPU correctness regression for the two PR heads; not an end-to-end throughput or WER replication.",
+  "image": "docker.io/hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df",
+  "suites": [
+    {
+      "id": "00",
+      "pr": 2662,
+      "paths": [
+        "tests/unit_test/moss_tts/test_reference_encoding.py",
+        "tests/unit_test/moss_tts/test_encoder.py",
+        "tests/unit_test/moss_tts/test_audio_tokenizer.py",
+        "tests/unit_test/moss_tts/test_pipeline.py",
+        "tests/unit_test/moss_tts_local/test_pipeline.py"
+      ],
+      "marker": "not benchmark"
+    },
+    {
+      "id": "01",
+      "pr": 2658,
+      "paths": [
+        "tests/unit_test/qwen3_tts/test_incremental_codec.py",
+        "tests/unit_test/qwen3_tts/test_incremental_codec_cuda_graph.py",
+        "tests/unit_test/qwen3_tts/test_pipeline.py"
+      ],
+      "marker": "not benchmark"
+    }
+  ],
+  "decision": "Run focused CPU and accelerator tests unchanged on CUDA; inspect every skip/failure. Failures require same-environment base comparison before attributing regression. Real checkpoint parity is a follow-up if focused results leave numerical uncertainty."
+}
