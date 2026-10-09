@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -21,6 +22,7 @@ from sglang_omni.models.easymagpie_tts.payload_types import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.sampling.seed import resolve_row_seed
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 CONTINUE_TOKEN_ID = 0
@@ -92,6 +94,7 @@ def build_easymagpie_state(payload: StagePayload) -> EasyMagpieTTSState:
 class EasyMagpieSGLangRequestData(SGLangARRequestData):
     state: EasyMagpieTTSState = field(default_factory=EasyMagpieTTSState)
     output_codes: list[torch.Tensor] = field(default_factory=list)
+    stream_code_count: int = 0
     decode_offset: int = 0
     last_audio_codes: torch.Tensor | None = None
     last_phoneme_tokens: torch.Tensor | None = None
@@ -160,9 +163,39 @@ def build_sglang_easymagpie_request(
     )
 
 
+def is_streaming_request(data: EasyMagpieSGLangRequestData) -> bool:
+    params = data.stage_payload.request.params
+    return isinstance(params, dict) and bool(params.get("stream", False))
+
+
+def easymagpie_stream_output_builder(
+    request_id: str, data: EasyMagpieSGLangRequestData, req_output: Any
+) -> list[OutgoingMessage]:
+    """Forward the acoustic frames produced since the last step to the vocoder."""
+    del req_output
+    if not is_streaming_request(data) or data.stream_code_count == len(
+        data.output_codes
+    ):
+        return []
+    else:
+        pass
+    rows = data.output_codes[data.stream_code_count :]
+    data.stream_code_count = len(data.output_codes)
+    return [
+        OutgoingMessage(
+            request_id=request_id,
+            type="stream",
+            target="vocoder",
+            data=torch.stack(rows, dim=0).to(torch.long),
+            metadata={"modality": "audio_codes", "stream": True},
+        )
+    ]
+
+
 def apply_easymagpie_result(data: EasyMagpieSGLangRequestData) -> StagePayload:
     state = data.state
-    if data.output_codes:
+    # Streamed frames already reached the vocoder; it only needs usage here.
+    if data.output_codes and not is_streaming_request(data):
         state.audio_codes = torch.stack(data.output_codes, dim=0).to(torch.long)
     else:
         state.audio_codes = None
@@ -182,6 +215,8 @@ __all__ = [
     "apply_easymagpie_result",
     "build_easymagpie_state",
     "build_sglang_easymagpie_request",
+    "easymagpie_stream_output_builder",
+    "is_streaming_request",
     "max_decode_tokens",
     "prompt_cache_key",
 ]

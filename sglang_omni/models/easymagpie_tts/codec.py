@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -13,6 +14,11 @@ from torch import nn
 from torch.nn import functional as F
 
 CODEC_SUBDIR = "codec_native"
+
+# One [batch, channels, history] tensor per causal layer, in
+# ResNetDecoder.causal_layers order. Rows of different requests stack on dim 0.
+CodecStreamState = list[torch.Tensor]
+StreamRunner = Callable[[nn.Module, torch.Tensor], torch.Tensor]
 
 
 class EasyMagpieCodecConfig:
@@ -115,6 +121,19 @@ class CausalConv1d(nn.Module):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.activation(self.conv(F.pad(inputs, (self.history, 0))))
 
+    def empty_history(self, batch: int, device: torch.device) -> torch.Tensor:
+        return torch.zeros(
+            (batch, self.conv.in_channels, self.history),
+            device=device,
+            dtype=self.conv.weight.dtype,
+        )
+
+    def stream(
+        self, inputs: torch.Tensor, history: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        joined = torch.cat((history, inputs), dim=-1)
+        return self.activation(self.conv(joined)), joined[..., -self.history :]
+
 
 class CausalConvTranspose1d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int) -> None:
@@ -132,6 +151,22 @@ class CausalConvTranspose1d(nn.Module):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.activation(self.conv(inputs)[..., : -self.stride])
 
+    def empty_history(self, batch: int, device: torch.device) -> torch.Tensor:
+        return torch.zeros(
+            (batch, self.conv.in_channels, 1),
+            device=device,
+            dtype=self.conv.weight.dtype,
+        )
+
+    def stream(
+        self, inputs: torch.Tensor, history: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # The kernel spans two input frames, so each output window needs the
+        # previous chunk's last frame.
+        joined = torch.cat((history, inputs), dim=-1)
+        outputs = self.conv(joined)[..., self.stride : -self.stride]
+        return self.activation(outputs), joined[..., -1:]
+
 
 class ResidualBlock(nn.Module):
     def __init__(self, channels: int, filters: int, kernel_size: int) -> None:
@@ -142,6 +177,11 @@ class ResidualBlock(nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.output_activation(inputs + self.skip_conv(self.input_conv(inputs)))
+
+    def stream(self, inputs: torch.Tensor, run: StreamRunner) -> torch.Tensor:
+        return self.output_activation(
+            inputs + run(self.skip_conv, run(self.input_conv, inputs))
+        )
 
 
 class ResNetDecoder(nn.Module):
@@ -193,6 +233,38 @@ class ResNetDecoder(nn.Module):
             hidden = block(upsample(hidden))
         return self.post_conv(hidden).squeeze(1).clamp(-1.0, 1.0)
 
+    def causal_layers(self) -> list[CausalConv1d | CausalConvTranspose1d]:
+        """Every layer with history, in the order ``stream`` visits them."""
+        layers: list[CausalConv1d | CausalConvTranspose1d] = [self.pre_conv]
+        for block, upsample in zip(self.pre_resblocks, self.pre_up_sample_layers):
+            layers += [block.input_conv, block.skip_conv, upsample]
+        for block in self.conv_layers:
+            layers += [block.input_conv, block.skip_conv]
+        for upsample, block in zip(self.resblock_up_sample_layers, self.resblocks):
+            layers += [upsample, block.input_conv, block.skip_conv]
+        layers.append(self.post_conv)
+        return layers
+
+    def stream(
+        self, inputs: torch.Tensor, state: CodecStreamState
+    ) -> tuple[torch.Tensor, CodecStreamState]:
+        histories = iter(state)
+        next_state: CodecStreamState = []
+
+        def run(layer: nn.Module, values: torch.Tensor) -> torch.Tensor:
+            values, history = layer.stream(values, next(histories))
+            next_state.append(history)
+            return values
+
+        hidden = run(self.pre_conv, inputs)
+        for block, upsample in zip(self.pre_resblocks, self.pre_up_sample_layers):
+            hidden = run(upsample, block.stream(hidden, run))
+        for block in self.conv_layers:
+            hidden = block.stream(hidden, run)
+        for upsample, block in zip(self.resblock_up_sample_layers, self.resblocks):
+            hidden = block.stream(run(upsample, hidden), run)
+        return run(self.post_conv, hidden).squeeze(1).clamp(-1.0, 1.0), next_state
+
 
 class EasyMagpieCodec(nn.Module):
     """Decode [batch, frames, stacked codebooks] codes into [batch, samples] audio."""
@@ -226,6 +298,24 @@ class EasyMagpieCodec(nn.Module):
 
     def forward(self, codes: torch.Tensor) -> torch.Tensor:
         return self.audio_decoder(self.codes_to_latent(codes))
+
+    def empty_stream_state(self, batch: int) -> CodecStreamState:
+        device = self.dequantizer.levels.device
+        return [
+            layer.empty_history(batch, device)
+            for layer in self.audio_decoder.causal_layers()
+        ]
+
+    @torch.inference_mode()
+    def stream(
+        self, codes: torch.Tensor, state: CodecStreamState
+    ) -> tuple[torch.Tensor, CodecStreamState]:
+        """Decode the next [batch, frames, stacked] codes after ``state``.
+
+        Chunked decoding reproduces the whole-utterance decode because every
+        layer is causal and ``state`` carries each layer's input history.
+        """
+        return self.audio_decoder.stream(self.codes_to_latent(codes), state)
 
     @torch.inference_mode()
     def decode_batch(self, codes: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -262,4 +352,9 @@ def load_codec(checkpoint_dir: str, device: str) -> EasyMagpieCodec:
     return codec
 
 
-__all__ = ["EasyMagpieCodec", "EasyMagpieCodecConfig", "load_codec"]
+__all__ = [
+    "CodecStreamState",
+    "EasyMagpieCodec",
+    "EasyMagpieCodecConfig",
+    "load_codec",
+]

@@ -6,8 +6,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import torch
 from torch import nn
 
+from sglang_omni.models.easymagpie_tts.codec import (
+    EasyMagpieCodec,
+    EasyMagpieCodecConfig,
+)
 from sglang_omni.models.easymagpie_tts.hf_config import EasyMagpieTTSConfig
 from sglang_omni.models.easymagpie_tts.local_transformer import EasyMagpieTTSHeads
 from sglang_omni.models.easymagpie_tts.sglang_model import (
@@ -33,6 +38,35 @@ TINY_TTS_CONFIG = {
     "local_transformer_n_heads": 2,
     "local_transformer_hidden_dim": 8,
 }
+
+
+TINY_CODEC_CONFIG = {
+    "input_dim": 4,
+    "input_filters": 8,
+    "hidden_filters": 8,
+    "num_hidden_layers": 1,
+    "pre_upsample_rates": [2],
+    "pre_upsample_filters": [8],
+    "resblock_upsample_rates": [3],
+    "resblock_upsample_filters": [4],
+    "kernel_size": 3,
+    "resblock_kernel_size": 3,
+    "num_codebooks": 2,
+    "codebook_size": 16,
+    "num_levels_per_group": [4, 4],
+    "frame_stacking_factor": 2,
+}
+
+
+@pytest.fixture
+def tiny_codec_config() -> dict:
+    return dict(TINY_CODEC_CONFIG)
+
+
+@pytest.fixture
+def codec() -> EasyMagpieCodec:
+    torch.manual_seed(0)
+    return EasyMagpieCodec(EasyMagpieCodecConfig(**TINY_CODEC_CONFIG)).eval()
 
 
 @pytest.fixture

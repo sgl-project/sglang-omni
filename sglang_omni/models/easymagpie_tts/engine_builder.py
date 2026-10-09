@@ -14,6 +14,7 @@ from sglang_omni.models.easymagpie_tts.model_runner import EasyMagpieTTSModelRun
 from sglang_omni.models.easymagpie_tts.request_builders import (
     apply_easymagpie_result,
     build_sglang_easymagpie_request,
+    easymagpie_stream_output_builder,
 )
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
@@ -83,6 +84,9 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
         return build_sglang_easymagpie_request, apply_easymagpie_result
+
+    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+        return {"stream_output_builder": easymagpie_stream_output_builder}
 
 
 __all__ = ["EASYMAGPIE_ARCH", "EasyMagpieTTSEngineBuilder"]

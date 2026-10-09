@@ -13,12 +13,15 @@ from typing import Any
 import torch
 from transformers import AutoTokenizer
 
-from sglang_omni.models.easymagpie_tts.payload_types import EasyMagpieTTSState
 from sglang_omni.models.easymagpie_tts.request_builders import build_easymagpie_state
+from sglang_omni.models.easymagpie_tts.streaming_vocoder import (
+    DEFAULT_STARTUP_CHUNK_FRAMES,
+    DEFAULT_STEADY_CHUNK_FRAMES,
+    EasyMagpieStreamingVocoder,
+)
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.pipeline_state import build_usage, store_state
+from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 SPEAKER_SUBDIR = "speaker_embeddings"
@@ -136,56 +139,23 @@ def create_vocoder_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    max_batch_size: int = 8,
-    max_batch_wait_ms: int = 5,
-) -> SimpleScheduler:
+    max_batch_size: int = 64,
+    max_batch_wait_ms: float = 5,
+    startup_chunk_frames: list[int] | None = None,
+    steady_chunk_frames: int | None = None,
+) -> EasyMagpieStreamingVocoder:
     from sglang_omni.models.easymagpie_tts.codec import load_codec
     from sglang_omni.utils.device import resolve_concrete_device
 
     concrete_device = str(resolve_concrete_device(device, gpu_id))
-    codec = load_codec(resolve_checkpoint(model_path), concrete_device)
-    sample_rate = codec.config.output_sample_rate
-
-    def _result_payload(
-        payload: StagePayload, state: EasyMagpieTTSState, audio: torch.Tensor
-    ) -> StagePayload:
-        data = dict(
-            audio_waveform_payload(
-                audio.float().cpu().numpy(),
-                sample_rate=sample_rate,
-                modality="audio",
-                source_hint="EasyMagpie",
-            )
-        )
-        usage = build_usage(state)
-        if usage is not None:
-            data["usage"] = usage
-        else:
-            pass
-        return StagePayload(
-            request_id=payload.request_id, request=payload.request, data=data
-        )
-
-    def _codes(state: EasyMagpieTTSState) -> torch.Tensor:
-        if state.audio_codes is None or state.audio_codes.numel() == 0:
-            raise ValueError("EasyMagpie generated no audio frames")
-        else:
-            return torch.as_tensor(state.audio_codes, dtype=torch.long)
-
-    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        states = [EasyMagpieTTSState.from_dict(p.data) for p in payloads]
-        audio = codec.decode_batch([_codes(state) for state in states])
-        return [
-            _result_payload(payload, state, waveform)
-            for payload, state, waveform in zip(payloads, states, audio)
-        ]
-
-    def _vocode(payload: StagePayload) -> StagePayload:
-        return _vocode_batch([payload])[0]
-
-    return SimpleScheduler(
-        _vocode,
-        batch_compute_fn=_vocode_batch,
+    return EasyMagpieStreamingVocoder(
+        load_codec(resolve_checkpoint(model_path), concrete_device),
+        startup_chunk_frames=(
+            DEFAULT_STARTUP_CHUNK_FRAMES
+            if startup_chunk_frames is None
+            else startup_chunk_frames
+        ),
+        steady_chunk_frames=steady_chunk_frames or DEFAULT_STEADY_CHUNK_FRAMES,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )

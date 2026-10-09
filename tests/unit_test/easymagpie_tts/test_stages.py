@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 import torch
 
@@ -47,7 +46,7 @@ def make_payload(inputs, tts_params=None, data=None) -> StagePayload:
     )
 
 
-def test_pipeline_is_a_three_stage_offline_topology() -> None:
+def test_pipeline_streams_engine_frames_to_the_vocoder() -> None:
     config = EasyMagpieTTSPipelineConfig(model_path="unused")
     assert [stage.name for stage in config.stages] == [
         "preprocessing",
@@ -55,7 +54,9 @@ def test_pipeline_is_a_three_stage_offline_topology() -> None:
         "vocoder",
     ]
     assert config.stages[1].factory.dtype == "float16"
+    assert config.stages[1].stream_to == ["vocoder"]
     assert config.stages[-1].terminal is True
+    assert config.stages[-1].can_accept_stream_before_payload is True
 
 
 def test_preprocessing_tokenizes_text_context_and_attaches_the_voice(
@@ -91,41 +92,17 @@ def test_preprocessing_rejects_speech_before_phoneme_delay(
         stages.create_preprocessing_executor(str(checkpoint))
 
 
-def test_vocoder_batches_requests_and_reports_usage(tmp_path, monkeypatch) -> None:
-    decoded = []
+def test_vocoder_factory_applies_the_chunk_schedule(
+    tmp_path, monkeypatch, codec
+) -> None:
+    monkeypatch.setattr(codec_module, "load_codec", lambda *args: codec)
+    vocoder = stages.create_vocoder_executor(
+        str(tmp_path), device="cpu", startup_chunk_frames=[3], steady_chunk_frames=5
+    )
+    assert vocoder.startup_chunk_frames == (3,)
+    assert vocoder.steady_chunk_frames == 5
 
-    class FakeCodec:
-        config = SimpleNamespace(output_sample_rate=22050)
-
-        def decode_batch(self, codes):
-            decoded.append([item.shape[0] for item in codes])
-            return [torch.full((item.shape[0] * 2,), 0.5) for item in codes]
-
-    monkeypatch.setattr(codec_module, "load_codec", lambda *args: FakeCodec())
-    scheduler = stages.create_vocoder_executor(str(tmp_path), device="cpu")
-    payloads = [
-        make_payload(
-            "x",
-            data=EasyMagpieTTSState(
-                audio_codes=torch.zeros(frames, 4, dtype=torch.long),
-                prompt_tokens=9,
-                completion_tokens=frames,
-            ).to_dict(),
-        )
-        for frames in (3, 1)
-    ]
-
-    results = scheduler.batch_fn(payloads)
-
-    assert decoded == [[3, 1]]
-    assert results[0].data["sample_rate"] == 22050
-    assert results[0].data["usage"]["completion_tokens"] == 3
-    audio = results[1].data
-    assert audio["modality"] == "audio"
-    assert audio["audio_waveform_shape"] == [2]
-    waveform = np.frombuffer(audio["audio_waveform"], dtype=np.float32)
-    assert waveform.tolist() == [0.5, 0.5]
-
-    empty = make_payload("x", data=EasyMagpieTTSState().to_dict())
-    with pytest.raises(ValueError, match="no audio frames"):
-        scheduler.fn(empty)
+    defaults = stages.create_vocoder_executor(str(tmp_path), device="cpu")
+    assert defaults.startup_chunk_frames == (2, 6)
+    assert defaults.steady_chunk_frames == 8
+    assert defaults.stream_chunk_batch_max == 64

@@ -15,6 +15,7 @@ from sglang_omni.models.easymagpie_tts.request_builders import (
     apply_easymagpie_result,
     build_easymagpie_state,
     build_sglang_easymagpie_request,
+    easymagpie_stream_output_builder,
     max_decode_tokens,
     prompt_cache_key,
 )
@@ -121,3 +122,31 @@ def test_result_carries_codes_and_usage_but_not_the_speaker_rows() -> None:
     assert result.audio_codes.tolist() == [[0, 1, 2, 3], [1, 2, 3, 4]]
     assert result.speaker_embedding is None
     assert (result.prompt_tokens, result.completion_tokens) == (9, 2)
+
+
+def test_stream_builder_sends_each_new_frame_once() -> None:
+    state = preprocessed_state()
+    payload = make_payload("hello", params={"stream": True}, data=state.to_dict())
+    data = build_sglang_easymagpie_request(payload)
+    assert easymagpie_stream_output_builder("req-0", data, None) == []
+
+    data.output_codes = [torch.arange(4), torch.arange(4) + 1]
+    (message,) = easymagpie_stream_output_builder("req-0", data, None)
+    assert (message.type, message.target) == ("stream", "vocoder")
+    assert message.metadata == {"modality": "audio_codes", "stream": True}
+    assert message.data.tolist() == [[0, 1, 2, 3], [1, 2, 3, 4]]
+
+    data.output_codes.append(torch.arange(4) + 2)
+    (message,) = easymagpie_stream_output_builder("req-0", data, None)
+    assert message.data.tolist() == [[2, 3, 4, 5]]
+
+    result = EasyMagpieTTSState.from_dict(apply_easymagpie_result(data).data)
+    assert result.audio_codes is None
+    assert result.completion_tokens == 3
+
+
+def test_stream_builder_ignores_offline_requests() -> None:
+    state = preprocessed_state()
+    data = build_sglang_easymagpie_request(make_payload("hello", data=state.to_dict()))
+    data.output_codes = [torch.arange(4)]
+    assert easymagpie_stream_output_builder("req-0", data, None) == []

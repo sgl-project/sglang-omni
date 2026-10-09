@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """EasyMagpie TTS pipeline configuration.
 
-Three-stage pipeline: preprocessing -> tts_engine -> vocoder.
+Three-stage pipeline: preprocessing -> tts_engine -> vocoder. Streaming
+requests also forward each step's acoustic frames from tts_engine to vocoder.
 """
 
 from __future__ import annotations
@@ -20,6 +21,19 @@ from sglang_omni.config import (
 _PKG = "sglang_omni.models.easymagpie_tts"
 
 
+class EasyMagpieVocoderFactoryArgs(FactoryArgs):
+    """Streaming chunk schedule, in stacked acoustic frames."""
+
+    startup_chunk_frames: list[int] | None = None
+    steady_chunk_frames: int | None = Field(default=None, ge=1)
+
+
+class EasyMagpieVocoderStageConfig(StageConfig):
+    factory: EasyMagpieVocoderFactoryArgs = Field(
+        default_factory=EasyMagpieVocoderFactoryArgs
+    )
+
+
 def stages() -> list[StageConfig]:
     return [
         StageConfig(
@@ -36,13 +50,15 @@ def stages() -> list[StageConfig]:
             factory=FactoryArgs(dtype="float16"),
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
-        StageConfig(
+        EasyMagpieVocoderStageConfig(
             name="vocoder",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 
@@ -53,6 +69,7 @@ class EasyMagpieTTSPipelineConfig(PipelineConfig):
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "tts_engine": EngineStageConfig,
+        "vocoder": EasyMagpieVocoderStageConfig,
     }
 
     model_path: str
