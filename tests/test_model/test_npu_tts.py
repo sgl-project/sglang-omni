@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _validate_pcm(pcm: bytes, sample_rate: int = 24000) -> float:
+def validate_pcm(pcm: bytes, sample_rate: int = 24000) -> float:
     assert pcm and len(pcm) % 2 == 0, "Empty or truncated PCM16 output"
     samples = array.array("h")
     samples.frombytes(pcm)
@@ -31,7 +31,7 @@ def _validate_pcm(pcm: bytes, sample_rate: int = 24000) -> float:
     return duration
 
 
-def _validate_wav(data: bytes) -> float:
+def validate_wav(data: bytes) -> float:
     with wave.open(io.BytesIO(data), "rb") as wav:
         assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (
             1,
@@ -41,7 +41,7 @@ def _validate_wav(data: bytes) -> float:
         frames = wav.getnframes()
         pcm = wav.readframes(frames)
         assert len(pcm) == frames * 2, "Truncated WAV payload"
-    return _validate_pcm(pcm)
+    return validate_pcm(pcm)
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +51,7 @@ def tts_server(tmp_path_factory):
 
     from benchmarks.benchmarker.utils import managed_omni_server
     from sglang_omni.platforms import current_platform
-    from tests.test_model.omni_router_utils import _find_available_port_range
+    from tests.test_model.omni_router_utils import find_available_port_range
 
     assert current_platform.is_npu() and torch.npu.is_available()
     assert torch.npu.device_count() == 1, "Reserve one visible NPU"
@@ -63,7 +63,7 @@ def tts_server(tmp_path_factory):
     task = os.environ.get("OMNI_NPU_TTS_TASK", "CustomVoice")
     assert task in {"CustomVoice", "Base", "VoiceDesign"}
     configured_port = os.environ.get("OMNI_NPU_TTS_PORT")
-    port = int(configured_port) if configured_port else _find_available_port_range(1)
+    port = int(configured_port) if configured_port else find_available_port_range(1)
     output = Path(
         os.environ.get("OMNI_NPU_TTS_OUTPUT", str(tmp_path_factory.mktemp("npu-tts")))
     )
@@ -87,7 +87,7 @@ def tts_server(tmp_path_factory):
         yield base_url, task, output
 
 
-def _payload(task: str, language: str = "English") -> dict:
+def speech_payload(task: str, language: str = "English") -> dict:
     payload = {
         "input": (
             "Hello, this is a speech synthesis test on Ascend."
@@ -115,7 +115,7 @@ def _payload(task: str, language: str = "English") -> dict:
     return payload
 
 
-def _request(base_url, payload, output, name, stream=False):
+def request_speech(base_url, payload, output, name, stream=False):
     payload = dict(payload, stream=stream, response_format="pcm" if stream else "wav")
     start = time.monotonic()
     first_byte = None
@@ -138,7 +138,7 @@ def _request(base_url, payload, output, name, stream=False):
                     chunks.append(chunk)
     audio = b"".join(chunks)
     (output / f"{name}.{'pcm' if stream else 'wav'}").write_bytes(audio)
-    duration = _validate_pcm(audio) if stream else _validate_wav(audio)
+    duration = validate_pcm(audio) if stream else validate_wav(audio)
     (output / f"{name}.json").write_text(
         json.dumps(
             {
@@ -157,19 +157,25 @@ def _request(base_url, payload, output, name, stream=False):
 @pytest.mark.parametrize("language", ["English", "Chinese"])
 def test_nonstream_speech(tts_server, language):
     base_url, task, output = tts_server
-    _request(base_url, _payload(task, language), output, language.lower())
+    request_speech(base_url, speech_payload(task, language), output, language.lower())
 
 
 def test_stream_speech(tts_server):
     base_url, task, output = tts_server
-    _request(base_url, _payload(task), output, "stream", stream=True)
+    request_speech(base_url, speech_payload(task), output, "stream", stream=True)
 
 
 def test_concurrent_requests(tts_server):
     base_url, task, output = tts_server
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
-            pool.submit(_request, base_url, _payload(task), output, f"concurrent-{i}")
+            pool.submit(
+                request_speech,
+                base_url,
+                speech_payload(task),
+                output,
+                f"concurrent-{i}",
+            )
             for i in range(2)
         ]
         for future in futures:
@@ -182,4 +188,4 @@ def test_valid_request_after_rejection(tts_server):
         session.trust_env = False
         response = session.post(base_url + "/v1/audio/speech", json={}, timeout=10)
         assert response.status_code in {400, 422}, response.text
-    _request(base_url, _payload(task), output, "after-rejection")
+    request_speech(base_url, speech_payload(task), output, "after-rejection")

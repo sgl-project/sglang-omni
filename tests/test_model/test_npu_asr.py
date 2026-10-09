@@ -19,17 +19,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _normalize(text: str) -> str:
+def normalize(text: str) -> str:
     return "".join(
         c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum()
     )
 
 
-def _load_cases(path: Path) -> dict:
+def load_cases(path: Path) -> dict:
     cases = json.loads(path.read_text())
     assert set(cases) == {"English", "Chinese"}, "Provide both language fixtures"
     for case in cases.values():
-        assert _normalize(case["text"]), "A reference transcript is required"
+        assert normalize(case["text"]), "A reference transcript is required"
         # No permissive default: calibrate the ceiling against fixed audio.
         assert isinstance(case["max_cer"], (int, float))
         assert 0 <= case["max_cer"] < 1, "Set a calibrated CER ceiling below 1"
@@ -39,7 +39,7 @@ def _load_cases(path: Path) -> dict:
     return cases
 
 
-def _stream_text(lines) -> str:
+def stream_text(lines) -> str:
     deltas = []
     final = None
     ended = False
@@ -75,7 +75,7 @@ def asr_server(tmp_path_factory):
 
     from benchmarks.benchmarker.utils import managed_omni_server
     from sglang_omni.platforms import current_platform
-    from tests.test_model.omni_router_utils import _find_available_port_range
+    from tests.test_model.omni_router_utils import find_available_port_range
 
     assert current_platform.is_npu() and torch.npu.is_available()
     assert torch.npu.device_count() == 1, "Reserve one visible NPU"
@@ -83,13 +83,13 @@ def asr_server(tmp_path_factory):
     config = Path(os.environ["OMNI_NPU_ASR_CONFIG"]).resolve()
     assert (model / "config.json").is_file()
     assert config.is_file()
-    cases = _load_cases(Path(os.environ["OMNI_NPU_ASR_CASES"]))
+    cases = load_cases(Path(os.environ["OMNI_NPU_ASR_CASES"]))
     output = Path(
         os.environ.get("OMNI_NPU_ASR_OUTPUT", str(tmp_path_factory.mktemp("npu-asr")))
     )
     output.mkdir(parents=True, exist_ok=True)
     (output / "cases.json").write_text(json.dumps(cases, ensure_ascii=False, indent=2))
-    port = _find_available_port_range(1)
+    port = find_available_port_range(1)
     base_url = f"http://127.0.0.1:{port}"
     with managed_omni_server(
         model_path=str(model),
@@ -107,7 +107,7 @@ def asr_server(tmp_path_factory):
         yield base_url, model_id, cases, output
 
 
-def _request(server, language, name, stream=False):
+def request_transcription(server, language, name, stream=False):
     from jiwer import cer
 
     base_url, model_id, cases, output = server
@@ -133,13 +133,13 @@ def _request(server, language, name, stream=False):
                 # Persist events before asserting completeness, including failures.
                 lines = list(response.iter_lines())
                 (output / f"{name}.sse").write_bytes(b"\n".join(lines))
-                text = _stream_text(lines)
+                text = stream_text(lines)
             else:
                 result = response.json()
                 (output / f"{name}-response.json").write_text(json.dumps(result))
                 text = result["text"]
-    actual = _normalize(text)
-    error_rate = cer(_normalize(case["text"]), actual)
+    actual = normalize(text)
+    error_rate = cer(normalize(case["text"]), actual)
     (output / f"{name}.json").write_text(
         json.dumps(
             {"text": text, "cer": error_rate, "elapsed_s": time.monotonic() - start},
@@ -153,17 +153,19 @@ def _request(server, language, name, stream=False):
 
 @pytest.mark.parametrize("language", ["English", "Chinese"])
 def test_transcription(asr_server, language):
-    _request(asr_server, language, language.lower())
+    request_transcription(asr_server, language, language.lower())
 
 
 def test_stream_transcription(asr_server):
-    _request(asr_server, "English", "stream", stream=True)
+    request_transcription(asr_server, "English", "stream", stream=True)
 
 
 def test_concurrent_transcriptions(asr_server):
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
-            pool.submit(_request, asr_server, language, f"concurrent-{language}")
+            pool.submit(
+                request_transcription, asr_server, language, f"concurrent-{language}"
+            )
             for language in ("English", "Chinese")
         ]
         for future in futures:
@@ -180,4 +182,4 @@ def test_transcription_after_rejection(asr_server):
             timeout=10,
         )
         assert response.status_code in {400, 422}, response.text
-    _request(asr_server, "English", "after-rejection")
+    request_transcription(asr_server, "English", "after-rejection")

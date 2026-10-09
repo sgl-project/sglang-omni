@@ -1,0 +1,9 @@
+config_cls: Qwen3ASRPipelineConfig
+model_path: Qwen/Qwen3-ASR-1.7B
+
+stages:
+  asr:
+    gpu: 0
+    engine:
+      disable_cuda_graph: true
+      enable_torch_compile: false

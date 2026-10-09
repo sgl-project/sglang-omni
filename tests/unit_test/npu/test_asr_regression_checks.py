@@ -5,23 +5,23 @@ import json
 
 import pytest
 
-from tests.test_model.test_npu_asr import _load_cases, _normalize, _stream_text
+from tests.test_model.test_npu_asr import load_cases, normalize, stream_text
 
 
 def test_normalize_bilingual_transcript():
-    assert _normalize("Hello, WORLD！ 你好。") == "helloworld你好"
+    assert normalize("Hello, WORLD！ 你好。") == "helloworld你好"
 
 
-def _event(kind, **fields):
+def transcript_event(kind, **fields):
     return "data: " + json.dumps({"type": "transcript.text." + kind, **fields})
 
 
 def test_complete_stream():
     assert (
-        _stream_text(
+        stream_text(
             [
-                _event("delta", delta="hello"),
-                _event("done", text="hello"),
+                transcript_event("delta", delta="hello"),
+                transcript_event("done", text="hello"),
                 "data: [DONE]",
             ]
         )
@@ -32,15 +32,19 @@ def test_complete_stream():
 @pytest.mark.parametrize(
     "events",
     [
-        [_event("delta", delta="hello")],
-        [_event("done", text="hello")],
+        [transcript_event("delta", delta="hello")],
+        [transcript_event("done", text="hello")],
         ["data: [DONE]"],
-        [_event("delta", delta="wrong"), _event("done", text="hello"), "data: [DONE]"],
+        [
+            transcript_event("delta", delta="wrong"),
+            transcript_event("done", text="hello"),
+            "data: [DONE]",
+        ],
     ],
 )
 def test_reject_incomplete_or_inconsistent_stream(events):
     with pytest.raises(AssertionError):
-        _stream_text(events)
+        stream_text(events)
 
 
 def test_cases_require_both_languages_and_calibrated_ceiling(tmp_path):
@@ -50,10 +54,10 @@ def test_cases_require_both_languages_and_calibrated_ceiling(tmp_path):
     case = {"audio": "clip.wav", "text": "hello", "max_cer": 0.1}
     path.write_text(json.dumps({"English": case}))
     with pytest.raises(AssertionError, match="both language"):
-        _load_cases(path)
+        load_cases(path)
     path.write_text(json.dumps({"English": case, "Chinese": case}))
-    assert _load_cases(path)["English"]["audio"] == str(audio)
+    assert load_cases(path)["English"]["audio"] == str(audio)
     case["max_cer"] = 1
     path.write_text(json.dumps({"English": case, "Chinese": case}))
     with pytest.raises(AssertionError, match="CER ceiling"):
-        _load_cases(path)
+        load_cases(path)
