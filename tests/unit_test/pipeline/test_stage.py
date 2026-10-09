@@ -6,6 +6,7 @@ import asyncio
 import logging
 import pickle
 import threading
+from pathlib import Path
 
 import pytest
 import torch
@@ -19,9 +20,9 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto import DataReadyMessage, SubmitMessage
-from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.proto.messages import ProfilerStartMessage, ProfilerStopMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
     FakeRelay,
@@ -57,6 +58,24 @@ class CloseAwareControlPlane(RecordingStageControlPlane):
         while not self.closed:
             await asyncio.sleep(0)
         raise RuntimeError("control plane closed")
+
+
+@pytest.mark.parametrize("role", ["single", "leader", "follower"])
+def test_request_profiler_records_only_external_io_owners(tmp_path: Path, role) -> None:
+    stage = make_stage(name="thinker", role=role)
+    stage.on_profiler_start(
+        ProfilerStartMessage(
+            run_id="ownership",
+            trace_path_template="trace_{stage}",
+            event_dir=str(tmp_path),
+            enable_torch=False,
+        )
+    )
+    try:
+        assert get_recorder().is_active() == (role != "follower")
+    finally:
+        stage.on_profiler_stop(ProfilerStopMessage(run_id="ownership"))
+    assert not get_recorder().is_active()
 
 
 def test_aggregated_input_waits_per_request_without_cross_talk() -> None:

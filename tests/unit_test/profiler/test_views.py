@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from sglang_omni.profiler.views import (
     build_report,
     hop_breakdown,
@@ -33,6 +35,142 @@ def make_ev(request_id, stage, name, ts, **md):
         "pid": os.getpid(),
         "metadata": md,
     }
+
+
+def test_serving_summary_intervals_and_batch_samples(tmp_path: Path) -> None:
+    events = []
+    for index, wait_ms in enumerate([1, 9]):
+        events.extend(
+            [
+                make_ev(str(index), "thinker", "scheduler_request_build_start", 0),
+                make_ev(
+                    str(index), "thinker", "scheduler_request_build_end", 1_000_000
+                ),
+                make_ev(str(index), "thinker", "scheduler_queue_enter", 1_000_000),
+                make_ev(
+                    str(index),
+                    "thinker",
+                    "scheduler_prefill_start",
+                    (wait_ms + 1) * 1_000_000,
+                ),
+                make_ev(
+                    str(index),
+                    "thinker",
+                    "scheduler_prefill_end",
+                    (wait_ms + 11) * 1_000_000,
+                ),
+                make_ev(
+                    str(index),
+                    "thinker",
+                    "scheduler_batch_start",
+                    20_000_000,
+                    batch_type="decode",
+                    batch_size=index + 1,
+                    waiting_requests=2,
+                    kv_usage=0.75,
+                    request_build_pending=2,
+                    request_build_backlog=3,
+                ),
+            ]
+        )
+    events.append(make_ev("0", "thinker", "scheduler_request_retracted", 21_000_000))
+    write_events(tmp_path / "events_test.jsonl", events)
+    report = build_report(tmp_path)
+    summary = report["serving_summary"]["thinker"]
+    assert report["request_count"] == 2
+    assert summary["queue_wait_ms"] == {
+        "count": 2,
+        "avg": 5,
+        "p50": 5,
+        "p95": 8.6,
+        "max": 9,
+    }
+    assert summary["prefill_ms"]["avg"] == 10
+    assert summary["request_build_ms"]["avg"] == 1
+    assert summary["decode_batch_size"]["avg"] == 1.5
+    assert summary["waiting_requests"]["count"] == 2
+    assert summary["kv_usage"]["avg"] == 0.75
+    assert summary["request_build_pending"]["avg"] == 2
+    assert summary["request_build_backlog"]["avg"] == 3
+    assert summary["observed_retractions"] == 1
+
+
+def test_serving_summary_code2wav_subbatches(tmp_path: Path) -> None:
+    executions = [
+        {"batch_size": 2, "execution_mode": "cuda_graph"},
+        {"batch_size": 1, "execution_mode": "eager", "fallback_reason": "key_miss"},
+        {"batch_size": 1, "execution_mode": "eager"},
+    ]
+    write_events(
+        tmp_path / "events_test.jsonl",
+        [
+            make_ev("r", "code2wav", "code2wav_batch_start", 0, batch_size=4),
+            make_ev(
+                "r",
+                "code2wav",
+                "code2wav_batch_end",
+                1_000_000,
+                execution_mode="mixed",
+                sub_batch_execution=executions,
+            ),
+            make_ev(
+                "r",
+                "code2wav",
+                "code2wav_batch_end",
+                2_000_000,
+                execution_mode="eager",
+                sub_batch_execution=[],
+            ),
+        ],
+    )
+    summary = build_report(tmp_path)["serving_summary"]["code2wav"]
+    assert summary["execution_mode"] == {"cuda_graph": 1, "eager": 2}
+    assert summary["graph_hit_count"] == 1
+    assert summary["graph_fallback_count"] == 1
+    assert summary["graph_attempt_success_rate"] == 0.5
+    assert summary["fallback_reason"] == {"key_miss": 1}
+    assert summary["effective_batch_size"]["count"] == 3
+    assert summary["effective_batch_size"]["avg"] == 1.333
+    assert summary["batch_ms"]["avg"] == 1
+
+
+@pytest.mark.parametrize("event_name", ["code2wav_decode_end", "code2wav_batch_end"])
+@pytest.mark.parametrize(
+    "fallback_reason, success_rate", [(None, None), ("disabled", 0.0)]
+)
+def test_serving_summary_eager_graph_semantics(
+    tmp_path: Path, event_name, fallback_reason, success_rate
+) -> None:
+    write_events(
+        tmp_path / "events_test.jsonl",
+        [
+            make_ev(
+                "r",
+                "code2wav",
+                event_name,
+                0,
+                execution_mode="eager",
+                fallback_reason=fallback_reason,
+            )
+        ],
+    )
+    summary = build_report(tmp_path)["serving_summary"]["code2wav"]
+    assert summary["execution_mode"] == {"eager": 1}
+    assert summary["graph_hit_count"] == 0
+    assert summary["graph_fallback_count"] == int(fallback_reason is not None)
+    assert summary["graph_attempt_success_rate"] == success_rate
+    if event_name == "code2wav_decode_end":
+        assert summary["effective_batch_size"]["avg"] == 1
+
+
+def test_serving_summary_empty_and_cli(tmp_path: Path, capsys) -> None:
+    from sglang_omni.profiler.__main__ import main
+
+    assert build_report(tmp_path)["serving_summary"] == {}
+    assert main([str(tmp_path), "--format", "table"]) == 0
+    assert "=== Serving Summary ===" in capsys.readouterr().out
+    assert main([str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["serving_summary"] == {}
 
 
 # ---------------------------------------------------------------------------
