@@ -1,0 +1,9 @@
+{
+  "container": "sglang-omni-jaxan-20261009-182104-020512100",
+  "host_run_root": "/data/luojiaxuan/home/runs/20261009-181500",
+  "image_id": "2bac261779c813672df92a8ce1cab74a4eaa18681b5c645ee89e4dc8765c6119",
+  "gpu_uuid": "GPU-166288d3-a850-bcc1-8716-96c33d3a5679",
+  "assignment_id": "01M4GY0J1PWD660J9BMVCHB9W8",
+  "expires_utc": "2026-10-09T20:15:00Z",
+  "storage_lifetime": "task temporary storage; all retained results exported to Git before lease release"
+}
