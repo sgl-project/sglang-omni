@@ -1,94 +1,75 @@
-# Voxt on a local sglang-omni MLX server
+# Voxt on sglang-omni's native MLX runtime
 
-This directory runs Voxt's local Qwen3-ASR 0.6B 4-bit on sglang-omni's
-standalone MLX server (`sglang_omni_mlx.qwen3_asr.server`), a single process
-on Apple Silicon that shares no code with sglang-omni's CUDA serving stack.
-Every other model keeps Voxt's original Swift backend.
+Voxt's local Qwen3-ASR 0.6B 4-bit runs on sglang-omni's native runtime
+(`sglang_omni_mlx/native`): one C++ binary on MLX, with no Python. Voxt starts
+it and owns it. Every other model keeps Voxt's original Swift backend.
 
-| Checkpoint | Server | Voxt behavior kept |
+| Checkpoint | Runtime | Voxt behavior kept |
 | --- | --- | --- |
-| `mlx-community/Qwen3-ASR-0.6B-4bit` | `sglang_omni_mlx.qwen3_asr.server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |
+| `mlx-community/Qwen3-ASR-0.6B-4bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |
 
-Not migrated, and still on the Swift backend: MOSS-Transcribe-Diarize, the
-Whisper and other Qwen3-ASR variants, Cohere, Parakeet, Nemotron, SenseVoice,
-speaker analysis, VAD and the local LLMs.
-
-## Set up
+## Build and run
 
 Requirements: an Apple Silicon Mac, Xcode and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-Voxt/backend/setup_env.sh ~/voxt-omni-env
-```
-
-The script prints the `VOXT_OMNI_PYTHON` to use. It installs the packages
-pinned in `requirements-mac.lock` (MLX, `tokenizers` and a small Starlette
-server; no PyTorch or SGLang) and this checkout's sglang-omni without its
-dependencies.
-
-## Build and run
-
-```bash
 Voxt/backend/run_omni_dev.sh build
-VOXT_OMNI_PYTHON=~/voxt-omni-env/venv/bin/python Voxt/backend/run_omni_dev.sh run
+Voxt/backend/run_omni_dev.sh run
 ```
 
-"Voxt Omni Dev" has its own bundle identifier, runs without the sandbox so it
-can start the backend, and sees `~/.voxt-omni-dev` as its home, so its database,
-history, preferences and models stay apart from any installed Voxt. Set
-`VOXT_SHARED_MODELS` to an existing `<root>/mlx-audio` directory to reuse
+`build` builds the runtime into `Voxt/build/omni-runtime` with
+`sglang_omni_mlx/native/scripts/build_runtime.sh`, then builds "Voxt Omni Dev".
+`bin/` holds `qwen3_asr_server`, `qwen3_asr_transcribe`, and the pinned MLX
+library and Metal kernels next to them.
+
+"Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
+can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its
+database, history, preferences and models stay apart from any installed Voxt.
+Set `VOXT_SHARED_MODELS` to an existing `<root>/mlx-audio` directory to reuse
 downloaded weights. `run_omni_dev.sh run --swift-backend` runs the same build on
 the original Swift backend for comparison.
 
-Download the models from Voxt's model settings as usual. With the Omni backend
-enabled, selecting Qwen3-ASR 0.6B 4-bit starts a server for it on a free
-loopback port; switching models, idle unload, deletion and quitting stop it,
-and a server that dies is replaced on the next use. After the models are
-cached, dictation needs no network.
+With the Omni backend enabled (`VOXT_ASR_BACKEND=omni`, `VOXT_OMNI_RUNTIME=<binary>`),
+selecting Qwen3-ASR 0.6B 4-bit starts the runtime on a free loopback port.
+Switching models, idle unload, deletion and quitting stop it, and a runtime
+that dies is replaced on the next use.
 
 ## How it fits together
 
-- `voxt_omni_backend/supervisor.py` owns one server process per loaded
-  model. It reports `ready` only after the server answers with the
-  unique model name it was started with, and stops the server and every process
-  it started when Voxt sends `shutdown`, when Voxt's control pipe closes (Voxt
-  quit or crashed) or on a termination signal. It never signals other processes.
-- `Voxt/Transcription/Omni*.swift` is the client: `OmniASRRuntime` (launch,
-  requests, an awaitable retire that drains in-flight work), the request
-  planning, the live session and its adapter to Voxt's streaming session
-  interface.
-- `sglang_omni_mlx/qwen3_asr/` (repository root) is the server: the WAV and
-  log-mel front end, the MLX model, greedy decoding with Voxt's stop rules, the
-  realtime session and the HTTP app.
+- `qwen3_asr_server --supervised` speaks the launch protocol Voxt expects:
+  - On stdout it prints `{"event":"ready",…}` once serving, or `failed` if it can't.
+  - On stdin, `{"command":"shutdown"}` makes it reply `stopped` and exit.
+  - End of stdin, which happens when Voxt quits or crashes, also stops it, and so does a termination signal.
+  - It is a single process, so stopping it leaves nothing behind.
+- The server API is the same as the reference Python server
+  (`sglang_omni_mlx.qwen3_asr.server`):
+  - `/health` with `request_states`;
+  - `/v1/models`;
+  - `/v1/audio/transcriptions` (JSON or SSE);
+  - the `/v1/realtime` manual-turn socket.
+- `Voxt/Transcription/Omni*.swift` is the client:
+  - `OmniASRRuntime` handles launch, requests, and an awaitable retire that drains in-flight work.
+  - It also contains the request planning, the live session and its adapter to Voxt's streaming session interface.
 
-## Tests
+## Tests and CI
 
-The server tests need `pytest`, `pytest-asyncio`, `httpx` and `transformers`
-(for reference features) on top of the backend environment; set
-`QWEN3_ASR_MLX_MODEL_PATH` to the installed checkpoint to include the tests
-that load it.
+- Runtime correctness is checked by `sglang_omni_mlx/native/ci`:
+  - `provision.py` fetches the pinned checkpoint and rebuilds the frozen corpus from its public sources, checking every file's SHA-256.
+  - `check_golden.py` runs the runtime over the 392-clip corpus with Voxt's Final request and requires every clip to match the golden output. It reports error rates next to the original Swift backend's.
+- The `Voxt Mac CI` workflow runs these on the repository's Apple Silicon runner, together with the server API tests and Voxt's Omni unit tests.
+- Voxt's opt-in suites need the installed model and `VOXT_RUN_MODEL_TESTS=1`:
+  - `OmniPhase1LifecycleTests`:
+    - load/Final/unload rounds that must leave no process behind;
+    - a server killed mid-Final;
+    - a cancelled cold start;
+    - termination during a Final;
+    - a cancelled live session.
 
-```bash
-cd Voxt/backend && "$VOXT_OMNI_PYTHON" -m pytest tests
-cd ../.. && python -m pytest tests/unit_test/mlx_qwen3_asr
-```
-
-Voxt's own tests include `OmniASRRuntimeLaunchTests` (no model needed) and two
-opt-in suites that need the installed Qwen model and `VOXT_RUN_MODEL_TESTS=1`:
-
-- `OmniPhase1LifecycleTests`: load/Final/unload rounds that must leave no
-  process behind, a server killed mid-Final, a cancelled cold start,
-  termination during a Final and a cancelled live session. Set
-  `VOXT_ASR_BACKEND=omni` with the backend variables, `VOXT_MODEL_STORAGE_ROOT`
-  and `VOXT_LIFECYCLE_CLIPS` (a directory with `short.wav` and `long.wav`).
-- `OmniPhase1BenchmarkTests`: the measurement used for acceptance, identical on
-  the upstream build and this one; see its header for the `VOXT_BENCH_*`
-  variables.
+    It also needs `VOXT_ASR_BACKEND=omni`, `VOXT_OMNI_RUNTIME`, `VOXT_MODEL_STORAGE_ROOT` and `VOXT_LIFECYCLE_CLIPS`.
+  - `OmniPhase1BenchmarkTests`: the measurement against the original backend. See its header for the `VOXT_BENCH_*` variables.
 
 Pass environment variables to an `xcodebuild test-without-building` run through
-the `.xctestrun` file. xcodebuild resolves symlinks in those values, which turns
-a venv's `bin/python` link into the base interpreter, so point
-`VOXT_OMNI_PYTHON` at a script that runs `exec <venv>/bin/python "$@"` there.
+the `.xctestrun` file.
 
 ## Known limitations
 

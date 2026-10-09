@@ -30,17 +30,15 @@ nonisolated enum OmniASRBackend {
     static let launchSettings: LaunchSettings? = LaunchSettings(environment: ProcessInfo.processInfo.environment)
 
     struct LaunchSettings: Sendable, Equatable {
-        let pythonExecutable: URL
-        let backendDirectory: URL
+        let runtimeExecutable: URL
 
-        /// `VOXT_ASR_BACKEND=omni` with the backend's Python and source directory.
+        /// `VOXT_ASR_BACKEND=omni` with `VOXT_OMNI_RUNTIME`, the path to the
+        /// native `qwen3_asr_server` binary.
         init?(environment: [String: String]) {
             guard environment["VOXT_ASR_BACKEND"] == "omni",
-                  let python = environment["VOXT_OMNI_PYTHON"], !python.isEmpty,
-                  let backend = environment["VOXT_OMNI_BACKEND_DIR"], !backend.isEmpty
+                  let runtime = environment["VOXT_OMNI_RUNTIME"], !runtime.isEmpty
             else { return nil }
-            pythonExecutable = URL(fileURLWithPath: python)
-            backendDirectory = URL(fileURLWithPath: backend, isDirectory: true)
+            runtimeExecutable = URL(fileURLWithPath: runtime)
         }
     }
 
@@ -49,13 +47,9 @@ nonisolated enum OmniASRBackend {
         return modelKindsByRepo[repo]
     }
 
-    static func configuration(derivedRoot: URL) -> OmniBackendConfiguration? {
+    static func configuration() -> OmniBackendConfiguration? {
         guard let launchSettings else { return nil }
-        return OmniBackendConfiguration(
-            pythonExecutable: launchSettings.pythonExecutable,
-            backendDirectory: launchSettings.backendDirectory,
-            derivedRoot: derivedRoot
-        )
+        return OmniBackendConfiguration(runtimeExecutable: launchSettings.runtimeExecutable)
     }
 }
 

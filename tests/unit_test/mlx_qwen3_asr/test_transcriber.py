@@ -15,12 +15,14 @@ mx = pytest.importorskip("mlx.core")
 
 from sglang_omni_mlx.qwen3_asr.audio import AudioLayout  # noqa: E402
 from sglang_omni_mlx.qwen3_asr.transcriber import (  # noqa: E402
-    FinishReason,
     Qwen3ASRTranscriber,
-    TranscriptionCancelled,
     TranscriptionOptions,
     load_tokenizer,
     normalize_language,
+)
+from sglang_omni_mlx.transcription import (  # noqa: E402
+    FinishReason,
+    TranscriptionCancelled,
 )
 
 SPECIAL_TOKENS = [

@@ -16,13 +16,13 @@ from sglang_omni_mlx.qwen3_asr.audio import (  # noqa: E402
     HOP_LENGTH,
     MEL_FILTERS,
     AudioLayout,
-    decode_wav,
     log_mel,
     peak_is_silent,
     reference_token_count,
     swift_token_count,
     token_count,
 )
+from sglang_omni_mlx.wav import decode_wav  # noqa: E402
 
 
 def pcm16_wav(

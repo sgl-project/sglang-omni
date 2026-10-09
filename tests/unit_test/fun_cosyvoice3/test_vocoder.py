@@ -27,6 +27,8 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
     FunCosyVoice3StreamingVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
@@ -1211,13 +1213,14 @@ def prepare_vocoder_startup(
         "warmup_packed_dit_compile",
         lambda scheduler: startup_events.append("packed_warmup"),
     )
-    if device_type == "cuda":
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    if device_type in ("cuda", "xpu"):
+        platform = CUDAOmniPlatform() if device_type == "cuda" else XPUOmniPlatform()
+        monkeypatch.setattr(stages, "current_platform", platform)
 
         class RecordingFlowCudaGraphRunner:
             def __init__(self, flow, *, device, autocast_dtype) -> None:
                 assert flow is fake_flow
-                assert device.type == "cuda"
+                assert device.type == device_type
                 assert autocast_dtype == torch.bfloat16
                 startup_events.append("runner_create")
 
@@ -1263,6 +1266,32 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     else:
         assert "native_compile" not in startup_events
     assert ("packed_warmup" in startup_events) is enable_dit_torch_compile
+
+
+@pytest.mark.parametrize("enable_dit_torch_compile", [False, True])
+def test_create_vocoder_executor_on_xpu_captures_flow_graphs_only_for_an_eager_dit(
+    monkeypatch: pytest.MonkeyPatch,
+    enable_dit_torch_compile: bool,
+) -> None:
+    startup_events: list[str] = []
+    prepare_vocoder_startup(
+        monkeypatch,
+        startup_events,
+        device_type="xpu",
+        allow_native_compile=enable_dit_torch_compile,
+    )
+
+    stages.create_vocoder_executor(
+        "model",
+        flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        device="xpu",
+        enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_flow_cuda_graph=True,
+        flow_cuda_graph_capture_shapes=FLOW_GRAPH_CAPTURE_SHAPES,
+    )
+
+    assert ("graph_capture" in startup_events) is not enable_dit_torch_compile
 
 
 def test_create_vocoder_executor_trt_without_compile_skips_the_compile(

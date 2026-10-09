@@ -663,15 +663,25 @@ def test_qwen_preprocessor_retries_without_special_token_compat(
 
 
 @pytest.mark.parametrize(
-    ("prompt_text", "fits"),
+    ("prompt_text", "rejection"),
     [
-        pytest.param("x" * 221, False, id="normalized"),
-        pytest.param("x" * 100_000, False, id="past-the-nfc-bound"),
-        pytest.param("e\u0301" * 220, True, id="decomposed-text-that-nfc-halves"),
+        pytest.param(
+            "x" * 221,
+            "Requested token count exceeds the model's maximum context length "
+            "of 64 tokens. The input messages need at least 56 tokens",
+            id="normalized",
+        ),
+        pytest.param(
+            "x" * 100_000,
+            "The input (at least 6250 tokens) is longer than the model's "
+            "context length (64 tokens).",
+            id="past-the-nfc-bound",
+        ),
+        pytest.param("e\u0301" * 220, None, id="decomposed-text-that-nfc-halves"),
     ],
 )
 def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
-    prompt_text: str, fits: bool
+    prompt_text: str, rejection: str | None
 ) -> None:
     from sglang_omni.models.qwen3_omni.components import (
         preprocessor as preprocessor_mod,
@@ -704,12 +714,13 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
         data={},
     )
 
-    if fits:
+    if rejection is None:
         asyncio.run(pre.call_impl(payload))
         assert tokenized_prompts == [prompt_text]
     else:
         with pytest.raises(ValueError) as exc_info:
             asyncio.run(pre.call_impl(payload))
+        assert str(exc_info.value).startswith(rejection)
         assert is_bad_request_error(exc_info.value)
         assert tokenized_prompts == []
 

@@ -89,6 +89,8 @@ sgl-omni serve \
 ```
 
 
+For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../get_started/installation_xpu.md#fun-cosyvoice3-text-to-speech-single-xpu).
+
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning
