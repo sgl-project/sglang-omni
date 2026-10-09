@@ -39,6 +39,26 @@ python -m sglang_omni.cli serve \
   --port 8000
 ```
 
+## Data-Parallel Serving
+
+To serve concurrent requests on two GPUs, run one complete model replica on
+each GPU:
+
+```bash
+python -m sglang_omni.cli serve \
+  --config examples/configs/sensenova_u1_dp2.yaml \
+  --model-path "$MODEL_PATH" \
+  --port 8000
+```
+
+The `sensenova_generate` process uses `num_replicas: 2` and
+`replica_devices: [0, 1]`. Requests are assigned to replicas at admission.
+Each GPU must have enough memory for the full model and its activations. DP
+increases concurrent throughput; it does not split one request across GPUs or
+reduce single-request latency. Use a distinct GPU for each SenseNova replica.
+The existing T2I dynamic batching setting applies independently within each
+replica; I2I requests still run one at a time.
+
 ## Generate an Image
 
 ```bash
@@ -120,8 +140,8 @@ does not prove that model execution was batched.
 
 ## Current Scope
 
-- Single-card execution; tensor parallelism is not wired into this native HF
-  stage.
+- One GPU per DP replica. Tensor and sequence parallelism are not wired into
+  this native HF stage.
 - BF16 is the supported initial dtype.
 - Dynamic batching defaults to off (`max_batch_size=1`).
 - Quantization, CPU offload, compact mode, and thinking/SRT KV transfer are not

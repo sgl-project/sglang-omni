@@ -24,5 +24,19 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
         )
     ]
 
+    def model_post_init(self, __context: object = None, /) -> None:
+        super().model_post_init(__context)
+        generate = next(stage for stage in self.stages if stage.name == "generate")
+        if generate.tp_size != 1:
+            raise ValueError("SenseNova-U1 supports DP replicas, but not TP")
+
+        replicas = self.processes.get("sensenova_generate")
+        if replicas is not None and replicas.num_replicas > 1:
+            devices = replicas.replica_devices
+            if devices is not None and len(set(devices)) != len(devices):
+                raise ValueError(
+                    "SenseNova-U1 DP requires one distinct GPU per replica"
+                )
+
 
 EntryClass = SenseNovaU1PipelineConfig
