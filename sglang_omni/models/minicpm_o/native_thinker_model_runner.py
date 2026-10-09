@@ -15,8 +15,10 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.minicpm_o.duplex_sampler import (
+    DuplexSampleRow,
     build_forbidden_token_index,
     duplex_sample,
+    to_device,
 )
 from sglang_omni.models.minicpm_o.special_tokens import (
     MiniCPMOSpecialTokenIds,
@@ -108,29 +110,33 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         logits = logits_output.next_token_logits
-        result = torch.empty(len(requests), dtype=torch.long, device=logits.device)
-        for index, request in enumerate(requests):
-            data = request.data
-            special_tokens = self.resolve_special_tokens(data)
-            if self.forbidden_token_index is None:
-                self.forbidden_token_index = build_forbidden_token_index(
-                    special_tokens, logits.shape[-1], logits.device
-                )
-            else:
-                pass
-            result[index] = duplex_sample(
-                logits[index],
-                data.thinker_state,
-                special_tokens=special_tokens,
-                forbidden_token_index=self.forbidden_token_index,
-                generation_step=data.generation_steps,
-                is_listen_forced=data.is_listen_forced,
+        special_tokens = self.resolve_special_tokens(requests[0].data)
+        if self.forbidden_token_index is None:
+            self.forbidden_token_index = build_forbidden_token_index(
+                special_tokens, logits.shape[-1], logits.device
             )
+        else:
+            pass
+        token_ids = duplex_sample(
+            logits,
+            [
+                DuplexSampleRow(
+                    thinker_state=request.data.thinker_state,
+                    generation_step=request.data.generation_steps,
+                    is_listen_forced=request.data.is_listen_forced,
+                )
+                for request in requests
+            ],
+            special_tokens=special_tokens,
+            forbidden_token_index=self.forbidden_token_index,
+        )
+        for request in requests:
+            data = request.data
             if data.is_listen_forced and data.generation_steps == 0:
                 data.thinker_state.force_listen_counter += 1
             else:
                 pass
-        return result
+        return to_device(token_ids, torch.long, logits.device)
 
     # note (Junnan Li): FULL capture must match decode graphs and retain talker conditioning.
     def requested_capture_hidden_mode_prefill(
@@ -150,6 +156,8 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         """Pair generated tokens with their next-step hidden states for the talker."""
+        pending_conditions: list[tuple[DuplexUnitRequestData, int, bool]] = []
+        hidden_states: list[torch.Tensor] = []
         for scheduler_request in scheduler_output.requests:
             request_output = outputs[scheduler_request.request_id]
             data = scheduler_request.data
@@ -158,15 +166,13 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
             pending_token_id = data.pending_unit_token
             if pending_token_id is not None and data.generation_steps >= 2:
                 hidden_state = request_output.extra["hidden_states"]
-                hidden_state = (
+                hidden_states.append(
                     hidden_state.reshape(-1, hidden_state.shape[-1])[-1]
-                    .detach()
-                    .clone()
                 )
-                data.talker_conditions.append(
+                pending_conditions.append(
                     (
+                        data,
                         pending_token_id,
-                        hidden_state.to("cpu"),
                         pending_token_id == special_tokens.turn_eos,
                     )
                 )
@@ -180,6 +186,15 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                 else:
                     pass
                 data.pending_unit_token = sampled_token_id
+        if hidden_states:
+            # note (0xtoward): one device read for the batch instead of one per session.
+            host_hidden_states = torch.stack(hidden_states).detach().to("cpu")
+            for (data, token_id, is_turn_end), hidden_state in zip(
+                pending_conditions, host_hidden_states, strict=True
+            ):
+                data.talker_conditions.append((token_id, hidden_state, is_turn_end))
+        else:
+            pass
 
 
 __all__ = [
