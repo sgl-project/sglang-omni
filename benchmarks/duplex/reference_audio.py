@@ -14,11 +14,7 @@ from numpy.typing import NDArray
 from pydantic import JsonValue
 from scipy.signal import resample_poly
 
-from benchmarks.duplex.reference_capture import (
-    TraceFormat,
-    parse_float32_trace,
-    parse_pcm16_trace,
-)
+from benchmarks.duplex.reference_capture import TraceFormat, parse_pcm16_trace
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.duplex.v15_audio import PACING_TOLERANCE_S
 
@@ -120,43 +116,6 @@ def check_send_receipts(
     return file_sha256(path), completions
 
 
-def check_sent_records(
-    sent_records: list[tuple[JsonValue, str, float]],
-    append_ids: list[JsonValue],
-    reasons: list[str],
-) -> list[float | None]:
-    """Match 'sent' records to appends by event_id; return per-append completion times.
-
-    Each append needs exactly one sent record of the append type; non-append sent
-    records (other event_ids) are allowed.
-    """
-    index_of = {
-        event_id: index
-        for index, event_id in enumerate(append_ids)
-        if isinstance(event_id, str) and event_id
-    }
-    times = [[] for _ in append_ids]
-    for event_id, kind, time_s in sent_records:
-        index = index_of.get(event_id) if isinstance(event_id, str) else None
-        if index is None:
-            if kind == APPEND:
-                reasons.append(
-                    f"append sent record without matching append: {event_id!r}"
-                )
-            else:
-                pass
-        elif kind != APPEND:
-            reasons.append(f"append {index} sent record type mismatch")
-        else:
-            times[index].append(time_s)
-    for index, recorded in enumerate(times):
-        if len(recorded) > 1:
-            reasons.append(f"append {index} has duplicate send completion records")
-        else:
-            pass
-    return [recorded[0] if recorded else None for recorded in times]
-
-
 def lateness(
     times: list[float | None] | None, end: float | None
 ) -> tuple[int | None, float | None]:
@@ -210,7 +169,7 @@ def analyze_variant(
     expected_appends = -(-sample_count // packet)
     first_append_s = window_end_s = None
     out_rate = None
-    appends, deviations, append_ids, append_times, sent_records = 0, [], [], [], []
+    appends, deviations, append_ids, append_times = 0, [], [], []
     last_time = None
     playout = cursor = None
     chunks = {
@@ -221,7 +180,7 @@ def analyze_variant(
     }
     first_audio_s = last_audio_s = None
     live_after_t = False
-    lifecycle_events, created_responses, response_terminals = [], set(), {}
+    created_responses, response_terminals = set(), {}
     closed_count, close_times_s = 0, []
     accepted_receipts = {}
 
@@ -236,18 +195,7 @@ def analyze_variant(
             post_window_events.append({"elapsed_s": at(time_s), "message": message})
 
     with trace_path.open(encoding="utf-8") as handle:
-        if trace_format == TraceFormat.PCM16:
-            records = parse_pcm16_trace(handle, samples, packet)
-            receipts_path = variant_dir / SEND_RECEIPTS
-            requires_window_mark = False
-        elif trace_format == TraceFormat.FLOAT32:
-            records = parse_float32_trace(handle, samples, packet, RATE)
-            receipts_path = None
-            requires_window_mark = True
-            receipts_required = False
-        else:
-            raise ValueError(f"Unsupported trace format: {trace_format!r}")
-        for capture in records:
+        for capture in parse_pcm16_trace(handle, samples, packet):
             line_number = capture.line_number
             if capture.row is None:
                 reasons.append(capture.read_error)
@@ -297,29 +245,11 @@ def analyze_variant(
                 continue
             else:
                 pass
-            if direction == "sent":
-                sent_records.append((event.get("event_id"), kind, time_s))
-                continue
-            else:
-                pass
             if direction == "send":
                 if first_append_s is not None:
                     accepted_receipts.setdefault(f"sent:{kind}", at(time_s))
                 else:
                     pass
-                continue
-            else:
-                pass
-            if direction == "mark":
-                lifecycle_events.append({"elapsed_s": at(time_s), **event})
-                if event.get("receiver_alive") is not True:
-                    reasons.append("window mark reports receiver not alive")
-                else:
-                    pass
-                if window_end_s is None or time_s < window_end_s:
-                    reasons.append("window mark before window end")
-                else:
-                    live_after_t = True
                 continue
             else:
                 pass
@@ -441,24 +371,14 @@ def analyze_variant(
         else []
     )
     receipts_sha, completions = None, None
-    if receipts_path is not None and (receipts_required or receipts_path.is_file()):
+    receipts_path = variant_dir / SEND_RECEIPTS
+    if receipts_required or receipts_path.is_file():
         receipts_sha, completions = check_send_receipts(
             receipts_path, append_ids, append_times, deadlines, reasons
         )
     else:
         pass
-    sent_format = bool(sent_records or lifecycle_events)
-    legacy = not sent_format and receipts_sha is None and not receipts_required
-    if sent_format:
-        if requires_window_mark and not lifecycle_events:
-            reasons.append("window mark missing from new-format trace")
-        else:
-            pass
-        sent = check_sent_records(sent_records, append_ids, reasons)
-        check_completions(sent, append_times, deadlines, reasons)
-        completions = sent if completions is None else completions
-    else:
-        pass
+    legacy = receipts_sha is None and not receipts_required
     if legacy:
         for index, time_s in enumerate(append_times):
             if time_s > window_end_s:
@@ -490,11 +410,7 @@ def analyze_variant(
             "directory": str(variant_dir),
             "trace_sha256": file_sha256(trace_path),
             "input_pcm_sha256": input_sha,
-            **(
-                {"input_send_receipts_sha256": receipts_sha}
-                if receipts_path is not None
-                else {}
-            ),
+            "input_send_receipts_sha256": receipts_sha,
         },
         "input": {"samples": sample_count, "sample_rate": RATE, "duration_s": window_s},
         "window": {
@@ -511,16 +427,12 @@ def analyze_variant(
             "legacy_inference": legacy,
             "send_completion_evidence": (
                 "legacy: inferred from absence of client "
-                "error before T and append starts <= T (no sent/mark records)"
+                f"error before T and append starts <= T (no {SEND_RECEIPTS})"
                 if legacy
                 else (
                     f"{SEND_RECEIPTS} completed_s in order <= per-append v2 deadline"
                     if receipts_sha is not None
-                    else (
-                        "sent records in order <= per-append v2 deadline"
-                        if sent_format
-                        else "missing"
-                    )
+                    else "missing"
                 )
             ),
             "completion_deadline": "t0 + min((i+1)*0.080, T) + 0.080 s",
@@ -551,7 +463,6 @@ def analyze_variant(
             ),
             "terminal_statuses": sorted({str(s) for s in response_terminals.values()}),
             "receipts_elapsed_s": accepted_receipts,
-            "window_marks": lifecycle_events,
             "post_window_errors": post_window_events,
             "protocol_anomalies": anomalies,
             "all_input_processed_receipt": None,
@@ -631,12 +542,6 @@ def load_runs(runs: list[Path], trace_format: TraceFormat) -> tuple[
         data = json.loads((run / "run.json").read_text())
         manifest = json.loads((run / "manifest.json").read_text())
         declared_format = manifest.get("trace_format")
-        if declared_format is None and str(
-            manifest.get("validation_scope", "")
-        ).startswith("vllm-native"):
-            declared_format = TraceFormat.FLOAT32.value
-        else:
-            pass
         if declared_format is not None and TraceFormat(declared_format) != trace_format:
             raise ValueError(
                 f"{run} declares a different trace format: {declared_format}"
@@ -670,26 +575,11 @@ def load_runs(runs: list[Path], trace_format: TraceFormat) -> tuple[
     return chosen, sources, superseded
 
 
-def diagnostics(
-    run: Path, state: dict[str, JsonValue], trace_format: TraceFormat
-) -> dict[str, JsonValue]:
+def diagnostics(run: Path, state: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Preserve recorder verdicts verbatim-by-field; they never decide eligibility."""
-    kept = {
-        k: v
-        for k, v in state.items()
-        if k not in ("files", "native_lifecycle", "input_timing")
-    }
+    kept = {k: v for k, v in state.items() if k not in ("files", "input_timing")}
     directory = run / state["directory"]
-    if (
-        trace_format == TraceFormat.FLOAT32
-        and (directory / "native-lifecycle.json").is_file()
-    ):
-        native = json.loads((directory / "native-lifecycle.json").read_text())
-        native.pop("capabilities", None)
-        kept["native_lifecycle"] = native
-    else:
-        pass
-    if trace_format == TraceFormat.PCM16 and (directory / "report.json").is_file():
+    if (directory / "report.json").is_file():
         kept["report_sha256"] = file_sha256(directory / "report.json")
     else:
         pass

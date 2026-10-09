@@ -2,11 +2,8 @@
 
 This page runs [Full-Duplex-Bench](https://github.com/DanielLin94144/Full-Duplex-Bench)
 v1.5 against a native full-duplex model served by SGLang-Omni (MiniCPM-o 4.5 by default).
-Every step is a shell command. Run them in order and copy-paste them as written.
-The scripts live in `benchmarks/duplex/fdb_v15/`.
 
-For measurement definitions and the underlying CLI, see
-[benchmarks/duplex/REFERENCE.md](../../benchmarks/duplex/REFERENCE.md).
+The scripts live in `benchmarks/duplex/fdb_v15/`.
 
 ## What is measured
 
@@ -189,9 +186,7 @@ With `JUDGE=qwen`, `RESULTS.md` adds a semantic table. From the same validation 
 | background_speech | 83.3 ± 23.6% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% |
 
 Always read quality together with coverage: a high quality over a low coverage is a
-judgment on few pairs. For comparison, `benchmarks/duplex/semantic/historical-values.json`
-holds an earlier full 498-pair MiniCPM-o run graded with the same protocol by a different
-judge model (joint quality 58.6%, coverage 58.2%). It is a reference point, not a target.
+judgment on few pairs.
 
 Per-repeat outputs are under `$FDB_WORK/runs/$RUN_NAME/repeat-N/`:
 
@@ -249,6 +244,194 @@ All variables are defined in `benchmarks/duplex/fdb_v15/env.sh`.
   full-dataset estimates.
 - **Non-passing sessions are never dropped.** They count as ineligible in the denominators,
   and empty interval sets show as `n/a`, not zero.
+
+## Scoring CLI reference
+
+The scripts wrap two CLIs: `benchmarks.eval.benchmark_duplex_v15` records sessions, and
+`benchmarks.eval.benchmark_duplex_reference` scores them with the official v1.5 ASR, timing
+and behavior code. Use them directly to score a recording outside the scripts.
+Run `source benchmarks/duplex/fdb_v15/env.sh` first so the variables below are set.
+
+### Dependencies and source
+
+The official scoring scripts and behavior prompt are not vendored. They are loaded from a
+[Full-Duplex-Bench checkout](https://github.com/DanielLin94144/Full-Duplex-Bench/tree/3e799c45a045256f47d5f1c9cda90157e2d2ec9e)
+at revision `3e799c45a045256f47d5f1c9cda90157e2d2ec9e`, and their SHA-256 is checked before
+every run. Their
+[CC BY-NC 4.0 license](https://github.com/DanielLin94144/Full-Duplex-Bench/blob/3e799c45a045256f47d5f1c9cda90157e2d2ec9e/LICENSE)
+applies.
+
+The scoring venv uses Python 3.12, torch and torchaudio 2.11.0+cu130, NeMo 3.0.0,
+Silero VAD 6.2.1, numpy 2.5.3, scipy 1.18.1, soundfile 0.14.0, openai 3.28.0 and pydantic.
+Each phase records its actual package versions. No command downloads a model implicitly.
+ASR uses a local `nvidia/parakeet-tdt-0.6b-v2` checkpoint at revision
+`ae9ad07059c7c739ffaf932226a8fe64ae2620b0`; its `.nemo` SHA-256 is
+`d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c`.
+
+### Record and export
+
+```bash
+OUT=results/fdb-manual
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+    --profile minicpmo-native-pr2377 \
+    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
+    --output "$OUT/recording"
+
+python -m benchmarks.eval.benchmark_duplex_reference export \
+    --engine model --trace-format realtime-pcm16-v1 --run "$OUT/recording" \
+    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
+```
+
+`record` selects the full dataset by default; `--max-per-subset N` or repeated
+`--sample-id category/id` selects a subset. It exits 0 only when every selected session passes.
+
+`export` cuts the fixed observation windows without changing the recording and needs a new
+output directory. `--dataset-root` counts every dataset sample that was not recorded as missing,
+so a subset run must also pass `--only category/id` for each selected pair. Repeated `--run`
+accepts disjoint shards; duplicate complete captures are rejected. `--engine` is a free label
+for the scored cohort.
+
+### Score and resume
+
+```bash
+TREE=(--reference-source "$FDB_SOURCE" --tree "model=$OUT/reference-audio")
+python -m benchmarks.eval.benchmark_duplex_reference asr "${TREE[@]}" \
+    --out "$OUT/scores" --nemo "$PARAKEET_NEMO" --nemo-sha256 "$PARAKEET_SHA256" --device cuda
+python -m benchmarks.eval.benchmark_duplex_reference timing "${TREE[@]}" \
+    --out "$OUT/scores" --audio-loader soundfile
+python -m benchmarks.eval.benchmark_duplex_reference prepare-judge "${TREE[@]}" --out "$OUT/scores"
+python -m benchmarks.eval.benchmark_duplex_reference judge "${TREE[@]}" --out "$OUT/scores" \
+    --judge gpt-4o-2024-08-06 --api-key-env OPENAI_API_KEY
+python -m benchmarks.eval.benchmark_duplex_reference summarize "${TREE[@]}" --out "$OUT/scores"
+```
+
+Run the phases in order against one output directory, with the same `--tree` mapping
+for each; repeat `--tree` to score several cohorts. CUDA ASR needs exactly one visible GPU.
+A rerun resumes from matching receipts. `--retry-failed` retries failed work units and keeps
+the earlier attempts; `--limit N` caps the work units of one invocation. Use a new output
+directory after changing the recording, the scoring configuration or the reference code.
+A zero exit means the phase finished, not that every sample qualified.
+
+### Report
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_reference report --scores "$OUT/scores" --engine model
+```
+
+The report prints the selected and eligible populations, protocol verdicts, ASR and timing
+coverage, interval means, medians and confidence intervals, and the official behavior label
+distribution. It only reads `summary.json` and the manifest; it needs no GPU, checkpoint or
+API key, and does not rescore.
+
+- `--replay replay.json` adds offline replay agreement. Format:
+  `{"selected": N, "replayed": M, "samples": [{"sample": "category/id", "variant": "overlap",
+  "recorded_status": "pass", "status": "match"}]}`. Each sample and variant must be unique
+  and belong to the manifest.
+- `--semantic-summary summary.json` adds the semantic quality section. It reads `scope`,
+  `inputs_sha256`, `uncertainty_note`, `overall_axes` and `overall_joint`; each axis has
+  `selected`, `accepted`, `failed` and `unresolved` counts. `benchmarks.duplex.semantic_judge`
+  writes this file.
+
+### Judges
+
+Qwen3.8-27B served by `sglang serve` is the recommended judge, for both the behavior labels
+(`custom-judge`) and the semantic judge. It is local, pinned and reproducible.
+`launch_judge.sh` starts the server and writes its config and launch receipt.
+
+GPT-4o (`judge`) is the paper's judge. Set the API key in `OPENAI_API_KEY`, never in a
+command argument or manifest; `--base-url` selects a compatible endpoint. The judge sends
+the exact reference prompt with seed 1 and keeps at most three attempts. A response from a
+model other than `gpt-4o-2024-08-06`, a malformed label or a failed request is not a valid
+label, and no fallback judge is used. Without a key the labels stay pending, and `summarize`
+still runs.
+
+### Custom behavior judge
+
+`custom-judge` sends the exact reference prompt to a self-hosted model. Its labels are
+non-official and never replace GPT-4o labels. `--source-scores` reads an existing scoring
+directory; `--out` must be a separate new directory, and source files are never modified.
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_reference custom-judge "${TREE[@]}" \
+    --source-scores "$OUT/scores" --out "$OUT/judge-qwen" \
+    --judge-config "$FDB_WORK/judge/judge-config.json" --base-url "$JUDGE_URL"
+python -m benchmarks.eval.benchmark_duplex_reference custom-summarize "${TREE[@]}" \
+    --source-scores "$OUT/scores" --out "$OUT/judge-qwen" \
+    --judge-config "$FDB_WORK/judge/judge-config.json"
+```
+
+The config written by `launch_judge.sh`:
+
+```json
+{
+  "model_id": "Qwen/Qwen3.8-27B",
+  "model_revision": "<40-hex commit>",
+  "tokenizer_id": "Qwen/Qwen3.8-27B",
+  "tokenizer_revision": "<40-hex commit>",
+  "served_model": "qwen3.8-27b",
+  "precision": "bf16",
+  "enable_thinking": false,
+  "decoding": {
+    "temperature": 0.0, "top_p": 1.0, "top_k": -1,
+    "min_p": 0.0, "repetition_penalty": 1.0, "max_tokens": 512
+  },
+  "seeds": [1, 2, 3],
+  "server_launch_receipt": "launch-receipt.json",
+  "server_launch_receipt_sha256": "<sha256 of the receipt>"
+}
+```
+
+Both revisions must be 40-character commit hashes. `temperature`, `top_p` and `max_tokens`
+are required; `top_k`, `min_p`, `repetition_penalty` and `enable_thinking` are sent only
+when set, so omit any the endpoint does not support. The launch receipt, a path relative to
+the config, records the server command, runtime version, checkpoint and tokenizer revisions
+and precision. The client checks its hash, because the returned model name alone does not
+prove which checkpoint was loaded. Put the endpoint key in `CUSTOM_JUDGE_API_KEY`, or a
+placeholder such as `EMPTY` for an endpoint without authentication.
+
+Matching reruns skip finished samples. A changed config or selection needs a new `--out`,
+and changed transcripts, audio or ASR receipts prevent reuse. `--retry-failed` retries only
+transport and parsing failures. Wrong models, invalid labels and non-`stop` finishes stay
+invalid. Label shares use valid labels only, and the per-category Wilson 95% intervals
+describe dataset sampling, not human agreement or generation variance.
+
+### Measurement definitions
+
+- **Input pacing.** Audio is sent in 80 ms packets. Every packet start must stay within
+  80 ms of its source cadence, otherwise the session is ineligible. This bounds transport
+  jitter only.
+- **Observation window.** The output is scored over `[0, T]`, where T is the input length,
+  anchored at the first input send. Received audio plays first-in first-out with no buffer,
+  so initial delay, gaps and queueing remain. Audio still queued at T is cut, and the rest
+  is silence; the result is mono 16 kHz PCM16 with exactly the input sample count. Errors
+  inside the window make the session ineligible; silence is a valid output.
+- **Intervals.** The official timing code merges VAD speech spans with 0.6 s (user) and
+  0.5 s (model) gaps. Stop intervals are overlaps of user and model spans. Response intervals
+  run from a user span end to the next strictly later model span start. These are whole-file
+  intervals, not event-local latencies. `summary.json` reports their pooled means and medians
+  with sample-cluster bootstrap CIs.
+- **Missing values.** Empty interval sets and missing labels are null, never zero latency
+  or 0%. Counts keep every selected, eligible, invalid and unscored sample.
+- **Limits.** Simulated playout is not acoustic latency, and the fixed window can cut long
+  replies. One generation per sample does not estimate generation variance. Prosody and MOS
+  are not covered.
+
+### Verification
+
+The unit tests cover export, missing samples, valid silence, timing, ASR deduplication,
+bounded judging and resumption. With the pinned checkout they also run the official formulas
+on synthetic fixtures, without a GPU or API. Run them from the sglang-omni venv:
+
+```bash
+FDB_REFERENCE_SOURCE="$FDB_SOURCE" python -m pytest -q \
+    tests/unit_test/benchmarks/test_duplex_reference*.py
+```
+
+Export is deterministic: re-exporting a recording reproduces every eligible WAV byte for byte,
+and re-summarizing saved transcripts and intervals reproduces the same summaries, including
+coverage and bootstrap intervals.
 
 ## Troubleshooting
 

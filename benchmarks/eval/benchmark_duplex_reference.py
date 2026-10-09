@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument(
         "--trace-format",
         choices=[trace_format.value for trace_format in TraceFormat],
-        help="Capture encoding (legacy sglang/vllm labels select their existing format)",
+        help="Capture encoding (default: realtime-pcm16-v1)",
     )
     export.add_argument("--run", type=Path, action="append", required=True)
     export.add_argument("--out", type=Path, required=True)

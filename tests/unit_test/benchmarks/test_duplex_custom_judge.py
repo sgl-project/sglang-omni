@@ -169,10 +169,10 @@ def test_custom_payload_resume_and_source_bytes_unchanged(custom_run):
     assert len(request["audio_sha256"]) == len(request["transcript_sha256"]) == 4
     summary = reference_core.read_json(args.out / "summary.json")
     assert summary["scope"] == "custom_behavior_judge_non_official"
-    assert summary["engines"]["vllm"]["all"]["selected_pairs"] == 2
-    assert summary["engines"]["vllm"]["all"]["eligible_pairs"] == 1
+    assert summary["engines"]["sgl-alt"]["all"]["selected_pairs"] == 2
+    assert summary["engines"]["sgl-alt"]["all"]["eligible_pairs"] == 1
     for group in ("all", "user_interruption"):
-        proportions = summary["engines"]["vllm"][group]["valid_label_proportions"]
+        proportions = summary["engines"]["sgl-alt"][group]["valid_label_proportions"]
         assert proportions["C_RESPOND"]["ci95"] == pytest.approx(
             [0.2065493143772374, 1.0]
         )
