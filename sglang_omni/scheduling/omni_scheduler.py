@@ -48,7 +48,7 @@ from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
-from sglang.srt.runtime_context import get_model, get_serving
+from sglang.srt.runtime_context import get_model, get_parallel, get_serving
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.utils import DynamicGradMode, broadcast_pyobj
@@ -1875,6 +1875,29 @@ class OmniScheduler(Generic[RequestDataT]):
         self.running_batch = plan.running_batch
         return plan.batch_to_run
 
+    def get_num_allocatable_reqs(
+        self,
+        running_bs: int,
+        beam_width: int | None = None,
+        running_batch: ScheduleBatch | None = None,
+    ) -> int:
+        free_request_rows = _Upstream.get_num_allocatable_reqs(
+            self, running_bs, beam_width=beam_width, running_batch=running_batch
+        )
+        bridge = self.session_bridge
+        if bridge is None or beam_width is not None:
+            return free_request_rows
+        else:
+            # note (Junnan Li): A unit whose session slot holds a request row reuses that row, so it does not count against the free rows.
+            per_batch_limit = get_parallel().pp_max_micro_batch_size - running_bs
+            return min(
+                per_batch_limit,
+                free_request_rows
+                + bridge.count_row_reusing_requests(
+                    self.waiting_queue, free_request_rows
+                ),
+            )
+
     def get_new_batch_prefill(self, running_batch):
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
@@ -2377,6 +2400,9 @@ class OmniScheduler(Generic[RequestDataT]):
             self.dirty_deferred_request_ids.add(request_id)
         else:
             pass
+
+    def warm_up_serving_thread(self) -> None:
+        pass
 
     def start(self) -> None:
         self.scheduler_thread_id = threading.get_ident()
