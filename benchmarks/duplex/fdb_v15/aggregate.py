@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import statistics
 from pathlib import Path
-from typing import Literal
 
 from pydantic import JsonValue
+
+from benchmarks.duplex.fdb_v15.common import ENGINE_LABEL, JudgeName, Settings, log
 
 CATEGORIES = (
     "all",
@@ -33,7 +33,6 @@ SEMANTIC_COLUMNS = tuple(
     for axis in SEMANTIC_AXES
     for measure in ("quality", "coverage")
 )
-JudgeName = Literal["qwen", "gpt"]
 RepeatMetrics = dict[str, dict[str, float | None]]
 
 
@@ -169,19 +168,9 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-root", type=Path, required=True)
-    parser.add_argument("--engine", required=True)
-    parser.add_argument("--judge", choices=("qwen", "gpt"), required=True)
-    args = parser.parse_args()
-    results = render(args.run_root, args.engine, args.judge)
-    (args.run_root / "RESULTS.md").write_text(results, encoding="utf-8")
-    print(results)
-    print(f"Wrote {args.run_root / 'RESULTS.md'}")
-
-
-if __name__ == "__main__":
-    main()
-else:
-    pass
+def aggregate(settings: Settings) -> None:
+    results = render(settings.run_root, ENGINE_LABEL, settings.judge)
+    results_path = settings.run_root / "RESULTS.md"
+    results_path.write_text(results, encoding="utf-8")
+    log(results)
+    log(f"Wrote {results_path}")
