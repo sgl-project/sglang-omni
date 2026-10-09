@@ -5,6 +5,9 @@ timing formulas and behavior prompt. This is the v1.5 scoring workflow; dataset
 integration, a passing session protocol and correct conversational behavior are
 separate results.
 
+For a scripted end-to-end run (setup, record, ASR, judge and repeat aggregation), follow the
+[Full-Duplex-Bench v1.5 runbook](../../docs/developer_reference/full_duplex_bench.md).
+
 The former event-anchored `benchmark_duplex_v15 score` command is removed. For
 existing recordings, use the `benchmark_duplex_reference` phases below:
 `export`, `asr`, `timing`, optionally `prepare-judge`/`judge`, then `summarize` and `report`.
