@@ -50,6 +50,8 @@ class MiniCPMOCode2Wav(nn.Module):
         prompt_cache_capacity: int,
         decode_stream_priority: int,
         enable_flow_block_compile: bool,
+        enable_flow_cuda_graph: bool,
+        flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
@@ -150,7 +152,9 @@ class MiniCPMOCode2Wav(nn.Module):
             # note (Dayuxiaoshui): compile the dense blocks only; the packed path
             # slices by data-dependent lengths and would recompile per length.
             for block in flow.decoder.estimator.blocks:
-                block.forward = torch.compile(block.forward, dynamic=True)
+                block.forward = torch.compile(
+                    block.forward, dynamic=True, options={"triton.cudagraphs": False}
+                )
             warmup_prompt = SpeakerPrompt(
                 prompt_tokens=torch.zeros(
                     1, FLOW_WARMUP_TOKENS, dtype=torch.int32, device=resolved_device
@@ -210,6 +214,14 @@ class MiniCPMOCode2Wav(nn.Module):
                                 device=resolved_device,
                             ),
                         )
+        else:
+            pass
+
+        if enable_flow_cuda_graph and resolved_device.type == "cuda":
+            with self.device_context:
+                self.token2wav.capture_flow_graphs(
+                    flow_cuda_graph_capture_shapes,
+                )
         else:
             pass
 

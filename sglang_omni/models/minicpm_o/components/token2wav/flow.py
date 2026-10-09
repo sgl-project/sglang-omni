@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Literal
 
@@ -34,6 +35,9 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
     ConformerState,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT, DiTState
+from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    FlowCudaGraphRunner,
+)
 
 # note (Junnan Li): Classifier-free guidance runs the estimator on all conditioned rows, then all unconditioned rows, so a stream's estimator caches hold its two rows on this axis.
 ESTIMATOR_GUIDANCE_AXIS = 2
@@ -87,6 +91,7 @@ class CausalConditionalCFM(torch.nn.Module):
         self.estimator = estimator
         self.inference_cfg_rate = inference_cfg_rate
         self.out_channels = estimator.out_channels
+        self.graph_runner: FlowCudaGraphRunner | None = None
         self.register_buffer(
             "rand_noise",
             torch.randn([1, self.out_channels, 50 * 600]),
@@ -105,9 +110,7 @@ class CausalConditionalCFM(torch.nn.Module):
         mel_conditioning: torch.Tensor,
         states: list[DiTState] | None = None,
     ) -> tuple[torch.Tensor, list[DiTState] | None]:
-        """Integrate the flow; streaming passes one estimator state per step."""
-        batch_size = x.size(0)
-        t = t_span[0].expand(batch_size)
+        t = t_span[0].expand(x.size(0))
         dt = t_span[1] - t_span[0]
         assert self.inference_cfg_rate > 0, "inference_cfg_rate better > 0"
         paired_mask = torch.cat([mask, mask], dim=0)
@@ -118,43 +121,91 @@ class CausalConditionalCFM(torch.nn.Module):
         paired_mel_conditioning = torch.cat(
             [mel_conditioning, torch.zeros_like(mel_conditioning)], dim=0
         )
-        next_states: list[DiTState] | None = None if states is None else []
-        for step in range(1, len(t_span)):
-            paired_sample = torch.cat([x, x], dim=0)
-            paired_timesteps = torch.cat([t, t], dim=0)
-            if states is None:
-                conditional_derivative = self.estimator.forward(
-                    paired_sample,
+        graph_runner = self.graph_runner if states is None else None
+        next_states: list[DiTState] = []
+        is_packed = self.estimator.enable_variable_length and x.shape[0] > 1
+        graph_shape = (
+            graph_runner.fit(x, t_span)
+            if graph_runner is not None and not is_packed
+            else None
+        )
+        with graph_runner.lock if graph_shape is not None else nullcontext():
+            captured_flow = (
+                graph_runner.prepare(
+                    graph_shape,
+                    x,
+                    paired_mu,
                     paired_mask,
-                    paired_mu,
-                    paired_timesteps,
                     paired_speaker_embeddings,
                     paired_mel_conditioning,
                 )
-            else:
-                conditional_derivative, next_state = self.estimator.forward_chunk(
-                    paired_sample,
-                    paired_mu,
-                    paired_timesteps,
-                    paired_speaker_embeddings,
-                    paired_mel_conditioning,
-                    states[step - 1],
-                )
-                next_states.append(next_state)
-            conditional_derivative, unconditional_derivative = torch.split(
-                conditional_derivative, [x.size(0), x.size(0)], dim=0
+                if graph_shape is not None
+                else None
             )
-            guided_derivative = (
-                (1.0 + self.inference_cfg_rate) * conditional_derivative
-                - self.inference_cfg_rate * unconditional_derivative
+            for step in range(1, len(t_span)):
+                if states is not None:
+                    derivative, next_state = self.estimator.forward_chunk(
+                        torch.cat([x, x], dim=0),
+                        paired_mu,
+                        torch.cat([t, t], dim=0),
+                        paired_speaker_embeddings,
+                        paired_mel_conditioning,
+                        states[step - 1],
+                    )
+                    next_states.append(next_state)
+                    conditional, unconditional = derivative.chunk(2, dim=0)
+                    x = x + dt * (
+                        (1.0 + self.inference_cfg_rate) * conditional
+                        - self.inference_cfg_rate * unconditional
+                    )
+                elif captured_flow is not None:
+                    graph_runner.run_step(captured_flow, t, dt)
+                else:
+                    x = self.euler_step(
+                        x,
+                        t,
+                        dt,
+                        paired_mu,
+                        paired_mask,
+                        paired_speaker_embeddings,
+                        paired_mel_conditioning,
+                    )
+                t = t + dt
+                if step < len(t_span) - 1:
+                    dt = t_span[step + 1] - t_span[step]
+                else:
+                    pass
+            output = (
+                captured_flow.output[:, :, : x.shape[2]].clone()
+                if captured_flow is not None
+                else x
             )
-            x = x + dt * guided_derivative
-            t = t + dt
-            if step < len(t_span) - 1:
-                dt = t_span[step + 1] - t_span[step]
-            else:
-                pass
-        return x, next_states
+            return output, next_states if states is not None else None
+
+    def euler_step(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        dt: torch.Tensor,
+        paired_mu: torch.Tensor,
+        paired_mask: torch.Tensor,
+        paired_speaker_embeddings: torch.Tensor,
+        paired_mel_conditioning: torch.Tensor,
+    ) -> torch.Tensor:
+        derivative = self.estimator.forward(
+            torch.cat([x, x], dim=0),
+            paired_mask,
+            paired_mu,
+            torch.cat([t, t], dim=0),
+            paired_speaker_embeddings,
+            paired_mel_conditioning,
+        )
+        conditional_derivative, unconditional_derivative = derivative.chunk(2, dim=0)
+        guided_derivative = (
+            (1.0 + self.inference_cfg_rate) * conditional_derivative
+            - self.inference_cfg_rate * unconditional_derivative
+        )
+        return x + dt * guided_derivative
 
     @torch.inference_mode()
     def forward(

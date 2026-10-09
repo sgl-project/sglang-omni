@@ -28,6 +28,9 @@ from sglang_omni.models.minicpm_o.components.token2wav.flow import (
     CausalConditionalCFM,
     CausalMaskedDiffWithXvec,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    FlowCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
@@ -206,6 +209,21 @@ class Token2Wav(torch.nn.Module):
         self.speech_window = torch.from_numpy(np.hamming(2 * self.source_cache_len)).to(
             device
         )
+
+    @torch.inference_mode()
+    def capture_flow_graphs(
+        self, flow_capture_shapes: tuple[tuple[int, int], ...]
+    ) -> None:
+        """Capture after the caller materializes compiled dense DiT blocks."""
+        decoder = self.flow.decoder
+        shapes = tuple(
+            shape
+            for shape in flow_capture_shapes
+            if shape[0] == 1 or not decoder.estimator.enable_variable_length
+        )
+        runner = FlowCudaGraphRunner(decoder.euler_step, decoder.rand_noise)
+        runner.capture(shapes)
+        decoder.graph_runner = runner
 
     @torch.inference_mode()
     def prepare_prompt(self, source: str | io.BytesIO) -> SpeakerPrompt:
