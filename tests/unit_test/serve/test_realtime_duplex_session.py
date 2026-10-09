@@ -608,3 +608,21 @@ def test_connections_over_capacity_are_denied_before_upgrade() -> None:
                 pass
 
     assert exc_info.value.status_code == 503
+
+
+def test_connection_without_update_is_closed_and_frees_its_slot() -> None:
+    client = build_test_client(
+        ScriptedAdapter(),
+        limits=RuntimeLimits(session_update_timeout_s=0.1),
+        max_connections=1,
+    )
+
+    with client.websocket_connect("/v1/realtime") as websocket:
+        events = receive_until(websocket, "session.closed")
+        with client.websocket_connect("/v1/realtime") as reopened_socket:
+            reopened = reopened_socket.receive_json()
+
+    errors = events_of_type(events, "error")
+    assert [error["error"]["code"] for error in errors] == ["session_update_timeout"]
+    assert errors[0]["sglang"]["fatal"] is True
+    assert reopened["type"] == "session.created"
