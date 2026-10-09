@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -129,6 +130,70 @@ def make_engine_builder(
     )
     builder.context_length = context_length
     return builder
+
+
+@pytest.mark.parametrize(
+    ("is_npu", "configured", "expected"),
+    [
+        (True, {}, {"PER_STREAM_QUEUE": "1"}),
+        (False, {}, {}),
+        (True, {"PER_STREAM_QUEUE": "0"}, {"PER_STREAM_QUEUE": "0"}),
+    ],
+)
+def test_per_stream_queue_env_defaults(monkeypatch, is_npu, configured, expected):
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: is_npu)
+    config = Qwen3ASRPipelineConfig(model_path="test", env_defaults=configured)
+    assert config.resolved_env_defaults() == expected
+    assert config.env_defaults == configured
+
+
+@pytest.mark.parametrize(
+    ("is_npu", "graphs", "per_stream", "task_queue", "blocking", "valid"),
+    [
+        (True, True, "1", "1", "0", True),
+        (True, True, "1", "2", "0", True),
+        (True, True, "1", None, None, True),
+        (True, True, "0", "2", "0", False),
+        (True, True, "1", "0", "0", False),
+        (True, True, "1", "2", "1", False),
+        (True, True, None, None, None, False),
+        (True, False, None, None, None, True),
+        (False, True, None, None, None, True),
+    ],
+)
+def test_npu_graph_startup_requires_per_stream_queues(
+    monkeypatch, is_npu, graphs, per_stream, task_queue, blocking, valid
+) -> None:
+    for name, value in (
+        ("PER_STREAM_QUEUE", per_stream),
+        ("TASK_QUEUE_ENABLE", task_queue),
+        ("ASCEND_LAUNCH_BLOCKING", blocking),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: is_npu)
+    monkeypatch.setattr(
+        qwen3_asr_builder.AsrEngineBuilder,
+        "validate_before_infrastructure",
+        lambda self, server_args: None,
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.mrope_fast_path, "apply_asr_mrope_fast_path", lambda: None
+    )
+    builder = _make_engine_builder()
+    builder.enable_encoder_cuda_graph = graphs
+    monkeypatch.setattr(builder, "log_memory_checkpoint", lambda checkpoint: None)
+    server_args = SimpleNamespace(
+        disable_cuda_graph=not graphs,
+        cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(bs=[1])),
+    )
+    expectation = (
+        nullcontext() if valid else pytest.raises(ValueError, match="PER_STREAM_QUEUE")
+    )
+    with expectation:
+        builder.validate_before_infrastructure(server_args)
 
 
 def test_qwen3_asr_engine_builder_binds_encode_wait_policy() -> None:

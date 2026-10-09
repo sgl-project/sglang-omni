@@ -17,6 +17,21 @@ MODEL_PATH="$(
 )"
 ```
 
+### Ascend NPU graph execution
+
+The NPU pipeline defaults to `PER_STREAM_QUEUE=1` before spawning its worker
+process. Existing shell and pipeline environment settings take precedence.
+`TASK_QUEUE_ENABLE` can retain its runtime default of `1` or be set to `2`;
+`ASCEND_LAUNCH_BLOCKING=1` is incompatible with this graph configuration.
+For direct engine construction outside the pipeline launcher, set
+`PER_STREAM_QUEUE=1` before initializing the NPU runtime.
+
+Use a torch_npu build that supports per-stream Host task queues. This lets cache
+transfers retain the existing caller-stream path while encoder graph updates use
+their own stream; it does not replace device-stream synchronization. See the
+[TorchNPU stream-level TaskQueue documentation](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md)
+for runtime constraints.
+
 ### Apple Silicon (MLX)
 
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and

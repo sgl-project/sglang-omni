@@ -257,3 +257,9 @@ def test_captures_in_either_mode_leave_later_captures_working(
 
     for output in outputs:
         assert float(output) == pytest.approx(8.0, abs=1e-4)
+
+
+def test_only_npu_backend_supports_graph_task_updates() -> None:
+    assert NpuDeviceGraphBackend.supports_graph_task_update
+    assert not CudaDeviceGraphBackend.supports_graph_task_update
+    assert not XpuDeviceGraphBackend.supports_graph_task_update
