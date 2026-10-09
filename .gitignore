@@ -31,6 +31,8 @@ htmlcov/
 # Logs
 *.log
 *.txt
+# Build definitions are sources, not logs.
+!CMakeLists.txt
 output.wav
 
 # OS

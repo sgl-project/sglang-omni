@@ -1,8 +1,8 @@
 // OmniPhase1LifecycleTests.swift
 // Lifecycle and fault acceptance for local Qwen on the Omni server.
 //
-// Opt-in: VOXT_RUN_MODEL_TESTS=1, VOXT_ASR_BACKEND=omni with the backend
-// variables, VOXT_MODEL_STORAGE_ROOT, and VOXT_LIFECYCLE_CLIPS (a directory with
+// Opt-in: VOXT_RUN_MODEL_TESTS=1, VOXT_ASR_BACKEND=omni with VOXT_OMNI_RUNTIME
+// (the native qwen3_asr_server binary), VOXT_MODEL_STORAGE_ROOT, and VOXT_LIFECYCLE_CLIPS (a directory with
 // short.wav and long.wav, 16 kHz mono). VOXT_LIFECYCLE_OUT receives a JSONL
 // record per round; VOXT_LIFECYCLE_ROUNDS defaults to 200.
 
@@ -24,8 +24,8 @@ final class OmniPhase1LifecycleTests: XCTestCase {
     private func fixtures() throws -> Fixtures {
         try ModelTestGate.requireEnabled("Omni phase 1 lifecycle")
         let environment = ProcessInfo.processInfo.environment
-        guard environment["VOXT_ASR_BACKEND"] == "omni" else {
-            throw XCTSkip("Set VOXT_ASR_BACKEND=omni and the Omni backend variables.")
+        guard OmniASRBackend.LaunchSettings(environment: environment) != nil else {
+            throw XCTSkip("Set VOXT_ASR_BACKEND=omni and VOXT_OMNI_RUNTIME.")
         }
         guard let clips = environment["VOXT_LIFECYCLE_CLIPS"], !clips.isEmpty else {
             throw XCTSkip("Set VOXT_LIFECYCLE_CLIPS to a directory with short.wav and long.wav.")
@@ -123,7 +123,7 @@ final class OmniPhase1LifecycleTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(400))
         let servers = ProcessTree.descendants().filter {
-            ProcessTree.commandLine(of: $0).contains("sglang_omni_mlx.qwen3_asr.server")
+            ProcessTree.commandLine(of: $0).contains("qwen3_asr_server")
         }
         XCTAssertFalse(servers.isEmpty, "no Qwen3-ASR server process found")
         servers.forEach { kill($0, SIGKILL) }
@@ -158,11 +158,9 @@ final class OmniPhase1LifecycleTests: XCTestCase {
         let manager = try await makeManager()
         let load = Task { @MainActor in try await manager.loadModel() }
         let started = await ProcessTree.waitForDescendants(timeoutSeconds: 10)
-        XCTAssertTrue(started, "the cold start never spawned the supervisor")
-        // The server is ready about a second after the supervisor starts; give
-        // up well inside that window.
-        try await Task.sleep(for: .milliseconds(200))
-
+        XCTAssertTrue(started, "the cold start never spawned the server")
+        // Note (Jiaxin Deng): the native server is ready about 150 ms after its process starts;
+        // give up as soon as the process appears, inside that window.
         manager.cancelPendingModelLoadForApplicationTermination()
         load.cancel()
         let loaded = try? await load.value
