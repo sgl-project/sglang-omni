@@ -45,9 +45,7 @@ encoding/decoding execute in MLX; audio preprocessing and stage payloads use CPU
 tensors. The existing speech, cloning and editing APIs remain the same.
 
 Apple defaults to one request per stage batch. Larger batches can be selected
-with each stage's `max_batch_size` after checking unified-memory use. Outputs are
-complete waveforms; incremental audio streaming is not implemented. CUDA graph,
-Torch compilation and CUDA fusion settings do not select MLX kernels.
+with each stage's `max_batch_size` after checking unified-memory use.
 
 The conditioner and DiT use BF16 matrix weights by default. Text residuals,
 hidden-state fusion, rotary positions, VAE computation and Euler integration
@@ -59,9 +57,6 @@ and weight precision. This path currently supports BF16 and FP32, not FP16 or
 quantized checkpoints.
 
 Reference audio uses posterior sampling, matching the original PyTorch recipe.
-Reference and generation noise have independent request-local streams. A fixed
-seed is reproducible within a backend; it does not imply identical Torch/MLX
-random samples or bitwise equality across batch shapes.
 
 Run component tests and opt-in real-checkpoint parity on an Apple GPU:
 
@@ -76,7 +71,7 @@ AUK_MLX_SERVER_URL=http://localhost:8000 \
 
 Repeat the checkpoint and HTTP tests with the base model. Component parity uses
 identical weights and explicit noise, and complements end-to-end speech-quality
-evaluation; it does not establish quality or throughput on its own.
+evaluation.
 
 ## Speech Generation
 
