@@ -29,10 +29,17 @@ class TextDecoderConfig:
 
 
 def text_decoder_config(text: dict[str, object]) -> TextDecoderConfig:
-    """The decoder config from a checkpoint's text_config."""
-    return TextDecoderConfig(
-        **{name: text[name] for name in TextDecoderConfig.__dataclass_fields__}
-    )
+    """The decoder config from a checkpoint's text_config, either rope spelling."""
+    fields = {
+        name: text[name]
+        for name in TextDecoderConfig.__dataclass_fields__
+        if name != "rope_theta"
+    }
+    if "rope_theta" in text:
+        rope_theta = text["rope_theta"]
+    else:
+        rope_theta = text["rope_parameters"]["rope_theta"]
+    return TextDecoderConfig(**fields, rope_theta=rope_theta)
 
 
 class KVCache:
