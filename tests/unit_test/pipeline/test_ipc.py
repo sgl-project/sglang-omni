@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import signal
 from pathlib import Path
 from traceback import format_exception
@@ -21,8 +22,12 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.pipeline.stage import runtime as stage_runtime_module
+from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
+from sglang_omni.proto.messages import ProfilerStartMessage
+from sglang_omni.serve import launcher
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 
@@ -655,6 +660,87 @@ def test_start_profile_torch_mode_still_requires_trace_template() -> None:
         resp = client.post("/start_profile", json={"enable_torch": True})
     assert resp.status_code == 400
     assert "trace_path_template is required" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "trace_path_template",
+    ["/tmp/profile_{pid}", "/tmp/profile_{", "/tmp/profile_{run_id.foo}"],
+)
+def test_start_profile_rejects_invalid_trace_path_template(
+    trace_path_template: str,
+) -> None:
+    class FakeProfilerControl:
+        async def broadcast_start(self, **kwargs: object) -> None:
+            raise AssertionError("invalid template should fail before broadcasting")
+
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, FakeProfilerControl(), profiler_dir=None)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/start_profile",
+            json={
+                "enable_torch": True,
+                "trace_path_template": trace_path_template,
+            },
+        )
+    assert resp.status_code == 400
+    assert (
+        "Only {run_id} and {stage} placeholders are supported" in resp.json()["detail"]
+    )
+
+
+def test_start_profile_accepts_supported_trace_path_placeholders() -> None:
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.starts: list[dict[str, object]] = []
+
+        async def broadcast_start(self, **kwargs: object) -> None:
+            self.starts.append(kwargs)
+
+    app = FastAPI()
+    control = FakeProfilerControl()
+    launcher.mount_profiler_routes(app, control, profiler_dir=None)
+    template = "/tmp/profile_{run_id}_{stage}"
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/start_profile",
+            json={"enable_torch": True, "trace_path_template": template},
+        )
+
+    assert resp.status_code == 200
+    assert control.starts[0]["trace_path_template"] == template
+
+
+@pytest.mark.parametrize("trace_path_template", ["/tmp/t_{pid}", "/tmp/t_{"])
+def test_stage_profiler_start_ignores_invalid_trace_path_template(
+    trace_path_template: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class InactiveProfiler:
+        @classmethod
+        def is_active(cls) -> bool:
+            return False
+
+        @classmethod
+        def start(cls, template: str, run_id: str | None = None) -> str:
+            raise AssertionError("invalid template must not start the profiler")
+
+    monkeypatch.setattr(stage_runtime_module, "TorchProfiler", InactiveProfiler)
+    stage = Stage.__new__(Stage)
+    stage.name = "talker"
+    message = ProfilerStartMessage(
+        run_id="repro",
+        trace_path_template=trace_path_template,
+        enable_torch=True,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        stage.on_profiler_start(message)
+
+    assert "ignored invalid profiler trace path template" in caplog.text
 
 
 @pytest.mark.asyncio
