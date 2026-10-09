@@ -78,6 +78,24 @@ def test_wav_the_parser_reads_decodes_as_the_wav_parser(
     np.testing.assert_array_equal(decoded, parsed)
 
 
+def test_wav_whose_header_states_no_data_decodes_to_its_end() -> None:
+    data = encode_audio(tone(1), "WAV", "PCM_16", SAMPLE_RATE)
+    data_at = data.index(b"data")
+    unsized = data[: data_at + 4] + bytes(4) + data[data_at + 8 :]
+
+    decoded, sample_rate = decode_audio_bytes(unsized)
+
+    assert sample_rate == SAMPLE_RATE
+    np.testing.assert_array_equal(decoded, libsndfile_mono(data))
+
+
+def test_wav_without_samples_is_an_error() -> None:
+    data = encode_audio(np.zeros(0, dtype=np.float32), "WAV", "PCM_16", SAMPLE_RATE)
+
+    with pytest.raises(ValueError, match="No audio frames decoded"):
+        decode_audio_bytes(data)
+
+
 def test_containers_libsndfile_rejects_decode_through_pyav() -> None:
     buffer = io.BytesIO()
     with av.open(buffer, "w", format="adts") as container:
