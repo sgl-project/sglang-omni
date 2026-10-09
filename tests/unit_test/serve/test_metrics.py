@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.serve.metrics import (
     OmniPrometheusMetrics,
-    _render_sample,
     install_metrics_middleware,
+    render_sample,
 )
 
 
@@ -112,7 +112,7 @@ def test_coordinator_snapshot_gauges_reset_missing_state_and_stage() -> None:
 
 
 def test_label_keys_are_sorted_and_values_are_escaped() -> None:
-    sample = _render_sample(
+    sample = render_sample(
         "sample_metric",
         {"z_label": 'quote"slash\\newline\n', "a_label": "first"},
         1,
@@ -135,9 +135,9 @@ def test_histogram_buckets_are_cumulative() -> None:
     )
     text = metrics.render_text()
 
-    assert _http_duration_bucket(le="0.01") + " 0.0" in text
-    assert _http_duration_bucket(le="0.025") + " 1.0" in text
-    assert _http_duration_bucket(le="+Inf") + " 1.0" in text
+    assert http_duration_bucket(le="0.01") + " 0.0" in text
+    assert http_duration_bucket(le="0.025") + " 1.0" in text
+    assert http_duration_bucket(le="+Inf") + " 1.0" in text
     assert (
         'sglang_omni_http_request_duration_seconds_count{method="POST",'
         'model_name="moss-tts-local-v15",route="/v1/audio/speech"} 1.0' in text
@@ -175,14 +175,14 @@ def test_http_middleware_records_statuses_routes_and_skips_metrics_scrape() -> N
 
     assert metrics_resp.status_code == 200
     text = metrics_resp.text
-    assert _http_requests_total(route="/ok", status="200") + " 1.0" in text
-    assert _http_requests_total(route="/bad", status="400") + " 1.0" in text
-    assert _http_requests_total(route="/boom", status="500") + " 1.0" in text
-    assert _http_requests_total(route="__unmatched__", status="404") + " 1.0" in text
+    assert http_requests_total(route="/ok", status="200") + " 1.0" in text
+    assert http_requests_total(route="/bad", status="400") + " 1.0" in text
+    assert http_requests_total(route="/boom", status="500") + " 1.0" in text
+    assert http_requests_total(route="__unmatched__", status="404") + " 1.0" in text
     assert 'route="/metrics"' not in text
 
 
-def _http_duration_bucket(*, le: str) -> str:
+def http_duration_bucket(*, le: str) -> str:
     return (
         "sglang_omni_http_request_duration_seconds_bucket{"
         f'le="{le}",method="POST",model_name="moss-tts-local-v15",'
@@ -191,7 +191,7 @@ def _http_duration_bucket(*, le: str) -> str:
     )
 
 
-def _http_requests_total(*, route: str, status: str) -> str:
+def http_requests_total(*, route: str, status: str) -> str:
     return (
         "sglang_omni_http_requests_total{"
         f'method="GET",model_name="moss-tts-local-v15",route="{route}",'
