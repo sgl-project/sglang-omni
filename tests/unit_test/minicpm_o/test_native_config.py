@@ -18,10 +18,12 @@ from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
+    resolve_stage_factory_args,
     resolve_stage_typed_kwargs,
 )
 from sglang_omni.models.minicpm_o import native_stages, stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
+from sglang_omni.models.minicpm_o.config import MiniCPMOPipelineConfig
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexPipelineConfig,
@@ -29,10 +31,66 @@ from sglang_omni.models.minicpm_o.native_config import (
 )
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
 from sglang_omni.scheduling.session import SessionHooks
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 
 class ConfigLoaded(Exception):
     """Stop at the configuration boundary before allocating any model or GPU."""
+
+
+def test_minicpm_video_frame_config() -> None:
+    config = MiniCPMOPipelineConfig(model_path="unused")
+    preprocessing = config.stage_named("preprocessing")
+    assert preprocessing.factory.video_frame_workers == 8
+
+    disabled = ConfigManager(config).merge_config(
+        [("preprocessing.factory.video_frame_workers", "0")]
+    )
+    assert disabled.stage_named("preprocessing").factory.video_frame_workers == 0
+    factory_kwargs = resolve_stage_factory_args(
+        disabled.stage_named("preprocessing"), disabled
+    )
+    assert factory_kwargs["video_frame_workers"] == 0
+
+
+@pytest.mark.parametrize(("workers", "uses_pool"), [(8, True), (0, False)])
+def test_minicpm_preprocessing_factory(
+    monkeypatch, workers: int, uses_pool: bool
+) -> None:
+    fake_preprocessor = Mock()
+    constructor = Mock(return_value=fake_preprocessor)
+    monkeypatch.setattr(stages, "MiniCPMOPreprocessor", constructor)
+
+    video_frame_executor = Mock()
+    thread_pool = Mock(return_value=video_frame_executor)
+    monkeypatch.setattr(stages, "ThreadPoolExecutor", thread_pool)
+
+    scheduler = stages.create_preprocessing_executor(
+        "unused", video_frame_workers=workers
+    )
+    try:
+        assert isinstance(scheduler, SimpleScheduler)
+        assert scheduler.max_concurrency == 1
+        constructor.assert_called_once_with(
+            "unused",
+            speech_enabled=False,
+            video_frame_executor=video_frame_executor if uses_pool else None,
+            video_frame_workers=workers,
+        )
+        if uses_pool:
+            thread_pool.assert_called_once_with(
+                max_workers=8,
+                thread_name_prefix="minicpmo-video-frame",
+            )
+        else:
+            thread_pool.assert_not_called()
+    finally:
+        scheduler.stop()
+
+    if uses_pool:
+        video_frame_executor.shutdown.assert_called_once_with()
+    else:
+        video_frame_executor.shutdown.assert_not_called()
 
 
 @pytest.fixture

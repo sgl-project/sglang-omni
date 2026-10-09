@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from concurrent.futures import Executor, ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -50,10 +51,32 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     speech_enabled: bool = False,
+    video_frame_workers: int = 8,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
+    video_frame_executor: Executor | None = None
+    if video_frame_workers > 1:
+        # note (chenye): shared CPU pool for sequential resize and checkpoint image
+        # processing
+        video_frame_executor = ThreadPoolExecutor(
+            max_workers=video_frame_workers,
+            thread_name_prefix="minicpmo-video-frame",
+        )
+    else:
+        pass
 
-    return SimpleScheduler[StagePayload, StagePayload](preprocessor)
+    preprocessor = MiniCPMOPreprocessor(
+        model_path,
+        speech_enabled=speech_enabled,
+        video_frame_executor=video_frame_executor,
+        video_frame_workers=video_frame_workers,
+    )
+
+    return SimpleScheduler[StagePayload, StagePayload](
+        preprocessor,
+        shutdown_callback=(
+            video_frame_executor.shutdown if video_frame_executor is not None else None
+        ),
+    )
 
 
 ENCODER_CACHE_MAX_ENTRIES = 64

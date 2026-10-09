@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from concurrent.futures import Executor, wait
 
 import numpy as np
 import numpy.typing as npt
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer, BatchFeature, ProcessorMixin
 
 from sglang_omni.models.minicpm_o.payload_types import (
     AudioEncoderInputs,
@@ -35,11 +35,6 @@ from sglang_omni.preprocessing.video import (
     ensure_video_list_async,
 )
 from sglang_omni.proto import StagePayload
-
-if TYPE_CHECKING:
-    from transformers import ProcessorMixin
-else:
-    pass
 
 IMAGE_PLACEHOLDER = "<image>./</image>"
 AUDIO_PLACEHOLDER = "<audio>./</audio>"
@@ -106,6 +101,8 @@ class MiniCPMOPreprocessor:
         model_path: str,
         *,
         speech_enabled: bool = False,
+        video_frame_executor: Executor | None = None,
+        video_frame_workers: int = 1,
     ) -> None:
         local_dir = str(resolve_model_path(model_path))
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -113,8 +110,10 @@ class MiniCPMOPreprocessor:
         )
         # note (MayDomine): text-only requests do not need Whisper feature extraction.
         self.model_dir = local_dir
-        self._processor = None  # noqa: leading-underscore
+        self._processor: ProcessorMixin | None = None  # noqa: leading-underscore
         self.speech_enabled = speech_enabled
+        self.video_frame_executor = video_frame_executor
+        self.video_frame_workers = video_frame_workers
 
     def speech_to_text_inputs(
         self, payload: StagePayload, inputs: Mapping[str, object]
@@ -137,9 +136,115 @@ class MiniCPMOPreprocessor:
             self._processor = AutoProcessor.from_pretrained(  # noqa: leading-underscore
                 self.model_dir, trust_remote_code=True
             )
+            self.enable_video_frame_parallelism(
+                self._processor  # noqa: leading-underscore
+            )
         else:
             pass
         return self._processor  # noqa: leading-underscore
+
+    def enable_video_frame_parallelism(self, processor: ProcessorMixin) -> None:
+        if self.video_frame_executor is None or self.video_frame_workers <= 1:
+            return
+        else:
+            pass
+        image_processor = processor.image_processor
+        assert image_processor is not None
+        original_preprocess = image_processor.preprocess
+        video_frame_executor = self.video_frame_executor
+        video_frame_workers = self.video_frame_workers
+
+        def parallel_preprocess(
+            images: list[Image.Image] | list[list[Image.Image]],
+            do_pad: bool = True,
+            max_slice_nums: int | None = None,
+            return_tensors: str | None = None,
+            **processor_options: object,
+        ) -> BatchFeature:
+            if (
+                max_slice_nums != 1
+                or return_tensors != "pt"
+                or not isinstance(images, list)
+                or len(images) != 1
+                or not isinstance(images[0], list)
+                or len(images[0]) <= 1
+            ):
+                return original_preprocess(
+                    images,
+                    do_pad=do_pad,
+                    max_slice_nums=max_slice_nums,
+                    return_tensors=return_tensors,
+                    **processor_options,
+                )
+            else:
+                pass
+
+            frame_images = images[0]
+            chunk_count = min(video_frame_workers, len(frame_images))
+            base_chunk_size, remainder = divmod(len(frame_images), chunk_count)
+            frame_chunks: list[list[Image.Image]] = []
+            frame_start = 0
+            for chunk_index in range(chunk_count):
+                chunk_size = base_chunk_size + int(chunk_index < remainder)
+                frame_chunks.append(
+                    frame_images[frame_start : frame_start + chunk_size]
+                )
+                frame_start += chunk_size
+
+            futures = [
+                video_frame_executor.submit(
+                    original_preprocess,
+                    [frame_chunk],
+                    do_pad=do_pad,
+                    max_slice_nums=max_slice_nums,
+                    return_tensors=return_tensors,
+                    **processor_options,
+                )
+                for frame_chunk in frame_chunks
+            ]
+            wait(futures)
+            processor_outputs: list[BatchFeature] = [
+                future.result() for future in futures
+            ]
+
+            expected_keys = {"pixel_values", "image_sizes", "tgt_sizes"}
+            if any(set(output.data) != expected_keys for output in processor_outputs):
+                return original_preprocess(
+                    images,
+                    do_pad=do_pad,
+                    max_slice_nums=max_slice_nums,
+                    return_tensors=return_tensors,
+                    **processor_options,
+                )
+            else:
+                pass
+
+            return BatchFeature(
+                data={
+                    "pixel_values": [
+                        [
+                            value
+                            for output in processor_outputs
+                            for value in output["pixel_values"][0]
+                        ]
+                    ],
+                    "image_sizes": [
+                        [
+                            value
+                            for output in processor_outputs
+                            for value in output["image_sizes"][0]
+                        ]
+                    ],
+                    "tgt_sizes": [
+                        torch.cat(
+                            [output["tgt_sizes"][0] for output in processor_outputs],
+                            dim=0,
+                        )
+                    ],
+                }
+            )
+
+        image_processor.preprocess = parallel_preprocess
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
@@ -302,6 +407,8 @@ class MiniCPMOPreprocessor:
                 **video_kwargs,
                 extract_audio=use_audio_in_video,
                 audio_target_sr=16000,
+                resize_executor=self.video_frame_executor,
+                resize_workers=self.video_frame_workers,
             )
         else:
             videos, video_audios = [], None

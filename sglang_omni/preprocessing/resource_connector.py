@@ -10,7 +10,7 @@ import logging
 import os
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, TypeVar
 from urllib.parse import ParseResult, urlparse
@@ -702,6 +702,8 @@ class MultiModalResourceConnector:
         timeout: float = 30.0,
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
+        resize_executor: Executor | None = None,
+        resize_workers: int = 1,
     ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
@@ -716,6 +718,8 @@ class MultiModalResourceConnector:
             timeout: Timeout for HTTP requests in seconds.
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
+            resize_executor: Optional executor for frame tensor resize.
+            resize_workers: Maximum number of frame chunks submitted for each resize.
 
         Returns:
             Tuple of (video_tensor, sample_fps, audio_or_None).
@@ -731,6 +735,8 @@ class MultiModalResourceConnector:
             image_mode=image_mode,
             extract_audio=extract_audio,
             audio_target_sr=audio_target_sr,
+            resize_executor=resize_executor,
+            resize_workers=resize_workers,
             **self.media_io_kwargs.get("video", {}),
         )
 
