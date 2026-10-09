@@ -1,0 +1,272 @@
+{
+  "scope": "Historical capture on 2026-09-27; custom primary Claude judging on 2026-10-08. Not new GPT scores.",
+  "source_sha256": {
+    "reference-summary": "a46f363c7160b32ab53be013fe700193c05b0c3295454d1cc6fe6e4e21337e28",
+    "semantic-summary": "bb27e4288e56f8b8cd1935394e2661111df6961881d757233c8b05c531b5007a"
+  },
+  "capture_server_revision": "6eed7bdac4a5fedd27dfbe89b202a92cdc01a8e5",
+  "capture_sglang": "0.5.20",
+  "primary_judge": "claude-opus-5-5",
+  "primary_effort": "medium",
+  "semantic_axes": {
+    "interaction_handling": {
+      "selected": 498,
+      "accepted": 308,
+      "failed": 51,
+      "unresolved": 139,
+      "coverage_percent": 72.08835341365462,
+      "quality_percent": 85.79387186629526,
+      "unresolved_bounds_percent": [
+        61.84738955823293,
+        89.75903614457832
+      ],
+      "sampling_ci95_percent": [
+        81.94070080862534,
+        89.34426229508196
+      ]
+    },
+    "relevance": {
+      "selected": 498,
+      "accepted": 309,
+      "failed": 21,
+      "unresolved": 168,
+      "coverage_percent": 66.26506024096386,
+      "quality_percent": 93.63636363636364,
+      "unresolved_bounds_percent": [
+        62.04819277108434,
+        95.78313253012048
+      ],
+      "sampling_ci95_percent": [
+        90.93500797448166,
+        96.09638830447213
+      ]
+    },
+    "grounding": {
+      "selected": 498,
+      "accepted": 206,
+      "failed": 96,
+      "unresolved": 196,
+      "coverage_percent": 60.6425702811245,
+      "quality_percent": 68.21192052980132,
+      "unresolved_bounds_percent": [
+        41.36546184738956,
+        80.72289156626506
+      ],
+      "sampling_ci95_percent": [
+        62.912005548594955,
+        73.24464070048309
+      ]
+    }
+  },
+  "semantic_joint": {
+    "selected": 498,
+    "accepted": 170,
+    "failed": 120,
+    "unresolved": 208,
+    "coverage_percent": 58.23293172690763,
+    "quality_percent": 58.62068965517241,
+    "unresolved_bounds_percent": [
+      34.136546184738954,
+      75.90361445783132
+    ],
+    "sampling_ci95_percent": [
+      52.940671113806346,
+      64.33566433566433
+    ]
+  },
+  "reference_all": {
+    "asr_files": {
+      "clean_input.wav:ineligible": 2,
+      "clean_input.wav:ok": 496,
+      "clean_output.wav:ineligible": 2,
+      "clean_output.wav:ok": 496,
+      "clean_output.wav:ok_empty_transcript": 7,
+      "input.wav:ineligible": 1,
+      "input.wav:ok": 497,
+      "output.wav:ineligible": 1,
+      "output.wav:ok": 497,
+      "output.wav:ok_empty_transcript": 5
+    },
+    "behavior": {
+      "official_format_note": "official stats_by_axis over every parsed response, rounded to 2 dp",
+      "official_format_ratios": {
+        "C": {},
+        "C_total_tags": 0
+      },
+      "population": 498,
+      "status": {
+        "not_judged": 495,
+        "variant_ineligible": 3
+      },
+      "valid_label_proportions": {
+        "C_RESPOND": {
+          "bootstrap": {
+            "ci95": null,
+            "replicates": 0,
+            "unit": "sample",
+            "unit_n": 0
+          },
+          "count": 0,
+          "proportion": null
+        },
+        "C_RESUME": {
+          "bootstrap": {
+            "ci95": null,
+            "replicates": 0,
+            "unit": "sample",
+            "unit_n": 0
+          },
+          "count": 0,
+          "proportion": null
+        },
+        "C_UNCERTAIN_HANDLING": {
+          "bootstrap": {
+            "ci95": null,
+            "replicates": 0,
+            "unit": "sample",
+            "unit_n": 0
+          },
+          "count": 0,
+          "proportion": null
+        },
+        "C_UNKNOWN": {
+          "bootstrap": {
+            "ci95": null,
+            "replicates": 0,
+            "unit": "sample",
+            "unit_n": 0
+          },
+          "count": 0,
+          "proportion": null
+        }
+      },
+      "valid_n": 0
+    },
+    "timing_official_overlap": {
+      "ineligible_reasons": {
+        "append 57 send completed after v2 deadline": 1,
+        "append 58 send completed after v2 deadline": 1,
+        "append 59 send completed after v2 deadline": 1,
+        "append 60 send completed after v2 deadline": 1,
+        "append 61 send completed after v2 deadline": 1,
+        "input pacing deviation 0.4181870162859562 exceeds 0.08s": 1
+      },
+      "manifest_flags": {
+        "audio_received_after_T": 219,
+        "playout_active_at_T": 274
+      },
+      "official_all_intervals": {
+        "reduction": "campaign reduction of official per-sample intervals (end - start); official source defines no scalar aggregate",
+        "response": {
+          "bootstrap_pooled_mean": {
+            "ci95": [
+              2.9568216213395364,
+              3.0477751028806583
+            ],
+            "empty_replicates": 0,
+            "method": "percentile",
+            "replicates": 2000,
+            "seed": "20260925:minicpmo:all:overlap:resp",
+            "unit": "sample",
+            "unit_n": 497
+          },
+          "interval_n": 732,
+          "mean_s": 3.0018142076502734,
+          "median_s": 2.9800000000000004,
+          "samples": 497,
+          "zero_interval_samples": 4
+        },
+        "stop": {
+          "bootstrap_pooled_mean": {
+            "ci95": [
+              1.684369653158087,
+              1.837859358677686
+            ],
+            "empty_replicates": 0,
+            "method": "percentile",
+            "replicates": 2000,
+            "seed": "20260925:minicpmo:all:overlap:stop",
+            "unit": "sample",
+            "unit_n": 497
+          },
+          "interval_n": 498,
+          "mean_s": 1.7586345381526103,
+          "median_s": 1.7399999999999998,
+          "samples": 497,
+          "zero_interval_samples": 9
+        }
+      },
+      "population": 498,
+      "status": {
+        "ineligible": 1,
+        "label_model_speech_at_output_end": 248,
+        "label_user_ends_without_later_model_start": 255,
+        "ok": 497
+      }
+    },
+    "timing_supplementary_clean": {
+      "ineligible_reasons": {
+        "append 106 send completed after v2 deadline": 1,
+        "append 124 send completed after v2 deadline": 1,
+        "append 125 send completed after v2 deadline": 1,
+        "append 126 send completed after v2 deadline": 1,
+        "append 127 send completed after v2 deadline": 1,
+        "append 128 send completed after v2 deadline": 1,
+        "append 129 send completed after v2 deadline": 1,
+        "append 130 send completed after v2 deadline": 1,
+        "append 131 send completed after v2 deadline": 1,
+        "append 132 send completed after v2 deadline": 1,
+        "append 133 send completed after v2 deadline": 1,
+        "append 134 send completed after v2 deadline": 1,
+        "input pacing deviation 0.1077183615975077 exceeds 0.08s": 1,
+        "input pacing deviation 0.9171628272160888 exceeds 0.08s": 1
+      },
+      "manifest_flags": {
+        "audio_received_after_T": 224,
+        "playout_active_at_T": 247
+      },
+      "official_all_intervals": {
+        "reduction": "campaign reduction of official per-sample intervals (end - start); official source defines no scalar aggregate",
+        "response": {
+          "bootstrap_pooled_mean": {
+            "ci95": [
+              3.1069528036557346,
+              3.209625208428199
+            ],
+            "empty_replicates": 0,
+            "method": "percentile",
+            "replicates": 2000,
+            "seed": "20260925:minicpmo:all:clean:resp",
+            "unit": "sample",
+            "unit_n": 496
+          },
+          "interval_n": 489,
+          "mean_s": 3.158846625766871,
+          "median_s": 3.1399999999999997,
+          "samples": 496,
+          "zero_interval_samples": 7
+        },
+        "stop": {
+          "bootstrap_pooled_mean": {
+            "ci95": null,
+            "replicates": 0,
+            "unit": "sample",
+            "unit_n": 496
+          },
+          "interval_n": 0,
+          "mean_s": null,
+          "median_s": null,
+          "samples": 496,
+          "zero_interval_samples": 496
+        }
+      },
+      "population": 498,
+      "status": {
+        "ineligible": 2,
+        "label_model_speech_at_output_end": 219,
+        "label_user_ends_without_later_model_start": 7,
+        "ok": 496
+      }
+    }
+  }
+}

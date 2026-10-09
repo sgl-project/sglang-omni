@@ -23,7 +23,7 @@ The pipeline has three steps:
 |---|---|---|---|
 | 1. Generate | `generate.sh` | Streams every input to `/v1/realtime`, records the model's audio, then cuts a fixed observation window per session | Model server, GPU 0 |
 | 2. ASR | `asr.sh` | Transcribes the input and output audio with word timestamps (Parakeet), then computes VAD speech intervals with the official timing code | Scoring venv, GPU 1 |
-| 3. Judge | `judge.sh` | Sends the four transcripts of each pair to an LLM with the official prompt, then writes `summary.json` and `report.txt` | Judge server, GPU 1 |
+| 3. Judge | `judge.sh` | Sends the four transcripts of each pair to an LLM with the official prompt, runs the semantic A/F/U judge (Qwen only), then writes `summary.json` and `report.txt` | Judge server, GPU 1 |
 
 `aggregate.sh` then combines repeats into one table.
 
@@ -36,6 +36,17 @@ The results are:
   `C_RESPOND` means it addressed the overlap's content. `C_RESUME` means it ignored the overlap
   and continued. `C_UNCERTAIN_HANDLING` means it asked for a repeat or showed it did not catch
   the overlap. `C_UNKNOWN` means its reply was off-target or it said nothing.
+- **Semantic quality** (non-official, `JUDGE=qwen`): a label says what the model did, not
+  whether it was right. A `C_RESUME` that ignored a real interruption and a `C_RESUME` that
+  correctly ignored a backchannel look the same. The semantic judge grades each pair on three
+  axes, each `accept`, `fail` or `unresolved`:
+  `interaction_handling` (did it handle the overlap correctly for its category),
+  `relevance` (did it address the operative request) and
+  `grounding` (no unsupported facts, claimed actions or false memories).
+  `joint` fails if any axis fails and accepts only if all three accept.
+  Every verdict must quote an exact substring of the transcript it relies on; a verdict
+  with a missing or invalid quote becomes `unresolved`, never a pass.
+  Each cell reports quality = A/(A+F) and coverage = (A+F)/N, where N is every selected pair.
 
 ## Hardware and judge
 
@@ -47,8 +58,13 @@ Two judges are supported, selected by `JUDGE`:
 
 | `JUDGE` | Model | Notes |
 |---|---|---|
-| `qwen` (default) | [Qwen3.8-27B](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B), served locally by SGLang | Reproducible and free. Non-thinking mode, greedy, seeds 1-3. Results are labeled non-official |
-| `gpt` | `gpt-4o-2024-08-06` | The paper's judge. Needs `OPENAI_API_KEY`. The response must report exactly this model name |
+| `qwen` (default) | [Qwen3.8-27B](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B), served locally by SGLang | Reproducible and free. Behavior labels: non-thinking, greedy, seeds 1-3. Semantic judge: thinking, temperature 0, seed 1. Results are labeled non-official |
+| `gpt` | `gpt-4o-2024-08-06` | The paper's judge. Needs `OPENAI_API_KEY`. The response must report exactly this model name. Behavior labels only |
+
+The semantic judge uses the frozen prompt, response schema and six control cases in
+`benchmarks/duplex/semantic/`. Before grading, every run sends the six controls and stops if
+any of the 18 axis statuses differs from `control-expected.json`. Passing the controls is a
+rubric check, not a measure of judge accuracy.
 
 ## Step 0: one-time setup
 
@@ -107,7 +123,8 @@ bash benchmarks/duplex/fdb_v15/judge.sh 1
 
 The preflight passes when `generate.sh` prints `{"pass": 8}` and
 `{"eligible_pairs": 4, ...}`, `asr.sh` prints `{"ok": 16}` and `{"ok": 8}`, and `judge.sh`
-prints `{"valid": 4}`. If anything differs, see [Troubleshooting](#troubleshooting).
+prints `{"valid": 4}` and `controls: 18/18 axis statuses match`.
+If anything differs, see [Troubleshooting](#troubleshooting).
 
 Then run the measured benchmark: 48 pairs (12 per category), three repeats.
 
@@ -132,10 +149,12 @@ Approximate wall time per repeat on H200, with one session at a time:
 
 | Pairs | `generate.sh` | `asr.sh` | `judge.sh` |
 |---|---|---|---|
-| 48 | ~25 min | ~1 min | < 1 min |
-| 498 | ~4 h | ~10 min | ~5 min |
+| 48 | ~25 min | ~1 min | ~6 min |
+| 498 | ~4 h | ~10 min | ~45 min |
 
-Sessions run in real time (about 15 s each), so generation dominates.
+Sessions run in real time (about 15 s each), so generation dominates. Most of `judge.sh`
+is the semantic judge: thinking-mode batches of up to 8 pairs take about 5 minutes each,
+and 8 batches run concurrently.
 `NUM_SHARDS=2` roughly halves it; read the note on `NUM_SHARDS` before using it.
 
 When everything is done, stop terminals A and B with Ctrl-C.
@@ -159,6 +178,21 @@ count cells show one value, or a range when repeats differ. This is the validati
 - `Timed overlap sessions` is how many overlap sessions produced timing intervals.
 - `Judged pairs` is how many pairs got a valid label. The label shares use only these pairs.
 
+With `JUDGE=qwen`, `RESULTS.md` adds a semantic table. From the same validation run:
+
+| Category | interaction_handling quality | interaction_handling coverage | relevance quality | relevance coverage | grounding quality | grounding coverage | joint quality | joint coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 73.9 ± 1.6% | 95.8 ± 5.9% | 85.9 ± 5.8% | 87.5 ± 5.9% | 52.2 ± 11.0% | 79.2 ± 5.9% | 32.2 ± 17.3% | 79.2 ± 5.9% |
+| user_interruption | 66.7 ± 47.1% | 83.3 ± 23.6% | 66.7 ± 47.1% | 83.3 ± 23.6% | 58.3 ± 11.8% | 83.3 ± 23.6% | 25.0 ± 35.4% | 83.3 ± 23.6% |
+| user_backchannel | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 50.0 ± 23.6% | 100.0 ± 0.0% | 50.0 ± 23.6% |
+| talking_to_other | 50.0 ± 23.6% | 100.0 ± 0.0% | 75.0 ± 35.4% | 66.7 ± 0.0% | 58.3 ± 11.8% | 83.3 ± 23.6% | 16.7 ± 23.6% | 83.3 ± 23.6% |
+| background_speech | 83.3 ± 23.6% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% |
+
+Always read quality together with coverage: a high quality over a low coverage is a
+judgment on few pairs. For comparison, `benchmarks/duplex/semantic/historical-values.json`
+holds an earlier full 498-pair MiniCPM-o run graded with the same protocol by a different
+judge model (joint quality 58.6%, coverage 58.2%). It is a reference point, not a target.
+
 Per-repeat outputs are under `$FDB_WORK/runs/$RUN_NAME/repeat-N/`:
 
 | Path | Content |
@@ -168,12 +202,14 @@ Per-repeat outputs are under `$FDB_WORK/runs/$RUN_NAME/repeat-N/`:
 | `reference-audio/` | Fixed-window WAVs used for scoring, plus `reference-manifest.json` with eligibility |
 | `scores/summary.json` | Timing, ASR coverage, and (for `JUDGE=gpt`) behavior labels |
 | `judge-qwen/summary.json` | Qwen behavior labels (`JUDGE=qwen` only) |
-| `report.txt` | Human-readable coverage and timing report |
+| `semantic-qwen/` | Semantic judge (`JUDGE=qwen` only): `controls/comparison.json`, `inputs.json` (the exact packets sent), `batches/*/` (request, raw response, validated assessments), `quality-outcomes.json` (per-pair axes, joint and any conversion reasons) and `summary.json` |
+| `report.txt` | Human-readable coverage, timing and semantic quality report |
 | `logs/` | Recorder logs; `scores/logs/` holds ASR and timing logs |
 
 With `JUDGE=qwen`, the "Official behavior label distribution" section of `report.txt`
 shows `0 / 0` and `not_prepared`. That is expected: that section only counts GPT-4o
 labels. The Qwen labels are in `judge-qwen/summary.json` and in `RESULTS.md`.
+The "Custom semantic quality" section of `report.txt` shows the semantic judge for that repeat.
 
 ## Settings
 
@@ -225,5 +261,7 @@ All variables are defined in `benchmarks/duplex/fdb_v15/env.sh`.
 | `--device cuda needs exactly one visible GPU` | `SCORING_GPU` must be a single index |
 | `asr.sh` or `judge.sh` prints `WARNING: ... reported failures` | Rerun the same command with `--retry-failed`, for example `bash benchmarks/duplex/fdb_v15/asr.sh 1 --retry-failed` |
 | `custom judge identity changed; use a new --out` | The judge config changed since this repeat was judged (for example, a different SGLang version). Delete `repeat-N/judge-qwen` and rerun `judge.sh N` |
+| `Control check failed: this judge configuration is not accepted.` | The judge missed a control case; the printed lines show which. Do not grade with this configuration. Check that the judge server runs the pinned Qwen3.8-27B revision |
+| `... changed since this directory was created; use a new --out` | The semantic judge settings, prompt or inputs changed since this repeat was graded. Delete `repeat-N/semantic-qwen` and rerun `judge.sh N` |
 | `model_mismatch` with `JUDGE=gpt` | The endpoint returned a model name other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
 | `ModuleNotFoundError` in `asr.sh` | Rerun `setup.sh`; it reinstalls the scoring venv packages |

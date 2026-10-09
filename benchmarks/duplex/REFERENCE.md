@@ -149,6 +149,8 @@ quality section. It reads `scope`, `inputs_sha256`, `uncertainty_note`,
 resolved / selected. Zero denominators display `n/a`. This A/F/U summary is
 different from the C-label `custom-summarize` output and is not joined to the
 reference population. It cannot fill missing official behavior labels.
+`python -m benchmarks.duplex.semantic_judge` produces this summary from a scored
+tree with the frozen prompt, schema and controls in `benchmarks/duplex/semantic/`.
 
 ### Judge configuration
 

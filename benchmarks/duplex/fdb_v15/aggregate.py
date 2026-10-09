@@ -27,6 +27,12 @@ COLUMNS = (
     *((label, label, "percent") for label in C_LABELS),
     ("judged_pairs", "Judged pairs", "count"),
 )
+SEMANTIC_AXES = ("interaction_handling", "relevance", "grounding", "joint")
+SEMANTIC_COLUMNS = tuple(
+    (f"{axis}_{measure}", f"{axis} {measure}", "percent")
+    for axis in SEMANTIC_AXES
+    for measure in ("quality", "coverage")
+)
 JudgeName = Literal["qwen", "gpt"]
 RepeatMetrics = dict[str, dict[str, float | None]]
 
@@ -68,6 +74,44 @@ def repeat_metrics(repeat_dir: Path, engine: str, judge: JudgeName) -> RepeatMet
     return metrics
 
 
+def semantic_metrics(repeat_dir: Path) -> RepeatMetrics:
+    summary_path = repeat_dir / "semantic-qwen" / "summary.json"
+    if not summary_path.is_file():
+        return {}
+    else:
+        pass
+    metrics = {}
+    for category, axes in read_json(summary_path)["categories"].items():
+        metrics[category] = {}
+        for axis in SEMANTIC_AXES:
+            for measure in ("quality", "coverage"):
+                percent = axes[axis][f"{measure}_percent"]
+                metrics[category][f"{axis}_{measure}"] = (
+                    None if percent is None else percent / 100
+                )
+    return metrics
+
+
+def render_table(
+    per_repeat: list[RepeatMetrics], columns: tuple[tuple[str, str, str], ...]
+) -> list[str]:
+    lines = [
+        "| Category | " + " | ".join(title for _, title, _ in columns) + " |",
+        "|---|" + "---:|" * len(columns),
+    ]
+    for category in CATEGORIES:
+        rows = [metrics[category] for metrics in per_repeat if category in metrics]
+        if not rows:
+            continue
+        else:
+            pass
+        cells = [
+            format_cell([row[key] for row in rows], unit) for key, _, unit in columns
+        ]
+        lines.append(f"| {category} | " + " | ".join(cells) + " |")
+    return lines
+
+
 def format_cell(values: list[float | None], unit: str) -> str:
     present = [value for value in values if value is not None]
     if not present:
@@ -107,19 +151,21 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
         "Latencies are pooled whole-file overlap intervals; "
         "label shares are over valid judge labels.",
         "",
-        "| Category | " + " | ".join(title for _, title, _ in COLUMNS) + " |",
-        "|---|" + "---:|" * len(COLUMNS),
+        *render_table(per_repeat, COLUMNS),
     ]
-    for category in CATEGORIES:
-        rows = [metrics[category] for metrics in per_repeat if category in metrics]
-        if not rows:
-            continue
-        else:
-            pass
-        cells = [
-            format_cell([row[key] for row in rows], unit) for key, _, unit in COLUMNS
+    per_repeat_semantic = [semantic_metrics(path) for path in repeat_dirs]
+    if any(per_repeat_semantic):
+        lines += [
+            "",
+            "## Semantic A/F/U judge",
+            "",
+            "quality = A/(A+F); coverage = (A+F)/N. "
+            "joint fails if any axis fails and accepts only if all three accept.",
+            "",
+            *render_table(per_repeat_semantic, SEMANTIC_COLUMNS),
         ]
-        lines.append(f"| {category} | " + " | ".join(cells) + " |")
+    else:
+        pass
     return "\n".join(lines) + "\n"
 
 
