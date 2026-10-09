@@ -1,28 +1,41 @@
 # NPU model CI
 
-The workflow covers Qwen3-TTS 0.6B CustomVoice and Qwen3-ASR 1.7B on one reserved
-NPU on the `linux-aarch64-a2-2` ARM64 A2 runner. It runs for relevant PR changes,
+The workflow covers Qwen3-TTS 0.6B CustomVoice and Qwen3-ASR 1.7B on one visible
+NPU allocated to each test Pod by the `linux-aarch64-a2-2` ARM64 A2 runner platform.
+It runs for relevant PR changes,
 manually, and nightly at 16:00 UTC.
 Missing integration settings fail preflight, not pass or skip hardware checks.
-Qwen3-TTS requires the NPU support from PR #2004. No GPU speed baselines are used.
+No GPU speed baselines are used.
+
+One workflow runs two independent matrix jobs, one per model, each in a fresh
+job container with separate logs and results. Jobs run serially on this runner pool;
+a model test failure does not cancel the other model. Both must pass the final
+`NPU Model CI Status` check.
 
 ## Integration checklist — ask the maintainers
 
-The workflow temporarily uses runner `linux-aarch64-a2-2`, physical device `0`,
-and `cocoa001/sglang-omni:qwen3-tts-npu-a2-d794efee`, pinned to digest
-`sha256:2211349c4664cf792ab989e0f50a615d05d621fb12e6d84dde890c8f39a45823`.
-Confirm runner/device allocation before execution and replace the personal image
-with a validated official A2 image before production CI. The existing A3 model
-results do not qualify this A2 environment or Qwen3-ASR.
+The runner must support Kubernetes container hooks: the workflow selects the
+test image through `jobs.models.container.image`, and the platform creates the
+test Pod. The test script runs inside that Pod without Docker or BuildKit.
+Select a validated ARM64 910B image from the NPU release workflow. A3 results
+do not qualify A2.
 
-Set these **repository variables**; image and device override the temporary
-defaults, while the data directory is still required:
+Set these **repository variables**; the image and data directory are required:
 
 | Variable | Placeholder | Information to request |
 |---|---|---|
-| `NPU_CI_DEVICE` | Temporary default: `0` | Confirm one exclusively reserved physical device, the same on every runner matching the label |
-| `NPU_CI_IMAGE` | `lmsysorg/sglang-omni@sha256:REPLACE_WITH_A2_DIGEST` | Compatible ARM64 A2/910B environment image; use the Docker PR's published A2 digest for integrated validation |
-| `NPU_CI_DATA_DIR` | `/REPLACE_WITH_HOST_CACHE/npu-ci` | Absolute host directory with the weights, serving configs and fixed ASR fixtures below |
+| `NPU_CI_IMAGE` | `swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni@sha256:REPLACE_WITH_910B_DIGEST` | Use the final Omni 910B image digest from the release workflow summary, not the SGLang base-image digest |
+| `NPU_CI_DATA_DIR` | `/data` | Absolute path inside the test Pod containing the mounted weights, serving configs and fixed ASR fixtures below |
+
+Keep the image digest fixed for reproducible tests; update it when qualifying a
+new runtime. Kubernetes manages image pulls and node-local layer caching.
+Do not substitute a rolling tag such as `main-cann9.0.0-910b` without a digest.
+
+The 2026-09-29 publication provides this 910B image for runner qualification:
+
+```text
+swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni@sha256:993fd7fb5a2fceb86f15fabff953fa76b67e63e558954c153aecdccbf72fab9a
+```
 
 Also ask an administrator to:
 
@@ -30,24 +43,33 @@ Also ask an administrator to:
    the intended PR refs. Review the exact commit before approving each job.
    The workflow also requires a non-draft PR with `run-ci`, but a label retained
    across pushes is not approval of new code.
-2. Confirm trusted-runner Docker/privileged access, host networking and Ascend
-   mount paths in `scripts/npu/run_model_ci.sh`. This is not a sandbox for
-   unreviewed fork code. Workflow changes themselves must be reviewed.
+2. Enable Kubernetes container hooks for `linux-aarch64-a2-2`, with job workspace
+   sharing and cleanup on completion, cancellation and timeout. Configure the
+   **test Pod**, not only the runner Pod, with one exclusively allocated NPU,
+   compatible driver libraries, model/data mounts and sufficient memory and
+   shared memory (8 GiB for `/dev/shm`). Preserve the platform's device visibility
+   variables; the serving configs select logical device `0`. Do not mount a
+   Docker socket or require Docker-in-Docker. Review workflow changes before
+   executing PR code on this infrastructure.
 3. Allow registry and PyPI access or configure approved mirrors. Model inference
-   uses local weights with `HF_HUB_OFFLINE=1`.
+   uses local weights with `HF_HUB_OFFLINE=1`. Use anonymous SWR pulls if allowed;
+   otherwise configure a read-only image pull secret on the test Pods. Do not
+   expose image-publishing credentials to PR test code.
 4. Grant permission to trigger/rerun Actions and read artifacts. Confirm the
    pre-merge workflow testing route: PR events or a reviewed upstream branch.
    A new manual workflow is not selectable until GitHub knows it on main.
 
-The runner label is temporarily fixed; no `NPU_CI_RUNNER_LABELS` variable is needed. Confirm
-the physical device allocation rather than inferring it from the label suffix.
-The workflow serializes model jobs sharing the reserved device. Local runs
-must reserve the device separately. Testing A3 does not qualify A2.
+No `NPU_CI_DEVICE` setting is used: the platform owns physical device allocation.
+The script preserves `ASCEND_RT_VISIBLE_DEVICES` and other injected device settings.
+Both suites require exactly one visible NPU. Simply adding `container.image`
+does not configure container hooks, device allocation or data mounts.
 
-## Prepare the data directory
+## Prepare the Pod mounts
+
+For `NPU_CI_DATA_DIR=/data`, expose this layout inside each test Pod:
 
 ```text
-npu-ci/
+/data/
   models/
     qwen3-tts/       # Qwen3-TTS-12Hz-0.6B-CustomVoice, with speech_tokenizer/
     qwen3-asr/       # Qwen3-ASR-1.7B
@@ -60,9 +82,27 @@ npu-ci/
     chinese.wav
 ```
 
-Ask model owners for immutable checkpoint revisions and matching serving
-configs. For TTS, start from `examples/configs/qwen3_tts_0_6b_customvoice_npu.yaml`
-in #2004. Stage placement uses logical device 0. Config paths must be accessible
+Reuse the downloaded checkpoints with read-only mounts; no new download is needed:
+
+| Existing node directory | Test Pod mount |
+|---|---|
+| `/root/.cache/modelscope/hub/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | `/data/models/qwen3-tts` |
+| `/root/.cache/modelscope/hub/models/Qwen/Qwen3-ASR-1.7B` | `/data/models/qwen3-asr` |
+
+Node-local mounts require scheduling on a node containing those files. Otherwise,
+use shared storage. Mount the configs and ASR fixtures read-only as well.
+Prepare `configs/qwen3-tts.yaml` from
+`examples/configs/qwen3_tts_0_6b_customvoice_npu.yaml` and `configs/qwen3-asr.yaml`
+from `examples/configs/qwen3_asr_npu.yaml` in this checkout.
+
+The prevalidation checkpoint revisions were
+`85e237c12c027371202489a0ec509ded67b5e4b5` (TTS) and
+`7278e1e70fe206f11671096ffdd38061171dd6e5` (ASR). Record and verify the revisions
+of the mounted checkpoints before qualifying the runner.
+
+These functional smoke configurations disable engine decode graphs and Torch
+compile; they do not qualify graph performance.
+Stage placement uses logical device 0. Config paths must be accessible
 inside the container. Symlink targets must also reside in the mounted data
 directory. Keep revisions in the cache inventory; do not overwrite assets
 during CI runs.
@@ -97,18 +137,30 @@ Run workflow**, or approve a relevant PR's jobs. `NPU Model CI Status` requires
 both models to pass. Only enable it as a required merge check after real Actions
 validation; account for path filters in the repository's required-check policy.
 
-For local execution, export the three variables above, then select a model:
+For local execution **inside an already provisioned test container**, export
+the image reference and mounted data directory above, then select a model:
 
 ```bash
 NPU_CI_MODEL=qwen3-tts bash scripts/npu/run_model_ci.sh
 NPU_CI_MODEL=qwen3-asr bash scripts/npu/run_model_ci.sh
 ```
 
-The image supplies dependencies; checked-out source is copied and installed in
-a disposable container using `--no-deps`. Results include source SHA/status,
-image metadata, serving config, package versions, NPU state, server logs,
-outputs and JUnit. Actions uploads `npu-ci-results/` for seven days. Only this
-run's container is removed; a hard-killed runner may need operator cleanup.
+If PyPI is unavailable, configure `PIP_INDEX_URL` for an approved mirror in the
+test Pod without changing the pinned test dependency versions.
+
+The image supplies runtime dependencies, including `qwen-tts`. The script loads
+`$ASCEND_HOME_PATH/set_env.sh` (default: `/usr/local/Ascend/ascend-toolkit/set_env.sh`).
+Checked-out source is copied into a temporary directory inside the test Pod so
+NPU package metadata does not overwrite the checkout. Before installation,
+`install_npu.sh --check` verifies the configured SGLang release and NPU stack
+without installing dependencies. The source is then installed with `--no-deps`;
+CI tests that checkout, not the source bundled in the image.
+Results under the checkout's `npu-ci-results/` include source SHA/status, the
+configured image digest, runner log, environment-check log,
+serving config, package versions, NPU state, server logs,
+outputs and JUnit. Actions uploads `npu-ci-results/` for seven days, including
+failed tests when artifact upload can still run. Kubernetes container hooks
+remove the test Pod and its temporary source tree after the job.
 
 Each model runs five pytest cases. ASR checks English/Chinese CER, complete SSE
 with consistent deltas, two concurrent requests and recovery after rejection.
@@ -122,8 +174,7 @@ In a compatible environment with exactly one reserved visible NPU, install the
 source revision under test and use that model's NPU serving config:
 
 ```bash
-python -m pip install pytest==8.3.5 jiwer==4.0.0 rapidfuzz==3.14.1
-export ASCEND_RT_VISIBLE_DEVICES=0
+python -m pip install pytest==8.3.2 jiwer==4.0.0 rapidfuzz==3.14.1
 export HF_HUB_OFFLINE=1
 export OMNI_RUN_NPU_TESTS=1
 export OMNI_NPU_TTS_MODEL=/models/Qwen3-TTS-12Hz-0.6B-CustomVoice
@@ -173,6 +224,6 @@ must be added with validated assets and thresholds. Network chunk boundaries
 are not assumed to equal model chunk boundaries.
 
 No global CUDA/NPU process cleanup is used. The shared `managed_omni_server`
-context stops only the server it started. Prefer a disposable container for CI
-so cancellation can also clean up descendants. The CI script records source and
-image metadata, archives logs on failure and does not retry failed tests.
+context stops only the server it started. Pod cleanup must terminate remaining
+processes on job cancellation or timeout. The script preserves failed test exit
+codes and does not retry failed tests.

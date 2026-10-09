@@ -10,7 +10,7 @@ on:
       - 'benchmarks/**'
       - 'examples/configs/**'
       - 'pyproject_npu.toml'
-      - 'scripts/npu/run_model_ci.sh'
+      - 'scripts/npu/**'
       - '.github/workflows/omni-npu-ci.yaml'
   workflow_dispatch:
   schedule:
@@ -21,10 +21,7 @@ permissions:
   pull-requests: read
 
 env:
-  # TODO: replace the temporary personal image with a validated official A2 image.
-  NPU_CI_IMAGE: ${{ vars.NPU_CI_IMAGE || 'cocoa001/sglang-omni:qwen3-tts-npu-a2-d794efee@sha256:2211349c4664cf792ab989e0f50a615d05d621fb12e6d84dde890c8f39a45823' }}
-  # TODO: confirm exclusive device allocation with the runner maintainers.
-  NPU_CI_DEVICE: ${{ vars.NPU_CI_DEVICE || '0' }}
+  NPU_CI_IMAGE: ${{ vars.NPU_CI_IMAGE }}
   NPU_CI_DATA_DIR: ${{ vars.NPU_CI_DATA_DIR }}
 
 jobs:
@@ -50,28 +47,32 @@ jobs:
         run: |
           python - <<'PY'
           import os, re
-          assert re.fullmatch(r'.+@sha256:[0-9a-f]{64}', os.environ['NPU_CI_IMAGE']), 'Set NPU_CI_IMAGE to a tested image digest'
-          assert re.fullmatch(r'[0-9]+', os.environ['NPU_CI_DEVICE']), 'Set NPU_CI_DEVICE to one reserved physical device ID'
+          assert re.fullmatch(r'.+@sha256:[0-9a-f]{64}', os.environ['NPU_CI_IMAGE']), 'Set NPU_CI_IMAGE to a validated SWR 910B image pinned by digest'
           path = os.environ['NPU_CI_DATA_DIR']
-          assert path.startswith('/') and path != '/' and 'REPLACE' not in path, 'Set NPU_CI_DATA_DIR to the prepared host data directory'
+          assert path.startswith('/') and path != '/' and 'REPLACE' not in path, 'Set NPU_CI_DATA_DIR to the data directory mounted in the test Pod'
           PY
 
   models:
+    name: ${{ matrix.model }} (NPU)
     needs: preflight
     # Configure required reviewers on this environment BEFORE enabling hardware
     # execution. A persistent PR label is not approval of every new commit.
     environment: npu-ci
-    # TODO: confirm this temporary runner selection and its runtime compatibility.
     runs-on: linux-aarch64-a2-2
+    container:
+      image: ${{ vars.NPU_CI_IMAGE }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
         model: [qwen3-tts, qwen3-asr]
-    # Serialize both models and all runs sharing the reserved device.
+    # Serialize hardware tests across runs on this runner pool.
     concurrency:
-      group: omni-npu-model-device-${{ vars.NPU_CI_DEVICE || '0' }}
+      group: omni-npu-model-linux-aarch64-a2-2
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
