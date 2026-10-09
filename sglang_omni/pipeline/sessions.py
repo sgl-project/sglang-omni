@@ -18,6 +18,7 @@ from sglang_omni.pipeline.replicas import assign_replica_bindings
 from sglang_omni.profiler.duplex_events import (
     emit_session_output_event,
     emit_session_unit_event,
+    emit_session_unit_ready_event,
 )
 from sglang_omni.proto import OmniRequest, StreamMessage
 from sglang_omni.proto.session import (
@@ -201,7 +202,12 @@ class CoordinatorSessions:
         return session.session_identity
 
     async def append_session(
-        self, session_identity: SessionIdentity, chunk: TimedChunk
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
     ) -> int:
         """Accept input in global seq order, independently of output consumption.
 
@@ -277,6 +283,13 @@ class CoordinatorSessions:
             session.ended_modalities.add(chunk.modality)
         else:
             pass
+        emit_session_unit_ready_event(
+            request_id=request_id,
+            session_identity=session.session_identity,
+            input_chunk=chunk,
+            ready_timestamp_ns=ready_timestamp_ns,
+            ready_run_id=ready_run_id,
+        )
         emit_session_unit_event(
             request_id=request_id,
             event_name="session_unit_admitted",
