@@ -24,6 +24,37 @@ class GraphSolve(Protocol):
     def __call__(self) -> torch.Tensor: ...
 
 
+class GroupReplay(Protocol):
+    def __call__(self, rows: slice, frames: slice) -> torch.Tensor: ...
+
+
+def replay_in_groups(
+    replay: GroupReplay, lengths: Sequence[int], *, max_frames: int, max_rows: int
+) -> torch.Tensor:
+    """replay over the fewest consecutive groups of rows whose frames sum to at most
+    max_frames and whose count is at most max_rows, the outputs joined along the
+    frames. Every length is at most max_frames."""
+    generated: list[torch.Tensor] = []
+    start = 0
+    frame_start = 0
+    frames = 0
+    for index, length in enumerate(lengths):
+        if frames + length > max_frames or index - start == max_rows:
+            generated.append(
+                replay(slice(start, index), slice(frame_start, frame_start + frames))
+            )
+            start = index
+            frame_start += frames
+            frames = 0
+        else:
+            pass
+        frames += length
+    generated.append(
+        replay(slice(start, len(lengths)), slice(frame_start, frame_start + frames))
+    )
+    return torch.cat(generated, dim=1)
+
+
 class SolveGraphCapture:
     """Captures the prefix hop and whole history solve graphs into one pool. They
     share it because a stream step replays one graph at a time, under the scheduler's
