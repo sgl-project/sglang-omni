@@ -17,6 +17,7 @@ from sglang.kernels.ops.attention.flash_attention import (
     flash_attn_with_kvcache,
 )
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+from sglang.srt.utils.custom_op import register_custom_op
 
 logger = logging.getLogger(__name__)
 
@@ -60,23 +61,9 @@ def ragged_fa3(
 
 # note(ratish): the compiled forward calls FA3 through this alias-free op;
 # eager calls ragged_fa3 directly and skips the custom op dispatch per block.
-packed_fa3 = torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::packed_fa3", mutates_args=(), device_types="cuda"
-)(ragged_fa3)
-
-
-@packed_fa3.register_fake
-def fake_packed_fa3(
-    q: torch.Tensor,
-    k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    page_table: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    max_seqlen_q: int,
-    num_splits: int = 0,
-) -> torch.Tensor:
-    return torch.empty_like(q)
+packed_fa3 = register_custom_op(
+    ragged_fa3, op_name="fun_cosyvoice3_packed_fa3", mutates_args=[], out_shape="q"
+)
 
 
 def whole_row_fa3(
@@ -98,20 +85,12 @@ def whole_row_fa3(
     )
 
 
-packed_whole_row_fa3 = torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::whole_row_fa3", mutates_args=(), device_types="cuda"
-)(whole_row_fa3)
-
-
-@packed_whole_row_fa3.register_fake
-def fake_whole_row_fa3(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    cu_seqlens: torch.Tensor,
-    max_seqlen: int,
-) -> torch.Tensor:
-    return torch.empty_like(q)
+packed_whole_row_fa3 = register_custom_op(
+    whole_row_fa3,
+    op_name="fun_cosyvoice3_whole_row_fa3",
+    mutates_args=[],
+    out_shape="q",
+)
 
 
 @dataclass(frozen=True)
