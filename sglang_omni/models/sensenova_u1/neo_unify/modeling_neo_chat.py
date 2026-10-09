@@ -849,6 +849,22 @@ class NEOChatModel(PreTrainedModel):
         z_next = z + (t_next - t) * v_pred
         return z_next
 
+    @staticmethod
+    def _build_cfg_schedule(timesteps, cfg_interval, needs_cfg):
+        if not needs_cfg:
+            return [False] * (timesteps.numel() - 1)
+        return (
+            (timesteps[:-1] >= cfg_interval[0]) & (timesteps[:-1] <= cfg_interval[1])
+        ).tolist()
+
+    @staticmethod
+    def _build_i2i_cfg_schedule(timesteps, cfg_interval):
+        if cfg_interval[0] == 0:
+            return [True] * (timesteps.numel() - 1)
+        return (
+            (timesteps[:-1] > cfg_interval[0]) & (timesteps[:-1] < cfg_interval[1])
+        ).tolist()
+
     def _calculate_dynamic_mu(self, image_seq_len: int) -> float:
         denom = self.max_image_seq_len - self.base_image_seq_len
         if denom == 0:
@@ -1369,11 +1385,7 @@ class NEOChatModel(PreTrainedModel):
 
         outputs = self.language_model.model(
             inputs_embeds=input_embeds,
-            image_gen_indicators=torch.ones(
-                (input_embeds.shape[0], input_embeds.shape[1]),
-                dtype=torch.bool,
-                device=input_embeds.device,
-            ),
+            image_only=True,
             indexes=indexes_image,
             attention_mask=attn_mask,
             past_key_values=past_key_values,
@@ -2825,6 +2837,7 @@ class NEOChatModel(PreTrainedModel):
             timesteps = self._apply_time_schedule(
                 timesteps, token_h * token_w, timestep_shift
             )
+        cfg_active = self._build_i2i_cfg_schedule(timesteps, cfg_interval)
         denoise_embeddings = None
         if device.type == "npu":
             denoise_embeddings = self.fm_modules["timestep_embedder"](timesteps[:-1])
@@ -2839,9 +2852,7 @@ class NEOChatModel(PreTrainedModel):
         for step_i in range(num_steps):
             t = timesteps[step_i]
             t_next = timesteps[step_i + 1]
-            use_cfg = (t > cfg_interval[0] and t < cfg_interval[1]) or cfg_interval[
-                0
-            ] == 0
+            use_cfg = cfg_active[step_i]
 
             z = self.patchify(image_prediction, self.patch_size * merge_size)
             image_input = self.patchify(
@@ -3394,6 +3405,7 @@ class NEOChatModel(PreTrainedModel):
             timesteps = self._apply_time_schedule(
                 timesteps, token_h * token_w, timestep_shift
             )
+        cfg_active = self._build_cfg_schedule(timesteps, cfg_interval, needs_cfg)
         denoise_embeddings = None
         if device.type == "npu":
             denoise_embeddings = self.fm_modules["timestep_embedder"](timesteps[:-1])
@@ -3447,7 +3459,7 @@ class NEOChatModel(PreTrainedModel):
                 image_size=image_size,
             )
 
-            if t >= cfg_interval[0] and t <= cfg_interval[1] and cfg_scale > 1:
+            if cfg_active[step_i]:
                 v_pred_uncondition = self._t2i_predict_v(
                     image_embeds,
                     indexes_image_uncondition,
