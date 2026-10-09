@@ -65,8 +65,11 @@ def test_request_audio_decodes_as_the_reference_loader(
 
 
 @pytest.mark.parametrize("channels", [1, 2])
-def test_pcm16_wav_decodes_as_the_wav_parser(channels: int) -> None:
-    data = encode_audio(tone(channels), "WAV", "PCM_16", SAMPLE_RATE)
+@pytest.mark.parametrize("subtype", ["PCM_U8", "PCM_16", "PCM_32", "FLOAT", "DOUBLE"])
+def test_wav_the_parser_reads_decodes_as_the_wav_parser(
+    subtype: str, channels: int
+) -> None:
+    data = encode_audio(tone(channels), "WAV", subtype, SAMPLE_RATE)
 
     decoded, sample_rate = decode_audio_bytes(data)
     parsed, parsed_rate = parse_wav_bytes(data)
