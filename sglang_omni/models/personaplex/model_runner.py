@@ -29,7 +29,7 @@ from sglang_omni.models.personaplex.architecture import (
     NUM_STREAMS,
     USER_STREAM_OFFSET,
 )
-from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
+from sglang_omni.models.personaplex.sampling import sample_token
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -105,17 +105,41 @@ class PersonaPlexModelRunner(ModelRunner):
         rows[known] = model.embed_rows(tokens[known]).to(dtype)
         return rows
 
-    def audio_sampler(self, data: SGLangARRequestData) -> AudioTokenSampler:
+    def audio_generator(self, data: SGLangARRequestData) -> torch.Generator | None:
         inputs = data.talker_model_inputs
-        sampling = inputs["sampling"]
+        audio_seed = inputs["sampling"].audio_seed
         generator = inputs.get("audio_generator")
-        if generator is None and sampling.audio_seed is not None:
+        if generator is None and audio_seed is not None:
             generator = torch.Generator(device=self.model_device)
-            generator.manual_seed(sampling.audio_seed)
+            generator.manual_seed(audio_seed)
             inputs["audio_generator"] = generator
         else:
             pass
-        return lambda logits: sample_token(logits, sampling.audio, generator)
+        return generator
+
+    def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
+        """Sample row i with requests[i]'s audio settings and generator."""
+        runs = []
+        start_row = 0
+        # Note (edwardzh): Only adjacent requests share a sampling call, so rows are
+        # sliced in place and no index tensor reaches the device.
+        for audio, group in groupby(
+            requests,
+            key=lambda request: request.data.talker_model_inputs["sampling"].audio,
+        ):
+            generators = [self.audio_generator(request.data) for request in group]
+            end_row = start_row + len(generators)
+            runs.append((slice(start_row, end_row), audio, generators))
+            start_row = end_row
+
+        def sample(logits: torch.Tensor) -> torch.Tensor:
+            picks = [
+                sample_token(logits[rows], audio, generators)
+                for rows, audio, generators in runs
+            ]
+            return picks[0] if len(picks) == 1 else torch.cat(picks)
+
+        return sample
 
     def spell_frames(
         self,
@@ -127,39 +151,22 @@ class PersonaPlexModelRunner(ModelRunner):
 
         Row i of text_token_B, forced_BK and hidden_out belongs to requests[i].
         """
-
-        def depformer_pass_key(
-            request: SchedulerRequest,
-        ) -> tuple[AudioSampling, str | None]:
-            sampling = request.data.talker_model_inputs["sampling"]
-            # Note (Jinjie Guo): A seeded request uses its own random generator, so it
-            # always gets a pass of its own.
-            if sampling.audio_seed is None:
-                return sampling.audio, None
-            else:
-                return sampling.audio, request.request_id
-
-        start_row = 0
-        # Note (Jinjie Guo): A pass takes only adjacent requests, so it needs no gather.
-        for _, group in groupby(requests, key=depformer_pass_key):
-            pass_requests = list(group)
-            end_row = start_row + len(pass_requests)
-            codes_BK = self.model.depformer.generate(
-                text_token_B[start_row:end_row],
-                self.model.hidden_out[start_row:end_row],
-                forced_BK[start_row:end_row],
-                self.audio_sampler(pass_requests[0].data),
-            )
-            for request, codes in zip(pass_requests, codes_BK, strict=True):
-                data = request.data
-                inputs = data.talker_model_inputs
-                device_rows = self.rows_on_device(data)
-                frame = output_frame(device_rows["agent_row"], codes)
-                device_rows["agent_row"] = codes
-                inputs["agent_rows"].append(codes)
-                inputs["frames"].append(frame)
-                inputs["pending_frames"].append(frame)
-            start_row = end_row
+        batch = len(requests)
+        codes_BK = self.model.depformer.generate(
+            text_token_B[:batch],
+            self.model.hidden_out[:batch],
+            forced_BK,
+            self.audio_sampler(requests),
+        )
+        for request, codes in zip(requests, codes_BK, strict=True):
+            data = request.data
+            inputs = data.talker_model_inputs
+            device_rows = self.rows_on_device(data)
+            frame = output_frame(device_rows["agent_row"], codes)
+            device_rows["agent_row"] = codes
+            inputs["agent_rows"].append(codes)
+            inputs["frames"].append(frame)
+            inputs["pending_frames"].append(frame)
 
     def free_codes(self) -> torch.Tensor:
         return torch.full(

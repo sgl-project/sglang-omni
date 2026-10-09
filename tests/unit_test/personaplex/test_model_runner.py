@@ -17,6 +17,7 @@ from sglang_omni.models.personaplex.request_builders import (
     apply_lm_result,
     build_lm_request,
 )
+from sglang_omni.models.personaplex.sampling import sample_token
 from sglang_omni.models.personaplex.timeline import output_frame
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
@@ -177,79 +178,150 @@ def test_decode_rows_chain_text_agent_codes_and_caller_frames():
     assert torch.equal(row[USER_STREAM_OFFSET:], timeline.user_rows[first_position + 1])
 
 
-def test_compatible_neighbours_share_one_depformer_pass() -> None:
-    model = FakeModel(max_batch=5)
-    runner = make_runner(model)
-    seeded_params = {"seed": 7}
-    requests = [
-        make_request(2, request_id="plain-0"),
-        make_request(2, request_id="plain-1"),
-        make_request(2, request_id="greedy", params={"audio_temperature": 0.0}),
-        make_request(2, request_id="seeded-0", params=seeded_params),
-        make_request(2, request_id="seeded-1", params=seeded_params),
-    ]
-    timelines = [request.data.talker_model_inputs["timeline"] for request in requests]
-    prompt_positions = sum(timeline.num_prompt_positions for timeline in timelines)
+def run_prefill(runner, requests, text_token_ids) -> None:
+    prompt_positions = sum(
+        request.data.talker_model_inputs["timeline"].num_prompt_positions
+        for request in requests
+    )
     runner.before_prefill(
         SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(prompt_positions)),
         SimpleNamespace(reqs=[SimpleNamespace(output_ids=[]) for _ in requests]),
         requests,
     )
-
     runner.post_prefill(
-        SimpleNamespace(next_token_ids=torch.arange(70, 75)), None, None, requests
+        SimpleNamespace(next_token_ids=torch.tensor(text_token_ids)),
+        None,
+        None,
+        requests,
     )
-    prefill_calls = list(model.depformer.calls)
-    assert [len(call.text) for call in prefill_calls] == [2, 1, 1, 1]
-    assert torch.equal(
-        torch.cat([call.text for call in prefill_calls]), torch.arange(70, 75)
-    )
-    assert torch.equal(
-        torch.cat([call.hidden for call in prefill_calls]), model.hidden_out
-    )
-    prefill_forced = torch.cat([call.forced for call in prefill_calls])
-    prefill_codes = torch.cat([call.codes for call in prefill_calls])
-    for index, (request, timeline) in enumerate(zip(requests, timelines, strict=True)):
-        assert torch.equal(prefill_forced[index], timeline.forced_agent_at_start)
-        agent_rows = request.data.talker_model_inputs["agent_rows"]
-        assert torch.equal(agent_rows[0], prefill_codes[index])
-    logits = torch.randn(64, 64)
-    assert torch.equal(prefill_calls[1].sample(logits), logits.argmax(dim=-1))
-    seeded_generators = [
-        request.data.talker_model_inputs["audio_generator"] for request in requests[3:]
+
+
+def test_requests_with_any_sampling_share_one_depformer_pass() -> None:
+    model = FakeModel(max_batch=5)
+    runner = make_runner(model)
+    requests = [
+        make_request(2, request_id="plain"),
+        make_request(2, request_id="greedy", params={"audio_temperature": 0.0}),
+        make_request(2, request_id="seeded-0", params={"seed": 7}),
+        make_request(2, request_id="top-5", params={"audio_top_k": 5}),
+        make_request(2, request_id="seeded-1", params={"seed": 8}),
     ]
-    assert seeded_generators[0] is not seeded_generators[1]
+    timelines = [request.data.talker_model_inputs["timeline"] for request in requests]
+
+    run_prefill(runner, requests, list(range(70, 75)))
+    [prefill_call] = model.depformer.calls
+    assert prefill_call.text.tolist() == list(range(70, 75))
+    assert torch.equal(prefill_call.hidden, model.hidden_out)
+    for index, (request, timeline) in enumerate(zip(requests, timelines, strict=True)):
+        assert torch.equal(prefill_call.forced[index], timeline.forced_agent_at_start)
+        agent_rows = request.data.talker_model_inputs["agent_rows"]
+        assert torch.equal(agent_rows[0], prefill_call.codes[index])
+
+    logits = torch.randn(5, 64)
+    picks = prefill_call.sample(logits)
+    assert picks[1] == logits[1].argmax()
+    assert picks[3] in torch.topk(logits[3], 5).indices
+    for row in (2, 4):
+        sampling = requests[row].data.talker_model_inputs["sampling"]
+        generator = torch.Generator().manual_seed(sampling.audio_seed)
+        assert picks[row] == sample_token(
+            logits[row : row + 1], sampling.audio, [generator]
+        )
 
     runner.post_decode(
         SimpleNamespace(next_token_ids=torch.arange(80, 85)), None, None, requests
     )
-    decode_calls = model.depformer.calls[len(prefill_calls) :]
-    assert [len(call.text) for call in decode_calls] == [2, 1, 1, 1]
-    decode_codes = torch.cat([call.codes for call in decode_calls])
+    [decode_call] = model.depformer.calls[1:]
+    assert (decode_call.forced == -1).all()
     for index, request in enumerate(requests):
         frames = request.data.talker_model_inputs["frames"]
         assert torch.equal(
-            frames[1], output_frame(prefill_codes[index], decode_codes[index])
+            frames[1], output_frame(prefill_call.codes[index], decode_call.codes[index])
         )
 
 
-def test_seeded_audio_sampler_draws_reproducibly_from_one_generator():
+class SamplingDepformer:
+    """Samples every step from logits that depend on the step alone, so a
+    request's codes depend only on its sampling settings and random stream."""
+
+    spec = SimpleNamespace(steps=8)
+
+    def __init__(self):
+        self.logits = torch.randn(8, 64, generator=torch.Generator().manual_seed(0))
+        self.batch_sizes = []
+
+    def generate(self, text_token_B, transformer_out_BD, forced_BK, sample):
+        self.batch_sizes.append(forced_BK.shape[0])
+        codes = []
+        for step in range(8):
+            sampled = sample(self.logits[step].expand(forced_BK.shape[0], -1))
+            forced = forced_BK[:, step]
+            codes.append(torch.where(forced >= 0, forced, sampled))
+        return torch.stack(codes, dim=1)
+
+
+def test_seeded_codes_ignore_row_order_and_neighbours_leaving() -> None:
+    def seeded_frames(schedule) -> list[torch.Tensor]:
+        model = FakeModel(max_batch=4)
+        model.depformer = SamplingDepformer()
+        runner = make_runner(model)
+        seeded = make_request(6, request_id="seeded", params={"seed": 7})
+        neighbours = {
+            "plain": make_request(1, request_id="plain"),
+            "other-seed": make_request(6, request_id="other-seed", params={"seed": 8}),
+            "top-3": make_request(6, request_id="top-3", params={"audio_top_k": 3}),
+            "greedy": make_request(
+                6, request_id="greedy", params={"audio_temperature": 0.0}
+            ),
+        }
+        requests = {"seeded": seeded, **neighbours}
+        for kind, names in schedule:
+            batch = [requests[name] for name in names]
+            if kind == "prefill":
+                run_prefill(runner, batch, [70] * len(batch))
+            else:
+                runner.post_decode(
+                    SimpleNamespace(next_token_ids=torch.full((len(batch),), 80)),
+                    None,
+                    None,
+                    batch,
+                )
+        return seeded.data.talker_model_inputs["frames"]
+
+    alone = seeded_frames([("prefill", ["seeded"])] + [("decode", ["seeded"])] * 3)
+    # Note (edwardzh): plain finishes early, other-seed is aborted mid-stream, and
+    # a retract reorders the rows, so seeded's row and pass neighbours change.
+    batched = seeded_frames(
+        [
+            ("prefill", ["plain", "seeded", "other-seed"]),
+            ("decode", ["other-seed", "plain", "seeded"]),
+            ("prefill", ["top-3", "greedy"]),
+            ("decode", ["seeded", "top-3", "greedy", "other-seed"]),
+            ("decode", ["greedy", "top-3", "seeded"]),
+        ]
+    )
+    assert len(batched) == len(alone) == 4
+    for alone_frame, batched_frame in zip(alone, batched, strict=True):
+        assert torch.equal(alone_frame, batched_frame)
+
+
+def test_audio_sampler_keeps_one_generator_per_seeded_request():
     runner = make_runner(FakeModel())
     logits = torch.randn(1, 64)
 
     def draws(request):
-        sampler = runner.audio_sampler(request.data)
+        sampler = runner.audio_sampler([request])
         return [int(sampler(logits)) for _ in range(5)]
 
     params = {"seed": 7, "audio_temperature": 1.0, "audio_top_k": 0}
     first, second = make_request(1, params=params), make_request(1, params=params)
     assert draws(first) == draws(second)
     generator = first.data.talker_model_inputs["audio_generator"]
-    runner.audio_sampler(first.data)
+    runner.audio_sampler([first])
     assert first.data.talker_model_inputs["audio_generator"] is generator
 
     unseeded = make_request(1, params={"audio_temperature": 1.0})
-    runner.audio_sampler(unseeded.data)
+    runner.audio_sampler([unseeded])
     assert "audio_generator" not in unseeded.data.talker_model_inputs
 
 
