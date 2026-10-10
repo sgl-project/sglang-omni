@@ -185,6 +185,27 @@ def test_scheduler_idle_sleep_yields_to_pending_request_builds(
     assert sleep_calls == ([0.001, 0.0001] if follower else [0.0001])
 
 
+@pytest.mark.parametrize("loop_name", ["event_loop_normal", "event_loop_async_decode"])
+def test_event_loops_run_without_autograd(loop_name: str) -> None:
+    class StopLoop(Exception):
+        pass
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.running = True
+    grad_modes: list[bool] = []
+
+    def process_admin_requests() -> None:
+        grad_modes.append(torch.is_grad_enabled())
+        raise StopLoop
+
+    scheduler.process_admin_requests = process_admin_requests
+    with pytest.raises(StopLoop):
+        getattr(scheduler, loop_name)()
+
+    assert grad_modes == [False]
+    assert torch.is_grad_enabled()
+
+
 def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.running = True
@@ -2215,6 +2236,46 @@ def test_off_thread_abort_finishes_a_request_held_by_batch_selection() -> None:
 
     assert scheduler.recv_requests() == []
     assert schedulable_request_ids(scheduler) == ["req-fresh"]
+
+
+@pytest.mark.parametrize("late_follower", [False, True])
+def test_tp_admin_action_lands_on_every_rank_in_one_pass(
+    monkeypatch: pytest.MonkeyPatch, late_follower: bool
+) -> None:
+    """Ranks get an admin action at different times but apply it in one pass."""
+    install_tp_broadcast(monkeypatch)
+    ranks = [tp_rank_scheduler(rank, 2, "waiting") for rank in range(2)]
+    applied: list[int] = []
+    waiters = [Queue(maxsize=1) for _ in ranks]
+    for rank, scheduler in enumerate(ranks):
+        scheduler.admin_queue = Queue()
+        scheduler.tp_admin_waiters = deque()
+        scheduler.tp_admin_results = deque()
+        scheduler.run_admin_action = lambda action, payload, rank=rank: (
+            applied.append(rank) or {"success": True, "message": action}
+        )
+
+    def queue_admin(rank: int) -> None:
+        ranks[rank].admin_queue.put(("pause_generation", {}, waiters[rank]))
+        ranks[rank].process_admin_requests()
+
+    queue_admin(0)
+    if not late_follower:
+        queue_admin(1)
+    else:
+        pass
+    assert applied == []
+    for scheduler in ranks:
+        scheduler.recv_requests()
+    if late_follower:
+        queue_admin(1)
+    else:
+        pass
+
+    assert applied == [0, 1]
+    assert [waiter.get_nowait()["message"] for waiter in waiters] == [
+        "pause_generation"
+    ] * 2
 
 
 def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:

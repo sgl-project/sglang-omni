@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
-import socket
 from collections.abc import Mapping
 from typing import TypedDict
 
@@ -50,6 +49,7 @@ from sglang_omni.pipeline.stage_workers import (
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
 from sglang_omni.utils.cpu import effective_cpu_count
 from sglang_omni.utils.imports import import_string
+from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN, claim_tcp_port
 
 logger = logging.getLogger(__name__)
 
@@ -537,22 +537,20 @@ def resolve_comm_config(
 
 
 class NcclPortAllocator:
-    """Allocate unique NCCL ports for per-stage TP groups."""
+    """Allocate unique NCCL ports for per-stage TP groups.
 
-    def __init__(self, base_port: int = 29500) -> None:
+    Claims are exclusive across processes, so two servers started together
+    do not pick the same port.
+    """
+
+    def __init__(self, base_port: int = NCCL_PORT_BASE) -> None:
         self.next = base_port
 
     def allocate(self) -> int:
-        """Return an available port, incrementing the counter."""
-        while True:
-            port = self.next
-            self.next += 1
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("127.0.0.1", port))
-                    return port
-            except OSError:
-                continue
+        """Return an available port and advance past it."""
+        port = claim_tcp_port(self.next, NCCL_PORT_SPAN)
+        self.next = port + 1
+        return port
 
 
 async def finish_despite_cancellation(coro) -> None:

@@ -12,8 +12,10 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts) plus the API server;
-`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. ZONOS2 also serves here,
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
+`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
+that model's CosyVoice dependencies — see
+[Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
 families (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
@@ -132,6 +134,17 @@ curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "file=@sample.wav" -F "model=/path/to/Qwen3-ASR-1.7B"
 ```
 
+### Whisper ASR (speech-to-text, single XPU)
+
+```bash
+sgl-omni serve --model-path openai/whisper-large-v3 --host 0.0.0.0 --port 8000
+# transcribe:
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@sample.wav" -F "model=openai/whisper-large-v3"
+```
+
+See the [Whisper cookbook](../cookbook/whisper_asr.md) for request parameters.
+
 ### Fun-ASR-Nano (speech-to-text, single XPU)
 
 Same endpoint as Qwen3-ASR, one uploaded clip of 30 s or less per request. See
@@ -185,6 +198,8 @@ pip install --no-deps sox
 pip install --no-deps qwen-tts==0.1.1
 ```
 
+#### Base
+
 ```bash
 sgl-omni serve --model-path /path/to/Qwen3-TTS-12Hz-1.7B-Base --host 0.0.0.0 --port 8000
 # Base checkpoint clones a reference voice — pass ref_audio (+ ref_text):
@@ -193,6 +208,39 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
   -d '{"model":"/path/to/Qwen3-TTS-12Hz-1.7B-Base","input":"Hello from Intel XPU.",
        "voice":"default","ref_audio":"/path/to/ref.wav","ref_text":"reference transcript",
        "response_format":"wav"}' -o out.wav
+```
+
+#### CustomVoice
+
+`CustomVoice` checkpoints synthesize speech with built-in speakers and need no reference audio. Use the matching config and select a speaker in the request:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --config examples/configs/qwen3_tts_1_7b_customvoice.yaml \
+  --host 0.0.0.0 --port 8000
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice","input":"Hello from Intel XPU.",
+       "voice":"Ryan","task_type":"CustomVoice","language":"English",
+       "instructions":"Speak clearly and calmly.","response_format":"wav"}' -o out.wav
+```
+
+#### VoiceDesign
+
+The `VoiceDesign` checkpoint synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --host 0.0.0.0 --port 8000
+# VoiceDesign requires task_type and non-empty instructions:
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign","input":"Hello, how are you?",
+       "voice":"default","task_type":"VoiceDesign",
+       "instructions":"A warm, natural young adult voice.","response_format":"wav"}' -o out.wav
 ```
 
 #### Codec decoding on XPU
@@ -224,6 +272,56 @@ stages:
 
 An explicit stage value wins over the pipeline default. See the platform-neutral
 defaults in [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
+
+### AuK (speech generation and editing, single XPU)
+
+Run one checkpoint at a time:
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path tencent/AuK \
+  --host 0.0.0.0 --port 8000
+```
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path tencent/AuK-Flash \
+  --host 0.0.0.0 --port 8000
+```
+
+With either server, generate a 24 kHz WAV from text and voice instructions. Without reference audio, `stage_params.auk_engine.gen_seconds` is required:
+
+```bash
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Welcome home.","instructions":"A warm, relaxed voice.",
+       "stage_params":{"auk_engine":{"gen_seconds":3}},
+       "seed":1234,"response_format":"wav"}' -o out.wav
+```
+
+AuK uses 32 sampling steps by default; AuK-Flash uses its fixed four-step recipe. See the [AuK cookbook](../cookbook/auk.md) for voice cloning and speech editing through `/generate`.
+
+### Fun-CosyVoice3 (text-to-speech, single XPU)
+
+Fun-CosyVoice3 needs the `[fun-cosyvoice3]` extra and the CosyVoice sources. Install the
+extra through the helper above, not with `pip install -e ".[fun-cosyvoice3]"`, which would
+resolve the CUDA project file. Then clone CosyVoice with its Matcha-TTS submodule as in
+[docs/cookbook/fun_cosyvoice3.md](../cookbook/fun_cosyvoice3.md#prerequisites) and add both to
+`PYTHONPATH`; `sox` is not needed.
+
+```bash
+scripts/xpu/install_xpu.sh --extras fun-cosyvoice3
+export PYTHONPATH="${COSYVOICE_PATH}:${COSYVOICE_PATH}/third_party/Matcha-TTS:$PYTHONPATH"
+```
+
+```bash
+sgl-omni serve --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 --host 0.0.0.0 --port 8000
+# clones a reference voice — pass ref_audio (+ ref_text):
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"FunAudioLLM/Fun-CosyVoice3-0.5B-2512","input":"Hello from Intel XPU.",
+       "ref_audio":"/path/to/ref.wav","ref_text":"reference transcript"}' -o out.wav
+```
 
 ### dots.tts (text-to-speech, single XPU)
 
@@ -407,8 +505,8 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex and dots.tts all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, MiniCPM-o, PersonaPlex and dots.tts single-card;
+> ✅ Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
+> (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).

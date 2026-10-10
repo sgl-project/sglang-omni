@@ -412,13 +412,15 @@ class SessionRuntime:
         except ProtocolError as exc:
             self.fail(str(exc), exc.code)
         except Exception as exc:
-            logger.exception(f"Realtime session {self.session_id} input pump failed")
-            code = (
-                ContextExhaustedError.CODE
-                if ContextExhaustedError.matches(exc)
-                else "internal"
-            )
-            self.fail(str(exc), code)
+            if ContextExhaustedError.matches(exc):
+                logger.error(f"Realtime session {self.session_id} closed: {exc}")
+                failure_code = ContextExhaustedError.CODE
+            else:
+                logger.exception(
+                    f"Realtime session {self.session_id} input pump failed"
+                )
+                failure_code = "internal"
+            self.fail(str(exc), failure_code)
 
     def fail(
         self, message: str, code: str = "internal", event_id: str | None = None

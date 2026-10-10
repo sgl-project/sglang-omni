@@ -408,7 +408,7 @@ private extension Duration {
     }
 }
 
-private final class BenchmarkWriter {
+final class BenchmarkWriter {
     private let handle: FileHandle
 
     init(_ url: URL) throws {
@@ -432,9 +432,9 @@ private final class BenchmarkWriter {
     }
 }
 
-/// Physical footprint of this process plus every descendant (the Omni supervisor,
-/// its lifeline and the server's stage processes), sampled every 100 ms.
-private final class ProcessTreeFootprintSampler: @unchecked Sendable {
+/// Physical footprint of this process plus every descendant (the Omni server
+/// process), sampled every 100 ms.
+final class ProcessTreeFootprintSampler: @unchecked Sendable {
     struct Snapshot {
         let current: UInt64
         let peak: UInt64

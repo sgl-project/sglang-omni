@@ -27,6 +27,7 @@ from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
 from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.scheduling.session import SessionAppend
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
@@ -42,14 +43,21 @@ def perception() -> MiniCPMOPerceptionState:
     tokenizer.convert_tokens_to_ids.side_effect = dict(
         zip(REQUIRED_SPECIAL_TOKENS, range(1, 17))
     ).__getitem__
+    audio_encoder = Mock()
+    audio_encoder.forward_streaming_batch.side_effect = lambda chunks: [
+        (torch.full((10, 4), 9.0), None) for _ in chunks
+    ]
     state = MiniCPMOPerceptionState(
         tokenizer=tokenizer,
         processor=Mock(),
-        audio_encoder=Mock(),
+        audio_encoder=audio_encoder,
         image_encoder=Mock(),
         max_slice_nums=1,
+        mel_filter_bank=Mock(),
     )
-    state.encode_audio = Mock(return_value=torch.full((10, 4), 9.0))
+    state.prepare_audio = Mock(return_value=np.zeros(4, dtype=np.float32))
+    state.mel_chunk = Mock(return_value=Mock(batch_key=Mock(return_value=())))
+    state.finish_audio = Mock()
     state.encode_image = Mock(return_value=torch.full((64, 4), 6.0))
     return state
 
@@ -62,9 +70,28 @@ def hooks(perception: MiniCPMOPerceptionState) -> PerceptionHooks:
         perception.audio_encoder,
         reference_audio=b"",
         image_encoder=Mock(),
+        mel_filter_bank=Mock(
+            log_mel=Mock(side_effect=lambda windows: torch.zeros(len(windows), 80, 1))
+        ),
+        reference_cache_capacity=1,
     )
     hooks.states[IDENTITY] = perception
     return hooks
+
+
+def append_unit(
+    hooks: PerceptionHooks, chunk: TimedChunk, payload: StagePayload
+) -> StagePayload:
+    [result] = hooks.append_batch(
+        [
+            SessionAppend(
+                chunk=chunk,
+                payload=payload,
+                context=SimpleNamespace(session_identity=IDENTITY),
+            )
+        ]
+    )
+    return result
 
 
 def unit_payload(data: PerceptionStepPlan | None = None) -> StagePayload:
@@ -138,10 +165,10 @@ def test_append_and_thinker_splice(
         "audio", 0, 1000, 0, {"pcm": pcm, "images": [b"frame"]} if has_image else pcm
     )
     payload = unit_payload()
-    result = hooks.append(chunk, payload, SimpleNamespace(session_identity=IDENTITY))
+    result = append_unit(hooks, chunk, payload)
     assert result is payload
     np.testing.assert_array_equal(
-        perception.encode_audio.call_args.args[0],
+        perception.prepare_audio.call_args.args[0],
         np.arange(16000, dtype=np.float32) / 32768,
     )
     if has_image:
@@ -208,6 +235,7 @@ def test_image_audio_commit_atomically(
         (79, 89),
     ]
     assert request.session_embedding_spans == [history, *unit.embedding_spans]
+    assert request.req.skip_radix_cache_insert is True
     if finish == "complete":
         bridge.complete("unit")
         assert session.embedding_spans == [history, *unit.embedding_spans]
@@ -223,9 +251,9 @@ def test_empty_eos_does_not_encode(
     perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
 ) -> None:
     payload = unit_payload()
-    hooks.append(TimedChunk("audio", 0, 0, 1, None, eos=True), payload, Mock())
+    append_unit(hooks, TimedChunk("audio", 0, 0, 1, None, eos=True), payload)
     assert payload.data is None
-    perception.encode_audio.assert_not_called()
+    perception.prepare_audio.assert_not_called()
     perception.encode_image.assert_not_called()
 
 
@@ -243,12 +271,12 @@ def test_undecodable_frame_is_dropped_and_siblings_kept(
     last = torch.full((64, 4), 7.0)
     perception.encode_image.side_effect = [first, error, last]
     payload = unit_payload()
-    hooks.append(
+    append_unit(
+        hooks,
         TimedChunk(
             "audio", 0, 1000, 0, {"pcm": b"\0\0", "images": [b"first", b"bad", b"last"]}
         ),
         payload,
-        SimpleNamespace(session_identity=IDENTITY),
     )
     spans = payload.data["embedding_spans"]
     assert [span["modality"] for span in spans] == ["image", "image", "audio"]

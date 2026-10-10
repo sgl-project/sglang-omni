@@ -1090,6 +1090,18 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
                 qwenUsesAutomaticLanguageProtocol: language == nil,
                 mossVisibleOutputMode: nil
             )
+        case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
+            let inferenceConfiguration = resolvedInferenceConfiguration(for: .intermediate)
+            return MLXMeetingNativeStreamingConfiguration(
+                session: try await OmniNativeStreamingSession.moss(
+                    runtime: runtime,
+                    prompt: inferenceConfiguration.mossPrompt
+                ),
+                liveMode: liveMode,
+                qwenUsesAutomaticLanguageProtocol: false,
+                // As on the Swift backend: the live overlay strips MOSS tags.
+                mossVisibleOutputMode: .plainText
+            )
         default:
             throw NSError(
                 domain: "Voxt.Meeting.NativeMLX",
@@ -1175,6 +1187,14 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             }
             releaseNativeLiveSession(cancelSession: true)
             nativeQwenLiveUsesAutomaticLanguageProtocol = language == nil
+        case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
+            let prompt = resolvedInferenceConfiguration(for: .intermediate).mossPrompt
+            session = try await OmniNativeStreamingSession.moss(runtime: runtime, prompt: prompt)
+            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+                session.cancel()
+                return false
+            }
+            releaseNativeLiveSession(cancelSession: true)
         default:
             return false
         }
@@ -1692,12 +1712,18 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         case .omni(let runtime):
             // The Omni branch starts before any MLXArray exists on the client.
             let targetSampleRate = targetSampleRate
+            let speechSegments = try await omniSpeechSegmentsIfNeeded(
+                runtime: runtime,
+                audioSamples: audioSamples,
+                inferenceConfiguration: inferenceConfiguration
+            )
             let inferenceTask = Task.detached(priority: inferenceTaskPriority) {
                 try await Self.runOmniInferenceDetached(
                     runtime: runtime,
                     audioSamples: audioSamples,
                     inferenceConfiguration: inferenceConfiguration,
-                    targetSampleRate: targetSampleRate
+                    targetSampleRate: targetSampleRate,
+                    speechSegments: speechSegments
                 )
             }
             return try await withTaskCancellationHandler {
@@ -1746,6 +1772,46 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         } onCancel: {
             inferenceTask.cancel()
         }
+    }
+
+    /// Cohere's voice-activity cuts for long audio on the Omni server, decided as
+    /// resolvedLongFormVADModelIfNeeded decides them for the Swift model; the
+    /// server loads the provisioned Silero VAD itself.
+    private func omniSpeechSegmentsIfNeeded(
+        runtime: OmniASRRuntime,
+        audioSamples: [Float],
+        inferenceConfiguration: ResolvedInferenceConfiguration
+    ) async throws -> OmniSpeechSegments? {
+        guard runtime.kind == .cohereTranscribe,
+              inferenceConfiguration.cohereLongFormStrategy == .voiceActivity,
+              MLXTranscriptionPlanning.shouldUseSenseVoiceVAD(
+                  sampleCount: audioSamples.count,
+                  sampleRate: targetSampleRate,
+                  directPassMaximumDurationSeconds: senseVoiceDirectPassMaximumDurationSeconds
+              )
+        else {
+            return nil
+        }
+        let modelDirectory = try await SileroVADModelProvisioner.shared.ensureModelDirectory()
+        try Task.checkCancellation()
+        // Note (khazic): the server returns no text for audio without speech, as this config's
+        // no-speech policy asks.
+        let config = Self.longFormSpeechSegmentConfig(
+            chunkMaximumDurationSeconds: senseVoiceChunkMaximumDurationSeconds,
+            vadThreshold: senseVoiceVADThreshold,
+            vadMinSpeechDurationMs: senseVoiceVADMinSpeechDurationMs,
+            vadMinSilenceDurationMs: senseVoiceVADMinSilenceDurationMs,
+            vadSpeechPadMs: senseVoiceVADSpeechPadMs
+        )
+        return OmniSpeechSegments(
+            vadModelDirectory: modelDirectory,
+            threshold: config.threshold,
+            minSpeechMilliseconds: config.minSpeechMs,
+            minSilenceMilliseconds: config.minSilenceMs,
+            speechPadMilliseconds: config.speechPadMs,
+            mergeGapSeconds: config.mergeGapS,
+            maxChunkSeconds: config.maxChunkS
+        )
     }
 
     private func resolvedLongFormVADModelIfNeeded(

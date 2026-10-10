@@ -1,0 +1,81 @@
+{
+  "mlx-community/whisper-large-v3-turbo": {
+    "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+    "files": {
+      "config.json": "b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379",
+      "weights.safetensors": "951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6"
+    },
+    "tokenizer": {
+      "repo": "openai/whisper-large-v3",
+      "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1",
+      "files": {
+        "generation_config.json": "fbdfa70135de9b1d31553393f14e80aaeb1936ea36576b2ba864055943c09d23",
+        "merges.txt": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+        "tokenizer_config.json": "844b642c73a91359722f47b35705f7174686df33d252695d8572cf9ac03a6389",
+        "vocab.json": "e2aa043ef015641d363d8288e7c241c85e36a5c761fb303598e0710233344387"
+      }
+    }
+  },
+  "beshkenadze/cohere-transcribe-03-2026-mlx-fp16": {
+    "revision": "06bbe0d853a93cbbf7c1f40cffccd4c5481459ef",
+    "files": {
+      "config.json": "5de7e586cec6d8f51225c8d5fe17a56a3043dda9af8c42f9cb01dd545905eb18",
+      "model.safetensors": "1ec6ba9ee27da02b21b3ffdb5183b77020351d3331d05a74ad8d58a09394a2b8",
+      "tokenizer.model": "6d21e6a83b2d0d3e1241a7817e4bef8eb63bcb7cfe4a2675af9a35ff3bbf0e14",
+      "tokenizer_config.json": "0dfeb3eeba07bccaa1b4bf78f3135ad3059acf8d18f681675832b285ac0035b0"
+    }
+  },
+  "mlx-community/silero-vad-v6": {
+    "revision": "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
+    "files": {
+      "config.json": "9fe1befb9692a0d4135adadc33f8075ef6d350bd2391b88d750f2c233f97fa0b",
+      "model.safetensors": "65b6c5f0293cbc44d109e58bef78b474d9c65dedbee814cf0b90ef5f0d9150ff"
+    }
+  },
+  "mlx-community/whisper-large-v3-mlx": {
+    "revision": "49e6aa286ad60c14352c404340ded53710378a11",
+    "files": {
+      "config.json": "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3",
+      "weights.npz": "05ff791ce3630fae47e7c51004e9666204d786246ec07cac6110af768099b40d"
+    },
+    "tokenizer": {
+      "repo": "openai/whisper-large-v3",
+      "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1",
+      "files": {
+        "generation_config.json": "fbdfa70135de9b1d31553393f14e80aaeb1936ea36576b2ba864055943c09d23",
+        "merges.txt": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+        "tokenizer_config.json": "844b642c73a91359722f47b35705f7174686df33d252695d8572cf9ac03a6389",
+        "vocab.json": "e2aa043ef015641d363d8288e7c241c85e36a5c761fb303598e0710233344387"
+      }
+    }
+  },
+  "mlx-community/whisper-small-mlx": {
+    "revision": "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e",
+    "files": {
+      "config.json": "e8f58e638208af66d5d5d67801259dc7a12d199e971967a9f9d33a8e3635668e",
+      "weights.npz": "55b6674c9b339702d486e2b1573839a66f8ec8f821ed2886993ef717a86b09f5"
+    },
+    "tokenizer": {
+      "repo": "openai/whisper-small",
+      "revision": "973afd24965f72e36ca33b3055d56a652f456b4d",
+      "files": {
+        "generation_config.json": "71565b8ef50d0bf7a1193ed4bbed195b94e70c18894d81bba2f1233dcec3ab53",
+        "merges.txt": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+        "tokenizer_config.json": "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce",
+        "vocab.json": "8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9"
+      }
+    }
+  },
+  "OpenMOSS-Team/MOSS-Transcribe-Diarize": {
+    "revision": "704aa4a9c304e8520be88901e0d1960158ef5b15",
+    "files": {
+      "config.json": "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234",
+      "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "model-00000-of-00001.safetensors": "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4",
+      "processor_config.json": "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7",
+      "tokenizer.json": "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb",
+      "tokenizer_config.json": "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
+  }
+}

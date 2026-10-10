@@ -1,10 +1,8 @@
 import Foundation
 
-/// Where the Voxt-owned backend lives and how to start it.
+/// Which native server binary to run and how to start it.
 nonisolated struct OmniBackendConfiguration: Sendable, Equatable {
-    var pythonExecutable: URL
-    var backendDirectory: URL
-    var derivedRoot: URL
+    var runtimeExecutable: URL
     var startupTimeoutSeconds: Double = 180
 }
 
@@ -66,7 +64,7 @@ nonisolated enum OmniASRRuntimeError: LocalizedError, Equatable {
 /// `ready → retiring → stopped` is a real barrier: `retire()` refuses new
 /// leases at once, lets work that already holds a lease finish (a multi-chunk
 /// Final or a live session keeps issuing requests), and returns only after the
-/// supervisor has stopped the server and every process it started.
+/// server process has exited.
 actor OmniASRRuntime {
     enum State: Equatable {
         case idle
@@ -79,10 +77,10 @@ actor OmniASRRuntime {
 
     /// The longest audio the server accepts in one Qwen3-ASR stream request.
     static let qwenMaximumRequestSeconds: Float = 1200
-    /// Grace periods for stopping a supervisor before escalating.
+    /// Grace periods for stopping the server process before escalating.
     static let shutdownGrace: Duration = .seconds(15)
     static let terminateGrace: Duration = .seconds(10)
-    /// Enough of the supervisor's stderr to show why a start failed.
+    /// Enough of the server process's stderr to show why a start failed.
     static let diagnosticTailBytes = 2048
 
     nonisolated let kind: OmniASRModelKind
@@ -90,7 +88,7 @@ actor OmniASRRuntime {
     nonisolated let configuration: OmniBackendConfiguration
 
     private(set) var state: State = .idle
-    private var supervisor: Process?
+    private var serverProcess: Process?
     private var controlPipe: Pipe?
     private var servingEndpoint: OmniServerEndpoint?
     private var preparation: Task<OmniServerEndpoint, Error>?
@@ -114,6 +112,17 @@ actor OmniASRRuntime {
     var isServing: Bool {
         if case .ready = state { return true }
         return false
+    }
+
+    /// False once the runtime failed, its server exited, or it was retired: a
+    /// caller that wants a server needs a new runtime.
+    var canServe: Bool {
+        switch state {
+        case .idle, .starting, .ready:
+            return true
+        case .retiring, .stopped, .failed:
+            return false
+        }
     }
 
     /// Starts the server once; concurrent callers share the same launch.
@@ -146,7 +155,7 @@ actor OmniASRRuntime {
             if case .starting = state {
                 state = .failed(error.localizedDescription)
             }
-            await stopSupervisor()
+            await stopServerProcess()
             throw error
         }
     }
@@ -175,7 +184,7 @@ actor OmniASRRuntime {
         state = .retiring
         let task = Task {
             await self.drainActiveUses()
-            await self.stopSupervisor()
+            await self.stopServerProcess()
         }
         retirement = task
         await task.value
@@ -233,9 +242,9 @@ actor OmniASRRuntime {
         return try parser.finish()
     }
 
-    /// The supervisor exits after its server dies; requests must stop here
-    /// instead of reaching whatever later binds the port.
-    private func supervisorExited() {
+    /// The server process has exited; requests must stop here instead of
+    /// reaching whatever later binds the port.
+    private func serverProcessExited() {
         guard case .ready = state else { return }
         state = .failed("The local Omni server stopped unexpectedly.")
         servingEndpoint = nil
@@ -243,23 +252,18 @@ actor OmniASRRuntime {
 
     private func launch() async throws -> OmniServerEndpoint {
         let process = Process()
-        process.executableURL = configuration.pythonExecutable
+        process.executableURL = configuration.runtimeExecutable
         process.arguments = [
-            "-m", "voxt_omni_backend.supervisor",
+            "--supervised",
             "--model-kind", kind.rawValue,
             "--model-directory", modelDirectory.path,
-            "--derived-root", configuration.derivedRoot.path,
             "--startup-timeout-s", String(configuration.startupTimeoutSeconds),
         ]
-        process.currentDirectoryURL = configuration.backendDirectory
-        process.environment = Self.supervisorEnvironment(
-            inheriting: ProcessInfo.processInfo.environment,
-            backendDirectory: configuration.backendDirectory
-        )
+        process.environment = Self.runtimeEnvironment(inheriting: ProcessInfo.processInfo.environment)
         let control = Pipe()
         let events = Pipe()
         let diagnostics = Pipe()
-        // Writing shutdown to a supervisor that just exited must not raise SIGPIPE in Voxt.
+        // Note (Jiaxin Deng): writing shutdown to a server that just exited must not raise SIGPIPE in Voxt.
         _ = fcntl(control.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         process.standardInput = control
         process.standardOutput = events
@@ -276,7 +280,7 @@ actor OmniASRRuntime {
             }
         }
         process.terminationHandler = { [weak self] _ in
-            Task { await self?.supervisorExited() }
+            Task { await self?.serverProcessExited() }
         }
         // A retire that ran before this launch got the actor must win; nothing
         // suspends between this check and the spawn.
@@ -286,13 +290,30 @@ actor OmniASRRuntime {
         } catch {
             throw OmniASRRuntimeError.launchFailed(error.localizedDescription)
         }
-        supervisor = process
+        serverProcess = process
         controlPipe = control
+        // Note (Jiaxin Deng): a server that never reports (a stalled model load) is killed at the
+        // startup deadline; its stdout then ends and the launch fails.
+        let timedOut = OmniStartupDeadline()
+        let serverPID = process.processIdentifier
+        let seconds = configuration.startupTimeoutSeconds
+        let deadline = Task.detached {
+            try await Task.sleep(for: .seconds(seconds))
+            timedOut.expire()
+            kill(serverPID, SIGKILL)
+        }
+        defer { deadline.cancel() }
         var iterator = Self.eventStream(events.fileHandleForReading).makeAsyncIterator()
         guard let first = try await iterator.next() else {
-            throw OmniASRRuntimeError.launchFailed(
-                "supervisor exited before reporting: \(stderrTail.text)"
-            )
+            if timedOut.expired {
+                throw OmniASRRuntimeError.launchFailed(
+                    "the server did not report ready within \(String(format: "%g", seconds)) s"
+                )
+            } else {
+                throw OmniASRRuntimeError.launchFailed(
+                    "server exited before reporting: \(stderrTail.text)"
+                )
+            }
         }
         guard first["event"] as? String == "ready",
               let host = first["host"] as? String,
@@ -310,11 +331,10 @@ actor OmniASRRuntime {
         )
     }
 
-    /// Asks for an orderly shutdown, then escalates: SIGTERM lets the supervisor
-    /// reap its tree, and SIGKILL still takes the tree down through its lifeline.
-    private func stopSupervisor() async {
-        guard let process = supervisor else { return }
-        supervisor = nil
+    /// Asks for an orderly shutdown, then escalates to SIGTERM and finally SIGKILL.
+    private func stopServerProcess() async {
+        guard let process = serverProcess else { return }
+        serverProcess = nil
         if let controlPipe {
             let shutdown = Data("{\"command\": \"shutdown\"}\n".utf8)
             try? controlPipe.fileHandleForWriting.write(contentsOf: shutdown)
@@ -330,16 +350,10 @@ actor OmniASRRuntime {
 
     /// Voxt's environment without the dynamic loader settings a debugger or XCTest
     /// injects.
-    nonisolated static func supervisorEnvironment(
-        inheriting inherited: [String: String],
-        backendDirectory: URL
-    ) -> [String: String] {
-        var environment = inherited.filter {
+    nonisolated static func runtimeEnvironment(inheriting inherited: [String: String]) -> [String: String] {
+        inherited.filter {
             !$0.key.hasPrefix("DYLD_") && !$0.key.hasPrefix("__XPC_DYLD_")
         }
-        environment["PYTHONPATH"] = backendDirectory.path
-        environment["PYTHONUNBUFFERED"] = "1"
-        return environment
     }
 
     private static func waitForExit(_ process: Process, within limit: Duration) async -> Bool {
@@ -351,25 +365,74 @@ actor OmniASRRuntime {
         return true
     }
 
-    private nonisolated static func eventStream(
+    /// The server's stdout as JSON events, read on the file handle's own dispatch
+    /// source: a blocking read per live server would starve the concurrency pool.
+    nonisolated static func eventStream(
         _ handle: FileHandle
     ) -> AsyncThrowingStream<[String: Any], Error> {
         AsyncThrowingStream { continuation in
-            let reader = Task.detached {
-                do {
-                    for try await line in handle.bytes.lines {
-                        guard let data = line.data(using: .utf8),
-                              let event = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                        else { continue }
-                        continuation.yield(event)
-                    }
+            let lines = OmniLineBuffer()
+            handle.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
                     continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+                } else {
+                    do {
+                        for line in lines.append(data) {
+                            if let event = try JSONSerialization.jsonObject(with: line) as? [String: Any] {
+                                continuation.yield(event)
+                            }
+                        }
+                    } catch {
+                        handle.readabilityHandler = nil
+                        continuation.finish(throwing: error)
+                    }
                 }
             }
-            continuation.onTermination = { _ in reader.cancel() }
+            continuation.onTermination = { _ in handle.readabilityHandler = nil }
         }
+    }
+}
+
+/// Whether a launch's startup deadline passed.
+nonisolated final class OmniStartupDeadline: @unchecked Sendable {
+    private let lock = NSLock()
+    private var passed = false
+
+    func expire() {
+        lock.lock()
+        passed = true
+        lock.unlock()
+    }
+
+    var expired: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return passed
+    }
+}
+
+/// Splits bytes into newline-terminated lines across reads.
+nonisolated final class OmniLineBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending = Data()
+
+    /// The complete lines in what has arrived so far, without their newlines;
+    /// a trailing partial line waits for the next call.
+    func append(_ data: Data) -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        pending.append(data)
+        var lines: [Data] = []
+        while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+            let line = pending[pending.startIndex ..< newline]
+            if !line.isEmpty {
+                lines.append(Data(line))
+            }
+            pending.removeSubrange(pending.startIndex ... newline)
+        }
+        return lines
     }
 }
 
@@ -417,6 +480,57 @@ extension OmniASRRuntime {
         )
     }
 
+    /// Whisper Final as MLXAudio decoded it: the server cuts the recording into
+    /// 30 s windows and decodes each with the same budget, so one request
+    /// carries the whole recording.
+    nonisolated static func whisperFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?,
+        maxNewTokens: Int,
+        temperature: Float
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: maxNewTokens,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            temperature: temperature
+        )
+    }
+
+    /// Cohere Transcribe Final as MLXAudio decoded it: energy-cut chunks, or
+    /// speech segments for long audio, share one token budget on the server.
+    nonisolated static func cohereFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?,
+        usePunctuation: Bool?,
+        maxNewTokens: Int,
+        temperature: Float,
+        chunkDuration: Float,
+        minChunkDuration: Float,
+        speechSegments: OmniSpeechSegments?
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: maxNewTokens,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            temperature: temperature,
+            usePunctuation: usePunctuation,
+            chunkDuration: chunkDuration,
+            minChunkDuration: minChunkDuration,
+            speechSegments: speechSegments
+        )
+    }
+
     func transcribeQwenFinal(
         samples: [Float],
         sampleRate: Int,
@@ -459,5 +573,27 @@ extension OmniASRRuntime {
             text += result.text
         }
         return (text.trimmingCharacters(in: .whitespacesAndNewlines), resolvedLanguage)
+    }
+}
+
+extension OmniASRRuntime {
+    /// MOSS-Transcribe-Diarize Final as MLXAudio decoded it: one request for the
+    /// whole recording, which the server cuts into 1200 s chunks, each with the
+    /// token budget, decoded greedily with both end tokens and the loop guard.
+    func transcribeMossFinal(
+        samples: [Float],
+        sampleRate: Int,
+        prompt: String?,
+        maxTokens: Int
+    ) async throws -> OmniTranscriptionResult {
+        try await transcribe(OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: nil,
+            prompt: prompt,
+            maxNewTokens: maxTokens,
+            stopAtEndOfText: true,
+            stopOnTokenLoop: true
+        ))
     }
 }

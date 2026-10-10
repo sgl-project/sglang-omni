@@ -1341,7 +1341,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         codes_ready = state.pending_codes_ready
         state.pending_codes_ready = None
         if codes_ready is None and supports_device_streams(codes.device):
-            codes_ready = self.device_module.Event()
+            codes_ready = torch.get_device_module(codes.device).Event()
             codes_ready.record()
         else:
             pass
@@ -2907,6 +2907,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         while True:
+            self.commit_decoded_incremental()
             in_flight = bool(getattr(self.worker_ctx, "pending_incremental", None))
             if in_flight:
                 if not self.followup_collect_lock.acquire(
@@ -3006,10 +3007,19 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else:
                     planned.append((request_id, state, plan))
         stream = getattr(self.worker_ctx, "stream", self.followup_decode_stream)
-        for cohort in self.group_decode_plans(planned_incremental):
+        # note (Haoling Pu): earliest cohort first, its earliest rows in the first group.
+        cohorts = sorted(
+            (
+                sorted(cohort, key=lambda entry: entry[1].playback_deadline_s)
+                for cohort in self.group_decode_plans(planned_incremental)
+            ),
+            key=lambda cohort: cohort[0][1].playback_deadline_s,
+        )
+        for cohort in cohorts:
             for group in self.split_incremental_group_for_graph(
                 cohort, runner=getattr(self.worker_ctx, "incremental_graphs", None)
             ):
+                self.commit_decoded_incremental()
                 self.drain_pending_incremental(keep=1)
                 pending = self.launch_incremental_group(group, stream=stream)
                 if pending is not None:
@@ -3041,6 +3051,32 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         return pending
+
+    def commit_decoded_incremental(self) -> None:
+        """Commit the oldest in-flight cohorts that are ready to resolve."""
+        pending = self.pending_incremental()
+        ready_count = 0
+        for in_flight_group in pending:
+            slot = in_flight_group.handle.slot
+            if slot is None:
+                is_ready = True
+            else:
+                try:
+                    is_ready = slot.output_transfer.query()
+                except RuntimeError:
+                    logger.warning(
+                        "Qwen3-TTS follow-up decode event query failed; resolving the cohort now",
+                        exc_info=True,
+                    )
+                    is_ready = True
+            if is_ready:
+                ready_count += 1
+            else:
+                break
+        if ready_count > 0:
+            self.drain_pending_incremental(keep=len(pending) - ready_count)
+        else:
+            pass
 
     def drain_pending_incremental(self, *, keep: int) -> None:
         """Resolve and commit the oldest in-flight cohorts down to ``keep``."""

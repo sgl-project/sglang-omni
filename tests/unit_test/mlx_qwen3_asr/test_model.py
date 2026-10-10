@@ -16,12 +16,14 @@ from mlx.utils import tree_flatten  # noqa: E402
 
 from sglang_omni_mlx.qwen3_asr.audio import AudioLayout, swift_token_count  # noqa: E402
 from sglang_omni_mlx.qwen3_asr.model import (  # noqa: E402
-    KV_CACHE_STEP_TOKENS,
     AudioEncoderConfig,
     Qwen3ASR,
-    TextDecoderConfig,
     conv_output_frames,
     load_qwen3_asr,
+)
+from sglang_omni_mlx.text_decoder import (  # noqa: E402
+    KV_CACHE_STEP_TOKENS,
+    TextDecoderConfig,
 )
 
 AUDIO_CONFIG = {

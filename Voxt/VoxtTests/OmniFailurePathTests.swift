@@ -107,9 +107,7 @@ final class OmniFailurePathTests: XCTestCase {
     func testTheLedgerReleasesRuntimesNoLoadWillAdopt() async {
         let scratch = FileManager.default.temporaryDirectory
         let configuration = OmniBackendConfiguration(
-            pythonExecutable: URL(fileURLWithPath: "/usr/bin/false"),
-            backendDirectory: scratch,
-            derivedRoot: scratch
+            runtimeExecutable: URL(fileURLWithPath: "/usr/bin/false")
         )
         let adopted = OmniASRRuntime(kind: .qwen3ASR, modelDirectory: scratch, configuration: configuration)
         let orphan = OmniASRRuntime(kind: .qwen3ASR, modelDirectory: scratch, configuration: configuration)
@@ -129,22 +127,20 @@ final class OmniFailurePathTests: XCTestCase {
     }
 
     /// Retiring a runtime whose launch has not started yet must keep the
-    /// supervisor from starting at all. A smoke check: the window between
+    /// server process from starting at all. A smoke check: the window between
     /// prepare() queueing the launch and the launch running cannot be hit on
     /// demand, so this passes without the guard too; it catches leftovers.
-    func testRetiringBeforeTheLaunchRunsStartsNoSupervisor() async throws {
+    func testRetiringBeforeTheLaunchRunsStartsNoServerProcess() async throws {
         let token = "voxt-omni-retire-race-\(UUID().uuidString)"
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(token, isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-        let script = scratch.appendingPathComponent("python")
-        // Stands in for the supervisor: exits once Voxt writes or closes its control pipe.
+        let script = scratch.appendingPathComponent("qwen3_asr_server")
+        // Note (Jiaxin Deng): stands in for the runtime; exits once Voxt writes or closes its control pipe.
         try "#!/bin/sh\nexec /bin/sh -c 'read line' \(token)\n".write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         defer { try? FileManager.default.removeItem(at: scratch) }
         let configuration = OmniBackendConfiguration(
-            pythonExecutable: script,
-            backendDirectory: scratch,
-            derivedRoot: scratch,
+            runtimeExecutable: script,
             startupTimeoutSeconds: 5
         )
 
@@ -156,11 +152,11 @@ final class OmniFailurePathTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(500))
         let leftover = Self.processes(matching: token)
-        // A supervisor started after retirement would wait on its control pipe forever.
+        // Note (Jiaxin Deng): a server started after retirement would wait on its control pipe forever.
         Self.kill(matching: token)
         preparations.forEach { $0.cancel() }
 
-        XCTAssertEqual(leftover, 0, "a supervisor started after its runtime retired")
+        XCTAssertEqual(leftover, 0, "a server process started after its runtime retired")
     }
 
     private static func kill(matching token: String) {

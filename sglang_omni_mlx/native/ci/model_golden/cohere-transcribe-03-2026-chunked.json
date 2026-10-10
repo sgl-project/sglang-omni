@@ -1,0 +1,235 @@
+{
+ "model": "beshkenadze/cohere-transcribe-03-2026-mlx-fp16",
+ "tool": "cohere_transcribe",
+ "clips_over_seconds": 30,
+ "request": {
+  "max_new_tokens": 1024,
+  "use_punctuation": 1,
+  "chunk_duration": 20
+ },
+ "language_by_clip_language": {
+  "en": "en",
+  "zh": "zh",
+  "mixed": "zh",
+  "none": "en"
+ },
+ "baseline": {
+  "source": "pending",
+  "wer_en": 0.0,
+  "cer_zh": 0.0,
+  "mer_mixed": 0.0
+ },
+ "tolerance": {
+  "metric_pp": 1.5,
+  "min_identical": 0.8
+ },
+ "devices": {
+  "Apple M1 Pro": {
+   "metrics": {
+    "wer_en": 0.01658,
+    "cer_zh": 0.06803,
+    "mer_mixed": 0.0
+   },
+   "clips": {
+    "0147_zh_numbers": {
+     "text": "自 1988 年以来,投票箱就必须是透明的。这样选民和观察员,才能看到投票开始时,箱内没有信封,还能看到出了那些极是统计过。\n有权投票的选命以外,没有其他人向乡内投入信封。",
+     "language": "zh",
+     "generated_token_count": 94,
+     "finish_reason": "stop"
+    },
+    "0344_en_long": {
+     "text": "In every way they sought to undermine the authority of saint Paul. They said to the Galatians, You have no right to think highly of Paul. He was the last to turn to Christ. Paul came later and is beneath us. Indeed, he persecuted the church of Christ for a long time. Do you suppose that God, for the sake of a few lutheran heretics, would disown his entire church?\nAgainst these boasting, false apostles, Paul boldly defends his apostolic authority and ministry. As the ambassador of a government is honoured for his office, and not for his private person, so the minister of Christ should exalt his office, in order to gain authority among men. Paul takes pride in his ministry, not to his own praise, but to the praise of God.\nPaul an apostle not of men, et cetera. Either he calls ministers through the agency of men, or he calls them directly as he called the prophets and apostles. Paul declares that the false apostles were called or sent neither by men nor by man.",
+     "language": "en",
+     "generated_token_count": 249,
+     "finish_reason": "stop"
+    },
+    "0345_en_long": {
+     "text": "I remained there alone for many hours but I must acknowledge that before I left the chambers I had gradually brought myself to look at the matter in another light had eva cressweller not been good looking had jack been still at college had sir kennington oval remained in England\nHad mister Bunnett and the bar keeper not succeeded in stopping my carriage on the hill, should I have succeeded in arranging for the final departure of my old friend? On arriving at home at my own residence, I found that our salon was filled with a brilliant company.\nAs I spoke, I made him a gracious bow, and I think I showed him by my mode of address that I did not bear any grudge as to my individual self. I have come to your shores, Mr. President, with the purpose of seeing how things are progressing in this distant quarter of the world.\nWe have our little struggles here as elsewhere, and all things cannot be done by rose water. We are quite satisfied now, Captain Battleaxe, said my wife.",
+     "language": "en",
+     "generated_token_count": 238,
+     "finish_reason": "stop"
+    },
+    "0346_en_long": {
+     "text": "also a popular contrivance whereby love making may be suspended but not stopped during the picnic season harangue the tiresome product of a tireless tongue anger\nPain painful to hear. Hay fever a heart trouble caused by falling in love with a grass widow. Heaven a good place to be raised to.\nHeredity the cause of all our faults horse sense a degree of wisdom that keeps one from betting on the races hose man's excuse for wetting the walk hotel\na place where a guest often gives up good dollars for poor quarters house cleaning a domestic upheaval that makes it easy for the government to enlist all the soldiers it needs",
+     "language": "en",
+     "generated_token_count": 153,
+     "finish_reason": "stop"
+    },
+    "0347_en_long": {
+     "text": "Concorde returned to its place amidst the tents the English forwarded to the French baskets of flowers of which they had made a plentiful provision to greet the arrival of the young princess the French in return invited the English to a supper which was to be given the next day\nCongratulations were poured in upon the princess everywhere during her journey from the respect paid her on all sides she seemed like a queen and from the adoration with which she was treated by two or three she appeared an object of worship.\nThe queen mother gave the French the most affectionate reception France was her native country and she had suffered too much unhappiness in England for England to have made her forget France she taught her daughter then by her own affection for it that love for a country where they had both been hospitably received and where a brilliant future opened for them.\nThe count had thrown himself back on his seat leaning his shoulders against the partition of the tent and remained thus, his face buried in his hands, with heaving chest and restless limbs.",
+     "language": "en",
+     "generated_token_count": 238,
+     "finish_reason": "stop"
+    },
+    "0348_en_long": {
+     "text": "Saturday august fifteenth the sea unbroken all round no land in sight the horizon seems extremely distant all my danger and sufferings were needed to strike a spark of human feeling out of him\nBut now that I am well his nature has resumed its sway. You seem anxious, my uncle, I said, seeing him continually with his glass to his eye anxious? One might be with less reason than now. I am not complaining that the rate is slow, but that the sea is so wide.\nWe are losing time and the fact is I have not come all this way to take a little sail upon a pond on a raft. He called this sea a pond and our long voyage taking a little sail. Therefore don't talk to me about views and prospects. I take this as my answer and I leave the professor to bite his lips with impatience.\nThank you.",
+     "language": "en",
+     "generated_token_count": 201,
+     "finish_reason": "stop"
+    },
+    "0349_en_long": {
+     "text": "The grateful applause of the clergy has consecrated the memory of a prince who indulged their passions and promoted their interest. The edict of Milan, the great charter of toleration, had confirmed to each individual of the Roman world the privilege of choosing and professing his own religion.\nBut this inestimable privilege was soon violated with the knowledge of truth the emperor imbibed the maxims of persecution and the sects which dissented from the catholic church were afflicted and oppressed by the triumph of christianity.\nConstantine easily believed that the heretics who presumed to dispute his opinions or to oppose his commands were guilty of the most absurd and criminal obstinacy, and that a seasonable application of moderate severities might save those unhappy men from the danger of an everlasting condemnation.\nSome of the penal regulations were copied from the edicts of Diocletian, and this method of conversion was applauded by the same bishops who had felt the hand of oppression and pleaded for the rights of humanity.",
+     "language": "en",
+     "generated_token_count": 266,
+     "finish_reason": "stop"
+    },
+    "0350_en_long": {
+     "text": "Eleven o'clock had struck it was a fine clear night they were the only persons on the road and they sauntered leisurely along to avoid paying the price of fatigue for the recreation provided for the toledans in the valley or on the banks of their river\nSecure, as he thought, in the careful administration of justice in that city and the character of its well disposed inhabitants, the good hidalgo was far from thinking that any disaster could befall his family. Rodolfo and his companions, with their faces muffled in their cloaks, stared rudely and insolently at the mother, the daughter, and the servant maid.\nIn a moment he communicated his thoughts to his companions, and in the next moment they resolved to turn back and carry her off to please Rodolpho. For the rich who are open handed always find parricides ready to encourage their bad propensities.\nAnd thus to conceive this wicked design to communicate it approve it resolve on ravishing Leucadia and to carry that design into effect was the work of a moment.",
+     "language": "en",
+     "generated_token_count": 253,
+     "finish_reason": "stop"
+    },
+    "0351_en_long": {
+     "text": "Length of service fourteen years three months and five days. He seemed born to please without being conscious of the power he possessed. It must be owned, and no one was more ready to confess it than himself, that his literary attainments were by no means of a high order.\nWe don't spin tops is a favourite saying amongst artillery officers indicating that they do not shirk their duty by frivolous pursuits but it must be confessed that servadac being naturally idle was very much given to spinning tops\nSometimes he would wander on foot upon the sandy shore and sometimes he would enjoy a ride along the summit of the cliff altogether being in no hurry at all to bring his task to an end no cathedral not even burgos itself could vie with the church at montmartre\nBen Zoof's most ambitious desire was to induce the captain to go with him and end his days in his much loved home and so incessantly were Servadac's ears besieged with descriptions of the unparalleled beauties and advantages of this eighteenth arrondissement of Paris\nthat he could scarcely hear the name of Montmartre without a conscious thrill of aversion.",
+     "language": "en",
+     "generated_token_count": 284,
+     "finish_reason": "stop"
+    },
+    "0352_en_long": {
+     "text": "This was what did the mischief so far as the running away was concerned. It is hardly necessary to say more of them here from the manner in which he expressed himself with regard to Robert Hallen, no man in the whole range of his recollections will be longer remembered than he. His enthralment while under Hallen will hardly ever be forgotten.\nOf this party, Edward, a boy of seventeen, called forth much sympathy. He, too, was claimed by Holland John Wesley Combash, Jacob Taylor, and Thomas Edward Skinner. A few years back, one of their slaves, a coachman, was kept on the coach box one cold night when they were out at a ball until he became almost frozen to death.\nIn fact, he did die in the infirmary from the effects of the frost about one week afterwards. The doctor who attended the injured creature in this case was simply told that she slipped and fell down the stairs as she was coming down.",
+     "language": "en",
+     "generated_token_count": 228,
+     "finish_reason": "stop"
+    },
+    "0353_en_long": {
+     "text": "Natty harmon tried the kitchen pump secretly several times during the evening for the water had to run uphill all the way from the well to the kitchen sink and he believed this to be a continual miracle that might give out at any moment to night there was no need of extra heat and there were great ceremonies to be observed in lighting the fires on the hearthstones\nKathleen waved the torch to and fro as she recited some beautiful lines written for some such purpose as that which called them together to night burn fire burn flicker flicker flame next came olive's turn to help in the ceremonies\nRalph Thurston had found a line of Latin for them in his beloved horrence tibi splendet focus for you the hearth fire shines olive had painted the motto on a long narrow panel of canvas and giving it to mister Popham stood by the fireside while he deftly fitted it into the place prepared for it\nThank you.",
+     "language": "en",
+     "generated_token_count": 233,
+     "finish_reason": "stop"
+    },
+    "0354_en_long": {
+     "text": "Notwithstanding the high resolution of Hawkeye, he fully comprehended all the difficulties and danger he was about to incur. In his return to the camp, his acute and practised intellects were intently engaged in devising means to counteract a watchfulness and suspicion on the part of his enemies that he knew were in no degree inferior to his own.\nIn other words, while he had implicit faith in the ability of balaam's ass to speak, he was somewhat skeptical on the subject of a bear's singing, and yet he had been assured of the latter on the testimony of his own exquisite organs. There was something in his air and manner that betrayed to the scout the utter confusion of the state of his mind.\nThe ingenious Hawkeye who recalled the hasty manner in which the other had abandoned his post at the bedside of the sick woman was not without his suspicions concerning the subject of so much solemn deliberation the bear shook his shaggy sides and then a well known voice replied",
+     "language": "en",
+     "generated_token_count": 245,
+     "finish_reason": "stop"
+    },
+    "0355_en_long": {
+     "text": "The army found the people in poverty and left them in comparative wealth but a word further concerning the expedition in general. It was through Floyd's advice that Buchanan ordered a military expedition to Utah ostensibly\nto install certain federal officials and to repress an alleged infantile rebellion which in fact had never come into existence but in reality to further the interests of the secessionists moreover had the people been inclined to rebellion what greater opportunity could they have wished already a north and a south were talked of why not set up also a west\nThey knew no north no south no east no west they stood positively by the constitution and would have nothing to do in the bloody strife between brothers unless indeed they were summoned by the authority to which they had already once loyally responded to furnish men and arms for their country's need.\nWhat the latter day saints call celestial marriage is characteristic of the church, and is in very general practice. But of celestial marriage, plurality of wives was an incident, never an essential.",
+     "language": "en",
+     "generated_token_count": 246,
+     "finish_reason": "stop"
+    },
+    "0356_en_long": {
+     "text": "So they were quite willing to obey the orders of their girl queen and in a short time the blast of trumpets and roll of drums and clashing of cymbals told trot and cap'n bill that the blue bands had assembled before the palace then they all marched out a little way into the fields and found that the army of pinkies had already formed and was advancing steadily toward them\nWhen the blueskins saw ghip ghisizzle they raised another great shout for he was the favorite of the soldiers and very popular with all the people since last Thursday i ghip ghisizzle have been the lawful boolooroo of the blue country but now that you are conquered by queen trot i suppose i am conquered too and you have no boolooroo at all\nwhen he finished she said cheerfully don't worry sizzle dear it'll all come right pretty soon now then let's enter the city and enjoy the great feast that's being cooked i'm nearly starved myself for this conquering kingdoms is hard work",
+     "language": "en",
+     "generated_token_count": 240,
+     "finish_reason": "stop"
+    },
+    "0357_en_long": {
+     "text": "Mayne Hall liked Alexander because he was an engineer he had preconceived ideas about everything and his idea about americans was that they should be engineers or mechanics it's tremendously well put on too it's been on only two weeks and i've been half a dozen times already\nDo you know, Alexander, mayhall looked with perplexity up into the top of the hansom and rubbed his pink cheek with his gloved finger, do you know, I sometimes think of taking to criticism seriously myself. She saves her hand, too. She's at her best in the second act. He's been wanting to marry Hilda these three years and more. She doesn't take up with anybody, you know.\nirene burgoyne one of her family told me in confidence that there was a romance somewhere back in the beginning mainhall vouched for her constancy with a loftiness that made alexander smile even while a kind of rapid excitement was tingling through him he's another who's awfully keen about her let me introduce you sir harry town mister bartley alexander the american engineer\nThank you.",
+     "language": "en",
+     "generated_token_count": 264,
+     "finish_reason": "stop"
+    },
+    "0358_en_long": {
+     "text": "Those pretty wrongs that liberty commits when I am some time absent from thy heart thy beauty and thy years full well befits for still temptation follows where thou art\nay me no matter then although my foot did stand upon the farthest earth removed from thee for nimble thought can jump both sea and land as soon as think the place where he would be but ah\nThought kills me that I am not thought to leap large lengths of miles when thou art gone, but that so much of earth and water wrought I must attend time's leisure with my moan, receiving naught by elements so slow but heavy tears.\nBadges of either's woe.",
+     "language": "en",
+     "generated_token_count": 149,
+     "finish_reason": "stop"
+    },
+    "0359_en_long": {
+     "text": "The analysis of knowledge will occupy us until the end of the thirteenth lecture and is the most difficult part of our whole enterprise what is called perception differs from sensation by the fact that the sensational ingredients bring up habitual associates.\nImages and expectations of their usual correlates, all of which are subjectively indistinguishable from the sensation. Whether or not this principle is liable to exceptions, everyone would agree that it has a broad measure of truth.\nThough the word exactly might seem an overstatement, and it might seem more correct to say that ideas approximately represent impressions. And what sort of evidence is logically possible? There is no logical impossibility in the hypothesis that the world sprang into being five minutes ago.\nExactly as it then was with a population that remembered a wholly unreal past.",
+     "language": "en",
+     "generated_token_count": 195,
+     "finish_reason": "stop"
+    },
+    "0360_zh_long": {
+     "text": "中国的古代的不同时期各有特点,中国的每个时期或每个执讲天下的家族都是一个鲜明特点的王朝。野孩子在被抛弃或离家出走之前,可能经历过严重的儿童虐待或创伤。\n例如,世界上最常见的镜态图像摄影格式是 35 毫米格式,这是胶片电影时代末期占主导地位的电影尺寸:除去表示您的“c”之外的所有名词都应用大写字幕开头,即便在句子中间也应如此。\n在往北的广袤地区,人烟稀少,有些地方是雅虎人烟的窗户。《报道称,他年仅二十多岁,彼伯发表声明表示:“虽然我当时并不在场,也没有直接经历这起悲惨的事故,但我仍为死者家属感到悲伤,为他们祈祷。”\n谢谢",
+     "language": "zh",
+     "generated_token_count": 317,
+     "finish_reason": "stop"
+    },
+    "0361_zh_long": {
+     "text": "小心不要让衣服变得太热,这可能会产生收缩现象,在极端情况下会把衣服拷焦。这场辩论是因为对卡特里娜飓风后的救济\n和重建之处有争议而开始的,一些财政保守派幽默地将其称为“不时的新二良政”。睡眠中断是指这样的过程,在正常睡眠期间有意地醒来,并且在短时间之后,时到六十分钟睡着。\n20 世纪 60 年代,布勒金斯基先试为约翰福特肯尼迪效力,担任他的顾问,后来又为林登·贝恩斯 (Johnson) 政府工作。",
+     "language": "zh",
+     "generated_token_count": 241,
+     "finish_reason": "stop"
+    },
+    "0362_zh_long": {
+     "text": "杜瓦尔已婚,有两个已经成年的孩子,他并没有给故事的讲述者李勒留下太大印象。因此,一个组织在共同努力克服障碍的过程中往往会带来新的创新流程以满足客户的需求。\n结果两种鱼类灭绝,另外两种鱼类濒临灭绝,其中包括弓背归:医院遵循了感染控制规定,包括把患者与他人隔离,以防感染到其他人。\n这提供了一个可以看到北极光的绝佳机会(因为天空将或多或少连续一整天都是暗的)。它们的热行为不像地球上的大型洞穴那么稳定,这些大型洞穴通常会保持相当横転的温度。\n但他们与地下生血的情况很相似。亚利桑那州乞丐镇、美国地质调查局、太空地质团队和北亚利桑那大学的格伦·库辛塑道。",
+     "language": "zh",
+     "generated_token_count": 339,
+     "finish_reason": "stop"
+    },
+    "0363_zh_long": {
+     "text": "科学家们可以得出结论,暗物质对其他暗物质的影响方式与普通物质相同。普利特维子湖国家公园森林茂盛,主要树种有三毛菊。\n云山和冷山(避高山和地中海)直被混合为特色。因为地球更薄,所以近的一面可能会有更多的阴暗部,容颜更容易上升到地表。\n它会攻击任何记录水中的东西,即使像霸王龙之类的巨型恐龙,也不是它的对手。自驾驶教学不是一种学习方法,而是一种辅助刚学习、使用新电脑程序或启动新项目的人的手段。",
+     "language": "zh",
+     "generated_token_count": 234,
+     "finish_reason": "stop"
+    },
+    "0364_zh_long": {
+     "text": "这并不是告别;这是一个篇章的结束,也是新篇章的开始。你也可以咨询出贵国以外其他政府的建议,但他们的建议是为他们的公民而致敬的。\n对儿童来说,金字塔的声光表演是该地区最有趣的活动之一。除了周三的比赛,卡帕内多还参加了锦标赛的两项个人竞赛。\n要说明社会化的重要性,最常用的方法之一是利用少数不幸儿童的案例。这些儿童由于被忽视、遭遇不幸或遭到故意虐待,在成长过程中在没有成年人的帮助下实现社会化。\n除了青春美丽的天空和周围的群山,什么也看不见。在洞穴中,几乎看不到也听不到外界的景象和声艺。",
+     "language": "zh",
+     "generated_token_count": 299,
+     "finish_reason": "stop"
+    },
+    "0365_zh_long": {
+     "text": "在某些航线上大型公司有自己的飞机,但对于其他航线和小公司来说就有问题了。摩尔多瓦的首都是辛基纳物,当地的语言是罗马尼亚语,但鹅语也被广泛使用。\n每个人都是社会的一份子,都会使用交通系统,而几乎每个人都对交通系统有怨言。巴厘岛会议议程中的其他议题还包括拯救世界上现存的森林、分项技术以帮助发展中国家以污染较少的方式发展。\n他还参与了许多国家的纸币雕版制作,近期作品包括加拿大新版5 元和 100 元纸币正面的总统肖像。",
+     "language": "zh",
+     "generated_token_count": 253,
+     "finish_reason": "stop"
+    },
+    "0366_zh_long": {
+     "text": "在昆达里尼瑜伽中,昆达里尼能量起低能量,通过瑜伽姿势、呼吸练习、念语和视觉形象被唤醒。\n多发性硬化是一种影响重视神经系统,由脑脊髓和视神经组成的疾病。\n上层的25 分(当列铺单面印刷版)是该文件现存最早的版本,手写原稿未能保留下来。 综上所述,如果我们的祖先解决蛋白质问题的途径与如今热带草原上的黑猩猩所使用的方法无异,我们也不应该感到惊讶。\n大多数对技术决定论的解释都包括这两个总体思路:一是在技术本身的发展在很大程度上超越了文化或政治影响,二是技术反过来会对社会产生不受社会条件制约的内在影响。",
+     "language": "zh",
+     "generated_token_count": 313,
+     "finish_reason": "stop"
+    },
+    "0367_zh_long": {
+     "text": "他一直无法用药物来缓解疼痛,因为比赛禁止参赛者服用这些药物。孕烫潮湿的衣服可以帮助其变杆,即便房间没有运动和愿意板,但是许多酒店提供出借服务。\n这些理论研究为什么某些人想要做他们所做的事,以及他们所处的环境中,哪些事情会让他们做或不做某些事情。\n事故发生后,基姆森被送往医院,但很快就一命呜呼。绞动两种干粉使其混合,然后用干净的尸首把它们揉成一个球。",
+     "language": "zh",
+     "generated_token_count": 203,
+     "finish_reason": "stop"
+    },
+    "0368_zh_long": {
+     "text": "张卡洛费斯切拉因失去了对赛车的把控,在比赛开始后不久就退出了。\n在 20 世纪 20 年代,大多数市民的主流态度是和平主义的、分离主义的。如果在冬天穿越北波罗地海,要检查客舱的位置,因为在冰面上航行会给那些受影影响最严重的人带来非常可怕的噪音。\n只有生殖细胞的突变才会遗传给孩子,而其他细胞的突变则会导致细胞死亡或癌症。芬兰是绝佳的帆船运动胜地拥有千湖之香的美玉,在其湖泊和沿海群岛范围内也含有数千座岛屿。\n大众汽车保有量较高还会导致更高的道路交通事故发生率,而这将推动发明用于修复伤者伤处的全新医疗技术。",
+     "language": "zh",
+     "generated_token_count": 326,
+     "finish_reason": "stop"
+    },
+    "0369_zh_long": {
+     "text": "对于哪些加工物品是古董,没有统一的定义:一些税务机构将 100 年以上的物品定义为古董。\n这些夫妇可能会为他们的孩子制定收养计划。这一发现也有助于深入了解鸟类羽毛的进化。\n切勿在建筑物上做标记或涂鸦,以免破坏遗址。该服务经常用于航运,包括游艇以及有远程数据和语音需求的探险。\n我们同意美国奥委会的声明,与其吊销执照不如在我们组织内部继续推进有意义的变革,可能更有利于维护运动员和俱乐部的利益及其运动。\n谢谢",
+     "language": "zh",
+     "generated_token_count": 243,
+     "finish_reason": "stop"
+    },
+    "0370_zh_long": {
+     "text": "这被称为化学物质的 Thrush,你可以用红杆蓝汁制作指示剂。二十世纪的研究表明,基因变有两种库:显性和椅性。\n人们自古以来就知道金银铜等几本化学元素,因为这些元素都能以自然形态在自然界中发现,并且比较容易使用原始工具进行开采。文明一词来自拉丁语cilius(意为公民)的与拉丁语cirvius(意为公民),及civitas(意为城市和城邦)都有关。\n以某种方式定位议了社会的规模:它让玩家可以通过在空中移动设备来控制电子游戏中的运动和操作。同理,有了升耕签证,你就不必分别向每个升耕成员国申请签证,从而节省了时间、金钱和手续。\n三",
+     "language": "zh",
+     "generated_token_count": 291,
+     "finish_reason": "stop"
+    },
+    "0371_zh_long": {
+     "text": "当所有可用的资源在一个组织的职能部门之间得到有效利用时,创造力和独创性就会发生。起初,它被送往位于大雅茅兹的詹姆斯·佩吉特医院进行救治。\n平时你总能在这里听到游客和小摊贩的声音,声光交织就像在讲述一个动人的故事。\n该洞穴坐落在麦加北部的一座山顶上,与外界完全隔绝。一名观察者形容彼士凯克正在陷入无政府状态,成群的人们在街上游荡。\n掠夺商店里的消费品。",
+     "language": "zh",
+     "generated_token_count": 217,
+     "finish_reason": "stop"
+    },
+    "0372_zh_long": {
+     "text": "较小的岛屿大多是独立国家,且所属于法国,它们以豪华海滩度假胜地而闻名。人工智能有很强的科幻色彩,但它其实是计算机科学非常重要的一个分支,研究的是机器的行为、学习和智能适应。\n也可以到北部参观法定马圣母院 (Fatih Muxloe) 圣地,它是举世文明的圣母玛利亚显现之地。周日晚些时候,美国总统塔纳德·特朗普通过提问秘书发表声明,宣布美军将撤离叙利亚。\n事实上,即使知道它的存在也不容易找到,一旦进入洞穴就完全以示隔绝了。取消政策各不相同,但截止,3 月末,大多数由于新冠病毒而出台的取消政策并没有延长到 2020 年 7 月,原定奥运会举办时间。\n谢谢",
+     "language": "zh",
+     "generated_token_count": 312,
+     "finish_reason": "stop"
+    },
+    "0373_zh_long": {
+     "text": "表演开始 5 分钟后,刮起了风,约一分钟后,风速达到了 70 公里/小时。紧接着又下起了大雨,雨是如此之大,像尊渣一样拍摆在皮肤上,随后天上下起了冰雹,惊慌失措的人群尖叫着四散奔逃。\n“从传统意义上讲,海军的任务是确保国家运输人员和货物的能力,同时干扰敌人运输及其人员和货物的能力。”邓迪大学的Pamela Vergerson教授指出,记者如果公布嫌疑人的照片等信息的话,似乎确实存在危害性。“\n在某些地区,水储一分钟就足够了,在其他地区则需要几分钟的时间。西藏冥想的核心活动是天宇家,通过把不同的神形象化净化能量通道、激活沦陷,从而达到顿悟的境界。\n谢谢",
+     "language": "zh",
+     "generated_token_count": 337,
+     "finish_reason": "stop"
+    },
+    "0374_zh_long": {
+     "text": "例如,北卡罗来纳州本尼特学校 (Big Brothe) 的学生每一年都会设计一个有关他们的州政府知情的网站,网站每年都会重新设计,但是老版本会在线保存,用作剪切部。\n这里几乎都是沙滩,游泳很安全,大部分地方都有新西兰圣诞树的树因(狮群)由 1 到 3 只有亲属关系的成年雄性,以及可多达 30 只的磁性和幼载组成。\n佩里表示,他会返回德克萨斯,评估今晚党团会议的结果,明确自己在这次教练中是否有胜算的余地。但后来,他又表示会继续参加竞选,并参加于一月。\n21 日在南卡罗来纳州举行的初选。",
+     "language": "zh",
+     "generated_token_count": 292,
+     "finish_reason": "stop"
+    },
+    "0375_zh_long": {
+     "text": "就像月球对地球施加拉力、引起潮汐一样,银河系也对人马作兴起,施加着作用力。\n一页之间印刷了 150-200 分,就是现代众所周知的邓拉普宽编版。实验是一种用来消除一个或多个可能性假设的实验,不过实验并不是唯一的方法,提出问题以及进行观察,也可以指导科学研究。\n若想从最佳角度欣赏香港的美景,可以离开该岛前往对面的九龙海冰,猪藉带该疾病,然后通过文字传染给人类。\n恶劣天气是任何危险天气现象的总称,这种天气会造成破坏、严重社会混乱或人员伤亡。",
+     "language": "zh",
+     "generated_token_count": 251,
+     "finish_reason": "stop"
+    }
+   }
+  }
+ }
+}
