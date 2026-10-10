@@ -52,7 +52,7 @@ def set_colocated_runtime(
 
 
 @pytest.mark.parametrize("colocated,replicas", [(False, 1), (False, 2), (True, 1)])
-@pytest.mark.parametrize("cpu_quota", [32, 2])
+@pytest.mark.parametrize("cpu_quota", [24, 2])
 @pytest.mark.parametrize("parent_threads", [None, "12"])
 def test_qwen_worker_cpu_policy_and_fallback(
     tmp_path: Path,
@@ -104,15 +104,7 @@ def test_qwen_worker_cpu_policy_and_fallback(
         )
         for group in groups:
             for process_spec in group.process_specs:
-                is_preprocessing = (
-                    prep.replica_topology.logical_name(
-                        process_spec.stage_specs[0].stage_name
-                    )
-                    == "preprocessing"
-                )
-                model_threads = (
-                    8 if colocated else cpu_quota if is_preprocessing else None
-                )
+                model_threads = 8 if colocated else None
                 expected_threads = parent_threads or str(
                     model_threads or fallback_threads
                 )

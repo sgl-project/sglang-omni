@@ -15,7 +15,6 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.platforms import current_platform
-from sglang_omni.utils.cpu import effective_cpu_count
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
@@ -335,15 +334,6 @@ class Qwen3OmniBasePipelineConfig(PipelineConfig):
     env_defaults: dict[str, str] = Field(
         default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
     )
-
-    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
-        """Keep CPU-sensitive preprocessing parallel unless OMP is configured."""
-        env_defaults = super().resolved_stage_env_defaults(stage_name)
-        if stage_name == "preprocessing" and "OMP_NUM_THREADS" not in env_defaults:
-            env_defaults["OMP_NUM_THREADS"] = str(effective_cpu_count())
-        else:
-            pass
-        return env_defaults
 
     @classmethod
     def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
