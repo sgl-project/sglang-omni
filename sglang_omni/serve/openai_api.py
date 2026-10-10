@@ -1051,6 +1051,14 @@ def _register_image_generations(app: FastAPI) -> None:
                 "seed": req.seed,
                 "n": req.n,
             }
+            if req.enable_cache_dit is not None:
+                params["enable_cache_dit"] = req.enable_cache_dit
+            else:
+                pass
+            if req.cache_dit_params is not None:
+                params["cache_dit_params"] = req.cache_dit_params
+            else:
+                pass
             SenseNovaU1Sampling.from_params(params)
             if not req.prompt.strip():
                 raise ValueError("SenseNova-U1 requires a non-empty text prompt")
@@ -1106,6 +1114,8 @@ def _register_image_edits(app: FastAPI) -> None:
         num_inference_steps: int | None = Form(default=None),
         guidance_scale: float | None = Form(default=None),
         img_cfg_scale: float | None = Form(default=None),
+        enable_cache_dit: bool | None = Form(default=None),
+        cache_dit_params: str | None = Form(default=None),
     ) -> ImageGenerationResponse:
         if model is not None and model != app.state.model_name:
             raise HTTPException(status_code=400, detail="Unknown image model")
@@ -1129,6 +1139,19 @@ def _register_image_edits(app: FastAPI) -> None:
         try:
             num_outputs = max(1, min(int(n or 1), 10))
             params = {"n": 1, "size_explicit": size is not None}
+            if enable_cache_dit is not None:
+                params["enable_cache_dit"] = enable_cache_dit
+            else:
+                pass
+            if cache_dit_params is not None:
+                parsed_cache_params = json.loads(cache_dit_params)
+                if not isinstance(parsed_cache_params, dict):
+                    raise ValueError("cache_dit_params must be a JSON object")
+                else:
+                    pass
+                params["cache_dit_params"] = parsed_cache_params
+            else:
+                pass
             if size is not None:
                 width_str, height_str = size.split("x")
                 params.update(width=int(width_str), height=int(height_str))

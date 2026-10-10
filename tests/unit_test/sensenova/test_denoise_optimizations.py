@@ -78,8 +78,8 @@ def test_shared_rope_tables_match_per_layer_for_batched_indexes():
     hidden_states = torch.randn(2, 5, 8)
     indexes = _axis_indexes(batch_size=2)
 
-    shared = first._resolve_rope_tables(indexes, hidden_states)
-    reference = second._resolve_rope_tables(indexes, hidden_states)
+    shared = first.resolve_rope_tables(indexes, hidden_states)
+    reference = second.resolve_rope_tables(indexes, hidden_states)
 
     for shared_axis, reference_axis in zip(shared, reference):
         for shared_value, reference_value in zip(shared_axis, reference_axis):
@@ -89,11 +89,11 @@ def test_shared_rope_tables_match_per_layer_for_batched_indexes():
 def test_shared_rope_tables_rebuild_after_dtype_change():
     attention = Qwen3Attention(_tiny_dense_config(), 0)
     indexes = _axis_indexes()
-    fp32_tables = attention._resolve_rope_tables(
+    fp32_tables = attention.resolve_rope_tables(
         indexes, torch.randn(1, 5, 8, dtype=torch.float32)
     )
 
-    bf16_tables = attention._resolve_rope_tables(
+    bf16_tables = attention.resolve_rope_tables(
         indexes,
         torch.randn(1, 5, 8, dtype=torch.bfloat16),
         fp32_tables,
@@ -119,10 +119,10 @@ def test_rope_sharing_matches_per_layer_build_with_bf16_norm_dispatch(monkeypatc
             ).last_hidden_state
 
     shared = run()
-    original = Qwen3Attention._resolve_rope_tables
+    original = Qwen3Attention.resolve_rope_tables
     monkeypatch.setattr(
         Qwen3Attention,
-        "_resolve_rope_tables",
+        "resolve_rope_tables",
         lambda self, idx, hidden, _tables=None: original(self, idx, hidden, None),
     )
     per_layer = run()

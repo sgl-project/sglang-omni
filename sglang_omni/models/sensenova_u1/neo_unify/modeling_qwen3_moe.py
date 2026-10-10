@@ -18,6 +18,11 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 
+from sglang_omni.models.sensenova_u1.cache_dit import (
+    decoder_attention_type,
+    decoder_layers,
+)
+
 from .configuration_neo_chat import NEOMoELLMConfig
 from .modeling_qwen3 import (
     Qwen3Attention,
@@ -518,14 +523,21 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
 
         hidden_states = inputs_embeds
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        layers = decoder_layers(
+            self,
+            update_cache=kwargs.get("update_cache", True),
+            has_non_image_tokens=exist_non_image_gen_tokens,
+            has_image_tokens=exist_image_gen_tokens,
+        )
+        for decoder_layer in layers[: self.config.num_hidden_layers]:
+            attention_type = decoder_attention_type(self, decoder_layer)
             hidden_states = decoder_layer(
                 hidden_states,
                 image_gen_indicators=image_gen_indicators,
                 exist_non_image_gen_tokens=exist_non_image_gen_tokens,
                 exist_image_gen_tokens=exist_image_gen_tokens,
                 indexes=indexes,
-                attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+                attention_mask=causal_mask_mapping[attention_type],
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
