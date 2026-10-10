@@ -40,6 +40,7 @@ class Qwen3TTSState(DeclarativeStateBase):
     audio_codes: torch.Tensor | list[list[int]] | None = wire(None, codec="tensor_list")
     finish_reason: str | None = None
     ref_code_len: int = wire(0, emit="truthy", codec="int")
+    ref_code_cache_key: str = wire("", emit="truthy", codec="str")
     audio_samples: object = wire(None, codec="tensor_list")
     # Note (Jiaxin Deng): set only by a preprocessing stage that runs outside the
     # engine process; the AR request builder consumes and clears them. tensor_cpu

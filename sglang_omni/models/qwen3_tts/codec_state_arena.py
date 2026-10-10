@@ -305,6 +305,18 @@ class Qwen3TTSCodecStateArena:
             pass
         buffer.index_copy_(0, index, rows.contiguous())
 
+    def copy_slot_from(
+        self, slot: int, source: Qwen3TTSCodecStateArena, source_slot: int
+    ) -> None:
+        """Copy a complete state between arenas with the same decoder layout."""
+        torch._foreach_copy_(  # noqa: leading-underscore  # PyTorch tensor-list copy API
+            [buffer[slot] for buffer in self._buffers(self.storage)],
+            [buffer[source_slot] for buffer in source._buffers(source.storage)],
+        )
+        self.storage.frame_positions[slot].copy_(
+            source.storage.frame_positions[source_slot]
+        )
+
     def describe(self) -> CodecStateStats:
         return {
             "slots": self._num_slots,  # noqa: leading-underscore

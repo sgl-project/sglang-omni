@@ -1169,3 +1169,42 @@ def test_real_tts_decoder_and_incremental_pcm_equal() -> None:
         state = Qwen3TTSIncrementalCodecState()
         for part, pcm in zip(parts, incremental_expected):
             assert torch.equal(incremental.decode(part, state), pcm)
+
+
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
+def test_reference_snapshot_restores_independent_generated_waveforms(
+    device: str,
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(23)
+    decoder = Qwen3TTSIncrementalDecoder(Decoder().to(device).eval())
+    live = Qwen3TTSCodecStateArena(
+        decoder, num_slots=1, device=torch.device(device), dtype=torch.float32
+    )
+    cache = Qwen3TTSCodecStateArena(
+        decoder, num_slots=1, device=torch.device(device), dtype=torch.float32
+    )
+    slot, cached_slot = live.acquire(), cache.acquire()
+    assert slot is not None and cached_slot is not None
+    reference = torch.randint(0, 16, (1, 2, 11), device=device)
+    with torch.inference_mode():
+        state = live.gather([slot])
+        decoder.decode(reference, state)
+        live.scatter([slot], state)
+        cache.copy_slot_from(cached_slot, live, slot)
+        for _ in range(3):
+            expected_state = decoder.init_state(
+                1, device=torch.device(device), dtype=torch.float32
+            )
+            decoder.decode(reference, expected_state)
+            live.copy_slot_from(slot, cache, cached_slot)
+            for frames in (4, 3):
+                codes = torch.randint(0, 16, (1, 2, frames), device=device)
+                expected = decoder.decode(codes, expected_state)
+                actual_state = live.gather([slot])
+                actual = decoder.decode(codes, actual_state)
+                live.scatter([slot], actual_state)
+                torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
