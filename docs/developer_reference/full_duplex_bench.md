@@ -36,6 +36,8 @@ Two judges are supported, selected by `JUDGE`:
 | `qwen` (default) | [Qwen3.8-27B](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B), served locally by SGLang | Behavior labels: non-thinking, greedy, seeds 1-3. Semantic judge: thinking, temperature 0, seed 1. |
 | `gpt` | `gpt-4o-2024-08-06` | The paper's judge. Needs `OPENAI_API_KEY`. |
 
+The two judges do not label the same way. On a full v1.5 run of NVIDIA NemotronLabs VoiceChat 11B (all 498 pairs, both judges on identical requests), the Qwen behavior labels matched `gpt-4o-2024-08-06` on 84.9% of pairs (Cohen's kappa 0.72). The disagreement sits in `C_UNKNOWN`: GPT-4o assigned it to 51 pairs (10.2%) and Qwen to 11 (2.2%), and 43 of GPT-4o's 51 became `C_RESUME` (19), `C_RESPOND` (13) or `C_UNCERTAIN_HANDLING` (11) under Qwen. Qwen therefore understates failures. Compare Qwen labels only with other Qwen labels, and use `JUDGE=gpt` for numbers reported against the paper or other systems.
+
 The semantic judge uses the frozen prompt, response schema and six control cases in `benchmarks/duplex/semantic/`. Before grading, every run sends the six controls and stops if any of the 18 axis statuses differs from `control-expected.json`. Passing the controls is a rubric check, not a measure of judge accuracy.
 
 ## One Time Setup
@@ -86,7 +88,7 @@ python -m benchmarks.duplex.fdb_v15 aggregate --run-name minicpmo-48
 
 ### Choosing pairs
 
-Only `generate` selects pairs; `asr` and `judge` score whatever that repeat recorded. Selection is deterministic, never random: each category takes its first N samples in numeric sample-ID order (1, 2, …, 10, 11, …), so every run and repeat with the same options evaluates the same pairs, and a smaller N is always a prefix of a larger one. The categories hold 200 (`user_interruption`), 98 (`user_backchannel`), 100 (`talking_to_other`) and 100 (`background_speech`) pairs.
+Only `generate` selects pairs; `asr` and `judge` score whatever that repeat recorded. Selection is deterministic, never random: each category takes its first N samples in numeric sample-ID order (1, 2, …, 10, 11, …), so every run and repeat with the same options evaluates the same pairs, and a smaller N is always a prefix of a larger one. On the Nemotron run above, the label shares of the first 12 pairs per category were within 5 points of all 498 pairs, under either judge. The categories hold 200 (`user_interruption`), 98 (`user_backchannel`), 100 (`talking_to_other`) and 100 (`background_speech`) pairs.
 
 | `generate` option | Effect |
 |---|---|
