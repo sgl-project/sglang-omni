@@ -22,10 +22,13 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     missing_additional_chat_templates_compat,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
+from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.utils.imports import import_string
 
 
 def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
@@ -547,3 +550,13 @@ def test_processor_compat_preserves_non_template_repo_errors(
     with missing_additional_chat_templates_compat():
         with pytest.raises(RepositoryNotFoundError, match="missing-repo"):
             processing_utils.list_repo_templates("missing-repo", local_files_only=False)
+
+
+def test_server_warmup_request_is_a_second_of_audio_to_transcribe() -> None:
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    request = import_string(config.server_warmup_request_factory)(config)
+
+    audio, sample_rate = decode_audio_bytes(request.wav_bytes)
+
+    assert isinstance(request, TranscriptionWarmupRequest)
+    assert (len(audio), sample_rate, request.max_new_tokens) == (16000, 16000, 8)

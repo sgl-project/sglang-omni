@@ -375,6 +375,14 @@ def serve(
             help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
         ),
     ] = False,
+    skip_server_warmup: Annotated[
+        bool,
+        typer.Option(
+            "--skip-server-warmup",
+            "--skip_server_warmup",
+            help="Report ready without sending the pipeline's warmup requests first.",
+        ),
+    ] = False,
 ) -> None:
     """Serve the pipeline.
 
@@ -477,4 +485,5 @@ def serve(
         ),
         allowed_media_domains=normalize_allowed_media_domains(allowed_media_domain),
         tts_batch_max_items=validate_tts_batch_max_items(tts_batch_max_items),
+        skip_server_warmup=skip_server_warmup,
     )

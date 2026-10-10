@@ -238,6 +238,7 @@ def test_ming_speech_launcher_places_thinker_tp_and_talker(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_speech_server(args)
@@ -394,6 +395,7 @@ def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> Non
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -432,6 +434,7 @@ def test_ming_text_launcher_rejects_nonpositive_tp_before_config(monkeypatch) ->
             host="127.0.0.1",
             port=8000,
             model_name="ming-omni",
+            skip_server_warmup=False,
         )
 
         with pytest.raises(ValueError, match="--tp-size must be >= 1"):
@@ -463,6 +466,7 @@ def test_ming_text_launcher_allows_encoder_gpu_overrides(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -501,6 +505,7 @@ def test_ming_text_launcher_can_build_thinker_only_smoke_pipeline(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -540,6 +545,7 @@ def test_ming_text_launcher_configures_image_encoder_tp(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -571,6 +577,7 @@ def test_ming_text_launcher_rejects_image_encoder_tp_zero(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--image-encoder-tp must be >= 1"):
@@ -600,6 +607,7 @@ def test_ming_text_launcher_rejects_thinker_only_with_image_encoder_tp(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--thinker-only cannot be used"):
@@ -629,6 +637,7 @@ def test_ming_text_launcher_requires_gpu_ids_for_image_encoder_tp(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--gpu-image-encoder must be specified"):
@@ -656,6 +665,7 @@ def test_ming_text_launcher_rejects_mismatched_gpu_count(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="requires exactly 2 GPU ids"):
@@ -683,6 +693,7 @@ def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="GPU ids must be unique"):

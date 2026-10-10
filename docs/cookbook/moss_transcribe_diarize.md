@@ -146,6 +146,14 @@ SGLang selects the XPUGraph backend on XPU. The B60 validation uses
 `mem_fraction_static=0.70` to leave enough memory for all eight encoder graph
 buckets; `0.80` leaves too little graph-capture headroom on a 24 GB card.
 
+Before it reports ready, the server transcribes one second of audio, at most 8
+tokens. `/health` returns 503 with status `starting` until that request has
+finished, so the one-time kernel builds of the transcription path happen before
+the first user request. The first concurrent batch can still build batch-size
+kernel variants. A failed warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT`
+(seconds, default 600) bounds the request, and `--skip-server-warmup` reports
+ready without it.
+
 ### Sending Requests
 
 Use `response_format=verbose_json` when you need parsed speaker segments. `json` returns the raw transcript text only.

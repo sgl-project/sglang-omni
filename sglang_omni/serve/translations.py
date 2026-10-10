@@ -162,6 +162,7 @@ def register_translations(app: FastAPI) -> None:
 
         try:
             result = await speech_to_text.complete_speech_to_text_request(
+                request,
                 client,
                 gen_req,
                 request_id=request_id,

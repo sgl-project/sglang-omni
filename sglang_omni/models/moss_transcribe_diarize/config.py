@@ -42,6 +42,9 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTranscribeDiarizeForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
+    server_warmup_request_factory: ClassVar[str] = (
+        "sglang_omni.serve.server_warmup.build_transcription_warmup_request"
+    )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "asr": MossTDStageConfig,

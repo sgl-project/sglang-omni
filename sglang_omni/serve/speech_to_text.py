@@ -8,7 +8,7 @@ import io
 import json
 import logging
 import math
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Collection, Coroutine
 from contextlib import aclosing
 from dataclasses import dataclass
 
@@ -248,7 +248,45 @@ async def detect_speech_language(
     return code or None
 
 
+async def complete_unless_disconnected(
+    request: Request,
+    client: Client,
+    completion: Coroutine[None, None, CompletionResult],
+    *,
+    request_id: str,
+) -> CompletionResult:
+    """Await a buffered completion; if the HTTP client disconnects first, abort its
+    pipeline request and raise ClientError, which the route maps to an error response.
+    """
+    completion_task = asyncio.create_task(completion)
+    disconnect_task = asyncio.create_task(wait_for_request_disconnect(request))
+    try:
+        done, _ = await asyncio.wait(
+            {completion_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if completion_task in done:
+            return completion_task.result()
+        else:
+            pass
+        await client.abort(request_id)
+        raise ClientError(f"Client disconnected; aborted request {request_id}")
+    except asyncio.CancelledError:
+        await client.abort(request_id)
+        raise
+    finally:
+        if not completion_task.done():
+            await cancel_task_bounded(completion_task)
+        else:
+            pass
+        if not disconnect_task.done():
+            await cancel_task_bounded(disconnect_task)
+        else:
+            pass
+
+
 async def complete_speech_to_text_request(
+    request: Request,
     client: Client,
     gen_req: GenerateRequest,
     *,
@@ -257,7 +295,12 @@ async def complete_speech_to_text_request(
 ) -> CompletionResult:
     """Keep sibling endpoints on the same backend-to-HTTP error mapping."""
     try:
-        return await client.completion(gen_req, request_id=request_id)
+        return await complete_unless_disconnected(
+            request,
+            client,
+            client.completion(gen_req, request_id=request_id),
+            request_id=request_id,
+        )
     except ClientError as exc:
         raise HTTPException(
             status_code=generation_error_status_code(exc), detail=str(exc)
@@ -459,7 +502,7 @@ def assemble_speech_to_text_response(
 
 
 async def cancel_task_bounded(
-    task: asyncio.Task[GenerateChunk | list[str] | None],
+    task: asyncio.Task[CompletionResult | GenerateChunk | list[str] | None],
 ) -> None:
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
@@ -470,7 +513,7 @@ async def cancel_task_bounded(
 
 
 def discard_cancelled_task_result(
-    task: asyncio.Task[GenerateChunk | list[str] | None],
+    task: asyncio.Task[CompletionResult | GenerateChunk | list[str] | None],
 ) -> None:
     try:
         task.result()
