@@ -250,6 +250,7 @@ def create_lm_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     context_length: int | None = None,
+    depformer_cuda_graph_batch_sizes: list[int] | None = None,
     server_args_overrides: dict[str, object] | None = None,
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
@@ -261,6 +262,7 @@ def create_lm_executor(
         max_running_requests=DEFAULT_LM_MAX_RUNNING_REQUESTS,
         context_length=context_length,
         enable_async_decode=enable_async_decode,
+        depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
     )
     return builder.build(
         model_path,

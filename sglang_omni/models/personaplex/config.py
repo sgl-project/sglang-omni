@@ -38,6 +38,16 @@ class PersonaPlexLMStageConfig(EngineStageConfig):
     factory: PersonaPlexLMFactoryArgs = Field(default_factory=PersonaPlexLMFactoryArgs)
 
 
+class PersonaPlexLMFactoryArgs(FactoryArgs):
+    depformer_cuda_graph_batch_sizes: list[PositiveInt] = Field(
+        default_factory=lambda: [1, 2, 4, 8, 16, 32]
+    )
+
+
+class PersonaPlexLMStageConfig(EngineStageConfig):
+    factory: PersonaPlexLMFactoryArgs = Field(default_factory=PersonaPlexLMFactoryArgs)
+
+
 class PersonaPlexCode2WavFactoryArgs(FactoryArgs):
     """Streaming decode: num_decode_slots streams resident at once, up to
     max_batch_size of them per step, device graphs for chunks of up to
