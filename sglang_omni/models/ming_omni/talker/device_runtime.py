@@ -20,14 +20,20 @@ class TalkerDeviceRuntime:
     def create_stream(self):
         if self.device_module is None:
             return None
+        else:
+            pass
         return self.device_module.Stream(device=self.device)
 
     def create_stream_context(self, stream):
         if self.device_module is None:
             return nullcontext()
+        else:
+            pass
         return self.device_module.stream(stream)
 
     def synchronize(self) -> None:
         if self.device_module is None:
             return
+        else:
+            pass
         self.device_module.current_stream(self.device).synchronize()

@@ -25,7 +25,7 @@ class FakeDetector:
         self.reset_calls += 1
 
 
-def _event(turn_detection: dict) -> SessionUpdate:
+def event(turn_detection: dict) -> SessionUpdate:
     return SessionUpdate.model_validate(
         {
             "type": "session.update",
@@ -34,7 +34,7 @@ def _event(turn_detection: dict) -> SessionUpdate:
     )
 
 
-def _session(
+def make_session(
     initial: FakeDetector,
     *,
     smart_turn_model=MagicMock(),
@@ -57,7 +57,7 @@ def _session(
 @pytest.mark.asyncio
 async def test_semantic_update_replaces_detector_and_clears_pending_audio():
     initial, semantic = FakeDetector(), FakeDetector()
-    session = _session(initial)
+    session = make_session(initial)
     session.audio_buffer.buf.extend(b"\x01\x00" * 32)
     build = TurnDetectorBuild(semantic, {"type": "semantic_vad", "eagerness": "medium"})
     with patch(
@@ -65,7 +65,7 @@ async def test_semantic_update_replaces_detector_and_clears_pending_audio():
         return_value=build,
     ):
         await session.handle_session_update(
-            _event({"type": "semantic_vad", "eagerness": "medium"})
+            event({"type": "semantic_vad", "eagerness": "medium"})
         )
 
     assert session.vad is semantic and initial.reset_calls == 1
@@ -81,7 +81,7 @@ async def test_semantic_update_replaces_detector_and_clears_pending_audio():
 @pytest.mark.asyncio
 async def test_unavailable_semantic_model_reports_effective_server_vad():
     initial, unused = FakeDetector(), FakeDetector()
-    session = _session(initial, smart_turn_model=None)
+    session = make_session(initial, smart_turn_model=None)
     session.audio_buffer.buf.extend(b"\x01\x00")
     build = TurnDetectorBuild(
         unused,
@@ -92,7 +92,7 @@ async def test_unavailable_semantic_model_reports_effective_server_vad():
         return_value=build,
     ):
         await session.handle_session_update(
-            _event({"type": "semantic_vad", "eagerness": "high"})
+            event({"type": "semantic_vad", "eagerness": "high"})
         )
 
     assert session.vad is initial and initial.reset_calls == 0
@@ -106,11 +106,11 @@ async def test_unavailable_semantic_model_reports_effective_server_vad():
 @pytest.mark.asyncio
 async def test_invalid_semantic_update_preserves_live_state():
     initial = FakeDetector()
-    session = _session(initial)
+    session = make_session(initial)
     session.audio_buffer.buf.extend(b"\x01\x00")
 
     await session.handle_session_update(
-        _event(
+        event(
             {
                 "type": "semantic_vad",
                 "eagerness": "medium",
@@ -129,7 +129,7 @@ async def test_invalid_semantic_update_preserves_live_state():
 @pytest.mark.asyncio
 async def test_same_type_partial_update_preserves_semantic_type():
     initial, replacement = FakeDetector(), FakeDetector()
-    session = _session(initial)
+    session = make_session(initial)
     session.session_object.turn_detection = TurnDetection(
         type="semantic_vad", eagerness="low"
     )
@@ -140,7 +140,7 @@ async def test_same_type_partial_update_preserves_semantic_type():
         "sglang_omni.serve.realtime.session.build_turn_detector",
         return_value=build,
     ) as builder:
-        await session.handle_session_update(_event({"eagerness": "high"}))
+        await session.handle_session_update(event({"eagerness": "high"}))
     assert builder.call_args.args[0] == {
         "type": "semantic_vad",
         "eagerness": "high",
@@ -151,7 +151,7 @@ async def test_same_type_partial_update_preserves_semantic_type():
 @pytest.mark.asyncio
 async def test_detector_build_failure_preserves_audio_and_state():
     initial = FakeDetector()
-    session = _session(initial)
+    session = make_session(initial)
     session.audio_buffer.buf.extend(b"\x01\x00")
     loop = asyncio.get_running_loop()
     with (
@@ -161,7 +161,7 @@ async def test_detector_build_failure_preserves_audio_and_state():
         ),
         patch.object(loop, "call_exception_handler"),
     ):
-        await session.handle_session_update(_event({"type": "semantic_vad"}))
+        await session.handle_session_update(event({"type": "semantic_vad"}))
     assert session.vad is initial and initial.reset_calls == 0
     assert not session.audio_buffer.is_empty()
     assert session.session_object.turn_detection is None

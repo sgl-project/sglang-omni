@@ -53,7 +53,7 @@ class FakeFishTokenizer:
     def __init__(self) -> None:
         self.additional_stop_token_ids: list[int] = []
         self.encoded_texts: list[str] = []
-        self._ids = {
+        self.ids = {
             "<|im_end|>": 99,
             "<|semantic:0|>": 200,
             "<|semantic:4095|>": 295,
@@ -67,14 +67,14 @@ class FakeFishTokenizer:
         if isinstance(token, str) and token.startswith("<|semantic:"):
             value = int(token.split(":", 1)[1].split("|>", 1)[0])
             return 200 + value
-        return self._ids.get(token, 123)
+        return self.ids.get(token, 123)
 
     def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
         del add_special_tokens
         self.encoded_texts.append(text)
         return (
             [self.convert_tokens_to_ids(text)]
-            if text in self._ids
+            if text in self.ids
             else [1000 + ord(char) % 100 for char in text]
         )
 
@@ -116,25 +116,25 @@ class FakeFishReq:
 
 class FakeFishModel:
     def __init__(self) -> None:
-        self._semantic_begin_id = 200
-        self._semantic_end_id = 295
-        self._rep_history_len = 4
-        self._vq_mask = torch.zeros(4, dtype=torch.bool)
-        self._vq_codes = torch.zeros((4, 2), dtype=torch.long)
-        self._output_semantic_ids = torch.tensor([201, 202, 203, 204], dtype=torch.long)
-        self._output_codes = torch.tensor(
+        self.semantic_begin_id = 200
+        self.semantic_end_id = 295
+        self.rep_history_len = 4
+        self.vq_mask = torch.zeros(4, dtype=torch.bool)
+        self.vq_codes = torch.zeros((4, 2), dtype=torch.long)
+        self.output_semantic_ids = torch.tensor([201, 202, 203, 204], dtype=torch.long)
+        self.output_codes = torch.tensor(
             [[201, 1, 2], [202, 3, 4], [203, 5, 6], [204, 7, 8]],
             dtype=torch.long,
         )
-        self._audio_decoder = SimpleNamespace(embed_text_dim=self._embed_text_dim)
+        self.audio_decoder = SimpleNamespace(embed_text_dim=self.embed_text_dim)
 
     def get_embed_tokens(self):
-        def _embed(input_ids: torch.Tensor) -> torch.Tensor:
+        def embed(input_ids: torch.Tensor) -> torch.Tensor:
             return input_ids.to(dtype=torch.float32).unsqueeze(-1).repeat(1, 2)
 
-        return _embed
+        return embed
 
-    def _embed_text_dim(
+    def embed_text_dim(
         self,
         req_embeds: torch.Tensor,
         vq_slice: torch.Tensor,

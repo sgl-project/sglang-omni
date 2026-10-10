@@ -9,13 +9,13 @@ logger = logging.getLogger(__name__)
 
 class NemotronTalkerScheduler(OmniScheduler):
     @staticmethod
-    def _append_stream_chunk_default(req_data, chunk) -> None:
+    def append_stream_chunk_default(req_data, chunk) -> None:
         # The thinker ships each text token as a one-element tensor, because
         # that is what crosses the relay between stage processes.
         req_data.pending_text_queue.append(int(chunk.data.reshape(-1)[0]))
 
     @staticmethod
-    def _mark_stream_done(req_data) -> None:
+    def mark_stream_done(req_data) -> None:
         req_data.thinker_chunks_done = True
 
     def get_next_batch_to_run(self):
@@ -23,18 +23,22 @@ class NemotronTalkerScheduler(OmniScheduler):
         if (
             batch is not None
             and batch.forward_mode.is_decode()
-            and not self._model_runner.is_decode_batch_ready(batch)
+            and not self.model_runner.is_decode_batch_ready(batch)
         ):
-            self._rollback_decode_prep_after_skip(batch)
+            self.rollback_decode_prep_after_skip(batch)
             return None
+        else:
+            pass
         return batch
 
-    def _rollback_decode_prep_after_skip(self, batch) -> None:
+    def rollback_decode_prep_after_skip(self, batch) -> None:
         if batch.out_cache_loc is not None:
             allocator = self.token_to_kv_pool_allocator
             new_pages = (batch.seq_lens - 1) % allocator.page_size == 0
             allocator.free(batch.out_cache_loc[new_pages])
             batch.out_cache_loc = None
+        else:
+            pass
         for req in batch.reqs:
             req.decode_batch_idx -= 1
             req.kv.kv_committed_len -= 1
@@ -47,6 +51,10 @@ class NemotronTalkerScheduler(OmniScheduler):
     def self_check_during_idle(self) -> None:
         if self.running_batch is not None and not self.running_batch.is_empty():
             return
+        else:
+            pass
         if self.waiting_queue:
             return
+        else:
+            pass
         super().self_check_during_idle()

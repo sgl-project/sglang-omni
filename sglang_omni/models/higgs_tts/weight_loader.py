@@ -26,27 +26,35 @@ class DiscreteWeightMapper:
     head_dest: str = "modality_head."
     tie_modality: bool = True
 
-    def _instance_prefix_map(self) -> dict[str, str]:
+    def instance_prefix_map(self) -> dict[str, str]:
         mapping = {
             "tied.embedding.modality_embeddings.0.embedding.": self.embedding_dest,
         }
         if not self.tie_modality:
             mapping["tied.head.modality_heads.0."] = self.head_dest
+        else:
+            pass
         return mapping
 
     def map(self, name: str) -> str | None:
         """Map ckpt name to downstream name; ``None`` to skip the weight."""
-        for higgs_prefix, dest_prefix in self._instance_prefix_map().items():
+        for higgs_prefix, dest_prefix in self.instance_prefix_map().items():
             if name.startswith(higgs_prefix):
                 return dest_prefix + name[len(higgs_prefix) :]
+            else:
+                pass
 
         # Audio tokenizer backbone — frozen, not in the serving graph.
         if name.startswith("tied.embedding.modality_embeddings.0.model."):
             return None
+        else:
+            pass
 
         for higgs_prefix, dest_prefix in self.text_prefix_map.items():
             if name.startswith(higgs_prefix):
                 return dest_prefix + name[len(higgs_prefix) :]
+            else:
+                pass
 
         return name
 

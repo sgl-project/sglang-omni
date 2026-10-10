@@ -12,7 +12,11 @@ from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
     NemotronCode2WavScheduler,
 )
 from sglang_omni.models.nemotron_voicechat.codec import RVQVAEDecoder
-from sglang_omni.models.nemotron_voicechat.conformer import AudioPerception
+from sglang_omni.models.nemotron_voicechat.conformer import (
+    AudioPerception,
+    GraphPerception,
+    StreamingPerception,
+)
 from sglang_omni.models.nemotron_voicechat.engine_builder import (
     NemotronVoiceChatEngineBuilder,
     NemotronVoiceChatTalkerEngineBuilder,
@@ -27,7 +31,10 @@ from sglang_omni.models.weight_loader import (
     resolve_dtype,
     resolve_model_path,
 )
-from sglang_omni.preprocessing.transcription import resolve_audio_source
+from sglang_omni.preprocessing.transcription import (
+    police_request_audio,
+    resolve_audio_source,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio import load_audio
@@ -39,7 +46,7 @@ SAMPLES_PER_FRAME = 1_280
 INPUT_SAMPLE_RATE = 16_000
 
 
-def _perception_config(model_path: str) -> dict:
+def perception_config(model_path: str) -> dict:
     config_path = Path(resolve_model_path(model_path)) / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     return config["model"]["stt"]["model"]["perception"]
@@ -52,7 +59,7 @@ def create_preprocessing_executor(model_path: str, **_):
         # Channel 0, not a downmix: this model speaks the other side of the
         # conversation, so a two-party recording carries the agent on channel 1.
         channels = load_audio(
-            resolve_audio_source(payload),
+            police_request_audio(resolve_audio_source(payload)),
             source_name="VoiceChat",
             target_sample_rate=INPUT_SAMPLE_RATE,
             mono=False,
@@ -61,6 +68,8 @@ def create_preprocessing_executor(model_path: str, **_):
         remainder = waveform.shape[-1] % SAMPLES_PER_FRAME
         if remainder:
             waveform = nn.functional.pad(waveform, (0, SAMPLES_PER_FRAME - remainder))
+        else:
+            pass
 
         state = NemotronVoiceChatState.from_dict(payload.data)
         state.waveform = waveform
@@ -72,10 +81,15 @@ def create_preprocessing_executor(model_path: str, **_):
 
 
 def create_perception_executor(
-    model_path: str, *, dtype=None, device=None, gpu_id=None
-):
+    model_path: str,
+    *,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    enable_cuda_graph: bool = True,
+) -> SimpleScheduler[StagePayload, StagePayload]:
     device = resolve_concrete_device(device, gpu_id)
-    module = AudioPerception(_perception_config(model_path))
+    module = AudioPerception(perception_config(model_path))
     load_module(
         module,
         model_path,
@@ -86,6 +100,9 @@ def create_perception_executor(
     )
     module.eval()
     parameter_dtype = module.proj.weight.dtype
+    perception_stream = (
+        GraphPerception(module) if enable_cuda_graph else StreamingPerception(module)
+    )
 
     @torch.inference_mode()
     def encode(payload: StagePayload) -> StagePayload:
@@ -95,7 +112,10 @@ def create_perception_executor(
             rearrange(waveform, "s -> 1 s") if waveform.ndim == 1 else waveform
         )
 
-        frames = module(waveform_1S.to(device=device, dtype=parameter_dtype))
+        frames = module(
+            waveform_1S.to(device=device, dtype=parameter_dtype),
+            stream=perception_stream,
+        )
         assert frames.shape[1] == state.num_frames + 1, (
             f"Perception returned {frames.shape[1]} rows for {state.num_frames} "
             "frames of audio; expected one more than the frame count."
@@ -127,7 +147,7 @@ def create_thinker_executor(
     )
 
 
-def _speech_generation_config(model_path: str) -> dict:
+def speech_generation_config(model_path: str) -> dict:
     config_path = Path(resolve_model_path(model_path)) / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     return config["model"]["speech_generation"]["model"]
@@ -158,7 +178,7 @@ def create_talker_executor(
 
 def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None):
     device = resolve_concrete_device(device, gpu_id)
-    generation = _speech_generation_config(model_path)
+    generation = speech_generation_config(model_path)
     weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
     markers = {
         name: load_weights_by_prefix(model_path, prefix=f"tts_model.{name}")[""]
@@ -199,7 +219,7 @@ def create_decode_executor(model_path, **_):
     Most frames carry a marker rather than a word — the model is listening, or
     punctuating a turn — so only the ids that spell something are detokenized.
     """
-    speech = _speech_generation_config(model_path)
+    speech = speech_generation_config(model_path)
     tokenizer = AutoTokenizer.from_pretrained(
         speech["tts_config"]["cas_config"]["pretrained_tokenizer_name"]
     )

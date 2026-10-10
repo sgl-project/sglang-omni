@@ -19,21 +19,21 @@ from sglang_omni.config import (
     resolve_stage_factory_args,
 )
 
-_FACTORY = "tests.unit_test.fixtures.pipeline_fakes.runtime_factory"
-_FACTORY_WITHOUT_TOTAL_BUDGET = (
+FACTORY = "tests.unit_test.fixtures.pipeline_fakes.runtime_factory"
+FACTORY_WITHOUT_TOTAL_BUDGET = (
     "tests.unit_test.fixtures.pipeline_fakes.runtime_factory_without_total_budget"
 )
-_OPEN_FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
-_FACTORY_WITHOUT_GPU_ID = (
+OPEN_FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
+FACTORY_WITHOUT_GPU_ID = (
     "tests.unit_test.fixtures.pipeline_fakes.runtime_factory_without_gpu_id"
 )
 
 
-def _stage(**kwargs) -> EngineStageConfig:
+def make_stage(**kwargs) -> EngineStageConfig:
     data = {
         "name": "thinker",
         "process": "pipeline",
-        "factory_path": _FACTORY,
+        "factory_path": FACTORY,
         "terminal": True,
         "gpu": 1,
     }
@@ -41,7 +41,7 @@ def _stage(**kwargs) -> EngineStageConfig:
     return EngineStageConfig(**data)
 
 
-class _HookedPipelineConfig(PipelineConfig):
+class HookedPipelineConfig(PipelineConfig):
     """A pipeline whose author seeds constructor kwargs for the thinker."""
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, object]:
@@ -53,14 +53,14 @@ class _HookedPipelineConfig(PipelineConfig):
         return {}
 
 
-class _PlacementFightingPipelineConfig(PipelineConfig):
+class PlacementFightingPipelineConfig(PipelineConfig):
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, object]:
         del stage_name
         return {"gpu_id": 0}
 
 
 def test_typed_groups_map_to_factory_kwargs() -> None:
-    stage = _stage(
+    stage = make_stage(
         gpu_memory_fraction=0.25,
         engine={"mem_fraction_static": 0.72},
         factory={"video_fps": 2.0},
@@ -77,8 +77,8 @@ def test_typed_groups_map_to_factory_kwargs() -> None:
 
 
 def test_total_gpu_memory_fraction_is_not_injected_into_unrelated_factories() -> None:
-    stage = _stage(
-        factory_path=_FACTORY_WITHOUT_TOTAL_BUDGET,
+    stage = make_stage(
+        factory_path=FACTORY_WITHOUT_TOTAL_BUDGET,
         gpu_memory_fraction=0.25,
         engine={"mem_fraction_static": 0.72},
     )
@@ -91,8 +91,8 @@ def test_total_gpu_memory_fraction_is_not_injected_into_unrelated_factories() ->
 
 
 def test_a_user_group_value_overrides_the_author_kwarg() -> None:
-    stage = _stage(factory={"video_fps": 2.0})
-    config = _HookedPipelineConfig(model_path="dummy-model", stages=[stage])
+    stage = make_stage(factory={"video_fps": 2.0})
+    config = HookedPipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config)
 
@@ -100,8 +100,8 @@ def test_a_user_group_value_overrides_the_author_kwarg() -> None:
 
 
 def test_the_author_kwarg_holds_when_the_user_says_nothing() -> None:
-    stage = _stage()
-    config = _HookedPipelineConfig(model_path="dummy-model", stages=[stage])
+    stage = make_stage()
+    config = HookedPipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config)
 
@@ -110,8 +110,8 @@ def test_the_author_kwarg_holds_when_the_user_says_nothing() -> None:
 
 def test_engine_keys_merge_over_the_authors_server_args() -> None:
     """Both channels feed ``server_args_overrides``; per-key, config wins."""
-    stage = _stage(engine={"mem_fraction_static": 0.72})
-    config = _HookedPipelineConfig(model_path="dummy-model", stages=[stage])
+    stage = make_stage(engine={"mem_fraction_static": 0.72})
+    config = HookedPipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config)
 
@@ -122,8 +122,8 @@ def test_engine_keys_merge_over_the_authors_server_args() -> None:
 
 
 def test_placement_owned_kwargs_are_refused_from_the_hook() -> None:
-    stage = _stage()
-    config = _PlacementFightingPipelineConfig(model_path="dummy-model", stages=[stage])
+    stage = make_stage()
+    config = PlacementFightingPipelineConfig(model_path="dummy-model", stages=[stage])
 
     with pytest.raises(ValueError, match="owned by placement"):
         resolve_stage_factory_args(stage, config)
@@ -131,7 +131,7 @@ def test_placement_owned_kwargs_are_refused_from_the_hook() -> None:
 
 def test_a_set_key_the_factory_does_not_accept_is_refused() -> None:
     """Silently dropping a set path would turn configuration into a no-op."""
-    stage = _stage(factory={"lookahead": 9})
+    stage = make_stage(factory={"lookahead": 9})
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
 
     with pytest.raises(ValueError, match="does not accept a 'lookahead'"):
@@ -139,7 +139,7 @@ def test_a_set_key_the_factory_does_not_accept_is_refused() -> None:
 
 
 def test_gpu_placed_stage_rejects_a_factory_with_no_gpu_id_parameter() -> None:
-    stage = _stage(factory_path=_FACTORY_WITHOUT_GPU_ID)
+    stage = make_stage(factory_path=FACTORY_WITHOUT_GPU_ID)
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
 
     with pytest.raises(ValueError, match="no gpu_id parameter"):
@@ -147,7 +147,7 @@ def test_gpu_placed_stage_rejects_a_factory_with_no_gpu_id_parameter() -> None:
 
 
 def test_a_non_gpu_stage_may_use_a_factory_with_no_gpu_id_parameter() -> None:
-    stage = _stage(factory_path=_FACTORY_WITHOUT_GPU_ID, gpu=None)
+    stage = make_stage(factory_path=FACTORY_WITHOUT_GPU_ID, gpu=None)
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config)
@@ -156,7 +156,7 @@ def test_a_non_gpu_stage_may_use_a_factory_with_no_gpu_id_parameter() -> None:
 
 
 def test_free_form_keys_reach_a_factory_that_takes_kwargs() -> None:
-    stage = _stage(factory_path=_OPEN_FACTORY, factory={"lookahead": 9}, gpu=None)
+    stage = make_stage(factory_path=OPEN_FACTORY, factory={"lookahead": 9}, gpu=None)
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config)
@@ -165,7 +165,7 @@ def test_free_form_keys_reach_a_factory_that_takes_kwargs() -> None:
 
 
 def test_scheduler_keys_pass_under_their_own_names() -> None:
-    stage = _stage(factory_path=_FACTORY, factory={"encoder_mem_reserve": 0.1})
+    stage = make_stage(factory_path=FACTORY, factory={"encoder_mem_reserve": 0.1})
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config)
@@ -174,7 +174,7 @@ def test_scheduler_keys_pass_under_their_own_names() -> None:
 
 
 def test_rank_gpu_id_can_be_supplied_by_launch_planner() -> None:
-    stage = _stage(gpu=0)
+    stage = make_stage(gpu=0)
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config, gpu_id=3)
@@ -186,7 +186,7 @@ def test_a_plain_stage_carries_no_server_args() -> None:
     stage = StageConfig(
         name="front",
         process="pipeline",
-        factory_path=_OPEN_FACTORY,
+        factory_path=OPEN_FACTORY,
         terminal=True,
     )
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
@@ -201,7 +201,7 @@ def test_kv_cache_bytes_never_reaches_server_args_overrides() -> None:
     from sglang_omni.config import EngineArgs
     from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 
-    stage = _stage(engine=EngineArgs(kv_cache_bytes="2GiB", max_running_requests=8))
+    stage = make_stage(engine=EngineArgs(kv_cache_bytes="2GiB", max_running_requests=8))
 
     kwargs = resolve_stage_typed_kwargs(stage)
 

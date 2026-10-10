@@ -113,8 +113,21 @@ impl RequestLease {
         }
     }
 
+    pub(super) fn new_pinned(envelope: EnvelopeLease, registration: Arc<WorkerRecord>) -> Self {
+        Self {
+            _admission: None,
+            _envelope: Some(envelope),
+            _capacity: None,
+            load: WorkerLoadGuard::new(registration, 1),
+        }
+    }
+
     pub(crate) fn target(&self) -> &ResolvedTarget {
         &self.load.registration.target
+    }
+
+    pub(crate) fn worker_id(&self) -> &str {
+        self.load.registration.worker_id.as_str()
     }
 
     pub(crate) fn request_immediate_probe(&self) {

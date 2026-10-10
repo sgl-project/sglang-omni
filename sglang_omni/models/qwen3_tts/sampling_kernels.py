@@ -22,20 +22,26 @@ else:
     tl = None
     _TRITON_GATHER_SUPPORTED = False
 
+FUSED_SAMPLER_VOCAB_SIZE = 2048
+FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
+TOP_K_CHUNKS = 8
+TOP_K_CHUNK_WARPS = 2
+TOP_K_MERGE_KEYS_PER_WARP = 64
 
-def _has_triton_runtime() -> bool:
+
+def has_triton_runtime() -> bool:
     return triton is not None and not current_platform.is_npu()
 
 
-if _has_triton_runtime():
+if has_triton_runtime():
 
     @triton.jit
-    def _rotl32(x, r: tl.constexpr) -> tl.uint32:
+    def rotl32(x, r: tl.constexpr) -> tl.uint32:
         x = x.to(tl.uint64)
         return ((x << r) | (x >> (32 - r))) & 0xFFFFFFFF
 
     @triton.jit
-    def _fmix32(h: tl.uint32) -> tl.uint32:
+    def fmix32(h: tl.uint32) -> tl.uint32:
         h ^= h >> 16
         h = (h * 0x85EBCA6B) & 0xFFFFFFFF
         h ^= h >> 13
@@ -44,17 +50,17 @@ if _has_triton_runtime():
         return h
 
     @triton.jit
-    def _murmur3_mix(h: tl.uint32, k: tl.uint32) -> tl.uint32:
+    def murmur3_mix(h: tl.uint32, k: tl.uint32) -> tl.uint32:
         k = (k * 0xCC9E2D51) & 0xFFFFFFFF
-        k = _rotl32(k, 15)
+        k = rotl32(k, 15)
         k = (k * 0x1B873593) & 0xFFFFFFFF
         h ^= k
-        h = _rotl32(h, 13)
+        h = rotl32(h, 13)
         h = (h * 5 + 0xE6546B64) & 0xFFFFFFFF
         return h
 
     @triton.jit
-    def _gumbel_from_hash(h: tl.uint32):
+    def gumbel_from_hash(h: tl.uint32):
         """Match SGLang multinomial_with_seed float64 endpoint handling.
 
         SGLang does ``x.log_().clamp_(min=finfo.min, max=-(2**-32)).neg_().log_().neg_()``.
@@ -67,7 +73,7 @@ if _has_triton_runtime():
         return -tl.log(-log_u)
 
     @triton.jit
-    def _seeded_gumbel_sample_sorted_kernel(
+    def seeded_gumbel_sample_sorted_kernel(
         logprobs,
         sorted_idx,
         seeds,
@@ -89,14 +95,14 @@ if _has_triton_runtime():
         col = offsets.to(tl.uint32)
 
         h: tl.uint32 = 0
-        h = _murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, pos)
-        h = _murmur3_mix(h, col)
+        h = murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
+        h = murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
+        h = murmur3_mix(h, pos)
+        h = murmur3_mix(h, col)
         h ^= 16
-        h = _fmix32(h)
+        h = fmix32(h)
 
-        gumbel = _gumbel_from_hash(h)
+        gumbel = gumbel_from_hash(h)
         weights = tl.load(
             logprobs + row * logprobs_stride_b + offsets * logprobs_stride_k,
             mask=mask,
@@ -110,7 +116,7 @@ if _has_triton_runtime():
         tl.store(out + row, token)
 
     @triton.jit
-    def _bitonic_compare_selected_32_desc(
+    def bitonic_compare_selected_32_desc(
         scores,
         token_ids,
         valid,
@@ -158,12 +164,12 @@ if _has_triton_runtime():
         )
 
     @triton.jit
-    def _bitonic_sort_selected_32_desc(scores, token_ids, max_top_k: tl.constexpr):
+    def bitonic_sort_selected_32_desc(scores, token_ids, max_top_k: tl.constexpr):
         """Match the CUDA ``SmallBitonicSort`` network used by torch.topk."""
         offsets = tl.arange(0, 32)
         valid = offsets < max_top_k
 
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -172,7 +178,7 @@ if _has_triton_runtime():
             network_size=2,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -181,7 +187,7 @@ if _has_triton_runtime():
             network_size=4,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -190,7 +196,7 @@ if _has_triton_runtime():
             network_size=4,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -199,7 +205,7 @@ if _has_triton_runtime():
             network_size=8,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -208,7 +214,7 @@ if _has_triton_runtime():
             network_size=8,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -217,7 +223,7 @@ if _has_triton_runtime():
             network_size=8,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -226,7 +232,7 @@ if _has_triton_runtime():
             network_size=16,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -235,7 +241,7 @@ if _has_triton_runtime():
             network_size=16,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -244,7 +250,7 @@ if _has_triton_runtime():
             network_size=16,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -253,7 +259,7 @@ if _has_triton_runtime():
             network_size=16,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -262,7 +268,7 @@ if _has_triton_runtime():
             network_size=32,
             final_round=True,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -271,7 +277,7 @@ if _has_triton_runtime():
             network_size=32,
             final_round=True,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -280,7 +286,7 @@ if _has_triton_runtime():
             network_size=32,
             final_round=True,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -289,7 +295,7 @@ if _has_triton_runtime():
             network_size=32,
             final_round=True,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -301,21 +307,9 @@ if _has_triton_runtime():
         return scores, token_ids
 
     @triton.jit
-    def _seeded_top_k_top_p_sample_kernel(
-        logits,
-        temperatures,
-        top_ks,
-        top_ps,
-        seeds,
-        positions,
-        out,
-        logits_stride_b: tl.constexpr,
-        max_top_k: tl.constexpr,
-        block_k: tl.constexpr,
-        has_top_p: tl.constexpr,
+    def pack_scaled_scores(
+        logits, temperatures, row, logits_stride_b: tl.constexpr, vocab_offsets
     ):
-        row = tl.program_id(0)
-        vocab_offsets = tl.arange(0, 2048)
         scores = tl.load(logits + row * logits_stride_b + vocab_offsets).to(tl.float32)
         temperature = tl.maximum(tl.load(temperatures + row).to(tl.float32), 1e-5)
         scores = scores / temperature
@@ -336,8 +330,10 @@ if _has_triton_runtime():
         packed = (ordered_score_bits.to(tl.uint64) << 32) | (
             all_ones_vocab - vocab_offsets.to(tl.uint32)
         ).to(tl.uint64)
-        top_packed = tl.topk(packed, k=block_k)
+        return scores, ordered_score_bits, packed
 
+    @triton.jit
+    def unpack_top_keys(top_packed, block_k: tl.constexpr):
         ranks = tl.arange(0, block_k)
         one_rank = tl.full(ranks.shape, 1, tl.uint32)
         high_bit_rank = one_rank << 31
@@ -352,8 +348,116 @@ if _has_triton_runtime():
         sorted_token_ids = all_ones_rank - (
             top_packed & all_ones_rank.to(tl.uint64)
         ).to(tl.uint32)
+        return sorted_scores, sorted_token_ids
+
+    @triton.jit
+    def bitonic_index_bit(log2_num_keys: tl.constexpr, index_bit: tl.constexpr):
+        """Bit index_bit of each key index, in the keys' 2 x ... x 2 view."""
+        return tl.reshape(
+            tl.arange(0, 2),
+            [1] * (log2_num_keys - index_bit - 1) + [2] + [1] * index_bit,
+        )
+
+    @triton.jit
+    def bitonic_merge_runs(
+        keys, log2_num_keys: tl.constexpr, log2_run_keys: tl.constexpr, is_descending
+    ):
+        """Sort each bitonic run of keys, descending where is_descending is 1."""
+        for step in tl.static_range(log2_run_keys):
+            partner_keys = tl.flip(keys, log2_num_keys - log2_run_keys + step)
+            is_right = bitonic_index_bit(log2_num_keys, log2_run_keys - 1 - step)
+            keys = tl.where(
+                (keys > partner_keys) != (is_descending ^ is_right).to(tl.int1),
+                partner_keys,
+                keys,
+            )
+        return keys
+
+    @triton.jit
+    def sample_sorted_top_k(
+        sorted_scores,
+        sorted_token_ids,
+        row,
+        top_ks,
+        top_ps,
+        seeds,
+        positions,
+        out,
+        block_k: tl.constexpr,
+        has_top_p: tl.constexpr,
+    ):
+        ranks = tl.arange(0, block_k)
+        keep_top_k = ranks < tl.load(top_ks + row)
+        masked_scores = tl.where(keep_top_k, sorted_scores, -float("inf"))
+        max_score = tl.max(masked_scores, axis=0)
+        probs = tl.exp(masked_scores - max_score)
+        probs = probs / tl.sum(probs, axis=0)
+
+        if has_top_p:
+            top_p = tl.load(top_ps + row).to(tl.float32)
+            active_top_p = (top_p > 0.0) & (top_p < 1.0)
+            cdf = tl.cumsum(probs, axis=0)
+            remove = (cdf - probs >= top_p) & active_top_p
+            remove = remove & (ranks != 0)
+            keep_top_k = keep_top_k & ~remove
+        else:
+            pass
+
+        logprobs = tl.where(keep_top_k, tl.log(probs), -float("inf"))
+
+        seed = tl.load(seeds + row).to(tl.uint64)
+        pos = tl.load(positions + row).to(tl.uint32)
+        col = ranks.to(tl.uint32)
+
+        h: tl.uint32 = 0
+        h = murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
+        h = murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
+        h = murmur3_mix(h, pos)
+        h = murmur3_mix(h, col)
+        h ^= 16
+        h = fmix32(h)
+
+        gumbel = gumbel_from_hash(h)
+        sampled_scores = logprobs.to(tl.float64) + gumbel
+        max_sampled_score = tl.max(sampled_scores, axis=0)
+        candidates = tl.where(sampled_scores == max_sampled_score, ranks, block_k)
+        sampled_rank = tl.min(candidates, axis=0)
+        token = tl.max(
+            tl.where(
+                ranks == sampled_rank,
+                sorted_token_ids.to(tl.int64),
+                0,
+            ),
+            axis=0,
+        )
+        tl.store(out + row, token)
+
+    @triton.jit
+    def seeded_top_k_top_p_sample_kernel(
+        logits,
+        temperatures,
+        top_ks,
+        top_ps,
+        seeds,
+        positions,
+        out,
+        logits_stride_b: tl.constexpr,
+        max_top_k: tl.constexpr,
+        block_k: tl.constexpr,
+        has_top_p: tl.constexpr,
+    ):
+        row = tl.program_id(0)
+        vocab_offsets = tl.arange(0, 2048)
+        scores, ordered_score_bits, packed = pack_scaled_scores(
+            logits, temperatures, row, logits_stride_b, vocab_offsets
+        )
+        top_packed = tl.topk(packed, k=block_k)
+        sorted_scores, sorted_token_ids = unpack_top_keys(top_packed, block_k)
 
         if max_top_k <= 32:
+            ranks = tl.arange(0, block_k)
+            all_ones_vocab = tl.full(vocab_offsets.shape, 0xFFFFFFFF, tl.uint32)
+            all_ones_rank = tl.full(ranks.shape, 0xFFFFFFFF, tl.uint32)
             # Note (Jun Liu): gatherTopK first writes every score strictly above
             # the threshold
             # in source-index order. It then appends threshold-equal scores in
@@ -361,7 +465,7 @@ if _has_triton_runtime():
             # unstable, so reproducing only the final top-k membership is not
             # sufficient for seeded sampling.
             threshold_ordered_score_bits = tl.max(
-                tl.where(ranks == max_top_k - 1, ordered_top_score_bits, 0),
+                tl.where(ranks == max_top_k - 1, (top_packed >> 32).to(tl.uint32), 0),
                 axis=0,
             )
             # Note (Jun Liu): CUDA's threshold gather compares the float rank
@@ -400,82 +504,142 @@ if _has_triton_runtime():
                 axis=0,
             )
             sorted_token_ids = gather_source_ids.to(tl.uint32)
-            sorted_scores, sorted_token_ids = _bitonic_sort_selected_32_desc(
+            sorted_scores, sorted_token_ids = bitonic_sort_selected_32_desc(
                 sorted_scores, sorted_token_ids, max_top_k
             )
+        else:
+            pass
 
-        keep_top_k = ranks < tl.load(top_ks + row)
-        masked_scores = tl.where(keep_top_k, sorted_scores, -float("inf"))
-        max_score = tl.max(masked_scores, axis=0)
-        probs = tl.exp(masked_scores - max_score)
-        probs = probs / tl.sum(probs, axis=0)
-
-        if has_top_p:
-            top_p = tl.load(top_ps + row).to(tl.float32)
-            active_top_p = (top_p > 0.0) & (top_p < 1.0)
-            cdf = tl.cumsum(probs, axis=0)
-            remove = (cdf - probs >= top_p) & active_top_p
-            remove = remove & (ranks != 0)
-            keep_top_k = keep_top_k & ~remove
-
-        logprobs = tl.where(keep_top_k, tl.log(probs), -float("inf"))
-
-        seed = tl.load(seeds + row).to(tl.uint64)
-        pos = tl.load(positions + row).to(tl.uint32)
-        col = ranks.to(tl.uint32)
-
-        h: tl.uint32 = 0
-        h = _murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, pos)
-        h = _murmur3_mix(h, col)
-        h ^= 16
-        h = _fmix32(h)
-
-        gumbel = _gumbel_from_hash(h)
-        sampled_scores = logprobs.to(tl.float64) + gumbel
-        max_sampled_score = tl.max(sampled_scores, axis=0)
-        candidates = tl.where(sampled_scores == max_sampled_score, ranks, block_k)
-        sampled_rank = tl.min(candidates, axis=0)
-        token = tl.max(
-            tl.where(
-                ranks == sampled_rank,
-                sorted_token_ids.to(tl.int64),
-                0,
-            ),
-            axis=0,
+        sample_sorted_top_k(
+            sorted_scores,
+            sorted_token_ids,
+            row,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            out,
+            block_k,
+            has_top_p,
         )
-        tl.store(out + row, token)
+
+    @triton.jit
+    def seeded_top_k_chunk_kernel(
+        logits,
+        temperatures,
+        chunk_keys,
+        logits_stride_b: tl.constexpr,
+        chunk_width: tl.constexpr,
+        block_k: tl.constexpr,
+    ):
+        row = tl.program_id(0)
+        chunk = tl.program_id(1)
+        vocab_offsets = chunk * chunk_width + tl.arange(0, chunk_width)
+        _, _, packed = pack_scaled_scores(
+            logits, temperatures, row, logits_stride_b, vocab_offsets
+        )
+        chunk_offsets = (row * tl.num_programs(1) + chunk) * block_k
+        run_offsets = tl.arange(0, block_k)
+        # note (ratish): even chunks store their run ascending and odd ones
+        # descending, the order the merge's bitonic rounds take.
+        tl.store(
+            chunk_keys
+            + chunk_offsets
+            + tl.where(chunk % 2 == 0, block_k - 1 - run_offsets, run_offsets),
+            tl.topk(packed, k=block_k),
+        )
+
+    @triton.jit
+    def seeded_top_k_merge_sample_kernel(
+        chunk_keys,
+        top_ks,
+        top_ps,
+        seeds,
+        positions,
+        out,
+        num_candidates: tl.constexpr,
+        block_k: tl.constexpr,
+        log2_num_candidates: tl.constexpr,
+        log2_block_k: tl.constexpr,
+        has_top_p: tl.constexpr,
+    ):
+        # note (ratish): the keys are unique, so the top block_k of the chunks'
+        # top block_k sets is the row's top block_k in the same order.
+        row = tl.program_id(0)
+        # note (ratish): the keys are stored as int64; the merge must order them unsigned.
+        candidates = tl.load(
+            chunk_keys + row * num_candidates + tl.arange(0, num_candidates)
+        ).to(tl.uint64)
+        candidates = tl.reshape(candidates, [2] * log2_num_candidates)
+        # note (ratish): the rounds tl.topk runs after sorting its runs: keep the
+        # larger key of each pair of runs, then re-sort the kept run.
+        for log2_covered_keys in tl.static_range(
+            log2_block_k + 1, log2_num_candidates + 1
+        ):
+            candidates = tl.max(
+                candidates, axis=log2_num_candidates - log2_covered_keys
+            )
+            if log2_covered_keys < log2_num_candidates:
+                candidates = bitonic_merge_runs(
+                    candidates,
+                    log2_num_candidates - log2_covered_keys + log2_block_k,
+                    log2_block_k,
+                    bitonic_index_bit(
+                        log2_num_candidates - log2_covered_keys + log2_block_k,
+                        log2_block_k,
+                    ),
+                )
+            else:
+                candidates = bitonic_merge_runs(
+                    candidates, log2_block_k, log2_block_k, 1
+                )
+        sorted_scores, sorted_token_ids = unpack_top_keys(
+            tl.reshape(candidates, [block_k]), block_k
+        )
+        sample_sorted_top_k(
+            sorted_scores,
+            sorted_token_ids,
+            row,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            out,
+            block_k,
+            has_top_p,
+        )
 
 else:
-    _seeded_gumbel_sample_sorted_kernel = None
-    _bitonic_compare_selected_32_desc = None
-    _bitonic_sort_selected_32_desc = None
-    _seeded_top_k_top_p_sample_kernel = None
+    seeded_gumbel_sample_sorted_kernel = None
+    bitonic_compare_selected_32_desc = None
+    bitonic_sort_selected_32_desc = None
+    seeded_top_k_top_p_sample_kernel = None
+    seeded_top_k_chunk_kernel = None
+    seeded_top_k_merge_sample_kernel = None
 
 
-def _next_power_of_2(value: int) -> int:
+def next_power_of_2(value: int) -> int:
     return 1 << (int(value) - 1).bit_length()
 
 
 _UINT32_MASK = 0xFFFFFFFF
 
 
-def _rotl32_pytorch(value: torch.Tensor, shift: int) -> torch.Tensor:
+def rotl32_pytorch(value: torch.Tensor, shift: int) -> torch.Tensor:
     value = value & _UINT32_MASK
     return ((value << shift) | (value >> (32 - shift))) & _UINT32_MASK
 
 
-def _murmur3_mix_pytorch(hash_value: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
+def murmur3_mix_pytorch(hash_value: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
     key = (key * 0xCC9E2D51) & _UINT32_MASK
-    key = _rotl32_pytorch(key, 15)
+    key = rotl32_pytorch(key, 15)
     key = (key * 0x1B873593) & _UINT32_MASK
     hash_value = hash_value ^ key
-    hash_value = _rotl32_pytorch(hash_value, 13)
+    hash_value = rotl32_pytorch(hash_value, 13)
     return (hash_value * 5 + 0xE6546B64) & _UINT32_MASK
 
 
-def _fmix32_pytorch(hash_value: torch.Tensor) -> torch.Tensor:
+def fmix32_pytorch(hash_value: torch.Tensor) -> torch.Tensor:
     hash_value = hash_value ^ (hash_value >> 16)
     hash_value = (hash_value * 0x85EBCA6B) & _UINT32_MASK
     hash_value = hash_value ^ (hash_value >> 13)
@@ -483,7 +647,7 @@ def _fmix32_pytorch(hash_value: torch.Tensor) -> torch.Tensor:
     return (hash_value ^ (hash_value >> 16)) & _UINT32_MASK
 
 
-def _murmur_hash32_pytorch(
+def murmur_hash32_pytorch(
     seeds: torch.Tensor,
     positions: torch.Tensor,
     num_cols: int,
@@ -493,9 +657,11 @@ def _murmur_hash32_pytorch(
         # Ascend can fault in the int64 rotate expression under sustained
         # concurrent sampling. The hash inputs are tiny; compute only this
         # integer-only portion on CPU and return the exact uint32 values.
-        return _murmur_hash32_pytorch(seeds.cpu(), positions.cpu(), num_cols).to(
+        return murmur_hash32_pytorch(seeds.cpu(), positions.cpu(), num_cols).to(
             seeds.device
         )
+    else:
+        pass
 
     seeds = seeds.to(dtype=torch.int64).view(-1, 1)
     positions = positions.to(dtype=torch.int64).view(-1, 1)
@@ -504,14 +670,14 @@ def _murmur_hash32_pytorch(
     hash_value = torch.zeros(
         (seeds.shape[0], num_cols), device=seeds.device, dtype=torch.int64
     )
-    hash_value = _murmur3_mix_pytorch(hash_value, seeds & _UINT32_MASK)
-    hash_value = _murmur3_mix_pytorch(hash_value, (seeds >> 32) & _UINT32_MASK)
-    hash_value = _murmur3_mix_pytorch(hash_value, positions & _UINT32_MASK)
-    hash_value = _murmur3_mix_pytorch(hash_value, columns)
-    return _fmix32_pytorch(hash_value ^ 16)
+    hash_value = murmur3_mix_pytorch(hash_value, seeds & _UINT32_MASK)
+    hash_value = murmur3_mix_pytorch(hash_value, (seeds >> 32) & _UINT32_MASK)
+    hash_value = murmur3_mix_pytorch(hash_value, positions & _UINT32_MASK)
+    hash_value = murmur3_mix_pytorch(hash_value, columns)
+    return fmix32_pytorch(hash_value ^ 16)
 
 
-def _seeded_gumbel_argmax_float32(
+def seeded_gumbel_argmax_float32(
     logprobs: torch.Tensor,
     seeds: torch.Tensor,
     positions: torch.Tensor,
@@ -519,13 +685,19 @@ def _seeded_gumbel_argmax_float32(
     """Seeded categorical sampling without float64 or CUDA-only kernels."""
     if logprobs.ndim != 2:
         raise ValueError("logprobs must be a 2D tensor")
+    else:
+        pass
     batch_size, num_cols = logprobs.shape
     if seeds.shape != (batch_size,) or positions.shape != (batch_size,):
         raise ValueError("seeds and positions must contain one value per row")
+    else:
+        pass
     if num_cols == 0:
         raise ValueError("logprobs must contain at least one column")
+    else:
+        pass
 
-    hashes = _murmur_hash32_pytorch(seeds, positions, num_cols)
+    hashes = murmur_hash32_pytorch(seeds, positions, num_cols)
     uniform = hashes.to(dtype=torch.float32) / float(_UINT32_MASK)
     # 0 and UINT32_MAX are valid hashes. Keep both away from log boundaries;
     # UINT32_MAX rounds to 1.0 after conversion to float32.
@@ -545,14 +717,20 @@ def sample_from_logprobs_with_seed_npu(
     """Use the float32 seeded sampler on NPU and leave other backends unchanged."""
     if logprobs.device.type != "npu":
         return None
+    else:
+        pass
     if seeds.device != logprobs.device or positions.device != logprobs.device:
         raise ValueError("logprobs, seeds, and positions must be on the same device")
+    else:
+        pass
     if logprobs.shape[0] == 0:
         return torch.empty((0,), device=logprobs.device, dtype=torch.long)
-    return _seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+    else:
+        pass
+    return seeded_gumbel_argmax_float32(logprobs, seeds, positions)
 
 
-def _all_tensors_on_npu(*tensors: torch.Tensor) -> bool:
+def all_tensors_on_npu(*tensors: torch.Tensor) -> bool:
     return all(tensor.device.type == "npu" for tensor in tensors)
 
 
@@ -562,45 +740,69 @@ def sample_from_sorted_logprobs_with_seed_small_k(
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor | None:
-    if _all_tensors_on_npu(logprobs, sorted_idx, seeds, positions):
+    if all_tensors_on_npu(logprobs, sorted_idx, seeds, positions):
         if logprobs.ndim != 2 or sorted_idx.shape != logprobs.shape:
             return None
+        else:
+            pass
         if seeds.ndim != 1 or positions.ndim != 1:
             return None
+        else:
+            pass
         batch_size, num_cols = logprobs.shape
         if batch_size == 0:
             return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+        else:
+            pass
         if seeds.shape[0] != batch_size or positions.shape[0] != batch_size:
             return None
+        else:
+            pass
         if num_cols <= 0:
             return None
+        else:
+            pass
 
-        sampled_rank = _seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+        sampled_rank = seeded_gumbel_argmax_float32(logprobs, seeds, positions)
         return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1)
+    else:
+        pass
 
     if (
-        _seeded_gumbel_sample_sorted_kernel is None
+        seeded_gumbel_sample_sorted_kernel is None
         or not logprobs.is_cuda
         or not sorted_idx.is_cuda
         or not seeds.is_cuda
         or not positions.is_cuda
     ):
         return None
+    else:
+        pass
     if logprobs.ndim != 2 or sorted_idx.shape != logprobs.shape:
         return None
+    else:
+        pass
     if seeds.ndim != 1 or positions.ndim != 1:
         return None
+    else:
+        pass
     batch_size, num_cols = logprobs.shape
     if batch_size == 0:
         return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+    else:
+        pass
     if seeds.shape[0] != batch_size or positions.shape[0] != batch_size:
         return None
+    else:
+        pass
     if num_cols <= 0 or num_cols > 1024:
         return None
+    else:
+        pass
 
-    block_size = _next_power_of_2(num_cols)
+    block_size = next_power_of_2(num_cols)
     out = torch.empty((batch_size,), device=logprobs.device, dtype=torch.long)
-    _seeded_gumbel_sample_sorted_kernel[(batch_size,)](
+    seeded_gumbel_sample_sorted_kernel[(batch_size,)](
         logprobs,
         sorted_idx,
         seeds,
@@ -616,18 +818,19 @@ def sample_from_sorted_logprobs_with_seed_small_k(
     return out
 
 
-_FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
-
-
-def _fused_raw_logit_block_k(max_top_k: int) -> int | None:
+def fused_raw_logit_block_k(max_top_k: int) -> int | None:
     """Return the power-of-two Triton selection width for a graph signature."""
-    if max_top_k not in _FUSED_RAW_LOGIT_TOP_KS:
+    if max_top_k not in FUSED_RAW_LOGIT_TOP_KS:
         return None
+    else:
+        pass
     if max_top_k <= 32:
         # Note (Jun Liu): PyTorch uses a fixed 32-entry bitonic network for all
         # these widths.
         return 32
-    return _next_power_of_2(max_top_k)
+    else:
+        pass
+    return next_power_of_2(max_top_k)
 
 
 def sample_from_logits_with_seed_top_k_top_p(
@@ -648,22 +851,26 @@ def sample_from_logits_with_seed_top_k_top_p(
     remains the fallback. It does not inspect device values because that would
     introduce a host synchronization during CUDA graph replay.
     """
-    block_k = _fused_raw_logit_block_k(int(max_top_k))
+    block_k = fused_raw_logit_block_k(int(max_top_k))
     if (
-        _seeded_top_k_top_p_sample_kernel is None
+        seeded_top_k_top_p_sample_kernel is None
         or not _TRITON_GATHER_SUPPORTED
         or block_k is None
         or not logits.is_cuda
         or logits.ndim != 2
-        or logits.shape[1] != 2048
+        or logits.shape[1] != FUSED_SAMPLER_VOCAB_SIZE
         or logits.dtype is not torch.bfloat16
         or not logits.is_contiguous()
     ):
         return None
+    else:
+        pass
 
     batch_size = int(logits.shape[0])
     if batch_size == 0:
         return torch.empty((0,), device=logits.device, dtype=torch.long)
+    else:
+        pass
 
     row_tensors = (temperatures, top_ks, top_ps, seeds, positions)
     if any(
@@ -674,6 +881,8 @@ def sample_from_logits_with_seed_top_k_top_p(
         for tensor in row_tensors
     ):
         return None
+    else:
+        pass
     if (
         temperatures.dtype is not torch.float32
         or top_ks.dtype is not torch.long
@@ -682,20 +891,60 @@ def sample_from_logits_with_seed_top_k_top_p(
         or positions.dtype is not torch.long
     ):
         return None
+    else:
+        pass
 
     out = torch.empty((batch_size,), device=logits.device, dtype=torch.long)
-    _seeded_top_k_top_p_sample_kernel[(batch_size,)](
-        logits,
-        temperatures,
-        top_ks,
-        top_ps,
-        seeds,
-        positions,
-        out,
-        logits.stride(0),
-        int(max_top_k),
-        int(block_k),
-        bool(has_top_p),
-        num_warps=8,
-    )
+    # note (ratish): the split launch is measured on sm_90 only; other devices keep
+    # the single kernel. Each chunk holds at least two runs, so it runs a halving round.
+    if (
+        max_top_k > 32
+        and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE
+        and torch.version.hip is None
+        and torch.cuda.get_device_capability(logits.device) == (9, 0)
+    ):
+        num_candidates = TOP_K_CHUNKS * block_k
+        chunk_keys = torch.empty(
+            (batch_size, num_candidates),
+            device=logits.device,
+            dtype=torch.int64,
+        )
+        seeded_top_k_chunk_kernel[(batch_size, TOP_K_CHUNKS)](
+            logits,
+            temperatures,
+            chunk_keys,
+            logits.stride(0),
+            FUSED_SAMPLER_VOCAB_SIZE // TOP_K_CHUNKS,
+            int(block_k),
+            num_warps=TOP_K_CHUNK_WARPS,
+        )
+        seeded_top_k_merge_sample_kernel[(batch_size,)](
+            chunk_keys,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            out,
+            num_candidates,
+            block_k,
+            num_candidates.bit_length() - 1,
+            block_k.bit_length() - 1,
+            bool(has_top_p),
+            num_warps=block_k // TOP_K_MERGE_KEYS_PER_WARP,
+        )
+    else:
+        seeded_top_k_top_p_sample_kernel[(batch_size,)](
+            logits,
+            temperatures,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            out,
+            logits.stride(0),
+            int(max_top_k),
+            int(block_k),
+            bool(has_top_p),
+            num_warps=8,
+        )
     return out

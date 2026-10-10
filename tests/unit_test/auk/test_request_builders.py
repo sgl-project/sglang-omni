@@ -90,7 +90,7 @@ def speech_payload(**kwargs):
     service = SpeechRequestValidator(default_model="tencent/AuK")
     generated = service.build_generate_request(request)
     return StagePayload(
-        request_id="speech", request=Client._build_omni_request(generated), data={}
+        request_id="speech", request=Client.build_omni_request(generated), data={}
     )
 
 
@@ -140,7 +140,7 @@ def test_reference_speech_requires_duration_or_transcript(context, reference):
 
 def test_generate_preserves_raw_editing_instruction(context, reference):
     from sglang_omni.client.client import Client
-    from sglang_omni.serve.openai_api import _build_rollout_generate_request
+    from sglang_omni.serve.openai_api import build_rollout_generate_request
     from sglang_omni.serve.protocol import RolloutGenerateRequest
 
     request = RolloutGenerateRequest(
@@ -148,9 +148,9 @@ def test_generate_preserves_raw_editing_instruction(context, reference):
         metadata={"tts_params": {"ref_audio": reference}},
         output_modalities=["audio"],
     )
-    generated = _build_rollout_generate_request(request)
+    generated = build_rollout_generate_request(request)
     payload = StagePayload(
-        request_id="editing", request=Client._build_omni_request(generated), data={}
+        request_id="editing", request=Client.build_omni_request(generated), data={}
     )
     state = AuKState.from_dict(preprocess_auk_payload(payload).data)
     assert state.instruction == request.prompt

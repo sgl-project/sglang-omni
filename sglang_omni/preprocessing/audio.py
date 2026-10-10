@@ -6,17 +6,20 @@ from __future__ import annotations
 import asyncio
 import base64
 import struct
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 import torch
 
-from .base import MediaIO, _is_url
+from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+
+from .base import MediaIO, is_url
+from .resource_connector import await_media_cleanup
 
 
-def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
+def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
     """Decode audio bytes using PyAV (supports WebM/Opus, MP3, OGG, FLAC, etc.)."""
     import io
 
@@ -27,6 +30,8 @@ def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         audio_stream = next((s for s in container.streams if s.type == "audio"), None)
         if audio_stream is None:
             raise ValueError("No audio stream found in data")
+        else:
+            pass
 
         sample_rate = audio_stream.rate
         frames = []
@@ -36,12 +41,16 @@ def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
                 # Planar formats (fltp, s16p, etc.): shape is (channels, samples)
                 # Average channels to mono
                 arr = arr.mean(axis=0)
+            else:
+                pass
             frames.append(arr.flatten().astype(np.float32))
     finally:
         container.close()
 
     if not frames:
         raise ValueError("No audio frames decoded")
+    else:
+        pass
 
     audio = np.concatenate(frames)
     # Normalize integer formats to [-1, 1] float range
@@ -49,18 +58,28 @@ def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         peak = max(abs(audio.max()), abs(audio.min()))
         if peak > 0:
             audio = audio / peak
+        else:
+            pass
+    else:
+        pass
     return audio, int(sample_rate)
 
 
-def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, int]:
+def parse_wav_bytes(
+    data: bytes, source: str = "bytes"
+) -> tuple[npt.NDArray[np.float32], int]:
     """Parse PCM/IEEE-float WAV from bytes without external deps."""
     if len(data) < 12:
         raise ValueError(f"Invalid WAV header: {source}")
+    else:
+        pass
 
     header = data[:12]
     riff, _, wave = struct.unpack("<4sI4s", header)
     if riff != b"RIFF" or wave != b"WAVE":
         raise ValueError(f"Not a RIFF/WAVE file: {source}")
+    else:
+        pass
 
     fmt_tag = None
     channels = None
@@ -72,29 +91,43 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
     while offset < len(data):
         if offset + 8 > len(data):
             break
+        else:
+            pass
         chunk_header = data[offset : offset + 8]
         chunk_id, chunk_size = struct.unpack("<4sI", chunk_header)
         offset += 8
 
         if offset + chunk_size > len(data):
             break
+        else:
+            pass
         chunk_data = data[offset : offset + chunk_size]
         offset += chunk_size
         if chunk_size % 2 == 1:
             offset += 1
+        else:
+            pass
 
         if chunk_id == b"fmt ":
             if len(chunk_data) >= 16:
                 fmt_tag, channels, sample_rate, _, _, bits_per_sample = struct.unpack(
                     "<HHIIHH", chunk_data[:16]
                 )
+            else:
+                pass
         elif chunk_id == b"data":
             data_bytes = chunk_data
+        else:
+            pass
 
     if fmt_tag is None or sample_rate is None or bits_per_sample is None:
         raise ValueError(f"Missing fmt chunk in WAV: {source}")
+    else:
+        pass
     if not data_bytes:
         raise ValueError(f"Missing data chunk in WAV: {source}")
+    else:
+        pass
 
     if fmt_tag == 3:  # IEEE float
         if bits_per_sample == 32:
@@ -120,15 +153,23 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
 
     if channels and channels > 1:
         audio = audio.reshape(-1, channels).mean(axis=1)
+    else:
+        pass
 
     return audio.astype(np.float32, copy=False), int(sample_rate)
 
 
-def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+def resample_linear(
+    audio: np.ndarray, orig_sr: int, target_sr: int
+) -> npt.NDArray[np.float32]:
     if orig_sr == target_sr:
         return audio.astype(np.float32, copy=False)
+    else:
+        pass
     if audio.size == 0:
         return audio.astype(np.float32, copy=False)
+    else:
+        pass
     duration = audio.shape[0] / float(orig_sr)
     new_len = max(int(round(duration * target_sr)), 1)
     old_idx = np.arange(audio.shape[0], dtype=np.float64)
@@ -136,17 +177,19 @@ def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndar
     return np.interp(new_idx, old_idx, audio).astype(np.float32)
 
 
-def load_audio_path(path: str | Path, *, target_sr: int = 16000) -> np.ndarray:
+def load_audio_path(
+    path: str | Path, *, target_sr: int = 16000
+) -> npt.NDArray[np.float32]:
     with open(path, "rb") as f:
         data = f.read()
     try:
-        audio, sr = _parse_wav_bytes(data, source=str(path))
+        audio, sr = parse_wav_bytes(data, source=str(path))
     except ValueError:
-        audio, sr = _decode_audio_bytes_av(data)
-    return _resample_linear(audio, sr, target_sr)
+        audio, sr = decode_audio_bytes_av(data)
+    return resample_linear(audio, sr, target_sr)
 
 
-class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
+class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
     """MediaIO implementation for audio files."""
 
     def __init__(self, *, target_sr: int = 16000, **kwargs) -> None:
@@ -160,41 +203,41 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
         self.target_sr = target_sr
         self.kwargs = kwargs
 
-    def load_bytes(self, data: bytes) -> tuple[npt.NDArray, float]:
+    def load_bytes(self, data: bytes) -> tuple[npt.NDArray[np.float32], float]:
         """Load audio from raw bytes (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
         try:
-            audio, sr = _parse_wav_bytes(data, source="bytes")
+            audio, sr = parse_wav_bytes(data, source="bytes")
         except ValueError:
-            audio, sr = _decode_audio_bytes_av(data)
-        resampled = _resample_linear(audio, sr, self.target_sr)
+            audio, sr = decode_audio_bytes_av(data)
+        resampled = resample_linear(audio, sr, self.target_sr)
         return resampled, float(self.target_sr)
 
     def load_base64(
         self,
         media_type: str,
         data: str,
-    ) -> tuple[npt.NDArray, float]:
+    ) -> tuple[npt.NDArray[np.float32], float]:
         """Load audio from base64-encoded data."""
         return self.load_bytes(base64.b64decode(data))
 
-    def load_file(self, filepath: Path) -> tuple[npt.NDArray, float]:
+    def load_file(self, filepath: Path) -> tuple[npt.NDArray[np.float32], float]:
         """Load audio from a local file path (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
         with open(filepath, "rb") as f:
             data = f.read()
         try:
-            audio, sr = _parse_wav_bytes(data, source=str(filepath))
+            audio, sr = parse_wav_bytes(data, source=str(filepath))
         except ValueError:
-            audio, sr = _decode_audio_bytes_av(data)
-        resampled = _resample_linear(audio, sr, self.target_sr)
+            audio, sr = decode_audio_bytes_av(data)
+        resampled = resample_linear(audio, sr, self.target_sr)
         return resampled, float(self.target_sr)
 
 
 async def ensure_audio_list_async(
-    audios: Any,
+    audios: object,
     *,
     target_sr: int = 16000,
-    resource_connector: Any | None = None,
-) -> list[Any]:
+    resource_connector: MultiModalResourceConnector | None = None,
+) -> list[object]:
     """Asynchronously normalize audio inputs into a list.
 
     Args:
@@ -208,6 +251,8 @@ async def ensure_audio_list_async(
     """
     if audios is None:
         return []
+    else:
+        pass
     items = audios if isinstance(audios, list) else [audios]
 
     # Import here to avoid circular dependency
@@ -215,42 +260,61 @@ async def ensure_audio_list_async(
         from .resource_connector import get_global_resource_connector
 
         resource_connector = get_global_resource_connector()
+    else:
+        pass
 
     # Collect coroutines for URL items
-    coroutines: list[asyncio.Task[tuple[npt.NDArray, float]] | None] = []
+    coroutines: list[asyncio.Task[tuple[npt.NDArray[np.float32], float]]] = []
     url_indices: list[int] = []
-    normalized: list[Any] = []
+    normalized: list[object] = []
 
-    # First pass: identify URL items and create coroutines
-    for idx, item in enumerate(items):
-        if isinstance(item, (str, Path)):
-            if _is_url(item):
-                # Create coroutine for async URL fetching
-                coro = resource_connector.fetch_audio_async(
-                    str(item), target_sr=target_sr
-                )
-                task = asyncio.create_task(coro)
-                coroutines.append(task)
-                url_indices.append(idx)
-                normalized.append(None)  # Placeholder
+    try:
+        # note (Teery): First pass: identify URL items and create coroutines
+        for idx, item in enumerate(items):
+            if isinstance(item, (str, Path)):
+                if is_url(item):
+                    # note (Teery): Create coroutine for async URL fetching
+                    coro = resource_connector.fetch_audio_async(
+                        str(item), target_sr=target_sr
+                    )
+                    task = asyncio.create_task(coro)
+                    coroutines.append(task)
+                    url_indices.append(idx)
+                    normalized.append(None)  # note (Teery): Placeholder
+                else:
+                    # note (Teery): Local path - can be loaded synchronously
+                    path = resource_connector.local_media_path(item)
+                    normalized.append(load_audio_path(path, target_sr=target_sr))
             else:
-                # Local path - can be loaded synchronously
-                normalized.append(load_audio_path(item, target_sr=target_sr))
-        else:
-            # Already processed (numpy array, etc.)
-            normalized.append(item)
+                # note (Teery): Already processed (numpy array, etc.)
+                normalized.append(item)
 
-    # Wait for all URL fetches to complete
-    if coroutines:
-        results = await asyncio.gather(*coroutines)
-        # Fill in the results at the correct indices (extract audio array, ignore sample rate)
-        for url_idx, (audio, _) in zip(url_indices, results):
-            normalized[url_idx] = audio
+        # note (Teery): Wait for all URL fetches to complete
+        if coroutines:
+            results = await asyncio.gather(*coroutines)
+            # note (Teery): Fill in the results at the correct indices (extract audio array, ignore sample rate)
+            for url_idx, (audio, _) in zip(url_indices, results):
+                normalized[url_idx] = audio
+        else:
+            pass
+    finally:
+        for task in coroutines:
+            if not task.done():
+                task.cancel()
+            else:
+                pass
+
+        async def cleanup_loaders() -> None:
+            await asyncio.gather(*coroutines, return_exceptions=True)
+
+        await await_media_cleanup(cleanup_loaders())
 
     return normalized
 
 
-def build_audio_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
+def build_audio_mm_inputs(
+    hf_inputs: Mapping[str, torch.Tensor],
+) -> dict[str, torch.Tensor | None]:
     """Extract standard audio tensors from HF processor outputs."""
     feature_attention_mask = hf_inputs.get("feature_attention_mask")
     audio_feature_lengths = hf_inputs.get("audio_feature_lengths")
@@ -260,6 +324,8 @@ def build_audio_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
         audio_feature_lengths = torch.sum(feature_attention_mask, dim=1).to(
             dtype=torch.long
         )
+    else:
+        pass
     return {
         "input_features": hf_inputs.get("input_features"),
         "feature_attention_mask": feature_attention_mask,
@@ -267,11 +333,11 @@ def build_audio_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compute_audio_cache_key(audios: Any) -> str | None:
-    """Compute cache key from raw audio inputs (paths, numpy arrays).
+def compute_audio_cache_key(audios: object) -> str | None:
+    """Compute a cache key from loaded audio waveforms.
 
-    This should be called BEFORE ensure_audio_list() to capture original
-    paths which are much cheaper to hash than audio data.
+    Pass decoded waveforms, such as the output of ensure_audio_list_async. A URL
+    or path can name different samples over time, so it is not a stable key.
     """
     from .cache_key import compute_media_cache_key
 

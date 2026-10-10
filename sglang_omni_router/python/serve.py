@@ -10,7 +10,7 @@ import logging.config
 import os
 import shlex
 from collections.abc import Sequence
-from typing import Any, get_args
+from typing import get_args
 
 import uvicorn
 from pydantic import ValidationError
@@ -47,7 +47,7 @@ logger = logging.getLogger("sglang_omni_router.python.serve")
 _NOFILE_HEADROOM = 64
 
 
-def _read_nofile_soft_limit() -> int | None:
+def read_nofile_soft_limit() -> int | None:
     try:
         import resource
     except ImportError:  # non-POSIX platform, nothing to check
@@ -59,7 +59,7 @@ def _read_nofile_soft_limit() -> int | None:
 
 
 def check_file_descriptor_limit(config: RouterConfig, *, strict: bool = False) -> None:
-    soft_limit = _read_nofile_soft_limit()
+    soft_limit = read_nofile_soft_limit()
     if soft_limit is None:
         return
     pool_size = config.upstream_pool_size
@@ -98,7 +98,7 @@ def normalize_log_level(log_level: str) -> str:
     return normalized_level
 
 
-def build_log_config(log_level: str) -> dict[str, Any]:
+def build_log_config(log_level: str) -> dict[str, object]:
     normalized_level = normalize_log_level(log_level)
     log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     log_config["loggers"]["sglang_omni_router.python"] = {

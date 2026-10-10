@@ -19,23 +19,27 @@ else:
     tl = None
 
 
-def _has_triton_runtime() -> bool:
+def has_triton_runtime() -> bool:
     return triton is not None and not current_platform.is_npu()
 
 
-if _has_triton_runtime():
+if has_triton_runtime():
 
     @triton.jit
-    def _gather_codec_embedding_and_add_kernel(
+    def gather_codec_embedding_and_add_kernel(
         token_ids,
         embedding_weight,
         gathered,
         accumulated,
+        projected_weight,
+        projected,
         token_stride,
         embedding_stride,
         gathered_stride,
         accumulated_stride,
+        projected_stride,
         hidden_size: tl.constexpr,
+        projected_size: tl.constexpr,
         block_size: tl.constexpr,
     ):
         row = tl.program_id(0)
@@ -52,12 +56,25 @@ if _has_triton_runtime():
         current = tl.load(accumulated_offsets, mask=mask)
         tl.store(gathered_offsets, values, mask=mask)
         tl.store(accumulated_offsets, current + values, mask=mask)
+        if projected_size > 0:
+            projected_mask = offsets < projected_size
+            projected_values = tl.load(
+                projected_weight + token_id * projected_size + offsets,
+                mask=projected_mask,
+            )
+            tl.store(
+                projected + row * projected_stride + offsets,
+                projected_values,
+                mask=projected_mask,
+            )
+        else:
+            pass
 
 else:
-    _gather_codec_embedding_and_add_kernel = None
+    gather_codec_embedding_and_add_kernel = None
 
 
-def _contiguous_storage_ranges_overlap(
+def contiguous_storage_ranges_overlap(
     first: torch.Tensor, second: torch.Tensor
 ) -> bool:
     first_start = first.data_ptr()
@@ -72,14 +89,17 @@ def gather_codec_embedding_and_add(
     embedding_weight: torch.Tensor,
     gathered: torch.Tensor,
     accumulated: torch.Tensor,
+    projected_weight: torch.Tensor | None = None,
+    projected: torch.Tensor | None = None,
 ) -> bool:
-    """Gather BF16 embedding rows and add them to an accumulator in one launch.
+    """Gather BF16 embedding rows and add them to an accumulator in one launch;
+    with projected_weight, also gather the same rows of that table into projected.
+    Return False without writes when the caller must use the eager path."""
 
-    Return ``False`` without writes when the caller must use the eager path.
-    """
-
-    if _gather_codec_embedding_and_add_kernel is None:
+    if gather_codec_embedding_and_add_kernel is None:
         return False
+    else:
+        pass
     if not (
         token_ids.is_cuda
         and embedding_weight.is_cuda
@@ -87,26 +107,42 @@ def gather_codec_embedding_and_add(
         and accumulated.is_cuda
     ):
         return False
+    else:
+        pass
     if token_ids.ndim != 1 or embedding_weight.ndim != 2:
         return False
+    else:
+        pass
     if gathered.ndim != 2 or accumulated.ndim != 2:
         return False
+    else:
+        pass
     batch_size = token_ids.shape[0]
     hidden_size = embedding_weight.shape[1]
     if batch_size == 0 or hidden_size == 0:
         return False
+    else:
+        pass
     if gathered.shape != (batch_size, hidden_size):
         return False
+    else:
+        pass
     if accumulated.shape != (batch_size, hidden_size):
         return False
+    else:
+        pass
     if token_ids.dtype not in (torch.int32, torch.int64):
         return False
+    else:
+        pass
     if (
         embedding_weight.dtype != torch.bfloat16
         or gathered.dtype != torch.bfloat16
         or accumulated.dtype != torch.bfloat16
     ):
         return False
+    else:
+        pass
     if not (
         token_ids.device
         == embedding_weight.device
@@ -114,6 +150,8 @@ def gather_codec_embedding_and_add(
         == accumulated.device
     ):
         return False
+    else:
+        pass
     if (
         not token_ids.is_contiguous()
         or not embedding_weight.is_contiguous()
@@ -121,6 +159,8 @@ def gather_codec_embedding_and_add(
         or not accumulated.is_contiguous()
     ):
         return False
+    else:
+        pass
     if (
         token_ids.stride(0) != 1
         or embedding_weight.stride(1) != 1
@@ -128,25 +168,61 @@ def gather_codec_embedding_and_add(
         or accumulated.stride(1) != 1
     ):
         return False
+    else:
+        pass
     if (
-        _contiguous_storage_ranges_overlap(gathered, accumulated)
-        or _contiguous_storage_ranges_overlap(gathered, embedding_weight)
-        or _contiguous_storage_ranges_overlap(accumulated, embedding_weight)
+        contiguous_storage_ranges_overlap(gathered, accumulated)
+        or contiguous_storage_ranges_overlap(gathered, embedding_weight)
+        or contiguous_storage_ranges_overlap(accumulated, embedding_weight)
     ):
         return False
+    else:
+        pass
+
+    assert (projected_weight is None) == (
+        projected is None
+    ), "projected_weight and projected are passed together"
+    if projected_weight is None:
+        projected_weight = embedding_weight
+        projected = gathered
+        projected_size = 0
+    elif not (
+        projected_weight.ndim == 2
+        and projected.ndim == 2
+        and projected_weight.shape[0] == embedding_weight.shape[0]
+        # note (ratish): the grid spans the embedding width,
+        # so a projected row must fit in it.
+        and projected_weight.shape[1] <= hidden_size
+        and projected.shape == (batch_size, projected_weight.shape[1])
+        and projected_weight.dtype == torch.bfloat16
+        and projected.dtype == torch.bfloat16
+        and projected_weight.device == projected.device == token_ids.device
+        and projected_weight.is_contiguous()
+        and projected.is_contiguous()
+        and not contiguous_storage_ranges_overlap(projected, gathered)
+        and not contiguous_storage_ranges_overlap(projected, accumulated)
+        and not contiguous_storage_ranges_overlap(projected, projected_weight)
+    ):
+        return False
+    else:
+        projected_size = projected_weight.shape[1]
 
     block_size = 256
     grid = (batch_size, triton.cdiv(hidden_size, block_size))
-    _gather_codec_embedding_and_add_kernel[grid](
+    gather_codec_embedding_and_add_kernel[grid](
         token_ids,
         embedding_weight,
         gathered,
         accumulated,
+        projected_weight,
+        projected,
         token_ids.stride(0),
         embedding_weight.stride(0),
         gathered.stride(0),
         accumulated.stride(0),
+        projected.stride(0),
         hidden_size=hidden_size,
+        projected_size=projected_size,
         block_size=block_size,
         num_warps=4,
     )

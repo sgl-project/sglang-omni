@@ -60,6 +60,8 @@ class MingOmniTalkerConfig:
         config_path = model_dir / "config.json"
         if not config_path.exists():
             raise FileNotFoundError(f"config.json not found in {model_dir}")
+        else:
+            pass
         with config_path.open("r", encoding="utf-8") as f:
             raw = json.load(f)
 
@@ -69,6 +71,8 @@ class MingOmniTalkerConfig:
         if llm_config_path.exists():
             with llm_config_path.open("r", encoding="utf-8") as f:
                 llm_config = json.load(f)
+        else:
+            pass
 
         return cls(
             llm_config=llm_config,
