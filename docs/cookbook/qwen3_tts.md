@@ -571,6 +571,8 @@ Both released checkpoints provide `Serena`, `Vivian`, `Uncle_Fu`, `Ryan`, `Aiden
 
 Both sizes support buffered speech, batch requests, incremental HTTP PCM output, and WebSocket audio output. HTTP streaming requires `stream=true` with `response_format="pcm"`; WebSocket sessions use `stream_audio=true` with `response_format="pcm"`.
 
+Before the server opens its port, a CustomVoice checkpoint runs a startup self-test: one streaming request with its first speaker, then 16 at once (fewer if the admission limit is lower). This moves the kernel loading and compilation that the first requests after a restart would otherwise wait for into startup. Startup fails if a self-test request fails or streams no audio, or if the self-test takes longer than 120 s, so `/health` answers only once it has passed.
+
 **0.6B instruction compatibility:** SGLang-Omni continues to pass optional `instructions` into the 0.6B prompt, preserving existing behavior. The released 0.6B model does not provide reliable instruction control; omit this field or use 1.7B when style control is needed.
 
 **Eric/Dylan language behavior:** For both sizes, `language: Auto` selects Eric's Sichuan dialect token or Dylan's Beijing dialect token. An explicit language takes precedence: `language: Chinese` keeps the Chinese language token. This preserves existing SGLang-Omni behavior and differs from the QwenLM/Qwen3-TTS Python wrapper (`qwen-tts` 0.1.1), which also selects dialect tokens for `Chinese`. This is a conditioning choice, not a guarantee that the speaker's accent disappears.

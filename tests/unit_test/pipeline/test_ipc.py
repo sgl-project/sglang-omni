@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
@@ -15,6 +17,8 @@ from fastapi.testclient import TestClient
 
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.runtime_config as runtime_config
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateChunk, GenerateRequest
 from sglang_omni.config.schema import (
     CustomVoiceConfig,
     EndpointsConfig,
@@ -23,6 +27,8 @@ from sglang_omni.config.schema import (
 )
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
+from sglang_omni.serve import launcher
+from sglang_omni.serve.protocol import CreateSpeechRequest
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 
@@ -50,6 +56,8 @@ class FakeStage:
 
 
 class StubCoordinator:
+    max_in_flight: int | None = None
+
     def __init__(self, *args, **kwargs):
         del args, kwargs
         self.started = False
@@ -63,6 +71,56 @@ class StubCoordinator:
 
     async def stop(self) -> None:
         self.stopped = True
+
+
+class RecordingSpeechService:
+    """Turns speech requests into client requests and keeps the speech requests."""
+
+    def __init__(self) -> None:
+        self.speech_requests: list[CreateSpeechRequest] = []
+
+    def build_generate_request(self, request: CreateSpeechRequest) -> GenerateRequest:
+        self.speech_requests.append(request)
+        return GenerateRequest(stream=request.stream)
+
+
+class ScriptedSpeechClient:
+    """Streams the same chunks for every request; records when each starts and ends."""
+
+    def __init__(
+        self, chunks: list[GenerateChunk], events: list[tuple[str, str]]
+    ) -> None:
+        self.chunks = chunks
+        self.events = events
+
+    async def generate(
+        self, request: GenerateRequest, request_id: str
+    ) -> AsyncIterator[GenerateChunk]:
+        self.events.append(("start", request_id))
+        for chunk in self.chunks:
+            await asyncio.sleep(0)
+            yield replace(chunk, request_id=request_id)
+        self.events.append(("done", request_id))
+
+
+class StalledSpeechClient:
+    """Never returns a chunk."""
+
+    async def generate(
+        self, request: GenerateRequest, request_id: str
+    ) -> AsyncIterator[GenerateChunk]:
+        await asyncio.Event().wait()
+        yield GenerateChunk(request_id=request_id)
+
+
+# note (Haoling Pu): the Qwen3-TTS vocoder's terminal result carries no audio.
+TERMINAL_CHUNK = Client.default_result_builder(
+    "", {"modality": "audio", "sample_rate": 24000}
+)
+AUDIO_THEN_END = [
+    GenerateChunk(request_id="", modality="audio", audio_data=b"\x00\x01"),
+    TERMINAL_CHUNK,
+]
 
 
 def make_config(base_path: Path) -> PipelineConfig:
@@ -418,12 +476,10 @@ async def run_launcher_with_fake_runner(
     config: PipelineConfig,
     serve_mock: AsyncMock | None,
     monkeypatch: pytest.MonkeyPatch,
+    speech_service: RecordingSpeechService | None = None,
 ) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
     profiler_calls = SimpleNamespace(starts=[], stops=[])
-
-    from sglang_omni.serve import launcher
-
     runner_ref = None
 
     class FakeRunner:
@@ -475,6 +531,7 @@ async def run_launcher_with_fake_runner(
     def fake_create_app(*args, **kwargs):
         del args
         app.state.create_app_kwargs = kwargs
+        app.state.speech_service = speech_service
         return app
 
     monkeypatch.setattr(launcher, "create_app", fake_create_app)
@@ -496,16 +553,121 @@ async def test_launcher_passes_one_resolved_custom_voice_config(
     )
     resolve = Mock(return_value=custom_voice_config)
     monkeypatch.setattr(PipelineConfig, "resolve_custom_voice_config", resolve)
+    speech_client = ScriptedSpeechClient(AUDIO_THEN_END, events=[])
+    monkeypatch.setattr(launcher, "Client", lambda coordinator: speech_client)
     _, app, _ = await run_launcher_with_fake_runner(
         config=config,
         serve_mock=AsyncMock(return_value=None),
         monkeypatch=monkeypatch,
+        speech_service=RecordingSpeechService(),
     )
     resolve.assert_called_once_with()
     kwargs = app.state.create_app_kwargs
     assert kwargs["custom_voice_config"] is custom_voice_config
     assert kwargs["requires_uploaded_voice_for_named_voice"] is False
     assert kwargs["supports_uploaded_voice_references"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("max_in_flight", "burst_size"), [(None, 16), (64, 16), (4, 4)]
+)
+async def test_launcher_runs_the_startup_self_test_before_serving(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    max_in_flight: int | None,
+    burst_size: int,
+) -> None:
+    monkeypatch.setattr(
+        PipelineConfig,
+        "resolve_custom_voice_config",
+        Mock(
+            return_value=CustomVoiceConfig(
+                speakers=("first", "second"), task_type="CustomVoice"
+            )
+        ),
+    )
+    monkeypatch.setattr(StubCoordinator, "max_in_flight", max_in_flight)
+    events: list[tuple[str, str]] = []
+    speech_client = ScriptedSpeechClient(AUDIO_THEN_END, events)
+    monkeypatch.setattr(launcher, "Client", lambda coordinator: speech_client)
+    speech_service = RecordingSpeechService()
+
+    await run_launcher_with_fake_runner(
+        config=make_config(tmp_path),
+        serve_mock=AsyncMock(
+            side_effect=lambda *args, **kwargs: events.append(("serve", ""))
+        ),
+        monkeypatch=monkeypatch,
+        speech_service=speech_service,
+    )
+
+    assert [kind for kind, _ in events] == (
+        ["start", "done"] + ["start"] * burst_size + ["done"] * burst_size + ["serve"]
+    )
+    assert events[0][1] == events[1][1]
+    assert len({request_id for kind, request_id in events if kind == "start"}) == (
+        burst_size + 1
+    )
+    assert [
+        (request.voice, request.stream, request.response_format)
+        for request in speech_service.speech_requests
+    ] == [("first", True, "pcm")]
+
+
+@pytest.mark.asyncio
+async def test_launcher_does_not_serve_when_a_self_test_request_streams_no_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        PipelineConfig,
+        "resolve_custom_voice_config",
+        Mock(
+            return_value=CustomVoiceConfig(speakers=("first",), task_type="CustomVoice")
+        ),
+    )
+    speech_client = ScriptedSpeechClient([TERMINAL_CHUNK], events=[])
+    monkeypatch.setattr(launcher, "Client", lambda coordinator: speech_client)
+    serve = AsyncMock(return_value=None)
+
+    with pytest.raises(RuntimeError, match="streamed no audio"):
+        await run_launcher_with_fake_runner(
+            config=make_config(tmp_path),
+            serve_mock=serve,
+            monkeypatch=monkeypatch,
+            speech_service=RecordingSpeechService(),
+        )
+
+    serve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_launcher_does_not_serve_when_the_startup_self_test_stalls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        PipelineConfig,
+        "resolve_custom_voice_config",
+        Mock(
+            return_value=CustomVoiceConfig(speakers=("first",), task_type="CustomVoice")
+        ),
+    )
+    monkeypatch.setattr(launcher, "Client", lambda coordinator: StalledSpeechClient())
+    monkeypatch.setattr(launcher, "STARTUP_SELF_TEST_TIMEOUT_S", 0.05)
+    serve = AsyncMock(return_value=None)
+
+    with pytest.raises(RuntimeError, match="did not finish within"):
+        await asyncio.wait_for(
+            run_launcher_with_fake_runner(
+                config=make_config(tmp_path),
+                serve_mock=serve,
+                monkeypatch=monkeypatch,
+                speech_service=RecordingSpeechService(),
+            ),
+            timeout=5,
+        )
+
+    serve.assert_not_awaited()
 
 
 @pytest.mark.asyncio

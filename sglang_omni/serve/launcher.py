@@ -52,8 +52,9 @@ from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recor
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
 from sglang_omni.serve.openai_api import create_app
-from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
+from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS, CreateSpeechRequest
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
     GpuDeviceInfo,
@@ -65,6 +66,14 @@ from sglang_omni.utils.imports import import_string
 logger = logging.getLogger(__name__)
 
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+STARTUP_SELF_TEST_TEXT = (
+    "The morning train leaves the station at seven and follows the river."
+)
+# note (Haoling Pu): one request plus 16 at once warmed later bursts of up to 16 (H100).
+STARTUP_SELF_TEST_BURST_SIZE = 16
+# note (Haoling Pu): it took 1.2-2.9 s on H100, cold or warm; slow GPUs get headroom.
+STARTUP_SELF_TEST_TIMEOUT_S = 120.0
 
 
 class ClientOptions(TypedDict, total=False):
@@ -463,6 +472,62 @@ def mount_profiler_routes(
     app.include_router(router)
 
 
+async def run_startup_self_test(
+    speech_service: SpeechRequestValidator,
+    client: Client,
+    *,
+    voice: str,
+    burst_size: int,
+) -> None:
+    """Stream one speech request, then burst_size at once, before the port opens.
+
+    Raises RuntimeError if a request streams no audio or the test outlasts its timeout.
+    """
+    generate_request = speech_service.build_generate_request(
+        CreateSpeechRequest(
+            input=STARTUP_SELF_TEST_TEXT,
+            voice=voice,
+            response_format="pcm",
+            stream=True,
+        )
+    )
+
+    async def synthesize(request_index: int) -> None:
+        request_id = f"startup-self-test-{request_index}"
+        audio_chunk_count = 0
+        async for chunk in client.generate(generate_request, request_id=request_id):
+            if chunk.audio_data is not None:
+                audio_chunk_count += 1
+            else:
+                pass
+        if audio_chunk_count == 0:
+            raise RuntimeError(
+                f"Startup self-test request {request_id} streamed no audio"
+            )
+        else:
+            pass
+
+    async def synthesize_one_then_burst() -> None:
+        await synthesize(0)
+        await asyncio.gather(
+            *(synthesize(request_index) for request_index in range(1, burst_size + 1))
+        )
+
+    started_s = time.perf_counter()
+    try:
+        await asyncio.wait_for(
+            synthesize_one_then_burst(), timeout=STARTUP_SELF_TEST_TIMEOUT_S
+        )
+    except asyncio.TimeoutError as error:
+        raise RuntimeError(
+            f"Startup self-test did not finish within {STARTUP_SELF_TEST_TIMEOUT_S:g} s"
+        ) from error
+    logger.info(
+        f"Startup self-test passed: {burst_size + 1} speech requests in "
+        f"{time.perf_counter() - started_s:.1f} s"
+    )
+
+
 async def run_server(
     pipeline_config: PipelineConfig,
     *,
@@ -513,6 +578,7 @@ async def run_server(
     try:
         cl_kwargs = client_kwargs or {}
         client = Client(coordinator, **cl_kwargs)
+        custom_voice_config = pipeline_config.resolve_custom_voice_config()
         deployment_factory = type(pipeline_config).realtime_deployment_factory
         if enable_realtime and deployment_factory is not None:
             realtime_deployment: RealtimeDeployment | None = import_string(
@@ -529,7 +595,7 @@ async def run_server(
             supports_uploaded_voice_references=(
                 pipeline_config.supports_uploaded_voice_references()
             ),
-            custom_voice_config=pipeline_config.resolve_custom_voice_config(),
+            custom_voice_config=custom_voice_config,
             supports_audio_translation=(pipeline_config.supports_audio_translation()),
             required_speech_reference_count=(
                 pipeline_config.required_speech_reference_count
@@ -554,6 +620,20 @@ async def run_server(
             architectures=[pipeline_config.architecture],
             audio_chunking=pipeline_config.resolved_audio_chunking,
         )
+        # note (Haoling Pu): only built-in speakers need no reference for the self-test.
+        if custom_voice_config is not None:
+            await run_startup_self_test(
+                app.state.speech_service,
+                client,
+                voice=custom_voice_config.speakers[0],
+                burst_size=(
+                    STARTUP_SELF_TEST_BURST_SIZE
+                    if coordinator.max_in_flight is None
+                    else min(STARTUP_SELF_TEST_BURST_SIZE, coordinator.max_in_flight)
+                ),
+            )
+        else:
+            pass
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
         mount_profiler_routes(app, profiler_ctl, profiler_dir)
