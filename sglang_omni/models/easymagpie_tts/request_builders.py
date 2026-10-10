@@ -134,10 +134,9 @@ def build_sglang_easymagpie_request(
         )
     else:
         pass
-    speaker_frames = (
-        0 if state.speaker_embedding is None else int(state.speaker_embedding.shape[0])
+    prompt_len = (
+        state.speaker_frames + len(state.context_token_ids) + state.text_prefill_num
     )
-    prompt_len = speaker_frames + len(state.context_token_ids) + state.text_prefill_num
     max_new_tokens = max_decode_tokens(state)
     sampling = SamplingParams(
         max_new_tokens=max_new_tokens,
@@ -206,8 +205,6 @@ def apply_easymagpie_result(data: EasyMagpieSGLangRequestData) -> StagePayload:
         state.audio_codes = torch.stack(data.output_codes, dim=0).to(torch.long)
     else:
         state.audio_codes = None
-    # The speaker rows are prompt-only; the codec stage does not need them.
-    state.speaker_embedding = None
     state.prompt_tokens = int(data.input_ids.numel())
     state.completion_tokens = len(data.output_codes)
     state.engine_time_s = time.perf_counter() - data.engine_start_s

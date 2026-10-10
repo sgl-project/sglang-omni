@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from sglang.kernels.ops.mamba.triton_ops import (
@@ -17,6 +18,7 @@ from sglang_omni.models.easymagpie_tts.request_builders import (
     build_sglang_easymagpie_request,
     easymagpie_stream_output_builder,
 )
+from sglang_omni.models.easymagpie_tts.speakers import load_speaker_embeddings
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 EASYMAGPIE_ARCH = "EasyMagpieTTSForConditionalGeneration"
@@ -105,10 +107,15 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del checkpoint_dir, device, gpu_id
+        del device, gpu_id
         model_runner = model_worker.model_runner
         model = model_runner.model
         model.eval()
+        model.setup_speakers(
+            load_speaker_embeddings(
+                Path(checkpoint_dir), model.tts_config.embedding_dim
+            )
+        )
         # Before graph capture, which the factory runs after setup_model. SGLang
         # may lower max_running_requests to fit memory, but the graph buckets
         # still reach the requested size.

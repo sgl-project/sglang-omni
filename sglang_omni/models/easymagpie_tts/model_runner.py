@@ -26,75 +26,126 @@ from sglang_omni.models.easymagpie_tts.request_builders import (
 )
 
 
+class PrefillPlan:
+    """Where each prompt row of a prefill batch comes from.
+
+    Row ``p`` of a request's prompt is speaker row ``p`` while ``p`` is
+    inside the voice, then the context tokens, then the text lead-in. Rows
+    are numbered in the batch's packed order.
+    """
+
+    def __init__(self) -> None:
+        self.rows = 0
+        self.speaker_src: list[int] = []
+        self.speaker_dst: list[int] = []
+        self.text_ids: list[int] = []
+        self.text_dst: list[int] = []
+        self.bos_dst: list[int] = []
+
+    def add(
+        self, data: EasyMagpieSGLangRequestData, spans: dict[str, tuple[int, int]]
+    ) -> None:
+        state = data.state
+        start = len(data.req.prefix_indices)
+        length = int(data.req.extend_range.length)
+        speaker_start, speaker_frames = spans[state.voice]
+        text_start = speaker_frames + len(state.context_token_ids)
+        prompt_len = text_start + state.text_prefill_num
+        if start + length > prompt_len:
+            raise RuntimeError(
+                f"EasyMagpie prefill has {max(prompt_len - start, 0)} rows, "
+                f"the scheduler expects {length}"
+            )
+        else:
+            pass
+        end = start + length
+        packed = self.rows - start
+        voice = range(start, min(end, speaker_frames))
+        self.speaker_src.extend(speaker_start + position for position in voice)
+        self.speaker_dst.extend(packed + position for position in voice)
+        text = state.context_token_ids + state.text_token_ids[: state.text_prefill_num]
+        for index, token in enumerate(text):
+            if start <= speaker_frames + index < end:
+                self.text_ids.append(token)
+                self.text_dst.append(packed + speaker_frames + index)
+            else:
+                pass
+        if start <= text_start + state.phoneme_delay < end:
+            self.bos_dst.append(packed + text_start + state.phoneme_delay)
+        else:
+            pass
+        self.rows += length
+
+    def indices(self) -> list[int]:
+        return (
+            self.speaker_src
+            + self.speaker_dst
+            + self.text_ids
+            + self.text_dst
+            + self.bos_dst
+        )
+
+    def sizes(self) -> list[int]:
+        return [
+            len(self.speaker_src),
+            len(self.speaker_dst),
+            len(self.text_ids),
+            len(self.text_dst),
+            len(self.bos_dst),
+        ]
+
+
 class EasyMagpieTTSModelRunner(ModelRunner):
     def model_dtype(self) -> torch.dtype:
         return next(self.model.parameters()).dtype
 
-    def build_prompt_embeds(
-        self, data: EasyMagpieSGLangRequestData, device: torch.device
+    def build_prefill_embeds(
+        self, requests: list, device: torch.device
     ) -> torch.Tensor:
-        """Speaker rows, context text, then the text lead-in with phoneme BOS.
+        """Every request's speaker rows, context text, then text lead-in.
 
         The lead-in rows are every step whose conditioning is known before
-        any prediction exists, so they are folded into prefill.
+        any prediction exists, so they are folded into prefill; the one at
+        the phoneme delay also carries the phoneme BOS. Only each request's
+        scheduled window of its prompt is built, and the whole batch takes
+        one index upload, one speaker gather and one text-embedding lookup.
         """
-        state = data.state
+        plan = PrefillPlan()
+        for request in requests:
+            plan.add(request.data, self.model.speaker_table.spans)
         heads = self.model.heads
         config = self.model.tts_config
         dtype = self.model_dtype()
-        rows = []
-        if state.speaker_embedding is not None:
-            rows.append(state.speaker_embedding.to(device=device, dtype=dtype))
-        else:
-            pass
-        if state.context_token_ids:
-            context = torch.tensor(state.context_token_ids, device=device)
-            rows.append(heads.text_embedding(context).to(dtype))
-        else:
-            pass
-        lead_in = torch.zeros(
-            (state.text_prefill_num, config.embedding_dim), device=device, dtype=dtype
+        (speaker_src, speaker_dst, text_ids, text_dst, bos_dst) = (
+            torch.tensor(plan.indices(), dtype=torch.long)
+            .to(device)
+            .split(plan.sizes())
         )
-        lead_in_ids = state.text_token_ids[: state.text_prefill_num]
-        if lead_in_ids:
-            ids = torch.tensor(lead_in_ids, device=device)
-            lead_in[: len(lead_in_ids)] = heads.text_embedding(ids).to(dtype)
-        else:
-            pass
+        embeds = torch.zeros(
+            (plan.rows, config.embedding_dim), device=device, dtype=dtype
+        )
+        embeds[speaker_dst] = self.model.speaker_table.rows[speaker_src]
+        embeds[text_dst] = heads.text_embedding(text_ids).to(dtype)
         bos = torch.full(
             (1, config.phoneme_stacking_factor),
             config.phoneme_bos_id,
             device=device,
             dtype=torch.long,
         )
-        lead_in[state.phoneme_delay] += heads.embed_phonemes(bos)[0].to(dtype)
-        rows.append(lead_in)
-        return torch.cat(rows, dim=0)
+        bos_row = heads.embed_phonemes(bos).to(dtype)
+        embeds.index_add_(0, bos_dst, bos_row.expand(bos_dst.numel(), -1))
+        return embeds
 
     def custom_prefill_forward(
         self, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> None:
         del schedule_batch
-        device = forward_batch.input_ids.device
-        pieces = []
-        for request in requests:
-            data = request.data
-            prompt = self.build_prompt_embeds(data, device)
-            start = len(data.req.prefix_indices)
-            length = int(data.req.extend_range.length)
-            piece = prompt[start : start + length]
-            if piece.shape[0] != length:
-                raise RuntimeError(
-                    f"EasyMagpie prefill has {piece.shape[0]} rows, "
-                    f"the scheduler expects {length}"
-                )
-            else:
-                pass
-            pieces.append(piece)
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(
-                input_embeds=torch.cat(pieces, dim=0),
+                input_embeds=self.build_prefill_embeds(
+                    requests, forward_batch.input_ids.device
+                ),
                 input_embeds_are_projected=True,
             ),
         )

@@ -5,12 +5,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from sglang_omni.models.easymagpie_tts.engine_builder import (
     EasyMagpieTTSEngineBuilder,
     decode_graph_batch_sizes,
 )
 from sglang_omni.models.easymagpie_tts.payload_types import MAX_TEXT_TOKENS
+from sglang_omni.models.easymagpie_tts.speakers import SPEAKER_SUBDIR
 
 
 @pytest.mark.parametrize(
@@ -49,7 +51,11 @@ def test_graph_buckets_follow_a_stage_running_limit_override() -> None:
         builder.adjust_overrides({"tp_size": 2})
 
 
-def test_setup_model_sizes_decode_state_before_capture(talker) -> None:
+def test_setup_model_sizes_decode_state_and_loads_voices(talker, tmp_path) -> None:
+    voices = tmp_path / SPEAKER_SUBDIR
+    voices.mkdir()
+    torch.save(torch.ones(3, 8), voices / "eng.pt")
+    torch.save({"speaker_encoding": torch.zeros(2, 8)}, voices / "alt.pt")
     worker = SimpleNamespace(
         model_runner=SimpleNamespace(
             model=talker, req_to_token_pool=SimpleNamespace(size=9)
@@ -57,7 +63,7 @@ def test_setup_model_sizes_decode_state_before_capture(talker) -> None:
     )
     EasyMagpieTTSEngineBuilder(max_running_requests=6).setup_model(
         model_worker=worker,
-        checkpoint_dir="unused",
+        checkpoint_dir=str(tmp_path),
         device="cpu",
         gpu_id=0,
         server_args=SimpleNamespace(max_running_requests=3),
@@ -65,6 +71,12 @@ def test_setup_model_sizes_decode_state_before_capture(talker) -> None:
     state = talker.decode_state
     assert (state.max_batch, state.num_slots) == (6, 9)
     assert state.text.shape[1] == MAX_TEXT_TOKENS
+    speakers = talker.speaker_table
+    assert speakers.spans == {"alt": (0, 2), "eng": (2, 3)}
+    assert speakers.rows.dtype == next(talker.parameters()).dtype
+    torch.testing.assert_close(
+        speakers.rows.sum(dim=1), torch.tensor([0.0] * 2 + [8.0] * 3)
+    )
 
 
 def test_async_decode_is_on_from_batch_one_by_default() -> None:

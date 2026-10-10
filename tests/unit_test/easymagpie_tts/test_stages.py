@@ -12,6 +12,7 @@ from sglang_omni.models.easymagpie_tts import codec as codec_module
 from sglang_omni.models.easymagpie_tts import stages
 from sglang_omni.models.easymagpie_tts.config import EasyMagpieTTSPipelineConfig
 from sglang_omni.models.easymagpie_tts.payload_types import EasyMagpieTTSState
+from sglang_omni.models.easymagpie_tts.speakers import SPEAKER_SUBDIR
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -24,7 +25,7 @@ class FakeTokenizer:
 @pytest.fixture
 def checkpoint(tmp_path, monkeypatch, tiny_raw_config):
     (tmp_path / "config.json").write_text(json.dumps(tiny_raw_config))
-    voices = tmp_path / stages.SPEAKER_SUBDIR
+    voices = tmp_path / SPEAKER_SUBDIR
     voices.mkdir()
     torch.save({"speaker_encoding": torch.ones(3, 8)}, voices / "eng.pt")
     torch.save(torch.zeros(2, 8), voices / "alt.pt")
@@ -73,8 +74,8 @@ def test_preprocessing_tokenizes_text_context_and_attaches_the_voice(
         5,
         4,
     )
-    assert state.speaker_embedding.shape == (2, 8)
-    assert state.speaker_embedding.dtype == torch.float16
+    assert state.speaker_frames == 2
+    assert scheduler.max_concurrency == 64
 
 
 def test_preprocessing_rejects_unknown_voices(checkpoint) -> None:

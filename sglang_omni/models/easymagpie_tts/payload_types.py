@@ -37,7 +37,7 @@ class EasyMagpieTTSState(DeclarativeStateBase):
     text_prefill_num: int = wire(4, codec="int")
     text_token_ids: list[int] = wire(default_factory=list, codec="list")
     context_token_ids: list[int] = wire(default_factory=list, codec="list")
-    speaker_embedding: torch.Tensor | None = wire(None, codec="tensor_cpu")
+    speaker_frames: int = wire(0, codec="int")
 
     audio_codes: torch.Tensor | None = wire(None, codec="tensor_cpu")
 

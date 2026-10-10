@@ -10,10 +10,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-import torch
 from transformers import AutoTokenizer
 
 from sglang_omni.models.easymagpie_tts.request_builders import build_easymagpie_state
+from sglang_omni.models.easymagpie_tts.speakers import load_speaker_embeddings
 from sglang_omni.models.easymagpie_tts.streaming_vocoder import (
     DEFAULT_STARTUP_CHUNK_FRAMES,
     DEFAULT_STEADY_CHUNK_FRAMES,
@@ -21,37 +21,8 @@ from sglang_omni.models.easymagpie_tts.streaming_vocoder import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import store_state
-from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-
-SPEAKER_SUBDIR = "speaker_embeddings"
-
-
-def load_speaker_embeddings(
-    checkpoint: Path, embedding_dim: int
-) -> dict[str, torch.Tensor]:
-    """Load every preset voice as a [frames, embedding_dim] float16 tensor."""
-    voices = {}
-    for path in sorted((checkpoint / SPEAKER_SUBDIR).glob("*.pt")):
-        loaded = torch.load(path, map_location="cpu", weights_only=True)
-        if isinstance(loaded, dict):
-            embedding = loaded["speaker_encoding"]
-        else:
-            embedding = loaded
-        if embedding.ndim != 2 or embedding.shape[1] != embedding_dim:
-            raise ValueError(
-                f"EasyMagpie speaker embedding {path} must be [frames, {embedding_dim}]"
-            )
-        else:
-            pass
-        voices[path.stem] = embedding.detach().to(torch.float16)
-    if not voices:
-        raise ValueError(
-            f"No EasyMagpie voices found under {checkpoint / SPEAKER_SUBDIR}"
-        )
-    else:
-        pass
-    return voices
 
 
 def create_preprocessing_executor(
@@ -59,8 +30,8 @@ def create_preprocessing_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    max_concurrency: int = 8,
-) -> SimpleScheduler:
+    max_concurrency: int = 64,
+) -> ThreadedSimpleScheduler:
     # note (Yashwant Hayaran): CPU-only stage declaring gpu only to share the
     # pipeline process; it does not touch the device.
     del device, gpu_id
@@ -79,14 +50,20 @@ def create_preprocessing_executor(
         )
     else:
         pass
-    voices = load_speaker_embeddings(checkpoint, int(config["embedding_dim"]))
+    # The engine holds the voice rows on the GPU; requests carry their length.
+    voice_frames = {
+        name: int(embedding.shape[0])
+        for name, embedding in load_speaker_embeddings(
+            checkpoint, int(config["embedding_dim"])
+        ).items()
+    }
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         state = build_easymagpie_state(payload)
-        if state.voice not in voices:
+        if state.voice not in voice_frames:
             raise ValueError(
                 f"Unknown EasyMagpie voice {state.voice!r}; "
-                f"available voices: {sorted(voices)}"
+                f"available voices: {sorted(voice_frames)}"
             )
         else:
             pass
@@ -102,10 +79,12 @@ def create_preprocessing_executor(
         state.context_token_ids = list(
             tokenizer.encode(state.context_text, add_special_tokens=False)
         )
-        state.speaker_embedding = voices[state.voice]
+        state.speaker_frames = voice_frames[state.voice]
         return store_state(payload, state)
 
-    return SimpleScheduler(_preprocess, max_concurrency=max_concurrency)
+    # Tokenization is blocking CPU work; asyncio's default executor would cap
+    # the thread count below max_concurrency.
+    return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
 
 
 def create_sglang_tts_engine_executor(

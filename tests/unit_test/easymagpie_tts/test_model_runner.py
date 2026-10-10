@@ -23,11 +23,14 @@ def runner(talker) -> EasyMagpieTTSModelRunner:
     return runner
 
 
-def make_request(*, prompt_rows: int = 9, slot: int = 1) -> SimpleNamespace:
+def make_request(
+    *, prompt_rows: int = 9, slot: int = 1, voice: str = "eng"
+) -> SimpleNamespace:
     state = EasyMagpieTTSState(
         text_token_ids=[11, 12, 13, 14, 15, 63],
         context_token_ids=[7, 8],
-        speaker_embedding=torch.ones((3, 8)),
+        voice=voice,
+        speaker_frames=3,
         phoneme_delay=3,
         speech_delay=5,
         text_prefill_num=4,
@@ -67,14 +70,35 @@ def test_prefill_folds_speaker_context_and_text_lead_in(runner, talker) -> None:
     torch.testing.assert_close(embeds[8], text[14] + bos)
 
 
-def test_prefill_slices_rows_already_held_as_prefix(runner) -> None:
+def test_batched_prefill_packs_each_requests_own_voice(runner, talker) -> None:
+    text = talker.heads.text_embedding.weight.detach()
+    bos = talker.heads.embed_phonemes(torch.tensor([[17]])).detach()[0]
+    eng, alt = make_request(), make_request(prompt_rows=8, voice="alt")
+    batch = SimpleNamespace(input_ids=torch.zeros(17), replace_embeds=None)
+    runner.custom_prefill_forward(batch, None, [eng, alt])
+
+    embeds = get_omni_prefill_inputs(batch).input_embeds
+    assert embeds.shape == (17, 8)
+    torch.testing.assert_close(embeds[:3], torch.ones((3, 8)))
+    torch.testing.assert_close(embeds[9:11], torch.full((2, 8), 2.0))
+    torch.testing.assert_close(embeds[11:13], text[[7, 8]])
+    torch.testing.assert_close(embeds[13:16], text[[11, 12, 13]])
+    torch.testing.assert_close(embeds[16], text[14] + bos)
+
+
+def test_prefill_slices_rows_already_held_as_prefix(runner, talker) -> None:
+    text = talker.heads.text_embedding.weight.detach()
+    bos = talker.heads.embed_phonemes(torch.tensor([[17]])).detach()[0]
     request = make_request(prompt_rows=4)
     request.data.req.prefix_indices = [0, 1, 2, 3, 4]
     batch = SimpleNamespace(
         input_ids=torch.zeros(4, dtype=torch.long), replace_embeds=None
     )
     runner.custom_prefill_forward(batch, None, [request])
-    assert get_omni_prefill_inputs(batch).input_embeds.shape == (4, 8)
+    embeds = get_omni_prefill_inputs(batch).input_embeds
+    assert embeds.shape == (4, 8)
+    torch.testing.assert_close(embeds[:3], text[[11, 12, 13]])
+    torch.testing.assert_close(embeds[3], text[14] + bos)
 
     request.data.req.extend_range.length = 6
     with pytest.raises(RuntimeError, match="scheduler expects 6"):

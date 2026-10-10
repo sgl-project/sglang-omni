@@ -91,7 +91,7 @@ def preprocessed_state(**overrides) -> EasyMagpieTTSState:
         "text": "hello",
         "text_token_ids": [11, 12, 13, 14, 15, 63],
         "context_token_ids": [7, 8],
-        "speaker_embedding": torch.ones((3, 8), dtype=torch.float16),
+        "speaker_frames": 3,
         "phoneme_delay": 3,
         "speech_delay": 5,
         "text_prefill_num": 4,
@@ -126,13 +126,12 @@ def test_cache_key_separates_prompts_with_identical_placeholder_ids() -> None:
     assert prompt_cache_key(base) != prompt_cache_key(preprocessed_state(voice="x"))
 
 
-def test_result_carries_codes_and_usage_but_not_the_speaker_rows() -> None:
+def test_result_carries_codes_and_usage() -> None:
     state = preprocessed_state()
     data = build_sglang_easymagpie_request(make_payload("hello", data=state.to_dict()))
     data.output_codes = [torch.arange(4), torch.arange(4) + 1]
     result = EasyMagpieTTSState.from_dict(apply_easymagpie_result(data).data)
     assert result.audio_codes.tolist() == [[0, 1, 2, 3], [1, 2, 3, 4]]
-    assert result.speaker_embedding is None
     assert (result.prompt_tokens, result.completion_tokens) == (9, 2)
 
 

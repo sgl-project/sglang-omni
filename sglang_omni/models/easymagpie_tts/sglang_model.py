@@ -30,6 +30,7 @@ from sglang_omni.models.easymagpie_tts.hf_config import (
     partition_weights,
 )
 from sglang_omni.models.easymagpie_tts.local_transformer import EasyMagpieTTSHeads
+from sglang_omni.models.easymagpie_tts.speakers import SpeakerTable
 
 STOP_LOGIT = 30.0
 
@@ -112,9 +113,17 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
         self.decode_state: EasyMagpieDecodeState | None = None
         self.decode_dtype: torch.dtype | None = None
         self.last_phoneme_tokens: torch.Tensor | None = None
+        self.speaker_table: SpeakerTable | None = None
 
     def get_input_embeddings(self) -> nn.Module:
         return self.backbone.get_input_embeddings()
+
+    def setup_speakers(self, voices: dict[str, torch.Tensor]) -> None:
+        self.speaker_table = SpeakerTable.from_voices(
+            voices,
+            device=self.heads.text_embedding.weight.device,
+            dtype=next(self.parameters()).dtype,
+        )
 
     def setup_decode_state(
         self, *, num_slots: int, text_capacity: int, max_batch: int, max_top_k: int

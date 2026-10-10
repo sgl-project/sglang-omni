@@ -94,4 +94,5 @@ def talker(tiny_tts_config) -> EasyMagpieTTSForConditionalGeneration:
     model.last_phoneme_tokens = None
     model.backbone = nn.Linear(1, 1)
     model.setup_decode_state(num_slots=4, text_capacity=8, max_batch=4, max_top_k=16)
+    model.setup_speakers({"alt": torch.full((2, 8), 2.0), "eng": torch.ones((3, 8))})
     return model
