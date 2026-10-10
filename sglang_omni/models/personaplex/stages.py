@@ -178,6 +178,7 @@ def create_lm_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     context_length: int | None = None,
+    depformer_cuda_graph_batch_sizes: list[int] | None = None,
     server_args_overrides: dict[str, object] | None = None,
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
@@ -186,7 +187,9 @@ def create_lm_executor(
     # overrides, so an engine context_length must reach the builder too.
     context_length = server_args_overrides.get("context_length", context_length)
     builder = PersonaPlexEngineBuilder(
-        max_running_requests=1, context_length=context_length
+        max_running_requests=1,
+        context_length=context_length,
+        depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
     )
     return builder.build(
         model_path,

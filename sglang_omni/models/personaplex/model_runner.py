@@ -11,8 +11,6 @@ one position later, a finished output frame streamed to the codec.
 
 from __future__ import annotations
 
-from typing import Protocol
-
 import torch
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
@@ -28,17 +26,18 @@ from sglang_omni.models.personaplex.architecture import (
     NUM_STREAMS,
     USER_STREAM_OFFSET,
 )
-from sglang_omni.models.personaplex.sampling import sample_token
+from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
+    DepformerCudaGraphRunner,
+)
+from sglang_omni.models.personaplex.sampling import AudioTokenSampler, sample_token
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
 
 
-class AudioTokenSampler(Protocol):
-    def __call__(self, logits: torch.Tensor) -> torch.Tensor: ...
-
-
 class PersonaPlexModelRunner(ModelRunner):
+    depformer_cuda_graph: DepformerCudaGraphRunner | None = None
+
     def sample_before_post_prefill(
         self,
         forward_batch: ForwardBatch,
@@ -128,9 +127,19 @@ class PersonaPlexModelRunner(ModelRunner):
         inputs = data.talker_model_inputs
         device_rows = self.rows_on_device(data)
         hidden = self.model.hidden_out[index : index + 1]
-        codes = self.model.depformer.generate(
-            text_token.view(1), hidden, forced.view(1, -1), self.audio_sampler(data)
-        )[0]
+        sampler = self.audio_sampler(data)
+        if self.depformer_cuda_graph is None:
+            codes = self.model.depformer.generate(
+                text_token.view(1), hidden, forced.view(1, -1), sampler
+            )[0]
+        else:
+            codes = self.depformer_cuda_graph.generate(
+                text_token.view(1),
+                hidden,
+                forced.view(1, -1),
+                inputs["sampling"].audio,
+                inputs.get("audio_generator"),
+            )[0]
         frame = output_frame(device_rows["agent_row"], codes)
         device_rows["agent_row"] = codes
         inputs["agent_rows"].append(codes)

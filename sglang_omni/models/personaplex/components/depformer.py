@@ -4,12 +4,10 @@
 Every step has its own projection, gating and output head (weights_per_step
 in the reference); the norms are shared. Attention runs over the steps of the
 same frame only, so each layer's K/V cache is one buffer sized to the frame's
-steps, written in place and re-made every frame.
+steps, overwritten before each prefix is read.
 """
 
 from __future__ import annotations
-
-from collections.abc import Callable
 
 import torch
 from einops import rearrange
@@ -22,6 +20,7 @@ from sglang_omni.models.personaplex.architecture import (
     TEXT_CARD,
     DepformerSpec,
 )
+from sglang_omni.models.personaplex.sampling import AudioTokenSampler
 
 
 def rms_norm_f32(x: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
@@ -90,12 +89,29 @@ class Depformer(nn.Module):
             nn.Linear(spec.dim, AUDIO_CARD, bias=False) for _ in range(spec.steps)
         )
 
+    def create_key_value_caches(
+        self, transformer_hidden_states: torch.Tensor
+    ) -> list[torch.Tensor]:
+        return [
+            transformer_hidden_states.new_empty(
+                2,
+                transformer_hidden_states.shape[0],
+                self.spec.num_heads,
+                self.spec.steps,
+                self.spec.head_dim,
+            )
+            for _ in self.layers
+        ]
+
     def generate(
         self,
         text_token_B: torch.Tensor,
         transformer_out_BD: torch.Tensor,
         forced_BK: torch.Tensor,
-        sample: Callable[[torch.Tensor], torch.Tensor],
+        sample: AudioTokenSampler,
+        *,
+        key_value_caches: list[torch.Tensor] | None = None,
+        output_codes: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Spell out one frame of agent codes.
 
@@ -106,34 +122,34 @@ class Depformer(nn.Module):
                 where the step is free. A forced code still conditions the
                 steps after it, as teacher forcing does in the reference.
             sample: [B, card] float logits → [B] ids.
+            key_value_caches: Optional reusable per-layer scratch buffers.
+            output_codes: Optional reusable [B, steps] output buffer.
         """
         spec = self.spec
-        caches = [
-            transformer_out_BD.new_empty(
-                2,
-                transformer_out_BD.shape[0],
-                spec.num_heads,
-                spec.steps,
-                spec.head_dim,
-            )
-            for _ in self.layers
-        ]
+        if key_value_caches is None:
+            key_value_caches = self.create_key_value_caches(transformer_out_BD)
+        else:
+            pass
         previous = text_token_B
-        codes = []
+        generated_codes: list[torch.Tensor] = []
         for step in range(spec.steps):
-            token_emb = (
+            token_embeddings = (
                 self.depformer_text_emb(previous)
                 if step == 0
                 else self.depformer_emb[step - 1](previous)
             )
-            x = self.depformer_in[step](transformer_out_BD) + token_emb
-            for layer, cache in zip(self.layers, caches, strict=True):
-                x = layer.step(x, step, cache)
-            sampled = sample(self.linears[step](x).float())
-            forced = forced_BK[:, step]
-            previous = torch.where(forced >= 0, forced, sampled)
-            codes.append(previous)
-        return torch.stack(codes, dim=1)
+            hidden_states = (
+                self.depformer_in[step](transformer_out_BD) + token_embeddings
+            )
+            for layer, key_value_cache in zip(
+                self.layers, key_value_caches, strict=True
+            ):
+                hidden_states = layer.step(hidden_states, step, key_value_cache)
+            sampled_tokens = sample(self.linears[step](hidden_states).float())
+            forced_tokens = forced_BK[:, step]
+            previous = torch.where(forced_tokens >= 0, forced_tokens, sampled_tokens)
+            generated_codes.append(previous)
+        return torch.stack(generated_codes, dim=1, out=output_codes)
 
     def load_reference_weights(self, weights: dict[str, torch.Tensor]) -> None:
         """Load depformer* / linears.* tensors in the checkpoint's names.

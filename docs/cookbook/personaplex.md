@@ -88,8 +88,16 @@ The fixed caller-frame budget still determines the number of generated frames.
 ## Known limitations
 
 - Offline, one request at a time (`max_running_requests=1`).
-- CUDA graphs are off; a 7B decode step plus 8 depformer steps runs close to the 80 ms frame budget rather than well inside it.
+- The temporal transformer and Mimi still run without CUDA graphs. The Depformer captures its eight-codebook loop lazily on CUDA, with batch-size buckets `[1, 2, 4, 8]`. The current request loop uses the singleton bucket; larger buckets support batched Depformer calls.
 - The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
+
+Set `--lm.factory.depformer_cuda_graph_batch_sizes '[]'` to disable Depformer
+graphs, or pass a JSON list of positive batch sizes to change the buckets.
+The first call for each bucket and audio sampling configuration includes capture
+overhead. Up to 16 graphs are cached; further configurations, oversized batches,
+non-CUDA devices and failed captures use eager execution. Sampling noise comes
+from the request's generator outside capture, and retained output codes are copied
+before the next replay.
 
 ## Tests
 

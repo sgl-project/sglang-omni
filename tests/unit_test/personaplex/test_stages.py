@@ -146,8 +146,15 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
     built = {}
 
     class Builder:
-        def __init__(self, *, max_running_requests, context_length):
+        def __init__(
+            self,
+            *,
+            max_running_requests: int,
+            context_length: int | None,
+            depformer_cuda_graph_batch_sizes: list[int] | None,
+        ) -> None:
             built["context_length"] = context_length
+            built["depformer_cuda_graph_batch_sizes"] = depformer_cuda_graph_batch_sizes
 
         def build(self, model_path, **kwargs):
             built["overrides"] = kwargs["server_args_overrides"]
@@ -157,8 +164,11 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
     assert built["context_length"] == 16384
     assert built["overrides"] == {"context_length": 16384}
 
-    stages.create_lm_executor("m", context_length=4096)
+    stages.create_lm_executor(
+        "m", context_length=4096, depformer_cuda_graph_batch_sizes=[1, 4]
+    )
     assert built["context_length"] == 4096 and built["overrides"] is None
+    assert built["depformer_cuda_graph_batch_sizes"] == [1, 4]
 
 
 def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
