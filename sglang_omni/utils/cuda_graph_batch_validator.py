@@ -57,6 +57,14 @@ _BUFFER_PROBES: dict[str, BufferProbe] = {
             ),
         )
     ),
+    "MossTTSNanoSGLangModel": BufferProbe(
+        (
+            (
+                "decode_input_embedding.weight",
+                lambda m: m.decode_input_embedding.weight.shape[0],
+            ),
+        )
+    ),
     "S2ProSGLangTextModel": BufferProbe(
         (("vq_codes", lambda m: m.vq_codes.shape[0]),),
         note="allocated only after setup_vq_decode()",
@@ -107,7 +115,7 @@ class CudaGraphBatchReport:
         )
         lines.append(f"  request slots:      {self.request_slots}")
         lines.append(
-            f"  model-side buffers: {self.buffer_capacity} " f"[{self.buffer_source}]"
+            f"  model-side buffers: {self.buffer_capacity} [{self.buffer_source}]"
         )
         lines.append(f"  VERDICT: {'OK' if self.is_valid else 'MISMATCH'}")
         for finding in self.findings:
