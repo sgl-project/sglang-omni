@@ -114,6 +114,7 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         text_1D = talker.embed_subword(ids, chars, lengths)
         return talker.gated_fusion_audio_text(audio_1D, text_1D)
 
+    @torch.no_grad()
     def before_prefill(self, forward_batch, schedule_batch, requests) -> None:
         del schedule_batch
         rows = [self.warmup() for _ in requests]
@@ -150,6 +151,8 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
             for req in schedule_batch.reqs
         )
 
+    # note (Xinhao Tan): autograd would chain every frame's graph onto fusion_buffer.
+    @torch.no_grad()
     def before_decode(
         self, forward_batch, schedule_batch, requests, *, is_lookahead=False
     ) -> None:

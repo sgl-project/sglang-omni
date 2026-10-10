@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """AR adapters preserve fusion inputs across streaming continuations."""
 
+from collections import deque
 from unittest.mock import Mock
 
 import pytest
@@ -320,6 +321,38 @@ def test_talker_continuation_fuses_previous_codes_with_current_text() -> None:
         get_omni_prefill_inputs(forward_batch).input_embeds,
         torch.tensor([[9.0, 10.0, 11.0, 12.0]]),
     )
+
+
+def test_talker_decode_rows_reach_fusion_buffer_without_autograd_history() -> None:
+    projection = torch.nn.Linear(4, 4)
+
+    def project_codes_and_text(
+        previous_codes: torch.Tensor, text_token_id: int
+    ) -> torch.Tensor:
+        return projection(previous_codes.float() + text_token_id)
+
+    runner = Mock(
+        spec=NemotronVoiceChatTalkerModelRunner,
+        model=Mock(
+            fusion_buffer=torch.zeros(1, 4),
+            fusion_mask=torch.zeros(1, dtype=torch.bool),
+        ),
+    )
+    runner.step_row.side_effect = project_codes_and_text
+    request_data = Mock(
+        pending_text_queue=deque([3]),
+        talker_model_inputs={"prev_codes": torch.zeros(1, 4, dtype=torch.long)},
+    )
+    NemotronVoiceChatTalkerModelRunner.before_decode(
+        runner,
+        Mock(spec=ForwardBatch),
+        Mock(reqs=[Mock()]),
+        [SchedulerRequest("unit", data=request_data)],
+    )
+    assert runner.model.fusion_buffer.grad_fn is None
+    with torch.no_grad():
+        expected_row = projection(torch.full((1, 4), 3.0))
+    torch.testing.assert_close(runner.model.fusion_buffer, expected_row)
 
 
 @pytest.mark.accelerator
