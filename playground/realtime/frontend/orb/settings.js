@@ -11,7 +11,7 @@ const REFERENCE_RATE = 16000;
 const MAX_REFERENCE_S = 30;
 // Placeholders only: an empty field is not sent, so the deployment's own default applies.
 const SAMPLING_FIELDS = [
-  { key: "temperature", label: "Temperature", step: "0.05", min: "0", max: "2", placeholder: "0.7" },
+  { key: "temperature", label: "Temperature", step: "0.05", min: "0", placeholder: "0.7" },
   { key: "top_k", label: "Top K", step: "1", min: "0", placeholder: "20" },
   { key: "top_p", label: "Top P", step: "0.01", min: "0.01", max: "1", placeholder: "0.8" },
   { key: "repetition_penalty", label: "Repetition penalty", step: "0.05", min: "1", placeholder: "1.05" },
@@ -19,7 +19,7 @@ const SAMPLING_FIELDS = [
   { key: "force_listen_count", label: "Initial listen units", step: "1", min: "0", placeholder: "3" },
   { key: "max_new_tokens_per_unit", label: "Tokens per unit", step: "1", min: "1", placeholder: "20" },
   { key: "repetition_window_size", label: "Repetition window", step: "1", min: "1", placeholder: "512" },
-  { key: "talker_temperature", label: "Voice temperature", step: "0.05", min: "0", max: "2", placeholder: "0.8" },
+  { key: "talker_temperature", label: "Voice temperature", step: "0.05", min: "0", placeholder: "0.8" },
   { key: "talker_repetition_penalty", label: "Voice repetition penalty", step: "0.05", min: "1", placeholder: "1.05" },
 ];
 const INTEGER_FIELDS = new Set(["top_k", "force_listen_count", "max_new_tokens_per_unit", "repetition_window_size"]);
@@ -169,15 +169,11 @@ export class Settings {
     const sampling = {};
     const keys = new Set(this.samplingKeys);
     if (keys.has("greedy") && this.state.sampling.greedy) sampling.greedy = true;
-    for (const { key, min, max } of SAMPLING_FIELDS) {
+    for (const { key } of SAMPLING_FIELDS) {
       const raw = this.state.sampling[key];
       if (!keys.has(key) || raw === undefined || raw === "") continue;
-      let value = INTEGER_FIELDS.has(key) ? parseInt(raw, 10) : parseFloat(raw);
-      if (!Number.isFinite(value)) continue;
-      // A number input's min/max only bound the spinner; a typed value passes through.
-      if (min !== undefined) value = Math.max(value, Number(min));
-      if (max !== undefined) value = Math.min(value, Number(max));
-      sampling[key] = value;
+      const value = INTEGER_FIELDS.has(key) ? parseInt(raw, 10) : parseFloat(raw);
+      if (Number.isFinite(value)) sampling[key] = value;
     }
     if (Object.keys(sampling).length) extension.sampling = sampling;
     const voice = this.currentVoice();
