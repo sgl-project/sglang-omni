@@ -115,6 +115,10 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
         self.last_phoneme_tokens: torch.Tensor | None = None
         self.speaker_table: SpeakerTable | None = None
 
+    @property
+    def language_model(self) -> nn.Module:
+        return self.backbone
+
     def get_input_embeddings(self) -> nn.Module:
         return self.backbone.get_input_embeddings()
 

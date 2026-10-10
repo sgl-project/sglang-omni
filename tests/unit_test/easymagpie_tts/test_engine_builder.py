@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 
+from sglang_omni.models.easymagpie_tts import engine_builder
 from sglang_omni.models.easymagpie_tts.engine_builder import (
+    PREFILL_GRAPH_MAX_TOKENS,
     EasyMagpieTTSEngineBuilder,
     decode_graph_batch_sizes,
 )
@@ -28,17 +32,42 @@ def test_decode_graph_sizes_end_at_the_running_limit(max_batch, sizes) -> None:
     assert decode_graph_batch_sizes(max_batch) == sizes
 
 
-def test_decode_graphs_are_on_by_default_and_prefill_graphs_off() -> None:
+def test_decode_and_prefill_graphs_are_on_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(engine_builder, "sglang_captures_mamba_prefill", lambda: True)
     builder = EasyMagpieTTSEngineBuilder(max_running_requests=8)
     defaults = builder.generation_defaults(dtype="float16")
     assert defaults["disable_cuda_graph"] is False
-    assert defaults["disable_prefill_cuda_graph"] is True
     assert defaults["cuda_graph_max_bs"] == 8
     assert defaults["cuda_graph_bs"] == [1, 2, 4, 8]
+    assert defaults["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
+    assert defaults["cuda_graph_bs_prefill"][-1] == PREFILL_GRAPH_MAX_TOKENS
+    assert "disable_prefill_cuda_graph" not in defaults
+    assert builder.supports_breakable_prefill_cuda_graph is True
     eager = EasyMagpieTTSEngineBuilder(cuda_graph=False).generation_defaults(
         dtype="float16"
     )
     assert eager["disable_cuda_graph"] is True
+    assert eager["disable_prefill_cuda_graph"] is True
+
+
+def test_prefill_runs_eagerly_with_one_warning_on_an_older_sglang(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(engine_builder, "sglang_captures_mamba_prefill", lambda: False)
+    with caplog.at_level(logging.WARNING, logger=engine_builder.__name__):
+        defaults = EasyMagpieTTSEngineBuilder().generation_defaults(dtype="float16")
+        EasyMagpieTTSEngineBuilder(cuda_graph=False).generation_defaults(
+            dtype="float16"
+        )
+    assert defaults["disable_prefill_cuda_graph"] is True
+    assert "cuda_graph_backend_prefill" not in defaults
+    assert defaults["disable_cuda_graph"] is False
+    assert len(caplog.records) == 1
+    assert "prefill runs eagerly" in caplog.records[0].getMessage()
+
+
+def test_the_prefill_graph_captures_the_nemotron_h_backbone(talker) -> None:
+    assert talker.language_model is talker.backbone
 
 
 def test_graph_buckets_follow_a_stage_running_limit_override() -> None:

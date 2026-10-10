@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,10 @@ from sglang.kernels.ops.mamba.triton_ops import (
     initialize_mamba_selective_state_update_backend,
 )
 from sglang.srt.environ import envs
+from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 
+from sglang_omni.models.easymagpie_tts import CAPABILITIES
 from sglang_omni.models.easymagpie_tts.model_runner import EasyMagpieTTSModelRunner
 from sglang_omni.models.easymagpie_tts.payload_types import MAX_TEXT_TOKENS, MAX_TOP_K
 from sglang_omni.models.easymagpie_tts.request_builders import (
@@ -20,10 +24,17 @@ from sglang_omni.models.easymagpie_tts.request_builders import (
 )
 from sglang_omni.models.easymagpie_tts.speakers import load_speaker_embeddings
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_prefill_cuda_graph_bs,
+)
 
 EASYMAGPIE_ARCH = "EasyMagpieTTSForConditionalGeneration"
 EASYMAGPIE_CONTEXT_LENGTH = 8192
 DEFAULT_MAX_RUNNING_REQUESTS = 64
+# Concurrent arrivals coalesce into one prefill; bigger batches run eagerly.
+PREFILL_GRAPH_MAX_TOKENS = 2048
+
+logger = logging.getLogger(__name__)
 
 
 def decode_graph_batch_sizes(max_batch: int) -> list[int]:
@@ -32,10 +43,22 @@ def decode_graph_batch_sizes(max_batch: int) -> list[int]:
     return [*sizes, max_batch]
 
 
+def sglang_captures_mamba_prefill() -> bool:
+    """Whether SGLang keeps Mamba2 prefill inside the breakable prefill graph.
+
+    Older SGLang breaks out to eager at every Mamba layer and, at the pinned
+    release, drops the talker's ``inputs_embeds`` on replay.
+    """
+    return hasattr(AttentionBackend, "breakable_cuda_graph_request_slots")
+
+
 class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
     model_name = "EasyMagpie-TTS"
     context_length = EASYMAGPIE_CONTEXT_LENGTH
     model_arch_override = EASYMAGPIE_ARCH
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
@@ -60,7 +83,7 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         envs.SGLANG_MAMBA_CONV_DTYPE.set(self.dtype)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        return {
+        defaults = {
             "dtype": dtype,
             "max_running_requests": self.max_running_requests,
             "max_total_tokens": self.max_running_requests * EASYMAGPIE_CONTEXT_LENGTH,
@@ -68,10 +91,7 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
             # Decode state is seeded from the prompt's last row, so the prompt
             # must arrive in one prefill.
             "chunked_prefill_size": 0,
-            # The decode graph reads the model's decode state tables; the
-            # custom prefill embeddings are not captured.
             "disable_cuda_graph": not self.cuda_graph,
-            "disable_prefill_cuda_graph": True,
             "cuda_graph_max_bs": self.max_running_requests,
             "cuda_graph_bs": decode_graph_batch_sizes(self.max_running_requests),
             "disable_overlap_schedule": True,
@@ -80,6 +100,22 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
             "sampling_backend": "pytorch",
             "trust_remote_code": False,
         }
+        if self.cuda_graph and sglang_captures_mamba_prefill():
+            defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+            defaults["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(
+                PREFILL_GRAPH_MAX_TOKENS
+            )
+        else:
+            defaults["disable_prefill_cuda_graph"] = True
+            if self.cuda_graph:
+                logger.warning(
+                    "This SGLang cannot keep Mamba2 prefill inside the prefill "
+                    "CUDA graph; EasyMagpie prefill runs eagerly. Upgrade SGLang "
+                    "to replay it from graphs."
+                )
+            else:
+                pass
+        return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if int(overrides.get("tp_size", 1)) != 1:
@@ -146,5 +182,7 @@ __all__ = [
     "DEFAULT_MAX_RUNNING_REQUESTS",
     "EASYMAGPIE_ARCH",
     "EasyMagpieTTSEngineBuilder",
+    "PREFILL_GRAPH_MAX_TOKENS",
     "decode_graph_batch_sizes",
+    "sglang_captures_mamba_prefill",
 ]
