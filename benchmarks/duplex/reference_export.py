@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from pydantic import JsonValue
 
+from benchmarks.duplex.profiles import PROFILES
 from benchmarks.duplex.reference_audio import (
     FILES,
     POLICY,
@@ -20,7 +21,7 @@ from benchmarks.duplex.reference_audio import (
     sha_bytes,
     write_wav,
 )
-from benchmarks.duplex.reference_capture import resolve_trace_format
+from benchmarks.duplex.reference_capture import TraceFormat, resolve_trace_format
 from benchmarks.duplex.reference_core import read_json, utc_now
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.duplex.v15_audio import normalize_audio, write_json
@@ -82,6 +83,12 @@ def export_runs(
             pass
         run, entry = chosen[sample_id]
         source_manifest = read_json(run / "manifest.json")
+        # note (luojiaxuan): load_runs already required a legacy-protocol profile.
+        profile_rate = (
+            PROFILES[source_manifest["profile"]].output_sample_rate
+            if capture_format is TraceFormat.LEGACY_PCM16
+            else None
+        )
         sidecar = bool((source_manifest.get("source") or {}).get("campaign_adapter"))
         transport = (source_manifest.get("config") or {}).get("transport") or {}
         sidecar = sidecar or transport.get("input_send_receipts") == SEND_RECEIPTS
@@ -99,8 +106,20 @@ def export_runs(
                 capture_format,
                 (state.get("input") or {}).get("sha256"),
                 receipts_required=sidecar,
+                profile_rate=profile_rate,
             )
             reasons = record["window"]["reasons"]
+            # note (luojiaxuan): A legacy session that failed its protocol replay can
+            # be silent for protocol reasons, so silence is only valid after a pass.
+            if (
+                capture_format is TraceFormat.LEGACY_PCM16
+                and state["protocol_verdict"] != "pass"
+            ):
+                reasons.append(
+                    f"recorder protocol verdict {state['protocol_verdict']!r} is not pass"
+                )
+            else:
+                pass
             if dataset_root is not None and pcm is not None:
                 source = dataset_root / state["source"]["file"]
                 if file_sha256(source) != state["source"]["sha256"]:

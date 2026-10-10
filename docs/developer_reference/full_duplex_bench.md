@@ -217,6 +217,40 @@ python -m benchmarks.eval.benchmark_duplex_reference export \
 
 `export` cuts the fixed observation windows without changing the recording and needs a new output directory. `--dataset-root` counts every dataset sample that was not recorded as missing, so a subset run must also pass `--only category/id` for each selected pair. Repeated `--run` accepts disjoint shards; duplicate complete captures are rejected. `--engine` is a free label for the scored cohort.
 
+### Half-duplex (turn-based) endpoints
+
+A turn-based endpoint served by `LegacyRealtimeFacade` (the Qwen3-Omni runtime behind `SGLANG_OMNI_QWEN_REALTIME_BACKEND=runtime`) speaks the conversation protocol, not the native session protocol. It accepts `session.update`, `input_audio_buffer.append`, `input_audio_buffer.clear`, `response.cancel` and `conversation.item.truncate`; it answers `sglang.input_audio.end` and `session.close` with a `not_supported` error; it never sends `sglang.input_audio.accepted`, `ended`, `drained` or `sglang.unit.done`; and its audio arrives as `response.audio.delta` at 24 kHz PCM16 with no rate on the wire. The profile `qwen3-omni-half-duplex` switches the recorder, the protocol oracle and the reconstruction to that protocol. The native profiles are unchanged.
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+    --profile qwen3-omni-half-duplex \
+    --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
+    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
+    --output "$OUT/recording"
+
+python -m benchmarks.eval.benchmark_duplex_reference export \
+    --engine model --trace-format realtime-legacy-pcm16-v1 --run "$OUT/recording" \
+    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
+```
+
+`benchmark_duplex_v10 record` takes the same options. `--turn-detection` is the JSON `turn_detection` object of `session.update`, sent once per session, so a detector sweep is one run per setting without restarting the server. `server_vad` takes `threshold` (Silero speech probability), `prefix_padding_ms` and `silence_duration_ms`; `semantic_vad` takes `eagerness` (`low`, `medium`, `high` or `auto`); both take `interrupt_response`. The recorder requires the option for this profile and rejects it for native profiles, and records it under `config.legacy` in the manifest. `--legacy-tail` (default 1.0 s) applies to this profile only.
+
+What a legacy session measures:
+
+- The session requests `modalities: ["text", "audio"]` with the given `turn_detection` and fails unless `session.updated` echoes the requested `turn_detection.type`.
+- Input pacing is the same as for native sessions, but there are no input or drain receipts, so input timing is the client send clock only. The session ends `--legacy-tail` seconds after the input end with a no-op `session.update`; its `session.updated` is the liveness proof, and the socket closes without `session.close`. A response still open at that point is not a violation; the `responses_open_at_close` metric counts them.
+- Any `error` event, non-fatal ones included, fails the session. A `response.done` with status `cancelled` and reason `turn_detected` is accepted only after an `input_audio_buffer.speech_started` during that response.
+- Simulated playout follows the server's barge-in: the playout cursor is cut at the client receipt of `output_audio_buffer.cleared`, or of `input_audio_buffer.speech_started` unless the session set `interrupt_response: false`; audio received afterwards starts a new playout. The exported observation window applies the same cut. `playout.json` lists the cuts and the export records `barge_in_cuts`.
+- A session with no output audio reconstructs as silence over the input duration. The export marks a variant eligible only when the recorder's protocol verdict is `pass`, so a session that negotiated the wrong protocol cannot export as a valid silent window.
+
+Server behaviors to plan around:
+
+- `semantic_vad` combined with `silence_duration_ms` raises inside the facade and closes the session with a fatal error; use `eagerness` instead.
+- A single user utterance longer than 30 s overflows the utterance buffer and ends the session with `buffer_overflow`. Full-Duplex-Bench v1.0 Candor turns reach 94 s, and a larger silence threshold makes the overflow more likely.
+- Without a loaded Smart Turn model, `semantic_vad` silently degrades to `server_vad`; the echo check fails such sessions instead of recording them as semantic runs.
+
 ### Score and resume
 
 ```bash
