@@ -15,6 +15,7 @@ from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 
 from sglang_omni.models.easymagpie_tts import CAPABILITIES
+from sglang_omni.models.easymagpie_tts.compile_support import resolve_torch_compile
 from sglang_omni.models.easymagpie_tts.model_runner import EasyMagpieTTSModelRunner
 from sglang_omni.models.easymagpie_tts.payload_types import MAX_TEXT_TOKENS, MAX_TOP_K
 from sglang_omni.models.easymagpie_tts.request_builders import (
@@ -66,12 +67,14 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         max_running_requests: int = DEFAULT_MAX_RUNNING_REQUESTS,
         mem_fraction_static: float = 0.72,
         cuda_graph: bool = True,
+        torch_compile: bool = True,
         enable_async_decode: bool = True,
         async_decode_min_batch_size: int = 1,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.mem_fraction_static = mem_fraction_static
         self.cuda_graph = cuda_graph
+        self.torch_compile = torch_compile
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
 
@@ -96,7 +99,7 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
             "cuda_graph_bs": decode_graph_batch_sizes(self.max_running_requests),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
-            "enable_torch_compile": False,
+            "enable_torch_compile": self.torch_compile,
             "sampling_backend": "pytorch",
             "trust_remote_code": False,
         }
@@ -130,6 +133,12 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         self.max_running_requests = max_running
         overrides["cuda_graph_max_bs"] = max_running
         overrides["cuda_graph_bs"] = decode_graph_batch_sizes(max_running)
+        # SGLang compiles the forward of each captured decode batch size.
+        overrides["enable_torch_compile"] = resolve_torch_compile(
+            bool(overrides.get("enable_torch_compile", self.torch_compile))
+            and not overrides.get("disable_cuda_graph", False)
+        )
+        overrides["torch_compile_max_bs"] = max_running
 
     def customize_server_args(self, server_args: Any) -> None:
         initialize_mamba_selective_state_update_backend(server_args)

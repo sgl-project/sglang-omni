@@ -68,6 +68,9 @@ def stages() -> list[StageConfig]:
 class EasyMagpieTTSPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "EasyMagpieTTSForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
+    # A cold Inductor cache autotunes the compiled talker for every decode
+    # graph batch size before the engine is ready.
+    startup_timeout_s: ClassVar[float] = 3600.0
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "tts_engine": EngineStageConfig,

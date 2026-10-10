@@ -9,7 +9,8 @@ import pytest
 import torch
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 
-from sglang_omni.models.easymagpie_tts import engine_builder
+from sglang_omni.models.easymagpie_tts import compile_support, engine_builder
+from sglang_omni.models.easymagpie_tts.config import EasyMagpieTTSPipelineConfig
 from sglang_omni.models.easymagpie_tts.engine_builder import (
     PREFILL_GRAPH_MAX_TOKENS,
     EasyMagpieTTSEngineBuilder,
@@ -70,7 +71,7 @@ def test_the_prefill_graph_captures_the_nemotron_h_backbone(talker) -> None:
     assert talker.language_model is talker.backbone
 
 
-def test_graph_buckets_follow_a_stage_running_limit_override() -> None:
+def test_graph_buckets_follow_a_stage_running_limit_override(sglang_fixes) -> None:
     builder = EasyMagpieTTSEngineBuilder()
     overrides = {"max_running_requests": 4}
     builder.adjust_overrides(overrides)
@@ -78,6 +79,53 @@ def test_graph_buckets_follow_a_stage_running_limit_override() -> None:
     assert overrides["cuda_graph_bs"] == [1, 2, 4]
     with pytest.raises(ValueError, match="tp_size"):
         builder.adjust_overrides({"tp_size": 2})
+
+
+@pytest.fixture
+def sglang_fixes(monkeypatch):
+    """Which compile fixes the installed SGLang is missing."""
+    missing: list[str] = []
+    monkeypatch.setattr(compile_support, "missing_compile_fixes", lambda: missing)
+    return missing
+
+
+def test_talker_compiles_every_decode_graph_batch_size(sglang_fixes) -> None:
+    builder = EasyMagpieTTSEngineBuilder(max_running_requests=8)
+    overrides = builder.generation_defaults(dtype="float16")
+    builder.adjust_overrides(overrides)
+    assert overrides["enable_torch_compile"] is True
+    assert overrides["torch_compile_max_bs"] == 8
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"enable_torch_compile": False}, {"disable_cuda_graph": True}],
+)
+def test_talker_compile_follows_stage_overrides(sglang_fixes, overrides) -> None:
+    EasyMagpieTTSEngineBuilder().adjust_overrides(overrides)
+    assert overrides["enable_torch_compile"] is False
+
+
+def test_talker_stays_eager_without_the_sglang_fixes(sglang_fixes, caplog) -> None:
+    sglang_fixes.append("Nemotron-H MoE runs serially under compile")
+    overrides = {"enable_torch_compile": True}
+    EasyMagpieTTSEngineBuilder().adjust_overrides(overrides)
+    assert overrides["enable_torch_compile"] is False
+    assert "Nemotron-H MoE runs serially" in caplog.text
+
+
+def test_the_installed_sglang_reports_each_missing_fix() -> None:
+    missing = compile_support.missing_compile_fixes()
+    assert set(missing) <= {
+        "Triton launches pass PDL constexprs on GPUs without PDL",
+        "Mamba2 decode state updates stay in place under compile",
+        "Nemotron-H MoE runs serially under compile",
+        "native MoE applies routed_scaling_factor",
+    }
+
+
+def test_pipeline_waits_for_a_cold_compile() -> None:
+    assert EasyMagpieTTSPipelineConfig.startup_timeout_s == 3600.0
 
 
 def test_setup_model_sizes_decode_state_and_loads_voices(talker, tmp_path) -> None:
