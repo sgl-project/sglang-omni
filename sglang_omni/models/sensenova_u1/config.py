@@ -54,6 +54,8 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
         generate = next(stage for stage in self.stages if stage.name == "generate")
         if generate.tp_size != 1:
             raise ValueError("SenseNova-U1 supports DP replicas, but not TP")
+        else:
+            pass
 
         replicas = self.processes.get("sensenova_generate")
         if replicas is not None and replicas.num_replicas > 1:
@@ -62,6 +64,10 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
                 raise ValueError(
                     "SenseNova-U1 DP requires one distinct GPU per replica"
                 )
+            else:
+                pass
+        else:
+            pass
 
 
 EntryClass = SenseNovaU1PipelineConfig

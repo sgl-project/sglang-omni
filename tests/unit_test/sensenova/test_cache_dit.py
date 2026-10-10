@@ -6,6 +6,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import torch
+from pydantic import JsonValue
+
 from sglang_omni.models.sensenova_u1.cache_dit import (
     SenseNovaCacheDit,
     decoder_attention_type,
@@ -21,7 +24,7 @@ from sglang_omni.models.sensenova_u1.sampling import (
 
 
 class TestCacheDitParameters(unittest.TestCase):
-    def test_disabled_defaults_ignore_invalid_parameters(self):
+    def test_disabled_defaults_ignore_invalid_parameters(self) -> None:
         for raw in ({"enable_taylorseer": True}, {"Fn_compute_blocks": -1}, []):
             for enabled in (None, False):
                 with self.subTest(raw=raw, enabled=enabled):
@@ -33,7 +36,7 @@ class TestCacheDitParameters(unittest.TestCase):
                         (False, None),
                     )
 
-    def test_inherited_enabled_default_validates_parameters(self):
+    def test_inherited_enabled_default_validates_parameters(self) -> None:
         for enabled in (None, True):
             with self.subTest(enabled=enabled), self.assertRaises(ValueError):
                 resolve_cache_dit_params(
@@ -44,7 +47,7 @@ class TestCacheDitParameters(unittest.TestCase):
                     True,
                 )
 
-    def test_deferred_parameters_survive_sampling_and_are_hashable(self):
+    def test_deferred_parameters_survive_sampling_and_are_hashable(self) -> None:
         raw = {"unknown": {"nested": [1, 2]}}
         options = SenseNovaU1Sampling.from_params({"cache_dit_params": raw})
         self.assertEqual(options.cache_dit_params, raw)
@@ -54,7 +57,7 @@ class TestCacheDitParameters(unittest.TestCase):
             cache_dit_batch_key({"b": 2, "a": 1}),
         )
 
-    def test_multi_output_preserves_cache_settings(self):
+    def test_multi_output_preserves_cache_settings(self) -> None:
         params = {"Fn_compute_blocks": 2}
         options = SenseNovaU1Sampling.from_params(
             {"n": 3, "enable_cache_dit": True, "cache_dit_params": params}
@@ -63,7 +66,7 @@ class TestCacheDitParameters(unittest.TestCase):
         self.assertTrue(options.enable_cache_dit)
         self.assertEqual(options.cache_dit_params, params)
 
-    def test_three_branch_edit_ignores_parameters(self):
+    def test_three_branch_edit_ignores_parameters(self) -> None:
         for enabled in (None, False, True):
             with self.subTest(enabled=enabled):
                 options = SenseNovaU1ImageEditSampling.from_params(
@@ -76,7 +79,7 @@ class TestCacheDitParameters(unittest.TestCase):
                 )
                 self.assertIsNone(options.cache_dit_params)
 
-    def test_guidance_branch_matrix(self):
+    def test_guidance_branch_matrix(self) -> None:
         for cfg, img_cfg, count in (
             (1, 1, 1),
             (0.5, 1, 2),
@@ -91,15 +94,17 @@ class TestCacheDitParameters(unittest.TestCase):
 
 
 class TestCacheDitLifecycle(unittest.TestCase):
-    def setUp(self):
-        self.native = [SimpleNamespace(attention_type="full_attention")]
-        self.transformer = SimpleNamespace(
+    def setUp(self) -> None:
+        self.native: list[SimpleNamespace] = [
+            SimpleNamespace(attention_type="full_attention")
+        ]
+        self.transformer: SimpleNamespace = SimpleNamespace(
             layers=self.native, config=SimpleNamespace(num_hidden_layers=1)
         )
-        self.controller = SenseNovaCacheDit(
+        self.controller: SenseNovaCacheDit = SenseNovaCacheDit(
             enabled_by_default=True, default_params={"residual_diff_threshold": 0.1}
         )
-        self.backend = SimpleNamespace(
+        self.backend: SimpleNamespace = SimpleNamespace(
             BlockAdapter=Mock(side_effect=lambda **kw: SimpleNamespace(**kw)),
             DBCacheConfig=Mock(side_effect=lambda **kw: kw),
             ForwardPattern=SimpleNamespace(Pattern_3=3),
@@ -107,28 +112,40 @@ class TestCacheDitLifecycle(unittest.TestCase):
             disable_cache=Mock(side_effect=self.disable),
             refresh_context=Mock(),
         )
-        self.module_patch = patch.dict("sys.modules", {"cache_dit": self.backend})
-        self.module_patch.start()
-        self.addCleanup(self.module_patch.stop)
+        module_patch = patch(
+            "sglang_omni.models.sensenova_u1.cache_dit.cache_dit", self.backend
+        )
+        module_patch.start()
+        self.addCleanup(module_patch.stop)
 
-    def enable(self, adapter, **kwargs):
+    def enable(
+        self, adapter: SimpleNamespace, *, cache_config: dict[str, int | float]
+    ) -> None:
+        # note (Codex): Match the backend callback; the fake only swaps layers.
         adapter.transformer.layers = [SimpleNamespace(cached=True)]
 
-    def disable(self, adapter):
+    def disable(self, adapter: SimpleNamespace) -> None:
         adapter.transformer.layers = adapter.blocks
 
-    def prepare(self, **kwargs):
-        options = {
-            "enabled": None,
-            "params": None,
-            "steps": 50,
-            "branch_count": 1,
-            "cfg_interval": (0.0, 1.0),
-        }
-        options.update(kwargs)
-        self.controller.prepare(self.transformer, **options)
+    def prepare(
+        self,
+        *,
+        enabled: bool | None = None,
+        params: JsonValue = None,
+        steps: int = 50,
+        branch_count: int = 1,
+        cfg_interval: tuple[float, float] = (0.0, 1.0),
+    ) -> None:
+        self.controller.prepare(
+            self.transformer,
+            enabled=enabled,
+            params=params,
+            steps=steps,
+            branch_count=branch_count,
+            cfg_interval=cfg_interval,
+        )
 
-    def test_refresh_updates_steps_and_retains_effective_parameters(self):
+    def test_refresh_updates_steps_and_retains_effective_parameters(self) -> None:
         self.prepare(params={"Fn_compute_blocks": 4})
         adapter = self.controller.adapter
         self.prepare(params={"Fn_compute_blocks": 4}, steps=30)
@@ -143,7 +160,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
             },
         )
 
-    def test_cfg_and_parameter_changes_remount(self):
+    def test_cfg_and_parameter_changes_remount(self) -> None:
         self.prepare()
         self.prepare(branch_count=2)
         self.assertTrue(self.controller.adapter.has_separate_cfg)
@@ -154,7 +171,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
         self.assertEqual(self.backend.disable_cache.call_count, 3)
         self.assertEqual(self.controller.adapter.blocks_name, "layers")
 
-    def test_disabled_schedules_unmount_before_parameter_validation(self):
+    def test_disabled_schedules_unmount_before_parameter_validation(self) -> None:
         for overrides in (
             {"enabled": False},
             {"branch_count": 3},
@@ -169,7 +186,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
                     "_sensenova_cache_dit_native_layers", self.transformer.__dict__
                 )
 
-    def test_inherited_disabled_request_skips_invalid_parameters(self):
+    def test_inherited_disabled_request_skips_invalid_parameters(self) -> None:
         self.controller.enabled_by_default = False
         self.prepare(params=["invalid"])
         self.backend.enable_cache.assert_not_called()
@@ -177,9 +194,11 @@ class TestCacheDitLifecycle(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.prepare(params={"enable_taylorseer": True})
 
-    def test_failed_mount_retains_recovery_and_original_exception(self):
-        def fail_enable(adapter, **kwargs):
-            self.enable(adapter, **kwargs)
+    def test_failed_mount_retains_recovery_and_original_exception(self) -> None:
+        def fail_enable(
+            adapter: SimpleNamespace, *, cache_config: dict[str, int | float]
+        ) -> None:
+            self.enable(adapter, cache_config=cache_config)
             raise RuntimeError("original mount failure")
 
         self.backend.enable_cache.side_effect = fail_enable
@@ -198,7 +217,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
         self.assertFalse(self.controller.cleanup_required)
         self.assertIsNot(self.transformer.layers, self.native)
 
-    def test_unmount_failure_can_be_retried(self):
+    def test_unmount_failure_can_be_retried(self) -> None:
         self.prepare()
         self.backend.disable_cache.side_effect = RuntimeError("cleanup failure")
         with self.assertRaisesRegex(RuntimeError, "cleanup failure"):
@@ -210,7 +229,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
         self.assertFalse(self.controller.cleanup_required)
         self.assertIsNone(self.controller.adapter)
 
-    def test_config_failure_does_not_leave_native_alias(self):
+    def test_config_failure_does_not_leave_native_alias(self) -> None:
         self.backend.DBCacheConfig.side_effect = ValueError("invalid config")
         with self.assertRaisesRegex(ValueError, "invalid config"):
             self.prepare()
@@ -220,7 +239,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
             "_sensenova_cache_dit_native_layers", self.transformer.__dict__
         )
 
-    def test_only_pure_denoising_uses_cached_layers(self):
+    def test_only_pure_denoising_uses_cached_layers(self) -> None:
         self.prepare(branch_count=2)
         for update, non_image, image in (
             (True, False, True),
@@ -252,32 +271,36 @@ class TestCacheDitLifecycle(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    importlib.util.find_spec("torch") and importlib.util.find_spec("cache_dit"),
+    importlib.util.find_spec("cache_dit"),
     "requires torch and cache-dit for real residual isolation",
 )
 class TestRealCacheDitIsolation(unittest.TestCase):
-    def test_two_guidance_branches_keep_distinct_residuals(self):
-        import torch
-
+    def test_two_guidance_branches_keep_distinct_residuals(self) -> None:
         class Block(torch.nn.Module):
             attention_type = "full_attention"
 
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
-                self.calls = 0
-                self.scale = torch.nn.Parameter(torch.tensor(2.0), requires_grad=False)
+                self.calls: int = 0
+                self.scale: torch.nn.Parameter = torch.nn.Parameter(
+                    torch.tensor(2.0), requires_grad=False
+                )
 
-            def forward(self, hidden_states, **kwargs):
+            def forward(
+                self, hidden_states: torch.Tensor, **kwargs: torch.Tensor
+            ) -> torch.Tensor:
                 self.calls += 1
                 return hidden_states * self.scale
 
         class Transformer(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
-                self.layers = torch.nn.ModuleList([Block() for _ in range(4)])
-                self.config = SimpleNamespace(num_hidden_layers=4)
+                self.layers: torch.nn.ModuleList = torch.nn.ModuleList(
+                    [Block() for _ in range(4)]
+                )
+                self.config: SimpleNamespace = SimpleNamespace(num_hidden_layers=4)
 
-            def forward(self, hidden_states):
+            def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
                 for layer in self.layers:
                     hidden_states = layer(hidden_states)
                 return hidden_states
@@ -305,9 +328,4 @@ class TestRealCacheDitIsolation(unittest.TestCase):
                 for value in (1.0, 10.0):
                     inputs = torch.full((1, 2, 4), value)
                     torch.testing.assert_close(transformer(inputs), inputs * 16)
-        # Without this check an integration that never caches could pass.
         self.assertLess(native[1].calls, 12)
-
-
-if __name__ == "__main__":
-    unittest.main()

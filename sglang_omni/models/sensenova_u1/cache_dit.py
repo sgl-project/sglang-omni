@@ -4,14 +4,27 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-if TYPE_CHECKING:
-    import torch
+import torch
+from pydantic import JsonValue
+
+try:
+    import cache_dit
+except ModuleNotFoundError as exc:
+    if exc.name != "cache_dit":
+        raise
+    else:
+        cache_dit = None
 
 from sglang_omni.models.sensenova_u1.sampling import resolve_cache_dit_params
 
 logger = logging.getLogger(__name__)
+
+
+class CacheDitAdapter(Protocol):
+    transformer: torch.nn.Module
+    blocks: torch.nn.ModuleList
 
 
 class SenseNovaCacheDit:
@@ -21,25 +34,29 @@ class SenseNovaCacheDit:
         enabled_by_default: bool,
         default_params: dict[str, int | float] | None,
     ) -> None:
-        self.enabled_by_default = enabled_by_default
-        self.default_params = {} if default_params is None else dict(default_params)
+        self.enabled_by_default: bool = enabled_by_default
+        self.default_params: dict[str, int | float] = (
+            {} if default_params is None else dict(default_params)
+        )
         self.transformer: torch.nn.Module | None = None
-        self.adapter = None
+        self.adapter: CacheDitAdapter | None = None
         self.active_key: tuple[tuple[str, int | float], ...] | None = None
-        self.cleanup_required = False
+        self.cleanup_required: bool = False
 
     def prepare(
         self,
         transformer: torch.nn.Module,
         *,
         enabled: bool | None,
-        params: dict[str, int | float] | None,
+        params: JsonValue,
         steps: int,
         branch_count: int,
         cfg_interval: tuple[float, float],
     ) -> None:
         if self.cleanup_required:
             self.unmount()
+        else:
+            pass
         requested = self.enabled_by_default if enabled is None else enabled
         if requested and branch_count > 2:
             logger.warning("Cache-DiT is disabled for three-branch image guidance")
@@ -47,11 +64,14 @@ class SenseNovaCacheDit:
         elif requested and branch_count > 1 and cfg_interval != (0.0, 1.0):
             logger.warning("Cache-DiT requires full-interval image guidance")
             requested = False
+        else:
+            pass
 
         if not requested:
             self.unmount()
             return
-
+        else:
+            pass
         _, request_params = resolve_cache_dit_params(
             {"enable_cache_dit": True, "cache_dit_params": params}, True
         )
@@ -59,6 +79,10 @@ class SenseNovaCacheDit:
             {"cache_dit_params": self.default_params | (request_params or {})}, True
         )
         effective_params = effective_params or {}
+        if cache_dit is None:
+            raise RuntimeError("Cache-DiT is required when enabled")
+        else:
+            pass
 
         key = (
             *sorted(effective_params.items()),
@@ -66,14 +90,16 @@ class SenseNovaCacheDit:
         )
         if self.active_key is not None and key != self.active_key:
             self.unmount()
+        else:
+            pass
         if self.active_key is None:
             if self.adapter is not None:
                 self.unmount()
+            else:
+                pass
             self.mount(transformer, steps, effective_params, branch_count > 1)
             self.active_key = key
         else:
-            import cache_dit
-
             cache_dit.refresh_context(
                 transformer,
                 cache_config=cache_dit.DBCacheConfig(
@@ -88,8 +114,6 @@ class SenseNovaCacheDit:
         params: dict[str, int | float],
         has_separate_cfg: bool,
     ) -> None:
-        import cache_dit
-
         layers = transformer.layers
         attention_types = {
             layer.attention_type
@@ -99,6 +123,8 @@ class SenseNovaCacheDit:
             raise ValueError(
                 "SenseNova Cache-DiT requires a uniform decoder attention type"
             )
+        else:
+            pass
 
         adapter = cache_dit.BlockAdapter(
             transformer=transformer,
@@ -109,7 +135,9 @@ class SenseNovaCacheDit:
         )
         config = cache_dit.DBCacheConfig(num_inference_steps=steps, **params)
         object.__setattr__(transformer, "_sensenova_cache_dit_native_layers", layers)
-        transformer._sensenova_cache_dit_attention_type = next(iter(attention_types))
+        transformer._sensenova_cache_dit_attention_type: str = next(
+            iter(attention_types)
+        )
         self.transformer = transformer
         self.adapter = adapter
         self.cleanup_required = True
@@ -129,8 +157,8 @@ class SenseNovaCacheDit:
         if self.adapter is None:
             self.cleanup_required = False
             return
-        import cache_dit
-
+        else:
+            pass
         try:
             cache_dit.disable_cache(self.adapter)
         except Exception:
@@ -149,6 +177,8 @@ class SenseNovaCacheDit:
         transformer = self.transformer
         if transformer is not None:
             self.clear_native_layers(transformer)
+        else:
+            pass
         self.transformer = None
         self.adapter = None
         self.active_key = None
@@ -157,16 +187,22 @@ class SenseNovaCacheDit:
     def restore_native_layers(self) -> None:
         if self.transformer is None:
             raise RuntimeError("SenseNova Cache-DiT has no transformer to restore")
+        else:
+            pass
         native_layers = self.transformer.__dict__.get(
             "_sensenova_cache_dit_native_layers"
         )
         if native_layers is None:
             raise RuntimeError("SenseNova Cache-DiT lost its native decoder layers")
+        else:
+            pass
         self.transformer.layers = native_layers
         if self.transformer.layers is not native_layers:
             raise RuntimeError(
                 "SenseNova Cache-DiT failed to restore native decoder layers"
             )
+        else:
+            pass
 
     @staticmethod
     def clear_native_layers(transformer: torch.nn.Module) -> None:
@@ -186,13 +222,15 @@ def decoder_layers(
         update_cache or has_non_image_tokens or not has_image_tokens
     ):
         return native_layers
-    return model.layers
+    else:
+        return model.layers
 
 
 def decoder_attention_type(model: torch.nn.Module, layer: torch.nn.Module) -> str:
-    if hasattr(layer, "attention_type"):
+    native_layers = model.__dict__.get("_sensenova_cache_dit_native_layers")
+    if native_layers is None or any(
+        layer is native_layer for native_layer in native_layers
+    ):
         return layer.attention_type
-    attention_type = model.__dict__.get("_sensenova_cache_dit_attention_type")
-    if attention_type is None:
-        raise AttributeError("SenseNova decoder layer does not expose attention_type")
-    return attention_type
+    else:
+        return model._sensenova_cache_dit_attention_type
