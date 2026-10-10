@@ -90,6 +90,7 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
 
     class FakeRunner:
         model = object()
+        sliding_window_size = 8
 
         def alloc_memory_pool(self) -> None:
             events.append("alloc_memory_pool")
@@ -140,6 +141,7 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
         "get_memory_pool",
     ]
     assert infrastructure[0].model_runner.model is FakeRunner.model
+    assert infrastructure[1][1] == ("req_pool", "kv_pool", 1, 8)
 
 
 def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
@@ -154,6 +156,7 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
 
     class FakeRunner:
         model = object()
+        sliding_window_size = None
 
         def alloc_memory_pool(self) -> None:
             events.append("alloc_memory_pool")
@@ -367,6 +370,7 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
 
     class FakeRunner:
         model = object()
+        sliding_window_size = None
 
         def alloc_memory_pool(self) -> None:
             pass

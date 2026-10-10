@@ -4,13 +4,30 @@ from __future__ import annotations
 
 import dataclasses
 import random
+from array import array
+from collections.abc import Iterator
 
 import pytest
 import torch
-from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch, release_req
+from sglang.srt.mem_cache.allocation import alloc_for_extend
+from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import (
+    BasePrefixCache,
+    EvictParams,
+    InsertParams,
+)
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.chunk_cache import ChunkCache
+from sglang.srt.mem_cache.common import release_kv_cache
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey
+from sglang.srt.mem_cache.swa_memory_pool import SWAKVPool
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.runtime_context import get_context
+from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
 from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
     EvictHeapRadixCache,
 )
@@ -100,7 +117,7 @@ def test_factory_selects_evict_heap_only_for_lru():
             chunked_prefill_size=None,
             radix_eviction_policy=policy,
         ):
-            return create_tree_cache(None, MockAllocator(), 1)
+            return create_tree_cache(None, MockAllocator(), 1, None)
 
     assert type(build("lru")) is EvictHeapRadixCache
     for policy in ("mru", "priority", "lfu", "fifo", "filo"):
@@ -125,7 +142,7 @@ def test_factory_passes_the_eviction_policy_config_to_the_strategy():
         radix_eviction_policy="slru",
         radix_eviction_policy_config={"protected_threshold": 4},
     ):
-        cache = create_tree_cache(None, MockAllocator(), 1)
+        cache = create_tree_cache(None, MockAllocator(), 1, None)
 
     assert cache.eviction_strategy.protected_threshold == 4
 
@@ -160,3 +177,235 @@ def test_reset_then_reuse():
     result = cache.evict(EvictParams(num_tokens=1 << 20))
     assert result.num_tokens_evicted == 2
     assert not cache.evictable_leaves
+
+
+def make_window_cache(
+    position_capacity: int, window_positions: int
+) -> tuple[ReqToTokenPool, PureSWATokenToKVPoolAllocator, SWAKVPool, BasePrefixCache]:
+    request_pool = ReqToTokenPool(
+        1, position_capacity, "cpu", enable_memory_saver=False
+    )
+    kv_pool = SWAKVPool(
+        size=0,
+        size_swa=position_capacity,
+        page_size=1,
+        dtype=torch.float32,
+        head_num=1,
+        head_dim=8,
+        swa_attention_layer_ids=[0],
+        full_attention_layer_ids=[],
+        device="cpu",
+    )
+    allocator = PureSWATokenToKVPoolAllocator(
+        size_swa=position_capacity,
+        page_size=1,
+        dtype=torch.float32,
+        device="cpu",
+        kvcache=kv_pool,
+        need_sort=False,
+    )
+    with get_context().override_server_args(
+        disable_radix_cache=True,
+        chunked_prefill_size=None,
+        enable_streaming_session=False,
+    ):
+        cache = create_tree_cache(request_pool, allocator, 1, window_positions)
+    return request_pool, allocator, kv_pool, cache
+
+
+def test_factory_preserves_window_eviction_capability() -> None:
+    _, _, _, cache = make_window_cache(32, 8)
+    assert cache.supports_swa()
+    assert cache.sliding_window_size == 8
+    with get_context().override_server_args(
+        disable_radix_cache=True,
+        chunked_prefill_size=None,
+        enable_streaming_session=False,
+    ):
+        ordinary_cache = create_tree_cache(None, MockAllocator(), 1, None)
+    assert isinstance(ordinary_cache, ChunkCache)
+    assert not ordinary_cache.supports_swa()
+
+
+@pytest.fixture
+def window_cache_runtime() -> Iterator[None]:
+    with get_context().override_server_args(
+        attention_backend="torch_native",
+        prefill_attention_backend="torch_native",
+        decode_attention_backend="torch_native",
+        disable_radix_cache=True,
+        chunked_prefill_size=None,
+        enable_streaming_session=False,
+        disaggregation_mode=None,
+        speculative_algorithm=None,
+        strip_thinking_cache=False,
+    ):
+        yield
+
+
+@pytest.mark.usefixtures("window_cache_runtime")
+@pytest.mark.parametrize("cache_on_release", [False, True])
+def test_window_slots_survive_reuse_and_release(
+    monkeypatch: pytest.MonkeyPatch, cache_on_release: bool
+) -> None:
+    monkeypatch.setenv("SGLANG_SWA_EVICTION_INTERVAL", "4")
+    position_capacity, position_count, window_positions = 32, 24, 8
+    request_pool, allocator, kv_pool, cache = make_window_cache(
+        position_capacity, window_positions
+    )
+    request = Req(
+        rid="window-request",
+        origin_input_text="",
+        origin_input_ids=array("q", range(position_count)),
+        sampling_params=SamplingParams(max_new_tokens=1),
+    )
+    assert request_pool.alloc([request]) is not None
+    slots = allocator.alloc(position_count)
+    assert slots is not None
+    request_pool.req_to_token[request.kv.req_pool_idx, :position_count] = slots.to(
+        torch.int32
+    )
+    request.kv.kv_committed_len = position_count
+    request.kv.kv_allocated_len = position_count
+    request.decode_batch_idx = 1
+    expected_keys = torch.arange(position_count * 8, dtype=torch.float32).reshape(
+        position_count, 1, 8
+    )
+    kv_pool.get_key_buffer(0)[slots] = expected_keys
+    batch = ScheduleBatch(
+        reqs=[request],
+        req_to_token_pool=request_pool,
+        token_to_kv_pool_allocator=allocator,
+        tree_cache=cache,
+        forward_mode=ForwardMode.DECODE,
+        device="cpu",
+    )
+    batch.maybe_evict_swa()
+    retained_positions = window_positions + 1
+    assert allocator.available_size() == position_capacity - retained_positions
+    batch.maybe_evict_swa()
+    assert allocator.available_size() == position_capacity - retained_positions
+    reused_slots = allocator.alloc(position_capacity - retained_positions)
+    assert reused_slots is not None
+    kv_pool.get_key_buffer(0)[reused_slots] = -1
+    assert torch.equal(
+        kv_pool.get_key_buffer(0)[slots[-retained_positions:]],
+        expected_keys[-retained_positions:],
+    )
+    release_kv_cache(request, cache, is_insert=cache_on_release)
+    assert not request.kv.holds_kv
+    assert request.kv.is_kv_released
+    assert request_pool.available_size() == 1
+    assert allocator.available_size() == retained_positions
+    allocator.free(reused_slots)
+    all_slots = allocator.alloc(position_capacity)
+    assert all_slots is not None
+    assert all_slots.unique().numel() == position_capacity
+    allocator.free(all_slots)
+    assert allocator.available_size() == position_capacity
+
+
+@pytest.mark.usefixtures("window_cache_runtime")
+def test_window_eviction_resumes_after_retract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_SWA_EVICTION_INTERVAL", "4")
+    position_capacity, position_count, window_positions = 32, 24, 8
+    request_pool, allocator, kv_pool, cache = make_window_cache(
+        position_capacity, window_positions
+    )
+    request = Req(
+        rid="retracted-window-request",
+        origin_input_text="",
+        origin_input_ids=array("q", range(16)),
+        sampling_params=SamplingParams(max_new_tokens=16),
+    )
+    request.output_ids.extend(range(16, position_count))
+    assert request_pool.alloc([request]) is not None
+    initial_slots = allocator.alloc(position_count)
+    assert initial_slots is not None
+    request_pool.req_to_token[request.kv.req_pool_idx, :position_count] = (
+        initial_slots.to(torch.int32)
+    )
+    request.kv.kv_committed_len = position_count
+    request.kv.kv_allocated_len = position_count
+    request.decode_batch_idx = 1
+    batch = ScheduleBatch(
+        reqs=[request],
+        req_to_token_pool=request_pool,
+        token_to_kv_pool_allocator=allocator,
+        tree_cache=cache,
+        forward_mode=ForwardMode.DECODE,
+        device="cpu",
+    )
+    batch.maybe_evict_swa()
+    retained_positions = window_positions + 1
+    assert allocator.available_size() == position_capacity - retained_positions
+    release_req(
+        req=request,
+        remaing_req_count=0,
+        req_to_token_pool=request_pool,
+        token_to_kv_pool_allocator=allocator,
+        tree_cache=cache,
+        hisparse_coordinator=None,
+        offload_kv=False,
+    )
+    assert request.is_retracted
+    assert request.retraction_count == 1
+    assert request.kv.is_kv_released
+    assert allocator.available_size() == position_capacity
+    assert request_pool.available_size() == 1
+    request.init_next_round_input(cache)
+    assert request.full_untruncated_fill_ids == array("q", range(position_count))
+    request.set_extend_range(0, position_count)
+    batch.forward_mode = ForwardMode.EXTEND
+    batch.prefix_lens, batch.extend_lens = [0], [position_count]
+    batch.seq_lens = batch.seq_lens_cpu = torch.tensor([position_count])
+    batch.extend_num_tokens = position_count
+    replay_slots, _, _ = alloc_for_extend(batch)
+    expected_keys = torch.arange(position_count * 8, dtype=torch.float32).reshape(
+        position_count, 1, 8
+    )
+    kv_pool.get_key_buffer(0)[replay_slots] = expected_keys
+    request.is_retracted = False
+    batch.forward_mode = ForwardMode.DECODE
+    batch.maybe_evict_swa()
+    assert allocator.available_size() == position_capacity - position_count
+    request.decode_batch_idx = 1
+    batch.maybe_evict_swa()
+    assert allocator.available_size() == position_capacity - retained_positions
+    continued_positions = 4
+    continued_slots = allocator.alloc(continued_positions)
+    assert continued_slots is not None
+    request_pool.req_to_token[
+        request.kv.req_pool_idx, position_count : position_count + continued_positions
+    ] = continued_slots.to(torch.int32)
+    request.output_ids.extend(
+        range(position_count, position_count + continued_positions)
+    )
+    request.kv.kv_committed_len += continued_positions
+    request.kv.kv_allocated_len += continued_positions
+    kv_pool.get_key_buffer(0)[continued_slots] = -2
+    batch.maybe_evict_swa()
+    assert allocator.available_size() == position_capacity - retained_positions
+    reused_slots = allocator.alloc(position_capacity - retained_positions)
+    assert reused_slots is not None
+    kv_pool.get_key_buffer(0)[reused_slots] = -1
+    assert torch.equal(
+        kv_pool.get_key_buffer(0)[
+            replay_slots[-(retained_positions - continued_positions) :]
+        ],
+        expected_keys[-(retained_positions - continued_positions) :],
+    )
+    assert torch.all(kv_pool.get_key_buffer(0)[continued_slots] == -2)
+    release_kv_cache(request, cache)
+    assert not request.kv.holds_kv
+    assert request.kv.is_kv_released
+    assert request_pool.available_size() == 1
+    assert allocator.available_size() == retained_positions
+    allocator.free(reused_slots)
+    all_slots = allocator.alloc(position_capacity)
+    assert all_slots is not None
+    assert all_slots.unique().numel() == position_capacity
+    allocator.free(all_slots)
+    assert allocator.available_size() == position_capacity
