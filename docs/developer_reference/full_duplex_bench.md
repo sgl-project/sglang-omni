@@ -169,8 +169,9 @@ Per-run choices (`--run-name`, `--repeat`, pair selection, `--num-shards`) are c
 | `FDB_WORK` | `$HOME/fdb` | Root for downloads, environments and results |
 | `JUDGE` | `qwen` | `qwen` or `gpt` |
 | `SERVER_CONFIG` | `examples/full_duplex/minicpmo.yaml` | Server config. Sampling is on, so repeats measure generation variance |
-| `GPU` | `0` | The one GPU that every step uses in turn |
-| `SERVER_PORT` / `JUDGE_PORT` | `8097` / `30000` | Local ports |
+| `CUDA_VISIBLE_DEVICES` | unset | One GPU index. When set, this chooses the card. Concurrent jobs export different indexes; see [Concurrent runs](#concurrent-runs) |
+| `GPU` | `0` | Used only when `CUDA_VISIBLE_DEVICES` is unset. Must be a single numeric index |
+| `SERVER_PORT` / `JUDGE_PORT` | `8097 + 10×GPU` / `30000 + 10×GPU` | Local ports. Unset values are derived from the GPU index, so two jobs do not share a port. The judge NCCL port is the judge port + 1. Do not pick a port in 29500–29899; that range is reserved for model-server NCCL |
 | `MODEL_PATH` | `$FDB_WORK/models/MiniCPM-o-4_5` | Checkpoint directory of the model under test |
 | `MODEL_REVISION` | `503e754…` | Recorded in the run manifest; must match `MODEL_PATH` |
 | `SESSION_TIMEOUT_S` | `90` | Per-session client deadline; the longest v1.5 input is about 18 s |
@@ -184,6 +185,7 @@ Per-run choices (`--run-name`, `--repeat`, pair selection, `--num-shards`) are c
 - **Repeats need sampling.** `minicpmo-parity.yaml` decodes greedily, so its repeats are nearly identical. Use it for regression checks against a fixed recording, not for variance.
 - **The first 48 pairs are not a random sample.** `--per-subset 12` takes the first 12 samples of each category. This gives fast, comparable numbers between runs, but they are not full-dataset estimates.
 - **Non-passing sessions are never dropped.** They count as ineligible in the denominators, and empty interval sets show as `n/a`, not zero.
+- **Concurrent jobs use one GPU each.** Ports, the judge config directory and compile caches are derived from `CUDA_VISIBLE_DEVICES`. The procedure is [Concurrent runs](#concurrent-runs).
 
 ## Scoring CLI reference
 
@@ -255,13 +257,13 @@ GPT-4o (`judge`) is the paper's judge. Set the API key in `OPENAI_API_KEY`, neve
 ```bash
 python -m benchmarks.eval.benchmark_duplex_reference custom-judge "${TREE[@]}" \
     --source-scores "$OUT/scores" --out "$OUT/judge-qwen" \
-    --judge-config "$FDB_WORK/judge/judge-config.json" --base-url "$JUDGE_URL"
+    --judge-config "$JUDGE_CONFIG" --base-url "$JUDGE_URL"
 python -m benchmarks.eval.benchmark_duplex_reference custom-summarize "${TREE[@]}" \
     --source-scores "$OUT/scores" --out "$OUT/judge-qwen" \
-    --judge-config "$FDB_WORK/judge/judge-config.json"
+    --judge-config "$JUDGE_CONFIG"
 ```
 
-The config written by `judge` and `serve-judge`:
+The config written by `judge` and `serve-judge` is `$JUDGE_CONFIG`, which is `$FDB_WORK/judge/port-$JUDGE_PORT/judge-config.json`. Each judge port has its own directory, so two concurrent jobs do not overwrite one config:
 
 ```json
 {
@@ -310,15 +312,55 @@ Export is deterministic: re-exporting a recording reproduces every eligible WAV 
 | Symptom | Fix |
 |---|---|
 | `ERROR: the model server did not become ready` (or the judge server) | The message ends with the last lines of the server log; the full log is `repeat-N/logs/model-server.log` or `repeat-N/logs/judge-server.log` |
-| `ERROR: something already serves ...` | Another server holds the port, often a leftover from an interrupted run; stop it, or set `SERVER_PORT` / `JUDGE_PORT` |
+| `ERROR: something already serves ...` | Another server holds the port, often a leftover from an interrupted run or a second job on the same GPU. Stop it, or give this job a different `CUDA_VISIBLE_DEVICES` / `SERVER_PORT` / `JUDGE_PORT` |
 | `ERROR: .../recording exists` | That repeat was already generated; use the next `--repeat` or delete the directory |
 | `ERROR: .../sample-ids.txt selects different pairs` | An earlier repeat of this run used another selection; pass the same selection options, or use a new `--run-name` |
 | A shard log reports `fail` or `error` sessions | They stay in the denominator. Read `repeat-N/logs/record-shard-*.log`. If most sessions fail, fix the server and redo the repeat |
 | HTTP 503 in record logs | `--num-shards` is larger than `max_sessions` in `SERVER_CONFIG` |
-| `--device cuda needs exactly one visible GPU` | `GPU` must be a single index |
+| `--device cuda needs exactly one visible GPU` | `CUDA_VISIBLE_DEVICES` (or `GPU`, when the former is unset) must be a single index |
+| `ERROR: set CUDA_VISIBLE_DEVICES to exactly one GPU index` | A concurrent job must see one card. `export CUDA_VISIBLE_DEVICES=0` in one terminal and `=1` in the other |
+| `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the same index as `CUDA_VISIBLE_DEVICES` |
 | `asr` or `judge` prints `WARNING: a phase reported failures` | Rerun the command the warning prints; it is the same step with `--retry-failed` |
 | `custom judge identity changed; use a new --out` | The judge config changed since this repeat was judged (for example, a different SGLang version). Delete `repeat-N/judge-qwen` and rerun `judge` for that repeat |
 | `Control check failed: this judge configuration is not accepted.` | The judge missed a control case; the printed lines show which. Do not grade with this configuration. Check that the judge server runs the pinned Qwen3.8-27B revision |
 | `... changed since this directory was created; use a new --out` | The semantic judge settings, prompt or inputs changed since this repeat was graded. Delete `repeat-N/semantic-qwen` and rerun `judge` for that repeat |
 | `model_mismatch` with `JUDGE=gpt` | The endpoint returned a model name other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
 | `ModuleNotFoundError` in `asr` | Rerun `setup`; it reinstalls the scoring venv packages |
+
+## Concurrent runs
+
+Open two terminals. Paste one block into each. Start both immediately; neither waits for the other. Each terminal keeps the sglang-omni venv active (`which python` prints that interpreter) and runs every line itself. Do not set `SERVER_PORT` or `JUDGE_PORT`. The model port is `8097 + 10×GPU` and the judge port is `30000 + 10×GPU`. The judge NCCL port is the judge port + 1. The judge config is `$FDB_WORK/judge/port-<judge port>/`. Compile caches are under `$FDB_WORK/cache/gpu-<index>/`.
+
+The first line from `generate` must be exactly the `Job GPU ...` line written under that terminal. GPU 0 is model port 8097, judge port 30000, judge NCCL port 30001. GPU 1 is model port 8107, judge port 30010, judge NCCL port 30011. A shell startup helper may have exported `CUDA_VISIBLE_DEVICES` already; the `export` in the block replaces it. `unset GPU` is required when that variable is set to a different index.
+
+Terminal 1:
+
+```bash
+cd /root/sglang-omni
+export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
+unset GPU SERVER_PORT JUDGE_PORT
+export CUDA_VISIBLE_DEVICES=0
+python -m benchmarks.duplex.fdb_v15 generate --run-name minicpmo-30-t1 --repeat 1 --per-subset 30
+python -m benchmarks.duplex.fdb_v15 asr --run-name minicpmo-30-t1 --repeat 1
+python -m benchmarks.duplex.fdb_v15 judge --run-name minicpmo-30-t1 --repeat 1
+python -m benchmarks.duplex.fdb_v15 aggregate --run-name minicpmo-30-t1
+```
+
+`generate` prints `Job GPU 0: model port 8097, judge port 30000 (nccl 30001), judge config /data/chenyang/fdb/judge/port-30000` when `FDB_WORK` is `/data/chenyang/fdb`. `aggregate` writes `$FDB_WORK/runs/minicpmo-30-t1/RESULTS.md`.
+
+Terminal 2:
+
+```bash
+cd /root/sglang-omni
+export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
+unset GPU SERVER_PORT JUDGE_PORT
+export CUDA_VISIBLE_DEVICES=1
+python -m benchmarks.duplex.fdb_v15 generate --run-name minicpmo-30-t2 --repeat 1 --per-subset 30
+python -m benchmarks.duplex.fdb_v15 asr --run-name minicpmo-30-t2 --repeat 1
+python -m benchmarks.duplex.fdb_v15 judge --run-name minicpmo-30-t2 --repeat 1
+python -m benchmarks.duplex.fdb_v15 aggregate --run-name minicpmo-30-t2
+```
+
+`generate` prints `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), judge config /data/chenyang/fdb/judge/port-30010` when `FDB_WORK` is `/data/chenyang/fdb`. `aggregate` writes `$FDB_WORK/runs/minicpmo-30-t2/RESULTS.md`.
+
+A third terminal is the same block with `export CUDA_VISIBLE_DEVICES=2`, `--run-name minicpmo-30-t3`, model port 8117 and judge port 30020. Do not point two terminals at the same `--run-name`.

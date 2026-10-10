@@ -157,6 +157,16 @@ def main() -> None:
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, exit_on_sigterm)
     settings = load_settings(args.run_name)
+    settings.apply_job_isolation()
+    if args.command != "env":
+        log(
+            f"Job GPU {settings.gpu}: model port {settings.server_port}, "
+            f"judge port {settings.judge_port} "
+            f"(nccl {settings.judge_nccl_port}), "
+            f"judge config {settings.judge_dir}"
+        )
+    else:
+        pass
     if args.command == "setup":
         setup(settings)
     elif args.command == "generate":

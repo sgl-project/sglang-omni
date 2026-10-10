@@ -68,6 +68,8 @@ def judge_server_command(settings: Settings) -> list[str]:
         "qwen3",
         "--mem-fraction-static",
         JUDGE_MEM_FRACTION_STATIC,
+        "--nccl-port",
+        str(settings.judge_nccl_port),
     ]
 
 
@@ -135,7 +137,12 @@ def running_server(
             log_file,
             port,
             timeout=SERVER_READY_TIMEOUT_S,
-            env={"CUDA_VISIBLE_DEVICES": gpu},
+            env={
+                "CUDA_VISIBLE_DEVICES": gpu,
+                # A taken port must fail here. Falling over to a random port
+                # would leave the client talking to the port in the command.
+                "SGLANG_OMNI_STRICT_PORT": "1",
+            },
             strip_proxy=True,
             health_path=health_path,
             health_body_contains=ready_text,
