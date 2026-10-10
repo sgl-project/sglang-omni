@@ -275,6 +275,39 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("long_reference", [False, True])
+def test_flow_budget_keeps_long_rows_and_references_separate(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    long_reference: bool,
+) -> None:
+    monkeypatch.setattr(code2wav, "FLOW_BATCH_TOKEN_SQUARE_BUDGET", 128)
+    model = build_code2wav_model()
+    tokens = [[1, 2], [3, 4], [5, 6]]
+    references = [b"a", b"b", b"c"]
+    if long_reference:
+        references[1] = b"b" * 12
+    else:
+        tokens[1] = [3] * 12
+    waveforms = model.vocode(tokens, references)
+    assert fake_token2wav.flow.inference.call_count == 2
+    for waveform, row, reference in zip(waveforms, tokens, references, strict=True):
+        np.testing.assert_array_equal(waveform, expected_waveform(row, reference))
+
+
+def test_flow_budget_preserves_one_normal_batch(
+    build_code2wav_model: Code2WavBuilder, fake_token2wav: MagicMock
+) -> None:
+    model = build_code2wav_model()
+    tokens = [[3, 4], [1], [5, 6, 7]]
+    references = [b"a", b"b", b"c"]
+    waveforms = model.vocode(tokens, references)
+    assert fake_token2wav.flow.inference.call_count == 1
+    for waveform, row, reference in zip(waveforms, tokens, references, strict=True):
+        np.testing.assert_array_equal(waveform, expected_waveform(row, reference))
+
+
 def find_checkpoint_dir() -> Path | None:
     env = os.environ.get("MINICPMO_CHECKPOINT")
     hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
