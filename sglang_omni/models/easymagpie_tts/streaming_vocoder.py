@@ -39,6 +39,7 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
     """
 
     can_batch_stream_chunks = True
+    accepts_stream_chunk_batch = True
 
     def __init__(
         self,

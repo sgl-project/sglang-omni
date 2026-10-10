@@ -174,28 +174,72 @@ def is_streaming_request(data: EasyMagpieSGLangRequestData) -> bool:
     return isinstance(params, dict) and bool(params.get("stream", False))
 
 
-def easymagpie_stream_output_builder(
-    request_id: str, data: EasyMagpieSGLangRequestData, req_output: Any
-) -> list[OutgoingMessage]:
+class EasyMagpieStreamOutputBuilder:
     """Forward the acoustic frames produced since the last step to the vocoder."""
-    del req_output
-    if not is_streaming_request(data) or data.stream_code_count == len(
-        data.output_codes
-    ):
-        return []
-    else:
-        pass
-    rows = data.output_codes[data.stream_code_count :]
-    data.stream_code_count = len(data.output_codes)
-    return [
-        OutgoingMessage(
-            request_id=request_id,
-            type="stream",
-            target="vocoder",
-            data=torch.stack(rows, dim=0).to(torch.long),
-            metadata={"modality": "audio_codes", "stream": True},
-        )
-    ]
+
+    def __call__(
+        self, request_id: str, data: EasyMagpieSGLangRequestData, req_output: Any
+    ) -> list[OutgoingMessage]:
+        del req_output
+        if not is_streaming_request(data) or data.stream_code_count == len(
+            data.output_codes
+        ):
+            return []
+        else:
+            pass
+        rows = data.output_codes[data.stream_code_count :]
+        data.stream_code_count = len(data.output_codes)
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                target="vocoder",
+                data=torch.stack(rows, dim=0).to(torch.long),
+                metadata=dict(STREAM_METADATA),
+            )
+        ]
+
+    def build_batch(
+        self, entries: list[tuple[str, EasyMagpieSGLangRequestData, Any]]
+    ) -> list[OutgoingMessage] | None:
+        """One ``[B, 1, codebooks]`` message for a step that streamed one frame
+        per request; None when some request has a backlog of several."""
+        streaming = []
+        for request_id, data, _ in entries:
+            if not is_streaming_request(data):
+                continue
+            else:
+                pass
+            pending = len(data.output_codes) - data.stream_code_count
+            if pending > 1:
+                return None
+            elif pending == 1:
+                streaming.append((request_id, data))
+            else:
+                pass
+        if not streaming:
+            return []
+        else:
+            pass
+        rows = []
+        for _, data in streaming:
+            rows.append(data.output_codes[data.stream_code_count])
+            data.stream_code_count += 1
+        request_ids = tuple(request_id for request_id, _ in streaming)
+        return [
+            OutgoingMessage(
+                request_id=request_ids[0],
+                type="stream",
+                target="vocoder",
+                data=torch.stack(rows, dim=0).to(torch.long).unsqueeze(1),
+                metadata=dict(STREAM_METADATA),
+                request_ids=request_ids,
+            )
+        ]
+
+
+STREAM_METADATA = {"modality": "audio_codes", "stream": True}
+easymagpie_stream_output_builder = EasyMagpieStreamOutputBuilder()
 
 
 def apply_easymagpie_result(data: EasyMagpieSGLangRequestData) -> StagePayload:

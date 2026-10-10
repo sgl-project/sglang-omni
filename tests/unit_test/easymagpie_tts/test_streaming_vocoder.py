@@ -13,7 +13,7 @@ from sglang_omni.models.easymagpie_tts.streaming_vocoder import (
     EasyMagpieStreamingVocoder,
     EasyMagpieStreamState,
 )
-from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamItemBatch
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
@@ -104,6 +104,43 @@ def test_streams_waiting_on_the_same_chunk_size_decode_together(
         [chunk(rid, rows[i : i + 1], i) for i in range(2) for rid in ("a", "b")]
     )
 
+    assert batch_sizes == [2]
+    assert {m.request_id for m in drain(vocoder)} == {"a", "b"}
+
+
+def test_a_row_batched_message_decodes_its_streams_together(
+    vocoder, codec, monkeypatch
+) -> None:
+    batch_sizes = []
+    stream = codec.stream
+
+    def counting_stream(codes, state):
+        batch_sizes.append(int(codes.shape[0]))
+        return stream(codes, state)
+
+    monkeypatch.setattr(codec, "stream", counting_stream)
+    for request_id in ("a", "b"):
+        vocoder.handle_streaming_new_request(
+            request_id, make_payload(request_id, stream=True)
+        )
+    for step in range(2):
+        vocoder.handle_message(
+            IncomingMessage(
+                request_id="a",
+                type="stream_chunk_batch",
+                data=StreamItemBatch(
+                    request_ids=("a", "b"),
+                    rows=(0, 1),
+                    chunk_ids=(step, step),
+                    data=torch.randint(0, 16, (2, 1, 4)),
+                    from_stage="tts_engine",
+                    metadata={"modality": "audio_codes", "stream": True},
+                ),
+            ),
+            loop=None,
+        )
+
+    assert vocoder.accepts_stream_chunk_batch is True
     assert batch_sizes == [2]
     assert {m.request_id for m in drain(vocoder)} == {"a", "b"}
 

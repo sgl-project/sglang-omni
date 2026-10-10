@@ -163,3 +163,43 @@ def test_stream_builder_ignores_offline_requests() -> None:
     data = build_sglang_easymagpie_request(make_payload("hello", data=state.to_dict()))
     data.output_codes = [torch.arange(4)]
     assert easymagpie_stream_output_builder("req-0", data, None) == []
+
+
+def streaming_data(frames: int, *, stream: bool = True):
+    state = preprocessed_state()
+    params = {"stream": True} if stream else None
+    data = build_sglang_easymagpie_request(
+        make_payload("hello", params=params, data=state.to_dict())
+    )
+    data.output_codes = [torch.arange(4) + i for i in range(frames)]
+    return data
+
+
+def test_stream_batch_sends_one_row_per_request_with_a_new_frame() -> None:
+    a, idle, offline, b = (
+        streaming_data(1),
+        streaming_data(0),
+        streaming_data(3, stream=False),
+        streaming_data(1),
+    )
+    b.output_codes[0] = torch.arange(4) + 7
+    entries = [("a", a, None), ("idle", idle, None), ("off", offline, None)]
+    entries.append(("b", b, None))
+
+    (message,) = easymagpie_stream_output_builder.build_batch(entries)
+
+    assert message.request_ids == ("a", "b")
+    assert message.request_id == "a"
+    assert message.metadata == {"modality": "audio_codes", "stream": True}
+    assert message.data.tolist() == [[[0, 1, 2, 3]], [[7, 8, 9, 10]]]
+    assert (a.stream_code_count, b.stream_code_count) == (1, 1)
+    assert easymagpie_stream_output_builder.build_batch(entries) == []
+
+
+def test_stream_batch_defers_a_frame_backlog_to_per_request_messages() -> None:
+    a, backlog = streaming_data(1), streaming_data(2)
+
+    entries = [("a", a, None), ("backlog", backlog, None)]
+
+    assert easymagpie_stream_output_builder.build_batch(entries) is None
+    assert (a.stream_code_count, backlog.stream_code_count) == (0, 0)
