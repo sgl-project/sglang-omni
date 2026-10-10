@@ -320,7 +320,20 @@ termination reasons, and committed HTTP response-body outcomes.
 The response-header histogram measures from router boundary entry until an HTTP
 response is available. It does not measure response-body completion, streaming
 TTFT, or WebSocket-session duration. Requests cancelled before that boundary
-are counted separately. Classification histograms separate slot wait,
+are counted separately.
+
+`sglang_omni_router_http_first_payload_duration_seconds` measures from the same
+request boundary until the router yields the first nonempty upstream response
+data frame downstream, with fixed route labels. It includes time spent waiting
+for response headers and the first payload, and records at most one observation
+per relayed HTTP response, including upstream HTTP error responses with a body.
+Empty bodies, trailers, body errors, and cancellation before any payload do not
+produce a latency sample. Router-generated responses and
+WebSocket sessions are excluded. This is a router forwarding observation, not
+client receipt, first model token, or first audible audio; downstream polling can
+affect it. Later body failure does not remove an already recorded sample.
+
+Classification histograms separate slot wait,
 blocking-executor wait, and execution for each request kind. Blocking work that
 outlives a caller timeout or cancellation records its phase durations when that
 work starts or finishes, without changing the caller's terminal outcome.

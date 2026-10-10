@@ -455,7 +455,7 @@ async fn wait_ready(address: SocketAddr) {
     }
 }
 
-async fn wait_metrics(address: SocketAddr, samples: &[&str]) {
+async fn wait_metrics(address: SocketAddr, samples: &[&str]) -> String {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -471,11 +471,11 @@ async fn wait_metrics(address: SocketAddr, samples: &[&str]) {
             .await
             .expect("read metrics");
         if samples.iter().all(|sample| text.contains(sample)) {
-            return;
+            return text;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "WebSocket termination metrics did not converge: {samples:?}"
+            "WebSocket termination metrics did not converge: {samples:?}; actual: {text}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -751,6 +751,23 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
     tokio::time::timeout(Duration::from_secs(2), state.realtime_control.notified())
         .await
         .expect("client-to-worker direction remains live under downstream backpressure");
+    let observed = wait_metrics(
+        router_address,
+        &[
+            "sglang_omni_router_http_first_payload_duration_seconds_count{route=\"realtime_websocket\"} 0\n",
+            "sglang_omni_router_http_first_payload_duration_seconds_count{route=\"speech_websocket\"} 0\n",
+        ],
+    )
+    .await;
+    let rejected_metric = "sglang_omni_router_http_response_headers_total{route=\"realtime_websocket\",status=\"4xx\"}";
+    let rejected_before: u64 = observed
+        .lines()
+        .find_map(|line| line.strip_prefix(rejected_metric))
+        .expect("realtime response count")
+        .trim()
+        .parse()
+        .expect("numeric response count");
+    let rejected_after = format!("{rejected_metric} {}\n", rejected_before + 1);
     let saturated = connect_async(format!("ws://{router_address}/v1/realtime"))
         .await
         .expect_err("second realtime session is rejected before upgrade");
@@ -760,7 +777,7 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
     wait_metrics(
         router_address,
         &[
-            "sglang_omni_router_http_response_headers_total{route=\"realtime_websocket\",status=\"4xx\"} 1\n",
+            &rejected_after,
             "sglang_omni_router_websocket_terminations_total{protocol=\"realtime\",phase=\"setup\",reason=\"dispatch_error\"} 0\n",
         ],
     )

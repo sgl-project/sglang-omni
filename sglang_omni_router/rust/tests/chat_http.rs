@@ -314,6 +314,14 @@ fn serve_connection(
                 wait_for_response_release(&response_gate);
                 write_response(&mut stream, b"E\r\ndata: [DONE]\n\n\r\n0\r\n\r\n");
             }
+            b"controlled-first-payload" => {
+                write_response(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                );
+                wait_for_response_release(&response_gate);
+                write_response(&mut stream, b"B\r\ndata: one\n\n\r\nE\r\ndata: [DONE]\n\n\r\n0\r\n\r\n");
+            }
             b"disconnect-hold" => {
                 write_response(
                     &mut stream,
@@ -347,6 +355,17 @@ fn serve_connection(
             b"empty-body" => write_response(
                 &mut stream,
                 b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ),
+            b"before-payload-reset" => {
+                write_response(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n",
+                );
+                return;
+            }
+            b"only-trailers" => write_response(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nTrailer: X-Worker-Trailer\r\nConnection: close\r\n\r\n0\r\nX-Worker-Trailer: done\r\n\r\n",
             ),
             b"response-trailers" => write_response(
                 &mut stream,
@@ -699,6 +718,18 @@ fn metrics(address: SocketAddr) -> String {
     String::from_utf8(response).expect("metrics are UTF-8")
 }
 
+fn metric_sample(metrics: &str, name: &str) -> f64 {
+    metrics
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(name)
+                .and_then(|sample| sample.strip_prefix(' '))
+        })
+        .expect("metric sample")
+        .parse()
+        .expect("numeric metric sample")
+}
+
 fn status(response: &[u8]) -> u16 {
     let line_end = response
         .windows(2)
@@ -937,6 +968,9 @@ fn relay_holds_admission_and_is_not_cut_off_after_commitment() {
     assert!(metrics(router.address).contains(
         "sglang_omni_router_http_response_body_terminations_total{outcome=\"complete\"} 1\n"
     ));
+    assert!(metrics(router.address).contains(
+        "sglang_omni_router_http_first_payload_duration_seconds_count{route=\"chat\"} 1\n"
+    ));
 
     drop(router);
     drop(worker);
@@ -950,17 +984,140 @@ fn relay_holds_admission_and_is_not_cut_off_after_commitment() {
 }
 
 #[test]
+fn first_payload_latency_includes_header_wait_and_gated_body_wait() {
+    for request in [
+        b"controlled-first-payload".as_slice(),
+        b"controlled-headers",
+    ] {
+        let worker = Worker::start();
+        let router = RouterProcess::start(worker.address, 1, 2_000, false);
+        let address = router.address;
+        let client = thread::spawn(move || post(address, request, None));
+        worker.wait_for_requests(1);
+        let header_count =
+            "sglang_omni_router_http_response_header_duration_seconds_count{route=\"chat\"}";
+        let payload_count =
+            "sglang_omni_router_http_first_payload_duration_seconds_count{route=\"chat\"}";
+        let expected_headers = if request == b"controlled-first-payload" {
+            1.0
+        } else {
+            0.0
+        };
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let observed = metrics(router.address);
+            assert_eq!(metric_sample(&observed, payload_count), 0.0);
+            if metric_sample(&observed, header_count) == expected_headers {
+                break;
+            }
+            assert!(Instant::now() < deadline, "response headers did not arrive");
+            thread::sleep(Duration::from_millis(2));
+        }
+        thread::sleep(Duration::from_millis(30));
+        worker.release_response();
+        let response = client.join().expect("join gated response");
+        assert_eq!(status(&response), 200);
+        let observed = metrics(router.address);
+        assert_eq!(metric_sample(&observed, payload_count), 1.0);
+        let header_seconds = metric_sample(
+            &observed,
+            "sglang_omni_router_http_response_header_duration_seconds_sum{route=\"chat\"}",
+        );
+        let payload_seconds = metric_sample(
+            &observed,
+            "sglang_omni_router_http_first_payload_duration_seconds_sum{route=\"chat\"}",
+        );
+        assert!(payload_seconds >= header_seconds);
+        assert!(payload_seconds >= 0.03, "the boundary timestamp was reset");
+        for route in [
+            "live",
+            "ready",
+            "metrics",
+            "unknown",
+            "speech_websocket",
+            "realtime_websocket",
+        ] {
+            assert_eq!(
+                metric_sample(
+                    &observed,
+                    &format!(
+                        "sglang_omni_router_http_first_payload_duration_seconds_count{{route=\"{route}\"}}"
+                    )
+                ),
+                0.0
+            );
+        }
+    }
+}
+
+#[test]
+fn disconnect_before_first_payload_does_not_record_a_latency_sample() {
+    let worker = Worker::start();
+    let router = RouterProcess::start(worker.address, 1, 2_000, false);
+    let mut client = TcpStream::connect(router.address).expect("connect gated body client");
+    client
+        .set_read_timeout(Some(DEADLINE))
+        .expect("bound client read");
+    client.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 24\r\nConnection: close\r\n\r\ncontrolled-first-payload").expect("send gated body request");
+    assert!(
+        read_request_head(&mut client)
+            .expect("response headers")
+            .starts_with("HTTP/1.1 200")
+    );
+    drop(client);
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let observed = metrics(router.address);
+        assert_eq!(
+            metric_sample(
+                &observed,
+                "sglang_omni_router_http_first_payload_duration_seconds_count{route=\"chat\"}"
+            ),
+            0.0
+        );
+        if metric_sample(
+            &observed,
+            "sglang_omni_router_http_response_body_terminations_total{outcome=\"dropped\"}",
+        ) == 1.0
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "disconnect was not observed");
+        thread::sleep(Duration::from_millis(2));
+    }
+    worker.release_response();
+}
+
+#[test]
 fn response_body_outcomes_cover_fixed_empty_and_trailer_boundaries() {
-    for (request, outcome) in [
-        (b"fixed-body".as_slice(), "complete"),
-        (b"empty-body".as_slice(), "complete"),
-        (b"response-trailers".as_slice(), "upstream_error"),
+    for (request, outcome, payload_count) in [
+        (b"fixed-body".as_slice(), "complete", 1.0),
+        (b"empty-body".as_slice(), "complete", 0.0),
+        (b"response-trailers".as_slice(), "upstream_error", 1.0),
+        (b"only-trailers".as_slice(), "upstream_error", 0.0),
+        (b"before-payload-reset".as_slice(), "upstream_error", 0.0),
     ] {
         let worker = Worker::start();
         let router = RouterProcess::start(worker.address, 1, 2_000, false);
         let response = post(router.address, request, None);
-        assert_eq!(status(&response), 200);
+        if payload_count != 0.0 || outcome == "complete" {
+            assert_eq!(status(&response), 200);
+        }
         let observed = metrics(router.address);
+        assert_eq!(
+            metric_sample(
+                &observed,
+                "sglang_omni_router_http_response_header_duration_seconds_count{route=\"chat\"}"
+            ),
+            1.0
+        );
+        assert_eq!(
+            metric_sample(
+                &observed,
+                "sglang_omni_router_http_first_payload_duration_seconds_count{route=\"chat\"}"
+            ),
+            payload_count
+        );
         assert!(
             observed.contains(&format!(
                 "sglang_omni_router_http_response_body_terminations_total{{outcome=\"{outcome}\"}} 1\n"

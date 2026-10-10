@@ -547,6 +547,7 @@ pub(crate) struct RouterMetrics {
     requests: [AtomicU64; HttpRoute::ALL.len()],
     responses: [[AtomicU64; StatusClass::ALL.len()]; HttpRoute::ALL.len()],
     response_header_durations: [DurationHistogram; HttpRoute::ALL.len()],
+    first_payload_durations: [DurationHistogram; HttpRoute::ALL.len()],
     cancelled_before_headers: [AtomicU64; HttpRoute::ALL.len()],
     classification_durations:
         [[DurationHistogram; ClassificationPhase::ALL.len()]; ClassificationKind::ALL.len()],
@@ -566,6 +567,7 @@ impl RouterMetrics {
             requests: std::array::from_fn(|_| AtomicU64::new(0)),
             responses: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
             response_header_durations: std::array::from_fn(|_| DurationHistogram::new()),
+            first_payload_durations: std::array::from_fn(|_| DurationHistogram::new()),
             cancelled_before_headers: std::array::from_fn(|_| AtomicU64::new(0)),
             classification_durations: std::array::from_fn(|_| {
                 std::array::from_fn(|_| DurationHistogram::new())
@@ -597,6 +599,10 @@ impl RouterMetrics {
 
     pub(crate) fn record_response_header_duration(&self, route: HttpRoute, duration: Duration) {
         self.response_header_durations[route.index()].observe(duration);
+    }
+
+    pub(crate) fn record_first_payload_duration(&self, route: HttpRoute, duration: Duration) {
+        self.first_payload_durations[route.index()].observe(duration);
     }
 
     pub(crate) fn record_cancelled_before_headers(&self, route: HttpRoute) {
@@ -652,6 +658,10 @@ impl RouterMetrics {
 
     pub(crate) fn response_header_duration(&self, route: HttpRoute) -> DurationHistogramSnapshot {
         self.response_header_durations[route.index()].snapshot()
+    }
+
+    pub(crate) fn first_payload_duration(&self, route: HttpRoute) -> DurationHistogramSnapshot {
+        self.first_payload_durations[route.index()].snapshot()
     }
 
     pub(crate) fn cancelled_before_headers(&self, route: HttpRoute) -> u64 {
