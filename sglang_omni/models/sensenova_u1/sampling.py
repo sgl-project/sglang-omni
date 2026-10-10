@@ -199,6 +199,8 @@ def _cache_dit_values(
                 raise ValueError(f"cache_dit_params.{name} must be between 0 and 1")
             else:
                 pass
+        elif name == "Fn_compute_blocks" and (type(value) is not int or value < 1):
+            raise ValueError(f"cache_dit_params.{name} must be a positive integer")
         elif type(value) is not int or value < 0:
             raise ValueError(f"cache_dit_params.{name} must be a non-negative integer")
         else:
@@ -229,6 +231,20 @@ def resolve_cache_dit_params(
         return bool(enabled), validated_params
     else:
         raise ValueError("cache_dit_params must be a mapping")
+
+
+def resolve_cache_dit_defaults(
+    default_enabled: bool,
+    params: dict[str, int | float] | None,
+) -> tuple[bool, dict[str, int | float] | None]:
+    if params is None:
+        return default_enabled, None
+    else:
+        pass
+    _, validated_params = resolve_cache_dit_params(
+        {"enable_cache_dit": True, "cache_dit_params": params}, True
+    )
+    return default_enabled, validated_params
 
 
 def image_guidance_branch_count(cfg_scale: float, img_cfg_scale: float) -> int:

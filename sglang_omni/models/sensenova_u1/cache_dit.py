@@ -115,9 +115,18 @@ class SenseNovaCacheDit:
         has_separate_cfg: bool,
     ) -> None:
         layers = transformer.layers
+        num_layers = transformer.config.num_hidden_layers
+        first_blocks = params.get("Fn_compute_blocks", 1)
+        back_blocks = params.get("Bn_compute_blocks", 0)
+        if first_blocks + back_blocks > num_layers:
+            raise ValueError(
+                "SenseNova Cache-DiT Fn_compute_blocks and Bn_compute_blocks "
+                "must not exceed the decoder layer count"
+            )
+        else:
+            pass
         attention_types = {
-            layer.attention_type
-            for layer in layers[: transformer.config.num_hidden_layers]
+            layer.attention_type for layer in layers[:num_layers]
         }
         if len(attention_types) != 1 or None in attention_types:
             raise ValueError(

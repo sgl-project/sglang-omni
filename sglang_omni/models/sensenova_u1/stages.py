@@ -32,6 +32,7 @@ from sglang_omni.models.sensenova_u1.sampling import (
     SenseNovaU1Sampling,
     cache_dit_batch_key,
     image_guidance_branch_count,
+    resolve_cache_dit_defaults,
     resolve_cache_dit_params,
 )
 from sglang_omni.models.weight_loader import resolve_dtype
@@ -551,8 +552,8 @@ def create_generation_executor(
         offload = SenseNovaLayerwiseOffload(model, resolved_device, offload_config)
     else:
         model = model.to(resolved_device)
-    enable_cache_dit, cache_dit_params = resolve_cache_dit_params(
-        {"cache_dit_params": cache_dit_params}, enable_cache_dit
+    enable_cache_dit, cache_dit_params = resolve_cache_dit_defaults(
+        enable_cache_dit, cache_dit_params
     )
     model._sensenova_cache_dit: SenseNovaCacheDit = SenseNovaCacheDit(
         enabled_by_default=enable_cache_dit,
