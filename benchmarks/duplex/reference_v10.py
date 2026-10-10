@@ -66,6 +66,13 @@ REFERENCE_FILES_RECORD = {
     key: {"path": path, "sha256": sha256}
     for key, (path, sha256) in V10_REFERENCE_FILES.items()
 }
+# note (luojiaxuan): the pinned evaluator sends neither a token cap nor a thinking
+# switch; a self-hosted Qwen judge would spend SGLang's default 128 new tokens on
+# reasoning, so the non-official path turns thinking off and caps the answer.
+SELF_HOSTED_JUDGE_OPTIONS: dict[str, JsonValue] = {
+    "max_tokens": 512,
+    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+}
 RESULT_MEAN_LINE = re.compile(r"(?P<label>.+) - Mean: (?P<mean>\S+) ± (?P<std>\S+)")
 RESULT_VALUE_LINE = re.compile(r"(?P<label>[^:]+):\s+(?P<value>\S+)")
 
@@ -298,15 +305,17 @@ class JudgeLedger:
             pass
         self.attempts[request_sha256] += 1
         sent_model = model if self.served_model is None else self.served_model
+        options = {} if self.served_model is None else SELF_HOSTED_JUDGE_OPTIONS
         started_utc, started_s = utc_now(), time.monotonic()
         response = self.client.chat.completions.create(
-            model=sent_model, messages=messages, seed=seed
+            model=sent_model, messages=messages, seed=seed, **options
         )
         exchange = {
             "request_sha256": request_sha256,
             "attempt": self.attempts[request_sha256],
             "requested_model": model,
             "sent_model": sent_model,
+            "sent_options": options,
             "returned_model": response.model,
             "seed": seed,
             "started_utc": started_utc,

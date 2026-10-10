@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""One-time setup: reference checkout, scoring venv, dataset and model checkpoints.
-Safe to rerun; finished steps are skipped."""
+"""One-time setup: reference checkout, scoring venv, the v1.5 and v1.0 datasets
+and model checkpoints. Safe to rerun; finished steps are skipped."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import subprocess
 import sys
 import zipfile
 from importlib.metadata import PackageNotFoundError, requires
+from pathlib import Path
 
 from huggingface_hub import hf_hub_download, model_info, snapshot_download
 from packaging.requirements import Requirement
@@ -26,7 +27,9 @@ from benchmarks.duplex.fdb_v15.common import (
     Settings,
     log,
 )
+from benchmarks.duplex.reference_core import V10_REFERENCE_FILES
 from benchmarks.duplex.run_artifacts import file_sha256
+from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
 from benchmarks.duplex.v15_dataset import SUBSETS
 
 REFERENCE_FILE_SHA256 = {
@@ -34,6 +37,7 @@ REFERENCE_FILE_SHA256 = {
     "v1_v1.5/evaluation/get_timing.py": "4f551da4194ab4d9584db964f4b27223914eecf98cbc312388ecf45eaf6f8a17",
     "v1_v1.5/evaluation/eval_behavior.py": "0ff8179a437503581d65787da3a43924b45310c31a98d1bcbadce5c8605ca6f2",
     "v1_v1.5/evaluation/instruction/behavior.txt": "19e5477dac9a9a1e11de126783a0b820b3ecb70db5e91181824fa944e1947977",
+    **dict(V10_REFERENCE_FILES.values()),
 }
 SCORING_PYTHON_VERSION = "3.12"
 SCORING_PACKAGES = [
@@ -48,6 +52,10 @@ SCORING_PACKAGES = [
     "tqdm",
     "websockets",
     "gdown",
+    # note (luojiaxuan): the pinned v1.0 evaluate.py imports dotenv, and its
+    # backchannel task reads WAV through torchaudio, which needs torchcodec.
+    "python-dotenv",
+    "torchcodec==0.11.*",
 ]
 TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu130"
 DATASET_DRIVE_FILE_IDS = {
@@ -56,12 +64,19 @@ DATASET_DRIVE_FILE_IDS = {
     "talking_to_other": "1Jh6ER4AUmqGgEZBTV0pcbDaMMQIWA7Kt",
     "background_speech": "1W63k1BlQ0QCgvYCb_8YJNqFfUhBwI97W",
 }
+V10_DATASET_DRIVE_FILE_IDS = {
+    "synthetic_pause_handling": "1iV0X6z3Z9SrmJvxJ2Hkij3nb8iuWbJyv",
+    "candor_pause_handling": "1uls3atEz7bZ1IkVq3Rw0yQyLAjjVkklc",
+    "candor_turn_taking": "1sb9mwOqDCK9BEpMb6fDVYOJU1vd5RFlb",
+    "synthetic_user_interruption": "1I36wGbPtZObjqI_1h11Rb2s1ulerb65a",
+    "icc_backchannel": "1HttNZbi0bYHe7a-CO_9vg_z7hMM8a5h0",
+}
 SERVING_DISTRIBUTION = "sglang-omni"
 MODEL_EXTRA = "minicpm-o"
 
 
 def setup_model_extra() -> None:
-    log(f"== [1/7] {MODEL_EXTRA} extra in the serving venv ({sys.executable})")
+    log(f"== [1/8] {MODEL_EXTRA} extra in the serving venv ({sys.executable})")
     try:
         declared = requires(SERVING_DISTRIBUTION) or []
     except PackageNotFoundError:
@@ -105,7 +120,7 @@ def setup_model_extra() -> None:
 
 
 def setup_reference_source(settings: Settings) -> None:
-    log(f"== [2/7] Full-Duplex-Bench reference checkout at {FDB_SOURCE_REVISION}")
+    log(f"== [2/8] Full-Duplex-Bench reference checkout at {FDB_SOURCE_REVISION}")
     if not (settings.fdb_source / ".git").is_dir():
         subprocess.run(
             ["git", "clone", FDB_SOURCE_URL, str(settings.fdb_source)], check=True
@@ -133,7 +148,7 @@ def setup_reference_source(settings: Settings) -> None:
 
 
 def setup_scoring_venv(settings: Settings) -> None:
-    log(f"== [3/7] Scoring venv at {settings.scoring_venv}")
+    log(f"== [3/8] Scoring venv at {settings.scoring_venv}")
     if not settings.scoring_python.is_file():
         subprocess.run(
             [
@@ -165,18 +180,25 @@ def setup_scoring_venv(settings: Settings) -> None:
     )
 
 
-def setup_dataset(settings: Settings) -> None:
-    log(f"== [4/7] FDB v1.5 dataset at {settings.dataset}")
-    zip_dir = settings.dataset_dir / "zips"
+def setup_dataset(
+    step: str,
+    settings: Settings,
+    dataset: Path,
+    revision_file: Path,
+    zip_dir: Path,
+    subsets: tuple[str, ...],
+    drive_file_ids: dict[str, str],
+) -> None:
+    log(f"== {step} FDB {dataset.name} dataset at {dataset}")
     zip_dir.mkdir(parents=True, exist_ok=True)
-    for subset in SUBSETS:
+    for subset in subsets:
         zip_path = zip_dir / f"{subset}.zip"
         if not zip_path.is_file() or zip_path.stat().st_size == 0:
             subprocess.run(
                 [
                     str(settings.scoring_venv / "bin" / "gdown"),
                     "--quiet",
-                    DATASET_DRIVE_FILE_IDS[subset],
+                    drive_file_ids[subset],
                     "-O",
                     str(zip_path),
                 ],
@@ -184,29 +206,27 @@ def setup_dataset(settings: Settings) -> None:
             )
         else:
             pass
-        if not (settings.dataset / subset).is_dir():
+        if not (dataset / subset).is_dir():
             with zipfile.ZipFile(zip_path) as archive:
-                archive.extractall(settings.dataset)
+                archive.extractall(dataset)
         else:
             pass
-    shutil.rmtree(settings.dataset / "__MACOSX", ignore_errors=True)
+    shutil.rmtree(dataset / "__MACOSX", ignore_errors=True)
     # Same text as `sha256sum ./*.zip`, so the revision matches earlier setups.
     checksums = "".join(
         f"{file_sha256(zip_path)}  ./{zip_path.name}\n"
         for zip_path in sorted(zip_dir.glob("*.zip"))
     )
-    (settings.dataset_dir / "zips.sha256").write_text(checksums)
+    zip_dir.with_name(f"{zip_dir.name}.sha256").write_text(checksums)
     revision = hashlib.sha256(checksums.encode()).hexdigest()
-    settings.dataset_revision_file.write_text(f"sha256:{revision}\n")
-    for subset in SUBSETS:
-        sample_count = sum(
-            path.is_dir() for path in (settings.dataset / subset).iterdir()
-        )
+    revision_file.write_text(f"sha256:{revision}\n")
+    for subset in subsets:
+        sample_count = sum(path.is_dir() for path in (dataset / subset).iterdir())
         log(f"   {subset}: {sample_count} samples")
 
 
 def setup_parakeet(settings: Settings) -> None:
-    log("== [5/7] Parakeet ASR checkpoint")
+    log("== [6/8] Parakeet ASR checkpoint")
     nemo = settings.parakeet_nemo
     if nemo.is_file() and file_sha256(nemo) == PARAKEET_SHA256:
         return
@@ -225,14 +245,14 @@ def setup_parakeet(settings: Settings) -> None:
 
 
 def setup_models(settings: Settings) -> None:
-    log(f"== [6/7] Model under test at {settings.model_path}")
+    log(f"== [7/8] Model under test at {settings.model_path}")
     if not (settings.model_path / "config.json").is_file():
         snapshot_download(
             MODEL_ID, revision=settings.model_revision, local_dir=settings.model_path
         )
     else:
         pass
-    log(f"== [7/7] Judge model at {settings.judge_model_path} (JUDGE={settings.judge})")
+    log(f"== [8/8] Judge model at {settings.judge_model_path} (JUDGE={settings.judge})")
     if settings.judge == "qwen" and not settings.judge_revision_file.is_file():
         judge_revision = model_info(JUDGE_MODEL_ID).sha
         snapshot_download(
@@ -248,7 +268,24 @@ def setup(settings: Settings) -> None:
     (settings.fdb_work / "models").mkdir(parents=True, exist_ok=True)
     setup_reference_source(settings)
     setup_scoring_venv(settings)
-    setup_dataset(settings)
+    setup_dataset(
+        "[4/8]",
+        settings,
+        settings.dataset,
+        settings.dataset_revision_file,
+        settings.dataset_dir / "zips",
+        SUBSETS,
+        DATASET_DRIVE_FILE_IDS,
+    )
+    setup_dataset(
+        "[5/8]",
+        settings,
+        settings.dataset_v10,
+        settings.dataset_v10_revision_file,
+        settings.dataset_dir / "zips-v1.0",
+        V10_SUBSETS,
+        V10_DATASET_DRIVE_FILE_IDS,
+    )
     setup_parakeet(settings)
     setup_models(settings)
     log("Setup complete.")

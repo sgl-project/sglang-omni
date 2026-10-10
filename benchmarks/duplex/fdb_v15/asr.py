@@ -1,17 +1,49 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 2: Parakeet ASR of all four roles, then official VAD timing intervals."""
+"""Step 2: Parakeet ASR of all four v1.5 roles, official VAD timing intervals,
+then Parakeet ASR of the v1.0 outputs."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from benchmarks.duplex.fdb_v15.common import (
     ENGINE_LABEL,
     PARAKEET_SHA256,
+    V10_DIR,
     Settings,
     log,
     reference_command,
     run_command,
     step_command,
+    v10_command,
 )
+
+
+def v10_asr(settings: Settings, tree: Path) -> bool:
+    """Transcribe the v1.0 export once; the pinned path refuses a second pass."""
+    if (tree / "asr.json").is_file():
+        log(f"== v1.0 ASR done earlier: {tree / 'asr.json'}")
+        return True
+    else:
+        pass
+    log(f"== v1.0 ASR (Parakeet on GPU {settings.gpu})")
+    return run_command(
+        v10_command(
+            settings,
+            "reference-asr",
+            "--tree",
+            str(tree),
+            "--reference-source",
+            str(settings.fdb_source),
+            "--nemo",
+            str(settings.parakeet_nemo),
+            "--nemo-sha256",
+            PARAKEET_SHA256,
+            "--device",
+            "cuda",
+        ),
+        visible_gpus=settings.gpu,
+    )
 
 
 def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
@@ -55,8 +87,12 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
         ),
         visible_gpus="",
     )
+    v10_tree = repeat_dir / V10_DIR / "reference"
+    is_v10_ok = (
+        v10_asr(settings, v10_tree) if (v10_tree / "manifest.json").is_file() else True
+    )
 
-    if not (is_asr_ok and is_timing_ok):
+    if not (is_asr_ok and is_timing_ok and is_v10_ok):
         raise SystemExit(
             f"WARNING: a phase reported failures; logs are in {scores / 'logs'}. "
             f"Rerun with: {step_command('asr', settings, repeat)} --retry-failed"
