@@ -392,7 +392,9 @@ class Code2WavCudaGraphRunner:
         remaining = list(self.priority_order(self.tier1_keys))
         while True:
             if remaining:
-                if tier1_info["attempts"] >= self.TIER1_MAX_ATTEMPTS:
+                # note (ratish): a shrink drops at least one tier-1 key, so one attempt per
+                # key reaches every smaller batch class; past that a footprint never settled.
+                if tier1_info["attempts"] >= len(self.tier1_keys):
                     remaining = []
                 else:
                     tier1_info["attempts"] += 1
@@ -456,8 +458,6 @@ class Code2WavCudaGraphRunner:
             len(self.graphs),
             self.device,
         )
-
-    TIER1_MAX_ATTEMPTS = 6
 
     def capture_attempt(
         self,

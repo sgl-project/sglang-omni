@@ -1,9 +1,10 @@
 // OmniPhase1LifecycleTests.swift
-// Lifecycle and fault acceptance for local Qwen on the Omni server.
+// Lifecycle and fault acceptance for a local model on its Omni server.
 //
 // Opt-in: VOXT_RUN_MODEL_TESTS=1, VOXT_ASR_BACKEND=omni with VOXT_OMNI_RUNTIME
 // (the native qwen3_asr_server binary), VOXT_MODEL_STORAGE_ROOT, and VOXT_LIFECYCLE_CLIPS (a directory with
-// short.wav and long.wav, 16 kHz mono). VOXT_LIFECYCLE_OUT receives a JSONL
+// short.wav and long.wav, 16 kHz mono). VOXT_LIFECYCLE_REPO picks the model
+// (Qwen3-ASR 0.6B 4-bit by default). VOXT_LIFECYCLE_OUT receives a JSONL
 // record per round; VOXT_LIFECYCLE_ROUNDS defaults to 200.
 
 import Darwin
@@ -12,7 +13,17 @@ import XCTest
 
 @MainActor
 final class OmniPhase1LifecycleTests: XCTestCase {
-    private let repo = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    private let repo = ProcessInfo.processInfo.environment["VOXT_LIFECYCLE_REPO"]
+        ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
+
+    /// The executable name of the server Voxt launches for `repo`.
+    private var serverName: String {
+        get throws {
+            let kind = try XCTUnwrap(OmniASRBackend.modelKind(for: repo), "\(repo) has no Omni server")
+            let configuration = try XCTUnwrap(OmniASRBackend.configuration(for: kind))
+            return configuration.runtimeExecutable.lastPathComponent
+        }
+    }
 
     private struct Fixtures {
         let short: (samples: [Float], sampleRate: Double)
@@ -122,10 +133,11 @@ final class OmniPhase1LifecycleTests: XCTestCase {
             )
         }
         try await Task.sleep(for: .milliseconds(400))
+        let serverName = try serverName
         let servers = ProcessTree.descendants().filter {
-            ProcessTree.commandLine(of: $0).contains("qwen3_asr_server")
+            ProcessTree.commandLine(of: $0).contains(serverName)
         }
-        XCTAssertFalse(servers.isEmpty, "no Qwen3-ASR server process found")
+        XCTAssertFalse(servers.isEmpty, "no \(serverName) process found")
         servers.forEach { kill($0, SIGKILL) }
 
         let failedAt = ContinuousClock.now
@@ -197,6 +209,9 @@ final class OmniPhase1LifecycleTests: XCTestCase {
     /// Cancelling a live session mid-stream leaves the server idle, so the Final
     /// that follows does not wait behind a stale live decode.
     func testCancelledLiveSessionLeavesTheServerIdle() async throws {
+        guard OmniASRBackend.modelKind(for: repo) == .qwen3ASR else {
+            throw XCTSkip("Only Qwen3-ASR has live sessions on its Omni server.")
+        }
         let fixtures = try fixtures()
         let manager = try await makeManager()
         let transcriber = MLXTranscriber(modelManager: manager)

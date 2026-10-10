@@ -6,7 +6,6 @@
 #include <condition_variable>
 #include <deque>
 #include <exception>
-#include <filesystem>
 #include <functional>
 #include <future>
 #include <map>
@@ -15,7 +14,6 @@
 #include <optional>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include "transcriber.h"
 
@@ -27,6 +25,11 @@ inline CancelFlag NewCancelFlag() {
   return std::make_shared<std::atomic<bool>>(false);
 }
 
+// One transcription bound to its audio and options; runs on the worker
+// thread and stops with TranscriptionCancelled once its flag is set.
+using Transcription =
+    std::function<TranscriptionResult(const std::atomic<bool> &)>;
+
 // Serializes requests: one model, one MLX stream, one request at a time.
 class TranscriptionWorker {
 public:
@@ -35,35 +38,30 @@ public:
   using Completion = std::function<void(std::optional<TranscriptionResult>,
                                         std::exception_ptr)>;
 
-  // Loads the model on the worker thread; throws what loading throws.
-  explicit TranscriptionWorker(const std::filesystem::path &model_directory);
+  // Runs load on the worker thread; throws what load throws.
+  explicit TranscriptionWorker(std::function<void()> load);
   ~TranscriptionWorker();
   TranscriptionWorker(const TranscriptionWorker &) = delete;
   TranscriptionWorker &operator=(const TranscriptionWorker &) = delete;
 
-  void Submit(std::vector<float> samples, TranscriptionOptions options,
-              CancelFlag cancel, Completion completion);
-  TranscriptionResult Transcribe(std::vector<float> samples,
-                                 TranscriptionOptions options,
+  void Submit(Transcription transcription, CancelFlag cancel,
+              Completion completion);
+  TranscriptionResult Transcribe(Transcription transcription,
                                  CancelFlag cancel);
   // Requests waiting for the worker and running on it; empty when idle.
   std::map<std::string, int> RequestStates() const;
   // Cancels everything queued or running, as on shutdown.
   void CancelAll();
 
-  const Qwen3ASRTranscriber &transcriber() const { return *transcriber_; }
-
 private:
   struct Job {
-    std::vector<float> samples;
-    TranscriptionOptions options;
+    Transcription transcription;
     CancelFlag cancel;
     Completion completion;
   };
 
-  void Run(std::promise<void> loaded, std::filesystem::path model_directory);
+  void Run(std::promise<void> loaded, std::function<void()> load);
 
-  std::unique_ptr<Qwen3ASRTranscriber> transcriber_;
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::deque<Job> queue_;

@@ -20,6 +20,8 @@ sgl-omni serve \
   --port 8000
 ```
 
+For Intel XPU installation and launch, see the [Whisper XPU recipe](../get_started/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
+
 ## Encoder CUDA Graph
 
 The encoder CUDA Graph is enabled by default. With pre-LM encoding (the default), capture buckets follow `pre_lm_max_batch_size` (8), so batches **1/2/4/8** are captured. `request_build_max_workers` defaults to 8, matching Qwen3-ASR and Fun-ASR. When `enable_pre_lm_encoder` is false, buckets follow the atomic prefill budget (`6144 // 1500 = 4`). To use eager encoder execution, override the pipeline configuration:
@@ -104,7 +106,7 @@ stages:
 
 ## Async Decode
 
-Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 64. Disable async decode on the stage to compare against synchronous decode or diagnose a request lifecycle issue:
+Whisper enables the shared one-step-lookahead decode path at every batch size, including a single request. It overlaps the current decode step's GPU work with the previous step's host-side result processing. The default running-request limit is 64. Disable async decode on the stage to compare against synchronous decode or diagnose a request lifecycle issue:
 
 ```bash
 sgl-omni serve \

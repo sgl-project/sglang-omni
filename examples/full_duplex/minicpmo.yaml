@@ -29,8 +29,6 @@ stages:
     gpu_memory_fraction: 0.12
   thinker:
     gpu_memory_fraction: 0.52
-    engine:
-      context_length: 8192
   talker:
     gpu_memory_fraction: 0.15
   speech:

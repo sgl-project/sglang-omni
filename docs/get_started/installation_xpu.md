@@ -12,7 +12,7 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
 that model's CosyVoice dependencies — see
 [Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). ZONOS2 also serves here,
@@ -133,6 +133,17 @@ sgl-omni serve --model-path /path/to/Qwen3-ASR-1.7B --host 0.0.0.0 --port 8000
 curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "file=@sample.wav" -F "model=/path/to/Qwen3-ASR-1.7B"
 ```
+
+### Whisper ASR (speech-to-text, single XPU)
+
+```bash
+sgl-omni serve --model-path openai/whisper-large-v3 --host 0.0.0.0 --port 8000
+# transcribe:
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@sample.wav" -F "model=openai/whisper-large-v3"
+```
+
+See the [Whisper cookbook](../cookbook/whisper_asr.md) for request parameters.
 
 ### Fun-ASR-Nano (speech-to-text, single XPU)
 
@@ -494,8 +505,8 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
+> ✅ Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
 > Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
+> (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).

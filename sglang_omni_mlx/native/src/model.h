@@ -3,13 +3,13 @@
 #pragma once
 
 #include <filesystem>
-#include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "audio.h"
+#include "layers.h"
 #include "mlx/mlx.h"
+#include "qwen3_decoder.h"
 
 namespace qwen3_asr {
 
@@ -20,34 +20,6 @@ struct AudioEncoderConfig {
   int d_model = 0;
   int n_window = 0;
   int n_window_infer = 0;
-};
-
-struct TextDecoderConfig {
-  int num_hidden_layers = 0;
-  int num_attention_heads = 0;
-  int num_key_value_heads = 0;
-  int head_dim = 0;
-  float rms_norm_eps = 0.0f;
-  float rope_theta = 0.0f;
-};
-
-struct QuantizationConfig {
-  int group_size = 0;
-  int bits = 0;
-  std::string mode = "affine";
-};
-
-// Per-layer key/value cache that grows in fixed steps.
-class KVCache {
-public:
-  std::pair<mlx::core::array, mlx::core::array>
-  UpdateAndFetch(const mlx::core::array &keys, const mlx::core::array &values);
-  int offset() const { return offset_; }
-
-private:
-  std::optional<mlx::core::array> keys_;
-  std::optional<mlx::core::array> values_;
-  int offset_ = 0;
 };
 
 class Qwen3ASR {
@@ -67,25 +39,16 @@ public:
   std::vector<KVCache> NewCaches() const;
 
 private:
-  const mlx::core::array &Weight(const std::string &name) const;
-  bool Has(const std::string &name) const;
-  mlx::core::array Linear(const mlx::core::array &x,
-                          const std::string &prefix) const;
-  mlx::core::array LayerNorm(const mlx::core::array &x,
-                             const std::string &prefix) const;
-  mlx::core::array RmsNorm(const mlx::core::array &x,
-                           const std::string &prefix) const;
+  Qwen3ASR(const nlohmann::json &config,
+           const std::filesystem::path &model_directory);
   mlx::core::array Conv2d(const mlx::core::array &x,
                           const std::string &prefix) const;
   mlx::core::array AudioEncoderLayer(const mlx::core::array &x,
                                      int layer) const;
-  mlx::core::array TextDecoderLayer(const mlx::core::array &x, int layer,
-                                    KVCache &cache) const;
 
   AudioEncoderConfig audio_;
-  TextDecoderConfig text_;
-  QuantizationConfig quantization_;
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  Checkpoint checkpoint_;
+  Qwen3Decoder decoder_;
 };
 
 } // namespace qwen3_asr

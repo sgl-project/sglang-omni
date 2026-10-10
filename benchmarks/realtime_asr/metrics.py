@@ -33,26 +33,26 @@ import statistics
 from collections import defaultdict
 from typing import Any
 
+from pydantic import JsonValue
+
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.realtime_asr.client import SAMPLE_RATE, SessionTrace
 from benchmarks.tasks.asr import apply_wer
 
 
 def check_invariants(trace: SessionTrace) -> list[str]:
-    """Return every protocol violation found in ``trace`` (empty means clean)."""
+    """Return every protocol violation found in trace (empty means clean)."""
     violations: list[str] = []
     if trace.error:
         violations.append(f"client error: {trace.error}")
+    else:
+        pass
 
-    for item in trace.events("error"):
-        violations.append(f"server error event: {item.event.get('error')}")
+    for record in trace.events("error"):
+        violations.append(f"server error event: {record.event.get('error')}")
 
-    indexes = [
-        item.event.get("event_index")
-        for item in trace.received
-        if "event_index" in item.event
-    ]
-    if any(not isinstance(index, int) for index in indexes):
+    indexes = [record.event.get("event_index") for record in trace.received]
+    if any(type(index) is not int for index in indexes):
         violations.append("event_index missing or non-integer on some events")
     else:
         for previous, current in zip(indexes, indexes[1:]):
@@ -61,30 +61,68 @@ def check_invariants(trace: SessionTrace) -> list[str]:
                     f"event_index not strictly increasing: {previous} -> {current}"
                 )
                 break
+            else:
+                pass
 
     committed_ids = [
-        item.event.get("segment_id")
-        for item in trace.events("input_audio_buffer.committed")
+        record.event.get("segment_id")
+        for record in trace.events("input_audio_buffer.committed")
     ]
-    final_ids = [item.event.get("segment_id") for item in trace.segments(is_final=True)]
+    final_ids = [
+        record.event.get("segment_id") for record in trace.segments(is_final=True)
+    ]
     if sorted(committed_ids, key=_sort_key) != sorted(final_ids, key=_sort_key):
         violations.append(
             f"committed segments {committed_ids} do not match final segments {final_ids}"
         )
+    else:
+        pass
     if len(set(final_ids)) != len(final_ids):
         violations.append(f"duplicate final segment ids: {final_ids}")
+    else:
+        pass
 
-    finalized: set[Any] = set()
-    for item in trace.events("transcription.segment"):
-        segment_id = item.event.get("segment_id")
-        if segment_id in finalized:
-            violations.append(f"segment {segment_id} updated after its final event")
-            break
-        if item.event.get("is_final"):
-            finalized.add(segment_id)
+    committed: set[JsonValue] = set()
+    finalized: set[JsonValue] = set()
+    completed_count = 0
+    for record in trace.received:
+        if record.type == "input_audio_buffer.committed":
+            committed.add(record.event.get("segment_id"))
+        elif record.type == "transcription.completed":
+            completed_count += 1
+        elif record.type == "transcription.segment":
+            segment_id = record.event.get("segment_id")
+            if completed_count:
+                violations.append(
+                    f"segment {segment_id} emitted after transcription.completed"
+                )
+            else:
+                pass
+            if segment_id in finalized:
+                violations.append(f"segment {segment_id} updated after its final event")
+            else:
+                pass
+            if record.event.get("is_final"):
+                if segment_id not in committed:
+                    violations.append(
+                        f"segment {segment_id} finalized before its committed event"
+                    )
+                else:
+                    pass
+                finalized.add(segment_id)
+            else:
+                pass
+        else:
+            pass
 
-    if not trace.events("transcription.completed"):
+    if completed_count == 0:
         violations.append("no transcription.completed event")
+    elif completed_count > 1:
+        violations.append(
+            f"duplicate transcription.completed events: {completed_count}"
+        )
+    else:
+        pass
     return violations
 
 
