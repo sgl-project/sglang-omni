@@ -34,6 +34,29 @@ Five stages run under `MultiProcessPipelineRunner` (preprocessing, Mimi encode, 
 - Prompt plus reply must fit the LM context, 8192 positions by default (about 10.8 minutes); a longer recording is rejected with the limit in the message and needs `--lm.engine.context_length`.
 - The reply text is the model's inner monologue with the frame markers (`PAD`, `EPAD`, `BOS`, `EOS`) removed.
 
+### Mimi encoder CUDA graphs
+
+For repeated recording lengths on CUDA, configure exact encoder lengths in codec
+frames (one frame is 80 ms). For example, capture 0.32 s, 2 s and 10 s inputs:
+
+```bash
+python -m sglang_omni.cli serve --model-path nvidia/personaplex-7b-v1 \
+  --mimi_encode.factory.cuda_graph_frames '[4,25,125]'
+```
+
+The encoder captures these graphs at startup. The list is empty by default and is
+limited to four lengths, each from 1 to 125 frames. Lengths refer to the waveform
+after preprocessing pads it to whole codec frames. Other lengths and non-CUDA
+devices run eager. No extra padding or cross-request batching is introduced.
+Captured lengths retain their GPU buffers until the stage shuts down, so configure
+only lengths that recur in your workload. Graph replay reduces encoder launch
+overhead; overall first-audio latency also includes preprocessing and LM prefill.
+
+To compile only the quantizer before capture, also pass
+`--mimi_encode.factory.compile_quantizer true`. This defaults to false and applies
+only to captured lengths on CUDA. It adds compilation time at startup. The feature
+extractor remains uncompiled because compiling it changed audio tokens in validation.
+
 For Intel GPUs, follow the [PersonaPlex XPU recipe](../get_started/installation_xpu.md#personaplex-speech-to-speech-single-xpu).
 
 ## Serving over HTTP

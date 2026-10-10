@@ -7,8 +7,14 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
+from sglang_omni.models.personaplex.config import (
+    MimiEncodeFactoryArgs,
+    PersonaPlexPipelineConfig,
+)
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -196,7 +202,9 @@ def test_mimi_encode_replaces_caller_and_voice_waveforms_with_codes(monkeypatch)
             return torch.full((1, 8, frames), first, dtype=torch.long)
 
     monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (_Codec(), "cpu"))
-    scheduler = stages.create_mimi_encode_executor("m")
+    scheduler = stages.create_mimi_encode_executor(
+        "m", **MimiEncodeFactoryArgs().model_dump(exclude_none=True)
+    )
 
     def run(state):
         payload = StagePayload(
@@ -216,6 +224,58 @@ def test_mimi_encode_replaces_caller_and_voice_waveforms_with_codes(monkeypatch)
 
     no_voice = run(PersonaPlexState(waveform=torch.ones(SAMPLES_PER_FRAME)))
     assert no_voice.user_codes.shape == (1, 8) and no_voice.voice_codes is None
+
+
+@pytest.mark.parametrize("frames", [[0], [126], [True], [1, 2, 3, 4, 5]])
+def test_mimi_graph_config_rejects_invalid_lengths(frames):
+    with pytest.raises(ValueError):
+        MimiEncodeFactoryArgs(cuda_graph_frames=frames)
+
+
+def test_mimi_graph_config_reaches_the_stage():
+    config = PersonaPlexPipelineConfig(model_path="m")
+    stage = next(s for s in config.stages if s.name == "mimi_encode")
+    assert stage.factory.cuda_graph_frames == []
+    assert stage.factory.compile_quantizer is False
+    defaults = resolve_stage_factory_args(stage, config)
+    assert defaults["cuda_graph_frames"] == []
+    assert defaults["compile_quantizer"] is False
+    manager = ConfigManager(config)
+    overrides = manager.parse_extra_args(
+        [
+            "--mimi_encode.factory.cuda_graph_frames",
+            "[4,25]",
+            "--mimi_encode.factory.compile_quantizer",
+            "true",
+        ]
+    )
+    config = manager.merge_config(overrides)
+    restored = PersonaPlexPipelineConfig.model_validate(config.model_dump())
+    stage = next(s for s in restored.stages if s.name == "mimi_encode")
+    assert stage.factory.cuda_graph_frames == [4, 25]
+    assert stage.factory.compile_quantizer is True
+    resolved = resolve_stage_factory_args(stage, restored)
+    assert resolved["cuda_graph_frames"] == [4, 25]
+    assert resolved["compile_quantizer"] is True
+
+
+def test_mimi_graph_setting_keeps_cpu_encoding_eager(monkeypatch):
+    class Codec:
+        def encode(self, waveform):
+            return torch.full((1, 8, 1), int(waveform[0, 0, 0]), dtype=torch.long)
+
+    monkeypatch.setattr(
+        stages, "load_codec", lambda *a, **k: (Codec(), torch.device("cpu"))
+    )
+    scheduler = stages.create_mimi_encode_executor(
+        "m", cuda_graph_frames=[1], compile_quantizer=True
+    )
+    state = PersonaPlexState(waveform=torch.full((SAMPLES_PER_FRAME,), 3.0))
+    payload = StagePayload(
+        "r", request=OmniRequest(inputs={}, params={}), data=state.to_dict()
+    )
+    result = PersonaPlexState.from_dict(scheduler.fn(payload).data)
+    assert torch.equal(result.user_codes, torch.full((1, 8), 3, dtype=torch.long))
 
 
 @pytest.mark.parametrize(

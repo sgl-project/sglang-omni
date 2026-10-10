@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The PersonaPlex pipeline: five stages on one GPU, the LM under SGLang."""
 
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
 from pydantic import Field
 
@@ -21,6 +21,17 @@ LM_STAGE = "lm"
 CODE2WAV_STAGE = "code2wav"
 
 
+class MimiEncodeFactoryArgs(FactoryArgs):
+    cuda_graph_frames: list[Annotated[int, Field(strict=True, gt=0, le=125)]] = Field(
+        default_factory=list, max_length=4
+    )
+    compile_quantizer: bool = False
+
+
+class MimiEncodeStageConfig(StageConfig):
+    factory: MimiEncodeFactoryArgs = Field(default_factory=MimiEncodeFactoryArgs)
+
+
 def personaplex_stages_factory() -> list[StageConfig]:
     return [
         StageConfig(
@@ -29,7 +40,7 @@ def personaplex_stages_factory() -> list[StageConfig]:
             factory_path=f"{MODEL_STAGES_PREFIX}.create_preprocessing_executor",
             next="mimi_encode",
         ),
-        StageConfig(
+        MimiEncodeStageConfig(
             name="mimi_encode",
             process="pipeline",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_mimi_encode_executor",
@@ -66,7 +77,8 @@ def personaplex_stages_factory() -> list[StageConfig]:
 class PersonaPlexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = PERSONAPLEX_ARCH
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        LM_STAGE: EngineStageConfig
+        LM_STAGE: EngineStageConfig,
+        "mimi_encode": MimiEncodeStageConfig,
     }
 
     model_path: str

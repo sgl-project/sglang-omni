@@ -17,6 +17,32 @@ from sglang_omni.models.personaplex.components.mimi_transformer import (
     MimiAttention,
     MimiTransformer,
 )
+from sglang_omni.models.personaplex.encoder_cuda_graph import MimiEncoderCudaGraphRunner
+from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")
+@pytest.mark.parametrize("compile_quantizer", [False, True])
+def test_encoder_graph_matches_eager_across_inputs_and_lengths(
+    random_codec, compile_quantizer
+):
+    codec = random_codec.cuda()
+    runner = MimiEncoderCudaGraphRunner(
+        codec,
+        frames=[4, 25],
+        graph_backend=CudaDeviceGraphBackend(),
+        compile_quantizer=compile_quantizer,
+    )
+    previous = []
+    for frames in (4, 25, 3, 4, 25):
+        waveform = torch.randn(frames * codec.samples_per_frame)
+        expected = codec.encode(waveform.cuda().view(1, 1, -1))[0].T.cpu()
+        actual = runner.encode(waveform)
+        assert actual.device.type == "cpu"
+        assert torch.equal(actual, expected)
+        for output, snapshot in previous:
+            assert torch.equal(output, snapshot)
+        previous.append((actual, actual.clone()))
 
 
 def test_causal_conv_chunks_match_whole():
