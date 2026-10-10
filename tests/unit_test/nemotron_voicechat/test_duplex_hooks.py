@@ -43,7 +43,7 @@ def test_perception_preserves_pcm_and_drains_without_an_extra_frame(
         "sglang_omni.models.nemotron_voicechat.duplex_hooks.GraphPerception",
         Mock(return_value=stream),
     )
-    hooks = PerceptionHooks(Mock())
+    hooks = PerceptionHooks(Mock(), max_open_sessions=1)
     session_identity = SessionIdentity("perception")
     hooks.open(session_identity, OmniRequest(None))
     context = SessionContext(
@@ -66,6 +66,50 @@ def test_perception_preserves_pcm_and_drains_without_an_extra_frame(
     assert hooks.usage(session_identity).bytes == 0
 
 
+def test_perception_sessions_own_independent_stream_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_stream = Mock(spec=StreamingPerception)
+    first_stream.push.return_value = torch.full((1, 4), 1.0)
+    second_stream = Mock(spec=StreamingPerception)
+    second_stream.push.return_value = torch.full((1, 4), 2.0)
+    monkeypatch.setattr(
+        "sglang_omni.models.nemotron_voicechat.duplex_hooks.GraphPerception",
+        Mock(side_effect=[first_stream, second_stream]),
+    )
+    hooks = PerceptionHooks(Mock(), max_open_sessions=2)
+    first_session = SessionIdentity("first")
+    second_session = SessionIdentity("second")
+    hooks.open(first_session, OmniRequest(None))
+    hooks.open(second_session, OmniRequest(None))
+
+    def session_context(session_identity: SessionIdentity) -> SessionContext:
+        return SessionContext(
+            session_identity=session_identity,
+            cancelled=threading.Event(),
+            emit=Mock(),
+        )
+
+    first_output = hooks.append(
+        audio_chunk(b"\x01\x00" * 1280),
+        stage_payload(),
+        session_context(first_session),
+    )
+    second_output = hooks.append(
+        audio_chunk(b"\x02\x00" * 1280),
+        stage_payload(),
+        session_context(second_session),
+    )
+    torch.testing.assert_close(first_output.data["acoustic"], torch.full((1, 4), 2.0))
+    torch.testing.assert_close(second_output.data["acoustic"], torch.full((1, 4), 1.0))
+    first_stream.push.assert_called_once()
+    second_stream.push.assert_called_once()
+
+    hooks.close(first_session)
+    hooks.close(second_session)
+    assert len(hooks.available_streams) == 2
+
+
 @pytest.mark.parametrize(
     "chunk",
     [
@@ -86,7 +130,7 @@ def test_perception_rejects_invalid_audio_before_model_execution(
         "sglang_omni.models.nemotron_voicechat.duplex_hooks.GraphPerception",
         Mock(return_value=stream),
     )
-    hooks = PerceptionHooks(Mock())
+    hooks = PerceptionHooks(Mock(), max_open_sessions=1)
     session_identity = SessionIdentity("invalid-input")
     hooks.open(session_identity, OmniRequest(None))
     context = SessionContext(
@@ -188,6 +232,44 @@ def test_codec_empty_session_drains_without_audio() -> None:
     assert output.data["pcm"] == b""
     assert emitted_chunks[-1].eos
     assert emitted_chunks[-1].duration_ms == 0
+
+
+def test_codec_sessions_keep_history_and_completion_independent() -> None:
+    hooks = CodecHooks(ConstantFrameDecoder(), "cpu")
+    first_session = SessionIdentity("first-codec")
+    second_session = SessionIdentity("second-codec")
+    hooks.open(first_session, OmniRequest(None))
+    hooks.open(second_session, OmniRequest(None))
+
+    def session_context(session_identity: SessionIdentity) -> SessionContext:
+        return SessionContext(
+            session_identity=session_identity,
+            cancelled=threading.Event(),
+            emit=Mock(),
+        )
+
+    first_output = hooks.append(
+        audio_chunk(),
+        stage_payload({"codes": torch.tensor([[1]])}),
+        session_context(first_session),
+    )
+    second_output = hooks.append(
+        audio_chunk(),
+        stage_payload({"codes": torch.tensor([[2]])}),
+        session_context(second_session),
+    )
+    assert first_output.data["pcm"] != second_output.data["pcm"]
+    hooks.append(
+        audio_chunk(b"", eos=True),
+        stage_payload({"eos": True}),
+        session_context(first_session),
+    )
+    continued = hooks.append(
+        audio_chunk(),
+        stage_payload({"codes": torch.tensor([[3]])}),
+        session_context(second_session),
+    )
+    assert continued.data["pcm"]
 
 
 @pytest.mark.accelerator

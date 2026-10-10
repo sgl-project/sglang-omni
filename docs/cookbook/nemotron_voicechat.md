@@ -45,14 +45,21 @@ The reply text is the thinker's spoken tokens only; frames where the model is li
 ```bash
 python examples/run_nemotron_voicechat_duplex.py \
   --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B \
-  --serve --port 8097
+  --serve --port 8097 --max-sessions 1
 ```
 
 Open http://localhost:8097, click **Start**, and allow microphone access.
 If the server runs on a remote GPU host, forward port 8097 to your local machine first.
 Headphones help avoid acoustic feedback. The example uses the shared realtime
-playground and supports one session on one GPU, with a four-minute browser limit.
-It uses the checkpoint's default prompt and voice.
+playground with a four-minute browser limit. It defaults to one session and uses
+the checkpoint's default prompt and voice.
+
+`--max-sessions` controls concurrent conversations. The default remains one.
+Each admitted session owns independent perception, transformer KV, and codec
+state; the thinker and talker KV pools are sized for the session limit plus one
+incoming request row. Perception and codec execution remain serialized in this
+foundation, so benchmark the 80 ms unit deadline before raising the limit in a
+latency-sensitive deployment.
 
 ## Offline request parameters
 
@@ -65,7 +72,7 @@ Audio randomness is governed by the checkpoint's own settings, read from `config
 
 ## Known limitations
 
-- The offline pipeline handles one request at a time (`max_running_requests=1` for both engines), without a barge-in or interrupt API.
+- The offline pipeline handles one request at a time (`max_running_requests=1` for both engines), without a barge-in or interrupt API. Native duplex sessions have independent state but do not yet batch perception or codec work across conversations.
 - Single speaker (`Aria`, the checkpoint's baked-in prompt latents).
 - The `function_head` tool-call channel is decoded and carried through but nothing acts on it.
 - Classifier-free guidance is off (`guidance_scale=0`) although the checkpoint config enables it at 0.2.

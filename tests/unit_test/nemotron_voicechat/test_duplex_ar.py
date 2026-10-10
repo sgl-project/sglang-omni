@@ -16,6 +16,10 @@ from sglang_omni.models.nemotron_voicechat.duplex_ar import (
     TalkerAdapter,
     ThinkerAdapter,
 )
+from sglang_omni.models.nemotron_voicechat.duplex_stages import (
+    TalkerBuilder,
+    ThinkerBuilder,
+)
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
     NemotronVoiceChatTalkerModelRunner,
@@ -138,6 +142,11 @@ def test_thinker_continuation_reuses_pending_token_position(
         StagePayload("reopened", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
     )
     assert reopened_request.input_ids.tolist() == [1, 2, 0]
+
+
+def test_duplex_ar_stages_disable_radix_cache_for_fusion_rows() -> None:
+    assert ThinkerBuilder().generation_defaults(dtype="bfloat16")["disable_radix_cache"]
+    assert TalkerBuilder().generation_defaults(dtype="bfloat16")["disable_radix_cache"]
 
 
 def test_context_limit_rejects_unit_without_corrupting_reopened_session(

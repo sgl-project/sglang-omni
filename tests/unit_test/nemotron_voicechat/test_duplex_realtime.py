@@ -10,6 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
+from sglang_omni.models.nemotron_voicechat.duplex_config import (
+    NemotronVoiceChatDuplexPipelineConfig,
+)
 from sglang_omni.models.nemotron_voicechat.realtime import VoiceChatOutput, deployment
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
@@ -19,6 +22,7 @@ from sglang_omni.proto.session import (
     TimedChunk,
 )
 from sglang_omni.serve.openai_api import create_app
+from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.output import ResponseFinished, ResponseStarted
 from sglang_omni.serve.realtime.schema import JsonObject, JsonValue
 
@@ -81,6 +85,19 @@ class RecordingSessionClient:
         await self.output_queue.put(None)
 
 
+def test_realtime_connection_capacity_follows_pipeline_sessions() -> None:
+    config = NemotronVoiceChatDuplexPipelineConfig(model_path="unused", max_sessions=3)
+    assert deployment(RecordingSessionClient(), config).max_connections == 3
+
+
+def single_session_deployment(
+    client: RecordingSessionClient,
+) -> RealtimeDeployment:
+    return deployment(
+        client, NemotronVoiceChatDuplexPipelineConfig(model_path="unused")
+    )
+
+
 def send_event(
     websocket: WebSocketTestSession, event_type: str, **fields: JsonValue
 ) -> None:
@@ -110,7 +127,9 @@ def append_audio(
 def test_native_websocket_partial_tail_continuation_and_close() -> None:
     client = RecordingSessionClient()
     app = create_app(
-        client, model_name="nemotron-voicechat", realtime_deployment=deployment(client)
+        client,
+        model_name="nemotron-voicechat",
+        realtime_deployment=single_session_deployment(client),
     )
     with TestClient(app).websocket_connect("/v1/realtime") as websocket:
         receive_until(websocket, "session.created")
@@ -142,7 +161,9 @@ def test_native_websocket_partial_tail_continuation_and_close() -> None:
 def test_native_websocket_disconnect_releases_session() -> None:
     client = RecordingSessionClient()
     app = create_app(
-        client, model_name="nemotron-voicechat", realtime_deployment=deployment(client)
+        client,
+        model_name="nemotron-voicechat",
+        realtime_deployment=single_session_deployment(client),
     )
     with TestClient(app).websocket_connect("/v1/realtime") as websocket:
         receive_until(websocket, "session.created")
@@ -154,7 +175,9 @@ def test_native_websocket_disconnect_releases_session() -> None:
 def test_native_websocket_reconnect_accepts_audio_after_session_close() -> None:
     client = RecordingSessionClient()
     application = create_app(
-        client, model_name="nemotron-voicechat", realtime_deployment=deployment(client)
+        client,
+        model_name="nemotron-voicechat",
+        realtime_deployment=single_session_deployment(client),
     )
     with TestClient(application) as http_client:
         for conversation_index in range(3):

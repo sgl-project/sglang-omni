@@ -11,6 +11,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from sglang_omni.models.nemotron_voicechat.duplex_config import (
+    TALKER_CONTEXT_LENGTH,
+    THINKER_CONTEXT_LENGTH,
+    NemotronVoiceChatDuplexPipelineConfig,
+)
+
 
 @pytest.fixture
 def example_module() -> ModuleType:
@@ -86,3 +92,36 @@ def test_workers_stop_when_session_shutdown_raises(example_module: ModuleType) -
         with TestClient(application):
             pass
     assert lifecycle_events == ["stop_workers"]
+
+
+def test_duplex_capacity_follows_max_sessions() -> None:
+    config = NemotronVoiceChatDuplexPipelineConfig(model_path="unused", max_sessions=4)
+    request_slots = 5
+    assert config.stage_factory_kwargs("perception") == {"max_open_sessions": 4}
+    assert config.stage_factory_kwargs("code2wav") == {"max_open_sessions": 4}
+    assert config.stage_factory_kwargs("thinker") == {
+        "server_args_overrides": {
+            "max_running_requests": request_slots,
+            "max_total_tokens": request_slots * THINKER_CONTEXT_LENGTH,
+        }
+    }
+    assert config.stage_factory_kwargs("talker") == {
+        "server_args_overrides": {
+            "max_running_requests": request_slots,
+            "max_total_tokens": request_slots * TALKER_CONTEXT_LENGTH,
+        }
+    }
+
+
+def test_explicit_duplex_engine_capacity_wins() -> None:
+    config = NemotronVoiceChatDuplexPipelineConfig(model_path="unused", max_sessions=4)
+    thinker = config.stage_named("thinker")
+    thinker.engine.max_total_tokens = 1234
+    talker = config.stage_named("talker")
+    talker.engine.mem_fraction_static = 0.3
+    assert config.stage_factory_kwargs("thinker") == {
+        "server_args_overrides": {"max_running_requests": 5}
+    }
+    assert config.stage_factory_kwargs("talker") == {
+        "server_args_overrides": {"max_running_requests": 5}
+    }
