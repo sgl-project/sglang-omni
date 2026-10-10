@@ -562,7 +562,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.wait_codes_ready(state)
         window = torch.stack(state.chunks[start - context : end], dim=0)
         codes = window.transpose(0, 1).unsqueeze(0)
-        wav, execution_metadata = self.forward_codes(codes, graph_eligible=not is_final)
+        wav, execution_metadata = self.forward_codes(codes, graph_eligible=True)
         wav = wav[..., -(end - start) * self.total_upsample :]
         samples = int(wav.numel())
         prev_wait_ns = 0
@@ -1439,12 +1439,24 @@ def create_code2wav_scheduler(
             graph_keys = serial_threshold_graph_keys(
                 stream_chunk_size, left_context_size, initial_codec_chunk_frames
             )
+        # note (ratish): every length up to a full window is a threshold window or the
+        # last window of some stream length, so the lengths the threshold keys miss
+        # are exactly the final windows.
+        final_window_keys = tuple(
+            key
+            for key in (
+                GraphKey(batch_size=1, frames=frames)
+                for frames in range(1, left_context_size + stream_chunk_size + 1)
+            )
+            if key not in graph_keys
+        )
         cuda_graph_runner = Code2WavCudaGraphRunner.build(
             model,
             device=concrete_device,
             num_quantizers=int(model.config.num_quantizers),
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             graph_keys=graph_keys,
+            best_effort_keys=final_window_keys,
             model_footprint_bytes=sum(
                 tensor.nbytes
                 for tensor in itertools.chain(model.parameters(), model.buffers())

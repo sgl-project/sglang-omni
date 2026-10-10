@@ -546,7 +546,7 @@ def create_sglang_tts_engine_executor(
     cuda_graph_max_bs: int = 64,
     server_args_overrides: Mapping[str, object] | None = None,
     enable_async_decode: bool = False,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     initial_chunk_frames: int = DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,

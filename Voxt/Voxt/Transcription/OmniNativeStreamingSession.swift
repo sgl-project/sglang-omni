@@ -17,6 +17,19 @@ nonisolated final class OmniNativeStreamingSession: MLXNativeStreamingSession, @
         return OmniNativeStreamingSession(session: session, runtime: runtime)
     }
 
+    /// MOSS-Transcribe-Diarize windows over the realtime transcription socket,
+    /// with the task prompt Voxt's Swift live session used.
+    static func moss(runtime: OmniASRRuntime, prompt: String?) async throws -> OmniNativeStreamingSession {
+        let endpoint = try await runtime.beginUse()
+        let session = OmniRealtimeTranscriptionSession(
+            endpoint: endpoint,
+            language: nil,
+            prompt: prompt,
+            joining: .lines
+        )
+        return OmniNativeStreamingSession(session: session, runtime: runtime)
+    }
+
     private init(session: OmniRealtimeTranscriptionSession, runtime: OmniASRRuntime) {
         self.session = session
         let source = session.events
@@ -27,8 +40,11 @@ nonisolated final class OmniNativeStreamingSession: MLXNativeStreamingSession, @
                 switch event {
                 case .display(let confirmedText, let provisionalText):
                     continuation.yield(.displayUpdate(confirmedText: confirmedText, provisionalText: provisionalText))
-                case .ended(let text):
-                    continuation.yield(.ended(STTOutput(text: text)))
+                case .ended(let text, let segments):
+                    continuation.yield(.ended(STTOutput(
+                        text: text,
+                        segments: segments.isEmpty ? nil : segments.map(\.transcriptSegment)
+                    )))
                 case .failed(let message):
                     continuation.yield(.failed(StreamingFailure(message: message)))
                 }
@@ -48,5 +64,17 @@ nonisolated final class OmniNativeStreamingSession: MLXNativeStreamingSession, @
 
     func cancel() {
         session.cancel()
+    }
+}
+
+nonisolated extension OmniSpeakerSegment {
+    /// The MLXAudio segment Voxt's MOSS handling reads; no speaker means none.
+    var transcriptSegment: STTTranscriptSegment {
+        STTTranscriptSegment(
+            text: text,
+            startTime: startSeconds,
+            endTime: endSeconds,
+            speakerID: speakerID.isEmpty ? nil : speakerID
+        )
     }
 }

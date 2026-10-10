@@ -135,11 +135,9 @@ class MingImageEncoder(nn.Module):
         if nccl_port is not None:
             os.environ["MASTER_PORT"] = str(nccl_port)
         elif "MASTER_PORT" not in os.environ:
-            import socket
+            from sglang_omni.utils.port_claim import claim_tcp_port
 
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("", 0))
-                os.environ["MASTER_PORT"] = str(s.getsockname()[1])
+            os.environ["MASTER_PORT"] = str(claim_tcp_port())
         else:
             pass
         # note (ratish): the groups take their widths and this process its

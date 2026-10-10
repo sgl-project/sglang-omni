@@ -116,7 +116,7 @@ def create_thinker_scheduler(
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     speech_enabled: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Create a thinker scheduler with optional hidden-state capture for speech."""

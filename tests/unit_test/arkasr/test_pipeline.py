@@ -177,7 +177,7 @@ def test_arkasr_stage_default_enables_async_decode():
     signature = inspect.signature(create_sglang_arkasr_executor)
 
     assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
 
 
 def stub_arkasr_engine_build(

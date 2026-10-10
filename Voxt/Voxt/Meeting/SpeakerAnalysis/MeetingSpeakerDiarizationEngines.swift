@@ -69,6 +69,10 @@ enum MeetingSpeakerDiarizationEngineFactory {
 
 actor SortformerMeetingSpeakerDiarizationEngine: MeetingSpeakerDiarizationEngine {
     private var model: SortformerModel?
+    // Note (Jiaxin Deng): the native path holds a server lease for as long as the Swift
+    // path would hold its model.
+    private var omniEndpoint: OmniServerEndpoint?
+    private var omniConfig: SortformerConfig?
 
     func diarize(
         asset: MeetingAudioAsset,
@@ -102,8 +106,15 @@ actor SortformerMeetingSpeakerDiarizationEngine: MeetingSpeakerDiarizationEngine
     ) async throws -> [MeetingSpeakerTurn] {
         // File callers own this engine, so its cached model is released on all exits.
         defer { model = nil }
-        return try await runSession(descriptors: descriptors, loadAsset: loadAsset,
-                                    fileAnalysis: true, progress: progress)
+        do {
+            let turns = try await runSession(descriptors: descriptors, loadAsset: loadAsset,
+                                             fileAnalysis: true, progress: progress)
+            await releaseOmniEndpoint()
+            return turns
+        } catch {
+            await releaseOmniEndpoint()
+            throw error
+        }
     }
 
     private func runSession(
@@ -112,6 +123,10 @@ actor SortformerMeetingSpeakerDiarizationEngine: MeetingSpeakerDiarizationEngine
         fileAnalysis: Bool,
         progress: (@Sendable (Double) async -> Void)?
     ) async throws -> [MeetingSpeakerTurn] {
+        if OmniSortformerRuntime.isEnabled {
+            return try await runOmniSession(descriptors: descriptors, loadAsset: loadAsset,
+                                            fileAnalysis: fileAnalysis, progress: progress)
+        }
         if fileAnalysis {
             try await MeetingLocalInferenceCoordinator.shared.withPermit(.fileSpeakerAnalysis) {
                 try await self.prepareFileModel()
@@ -200,6 +215,164 @@ actor SortformerMeetingSpeakerDiarizationEngine: MeetingSpeakerDiarizationEngine
             }
         }
         return turns
+    }
+
+    private func runOmniSession(
+        descriptors: [MeetingAudioAssetDescriptor],
+        loadAsset: @escaping @Sendable (MeetingAudioAssetDescriptor) async -> MeetingAudioAsset?,
+        fileAnalysis: Bool,
+        progress: (@Sendable (Double) async -> Void)?
+    ) async throws -> [MeetingSpeakerTurn] {
+        let endpoint: OmniServerEndpoint
+        if fileAnalysis {
+            endpoint = try await MeetingLocalInferenceCoordinator.shared.withPermit(.fileSpeakerAnalysis) {
+                try await self.omniEndpointIfAvailable()
+            }
+        } else {
+            endpoint = try await omniEndpointIfAvailable()
+        }
+        guard let config = omniConfig else { throw MeetingVADModelError.modelNotDownloaded }
+        let policy = try MeetingSpeakerFeedPolicy(
+            sampleRate: config.processorConfig.samplingRate,
+            hopLength: config.processorConfig.hopLength,
+            subsamplingFactor: config.fcEncoderConfig.subsamplingFactor,
+            chunkFrames: config.modulesConfig.chunkLen,
+            cacheFrames: config.modulesConfig.spkcacheLen,
+            updateFrames: config.modulesConfig.spkcacheUpdatePeriod,
+            usesAOSC: config.modulesConfig.useAosc
+        )
+        let options = OmniDiarizationOptions(
+            threshold: 0.5, minDuration: 0, mergeGap: 0.18,
+            spkcacheMax: policy.cacheMaximumFrames, fifoMax: MeetingSpeakerFeedPolicy.fifoMaximumFrames
+        )
+        // Note (Jiaxin Deng): the server refuses these limits at the handshake, which reads
+        // as a transport failure, so they are checked here first.
+        let encoderFrames = max(options.spkcacheMax, config.modulesConfig.spkcacheLen) + options.fifoMax
+            + config.modulesConfig.chunkLeftContext + config.modulesConfig.spkcacheUpdatePeriod
+        guard encoderFrames <= config.tfEncoderConfig.maxSourcePositions else {
+            throw MeetingSpeakerFeedError.invalidConfiguration
+        }
+        var stream = OmniDiarizationStream(endpoint: endpoint, options: options)
+        var state = (fifo: 0, cache: 0, frames: 0)
+        var previousDescriptor: MeetingAudioAssetDescriptor?
+        var turns: [MeetingSpeakerTurn] = []
+        let descriptorCount = max(descriptors.count, 1)
+        await progress?(0)
+
+        do {
+            for (index, descriptor) in descriptors.enumerated() {
+                try Task.checkCancellation()
+                if let previousDescriptor {
+                    let expectedStart = previousDescriptor.sessionStartOffset + previousDescriptor.durationSeconds
+                    let isContinuous = descriptor.source == previousDescriptor.source
+                        && abs(descriptor.sessionStartOffset - expectedStart) < 0.05
+                    if !isContinuous {
+                        await stream.close()
+                        stream = OmniDiarizationStream(endpoint: endpoint, options: options)
+                        state = (0, 0, 0)
+                    }
+                }
+                previousDescriptor = descriptor
+
+                guard let asset = await loadAsset(descriptor) else {
+                    throw MeetingSpeakerFeedError.audioUnavailable
+                }
+                let prepared = fileAnalysis && asset.sampleRate == 16_000
+                    ? asset.samples
+                    : ASRVoiceActivitySampleRateConverter.resample(
+                        samples: asset.samples, from: asset.sampleRate, to: 16_000
+                    )
+                guard !prepared.isEmpty else {
+                    throw MeetingSpeakerFeedError.audioUnavailable
+                }
+
+                var offset = 0
+                while offset < prepared.count {
+                    try Task.checkCancellation()
+                    try policy.validate(fifoFrames: state.fifo, cacheFrames: state.cache)
+                    let end = min(offset + policy.samplesPerFeed, prepared.count)
+                    let sampleCount = end - offset
+                    var padded = Array(prepared[offset ..< end])
+                    if padded.count < policy.frameSamples {
+                        padded.append(contentsOf: repeatElement(0, count: policy.frameSamples - padded.count))
+                    }
+                    let samples = padded
+                    let inputFrames = state.frames
+                    let audioOffset = asset.sessionStartOffset + Double(offset) / Double(policy.sampleRate)
+                    let currentStream = stream
+                    let feed: OmniDiarizationFeed
+                    if fileAnalysis {
+                        feed = try await MeetingLocalInferenceCoordinator.shared.withPermit(.fileSpeakerAnalysis) {
+                            let startedAt = ContinuousClock.now
+                            let feed = try await currentStream.feed(samples16k: samples)
+                            try policy.validateFeedDuration(startedAt.duration(to: .now))
+                            return feed
+                        }
+                    } else {
+                        feed = try await currentStream.feed(samples16k: samples)
+                    }
+                    try Task.checkCancellation()
+                    try policy.validate(fifoFrames: feed.fifoLength, cacheFrames: feed.spkcacheLength)
+                    state = (feed.fifoLength, feed.spkcacheLength, feed.framesProcessed)
+                    turns.append(contentsOf: feed.segments.compactMap { item in
+                        guard let range = policy.mappedRange(
+                            start: Double(item.start), end: Double(item.end),
+                            stateFrames: inputFrames, audioOffset: audioOffset, sampleCount: sampleCount
+                        ) else { return nil }
+                        return MeetingSpeakerTurn(
+                            source: asset.source, speakerID: "sortformer-\(item.speaker)",
+                            displayName: MeetingSpeakerDisplayNameFormatter.displayName(ordinal: item.speaker + 1),
+                            startSeconds: range.lowerBound, endSeconds: range.upperBound, confidence: nil
+                        )
+                    })
+                    offset = end
+                    await progress?((Double(index) + Double(offset) / Double(prepared.count)) / Double(descriptorCount))
+                }
+            }
+        } catch {
+            await stream.close()
+            await releaseOmniEndpoint(after: error, endpoint: endpoint)
+            throw error
+        }
+        await stream.close()
+        return turns
+    }
+
+    // Note (Jiaxin Deng): after a transport failure the server may be gone, so releasing lets
+    // the next session restart it; an endpoint already replaced has nothing to release.
+    private func releaseOmniEndpoint(after error: Error, endpoint: OmniServerEndpoint) async {
+        let domain = (error as NSError).domain
+        guard omniEndpoint == endpoint, domain == NSURLErrorDomain || domain == NSPOSIXErrorDomain else { return }
+        await releaseOmniEndpoint()
+    }
+
+    private func omniEndpointIfAvailable() async throws -> OmniServerEndpoint {
+        if let omniEndpoint {
+            return omniEndpoint
+        }
+        guard let directory = await MeetingSortformerModelStorage.validatedModelDirectory() else {
+            throw MeetingVADModelError.modelNotDownloaded
+        }
+        let config = try JSONDecoder().decode(
+            SortformerConfig.self,
+            from: Data(contentsOf: directory.appendingPathComponent("config.json"))
+        )
+        let endpoint = try await OmniSortformerRuntime.shared.acquire(modelDirectory: directory)
+        if let omniEndpoint {
+            // Note (Jiaxin Deng): another call acquired one while this one awaited.
+            await OmniSortformerRuntime.shared.release()
+            return omniEndpoint
+        }
+        omniEndpoint = endpoint
+        omniConfig = config
+        return endpoint
+    }
+
+    private func releaseOmniEndpoint() async {
+        guard omniEndpoint != nil else { return }
+        omniEndpoint = nil
+        omniConfig = nil
+        await OmniSortformerRuntime.shared.release()
     }
 
     private func prepareFileModel() async throws {

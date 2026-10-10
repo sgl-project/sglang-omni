@@ -19,12 +19,19 @@ nonisolated enum LoadedASRModel: @unchecked Sendable {
 
 /// Which checkpoints run on the local Omni server, fixed per process.
 ///
-/// Only Qwen3-ASR is eligible, and only when the development backend is
-/// configured; every other model keeps its Swift backend. The choice is read
-/// once so a running process never switches the backend of a checkpoint.
+/// Only the listed checkpoints are eligible, and only when the development
+/// backend is configured; every other model keeps its Swift backend. The choice
+/// is read once so a running process never switches the backend of a checkpoint.
 nonisolated enum OmniASRBackend {
     static let modelKindsByRepo: [String: OmniASRModelKind] = [
         "mlx-community/Qwen3-ASR-0.6B-4bit": .qwen3ASR,
+        "mlx-community/Qwen3-ASR-1.7B-6bit": .qwen3ASR,
+        "mlx-community/Qwen3-ASR-1.7B-8bit": .qwen3ASR,
+        "mlx-community/whisper-large-v3-turbo": .whisper,
+        "mlx-community/whisper-large-v3-mlx": .whisper,
+        "mlx-community/whisper-small-mlx": .whisper,
+        "beshkenadze/cohere-transcribe-03-2026-mlx-fp16": .cohereTranscribe,
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize": .mossTranscribeDiarize,
     ]
 
     static let launchSettings: LaunchSettings? = LaunchSettings(environment: ProcessInfo.processInfo.environment)
@@ -33,7 +40,7 @@ nonisolated enum OmniASRBackend {
         let runtimeExecutable: URL
 
         /// `VOXT_ASR_BACKEND=omni` with `VOXT_OMNI_RUNTIME`, the path to the
-        /// native `qwen3_asr_server` binary.
+        /// native `qwen3_asr_server` binary; the other kinds' servers sit beside it.
         init?(environment: [String: String]) {
             guard environment["VOXT_ASR_BACKEND"] == "omni",
                   let runtime = environment["VOXT_OMNI_RUNTIME"], !runtime.isEmpty
@@ -47,9 +54,22 @@ nonisolated enum OmniASRBackend {
         return modelKindsByRepo[repo]
     }
 
-    static func configuration() -> OmniBackendConfiguration? {
+    /// Qwen3-ASR, Silero VAD and Sortformer run `VOXT_OMNI_RUNTIME`; every other
+    /// kind runs the `<kind>_server` installed beside it.
+    static func runtimeExecutable(for kind: OmniASRModelKind, qwenRuntime: URL) -> URL {
+        switch kind {
+        case .qwen3ASR, .sileroVAD, .sortformer:
+            return qwenRuntime
+        case .whisper, .cohereTranscribe, .mossTranscribeDiarize:
+            return qwenRuntime.deletingLastPathComponent().appendingPathComponent("\(kind.rawValue)_server")
+        }
+    }
+
+    static func configuration(for kind: OmniASRModelKind) -> OmniBackendConfiguration? {
         guard let launchSettings else { return nil }
-        return OmniBackendConfiguration(runtimeExecutable: launchSettings.runtimeExecutable)
+        return OmniBackendConfiguration(
+            runtimeExecutable: runtimeExecutable(for: kind, qwenRuntime: launchSettings.runtimeExecutable)
+        )
     }
 }
 

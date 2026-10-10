@@ -105,6 +105,9 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.running = False
         self.abort_callback = abort_callback
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.running = True
         try:

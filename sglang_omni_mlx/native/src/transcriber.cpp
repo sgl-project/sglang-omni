@@ -54,16 +54,6 @@ std::string Lowercase(std::string text) {
   return text;
 }
 
-bool IsTokenLoop(const std::vector<int> &output_ids) {
-  if (output_ids.size() < kTokenLoopWindow) {
-    return false;
-  } else {
-  }
-  const std::set<int> distinct(output_ids.end() - kTokenLoopWindow,
-                               output_ids.end());
-  return distinct.size() <= kTokenLoopMaxDistinct;
-}
-
 std::optional<size_t> FindSubsequence(const std::vector<int> &values,
                                       const std::vector<int> &pattern) {
   if (pattern.size() > values.size()) {
@@ -83,6 +73,89 @@ std::optional<size_t> FindSubsequence(const std::vector<int> &values,
 
 const char *FinishReasonName(FinishReason reason) {
   return reason == FinishReason::kStop ? "stop" : "length";
+}
+
+nlohmann::ordered_json
+SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments) {
+  nlohmann::ordered_json array = nlohmann::ordered_json::array();
+  for (const SpeakerSegment &segment : segments) {
+    array.push_back({{"start", segment.start_seconds},
+                     {"end", segment.end_seconds},
+                     {"speaker", segment.speaker},
+                     {"text", segment.text}});
+  }
+  return array;
+}
+
+bool IsUnicodeSpace(uint32_t code_point) {
+  return code_point == ' ' || (code_point >= 0x09 && code_point <= 0x0D) ||
+         (code_point >= 0x1C && code_point <= 0x1F) || code_point == 0x85 ||
+         code_point == 0xA0 || code_point == 0x1680 ||
+         (code_point >= 0x2000 && code_point <= 0x200A) ||
+         code_point == 0x2028 || code_point == 0x2029 || code_point == 0x202F ||
+         code_point == 0x205F || code_point == 0x3000;
+}
+
+// Note (Jiaxin Deng): assumes valid UTF-8, the only kind the tokenizer emits.
+std::vector<uint32_t> CodePoints(const std::string &text) {
+  std::vector<uint32_t> code_points;
+  size_t i = 0;
+  while (i < text.size()) {
+    const auto byte = [&](size_t k) { return static_cast<uint8_t>(text[k]); };
+    const uint8_t lead = byte(i);
+    uint32_t cp = lead;
+    size_t length = 1;
+    if (lead >= 0xF0 && i + 3 < text.size()) {
+      cp = ((lead & 0x07) << 18) | ((byte(i + 1) & 0x3F) << 12) |
+           ((byte(i + 2) & 0x3F) << 6) | (byte(i + 3) & 0x3F);
+      length = 4;
+    } else if (lead >= 0xE0 && i + 2 < text.size()) {
+      cp = ((lead & 0x0F) << 12) | ((byte(i + 1) & 0x3F) << 6) |
+           (byte(i + 2) & 0x3F);
+      length = 3;
+    } else if (lead >= 0xC0 && i + 1 < text.size()) {
+      cp = ((lead & 0x1F) << 6) | (byte(i + 1) & 0x3F);
+      length = 2;
+    } else {
+    }
+    code_points.push_back(cp);
+    i += length;
+  }
+  return code_points;
+}
+
+std::string StripUnicodeWhitespace(const std::string &text) {
+  const std::vector<uint32_t> code_points = CodePoints(text);
+  size_t begin_cp = 0;
+  size_t end_cp = code_points.size();
+  while (begin_cp < end_cp && IsUnicodeSpace(code_points[begin_cp]))
+    ++begin_cp;
+  while (end_cp > begin_cp && IsUnicodeSpace(code_points[end_cp - 1]))
+    --end_cp;
+  size_t byte = 0;
+  size_t begin_byte = 0;
+  size_t end_byte = 0;
+  for (size_t cp = 0; cp <= code_points.size(); ++cp) {
+    if (cp == begin_cp)
+      begin_byte = byte;
+    if (cp == end_cp)
+      end_byte = byte;
+    if (cp == code_points.size())
+      break;
+    const uint8_t lead = static_cast<uint8_t>(text[byte]);
+    byte += lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+  }
+  return text.substr(begin_byte, end_byte - begin_byte);
+}
+
+bool IsTokenLoop(const std::vector<int> &output_ids) {
+  if (output_ids.size() < kTokenLoopWindow) {
+    return false;
+  } else {
+  }
+  const std::set<int> distinct(output_ids.end() - kTokenLoopWindow,
+                               output_ids.end());
+  return distinct.size() <= kTokenLoopMaxDistinct;
 }
 
 std::optional<std::string> NormalizeLanguage(const std::string &language) {
@@ -232,9 +305,11 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   }
   auto [text, language] = SplitOutput(output_ids, options);
   const bool ended_on_stop = !output_ids.empty() && is_stop(output_ids.back());
-  return {options.prefix_text + text, language,
+  return {options.prefix_text + text,
+          language,
           static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0),
-          finish_reason};
+          finish_reason,
+          {}};
 }
 
 std::pair<std::string, std::optional<std::string>>

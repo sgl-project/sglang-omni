@@ -148,6 +148,10 @@ class OmniPlatform(DeviceMixin):
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
 
+    def get_encoder_decoder_attention_backend(self) -> str | None:
+        """Default backend for all attention in encoder-decoder models, if needed."""
+        return None
+
     def supports_fp8_moe(self) -> bool:
         return True
 

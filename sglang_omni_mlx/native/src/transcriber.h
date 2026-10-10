@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <stdexcept>
@@ -11,6 +12,7 @@
 
 #include "audio.h"
 #include "model.h"
+#include "nlohmann/json.hpp"
 #include "tokenizer.h"
 
 namespace qwen3_asr {
@@ -31,17 +33,38 @@ struct TranscriptionOptions {
   std::string prefix_text;
 };
 
+struct SpeakerSegment {
+  double start_seconds = 0.0;
+  double end_seconds = 0.0;
+  // Empty when the output carried no speaker segments.
+  std::string speaker;
+  std::string text;
+};
+
 struct TranscriptionResult {
   std::string text;
   std::optional<std::string> language;
   int generated_token_count = 0;
   FinishReason finish_reason = FinishReason::kLength;
+  // Timestamped speaker segments, for models that produce them.
+  std::vector<SpeakerSegment> segments;
 };
 
 class TranscriptionCancelled : public std::runtime_error {
 public:
   TranscriptionCancelled() : std::runtime_error("transcription cancelled") {}
 };
+
+// Segments as the HTTP and realtime APIs send them: start, end, speaker, text.
+nlohmann::ordered_json
+SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
+
+bool IsUnicodeSpace(uint32_t code_point);
+std::vector<uint32_t> CodePoints(const std::string &text);
+// Strips every Unicode space from both ends.
+std::string StripUnicodeWhitespace(const std::string &text);
+// Greedy loop guard: the last 24 tokens use at most 3 distinct ids.
+bool IsTokenLoop(const std::vector<int> &output_ids);
 
 // The canonical prompt name for a Qwen3-ASR language code or name. Like
 // Voxt's Swift port, a name outside the table is used as given; blank is none.

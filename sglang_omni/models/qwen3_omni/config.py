@@ -24,7 +24,7 @@ THINKER_STAGE = "thinker"
 # TALKER_START_MIN_CHUNKS reflects the prompt topology's one-chunk minimum.
 MIN_PARTIAL_START_CHUNKS = 3
 
-# Note (wenyao): vLLM-Omni qwen3_omni.py::_get_talker_assistant_parts needs one chunk
+# Note (wenyao): the talker assistant prompt needs one chunk
 # for a 9-row tail (3 template + 4 pad + BOS + text); later chunks feed decode.
 TALKER_START_MIN_CHUNKS = 1
 
