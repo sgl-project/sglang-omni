@@ -350,7 +350,10 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         else:
             pass
         # note (guozhihao-224): one batched D2H instead of per-request .item() syncs.
-        token_ids_cpu = token_ids.tolist()
+        # note (Yucheng Hu): a .tolist() here waits inside a default-stream D2H, which
+        # blocks the vocoder thread's launches; the staged copy waits on an event.
+        self.stage_token_ids(result, token_ids)
+        token_ids_cpu = self.resolve_host_token_ids(result).tolist()
         for idx, sched_req in enumerate(requests):
             token_id = int(token_ids_cpu[idx])
             if token_id >= VOCAB_SIZE:
