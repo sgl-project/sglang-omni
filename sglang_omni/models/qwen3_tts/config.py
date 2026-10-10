@@ -30,6 +30,11 @@ _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
     "voicedesign",
 )
 
+# note (wenyao): 256 codec frames (21 s of audio) fill all 64 running slots on the
+# three-process layout; measured on H100 80GB (#2472), see the cookbook admission section.
+ADMISSION_NEW_TOKENS_ESTIMATE_ENV = "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION"
+TTS_ENGINE_ADMISSION_ESTIMATE_FRAMES = "256"
+
 
 class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
     load_frontend: bool
@@ -91,6 +96,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory=FactoryArgs(dtype="bfloat16"),
             gpu=0,
+            env={
+                ADMISSION_NEW_TOKENS_ESTIMATE_ENV: TTS_ENGINE_ADMISSION_ESTIMATE_FRAMES
+            },
             next="vocoder",
             stream_to=["vocoder"],
         ),

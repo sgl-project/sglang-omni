@@ -121,18 +121,41 @@ initial and follow-up vocoder graph-capture paths (`initial_cuda_graph` and
 
 ### Overload / admission policy
 
-Two SGLang generation-stage knobs bound how the server behaves past saturation:
+Three SGLang generation-stage knobs bound how the server behaves past saturation:
 
 | Knob | Meaning | Qwen3-TTS default |
 |---|---|---|
 | `--tts_engine.engine.max_running_requests` | Concurrent running slots | `64` |
 | `--tts_engine.engine.max_queued_requests` | Waiting-queue depth before fast-reject | `64` |
+| `--tts_engine.env.SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION` | New codec frames (one AR token per 12 Hz frame) the admitter charges per running request, `min(max_new_tokens, this)` | `256` |
 
 Every request enters the waiting queue first, so `max_queued_requests`
 must be **≥ 1**. Capacity is about `running + queued`. Extra arrivals get
 HTTP **503** (`The request queue is full.`) before preprocessing, or later
 if the AR waiting queue or request-build backlog is full. Qwen3-TTS
 defaults to 4 request-build workers with pending depth 16.
+
+The admitter reserves KV for every running request as if it will produce
+`min(max_new_tokens, SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION)` new codec frames
+(one AR token per 12 Hz frame), and SGLang reads that variable once per
+process. Qwen3-TTS requests default to `max_new_tokens` 2048 while a SeedTTS
+sentence runs about 60 to 120 frames; the SGLang default of 4096 never bound,
+so every running request was charged the full 2048 frames and the scheduler
+held about 37 of the 64 slots at an 11% KV pool. The 256-frame default (21 s
+of audio) admitted every slot: on one H100 80GB with the three-process layout and 1024
+SeedTTS-EN requests per cell, it moved 64 concurrent requests from 23.2 to
+24.5 req/s and from 23.8 to 24.8 req/s in forward and reverse arm order, with
+median first audio 0.23 s to 0.19 s and p95 first audio 2.0 s to 0.6 s, and
+32 concurrent requests from 20.4 to 21.1 req/s with p95 first audio 0.45 s to
+0.28 s; word error rate and speaker similarity stayed within the control
+spread. The estimate does not cap generation: requests that run past 256
+frames use the pool's remaining headroom, and if the pool fills, SGLang
+retracts decode requests and replays them later. Raise the value for
+deployments that synthesize minutes of audio per request. A value exported in
+the launching shell takes precedence over both this default and a
+`--tts_engine.env.SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION` override, because the
+stage env defaults apply only to variables the process did not inherit; unset
+it in the shell to let the configuration apply.
 
 ### Prefill CUDA graphs
 
