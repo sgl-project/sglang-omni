@@ -28,6 +28,7 @@ from sglang_omni.models.personaplex.architecture import (
     NUM_STREAMS,
     USER_STREAM_OFFSET,
 )
+from sglang_omni.models.personaplex.profiling import component_scope
 from sglang_omni.models.personaplex.sampling import sample_token
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
@@ -74,10 +75,11 @@ class PersonaPlexModelRunner(ModelRunner):
         cached = inputs.get("device_rows")
         if cached is None:
             timeline = self.request_timeline(data)
-            cached = {
-                "user_rows": timeline.user_rows.to(self.model_device),
-                "agent_row": timeline.agent_row_before_start.to(self.model_device),
-            }
+            with component_scope("h2d"):
+                cached = {
+                    "user_rows": timeline.user_rows.to(self.model_device),
+                    "agent_row": timeline.agent_row_before_start.to(self.model_device),
+                }
             inputs["device_rows"] = cached
         else:
             pass
@@ -86,22 +88,26 @@ class PersonaPlexModelRunner(ModelRunner):
     def prefill_rows(self, data: SGLangARRequestData) -> torch.Tensor:
         timeline = self.request_timeline(data)
         model = self.model
-        tokens = timeline.prefill_tokens.to(self.model_device)
+        with component_scope("h2d"):
+            tokens = timeline.prefill_tokens.to(self.model_device)
         dtype = model.fusion_buffer.dtype
         if not timeline.prefill_embedding_positions:
-            return model.embed_rows(tokens).to(dtype)
+            with component_scope("embeddings"):
+                return model.embed_rows(tokens).to(dtype)
         else:
             pass
-        stored = torch.as_tensor(
-            timeline.prefill_embeddings, device=self.model_device
-        ).to(dtype)
+        with component_scope("h2d"):
+            stored = torch.as_tensor(
+                timeline.prefill_embeddings, device=self.model_device
+            ).to(dtype)
         known = torch.ones(tokens.shape[0], dtype=torch.bool, device=self.model_device)
         known[timeline.prefill_embedding_positions] = False
         rows = torch.empty(
             tokens.shape[0], stored.shape[1], dtype=dtype, device=self.model_device
         )
         rows[timeline.prefill_embedding_positions] = stored
-        rows[known] = model.embed_rows(tokens[known]).to(dtype)
+        with component_scope("embeddings"):
+            rows[known] = model.embed_rows(tokens[known]).to(dtype)
         return rows
 
     def audio_sampler(self, data: SGLangARRequestData) -> AudioTokenSampler:
@@ -128,9 +134,10 @@ class PersonaPlexModelRunner(ModelRunner):
         inputs = data.talker_model_inputs
         device_rows = self.rows_on_device(data)
         hidden = self.model.hidden_out[index : index + 1]
-        codes = self.model.depformer.generate(
-            text_token.view(1), hidden, forced.view(1, -1), self.audio_sampler(data)
-        )[0]
+        with component_scope("depformer"):
+            codes = self.model.depformer.generate(
+                text_token.view(1), hidden, forced.view(1, -1), self.audio_sampler(data)
+            )[0]
         frame = output_frame(device_rows["agent_row"], codes)
         device_rows["agent_row"] = codes
         inputs["agent_rows"].append(codes)
@@ -161,7 +168,8 @@ class PersonaPlexModelRunner(ModelRunner):
             rows[index, 0] = int(token)
             rows[index, AGENT_STREAM_OFFSET:USER_STREAM_OFFSET] = agent_rows[index]
             rows[index, USER_STREAM_OFFSET:] = device_rows["user_rows"][start + index]
-        return model.embed_rows(rows).to(model.fusion_buffer.dtype)
+        with component_scope("embeddings"):
+            return model.embed_rows(rows).to(model.fusion_buffer.dtype)
 
     def before_prefill(
         self,
@@ -176,9 +184,10 @@ class PersonaPlexModelRunner(ModelRunner):
             generated = [int(token) for token in req.output_ids]
             prompt_rows = self.prefill_rows(data)
             if not generated:
-                inputs["prefill_forced"] = self.request_timeline(
-                    data
-                ).forced_agent_at_start.to(self.model_device)
+                with component_scope("h2d"):
+                    inputs["prefill_forced"] = self.request_timeline(
+                        data
+                    ).forced_agent_at_start.to(self.model_device)
                 rows.append(prompt_rows)
                 continue
             else:
@@ -233,9 +242,10 @@ class PersonaPlexModelRunner(ModelRunner):
             row[USER_STREAM_OFFSET:] = device_rows["user_rows"][position]
             rows.append(row)
         batch = len(rows)
-        model.fusion_buffer[:batch] = model.embed_rows(torch.stack(rows)).to(
-            model.fusion_buffer.dtype
-        )
+        with component_scope("embeddings"):
+            model.fusion_buffer[:batch] = model.embed_rows(torch.stack(rows)).to(
+                model.fusion_buffer.dtype
+            )
 
     def post_decode(
         self,

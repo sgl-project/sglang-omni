@@ -21,6 +21,7 @@ from sglang_omni.models.personaplex.components.mimi import (
 from sglang_omni.models.personaplex.config import PREPROCESSING_STAGE
 from sglang_omni.models.personaplex.engine_builder import PersonaPlexEngineBuilder
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
+from sglang_omni.models.personaplex.profiling import component_scope
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
     DEFAULT_VOICE,
@@ -38,6 +39,7 @@ from sglang_omni.preprocessing.transcription import (
     police_request_audio,
     resolve_audio_source,
 )
+from sglang_omni.profiler.event_recorder import emit
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
@@ -91,6 +93,11 @@ def create_preprocessing_executor(
     )
 
     def preprocess(payload: StagePayload) -> StagePayload:
+        emit(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="preprocess_start",
+        )
         params = stage_request_params(payload.request.params, PREPROCESSING_STAGE)
         # Note (wilsonzheng0327): Channel 0, not a downmix: in a two-party recording the
         # agent is on channel 1.
@@ -129,6 +136,11 @@ def create_preprocessing_executor(
         else:
             pass
         payload.data = state.to_dict()
+        emit(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="preprocess_end",
+        )
         return payload
 
     return SimpleScheduler(preprocess)
@@ -148,12 +160,20 @@ def create_mimi_encode_executor(
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
 
     def encode_waveform(waveform: torch.Tensor) -> torch.Tensor:
-        codes = codec.encode(
-            waveform.to(device=device, dtype=torch.float32).view(1, 1, -1)
-        )
-        return codes[0].T.cpu()
+        with component_scope("h2d"):
+            waveform = waveform.to(device=device, dtype=torch.float32).view(1, 1, -1)
+        with component_scope("mimi_encode"):
+            codes = codec.encode(waveform)
+        with component_scope("d2h"):
+            return codes[0].T.cpu()
 
     def encode(payload: StagePayload) -> StagePayload:
+        emit(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="encoder_start",
+            metadata={"modality": "audio", "batch_size": 1},
+        )
         state = PersonaPlexState.from_dict(payload.data)
         if state.waveform is not None:
             state.user_codes = encode_waveform(state.waveform)
@@ -166,6 +186,12 @@ def create_mimi_encode_executor(
         else:
             pass
         payload.data = state.to_dict()
+        emit(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="encoder_end",
+            metadata={"modality": "audio", "batch_size": 1},
+        )
         return payload
 
     return SimpleScheduler(encode)
@@ -224,9 +250,12 @@ def create_code2wav_executor(
         if codes is None or codes.shape[0] == 0:
             waveform = torch.zeros(0)
         else:
-            waveform = codec.decode(codes.to(device=device, dtype=torch.long).T[None])[
-                0, 0
-            ].cpu()
+            with component_scope("h2d"):
+                codes = codes.to(device=device, dtype=torch.long).T[None]
+            with component_scope("mimi_decode"):
+                waveform = codec.decode(codes)[0, 0]
+            with component_scope("d2h"):
+                waveform = waveform.cpu()
         payload.data = audio_waveform_payload(
             trim_to_caller(waveform, state.num_samples),
             sample_rate=SAMPLE_RATE,
