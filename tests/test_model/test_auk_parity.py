@@ -57,7 +57,12 @@ def models():
         qwen_path=qwen,
     )
     conditioning = create_conditioning_executor(
-        checkpoint, device="cuda", gpu_id=0, text_encoder_path=qwen
+        checkpoint,
+        device="cuda",
+        gpu_id=0,
+        text_encoder_path=qwen,
+        weight_dtype="float32",
+        text_cuda_graph_capture_lengths=[],
     )
     engine = create_auk_engine_executor(
         checkpoint,
@@ -65,7 +70,13 @@ def models():
         gpu_id=0,
         enable_dit_fused_qk_norm_rope=False,
     )
-    decode = create_decode_executor(checkpoint, device="cuda", gpu_id=0)
+    decode = create_decode_executor(
+        checkpoint,
+        device="cuda",
+        gpu_id=0,
+        vae_cuda_graph_capture_shapes=[],
+        enable_vae_torch_compile=False,
+    )
 
     def generate(payload):
         return decode.fn(engine.fn(conditioning.fn(payload)))
