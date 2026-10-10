@@ -620,7 +620,7 @@ first executable prefill / extend batch is selected.</p>
 </tr>
 <tr class="row-even"><td><p>Code2Wav first audio</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">code2wav_first_audio</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">Code2WavScheduler.decode_delta</span></code> / <code class="docutils literal notranslate"><span class="pre">_flush_pending</span></code> / <code class="docutils literal notranslate"><span class="pre">run_step</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Code2WavScheduler.keep_audio</span></code> (every decoded or flushed window)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Terminal response</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">terminal_response</span></code></p></td>
@@ -676,23 +676,15 @@ first executable prefill / extend batch is selected.</p>
 </tr>
 <tr class="row-odd"><td><p>Code2Wav</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">code2wav_decode_start</span></code></p></td>
-<td><p>Serial decode start: trigger, start/end/new/context/window frames, active and threshold-ready requests, inbox depth</p></td>
+<td><p>Each window’s decode start: trigger, start/end/new/context/window frames, <code class="docutils literal notranslate"><span class="pre">rows</span></code> (the windows its replay decodes together), active and threshold-ready requests, inbox depth</p></td>
 </tr>
 <tr class="row-even"><td><p>Code2Wav</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">code2wav_decode_launched</span></code></p></td>
-<td><p>Pipelined serial window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode and window/new-frame counts</p></td>
+<td><p>Pipelined window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode, window/new-frame counts and <code class="docutils literal notranslate"><span class="pre">rows</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Code2Wav</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">code2wav_decode_end</span></code></p></td>
 <td><p>Repeats start metadata and adds the current decode’s <code class="docutils literal notranslate"><span class="pre">audio_samples</span></code> plus execution metadata; output-overlap runs also include <code class="docutils literal notranslate"><span class="pre">pipelined</span></code> and the previous window’s post-EOS-scan <code class="docutils literal notranslate"><span class="pre">d2h_wait_ns</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p>Code2Wav</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">code2wav_batch_start</span></code></p></td>
-<td><p>Coalesced step start: batch and bucket shape, new/window frames, active requests, inbox depth, oldest wait, fire reason, due-bucket count, and sub-batch decomposition</p></td>
-</tr>
-<tr class="row-odd"><td><p>Code2Wav</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">code2wav_batch_end</span></code></p></td>
-<td><p>Repeats the start metadata and adds audio samples, execution mode, graph key, and fallback reason</p></td>
 </tr>
 </tbody>
 </table>
