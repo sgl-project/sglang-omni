@@ -624,6 +624,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/full_duplex_bench.html">Full-Duplex-Bench v1.5 runbook</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/bump_version.html">Bumping the SGLang Pin</a></li>
 </ul>
@@ -1700,8 +1701,8 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 </section>
 <section id="stage-placement-same-gpu-co-location">
 <h4>Stage placement — same-GPU co-location<a class="headerlink" href="#stage-placement-same-gpu-co-location" title="Link to this heading">#</a></h4>
-<p>Stages may share GPUs. Earlier topologies hard-rejected same-GPU speech-stage placement, which left Talker on H200 at &lt;2% utilization long-term. Informed by Ratish’s vLLM-Omni investigation (vLLM co-locates thinker + talker on a single device via per-stage memory budgeting + NVML accounting), the placement model now treats “any stage on any GPU” as first-class, with budgeting that accounts for co-tenants rather than rejecting the topology. See Design Decision History § PR #430 for the typed runtime config + placement planner that shipped this.</p>
-<p>Memory-fraction semantics have also been pinned down: vLLM’s <code class="docutils literal notranslate"><span class="pre">gpu_memory_utilization</span></code> is a fraction of total VRAM, while SGLang’s <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> is a fraction of remaining VRAM after weights load — more principled for single-stage LLM, but ambiguous for omni where stages load sequentially and “remaining” depends on load order. The placement model now uses one explicit semantics rather than inheriting the ambiguity.</p>
+<p>Stages may share GPUs. Earlier topologies hard-rejected same-GPU speech-stage placement, which left Talker on H200 at &lt;2% utilization long-term. The placement model now treats “any stage on any GPU” as first-class, with per-stage memory budgeting and NVML accounting that account for co-tenants rather than rejecting the topology. See Design Decision History § PR #430 for the typed runtime config + placement planner that shipped this.</p>
+<p>Memory-fraction semantics have also been pinned down: SGLang’s <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> is a fraction of remaining VRAM after weights load — principled for single-stage LLM, but ambiguous for omni where stages load sequentially and “remaining” depends on load order. The placement model now uses one explicit semantics rather than inheriting the ambiguity.</p>
 <p>Whether <code class="docutils literal notranslate"><span class="pre">factory</span></code> and <code class="docutils literal notranslate"><span class="pre">factory_args</span></code> should collapse into a single field is tracked in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/538">#538 §2.2</a>.</p>
 </section>
 </section>

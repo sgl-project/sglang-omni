@@ -1,0 +1,1307 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Full-Duplex-Bench v1.5 runbook &#8212; SGLang</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=4418a689" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=3476fdda"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=ccdb6887"></script>
+    <script src="../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'developer_reference/full_duplex_bench';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
+    <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
+    <link rel="icon" href="../_static/logo.ico"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="RL Admin Control" href="rl_admin_control.html" />
+    <link rel="prev" title="Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile" href="qwen3_asr_concurrency_profile.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.7" />
+    <meta name="docbuild:last-update" content="Oct 10, 2026"/>
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+  
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">🚀 Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">🚀 Installation — Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">🚀 Installation — Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">🚀 Installation — Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_musa.html">🚀 Installation — MUSA</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/higgs_tts.html">Higgs TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/voxtral_tts.html">Voxtral TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_tts.html">Qwen3 TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_tts.html">Ming-Omni-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/dots_tts.html">dots.tts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/minimax_music3.html">MiniMax Music 3</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/zonos2.html">ZONOS2</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_asr.html">Qwen3-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_asr.html">Fun-ASR-Nano</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/arkasr.html">ARK-ASR-3B</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/whisper_asr.html">Whisper ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/minicpm_o.html">MiniCPM-o</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/personaplex.html">PersonaPlex</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/auk.html">AuK</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/qwen3_omni.html">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/audio_translations.html">Audio Translations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Rust Router</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Benchmarks</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../benchmarks/relay.html">Benchmark Relay</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../benchmarks/qwen3_tts_leading_silence.html">Qwen3-TTS Base: Leading Silence in X-Vector Voice Cloning</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_design.html">API Server Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="pipeline.html">Pipeline Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config.html">Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_parameters.html">Adding a Parameter</a></li>
+<li class="toctree-l1"><a class="reference internal" href="communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reference_encode_service.html">Reference Encode Service</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiler.html">Request-level profiler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Full-Duplex-Bench v1.5 runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bump_version.html">Bumping the SGLang Pin</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-source-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Source repositories">
+    <i class="fab fa-github"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni" target="_blank"
+   class="btn btn-sm btn-source-repository-button dropdown-item"
+   title="Source repository"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+<span class="btn__text-container">Repository</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/developer_reference/full_duplex_bench.md?plain=1" target="_blank"
+   class="btn btn-sm btn-source-file-button dropdown-item"
+   title="Show source"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-code"></i>
+  </span>
+<span class="btn__text-container">Show source</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/developer_reference/full_duplex_bench.md" target="_blank"
+   class="btn btn-sm btn-source-edit-button dropdown-item"
+   title="Suggest edit"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-pencil-alt"></i>
+  </span>
+<span class="btn__text-container">Suggest edit</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fdeveloper_reference/full_duplex_bench.html&body=Your%20issue%20content%20here." target="_blank"
+   class="btn btn-sm btn-source-issues-button dropdown-item"
+   title="Open an issue"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-lightbulb"></i>
+  </span>
+<span class="btn__text-container">Open issue</span>
+</a>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../_sources/developer_reference/full_duplex_bench.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Full-Duplex-Bench v1.5 runbook</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-measured">What is Measured</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hardware-and-judge">Hardware and judge</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#one-time-setup">One Time Setup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-1-3-run-the-benchmark">Step 1-3: run the benchmark</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-pairs">Choosing pairs</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#settings">Settings</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#notes">Notes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scoring-cli-reference">Scoring CLI reference</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dependencies-and-source">Dependencies and source</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#record-and-export">Record and export</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#score-and-resume">Score and resume</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#report">Report</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#judges">Judges</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-behavior-judge">Custom behavior judge</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#measurement-definitions">Measurement definitions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#verification">Verification</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#troubleshooting">Troubleshooting</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#concurrent-runs">Concurrent runs</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section class="tex2jax_ignore mathjax_ignore" id="full-duplex-bench-v1-5-runbook">
+<h1>Full-Duplex-Bench v1.5 runbook<a class="headerlink" href="#full-duplex-bench-v1-5-runbook" title="Link to this heading">#</a></h1>
+<p>This page runs <a class="reference external" href="https://github.com/DanielLin94144/Full-Duplex-Bench">Full-Duplex-Bench</a> v1.5 against a native full-duplex model served by SGLang-Omni (MiniCPM-o 4.5 by default).</p>
+<p>Every step is a subcommand of <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">benchmarks.duplex.fdb_v15</span></code>; the code lives in <code class="docutils literal notranslate"><span class="pre">benchmarks/duplex/fdb_v15/</span></code>.</p>
+<section id="what-is-measured">
+<h2>What is Measured<a class="headerlink" href="#what-is-measured" title="Link to this heading">#</a></h2>
+<p>v1.5 has 498 sample pairs in four categories: <code class="docutils literal notranslate"><span class="pre">user_interruption</span></code> (200), <code class="docutils literal notranslate"><span class="pre">user_backchannel</span></code> (98), <code class="docutils literal notranslate"><span class="pre">talking_to_other</span></code> (100) and <code class="docutils literal notranslate"><span class="pre">background_speech</span></code> (100). Each pair contains two input audio files with the same initial user query. <code class="docutils literal notranslate"><span class="pre">input.wav</span></code> also includes a later speech event intended to overlap with the model’s answer: an interruption, a backchannel, speech directed at someone else, or background speech. <code class="docutils literal notranslate"><span class="pre">clean_input.wav</span></code> contains the initial query without that later event. Each file is streamed in a separate session, and the model’s output audio is recorded separately.</p>
+<p>The pipeline has three steps:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Step</p></th>
+<th class="head"><p>Subcommand</p></th>
+<th class="head"><p>What it does</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1. Generate</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">generate</span></code></p></td>
+<td><p>Starts the model server, streams every input to <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>, records the model’s audio, stops the server, then cuts a fixed observation window per session</p></td>
+</tr>
+<tr class="row-odd"><td><p>2. ASR</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">asr</span></code></p></td>
+<td><p>Transcribes the input and output audio with word timestamps (Parakeet), then computes VAD speech intervals with the official timing code</p></td>
+</tr>
+<tr class="row-even"><td><p>3. Judge</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">judge</span></code></p></td>
+<td><p>Starts the judge server, sends the four transcripts of each pair to an LLM with the official prompt, runs the semantic A/F/U judge (Qwen only), stops the server, then writes <code class="docutils literal notranslate"><span class="pre">summary.json</span></code> and <code class="docutils literal notranslate"><span class="pre">report.txt</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Every step takes <code class="docutils literal notranslate"><span class="pre">--run-name</span></code> and <code class="docutils literal notranslate"><span class="pre">--repeat</span></code>. A run is one fixed set of pairs under <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/RUN_NAME</span></code>. <code class="docutils literal notranslate"><span class="pre">--repeat</span> <span class="pre">N</span></code> does not run the benchmark N times, and it does not mean “repeat three times.” One command runs once. The value is only a string inserted into the output path, <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/RUN_NAME/repeat-N/</span></code>, so you can tell that invocation apart from another invocation of the same run. The default is <code class="docutils literal notranslate"><span class="pre">--repeat</span> <span class="pre">1</span></code>, which writes <code class="docutils literal notranslate"><span class="pre">repeat-1/</span></code>. <code class="docutils literal notranslate"><span class="pre">--repeat</span> <span class="pre">3</span></code> still runs once, and it writes <code class="docutils literal notranslate"><span class="pre">repeat-3/</span></code>. To measure variance, invoke the three steps again yourself with a different N (<code class="docutils literal notranslate"><span class="pre">--repeat</span> <span class="pre">2</span></code>, then <code class="docutils literal notranslate"><span class="pre">--repeat</span> <span class="pre">3</span></code>). Each invocation generates the same pairs once; sampling is on, so the generations differ. <code class="docutils literal notranslate"><span class="pre">aggregate</span> <span class="pre">--run-name</span> <span class="pre">RUN_NAME</span></code> reports the mean ± standard deviation over the finished <code class="docutils literal notranslate"><span class="pre">repeat-*</span></code> directories.</p>
+<p>The results are:</p>
+<ul class="simple">
+<li><p><strong>Stop latency</strong>: how long the model keeps talking while the user talks over it (overlap of merged user and model speech spans). Lower means the model yields sooner. Treat lower as better on <code class="docutils literal notranslate"><span class="pre">user_interruption</span></code>, where the model should give way. On <code class="docutils literal notranslate"><span class="pre">user_backchannel</span></code>, <code class="docutils literal notranslate"><span class="pre">talking_to_other</span></code> and <code class="docutils literal notranslate"><span class="pre">background_speech</span></code> the model should keep its turn, so the overlap length mostly tracks how long that other speech lasts. These are whole-file intervals.</p></li>
+<li><p><strong>Response latency</strong>: time from a user speech span ending to the next model speech start. Lower means the model starts sooner. Treat lower as better when a reply is due. These are whole-file intervals, the same as stop latency.</p></li>
+<li><p><strong>Behavior labels</strong>: the judge assigns each pair one label for how the model handled the overlap. <code class="docutils literal notranslate"><span class="pre">C_RESPOND</span></code> means it addressed the overlap’s content. <code class="docutils literal notranslate"><span class="pre">C_RESUME</span></code> means it ignored the overlap and continued. <code class="docutils literal notranslate"><span class="pre">C_UNCERTAIN_HANDLING</span></code> means it asked for a repeat or showed it did not catch the overlap. <code class="docutils literal notranslate"><span class="pre">C_UNKNOWN</span></code> means its reply was off-target or it said nothing. The shares have no single higher-is-better direction. The share that should be high is <code class="docutils literal notranslate"><span class="pre">C_RESPOND</span></code> on <code class="docutils literal notranslate"><span class="pre">user_interruption</span></code>, and <code class="docutils literal notranslate"><span class="pre">C_RESUME</span></code> on <code class="docutils literal notranslate"><span class="pre">user_backchannel</span></code>, <code class="docutils literal notranslate"><span class="pre">talking_to_other</span></code> and <code class="docutils literal notranslate"><span class="pre">background_speech</span></code>. <code class="docutils literal notranslate"><span class="pre">C_UNKNOWN</span></code> should be low. <code class="docutils literal notranslate"><span class="pre">C_UNCERTAIN_HANDLING</span></code> records uncertainty and has no quality direction of its own.</p></li>
+<li><p><strong>Semantic quality</strong> (non-official, <code class="docutils literal notranslate"><span class="pre">JUDGE=qwen</span></code>): a label says what the model did, not whether it was right. A <code class="docutils literal notranslate"><span class="pre">C_RESUME</span></code> that ignored a real interruption and a <code class="docutils literal notranslate"><span class="pre">C_RESUME</span></code> that correctly ignored a backchannel look the same. The semantic judge grades each pair on three axes, each <code class="docutils literal notranslate"><span class="pre">accept</span></code>, <code class="docutils literal notranslate"><span class="pre">fail</span></code> or <code class="docutils literal notranslate"><span class="pre">unresolved</span></code>: <code class="docutils literal notranslate"><span class="pre">interaction_handling</span></code> (did it handle the overlap correctly for its category), <code class="docutils literal notranslate"><span class="pre">relevance</span></code> (did it address the operative request) and <code class="docutils literal notranslate"><span class="pre">grounding</span></code> (no unsupported facts, claimed actions or false memories). <code class="docutils literal notranslate"><span class="pre">joint</span></code> fails if any axis fails and accepts only if all three accept. Every verdict must quote an exact substring of the transcript it relies on; a verdict with a missing or invalid quote becomes <code class="docutils literal notranslate"><span class="pre">unresolved</span></code>, never a pass. Each cell reports <code class="docutils literal notranslate"><span class="pre">quality</span> <span class="pre">=</span> <span class="pre">A/(A+F)</span></code> and <code class="docutils literal notranslate"><span class="pre">coverage</span> <span class="pre">=</span> <span class="pre">(A+F)/N</span></code>, where N is every selected pair. Higher quality is better. Higher coverage is better. Read them together: a high quality over a low coverage is a judgment on few pairs.</p></li>
+</ul>
+</section>
+<section id="hardware-and-judge">
+<h2>Hardware and judge<a class="headerlink" href="#hardware-and-judge" title="Link to this heading">#</a></h2>
+<p>One GPU with at least 80 GB is enough (H100/200 is recommended). The steps run in turn, and each step starts the server it needs and stops it when it exits.</p>
+<p>Two judges are supported, selected by <code class="docutils literal notranslate"><span class="pre">JUDGE</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p><code class="docutils literal notranslate"><span class="pre">JUDGE</span></code></p></th>
+<th class="head"><p>Model</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">qwen</span></code> (default)</p></td>
+<td><p><a class="reference external" href="https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B">Qwen3.8-27B</a>, served locally by SGLang</p></td>
+<td><p>Behavior labels: non-thinking, greedy, seeds 1-3. Semantic judge: thinking, temperature 0, seed 1.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gpt</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">gpt-4o-2024-08-06</span></code></p></td>
+<td><p>The paper’s judge. Needs <code class="docutils literal notranslate"><span class="pre">OPENAI_API_KEY</span></code>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The semantic judge uses the frozen prompt, response schema and six control cases in <code class="docutils literal notranslate"><span class="pre">benchmarks/duplex/semantic/</span></code>. Before grading, every run sends the six controls and stops if any of the 18 axis statuses differs from <code class="docutils literal notranslate"><span class="pre">control-expected.json</span></code>. Passing the controls is a rubric check, not a measure of judge accuracy.</p>
+</section>
+<section id="one-time-setup">
+<h2>One Time Setup<a class="headerlink" href="#one-time-setup" title="Link to this heading">#</a></h2>
+<p>Run these commands from the repository root, with the sglang-omni virtualenv active (<code class="docutils literal notranslate"><span class="pre">which</span> <span class="pre">python</span></code> should print that venv’s interpreter):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>&lt;path/to/sglang-omni&gt;
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>setup
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">setup</span></code> needs <code class="docutils literal notranslate"><span class="pre">git</span></code> and <code class="docutils literal notranslate"><span class="pre">uv</span></code> on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. It is safe to rerun and skips finished steps. It first installs the <code class="docutils literal notranslate"><span class="pre">minicpm-o</span></code> extra of sglang-omni (<code class="docutils literal notranslate"><span class="pre">onnx</span></code> and <code class="docutils literal notranslate"><span class="pre">einops</span></code>, which the MiniCPM-o server imports) into the active venv, leaving every other package unchanged. Everything else goes under <code class="docutils literal notranslate"><span class="pre">FDB_WORK</span></code> (default <code class="docutils literal notranslate"><span class="pre">$HOME/fdb</span></code>):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Path</p></th>
+<th class="head"><p>Content</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Full-Duplex-Bench/</span></code></p></td>
+<td><p>Official scoring code at the pinned revision <code class="docutils literal notranslate"><span class="pre">3e799c4</span></code>; file hashes are checked</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dataset/v1.5/</span></code></p></td>
+<td><p>The four v1.5 subsets, downloaded from the official Google Drive; <code class="docutils literal notranslate"><span class="pre">dataset/v1.5.revision</span></code> holds the archive hash</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scoring-venv/</span></code></p></td>
+<td><p>Python 3.12 with NeMo 3.0.0, torch 2.11 (cu130) and Silero VAD 6.2.1 for ASR and timing</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">models/parakeet-tdt-0.6b-v2/</span></code></p></td>
+<td><p>ASR checkpoint, SHA-256 checked</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">models/MiniCPM-o-4_5/</span></code></p></td>
+<td><p>Model under test at revision <code class="docutils literal notranslate"><span class="pre">503e754</span></code>. To reuse an existing copy, symlink it here or set <code class="docutils literal notranslate"><span class="pre">MODEL_PATH</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">models/Qwen3.8-27B/</span></code></p></td>
+<td><p>Judge checkpoint; its commit is saved in <code class="docutils literal notranslate"><span class="pre">models/Qwen3.8-27B.revision</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>To change a default, export the variable before running a subcommand. The variables are listed in <a class="reference internal" href="#settings"><span class="std std-ref">Settings</span></a>.</p>
+</section>
+<section id="step-1-3-run-the-benchmark">
+<h2>Step 1-3: run the benchmark<a class="headerlink" href="#step-1-3-run-the-benchmark" title="Link to this heading">#</a></h2>
+<p>Run everything in one terminal in the repository root, with the sglang-omni venv active. Run a preflight first. It takes one pair per category (4 pairs, about 10 minutes end to end, mostly server startup and the semantic judge) and catches environment problems before a long run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>generate<span class="w"> </span>--run-name<span class="w"> </span>preflight<span class="w"> </span>--per-subset<span class="w"> </span><span class="m">1</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>asr<span class="w"> </span>--run-name<span class="w"> </span>preflight
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>judge<span class="w"> </span>--run-name<span class="w"> </span>preflight
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>aggregate<span class="w"> </span>--run-name<span class="w"> </span>preflight
+</pre></div>
+</div>
+<p>The preflight passes when <code class="docutils literal notranslate"><span class="pre">generate</span></code> prints <code class="docutils literal notranslate"><span class="pre">{&quot;pass&quot;:</span> <span class="pre">8}</span></code> and <code class="docutils literal notranslate"><span class="pre">{&quot;eligible_pairs&quot;:</span> <span class="pre">4,</span> <span class="pre">...}</span></code>, <code class="docutils literal notranslate"><span class="pre">asr</span></code> prints <code class="docutils literal notranslate"><span class="pre">{&quot;ok&quot;:</span> <span class="pre">16}</span></code> and <code class="docutils literal notranslate"><span class="pre">{&quot;ok&quot;:</span> <span class="pre">8}</span></code>, and <code class="docutils literal notranslate"><span class="pre">judge</span></code> prints <code class="docutils literal notranslate"><span class="pre">{&quot;valid&quot;:</span> <span class="pre">4}</span></code> and <code class="docutils literal notranslate"><span class="pre">controls:</span> <span class="pre">18/18</span> <span class="pre">axis</span> <span class="pre">statuses</span> <span class="pre">match</span></code>. If anything differs, see <a class="reference internal" href="#troubleshooting"><span class="std std-ref">Troubleshooting</span></a>.</p>
+<p>The loop below is an ordinary shell loop. It calls the benchmark three times. <code class="docutils literal notranslate"><span class="pre">--repeat</span></code> does not loop by itself. The first iteration writes <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/minicpmo-48/repeat-1/</span></code>, the second writes <code class="docutils literal notranslate"><span class="pre">repeat-2/</span></code>, and the third writes <code class="docutils literal notranslate"><span class="pre">repeat-3/</span></code>. A later iteration does not overwrite an earlier one.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="k">for</span><span class="w"> </span>repeat<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="m">3</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">    </span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>generate<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-48<span class="w"> </span>--repeat<span class="w"> </span><span class="s2">"</span><span class="nv">$repeat</span><span class="s2">"</span><span class="w"> </span>--per-subset<span class="w"> </span><span class="m">12</span>
+<span class="w">    </span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>asr<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-48<span class="w"> </span>--repeat<span class="w"> </span><span class="s2">"</span><span class="nv">$repeat</span><span class="s2">"</span>
+<span class="w">    </span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>judge<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-48<span class="w"> </span>--repeat<span class="w"> </span><span class="s2">"</span><span class="nv">$repeat</span><span class="s2">"</span>
+<span class="k">done</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>aggregate<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-48
+</pre></div>
+</div>
+<section id="choosing-pairs">
+<h3>Choosing pairs<a class="headerlink" href="#choosing-pairs" title="Link to this heading">#</a></h3>
+<p>Only <code class="docutils literal notranslate"><span class="pre">generate</span></code> selects pairs; <code class="docutils literal notranslate"><span class="pre">asr</span></code> and <code class="docutils literal notranslate"><span class="pre">judge</span></code> score whatever that repeat recorded. Selection is deterministic, never random: each category takes its first N samples in numeric sample-ID order (1, 2, …, 10, 11, …), so every run and repeat with the same options evaluates the same pairs, and a smaller N is always a prefix of a larger one. The categories hold 200 (<code class="docutils literal notranslate"><span class="pre">user_interruption</span></code>), 98 (<code class="docutils literal notranslate"><span class="pre">user_backchannel</span></code>), 100 (<code class="docutils literal notranslate"><span class="pre">talking_to_other</span></code>) and 100 (<code class="docutils literal notranslate"><span class="pre">background_speech</span></code>) pairs.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p><code class="docutils literal notranslate"><span class="pre">generate</span></code> option</p></th>
+<th class="head"><p>Effect</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--per-subset</span> <span class="pre">N</span></code></p></td>
+<td><p>N pairs from every category (default 12); <code class="docutils literal notranslate"><span class="pre">all</span></code> selects all 498</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--subset-count</span> <span class="pre">CATEGORY=N</span></code></p></td>
+<td><p>Overrides <code class="docutils literal notranslate"><span class="pre">--per-subset</span></code> for one category; <code class="docutils literal notranslate"><span class="pre">0</span></code> skips it, <code class="docutils literal notranslate"><span class="pre">all</span></code> takes all of it. Repeatable</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--sample-id</span> <span class="pre">CATEGORY/ID</span></code></p></td>
+<td><p>Exactly these pairs. Repeatable</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--sample-ids-file</span> <span class="pre">PATH</span></code></p></td>
+<td><p>One <code class="docutils literal notranslate"><span class="pre">CATEGORY/ID</span></code> per line, such as another run’s <code class="docutils literal notranslate"><span class="pre">repeat-1/sample-ids.txt</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 20 interruptions, 10 backchannels, no other categories.</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>generate<span class="w"> </span>--run-name<span class="w"> </span>small<span class="w"> </span>--per-subset<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--subset-count<span class="w"> </span><span class="nv">user_interruption</span><span class="o">=</span><span class="m">20</span><span class="w"> </span>--subset-count<span class="w"> </span><span class="nv">user_backchannel</span><span class="o">=</span><span class="m">10</span>
+<span class="c1"># The full dataset.</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>generate<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-full<span class="w"> </span>--per-subset<span class="w"> </span>all
+<span class="c1"># Two specific pairs.</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>generate<span class="w"> </span>--run-name<span class="w"> </span>debug<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--sample-id<span class="w"> </span>user_interruption/1<span class="w"> </span>--sample-id<span class="w"> </span>background_speech/7
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">generate</span></code> prints the per-category counts it selected and writes them to <code class="docutils literal notranslate"><span class="pre">repeat-N/sample-ids.txt</span></code>. Every repeat of a run must select the same pairs: a later repeat with a different selection stops with an error, so use a new <code class="docutils literal notranslate"><span class="pre">--run-name</span></code> instead. Pass the same selection options to every repeat.</p>
+<p>Approximate wall time per repeat on H200, with one session at a time. Each <code class="docutils literal notranslate"><span class="pre">generate</span></code> adds about 1 minute of model server startup, and each <code class="docutils literal notranslate"><span class="pre">judge</span></code> about 2 minutes of judge server startup:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Pairs</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">generate</span></code></p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">asr</span></code></p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">judge</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>48</p></td>
+<td><p>~25 min</p></td>
+<td><p>~1 min</p></td>
+<td><p>~6 min</p></td>
+</tr>
+<tr class="row-odd"><td><p>498</p></td>
+<td><p>~4 h</p></td>
+<td><p>~10 min</p></td>
+<td><p>~45 min</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Sessions run in real time (about 15 s each), so generation dominates. Most of <code class="docutils literal notranslate"><span class="pre">judge</span></code> is the semantic judge: thinking-mode batches of up to 8 pairs take about 5 minutes each, and 8 batches run concurrently. <code class="docutils literal notranslate"><span class="pre">generate</span> <span class="pre">--num-shards</span> <span class="pre">2</span></code> roughly halves it; read the note on <code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> before using it.</p>
+</section>
+</section>
+<section id="results">
+<h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">aggregate</span></code> prints the table and writes it to <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/RUN_NAME/RESULTS.md</span></code>. Each latency and label cell is the mean ± sample standard deviation over the finished repeats; count cells show one value, or a range when repeats differ. This is the validation run (MiniCPM-o 4.5, <code class="docutils literal notranslate"><span class="pre">--per-subset</span> <span class="pre">3</span></code>, two repeats, Qwen judge), so the samples are small:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Category</p></th>
+<th class="head text-right"><p>Pairs</p></th>
+<th class="head text-right"><p>Timed overlap sessions</p></th>
+<th class="head text-right"><p>Stop latency (s)</p></th>
+<th class="head text-right"><p>Response latency (s)</p></th>
+<th class="head text-right"><p>C_RESPOND</p></th>
+<th class="head text-right"><p>C_RESUME</p></th>
+<th class="head text-right"><p>C_UNCERTAIN_HANDLING</p></th>
+<th class="head text-right"><p>C_UNKNOWN</p></th>
+<th class="head text-right"><p>Judged pairs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>all</p></td>
+<td class="text-right"><p>12</p></td>
+<td class="text-right"><p>12</p></td>
+<td class="text-right"><p>1.483 ± 0.070</p></td>
+<td class="text-right"><p>2.698 ± 0.075</p></td>
+<td class="text-right"><p>25.0 ± 11.8%</p></td>
+<td class="text-right"><p>66.7 ± 11.8%</p></td>
+<td class="text-right"><p>8.3 ± 0.0%</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>12</p></td>
+</tr>
+<tr class="row-odd"><td><p>user_interruption</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>2.161 ± 0.015</p></td>
+<td class="text-right"><p>2.479 ± 0.128</p></td>
+<td class="text-right"><p>50.0 ± 23.6%</p></td>
+<td class="text-right"><p>50.0 ± 23.6%</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>3</p></td>
+</tr>
+<tr class="row-even"><td><p>user_backchannel</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>0.625 ± 0.000</p></td>
+<td class="text-right"><p>2.308 ± 0.121</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>3</p></td>
+</tr>
+<tr class="row-odd"><td><p>talking_to_other</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>1.751 ± 0.083</p></td>
+<td class="text-right"><p>2.742 ± 0.083</p></td>
+<td class="text-right"><p>33.3 ± 0.0%</p></td>
+<td class="text-right"><p>66.7 ± 0.0%</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>3</p></td>
+</tr>
+<tr class="row-even"><td><p>background_speech</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>1.393 ± 0.181</p></td>
+<td class="text-right"><p>3.204 ± 0.034</p></td>
+<td class="text-right"><p>16.7 ± 23.6%</p></td>
+<td class="text-right"><p>50.0 ± 23.6%</p></td>
+<td class="text-right"><p>33.3 ± 0.0%</p></td>
+<td class="text-right"><p>0.0 ± 0.0%</p></td>
+<td class="text-right"><p>3</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Pairs</span></code> is the selected population. Failed or ineligible sessions stay in it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Timed</span> <span class="pre">overlap</span> <span class="pre">sessions</span></code> is how many overlap sessions produced timing intervals.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Judged</span> <span class="pre">pairs</span></code> is how many pairs got a valid label. The label shares use only these pairs.</p></li>
+</ul>
+<p>With <code class="docutils literal notranslate"><span class="pre">JUDGE=qwen</span></code>, <code class="docutils literal notranslate"><span class="pre">RESULTS.md</span></code> adds a semantic table. From the same validation run:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Category</p></th>
+<th class="head text-right"><p>interaction_handling quality</p></th>
+<th class="head text-right"><p>interaction_handling coverage</p></th>
+<th class="head text-right"><p>relevance quality</p></th>
+<th class="head text-right"><p>relevance coverage</p></th>
+<th class="head text-right"><p>grounding quality</p></th>
+<th class="head text-right"><p>grounding coverage</p></th>
+<th class="head text-right"><p>joint quality</p></th>
+<th class="head text-right"><p>joint coverage</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>all</p></td>
+<td class="text-right"><p>73.9 ± 1.6%</p></td>
+<td class="text-right"><p>95.8 ± 5.9%</p></td>
+<td class="text-right"><p>85.9 ± 5.8%</p></td>
+<td class="text-right"><p>87.5 ± 5.9%</p></td>
+<td class="text-right"><p>52.2 ± 11.0%</p></td>
+<td class="text-right"><p>79.2 ± 5.9%</p></td>
+<td class="text-right"><p>32.2 ± 17.3%</p></td>
+<td class="text-right"><p>79.2 ± 5.9%</p></td>
+</tr>
+<tr class="row-odd"><td><p>user_interruption</p></td>
+<td class="text-right"><p>66.7 ± 47.1%</p></td>
+<td class="text-right"><p>83.3 ± 23.6%</p></td>
+<td class="text-right"><p>66.7 ± 47.1%</p></td>
+<td class="text-right"><p>83.3 ± 23.6%</p></td>
+<td class="text-right"><p>58.3 ± 11.8%</p></td>
+<td class="text-right"><p>83.3 ± 23.6%</p></td>
+<td class="text-right"><p>25.0 ± 35.4%</p></td>
+<td class="text-right"><p>83.3 ± 23.6%</p></td>
+</tr>
+<tr class="row-even"><td><p>user_backchannel</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>50.0 ± 23.6%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>50.0 ± 23.6%</p></td>
+</tr>
+<tr class="row-odd"><td><p>talking_to_other</p></td>
+<td class="text-right"><p>50.0 ± 23.6%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>75.0 ± 35.4%</p></td>
+<td class="text-right"><p>66.7 ± 0.0%</p></td>
+<td class="text-right"><p>58.3 ± 11.8%</p></td>
+<td class="text-right"><p>83.3 ± 23.6%</p></td>
+<td class="text-right"><p>16.7 ± 23.6%</p></td>
+<td class="text-right"><p>83.3 ± 23.6%</p></td>
+</tr>
+<tr class="row-even"><td><p>background_speech</p></td>
+<td class="text-right"><p>83.3 ± 23.6%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>16.7 ± 23.6%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+<td class="text-right"><p>16.7 ± 23.6%</p></td>
+<td class="text-right"><p>100.0 ± 0.0%</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Always read quality together with coverage: a high quality over a low coverage is a judgment on few pairs.</p>
+<p>Per-repeat outputs are under <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/RUN_NAME/repeat-N/</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Path</p></th>
+<th class="head"><p>Content</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sample-ids.txt</span></code></p></td>
+<td><p>The selected pairs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">recording/shard-*/</span></code></p></td>
+<td><p>Raw session traces, input and output audio, protocol reports</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">reference-audio/</span></code></p></td>
+<td><p>Fixed-window WAVs used for scoring, plus <code class="docutils literal notranslate"><span class="pre">reference-manifest.json</span></code> with eligibility</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scores/summary.json</span></code></p></td>
+<td><p>Timing, ASR coverage, and (for <code class="docutils literal notranslate"><span class="pre">JUDGE=gpt</span></code>) behavior labels</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">judge-qwen/summary.json</span></code></p></td>
+<td><p>Qwen behavior labels (<code class="docutils literal notranslate"><span class="pre">JUDGE=qwen</span></code> only)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">semantic-qwen/</span></code></p></td>
+<td><p>Semantic judge (<code class="docutils literal notranslate"><span class="pre">JUDGE=qwen</span></code> only): <code class="docutils literal notranslate"><span class="pre">controls/comparison.json</span></code>, <code class="docutils literal notranslate"><span class="pre">inputs.json</span></code> (the exact packets sent), <code class="docutils literal notranslate"><span class="pre">batches/*/</span></code> (request, raw response, validated assessments), <code class="docutils literal notranslate"><span class="pre">quality-outcomes.json</span></code> (per-pair axes, joint and any conversion reasons) and <code class="docutils literal notranslate"><span class="pre">summary.json</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">report.txt</span></code></p></td>
+<td><p>Human-readable coverage, timing and semantic quality report</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">logs/</span></code></p></td>
+<td><p>Recorder logs; <code class="docutils literal notranslate"><span class="pre">scores/logs/</span></code> holds ASR and timing logs</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>With <code class="docutils literal notranslate"><span class="pre">JUDGE=qwen</span></code>, the “Official behavior label distribution” section of <code class="docutils literal notranslate"><span class="pre">report.txt</span></code> shows <code class="docutils literal notranslate"><span class="pre">0</span> <span class="pre">/</span> <span class="pre">0</span></code> and <code class="docutils literal notranslate"><span class="pre">not_prepared</span></code>. That is expected: that section only counts GPT-4o labels. The Qwen labels are in <code class="docutils literal notranslate"><span class="pre">judge-qwen/summary.json</span></code> and in <code class="docutils literal notranslate"><span class="pre">RESULTS.md</span></code>. The “Custom semantic quality” section of <code class="docutils literal notranslate"><span class="pre">report.txt</span></code> shows the semantic judge for that repeat.</p>
+</section>
+<section id="settings">
+<h2>Settings<a class="headerlink" href="#settings" title="Link to this heading">#</a></h2>
+<p>Per-run choices (<code class="docutils literal notranslate"><span class="pre">--run-name</span></code>, <code class="docutils literal notranslate"><span class="pre">--repeat</span></code>, pair selection, <code class="docutils literal notranslate"><span class="pre">--num-shards</span></code>) are command options; run any subcommand with <code class="docutils literal notranslate"><span class="pre">--help</span></code> to list them. Machine settings are environment variables, read in <code class="docutils literal notranslate"><span class="pre">benchmarks/duplex/fdb_v15/common.py</span></code>. Run the subcommands with the sglang-omni venv active; that interpreter serves the models and records sessions.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Variable</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">FDB_WORK</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">$HOME/fdb</span></code></p></td>
+<td><p>Root for downloads, environments and results</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">JUDGE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">qwen</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">qwen</span></code> or <code class="docutils literal notranslate"><span class="pre">gpt</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SERVER_CONFIG</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo.yaml</span></code></p></td>
+<td><p>Server config. Sampling is on, so repeats measure generation variance</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code></p></td>
+<td><p>unset</p></td>
+<td><p>One GPU index. When set, this chooses the card. Concurrent jobs export different indexes; see <a class="reference internal" href="#concurrent-runs"><span class="std std-ref">Concurrent runs</span></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GPU</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>Used only when <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> is unset. Must be a single numeric index</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SERVER_PORT</span></code> / <code class="docutils literal notranslate"><span class="pre">JUDGE_PORT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">8097</span> <span class="pre">+</span> <span class="pre">10×GPU</span></code> / <code class="docutils literal notranslate"><span class="pre">30000</span> <span class="pre">+</span> <span class="pre">10×GPU</span></code></p></td>
+<td><p>Local ports. Unset values are derived from the GPU index, so two jobs do not share a port. The judge NCCL port is the judge port + 1. Do not pick a port in 29500–29899; that range is reserved for model-server NCCL</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MODEL_PATH</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">$FDB_WORK/models/MiniCPM-o-4_5</span></code></p></td>
+<td><p>Checkpoint directory of the model under test</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MODEL_REVISION</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">503e754…</span></code></p></td>
+<td><p>Recorded in the run manifest; must match <code class="docutils literal notranslate"><span class="pre">MODEL_PATH</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SESSION_TIMEOUT_S</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">90</span></code></p></td>
+<td><p>Per-session client deadline; the longest v1.5 input is about 18 s</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SCORING_VENV</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">$FDB_WORK/scoring-venv</span></code></p></td>
+<td><p>Venv that runs ASR, timing and the judge clients</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="notes">
+<h2>Notes<a class="headerlink" href="#notes" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--repeat</span></code> only labels the directory.</strong> It does not repeat the run. <code class="docutils literal notranslate"><span class="pre">generate</span> <span class="pre">--repeat</span> <span class="pre">1</span></code> and <code class="docutils literal notranslate"><span class="pre">generate</span> <span class="pre">--repeat</span> <span class="pre">2</span></code> write <code class="docutils literal notranslate"><span class="pre">repeat-1/</span></code> and <code class="docutils literal notranslate"><span class="pre">repeat-2/</span></code> and leave each other alone. <code class="docutils literal notranslate"><span class="pre">generate</span> <span class="pre">--repeat</span> <span class="pre">N</span></code> also refuses to overwrite an existing <code class="docutils literal notranslate"><span class="pre">repeat-N/recording</span></code>. To redo that one invocation, delete <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/RUN_NAME/repeat-N</span></code> and rerun all three steps for the same N. <code class="docutils literal notranslate"><span class="pre">asr</span></code> and <code class="docutils literal notranslate"><span class="pre">judge</span></code> resume finished work when rerun.</p></li>
+<li><p><strong>Keep the settings fixed across the repeats of one run.</strong> Never mix repeats with different pair selections, <code class="docutils literal notranslate"><span class="pre">--num-shards</span></code>, <code class="docutils literal notranslate"><span class="pre">SERVER_CONFIG</span></code> or judge; use a new <code class="docutils literal notranslate"><span class="pre">--run-name</span></code> instead.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> changes what you measure.</strong> With <code class="docutils literal notranslate"><span class="pre">--num-shards</span> <span class="pre">2</span></code>, two sessions share the GPU, so latencies are measured under load and are not comparable to one shard. It must not exceed <code class="docutils literal notranslate"><span class="pre">max_sessions</span></code> in <code class="docutils literal notranslate"><span class="pre">SERVER_CONFIG</span></code> (2 by default); extra connections are rejected with HTTP 503.</p></li>
+<li><p><strong>Repeats need sampling.</strong> <code class="docutils literal notranslate"><span class="pre">minicpmo-parity.yaml</span></code> decodes greedily, so its repeats are nearly identical. Use it for regression checks against a fixed recording, not for variance.</p></li>
+<li><p><strong>The first 48 pairs are not a random sample.</strong> <code class="docutils literal notranslate"><span class="pre">--per-subset</span> <span class="pre">12</span></code> takes the first 12 samples of each category. This gives fast, comparable numbers between runs, but they are not full-dataset estimates.</p></li>
+<li><p><strong>Non-passing sessions are never dropped.</strong> They count as ineligible in the denominators, and empty interval sets show as <code class="docutils literal notranslate"><span class="pre">n/a</span></code>, not zero.</p></li>
+<li><p><strong>Concurrent jobs use one GPU each.</strong> Ports, the judge config directory and compile caches are derived from <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code>. The procedure is <a class="reference internal" href="#concurrent-runs"><span class="std std-ref">Concurrent runs</span></a>.</p></li>
+</ul>
+</section>
+<section id="scoring-cli-reference">
+<h2>Scoring CLI reference<a class="headerlink" href="#scoring-cli-reference" title="Link to this heading">#</a></h2>
+<p>The subcommands wrap two CLIs: <code class="docutils literal notranslate"><span class="pre">benchmarks.eval.benchmark_duplex_v15</span></code> records sessions, and <code class="docutils literal notranslate"><span class="pre">benchmarks.eval.benchmark_duplex_reference</span></code> scores them with the official v1.5 ASR, timing and behavior code. Use them directly to score a recording outside the runbook. Run <code class="docutils literal notranslate"><span class="pre">eval</span> <span class="pre">&quot;$(python</span> <span class="pre">-m</span> <span class="pre">benchmarks.duplex.fdb_v15</span> <span class="pre">env)&quot;</span></code> first so the variables below are set. <code class="docutils literal notranslate"><span class="pre">record</span></code> needs the model server and <code class="docutils literal notranslate"><span class="pre">custom-judge</span></code> needs the judge server; start them in another terminal with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">benchmarks.duplex.fdb_v15</span> <span class="pre">serve-model</span></code> or <code class="docutils literal notranslate"><span class="pre">serve-judge</span></code>, which run in the foreground until Ctrl-C.</p>
+<section id="dependencies-and-source">
+<h3>Dependencies and source<a class="headerlink" href="#dependencies-and-source" title="Link to this heading">#</a></h3>
+<p>The official scoring scripts and behavior prompt are not vendored. They are loaded from a <a class="reference external" href="https://github.com/DanielLin94144/Full-Duplex-Bench/tree/3e799c45a045256f47d5f1c9cda90157e2d2ec9e">Full-Duplex-Bench checkout</a> at revision <code class="docutils literal notranslate"><span class="pre">3e799c45a045256f47d5f1c9cda90157e2d2ec9e</span></code>, and their SHA-256 is checked before every run. Their <a class="reference external" href="https://github.com/DanielLin94144/Full-Duplex-Bench/blob/3e799c45a045256f47d5f1c9cda90157e2d2ec9e/LICENSE">CC BY-NC 4.0 license</a> applies.</p>
+<p>The scoring venv uses Python 3.12, torch and torchaudio 2.11.0+cu130, NeMo 3.0.0, Silero VAD 6.2.1, numpy 2.5.3, scipy 1.18.1, soundfile 0.14.0, openai 3.28.0 and pydantic. Each phase records its actual package versions. No command downloads a model implicitly. ASR uses a local <code class="docutils literal notranslate"><span class="pre">nvidia/parakeet-tdt-0.6b-v2</span></code> checkpoint at revision <code class="docutils literal notranslate"><span class="pre">ae9ad07059c7c739ffaf932226a8fe64ae2620b0</span></code>; its <code class="docutils literal notranslate"><span class="pre">.nemo</span></code> SHA-256 is <code class="docutils literal notranslate"><span class="pre">d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c</span></code>.</p>
+</section>
+<section id="record-and-export">
+<h3>Record and export<a class="headerlink" href="#record-and-export" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">OUT</span><span class="o">=</span>results/fdb-manual
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_v15<span class="w"> </span>record<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--profile<span class="w"> </span>minicpmo-native-pr2377<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--dataset-root<span class="w"> </span><span class="s2">"</span><span class="nv">$FDB_DATASET</span><span class="s2">"</span><span class="w"> </span>--dataset-revision<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>cat<span class="w"> </span><span class="s2">"</span><span class="nv">$FDB_WORK</span><span class="s2">/dataset/v1.5.revision"</span><span class="k">)</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--url<span class="w"> </span><span class="s2">"</span><span class="nv">$REALTIME_URL</span><span class="s2">"</span><span class="w"> </span>--model<span class="w"> </span><span class="s2">"</span><span class="nv">$MODEL_ID</span><span class="s2">"</span><span class="w"> </span>--model-revision<span class="w"> </span><span class="s2">"</span><span class="nv">$MODEL_REVISION</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--server-revision<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>HEAD<span class="k">)</span><span class="s2">"</span><span class="w"> </span>--timeout<span class="w"> </span><span class="s2">"</span><span class="nv">$SESSION_TIMEOUT_S</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--output<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/recording"</span>
+
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span><span class="nb">export</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--engine<span class="w"> </span>model<span class="w"> </span>--trace-format<span class="w"> </span>realtime-pcm16-v1<span class="w"> </span>--run<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/recording"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--dataset-root<span class="w"> </span><span class="s2">"</span><span class="nv">$FDB_DATASET</span><span class="s2">"</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/reference-audio"</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">record</span></code> selects the full dataset by default; <code class="docutils literal notranslate"><span class="pre">--max-per-subset</span> <span class="pre">N</span></code> or repeated <code class="docutils literal notranslate"><span class="pre">--sample-id</span> <span class="pre">category/id</span></code> selects a subset. It exits 0 only when every selected session passes.</p>
+<p><code class="docutils literal notranslate"><span class="pre">export</span></code> cuts the fixed observation windows without changing the recording and needs a new output directory. <code class="docutils literal notranslate"><span class="pre">--dataset-root</span></code> counts every dataset sample that was not recorded as missing, so a subset run must also pass <code class="docutils literal notranslate"><span class="pre">--only</span> <span class="pre">category/id</span></code> for each selected pair. Repeated <code class="docutils literal notranslate"><span class="pre">--run</span></code> accepts disjoint shards; duplicate complete captures are rejected. <code class="docutils literal notranslate"><span class="pre">--engine</span></code> is a free label for the scored cohort.</p>
+</section>
+<section id="score-and-resume">
+<h3>Score and resume<a class="headerlink" href="#score-and-resume" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">TREE</span><span class="o">=(</span>--reference-source<span class="w"> </span><span class="s2">"</span><span class="nv">$FDB_SOURCE</span><span class="s2">"</span><span class="w"> </span>--tree<span class="w"> </span><span class="s2">"model=</span><span class="nv">$OUT</span><span class="s2">/reference-audio"</span><span class="o">)</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span>asr<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">TREE</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--out<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/scores"</span><span class="w"> </span>--nemo<span class="w"> </span><span class="s2">"</span><span class="nv">$PARAKEET_NEMO</span><span class="s2">"</span><span class="w"> </span>--nemo-sha256<span class="w"> </span><span class="s2">"</span><span class="nv">$PARAKEET_SHA256</span><span class="s2">"</span><span class="w"> </span>--device<span class="w"> </span>cuda
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span>timing<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">TREE</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--out<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/scores"</span><span class="w"> </span>--audio-loader<span class="w"> </span>soundfile
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span>prepare-judge<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">TREE</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/scores"</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span>judge<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">TREE</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/scores"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--judge<span class="w"> </span>gpt-4o-2024-08-06<span class="w"> </span>--api-key-env<span class="w"> </span>OPENAI_API_KEY
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span>summarize<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">TREE</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/scores"</span>
+</pre></div>
+</div>
+<p>Run the phases in order against one output directory, with the same <code class="docutils literal notranslate"><span class="pre">--tree</span></code> mapping for each; repeat <code class="docutils literal notranslate"><span class="pre">--tree</span></code> to score several cohorts. CUDA ASR needs exactly one visible GPU. A rerun resumes from matching receipts. <code class="docutils literal notranslate"><span class="pre">--retry-failed</span></code> retries failed work units and keeps the earlier attempts; <code class="docutils literal notranslate"><span class="pre">--limit</span> <span class="pre">N</span></code> caps the work units of one invocation. Use a new output directory after changing the recording, the scoring configuration or the reference code. A zero exit means the phase finished, not that every sample qualified.</p>
+</section>
+<section id="report">
+<h3>Report<a class="headerlink" href="#report" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span>report<span class="w"> </span>--scores<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/scores"</span><span class="w"> </span>--engine<span class="w"> </span>model
+</pre></div>
+</div>
+<p>The report prints the selected and eligible populations, protocol verdicts, ASR and timing coverage, interval means, medians and confidence intervals, and the official behavior label distribution. It only reads <code class="docutils literal notranslate"><span class="pre">summary.json</span></code> and the manifest; it needs no GPU, checkpoint or API key, and does not rescore.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--replay</span> <span class="pre">replay.json</span></code> adds offline replay agreement. Format: <code class="docutils literal notranslate"><span class="pre">{&quot;selected&quot;:</span> <span class="pre">N,</span> <span class="pre">&quot;replayed&quot;:</span> <span class="pre">M,</span> <span class="pre">&quot;samples&quot;:</span> <span class="pre">[{&quot;sample&quot;:</span> <span class="pre">&quot;category/id&quot;,</span> <span class="pre">&quot;variant&quot;:</span> <span class="pre">&quot;overlap&quot;,</span> <span class="pre">&quot;recorded_status&quot;:</span> <span class="pre">&quot;pass&quot;,</span> <span class="pre">&quot;status&quot;:</span> <span class="pre">&quot;match&quot;}]}</span></code>. Each sample and variant must be unique and belong to the manifest.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--semantic-summary</span> <span class="pre">summary.json</span></code> adds the semantic quality section. It reads <code class="docutils literal notranslate"><span class="pre">scope</span></code>, <code class="docutils literal notranslate"><span class="pre">inputs_sha256</span></code>, <code class="docutils literal notranslate"><span class="pre">uncertainty_note</span></code>, <code class="docutils literal notranslate"><span class="pre">overall_axes</span></code> and <code class="docutils literal notranslate"><span class="pre">overall_joint</span></code>; each axis has <code class="docutils literal notranslate"><span class="pre">selected</span></code>, <code class="docutils literal notranslate"><span class="pre">accepted</span></code>, <code class="docutils literal notranslate"><span class="pre">failed</span></code> and <code class="docutils literal notranslate"><span class="pre">unresolved</span></code> counts. <code class="docutils literal notranslate"><span class="pre">benchmarks.duplex.semantic_judge</span></code> writes this file.</p></li>
+</ul>
+</section>
+<section id="judges">
+<h3>Judges<a class="headerlink" href="#judges" title="Link to this heading">#</a></h3>
+<p>Qwen3.8-27B served by <code class="docutils literal notranslate"><span class="pre">sglang</span> <span class="pre">serve</span></code> is the recommended judge, for both the behavior labels (<code class="docutils literal notranslate"><span class="pre">custom-judge</span></code>) and the semantic judge. It is local, pinned and reproducible. <code class="docutils literal notranslate"><span class="pre">judge</span></code> and <code class="docutils literal notranslate"><span class="pre">serve-judge</span></code> start it and write its config and launch receipt first.</p>
+<p>GPT-4o (<code class="docutils literal notranslate"><span class="pre">judge</span></code>) is the paper’s judge. Set the API key in <code class="docutils literal notranslate"><span class="pre">OPENAI_API_KEY</span></code>, never in a command argument or manifest; <code class="docutils literal notranslate"><span class="pre">--base-url</span></code> selects a compatible endpoint. The judge sends the exact reference prompt with seed 1 and keeps at most three attempts. A response from a model other than <code class="docutils literal notranslate"><span class="pre">gpt-4o-2024-08-06</span></code>, a malformed label or a failed request is not a valid label, and no fallback judge is used. Without a key the labels stay pending, and <code class="docutils literal notranslate"><span class="pre">summarize</span></code> still runs.</p>
+</section>
+<section id="custom-behavior-judge">
+<h3>Custom behavior judge<a class="headerlink" href="#custom-behavior-judge" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">custom-judge</span></code> sends the exact reference prompt to a self-hosted model. Its labels are non-official and never replace GPT-4o labels. <code class="docutils literal notranslate"><span class="pre">--source-scores</span></code> reads an existing scoring directory; <code class="docutils literal notranslate"><span class="pre">--out</span></code> must be a separate new directory, and source files are never modified.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span>custom-judge<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">TREE</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--source-scores<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/scores"</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/judge-qwen"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--judge-config<span class="w"> </span><span class="s2">"</span><span class="nv">$JUDGE_CONFIG</span><span class="s2">"</span><span class="w"> </span>--base-url<span class="w"> </span><span class="s2">"</span><span class="nv">$JUDGE_URL</span><span class="s2">"</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_duplex_reference<span class="w"> </span>custom-summarize<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">TREE</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--source-scores<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/scores"</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"</span><span class="nv">$OUT</span><span class="s2">/judge-qwen"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--judge-config<span class="w"> </span><span class="s2">"</span><span class="nv">$JUDGE_CONFIG</span><span class="s2">"</span>
+</pre></div>
+</div>
+<p>The config written by <code class="docutils literal notranslate"><span class="pre">judge</span></code> and <code class="docutils literal notranslate"><span class="pre">serve-judge</span></code> is <code class="docutils literal notranslate"><span class="pre">$JUDGE_CONFIG</span></code>, which is <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/judge/port-$JUDGE_PORT/judge-config.json</span></code>. Each judge port has its own directory, so two concurrent jobs do not overwrite one config:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"model_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Qwen/Qwen3.8-27B"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"model_revision"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&lt;40-hex commit&gt;"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"tokenizer_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Qwen/Qwen3.8-27B"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"tokenizer_revision"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&lt;40-hex commit&gt;"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"served_model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"qwen3.8-27b"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"precision"</span><span class="p">:</span><span class="w"> </span><span class="s2">"bf16"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"enable_thinking"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"decoding"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"temperature"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="nt">"top_p"</span><span class="p">:</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="nt">"top_k"</span><span class="p">:</span><span class="w"> </span><span class="mi">-1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"min_p"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="nt">"repetition_penalty"</span><span class="p">:</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="nt">"max_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">512</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">"seeds"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">"server_launch_receipt"</span><span class="p">:</span><span class="w"> </span><span class="s2">"launch-receipt.json"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"server_launch_receipt_sha256"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&lt;sha256 of the receipt&gt;"</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Both revisions must be 40-character commit hashes. <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code> are required; <code class="docutils literal notranslate"><span class="pre">top_k</span></code>, <code class="docutils literal notranslate"><span class="pre">min_p</span></code>, <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> and <code class="docutils literal notranslate"><span class="pre">enable_thinking</span></code> are sent only when set, so omit any the endpoint does not support. The launch receipt, a path relative to the config, records the server command, runtime version, checkpoint and tokenizer revisions and precision. The client checks its hash, because the returned model name alone does not prove which checkpoint was loaded. Put the endpoint key in <code class="docutils literal notranslate"><span class="pre">CUSTOM_JUDGE_API_KEY</span></code>, or a placeholder such as <code class="docutils literal notranslate"><span class="pre">EMPTY</span></code> for an endpoint without authentication.</p>
+<p>Matching reruns skip finished samples. A changed config or selection needs a new <code class="docutils literal notranslate"><span class="pre">--out</span></code>, and changed transcripts, audio or ASR receipts prevent reuse. <code class="docutils literal notranslate"><span class="pre">--retry-failed</span></code> retries only transport and parsing failures. Wrong models, invalid labels and non-<code class="docutils literal notranslate"><span class="pre">stop</span></code> finishes stay invalid. Label shares use valid labels only, and the per-category Wilson 95% intervals describe dataset sampling, not human agreement or generation variance.</p>
+</section>
+<section id="measurement-definitions">
+<h3>Measurement definitions<a class="headerlink" href="#measurement-definitions" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Input pacing.</strong> Audio is sent in 80 ms packets. Every packet start must stay within 80 ms of its source cadence, otherwise the session is ineligible. This bounds transport jitter only.</p></li>
+<li><p><strong>Observation window.</strong> The output is scored over <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">T]</span></code>, where T is the input length, anchored at the first input send. Received audio plays first-in first-out with no buffer, so initial delay, gaps and queueing remain. Audio still queued at T is cut, and the rest is silence; the result is mono 16 kHz PCM16 with exactly the input sample count. Errors inside the window make the session ineligible; silence is a valid output.</p></li>
+<li><p><strong>Intervals.</strong> The official timing code merges VAD speech spans with 0.6 s (user) and 0.5 s (model) gaps. Stop intervals are overlaps of user and model spans. Response intervals run from a user span end to the next strictly later model span start. These are whole-file intervals, not event-local latencies. <code class="docutils literal notranslate"><span class="pre">summary.json</span></code> reports their pooled means and medians with sample-cluster bootstrap CIs.</p></li>
+<li><p><strong>Missing values.</strong> Empty interval sets and missing labels are null, never zero latency or 0%. Counts keep every selected, eligible, invalid and unscored sample.</p></li>
+<li><p><strong>Limits.</strong> Simulated playout is not acoustic latency, and the fixed window can cut long replies. One generation per sample does not estimate generation variance. Prosody and MOS are not covered.</p></li>
+</ul>
+</section>
+<section id="verification">
+<h3>Verification<a class="headerlink" href="#verification" title="Link to this heading">#</a></h3>
+<p>The unit tests cover export, missing samples, valid silence, timing, ASR deduplication, bounded judging and resumption. With the pinned checkout they also run the official formulas on synthetic fixtures, without a GPU or API. Run them from the sglang-omni venv:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">FDB_REFERENCE_SOURCE</span><span class="o">=</span><span class="s2">"</span><span class="nv">$FDB_SOURCE</span><span class="s2">"</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>-q<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>tests/unit_test/benchmarks/test_duplex_reference*.py
+</pre></div>
+</div>
+<p>Export is deterministic: re-exporting a recording reproduces every eligible WAV byte for byte, and re-summarizing saved transcripts and intervals reproduces the same summaries, including coverage and bootstrap intervals.</p>
+</section>
+</section>
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Symptom</p></th>
+<th class="head"><p>Fix</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">the</span> <span class="pre">model</span> <span class="pre">server</span> <span class="pre">did</span> <span class="pre">not</span> <span class="pre">become</span> <span class="pre">ready</span></code> (or the judge server)</p></td>
+<td><p>The message ends with the last lines of the server log; the full log is <code class="docutils literal notranslate"><span class="pre">repeat-N/logs/model-server.log</span></code> or <code class="docutils literal notranslate"><span class="pre">repeat-N/logs/judge-server.log</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">something</span> <span class="pre">already</span> <span class="pre">serves</span> <span class="pre">...</span></code></p></td>
+<td><p>Another server holds the port, often a leftover from an interrupted run or a second job on the same GPU. Stop it, or give this job a different <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> / <code class="docutils literal notranslate"><span class="pre">SERVER_PORT</span></code> / <code class="docutils literal notranslate"><span class="pre">JUDGE_PORT</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">.../recording</span> <span class="pre">exists</span></code></p></td>
+<td><p>That repeat was already generated; use the next <code class="docutils literal notranslate"><span class="pre">--repeat</span></code> or delete the directory</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">.../sample-ids.txt</span> <span class="pre">selects</span> <span class="pre">different</span> <span class="pre">pairs</span></code></p></td>
+<td><p>An earlier repeat of this run used another selection; pass the same selection options, or use a new <code class="docutils literal notranslate"><span class="pre">--run-name</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>A shard log reports <code class="docutils literal notranslate"><span class="pre">fail</span></code> or <code class="docutils literal notranslate"><span class="pre">error</span></code> sessions</p></td>
+<td><p>They stay in the denominator. Read <code class="docutils literal notranslate"><span class="pre">repeat-N/logs/record-shard-*.log</span></code>. If most sessions fail, fix the server and redo the repeat</p></td>
+</tr>
+<tr class="row-odd"><td><p>HTTP 503 in record logs</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> is larger than <code class="docutils literal notranslate"><span class="pre">max_sessions</span></code> in <code class="docutils literal notranslate"><span class="pre">SERVER_CONFIG</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--device</span> <span class="pre">cuda</span> <span class="pre">needs</span> <span class="pre">exactly</span> <span class="pre">one</span> <span class="pre">visible</span> <span class="pre">GPU</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> (or <code class="docutils literal notranslate"><span class="pre">GPU</span></code>, when the former is unset) must be a single index</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">set</span> <span class="pre">CUDA_VISIBLE_DEVICES</span> <span class="pre">to</span> <span class="pre">exactly</span> <span class="pre">one</span> <span class="pre">GPU</span> <span class="pre">index</span></code></p></td>
+<td><p>A concurrent job must see one card. <code class="docutils literal notranslate"><span class="pre">export</span> <span class="pre">CUDA_VISIBLE_DEVICES=0</span></code> in one terminal and <code class="docutils literal notranslate"><span class="pre">=1</span></code> in the other</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">GPU</span> <span class="pre">and</span> <span class="pre">CUDA_VISIBLE_DEVICES</span> <span class="pre">disagree</span></code></p></td>
+<td><p>Unset <code class="docutils literal notranslate"><span class="pre">GPU</span></code>, or set it to the same index as <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">asr</span></code> or <code class="docutils literal notranslate"><span class="pre">judge</span></code> prints <code class="docutils literal notranslate"><span class="pre">WARNING:</span> <span class="pre">a</span> <span class="pre">phase</span> <span class="pre">reported</span> <span class="pre">failures</span></code></p></td>
+<td><p>Rerun the command the warning prints; it is the same step with <code class="docutils literal notranslate"><span class="pre">--retry-failed</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">custom</span> <span class="pre">judge</span> <span class="pre">identity</span> <span class="pre">changed;</span> <span class="pre">use</span> <span class="pre">a</span> <span class="pre">new</span> <span class="pre">--out</span></code></p></td>
+<td><p>The judge config changed since this repeat was judged (for example, a different SGLang version). Delete <code class="docutils literal notranslate"><span class="pre">repeat-N/judge-qwen</span></code> and rerun <code class="docutils literal notranslate"><span class="pre">judge</span></code> for that repeat</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Control</span> <span class="pre">check</span> <span class="pre">failed:</span> <span class="pre">this</span> <span class="pre">judge</span> <span class="pre">configuration</span> <span class="pre">is</span> <span class="pre">not</span> <span class="pre">accepted.</span></code></p></td>
+<td><p>The judge missed a control case; the printed lines show which. Do not grade with this configuration. Check that the judge server runs the pinned Qwen3.8-27B revision</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">...</span> <span class="pre">changed</span> <span class="pre">since</span> <span class="pre">this</span> <span class="pre">directory</span> <span class="pre">was</span> <span class="pre">created;</span> <span class="pre">use</span> <span class="pre">a</span> <span class="pre">new</span> <span class="pre">--out</span></code></p></td>
+<td><p>The semantic judge settings, prompt or inputs changed since this repeat was graded. Delete <code class="docutils literal notranslate"><span class="pre">repeat-N/semantic-qwen</span></code> and rerun <code class="docutils literal notranslate"><span class="pre">judge</span></code> for that repeat</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">model_mismatch</span></code> with <code class="docutils literal notranslate"><span class="pre">JUDGE=gpt</span></code></p></td>
+<td><p>The endpoint returned a model name other than <code class="docutils literal notranslate"><span class="pre">gpt-4o-2024-08-06</span></code>; use an endpoint that serves exactly that model</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">model-server.log</span></code> ends with <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">module</span> <span class="pre">named</span> <span class="pre">'onnx'</span></code> (or <code class="docutils literal notranslate"><span class="pre">einops</span></code>)</p></td>
+<td><p>Rerun <code class="docutils literal notranslate"><span class="pre">setup</span></code>; it installs the <code class="docutils literal notranslate"><span class="pre">minicpm-o</span></code> extra into the active venv</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ModuleNotFoundError</span></code> in <code class="docutils literal notranslate"><span class="pre">asr</span></code></p></td>
+<td><p>Rerun <code class="docutils literal notranslate"><span class="pre">setup</span></code>; it reinstalls the scoring venv packages</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="concurrent-runs">
+<h2>Concurrent runs<a class="headerlink" href="#concurrent-runs" title="Link to this heading">#</a></h2>
+<p>Open two terminals. Paste one block into each. Start both immediately; neither waits for the other. Each terminal keeps the sglang-omni venv active (<code class="docutils literal notranslate"><span class="pre">which</span> <span class="pre">python</span></code> prints that interpreter) and runs every line itself. Do not set <code class="docutils literal notranslate"><span class="pre">SERVER_PORT</span></code> or <code class="docutils literal notranslate"><span class="pre">JUDGE_PORT</span></code>. The model port is <code class="docutils literal notranslate"><span class="pre">8097</span> <span class="pre">+</span> <span class="pre">10×GPU</span></code> and the judge port is <code class="docutils literal notranslate"><span class="pre">30000</span> <span class="pre">+</span> <span class="pre">10×GPU</span></code>. The judge NCCL port is the judge port + 1. The judge config is <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/judge/port-&lt;judge</span> <span class="pre">port&gt;/</span></code>. Compile caches are under <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/cache/gpu-&lt;index&gt;/</span></code>.</p>
+<p>The first line from <code class="docutils literal notranslate"><span class="pre">generate</span></code> must be exactly the <code class="docutils literal notranslate"><span class="pre">Job</span> <span class="pre">GPU</span> <span class="pre">...</span></code> line written under that terminal. GPU 0 is model port 8097, judge port 30000, judge NCCL port 30001. GPU 1 is model port 8107, judge port 30010, judge NCCL port 30011. A shell startup helper may have exported <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> already; the <code class="docutils literal notranslate"><span class="pre">export</span></code> in the block replaces it. <code class="docutils literal notranslate"><span class="pre">unset</span> <span class="pre">GPU</span></code> is required when that variable is set to a different index.</p>
+<p>Terminal 1:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>&lt;path/to/sglang-omni&gt;
+<span class="nb">export</span><span class="w"> </span><span class="nv">FDB_WORK</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">FDB_WORK</span><span class="k">:-</span><span class="nv">$HOME</span><span class="p">/fdb</span><span class="si">}</span><span class="s2">"</span>
+<span class="nb">unset</span><span class="w"> </span>GPU<span class="w"> </span>SERVER_PORT<span class="w"> </span>JUDGE_PORT
+<span class="nb">export</span><span class="w"> </span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>generate<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-30-t1<span class="w"> </span>--repeat<span class="w"> </span><span class="m">1</span><span class="w"> </span>--per-subset<span class="w"> </span><span class="m">30</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>asr<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-30-t1<span class="w"> </span>--repeat<span class="w"> </span><span class="m">1</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>judge<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-30-t1<span class="w"> </span>--repeat<span class="w"> </span><span class="m">1</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>aggregate<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-30-t1
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">generate</span></code> prints <code class="docutils literal notranslate"><span class="pre">Job</span> <span class="pre">GPU</span> <span class="pre">0:</span> <span class="pre">model</span> <span class="pre">port</span> <span class="pre">8097,</span> <span class="pre">judge</span> <span class="pre">port</span> <span class="pre">30000</span> <span class="pre">(nccl</span> <span class="pre">30001),</span> <span class="pre">judge</span> <span class="pre">config</span> <span class="pre">/data/chenyang/fdb/judge/port-30000</span></code> when <code class="docutils literal notranslate"><span class="pre">FDB_WORK</span></code> is <code class="docutils literal notranslate"><span class="pre">/data/chenyang/fdb</span></code>. <code class="docutils literal notranslate"><span class="pre">aggregate</span></code> writes <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/minicpmo-30-t1/RESULTS.md</span></code>.</p>
+<p>Terminal 2:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>&lt;path/to/sglang-omni&gt;
+<span class="nb">export</span><span class="w"> </span><span class="nv">FDB_WORK</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">FDB_WORK</span><span class="k">:-</span><span class="nv">$HOME</span><span class="p">/fdb</span><span class="si">}</span><span class="s2">"</span>
+<span class="nb">unset</span><span class="w"> </span>GPU<span class="w"> </span>SERVER_PORT<span class="w"> </span>JUDGE_PORT
+<span class="nb">export</span><span class="w"> </span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">1</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>generate<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-30-t2<span class="w"> </span>--repeat<span class="w"> </span><span class="m">1</span><span class="w"> </span>--per-subset<span class="w"> </span><span class="m">30</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>asr<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-30-t2<span class="w"> </span>--repeat<span class="w"> </span><span class="m">1</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>judge<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-30-t2<span class="w"> </span>--repeat<span class="w"> </span><span class="m">1</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v15<span class="w"> </span>aggregate<span class="w"> </span>--run-name<span class="w"> </span>minicpmo-30-t2
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">generate</span></code> prints <code class="docutils literal notranslate"><span class="pre">Job</span> <span class="pre">GPU</span> <span class="pre">1:</span> <span class="pre">model</span> <span class="pre">port</span> <span class="pre">8107,</span> <span class="pre">judge</span> <span class="pre">port</span> <span class="pre">30010</span> <span class="pre">(nccl</span> <span class="pre">30011),</span> <span class="pre">judge</span> <span class="pre">config</span> <span class="pre">/data/chenyang/fdb/judge/port-30010</span></code> when <code class="docutils literal notranslate"><span class="pre">FDB_WORK</span></code> is <code class="docutils literal notranslate"><span class="pre">/data/chenyang/fdb</span></code>. <code class="docutils literal notranslate"><span class="pre">aggregate</span></code> writes <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/minicpmo-30-t2/RESULTS.md</span></code>.</p>
+<p>A third terminal is the same block with <code class="docutils literal notranslate"><span class="pre">export</span> <span class="pre">CUDA_VISIBLE_DEVICES=2</span></code>, <code class="docutils literal notranslate"><span class="pre">--run-name</span> <span class="pre">minicpmo-30-t3</span></code>, model port 8117 and judge port 30020. Do not point two terminals at the same <code class="docutils literal notranslate"><span class="pre">--run-name</span></code>.</p>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="qwen3_asr_concurrency_profile.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="rl_admin_control.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">RL Admin Control</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-measured">What is Measured</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hardware-and-judge">Hardware and judge</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#one-time-setup">One Time Setup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-1-3-run-the-benchmark">Step 1-3: run the benchmark</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-pairs">Choosing pairs</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#settings">Settings</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#notes">Notes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scoring-cli-reference">Scoring CLI reference</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dependencies-and-source">Dependencies and source</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#record-and-export">Record and export</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#score-and-resume">Score and resume</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#report">Report</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#judges">Judges</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-behavior-judge">Custom behavior judge</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#measurement-definitions">Measurement definitions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#verification">Verification</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#troubleshooting">Troubleshooting</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#concurrent-runs">Concurrent runs</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By SGLang-Omni Team
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026, SGLang-Omni.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    <p class="last-updated">
+  Last updated on Oct 10, 2026.
+  <br/>
+</p>
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
