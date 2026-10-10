@@ -470,11 +470,15 @@ class OmniScheduler(Generic[RequestDataT]):
         self.max_req_input_len = self.max_req_len - 1
         self.random_seed = tp_worker.random_seed
         self.device = tp_worker.device
-        # Hybrid-SWA per-layer capacities: upstream sources these from its
-        # kv_cache_builder; no Omni model serves hybrid-SWA, so they stay None.
-        self.full_tokens_per_layer = None
-        self.swa_tokens_per_layer = None
-        self.sliding_window_size = None
+        self.is_hybrid_swa = mr.is_hybrid_swa
+        if self.is_hybrid_swa:
+            self.full_tokens_per_layer = mr.full_max_total_num_tokens
+            self.swa_tokens_per_layer = mr.swa_max_total_num_tokens
+            self.sliding_window_size = mr.sliding_window_size
+        else:
+            self.full_tokens_per_layer = None
+            self.swa_tokens_per_layer = None
+            self.sliding_window_size = None
         self.min_free_slots_delayer = None
         self.enable_fpm = False
 
@@ -619,7 +623,6 @@ class OmniScheduler(Generic[RequestDataT]):
 
         # Upstream processing mode; explicit Prefill remains NULL, Decode overrides.
         self.disaggregation_mode = self.initial_disaggregation_mode()
-        self.is_hybrid_swa = False
         self.is_hybrid_ssm = False
         self.offload_tags: set = set()
         self.is_initializing = False

@@ -205,6 +205,7 @@ def create_sglang_infrastructure(
         req_to_token_pool,
         token_to_kv_pool_allocator,
         get_schedule().page_size,
+        model_runner.sliding_window_size,
     )
 
     return (
