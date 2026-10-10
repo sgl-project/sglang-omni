@@ -3,10 +3,13 @@
 
 The backbone produces one hidden state per frame; these heads turn it into a
 stacked acoustic frame through a small causal local transformer that samples
-one codebook at a time.
+one codebook at a time. Sampling keeps each layer's keys and values, so every
+codebook runs only its own row through the local transformer.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -39,6 +42,30 @@ class LocalAttention(nn.Module):
             is_causal=True,
         )
         return self.o_net(attended.transpose(1, 2).reshape(batch, length, -1))
+
+    def forward_step(
+        self, values: torch.Tensor, cache: LocalKVCache, position: int
+    ) -> torch.Tensor:
+        """Attend one new row to itself and the cached earlier rows."""
+        batch = values.shape[0]
+        qkv = self.qkv_net(values).view(batch, 1, 3, self.heads, self.head_dim)
+        query, key, value = qkv.transpose(1, 3).unbind(dim=2)
+        cache.keys[:, :, position : position + 1].copy_(key)
+        cache.values[:, :, position : position + 1].copy_(value)
+        attended = F.scaled_dot_product_attention(
+            query,
+            cache.keys[:, :, : position + 1],
+            cache.values[:, :, : position + 1],
+        )
+        return self.o_net(attended.transpose(1, 2).reshape(batch, 1, -1))
+
+
+@dataclass
+class LocalKVCache:
+    """One layer's keys and values, ``[batch, heads, codebooks, head_dim]``."""
+
+    keys: torch.Tensor
+    values: torch.Tensor
 
 
 class PointwiseConv(nn.Module):
@@ -74,11 +101,20 @@ class LocalLayer(nn.Module):
         values = values + self.self_attention(self.norm_self(values))
         return values + self.pos_ff(self.norm_pos_ff(values))
 
+    def forward_step(
+        self, values: torch.Tensor, cache: LocalKVCache, position: int
+    ) -> torch.Tensor:
+        values = values + self.self_attention.forward_step(
+            self.norm_self(values), cache, position
+        )
+        return values + self.pos_ff(self.norm_pos_ff(values))
+
 
 class LocalTransformer(nn.Module):
     def __init__(self, config: EasyMagpieTTSConfig) -> None:
         super().__init__()
         width = config.local_transformer_hidden_dim
+        self.max_length = config.num_stacked_codebooks
         self.position_embeddings = nn.Embedding(config.num_stacked_codebooks + 2, width)
         self.layers = nn.ModuleList(
             LocalLayer(width, config.local_transformer_n_heads)
@@ -91,6 +127,33 @@ class LocalTransformer(nn.Module):
         for layer in self.layers:
             values = layer(values)
         return values
+
+    def new_cache(self, like: torch.Tensor) -> list[LocalKVCache]:
+        """Empty per-layer caches for a batch of ``like.shape[0]`` frames."""
+        caches = []
+        for layer in self.layers:
+            attention = layer.self_attention
+            shape = (
+                like.shape[0],
+                attention.heads,
+                self.max_length,
+                attention.head_dim,
+            )
+            caches.append(LocalKVCache(like.new_empty(shape), like.new_empty(shape)))
+        return caches
+
+    def step(
+        self, values: torch.Tensor, caches: list[LocalKVCache], position: int
+    ) -> torch.Tensor:
+        """Output for row ``position``, given rows before it already in ``caches``.
+
+        Matches the last row of ``forward`` over the first ``position + 1``
+        rows while running only the new row through the layers.
+        """
+        values = (values + self.position_embeddings.weight[position]).unsqueeze(1)
+        for layer, cache in zip(self.layers, caches):
+            values = layer.forward_step(values, cache, position)
+        return values.squeeze(1)
 
 
 class EasyMagpieTTSHeads(nn.Module):
@@ -181,15 +244,14 @@ class EasyMagpieTTSHeads(nn.Module):
         max_top_k: int,
     ) -> torch.Tensor:
         """Sample one stacked frame with request-local temperature, top-k and seed."""
-        batch = hidden_states.shape[0]
         codebooks = len(self.audio_embeddings)
         sample_k = min(max_top_k, self.config.codebook_vocab_size)
-        values = hidden_states.new_zeros(batch, codebooks, hidden_states.shape[-1])
-        values[:, 0] = hidden_states
+        caches = self.local_transformer.new_cache(hidden_states)
+        values = hidden_states
         ranks = torch.arange(sample_k, device=hidden_states.device).unsqueeze(0)
         codes = []
         for index, head in enumerate(self.local_transformer_out_projections):
-            local_hidden = self.local_transformer(values[:, : index + 1])[:, -1]
+            local_hidden = self.local_transformer.step(values, caches, index)
             logits = head(local_hidden).masked_fill(
                 self.forbidden_code_mask, -torch.inf
             )
@@ -201,7 +263,7 @@ class EasyMagpieTTSHeads(nn.Module):
             code = token_ids.gather(1, sampled).squeeze(1)
             codes.append(code)
             if index + 1 < codebooks:
-                values[:, index + 1] = self.audio_embeddings[index](code)
+                values = self.audio_embeddings[index](code)
             else:
                 pass
         return torch.stack(codes, dim=1)

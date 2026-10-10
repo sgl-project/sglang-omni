@@ -9,6 +9,10 @@ import torch
 from torch import nn
 
 from sglang_omni.models.easymagpie_tts.decode_state import EMIT_COLUMN, STOP_COLUMN
+from sglang_omni.models.easymagpie_tts.local_transformer import (
+    LocalTransformer,
+    sample_seeded_rows,
+)
 from sglang_omni.models.easymagpie_tts.payload_types import EasyMagpieTTSState
 from sglang_omni.models.easymagpie_tts.sglang_model import (
     keep_shared_expert_input_intact,
@@ -43,6 +47,46 @@ def test_sampling_is_reproducible_from_seed_and_position(talker) -> None:
     torch.testing.assert_close(
         sample(talker, hidden, top_k=18), sample(talker, hidden, top_k=18)
     )
+
+
+def test_incremental_steps_match_the_full_forward(tiny_tts_config) -> None:
+    torch.manual_seed(0)
+    config = dataclasses.replace(tiny_tts_config, local_transformer_n_layers=2)
+    transformer = LocalTransformer(config).eval()
+    rows = torch.randn(3, config.num_stacked_codebooks, 8)
+
+    caches = transformer.new_cache(rows[:, 0])
+    for position in range(rows.shape[1]):
+        stepped = transformer.step(rows[:, position], caches, position)
+        full = transformer(rows[:, : position + 1])[:, -1]
+        torch.testing.assert_close(stepped, full, rtol=1e-5, atol=1e-5)
+
+
+def test_sampling_matches_the_full_prefix_recurrence(talker) -> None:
+    heads = talker.heads
+    hidden = torch.randn(3, 8)
+    batch, codebooks = hidden.shape[0], len(heads.audio_embeddings)
+    values = hidden.new_zeros(batch, codebooks, 8)
+    values[:, 0] = hidden
+    expected = []
+    for index, head in enumerate(heads.local_transformer_out_projections):
+        logits = head(heads.local_transformer(values[:, : index + 1])[:, -1])
+        scores, token_ids = (
+            logits.masked_fill(heads.forbidden_code_mask, -torch.inf)
+            .div(0.8)
+            .topk(5, dim=-1)
+        )
+        sampled = sample_seeded_rows(
+            scores, torch.full((batch,), 3), torch.arange(batch) * 4 + index
+        )
+        code = token_ids.gather(1, sampled).squeeze(1)
+        expected.append(code)
+        if index + 1 < codebooks:
+            values[:, index + 1] = heads.audio_embeddings[index](code)
+        else:
+            pass
+
+    assert sample(talker, hidden).tolist() == torch.stack(expected, 1).tolist()
 
 
 def test_top_k_one_is_greedy_over_allowed_codes(talker) -> None:
