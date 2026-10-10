@@ -22,7 +22,6 @@ from sglang_omni.models.nemotron_voicechat.model_runner import (
 )
 from sglang_omni.models.nemotron_voicechat.request_builders import ar_request
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
-    NUM_ITER,
     NemotronVoiceChatTalkerModelRunner,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -118,31 +117,14 @@ class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
             pass
         if self.sampler_graph is None:
             sampler_hidden = self.model.hidden_out[index : index + 1].float().clone()
-            iteration_fractions = torch.linspace(
-                0, 1, NUM_ITER + 1, device=sampler_hidden.device
-            )[:-1]
-            remaining_quantizers = torch.ceil(
-                (1 - iteration_fractions.pow(self.exponent)).pow(1 / self.exponent)
-                * self.model.talker.num_quantizers
-            ).long()
-            assignment_counts = tuple(
-                (
-                    remaining_quantizers
-                    - torch.cat(
-                        [remaining_quantizers[1:], remaining_quantizers.new_zeros(1)]
-                    )
-                ).tolist()
-            )
 
             def sample() -> torch.Tensor:
                 return self.model.talker.generate_codes(
                     sampler_hidden,
                     self.model.mog_head,
-                    num_iter=NUM_ITER,
-                    exponent=self.exponent,
+                    level_schedule=self.level_schedule,
                     top_p=self.top_p,
                     noise_scale=self.noise_scale,
-                    assignment_counts=assignment_counts,
                 )
 
             self.sampler_graph, self.sampler_output = capture_cuda_graph(
