@@ -1,90 +1,109 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Streaming vocoder scheduler for Fun-CosyVoice3."""
+"""Fun-CosyVoice3 streaming vocoder.
+
+Note (chenyang):
+
+Flow is not autoregressive: it cannot emit one token of mel from one new
+token. Each causal step decodes the whole prefix plus several lookahead tokens
+(PRE_LOOKAHEAD_LEN). Those last several tokens are context only and are not played;
+the next step (or the stream-done flush) is when they become audio.
+"""
 
 from __future__ import annotations
 
 import logging
-import queue as _queue_mod
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Literal, Mapping
 
 import torch
 
+from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
-from sglang_omni.models.fun_cosyvoice3.stages import FlowBatchInput
+from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
+    PrefixCacheRow,
+    compile_forward_prefix,
+)
+from sglang_omni.models.fun_cosyvoice3.stages import (
+    CosyVoice3Vocoder,
+    FlowBatchInput,
+    HiftStepRow,
+)
 from sglang_omni.models.fun_cosyvoice3.streaming import (
-    LEFTOVER_FLOW_STREAMING,
     PRE_LOOKAHEAD_LEN,
-    SAMPLE_RATE,
     TOKEN_HOP_LEN,
     TOKEN_MAX_HOP_LEN,
-    TOKEN_MEL_RATIO,
     as_flow_embedding,
     as_flow_prompt_feat,
     as_flow_prompt_token,
     next_stream_hop_len,
     pad_flow_prompt_to_hop,
-    stream_hop_len,
-    tokens_needed_for_causal_chunk,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
+SAMPLE_RATE = 24000
+
+NextDecode = Literal["causal_window", "leftover", "fallback", "wait"]
+
+
+def causal_hop_frames(item: FlowBatchInput, *, token_mel_ratio: int) -> int:
+    """Mel frames a causal hop over item solves, prompt included."""
+    return (
+        int(item.prompt_token.shape[1]) + int(item.token.shape[1]) - PRE_LOOKAHEAD_LEN
+    ) * token_mel_ratio
+
 
 @dataclass
-class _CosyVoice3StreamState:
+class CosyVoice3StreamState:
     tokens: list[int] = field(default_factory=list)
     token_offset: int = 0
     hop_len: int = TOKEN_HOP_LEN
-    prompt_pad: int = 0
     prompt_token: torch.Tensor | None = None
     prompt_feat: torch.Tensor | None = None
     embedding: torch.Tensor | None = None
-    prompts_latched: bool = False
     hift_mel: torch.Tensor | None = None
     speech_offset: int = 0
+    flow_cache: tuple[PrefixCacheRow, PrefixCacheRow] | None = None
+    leftover: torch.Tensor | None = None
+    done: bool = False
+    ready_since: float | None = None
+    first_emit_at: float | None = None
 
-
-@dataclass(frozen=True)
-class _CosyVoice3FirstHopPlan:
-    hop: int
-    token_end: int
-    token_offset: int
-    batched: bool
+    def next_decode(self) -> NextDecode:
+        causal_token_end = self.token_offset + self.hop_len + PRE_LOOKAHEAD_LEN
+        if self.prompt_token is not None and len(self.tokens) >= causal_token_end:
+            return "causal_window"
+        elif self.done and self.tokens:
+            return "leftover"
+        elif self.done:
+            return "fallback"
+        else:
+            return "wait"
 
 
 class FunCosyVoice3StreamingVocoderScheduler(
-    StreamingVocoderBase[_CosyVoice3StreamState, _CosyVoice3FirstHopPlan]
+    StreamingVocoderBase[CosyVoice3StreamState, NextDecode]
 ):
     """Decode CosyVoice3 speech tokens incrementally through Flow + HiFT."""
 
-    _can_batch_stream_chunks = True
-    _stream_chunk_batch_distinct_requests = True
-    # note (guozhihao-224): follow-up hops are a separate knife from
-    # first-hop coalescing. Keep this on once equal-shape causal batch
-    # is the default; A/B turns it off to isolate ITL/C50.
-    _can_batch_follow_up_hops = True
-    # note (guozhihao-224): c=1 has no joinable peer so this is a no-op.
-    # c=16 holds a singleton first hop or follow-up hop up to this
-    # window while equal-shape peers arrive, otherwise the vocoder
-    # decodes B=1 forever.
-    _first_hop_peer_wait_ms = 30
+    can_batch_stream_chunks = True
+    pump_on_chunk_batch = False
 
     def __init__(
         self,
-        vocoder: Any,
+        vocoder: CosyVoice3Vocoder,
         *,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
         sample_rate: int = SAMPLE_RATE,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         token_hop_len: int = TOKEN_HOP_LEN,
         token_max_hop_len: int = TOKEN_MAX_HOP_LEN,
@@ -94,18 +113,20 @@ class FunCosyVoice3StreamingVocoderScheduler(
         max_hop = int(token_max_hop_len)
         if hop <= 0:
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
-        if max_hop < hop:
+        elif max_hop < hop:
             raise ValueError(
                 f"token_max_hop_len ({token_max_hop_len}) must be >= "
                 f"token_hop_len ({token_hop_len})"
             )
-        self._token_hop_len = hop
-        self._token_max_hop_len = max_hop
-        self._disable_hop_growth = bool(disable_hop_growth)
-        self._vocoder = vocoder
+        else:
+            self.token_hop_len = hop
+            self.token_max_hop_len = max_hop
+            self.disable_hop_growth = bool(disable_hop_growth)
+            self.vocoder = vocoder
+            self.clock: Callable[[], float] = time.monotonic
         super().__init__(
-            self._vocode_payload,
-            batch_compute_fn=self._vocode_payloads,
+            self.vocode_payload,
+            batch_compute_fn=self.vocode_payloads,
             sample_rate=int(sample_rate),
             stream_source_hint="Fun-CosyVoice3",
             max_batch_size=max_batch_size,
@@ -114,31 +135,130 @@ class FunCosyVoice3StreamingVocoderScheduler(
             max_batch_cost=max_batch_cost,
         )
 
-    async def _vocode_payload(self, payload: StagePayload) -> StagePayload:
-        results = await self._vocoder.decode_payloads([payload])
+    def pump_one_step(self) -> list[str] | None:
+        with self.vocoder.stream_context:
+            return super().pump_one_step()
+
+    async def vocode_payload(self, payload: StagePayload) -> StagePayload:
+        results = await self.vocoder.decode_payloads([payload])
         return results[0]
 
-    async def _vocode_payloads(
-        self, payloads: list[StagePayload]
-    ) -> list[StagePayload]:
-        return await self._vocoder.decode_payloads(payloads)
+    async def vocode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
+        return await self.vocoder.decode_payloads(payloads)
 
-    def create_stream_state(self, request_id: str) -> _CosyVoice3StreamState:
-        del request_id
-        return _CosyVoice3StreamState(hop_len=self._token_hop_len)
+    def create_stream_state(self, request_id: str) -> CosyVoice3StreamState:
+        return CosyVoice3StreamState(hop_len=self.token_hop_len)
 
-    def _advance_hop_len(self, state: _CosyVoice3StreamState) -> None:
-        state.hop_len = next_stream_hop_len(
-            state.hop_len,
-            max_hop_len=self._token_max_hop_len,
-            disable_growth=self._disable_hop_growth,
+    def warmup_now(self) -> None:
+        # note(ratish): one hop and one final through Flow and HiFT before the
+        # stage publishes readiness, so the first request pays neither the
+        # attention kernel load nor the f0 cast.
+        item = self.make_warmup_flow_input(self.token_hop_len + PRE_LOOKAHEAD_LEN)
+        # note(ratish): under the vocoder's stream, so the warmup and not the
+        # first request builds that stream's memory pool and cuBLAS workspaces,
+        # which PyTorch keeps per stream.
+        started = time.monotonic()
+        with self.vocoder.stream_context:
+            mel = self.vocoder.hop_batch([item])[0]
+            self.vocoder.hift_step(
+                [HiftStepRow(history=mel, emitted_samples=0, is_final=False)]
+            )
+            self.warmup_prefix_hops(item)
+            hop_s = time.monotonic() - started
+            mel = self.vocoder.leftover_batch([item])[0]
+            self.vocoder.hift_step(
+                [HiftStepRow(history=mel, emitted_samples=0, is_final=True)]
+            )
+        final_s = time.monotonic() - started - hop_s
+        logger.info(
+            f"Fun-CosyVoice3 vocoder warmup: hop {hop_s:.1f} s, final {final_s:.1f} s"
+        )
+
+    def warmup_packed_dit_compile(self) -> None:
+        """Materialize PackedDiT contracts before the process becomes ready."""
+        packed_estimator = self.vocoder.flow.packed_estimator
+        if not isinstance(packed_estimator, PackedDiT):
+            raise RuntimeError(
+                "Fun-CosyVoice3 PackedDiT compile warmup requires a PackedDiT estimator"
+            )
+        else:
+            pass
+        if not packed_estimator.compile(self.vocoder.autocast_dtype):
+            return
+        else:
+            pass
+        prefix_pool = self.vocoder.flow.prefix_pool
+        if prefix_pool is not None:
+            prefix_pool.forward = compile_forward_prefix()
+        else:
+            pass
+        hop_tokens = self.token_hop_len + PRE_LOOKAHEAD_LEN
+        first = [self.make_warmup_flow_input(hop_tokens)]
+        # note(ratish): a second row count and length,
+        # so the sizes serving varies turn symbolic at startup, not on a request.
+        second = [
+            self.make_warmup_flow_input(hop_tokens),
+            self.make_warmup_flow_input(hop_tokens + self.token_hop_len),
+        ]
+        started = time.monotonic()
+        with self.vocoder.stream_context:
+            for items in (first, second):
+                self.vocoder.hop_batch(items)
+                self.vocoder.leftover_batch(items)
+            if prefix_pool is not None:
+                self.warmup_prefix_hops(first[0])
+            else:
+                pass
+        logger.info(
+            f"Fun-CosyVoice3 PackedDiT compile warmup, hop and final, with "
+            f"torch_num_threads={torch.get_num_threads()} "
+            f"({time.monotonic() - started:.1f} s)"
+        )
+
+    def warmup_prefix_hops(self, item: FlowBatchInput) -> None:
+        """A first hop and a follow-up hop through the prefix cache, so both
+        an empty and a filled prefix are materialized before serving."""
+        token_mel_ratio = self.vocoder.flow.token_mel_ratio
+        cache = self.vocoder.prefix_cache_rows(
+            causal_hop_frames(item, token_mel_ratio=token_mel_ratio)
+        )
+        if cache is None:
+            return
+        else:
+            pass
+        try:
+            self.vocoder.hop_batch_prefix([item], [cache])
+            longer = FlowBatchInput(
+                token=torch.cat((item.token, item.token), dim=1),
+                prompt_token=item.prompt_token,
+                prompt_feat=item.prompt_feat,
+                embedding=item.embedding,
+            )
+            if self.vocoder.grow_prefix_cache(
+                cache, causal_hop_frames(longer, token_mel_ratio=token_mel_ratio)
+            ):
+                self.vocoder.hop_batch_prefix([longer], [cache])
+            else:
+                pass
+        finally:
+            self.vocoder.release_prefix_cache(cache)
+
+    def make_warmup_flow_input(self, token_count: int) -> FlowBatchInput:
+        flow = self.vocoder.flow
+        return FlowBatchInput(
+            token=torch.zeros(1, token_count, dtype=torch.int32),
+            prompt_token=torch.zeros(1, self.token_hop_len, dtype=torch.int32),
+            prompt_feat=torch.zeros(
+                1, self.token_hop_len * flow.token_mel_ratio, flow.output_size
+            ),
+            embedding=torch.zeros(1, flow.spk_embed_affine_layer.in_features),
         )
 
     def latch_stream_contract(
         self,
         request_id: str,
-        state: _CosyVoice3StreamState,
-        source: StagePayload | Mapping[str, Any],
+        state: CosyVoice3StreamState,
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -149,658 +269,357 @@ class FunCosyVoice3StreamingVocoderScheduler(
                     f"Fun-CosyVoice3 streaming payload for {request_id!r} must "
                     f"be a StagePayload, got {type(payload).__name__}"
                 )
-            pipeline_state = FunCosyVoice3State.from_dict(payload.data)
-            self._latch_prompts(
-                request_id,
-                state,
-                prompt_token=pipeline_state.flow_prompt_speech_token,
-                prompt_feat=pipeline_state.flow_prompt_speech_feat,
-                embedding=pipeline_state.flow_embedding,
-            )
-            return
-        metadata: Mapping[str, Any] = source
-        if any(
-            key in metadata
-            for key in (
-                "flow_prompt_speech_token",
-                "flow_prompt_speech_feat",
-                "flow_embedding",
-            )
-        ):
-            self._latch_prompts(
-                request_id,
-                state,
-                prompt_token=metadata.get("flow_prompt_speech_token"),
-                prompt_feat=metadata.get("flow_prompt_speech_feat"),
-                embedding=metadata.get("flow_embedding"),
-            )
-
-    def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        super().on_streaming_new_request(request_id, payload)
-        # note (guozhihao-224): payload can arrive after buffered chunks.
-        # Serial path pumps immediately. Coalescing waits until
-        # _handle_new_request_batch has latched every queued streaming
-        # payload so equal-shape first hops share one causal Flow call.
-        if request_id in self._pending_done:
-            return
-        if self._can_batch_stream_chunks:
-            return
-        with self._state_lock:
-            failed = self._pump_streams()
-        for failed_id in failed:
-            self._cleanup_aborted_request(failed_id)
-
-    def _collect_new_request_batch(
-        self, first_msg: IncomingMessage
-    ) -> list[IncomingMessage]:
-        if not self._can_batch_stream_chunks:
-            return super()._collect_new_request_batch(first_msg)
-        try:
-            first_is_streaming = self.is_streaming_payload(first_msg.data)
-        except Exception:
-            return super()._collect_new_request_batch(first_msg)
-        if not first_is_streaming:
-            return super()._collect_new_request_batch(first_msg)
-        batch = [first_msg]
-        seen = {first_msg.request_id}
-        cap = max(int(self._max_batch_size), 1)
-        while len(batch) < cap:
-            try:
-                msg = self.inbox.get_nowait()
-            except _queue_mod.Empty:
-                break
-            if self._is_aborted(msg.request_id):
-                continue
-            if msg.type != "new_request":
-                self._pending_messages.appendleft(msg)
-                break
-            try:
-                is_streaming = self.is_streaming_payload(msg.data)
-            except Exception as exc:
-                self._emit_error(msg.request_id, exc)
-                self.abort(msg.request_id)
-                continue
-            if not is_streaming or msg.request_id in seen:
-                self._pending_messages.appendleft(msg)
-                break
-            seen.add(msg.request_id)
-            batch.append(msg)
-        return batch
-
-    def _handle_new_request_batch(
-        self,
-        batch: list[IncomingMessage],
-        loop: Any | None = None,
-    ) -> None:
-        super()._handle_new_request_batch(batch, loop)
-        if not self._can_batch_stream_chunks:
-            return
-        has_streaming = False
-        for msg in batch:
-            if msg.type != "new_request" or self._is_aborted(msg.request_id):
-                continue
-            try:
-                has_streaming = self.is_streaming_payload(msg.data)
-            except Exception:
-                continue
-            if has_streaming:
-                break
-        if not has_streaming:
-            return
-        with self._state_lock:
-            failed = self._pump_streams()
-        for failed_id in failed:
-            self._cleanup_aborted_request(failed_id)
-
-    def _collect_stream_chunk_batch(
-        self, first_msg: IncomingMessage
-    ) -> list[IncomingMessage]:
-        if not self._can_batch_stream_chunks:
-            return super()._collect_stream_chunk_batch(first_msg)
-        batch = [first_msg]
-        seen = {first_msg.request_id}
-        deferred: list[IncomingMessage] = []
-        leftover: IncomingMessage | None = None
-        cap = self._stream_chunk_batch_max or max(self._max_batch_size, 1)
-        while len(batch) < cap:
-            try:
-                msg = self.inbox.get_nowait()
-            except _queue_mod.Empty:
-                break
-            if msg.type != "stream_chunk":
-                leftover = msg
-                break
-            if self._is_aborted(msg.request_id):
-                continue
-            if msg.request_id in seen:
-                # note (guozhihao-224): keep scanning for other requests'
-                # first hops instead of stopping behind this request's
-                # follow-up chunk.
-                deferred.append(msg)
-                continue
-            batch.append(msg)
-            seen.add(msg.request_id)
-        if leftover is not None:
-            self._pending_messages.appendleft(leftover)
-        for msg in reversed(deferred):
-            self._pending_messages.appendleft(msg)
-        return batch
-
-    def _first_hop_group_size(self) -> int:
-        groups: dict[int, int] = {}
-        for request_id, state in self._stream_state_items():
-            if self._is_aborted(request_id) or not self._ready_for_causal_chunk(state):
-                continue
-            if state.token_offset != 0:
-                continue
-            key = self._first_hop_key(state)
-            groups[key] = groups.get(key, 0) + 1
-        return max(groups.values(), default=0)
-
-    def _has_joinable_first_hop_peer(self) -> bool:
-        ready_keys: set[int] = set()
-        for request_id, state in self._stream_state_items():
-            if self._is_aborted(request_id) or not self._ready_for_causal_chunk(state):
-                continue
-            if state.token_offset == 0:
-                ready_keys.add(self._first_hop_key(state))
-        if len(ready_keys) != 1:
-            return False
-        ready_key = next(iter(ready_keys))
-        for request_id, state in self._stream_state_items():
-            if self._is_aborted(request_id) or state.token_offset != 0:
-                continue
-            if self._ready_for_causal_chunk(state):
-                continue
-            if state.prompts_latched and self._first_hop_key(state) != ready_key:
-                continue
-            return True
-        return False
-
-    def _ingest_peer_message(self, msg: IncomingMessage) -> bool:
-        if self._is_aborted(msg.request_id):
-            return True
-        if msg.type == "stream_chunk":
-            try:
-                item = self._validate_stream_chunk_item(msg.request_id, msg.data)
-                self._ingest_stream_item(msg.request_id, item)
-            except Exception as exc:
-                self._emit_error(msg.request_id, exc)
-                self.abort(msg.request_id)
-            return True
-        if msg.type == "new_request":
-            try:
-                if self.is_streaming_payload(msg.data):
-                    self._handle_streaming_new_request(msg.request_id, msg.data)
-                    return True
-            except Exception as exc:
-                self._emit_error(msg.request_id, exc)
-                self.abort(msg.request_id)
-                return True
-            self._pending_messages.appendleft(msg)
-            return False
-        self._pending_messages.appendleft(msg)
-        return False
-
-    def _wait_for_first_hop_peers(self) -> None:
-        if self._first_hop_group_size() >= 2:
-            return
-        if not self._has_joinable_first_hop_peer():
-            return
-        wait_s = max(float(self._first_hop_peer_wait_ms), 0.0) / 1000.0
-        deadline = time.monotonic() + wait_s
-        while True:
-            if self._first_hop_group_size() >= 2:
-                return
-            if not self._has_joinable_first_hop_peer():
-                return
-            remaining = deadline - time.monotonic()
-            try:
-                if remaining <= 0:
-                    msg = self.inbox.get_nowait()
-                else:
-                    msg = self.inbox.get(timeout=remaining)
-            except _queue_mod.Empty:
-                if remaining <= 0:
-                    return
-                continue
-            if not self._ingest_peer_message(msg):
+            else:
+                pipeline_state = FunCosyVoice3State.from_dict(payload.data)
+                self.latch_prompts(
+                    request_id,
+                    state,
+                    prompt_token=pipeline_state.flow_prompt_speech_token,
+                    prompt_feat=pipeline_state.flow_prompt_speech_feat,
+                    embedding=pipeline_state.flow_embedding,
+                )
+        else:
+            metadata: Mapping[str, object] = source
+            if any(
+                key in metadata
+                for key in (
+                    "flow_prompt_speech_token",
+                    "flow_prompt_speech_feat",
+                    "flow_embedding",
+                )
+            ):
+                self.latch_prompts(
+                    request_id,
+                    state,
+                    prompt_token=metadata.get("flow_prompt_speech_token"),
+                    prompt_feat=metadata.get("flow_prompt_speech_feat"),
+                    embedding=metadata.get("flow_embedding"),
+                )
+            else:
                 return
 
-    def _follow_up_key(self, state: _CosyVoice3StreamState) -> tuple[int, int]:
-        # note (guozhihao-224): drop prompt_len so SeedTTS mixed prompts
-        # with the same hop/offset share one causal Flow call.
-        return int(state.hop_len), int(state.token_offset)
-
-    def _follow_up_group_size(self) -> int:
-        groups: dict[tuple[int, int], int] = {}
-        for request_id, state in self._stream_state_items():
-            if self._is_aborted(request_id) or not self._ready_for_causal_chunk(state):
-                continue
-            if state.token_offset == 0:
-                continue
-            key = self._follow_up_key(state)
-            groups[key] = groups.get(key, 0) + 1
-        return max(groups.values(), default=0)
-
-    def _has_joinable_follow_up_peer(self) -> bool:
-        ready_keys: set[tuple[int, int]] = set()
-        for request_id, state in self._stream_state_items():
-            if self._is_aborted(request_id) or not self._ready_for_causal_chunk(state):
-                continue
-            if state.token_offset == 0:
-                continue
-            ready_keys.add(self._follow_up_key(state))
-        if len(ready_keys) != 1:
-            return False
-        ready_key = next(iter(ready_keys))
-        for request_id, state in self._stream_state_items():
-            if self._is_aborted(request_id) or state.token_offset == 0:
-                continue
-            if self._ready_for_causal_chunk(state):
-                continue
-            if not state.prompts_latched:
-                continue
-            if self._follow_up_key(state) != ready_key:
-                continue
-            return True
-        return False
-
-    def _wait_for_follow_up_peers(self) -> None:
-        # note (guozhihao-224): same 30ms window as first hops; without it
-        # equal follow-ups arrive staggered and stay B=1 native.
-        if self._follow_up_group_size() >= 2:
-            return
-        if not self._has_joinable_follow_up_peer():
-            return
-        wait_s = max(float(self._first_hop_peer_wait_ms), 0.0) / 1000.0
-        deadline = time.monotonic() + wait_s
-        while True:
-            if self._follow_up_group_size() >= 2:
-                return
-            if not self._has_joinable_follow_up_peer():
-                return
-            remaining = deadline - time.monotonic()
-            try:
-                if remaining <= 0:
-                    msg = self.inbox.get_nowait()
-                else:
-                    msg = self.inbox.get(timeout=remaining)
-            except _queue_mod.Empty:
-                if remaining <= 0:
-                    return
-                continue
-            if not self._ingest_peer_message(msg):
-                return
-
-    def _ingest_ready_inbox(self) -> None:
-        """Pull already-queued peers between hops without blocking.
-
-        The base pump drains every ready hop before returning to the
-        serving loop. CosyVoice first hops must be able to join after a
-        follow-up step, otherwise a backlogged request monopolizes the GPU.
-        """
-        while True:
-            try:
-                msg = self.inbox.get_nowait()
-            except _queue_mod.Empty:
-                return
-            if not self._ingest_peer_message(msg):
-                return
-
-    def _pump_one_step(self) -> list[str] | None:
-        participants = self.select_step_participants()
-        if not participants:
-            return []
-        plan = self.build_step_plan(participants)
-        try:
-            decoded = self.run_step(participants, plan)
-        except Exception as exc:
-            return list(self.on_step_failure(participants, exc))
-        for request_id, _ in participants:
-            waveform = decoded.get(request_id)
-            if waveform is not None and not self._is_aborted(request_id):
-                self._mark_stream_emitted(request_id)
-                self.outbox.put(self._stream_chunk_message(request_id, waveform))
-        return None
-
-    def _pump_streams(self) -> list[str]:
-        # note (guozhihao-224): one hop per step. Keep looping while work
-        # remains so a lone request is not stalled until the next inbox
-        # message, but ingest between steps so a new first hop can preempt
-        # a follow-up backlog. 30ms peer wait stays at pump start and when
-        # a singleton first hop appears after ingest.
-        first = True
-        while True:
-            if self._can_batch_stream_chunks:
-                if first:
-                    self._wait_for_first_hop_peers()
-                    if (
-                        self._first_hop_group_size() == 0
-                        and self._can_batch_follow_up_hops
-                    ):
-                        self._wait_for_follow_up_peers()
-                else:
-                    self._ingest_ready_inbox()
-                    if self._first_hop_group_size() == 1:
-                        self._wait_for_first_hop_peers()
-            first = False
-            failed = self._pump_one_step()
-            if failed is not None:
-                return failed
-
-    def _latch_prompts(
+    def latch_prompts(
         self,
         request_id: str,
-        state: _CosyVoice3StreamState,
+        state: CosyVoice3StreamState,
         *,
-        prompt_token: Any,
-        prompt_feat: Any,
-        embedding: Any,
+        prompt_token: object,
+        prompt_feat: object,
+        embedding: object,
     ) -> None:
         token = as_flow_prompt_token(prompt_token)
         feat = as_flow_prompt_feat(prompt_feat)
-        spk = as_flow_embedding(embedding)
+        speaker_embedding = as_flow_embedding(embedding)
         # note (guozhihao-224): pad prompt to a hop multiple here so the
         # first generated hop stays hop+lookahead instead of waiting for
         # prompt_pad extra AR tokens.
-        token, feat = pad_flow_prompt_to_hop(token, feat, hop_len=self._token_hop_len)
-        if state.prompts_latched:
+        token, feat = pad_flow_prompt_to_hop(
+            token,
+            feat,
+            hop_len=self.token_hop_len,
+            token_mel_ratio=self.vocoder.flow.token_mel_ratio,
+        )
+        if state.prompt_token is None:
+            state.prompt_token = token
+            state.prompt_feat = feat
+            state.embedding = speaker_embedding
+        elif (
+            tuple(token.shape) != tuple(state.prompt_token.shape)
+            or tuple(feat.shape) != tuple(state.prompt_feat.shape)
+            or tuple(speaker_embedding.shape) != tuple(state.embedding.shape)
+        ):
             # note (guozhihao-224): latch is shape-stable; payload and first
             # chunk metadata must carry the same prompt tensors.
-            if (
-                tuple(token.shape) != tuple(state.prompt_token.shape)
-                or tuple(feat.shape) != tuple(state.prompt_feat.shape)
-                or tuple(spk.shape) != tuple(state.embedding.shape)
-            ):
-                raise ValueError(
-                    f"Fun-CosyVoice3 stream prompt tensors changed for {request_id!r}"
-                )
+            raise ValueError(
+                f"Fun-CosyVoice3 stream prompt tensors changed for {request_id!r}"
+            )
+        else:
             return
-        state.prompt_token = token
-        state.prompt_feat = feat
-        state.embedding = spk
-        state.prompt_pad = 0
-        state.prompts_latched = True
 
     def validate_chunk(
         self,
         request_id: str,
-        state: _CosyVoice3StreamState,
+        state: CosyVoice3StreamState,
         codes: torch.Tensor,
     ) -> torch.Tensor:
-        del request_id, state
         chunk = codes.to(dtype=torch.long)
         if chunk.ndim == 2 and chunk.shape[-1] == 1:
-            chunk = chunk.reshape(-1)
-        if chunk.ndim != 1:
+            return chunk.reshape(-1).contiguous()
+        elif chunk.ndim != 1:
             raise ValueError(
                 f"Fun-CosyVoice3 stream chunk must be 1-D speech tokens, "
                 f"got {tuple(chunk.shape)}"
             )
-        return chunk.contiguous()
+        else:
+            return chunk.contiguous()
+
+    def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
+        super().on_streaming_new_request(request_id, payload)
+        state = self.stream_states.get(request_id)
+        if state is None:
+            return
+        elif state.ready_since is None and state.next_decode() != "wait":
+            ready_since = self.clock()
+        else:
+            ready_since = state.ready_since
+        state.ready_since = ready_since
 
     def ingest(
         self,
         request_id: str,
-        state: _CosyVoice3StreamState,
+        state: CosyVoice3StreamState,
         codes: torch.Tensor,
     ) -> None:
-        del request_id
         state.tokens.extend(int(token) for token in codes.tolist())
+        if state.ready_since is None and state.next_decode() != "wait":
+            ready_since = self.clock()
+        else:
+            ready_since = state.ready_since
+        state.ready_since = ready_since
 
-    def should_decode(self, state: _CosyVoice3StreamState, *, is_final: bool) -> bool:
-        del is_final
-        return self._ready_for_causal_chunk(state)
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage] | None:
+        state = self.get_or_create_stream_state(request_id)
+        if state is None:
+            return []
+        else:
+            state.done = True
+            if state.ready_since is None and state.next_decode() != "wait":
+                ready_since = self.clock()
+            else:
+                ready_since = state.ready_since
+            state.ready_since = ready_since
+            return None
 
-    def _ready_for_causal_chunk(self, state: _CosyVoice3StreamState) -> bool:
-        if not state.prompts_latched:
-            return False
-        needed = tokens_needed_for_causal_chunk(
-            state.token_offset,
-            hop_len=state.hop_len,
-            prompt_pad=state.prompt_pad,
-        )
-        return len(state.tokens) >= needed
-
-    def _first_hop_key(self, state: _CosyVoice3StreamState) -> int:
-        hop = stream_hop_len(0, hop_len=state.hop_len, prompt_pad=state.prompt_pad)
-        return hop + PRE_LOOKAHEAD_LEN
+    def has_ready_work(self) -> bool:
+        with self.state_lock:
+            ready = any(
+                state.next_decode() != "wait" and not self.is_aborted(request_id)
+                for request_id, state in self.stream_state_items()
+            )
+            if ready:
+                return True
+            else:
+                return False
 
     def select_step_participants(
         self,
-    ) -> list[tuple[str, _CosyVoice3StreamState]]:
-        first_hops: list[tuple[str, _CosyVoice3StreamState]] = []
-        follow_ups: list[tuple[str, _CosyVoice3StreamState]] = []
-        for request_id, state in self._stream_state_items():
-            if self._is_aborted(request_id) or not self._ready_for_causal_chunk(state):
+    ) -> list[tuple[str, CosyVoice3StreamState]]:
+        now = self.clock()
+        started: list[tuple[float, float, str, CosyVoice3StreamState]] = []
+        unstarted: list[tuple[float, str, CosyVoice3StreamState]] = []
+        for request_id, state in self.stream_state_items():
+            if state.next_decode() == "wait" or self.is_aborted(request_id):
                 continue
-            if state.token_offset == 0:
-                first_hops.append((request_id, state))
+            elif state.first_emit_at is None:
+                assert state.ready_since is not None
+                unstarted.append((state.ready_since, request_id, state))
             else:
-                follow_ups.append((request_id, state))
-        if first_hops:
-            if not self._can_batch_stream_chunks:
-                return first_hops[:1]
-            groups: dict[int, list[tuple[str, _CosyVoice3StreamState]]] = {}
-            for entry in first_hops:
-                groups.setdefault(self._first_hop_key(entry[1]), []).append(entry)
-            best = max(groups.values(), key=len)
-            return best[: self._max_batch_size]
-        if follow_ups:
-            if not self._can_batch_stream_chunks or not self._can_batch_follow_up_hops:
-                return follow_ups[:1]
-            follow_groups: dict[
-                tuple[int, int], list[tuple[str, _CosyVoice3StreamState]]
-            ] = {}
-            for entry in follow_ups:
-                follow_groups.setdefault(self._follow_up_key(entry[1]), []).append(
-                    entry
+                assert state.ready_since is not None
+                playback_slack = state.speech_offset / self.sample_rate - (
+                    now - state.first_emit_at
                 )
-            best_follow = max(follow_groups.values(), key=len)
-            return best_follow[: self._max_batch_size]
-        return []
+                started.append((playback_slack, state.ready_since, request_id, state))
+        ranked = [(request_id, state) for _, _, request_id, state in sorted(started)]
+        ranked += [(request_id, state) for _, request_id, state in sorted(unstarted)]
+        if not ranked:
+            return []
+        else:
+            head_decode = ranked[0][1].next_decode()
+            if head_decode == "fallback":
+                return ranked[:1]
+            else:
+                peers = [
+                    (request_id, state)
+                    for request_id, state in ranked
+                    if state.next_decode() == head_decode
+                ]
+                return peers[: self.max_batch_size]
 
     def build_step_plan(
-        self, participants: list[tuple[str, _CosyVoice3StreamState]]
-    ) -> _CosyVoice3FirstHopPlan:
-        state = participants[0][1]
-        hop = stream_hop_len(
-            state.token_offset,
-            hop_len=state.hop_len,
-            prompt_pad=state.prompt_pad,
-        )
-        return _CosyVoice3FirstHopPlan(
-            hop=hop,
-            token_end=state.token_offset + hop + PRE_LOOKAHEAD_LEN,
-            token_offset=state.token_offset,
-            batched=len(participants) > 1,
-        )
+        self, participants: list[tuple[str, CosyVoice3StreamState]]
+    ) -> NextDecode:
+        decode = participants[0][1].next_decode()
+        assert decode != "wait"
+        return decode
 
     def run_step(
         self,
-        participants: list[tuple[str, _CosyVoice3StreamState]],
-        plan: _CosyVoice3FirstHopPlan,
+        participants: list[tuple[str, CosyVoice3StreamState]],
+        plan: NextDecode,
     ) -> dict[str, torch.Tensor]:
-        # note (guozhihao-224): B>1 uses packed inference_causal; B=1 keeps
-        # native CosyVoice Flow.inference. Packed singleton-vs-row tests
-        # cover the batch adapter; native hops stay on the official signature.
-        if plan.batched:
-            return self._run_causal_hop_batch(participants, plan)
-        request_id, state = participants[0]
-        waveform = self.decode_delta(request_id, state, is_final=False)
-        if waveform is None:
+        assert plan != "wait"
+        if plan == "fallback":
+            request_id, _ = participants[0]
+            self.complete_stream_request(request_id, self.finish_stream(request_id))
             return {}
-        return {request_id: waveform}
-
-    def _run_causal_hop_batch(
-        self,
-        participants: list[tuple[str, _CosyVoice3StreamState]],
-        plan: _CosyVoice3FirstHopPlan,
-    ) -> dict[str, torch.Tensor]:
-        items: list[FlowBatchInput] = []
-        for _, state in participants:
-            if state.prompt_token is None or state.prompt_feat is None:
-                raise RuntimeError(
-                    "Fun-CosyVoice3 streaming vocoder decoded before prompt "
-                    "conditioning was latched"
-                )
-            if state.embedding is None:
-                raise RuntimeError(
-                    "Fun-CosyVoice3 streaming vocoder decoded before speaker "
-                    "embedding was latched"
-                )
-            generated = state.tokens[: plan.token_end]
-            items.append(
+        elif plan == "leftover":
+            items = [
                 FlowBatchInput(
-                    token=torch.tensor(generated, dtype=torch.int32).unsqueeze(0),
+                    token=torch.tensor(state.tokens, dtype=torch.int32).unsqueeze(0),
                     prompt_token=state.prompt_token,
                     prompt_feat=state.prompt_feat,
                     embedding=state.embedding,
                 )
-            )
-        if plan.token_offset == 0:
-            logger.info(
-                "Fun-CosyVoice3 first-hop Flow batch size=%d hop=%d",
-                len(items),
-                plan.hop,
-            )
+                for _, state in participants
+            ]
+            logger.info(f"Fun-CosyVoice3 leftover Flow batch size={len(items)}")
+            mels = self.vocoder.leftover_batch(items)
+            for (_, state), (delta, offset) in zip(
+                participants,
+                self.hift_step(participants, mels, is_final=True),
+                strict=True,
+            ):
+                state.leftover, state.speech_offset = delta, offset
+            for request_id, _ in participants:
+                self.complete_stream_request(request_id, self.finish_stream(request_id))
+            return {}
         else:
-            logger.info(
-                "Fun-CosyVoice3 follow-up Flow batch size=%d hop=%d token_offset=%d",
-                len(items),
-                plan.hop,
-                plan.token_offset,
-            )
-        mels = self._vocoder.first_hop_batch(items)
-        offset_frames = int(plan.token_offset) * TOKEN_MEL_RATIO
-        decoded: dict[str, torch.Tensor] = {}
-        for (request_id, state), mel in zip(participants, mels, strict=True):
-            if mel.shape[-1] < offset_frames:
-                raise RuntimeError(
-                    "Fun-CosyVoice3 causal Flow batch returned "
-                    f"{mel.shape[-1]} frames, need offset {offset_frames}"
+            items = [
+                FlowBatchInput(
+                    token=torch.tensor(
+                        state.tokens[
+                            : state.token_offset + state.hop_len + PRE_LOOKAHEAD_LEN
+                        ],
+                        dtype=torch.int32,
+                    ).unsqueeze(0),
+                    prompt_token=state.prompt_token,
+                    prompt_feat=state.prompt_feat,
+                    embedding=state.embedding,
                 )
-            delta, hift_mel, speech_offset = self._vocoder._hift_delta(
-                mel[:, :, offset_frames:],
-                hift_mel=state.hift_mel,
-                speech_offset=state.speech_offset,
-                finalize=False,
-            )
-            state.token_offset += plan.hop
-            self._advance_hop_len(state)
-            state.hift_mel = hift_mel
-            state.speech_offset = speech_offset
-            if delta is not None and delta.numel() > 0:
-                decoded[request_id] = delta
-        return decoded
+                for _, state in participants
+            ]
+            logger.info(f"Fun-CosyVoice3 causal Flow batch size={len(items)}")
+            mels = self.hop_batch_with_prefix(participants, items)
+            decoded: dict[str, torch.Tensor] = {}
+            for (request_id, state), (delta, offset) in zip(
+                participants,
+                self.hift_step(participants, mels, is_final=False),
+                strict=True,
+            ):
+                state.speech_offset = offset
+                if delta.numel() > 0:
+                    decoded[request_id] = delta
+                else:
+                    pass
+            now = self.clock()
+            for request_id, state in participants:
+                state.token_offset += state.hop_len
+                state.hop_len = next_stream_hop_len(
+                    state.hop_len,
+                    max_hop_len=self.token_max_hop_len,
+                    disable_growth=self.disable_hop_growth,
+                )
+                if request_id in decoded and state.first_emit_at is None:
+                    state.first_emit_at = now
+                else:
+                    pass
+                if state.next_decode() != "wait":
+                    state.ready_since = now
+                else:
+                    state.ready_since = None
+            return decoded
 
-    def _run_one_causal_hop(self, state: _CosyVoice3StreamState) -> torch.Tensor | None:
-        hop = stream_hop_len(
-            state.token_offset,
-            hop_len=state.hop_len,
-            prompt_pad=state.prompt_pad,
-        )
-        token_end = state.token_offset + hop + PRE_LOOKAHEAD_LEN
-        delta = self._run_flow_hift(
-            state,
-            token_end=token_end,
-            token_offset=state.token_offset,
-            streaming=True,
-            finalize=False,
-        )
-        state.token_offset += hop
-        self._advance_hop_len(state)
-        return delta
+    def hop_batch_with_prefix(
+        self,
+        participants: list[tuple[str, CosyVoice3StreamState]],
+        items: list[FlowBatchInput],
+    ) -> list[torch.Tensor]:
+        """Flow for the step: rows with room in the prefix pool run over their
+        new frames against their cached prefix, the rest over their whole
+        history as one plain call."""
+        if self.vocoder.flow.prefix_pool is None:
+            return self.vocoder.hop_batch(items)
+        else:
+            pass
+        cached: list[int] = []
+        caches: list[tuple[PrefixCacheRow, PrefixCacheRow]] = []
+        plain: list[int] = []
+        token_mel_ratio = self.vocoder.flow.token_mel_ratio
+        for index, ((_, state), item) in enumerate(
+            zip(participants, items, strict=True)
+        ):
+            total_frames = causal_hop_frames(item, token_mel_ratio=token_mel_ratio)
+            cache = state.flow_cache
+            if cache is None:
+                cache = self.vocoder.prefix_cache_rows(total_frames)
+            elif not self.vocoder.grow_prefix_cache(cache, total_frames):
+                # Note (Jiaxin Deng): a row the pool cannot hold runs over its
+                # whole history this hop and may re-enter the pool on a later one.
+                self.vocoder.release_prefix_cache(cache)
+                cache = None
+            else:
+                pass
+            state.flow_cache = cache
+            if cache is None:
+                plain.append(index)
+            else:
+                cached.append(index)
+                caches.append(cache)
+        mels: list[torch.Tensor | None] = [None] * len(items)
+        if cached:
+            outputs = self.vocoder.hop_batch_prefix(
+                [items[index] for index in cached], caches
+            )
+            for index, mel in zip(cached, outputs, strict=True):
+                mels[index] = mel
+        else:
+            pass
+        if plain:
+            outputs = self.vocoder.hop_batch([items[index] for index in plain])
+            for index, mel in zip(plain, outputs, strict=True):
+                mels[index] = mel
+        else:
+            pass
+        return [mel for mel in mels if mel is not None]
+
+    def hift_step(
+        self,
+        participants: list[tuple[str, CosyVoice3StreamState]],
+        mels: list[torch.Tensor],
+        *,
+        is_final: bool,
+    ) -> list[tuple[torch.Tensor, int]]:
+        """Append each participant's new mel frames to its history and run one
+        HiFT call over the step."""
+        rows: list[HiftStepRow] = []
+        token_mel_ratio = self.vocoder.flow.token_mel_ratio
+        for (_, state), mel in zip(participants, mels, strict=True):
+            new_frames = mel[:, :, state.token_offset * token_mel_ratio :].detach()
+            if state.hift_mel is None:
+                state.hift_mel = new_frames
+            else:
+                state.hift_mel = torch.cat(
+                    [state.hift_mel.to(new_frames.device), new_frames], dim=2
+                )
+            rows.append(
+                HiftStepRow(
+                    history=state.hift_mel,
+                    emitted_samples=state.speech_offset,
+                    is_final=is_final,
+                )
+            )
+        return self.vocoder.hift_step(rows)
 
     def decode_delta(
         self,
         request_id: str,
-        state: _CosyVoice3StreamState,
+        state: CosyVoice3StreamState,
         *,
         is_final: bool,
     ) -> torch.Tensor | None:
-        del request_id
-        pieces: list[torch.Tensor] = []
-        if not is_final:
-            # note (guozhihao-224): one hop per non-final step so a
-            # backlogged request cannot drain every ready hop inside one
-            # run_step. stream_done still catches up below.
-            if not self._ready_for_causal_chunk(state):
-                return None
-            delta = self._run_one_causal_hop(state)
-            if delta is None or delta.numel() == 0:
-                return None
-            return delta
-        while self._ready_for_causal_chunk(state):
-            delta = self._run_one_causal_hop(state)
-            if delta is not None and delta.numel() > 0:
-                pieces.append(delta)
-        if not state.tokens:
-            return None if not pieces else torch.cat(pieces, dim=-1)
-        # note (guozhihao-224): leftover keeps finalize=True so HiFT
-        # flushes and pre_lookahead consumes the tail. DiT stays
-        # bidirectional; leftover streaming=True did not win the A/B.
-        delta = self._run_flow_hift(
-            state,
-            token_end=len(state.tokens),
-            token_offset=state.token_offset,
-            streaming=LEFTOVER_FLOW_STREAMING,
-            finalize=True,
-        )
-        if delta is not None and delta.numel() > 0:
-            pieces.append(delta)
-        if not pieces:
+        # note(ratish): hops and leftovers run in steps, so the per-chunk
+        # decode never emits and the final flush returns the batched leftover.
+        if is_final:
+            return state.leftover
+        else:
             return None
-        return torch.cat(pieces, dim=-1)
-
-    def _run_flow_hift(
-        self,
-        state: _CosyVoice3StreamState,
-        *,
-        token_end: int,
-        token_offset: int,
-        streaming: bool,
-        finalize: bool,
-    ) -> torch.Tensor | None:
-        if state.prompt_token is None or state.prompt_feat is None:
-            raise RuntimeError(
-                "Fun-CosyVoice3 streaming vocoder decoded before prompt "
-                "conditioning was latched"
-            )
-        if state.embedding is None:
-            raise RuntimeError(
-                "Fun-CosyVoice3 streaming vocoder decoded before speaker "
-                "embedding was latched"
-            )
-        generated = state.tokens[:token_end]
-        if not generated:
-            raise RuntimeError(
-                "Fun-CosyVoice3 streaming vocoder has no speech tokens to decode"
-            )
-        token = torch.tensor(generated, dtype=torch.int32).unsqueeze(0)
-        wav, hift_mel, speech_offset = self._vocoder.token2wav_chunk(
-            token=token,
-            prompt_token=state.prompt_token,
-            prompt_feat=state.prompt_feat,
-            embedding=state.embedding,
-            token_offset=token_offset,
-            streaming=streaming,
-            finalize=finalize,
-            hift_mel=state.hift_mel,
-            speech_offset=state.speech_offset,
-        )
-        state.hift_mel = hift_mel
-        state.speech_offset = speech_offset
-        return wav
 
     def fallback_full_decode(
         self,
         request_id: str,
         payload: StagePayload,
-        state: _CosyVoice3StreamState,
+        state: CosyVoice3StreamState,
     ) -> torch.Tensor | None:
-        del request_id, state
         pipeline_state = FunCosyVoice3State.from_dict(payload.data)
         if pipeline_state.audio_codes is None:
             codes = torch.zeros(0, dtype=torch.long)
@@ -812,10 +631,11 @@ class FunCosyVoice3StreamingVocoderScheduler(
             raise RuntimeError(
                 "Fun-CosyVoice3 generation produced no usable speech tokens"
             )
-        prompt_token = as_flow_prompt_token(pipeline_state.flow_prompt_speech_token)
-        prompt_feat = as_flow_prompt_feat(pipeline_state.flow_prompt_speech_feat)
-        embedding = as_flow_embedding(pipeline_state.flow_embedding)
-        return self._vocoder.token2wav(
+        else:
+            prompt_token = as_flow_prompt_token(pipeline_state.flow_prompt_speech_token)
+            prompt_feat = as_flow_prompt_feat(pipeline_state.flow_prompt_speech_feat)
+            embedding = as_flow_embedding(pipeline_state.flow_embedding)
+        return self.vocoder.token2wav(
             token=codes.unsqueeze(0),
             prompt_token=prompt_token,
             prompt_feat=prompt_feat,
@@ -826,34 +646,38 @@ class FunCosyVoice3StreamingVocoderScheduler(
         self,
         request_id: str,
         payload: StagePayload,
-        state: _CosyVoice3StreamState,
-    ) -> dict[str, Any]:
-        del request_id, state
-        final_data: dict[str, Any] = {
+        state: CosyVoice3StreamState,
+    ) -> dict[str, str | int | dict[str, int | float]]:
+        final_data: dict[str, str | int | dict[str, int | float]] = {
             "modality": "audio",
-            "sample_rate": self._sample_rate,
+            "sample_rate": self.sample_rate,
         }
         pipeline_state = FunCosyVoice3State.from_dict(payload.data)
+        final_data["finish_reason"] = pipeline_state.finish_reason
         usage = build_usage(pipeline_state)
-        if usage is not None:
+        if usage is None:
+            return final_data
+        else:
             final_data["usage"] = usage
-        return final_data
+            return final_data
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
-        del request_id
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         return audio_waveform_payload(
             waveform,
-            sample_rate=self._sample_rate,
+            sample_rate=self.sample_rate,
             modality="audio",
             source_hint="Fun-CosyVoice3",
         )
 
     def release_stream_resources(
-        self, request_id: str, state: _CosyVoice3StreamState
+        self, request_id: str, state: CosyVoice3StreamState
     ) -> None:
-        del request_id
         state.tokens.clear()
         state.hift_mel = None
+        self.vocoder.release_prefix_cache(state.flow_cache)
+        state.flow_cache = None
         state.prompt_token = None
         state.prompt_feat = None
         state.embedding = None

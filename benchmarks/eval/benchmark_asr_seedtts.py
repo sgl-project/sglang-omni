@@ -90,20 +90,20 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import statistics
 import time
 
 import requests
 
-from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
-from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.eval.asr_profiling import (
-    UtilizationSampler,
+from benchmarks.benchmarker.fingerprint import (
     collect_environment_fingerprint,
     collect_server_identity,
-    run_profiled_pass,
 )
+from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.eval.asr_profiling import UtilizationSampler, run_profiled_pass
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
@@ -111,6 +111,7 @@ from benchmarks.tasks.asr import (
     build_asr_eval_results,
     run_asr_transcription,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
 
@@ -153,17 +154,35 @@ def _evaluation_input_sha256(
 
 
 def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
-    """Best-effort read of the router /workers snapshot (None if unavailable)."""
-    try:
-        response = requests.get(
-            f"http://{host}:{port}/workers",
-            timeout=10,
-            proxies={"http": None, "https": None},
+    """Best-effort read of per-worker router dispatch counters."""
+    with requests.Session() as session:
+        session.trust_env = False
+        for path in ("/diagnostics", "/workers"):
+            try:
+                response = session.get(f"http://{host}:{port}{path}", timeout=10)
+                response.raise_for_status()
+                payload = response.json()
+                if path == "/diagnostics":
+                    return _normalize_rust_worker_snapshot(payload)
+                return payload
+            except (requests.RequestException, ValueError, TypeError):
+                continue
+    return None
+
+
+def _normalize_rust_worker_snapshot(snapshot: dict) -> dict:
+    workers = []
+    for worker in snapshot.get("workers", []):
+        dispatches = worker.get("dispatches", [])
+        workers.append(
+            {
+                "display_id": worker.get("worker_id"),
+                "routed_requests": sum(
+                    int(entry.get("requests", 0)) for entry in dispatches
+                ),
+            }
         )
-        response.raise_for_status()
-        return response.json()
-    except Exception:
-        return None
+    return {"workers": workers}
 
 
 def _worker_delta(before: dict | None, after: dict | None) -> dict:
@@ -173,17 +192,21 @@ def _worker_delta(before: dict | None, after: dict | None) -> dict:
 
     def _by_id(snapshot: dict, key: str) -> dict[str, int]:
         return {
-            str(w.get("display_id")): int(w.get(key, 0))
-            for w in snapshot.get("workers", [])
+            str(worker.get("display_id", worker.get("worker_id"))): int(
+                worker.get(key, 0)
+            )
+            for worker in snapshot.get("workers", [])
         }
 
     out: dict[str, object] = {}
     for key in ("routed_requests", "successful_requests", "failed_requests"):
+        if not any(key in worker for worker in after.get("workers", [])):
+            continue
         before_by_id = _by_id(before, key)
         after_by_id = _by_id(after, key)
         deltas = {
-            wid: after_by_id.get(wid, 0) - before_by_id.get(wid, 0)
-            for wid in after_by_id
+            worker_id: after_by_id.get(worker_id, 0) - before_by_id.get(worker_id, 0)
+            for worker_id in after_by_id
         }
         out[f"total_{key}"] = sum(deltas.values())
         if key == "routed_requests":
@@ -216,7 +239,6 @@ async def run_asr_seedtts_once(
         stream=stream,
     )
     after = _fetch_worker_snapshot(host, port)
-
     benchmark_result = build_asr_eval_results(
         samples,
         outputs,
@@ -752,6 +774,11 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     concurrencies = args.concurrencies
     max_samples = args.max_samples if args.max_samples > 0 else None

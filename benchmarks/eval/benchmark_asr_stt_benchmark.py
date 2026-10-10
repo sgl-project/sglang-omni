@@ -43,8 +43,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 
+from benchmarks.benchmarker.fingerprint import (
+    collect_environment_fingerprint,
+    collect_server_identity,
+)
 from benchmarks.dataset.prepare import (
     STT_BENCHMARK_DATASET_ID,
     STT_BENCHMARK_DATASET_REVISION,
@@ -54,10 +59,6 @@ from benchmarks.dataset.stt_benchmark import (
     STT_BENCHMARK_SPLIT,
     load_stt_benchmark_samples,
 )
-from benchmarks.eval.asr_profiling import (
-    collect_environment_fingerprint,
-    collect_server_identity,
-)
 from benchmarks.eval.benchmark_asr_seedtts import (
     _evaluation_input_sha256,
     _print_table,
@@ -66,6 +67,7 @@ from benchmarks.eval.benchmark_asr_seedtts import (
     finalize_args,
 )
 from benchmarks.runtime_metrics import collect_benchmark_provenance
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 RESULTS_FILE = "asr_stt_benchmark_results.json"
 
@@ -81,6 +83,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--config-name",
+        default=None,
+        help="Dataset config name (e.g. clean/other for openslr/librispeech_asr).",
+    )
+    parser.add_argument(
         "--split",
         default=STT_BENCHMARK_SPLIT,
         help="Dataset split to evaluate.",
@@ -91,13 +98,22 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Limit samples (0 = full set; 1000 for the canonical repo).",
     )
+    parser.add_argument(
+        "--lang",
+        default=STT_BENCHMARK_LANG,
+        choices=["en", "zh"],
+        help="Transcript language: picks WER (en) or CER (zh) normalization.",
+    )
     add_common_args(parser, default_output=RESULTS_FILE)
-    args = finalize_args(parser.parse_args())
-    args.lang = STT_BENCHMARK_LANG
-    return args
+    return finalize_args(parser.parse_args())
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     concurrencies = args.concurrencies
     max_samples = args.max_samples if args.max_samples > 0 else None
@@ -111,6 +127,7 @@ def main() -> None:
     samples = load_stt_benchmark_samples(
         args.repo_id,
         max_samples=max_samples,
+        config_name=args.config_name,
         split=args.split,
         revision=dataset_revision,
     )
@@ -153,6 +170,7 @@ def main() -> None:
             "host": args.host,
             "port": args.port,
             "repo_id": args.repo_id,
+            "config_name": args.config_name,
             "split": args.split,
             "lang": args.lang,
             "model_path": args.model_path,

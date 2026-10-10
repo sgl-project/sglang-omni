@@ -60,7 +60,7 @@ def speech_server(tmp_path_factory: pytest.TempPathFactory):
     stop_server(proc)
 
 
-def _load_pcm16_with_silence(path: Path) -> bytes:
+def load_pcm16_with_silence(path: Path) -> bytes:
     with wave.open(str(path)) as wav:
         assert wav.getnchannels() == 1
         assert wav.getframerate() == 16000
@@ -69,14 +69,14 @@ def _load_pcm16_with_silence(path: Path) -> bytes:
     return pcm + b"\x00\x00" * 16000
 
 
-async def _recv_event(ws) -> dict:
+async def recv_event(ws) -> dict:
     return json.loads(await asyncio.wait_for(ws.recv(), timeout=WS_TIMEOUT))
 
 
-async def _recv_until(ws, terminal_type: str, *, limit: int = 500) -> list[dict]:
+async def recv_until(ws, terminal_type: str, *, limit: int = 500) -> list[dict]:
     events: list[dict] = []
     for _ in range(limit):
-        event = await _recv_event(ws)
+        event = await recv_event(ws)
         events.append(event)
         if event.get("type") == terminal_type:
             return events
@@ -85,7 +85,7 @@ async def _recv_until(ws, terminal_type: str, *, limit: int = 500) -> list[dict]
     )
 
 
-async def _stream_audio(ws, pcm: bytes, *, chunk_ms: int = 200) -> None:
+async def stream_audio(ws, pcm: bytes, *, chunk_ms: int = 200) -> None:
     chunk_bytes = 16000 * chunk_ms // 1000 * 2
     for start in range(0, len(pcm), chunk_bytes):
         await ws.send(
@@ -109,7 +109,7 @@ async def test_vad_turn_streams_raw_pcm_audio(
     port: int = speech_server.port  # type: ignore[attr-defined]
     with disable_proxy():
         async with websockets.connect(f"ws://localhost:{port}/v1/realtime") as ws:
-            assert (await _recv_event(ws))["type"] == "session.created"
+            assert (await recv_event(ws))["type"] == "session.created"
             await ws.send(
                 json.dumps(
                     {
@@ -122,11 +122,11 @@ async def test_vad_turn_streams_raw_pcm_audio(
                     }
                 )
             )
-            updated = await _recv_event(ws)
+            updated = await recv_event(ws)
             assert updated["type"] == "session.updated", updated
 
-            await _stream_audio(ws, _load_pcm16_with_silence(AUDIO_FIXTURE))
-            events = await _recv_until(
+            await stream_audio(ws, load_pcm16_with_silence(AUDIO_FIXTURE))
+            events = await recv_until(
                 ws, "conversation.item.input_audio_transcription.completed"
             )
 

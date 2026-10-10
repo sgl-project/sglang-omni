@@ -1,5 +1,5 @@
+import os
 from collections.abc import Iterable, Mapping
-from typing import Any
 
 from transformers import AutoConfig
 
@@ -10,26 +10,65 @@ from sglang_omni.config.sources import patches_from_dotted_cli, sources_from_con
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.utils import (
     architecture_from_hf_config,
+    try_resolve_arch_from_auk_layout,
+    try_resolve_arch_from_cosyvoice3_layout,
     try_resolve_arch_from_mistral_config,
+    try_resolve_arch_from_nemo_config,
+    try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
 )
 
 
 def resolve_config_cls_for_model_path(model_path: str):
     """Resolve a PipelineConfig class from HF config metadata."""
+    # note (db-ol): a pinned <repo-id>@<revision> spec resolves metadata at
+    # the pinned revision without materializing the snapshot. The weights
+    # download happens later, when resolve_checkpoint loads a stage.
+    repo_id, revision = model_path, None
+    if "@" in model_path and not os.path.isdir(model_path):
+        repo_id, _, pinned = model_path.partition("@")
+        revision = pinned or None
+    else:
+        pass
+    hf_kwargs = {"revision": revision} if revision else {}
     hf_config = None
     try:
-        hf_config = AutoConfig.from_pretrained(model_path)
+        hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
     except (OSError, ValueError, KeyError):
         hf_config = None
 
     arch = architecture_from_hf_config(hf_config) if hf_config is not None else None
     if arch is None:
-        arch = try_resolve_arch_from_raw_config(model_path)
+        arch = try_resolve_arch_from_raw_config(repo_id, revision=revision)
+    else:
+        pass
     if arch is None:
-        arch = try_resolve_arch_from_mistral_config(model_path)
+        arch = try_resolve_arch_from_mistral_config(repo_id, revision=revision)
+    else:
+        pass
     if arch is None:
-        raise ValueError(f"Could not resolve model architecture for {model_path!r}")
+        arch = try_resolve_arch_from_nemo_config(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_cosyvoice3_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_auk_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_personaplex_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        hint = f", check that revision {revision} exists" if revision else ""
+        raise ValueError(
+            f"Could not resolve model architecture for {model_path!r}{hint}"
+        )
+    else:
+        pass
     return PIPELINE_CONFIG_REGISTRY.get_config(arch)
 
 
@@ -67,26 +106,30 @@ class ConfigManager:
                 raise ValueError(f"Invalid argument: {arg}")
 
             if cur_key is not None and cur_value is not None:
-                extra_args.append((_normalize_flag_key(cur_key), cur_value))
+                extra_args.append((normalize_flag_key(cur_key), cur_value))
                 cur_key, cur_value = None, None
+            else:
+                pass
         if cur_key is not None and cur_value is None:
             raise ValueError(f"Missing value for argument: {cur_key}")
+        else:
+            pass
         return extra_args
 
     def merge_config(
         self,
-        extra_args: Mapping[str, Any] | Iterable[tuple[str, Any]],
+        extra_args: Mapping[str, object] | Iterable[tuple[str, object]],
         *,
         extra_patches: ConfigPatchSet | None = None,
     ) -> PipelineConfig:
         """Merge the configuration and the extra arguments.
 
         The dotted keys are translated into canonical patches and applied by
-        :class:`~sglang_omni.config.resolver.ConfigResolver`, which is the only
+        :class:sglang_omni.config.resolver.ConfigResolver, which is the only
         code that writes into a configuration.
 
-        ``extra_patches`` carries patches a caller has already translated --
-        the ``--model-path`` flag in ``sgl-omni serve``, for instance.
+        extra_patches carries patches a caller has already translated --
+        the --model-path flag in sgl-omni serve, for instance.
         Everything is resolved together, in one patch set, so that writing the
         same path two ways is refused (or settled by declared specificity)
         rather than by the order the translations happen to run in.
@@ -94,8 +137,10 @@ class ConfigManager:
         patches = patches_from_dotted_cli(extra_args, self.config)
         if extra_patches is not None:
             patches = patches.merge(extra_patches)
+        else:
+            pass
         resolved = ConfigResolver(self.config).resolve(patches)
-        _validate_dotted_gpu_override_conflicts(
+        validate_dotted_gpu_override_conflicts(
             resolved.config, {patch.key for patch in patches.ordered()}
         )
         return resolved.config
@@ -116,6 +161,8 @@ class ConfigManager:
                 raise ValueError(
                     f"Unknown variant '{variant}' for {config_cls.__name__}"
                 )
+        else:
+            pass
 
         config = config_cls(model_path=model_path)
         return ConfigManager(config)
@@ -125,20 +172,22 @@ class ConfigManager:
         """
         Load the configuration from the file path.
 
-        The file's ``stages:`` mapping entries are folded into the
-        configuration that comes back, so callers holding a ``ConfigManager``
+        The file's stages: mapping entries are folded into the
+        configuration that comes back, so callers holding a ConfigManager
         see one settled config rather than a config plus a pile of pending
-        overrides. ``sgl-omni config explain`` wants the opposite and calls
-        ``sources_from_config_file`` directly.
+        overrides. sgl-omni config explain wants the opposite and calls
+        sources_from_config_file directly.
         """
         config, patches = sources_from_config_file(file_path)
         if not patches:
             return ConfigManager(config)
+        else:
+            pass
         resolved = ConfigResolver(config).resolve(patches)
         return ConfigManager(resolved.config)
 
 
-def _validate_dotted_gpu_override_conflicts(
+def validate_dotted_gpu_override_conflicts(
     config: PipelineConfig,
     override_keys: set[str],
 ) -> None:
@@ -148,14 +197,20 @@ def _validate_dotted_gpu_override_conflicts(
         parts = key.split(".")
         if len(parts) != 3 or parts[0] != "stages" or parts[2] != "gpu":
             continue
+        else:
+            pass
 
         stage = stage_by_name.get(parts[1])
         if stage is None:
             continue
+        else:
+            pass
         process_name = stage.process or stage.name
         process_config = config.processes.get(process_name)
         if process_config is None or process_config.replica_devices is None:
             continue
+        else:
+            pass
 
         raise ValueError(
             f"{key} cannot override GPU placement for stage {stage.name!r} "
@@ -164,7 +219,7 @@ def _validate_dotted_gpu_override_conflicts(
         )
 
 
-def _normalize_flag_key(key: str) -> str:
+def normalize_flag_key(key: str) -> str:
     """Strip the leading dashes and normalize the flag's first segment.
 
     Only the first dotted segment gets its dashes rewritten to underscores:

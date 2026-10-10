@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 
 def create_sglang_whisper_asr_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "float16",
     max_running_requests: int = 64,
     max_new_tokens: int = 256,
@@ -18,7 +19,7 @@ def create_sglang_whisper_asr_executor(
     encoder_graph_batch_buckets: list[int] | None = None,
     request_build_max_workers: int = 8,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     request_build_max_pending: int | None = 16,
     prefill_coalesce_requests: int = 2,
     prefill_coalesce_wait_ms: float = 6.0,
@@ -31,7 +32,7 @@ def create_sglang_whisper_asr_executor(
     pre_lm_max_batch_size: int = 8,
     pre_lm_max_batch_wait_ms: int = 0,
     pre_lm_cache_pin_host_memory: bool = True,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
@@ -63,6 +64,7 @@ def create_sglang_whisper_asr_executor(
     ).build(
         model_path,
         device=device,
+        gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,
     )

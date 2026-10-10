@@ -15,7 +15,7 @@ from sglang_omni.client import ClientError
 from sglang_omni.client.types import SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_api import _create_speech_batch_with_disconnect_watch
+from sglang_omni.serve.openai_api import create_speech_batch_with_disconnect_watch
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 
 CONTEXT_LENGTH_ERROR = (
@@ -122,7 +122,7 @@ class CountingReferenceSpeechRequestValidator(SpeechRequestValidator):
         super().__init__(default_model="tts")
         self.reference_loads: list[str] = []
 
-    def _load_media_reference_descriptor(
+    def load_media_reference_descriptor(
         self, value: str, *, param: str
     ) -> dict[str, str]:
         self.reference_loads.append(value)
@@ -436,7 +436,18 @@ def test_batch_speech_rejects_non_positive_item_duration_fields(
     assert client_impl.requests == []
 
 
-def test_batch_speech_rejects_streaming_items() -> None:
+@pytest.mark.parametrize("response_format", ["wav", "pcm"])
+@pytest.mark.parametrize(
+    ("stream_fields", "error_param"),
+    [
+        ({"stream": True}, "stream"),
+        ({"stream_format": "sse"}, "stream_format"),
+        ({"stream": False, "stream_format": "sse"}, "stream_format"),
+    ],
+)
+def test_batch_speech_rejects_streaming_items(
+    response_format: str, stream_fields: dict[str, str | bool], error_param: str
+) -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
@@ -445,15 +456,42 @@ def test_batch_speech_rejects_streaming_items() -> None:
         json={
             "model": "tts",
             "voice": "default",
-            "items": [{"input": "one", "stream": True}],
+            "response_format": response_format,
+            "items": [
+                {"input": "one", **stream_fields},
+                {"input": "two"},
+            ],
         },
     )
 
     assert response.status_code == 200
-    item = response.json()["results"][0]
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (1, 1)
+    item = body["results"][0]
     assert item["status"] == "error"
-    assert item["error"]["param"] == "items.0.stream"
-    assert client_impl.requests == []
+    assert item["error"]["param"] == f"items.0.{error_param}"
+    assert item["error"]["message"] == (
+        "stream is not supported for batch speech requests"
+    )
+    assert body["results"][1]["status"] == "success"
+    assert [request.prompt for request in client_impl.requests] == ["two"]
+    assert client_impl.requests[0].stream is False
+
+
+@pytest.mark.parametrize("stream_format", ["audio", "unknown"])
+def test_batch_speech_ignores_non_sse_item_stream_format(stream_format: str) -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={"items": [{"input": "one", "stream_format": stream_format}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["succeeded"] == 1
+    assert [request.prompt for request in client_impl.requests] == ["one"]
+    assert client_impl.requests[0].stream is False
 
 
 def test_batch_speech_accepts_item_model_override() -> None:
@@ -589,7 +627,7 @@ def test_batch_speech_request_disconnect_aborts_started_items() -> None:
         request = DisconnectingBatchRequest(client_impl)
 
         with pytest.raises(asyncio.CancelledError):
-            await _create_speech_batch_with_disconnect_watch(
+            await create_speech_batch_with_disconnect_watch(
                 request,
                 client=client_impl,
                 speech_service=service,

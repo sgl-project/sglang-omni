@@ -6,6 +6,7 @@ import importlib.util
 import json
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +17,7 @@ RUNTIME_SCRIPT = REPO_ROOT / "tests/utils/tts_mps_runtime.py"
 OVERLAP_SCRIPT = REPO_ROOT / "tests/utils/tts_mps_overlap.py"
 
 
-def _load(path: Path, name: str):
+def load(path: Path, name: str):
     assert path.is_file(), f"{path.name} is missing"
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
@@ -27,7 +28,7 @@ def _load(path: Path, name: str):
 
 
 def test_launch_contract_is_one_gpu_dp2_without_weight_sharing(tmp_path: Path) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime")
     config = tmp_path / "config.yaml"
     config.write_text("config_cls: HiggsTtsPipelineConfig\n", encoding="utf-8")
     launcher = tmp_path / "examples/mps_dp/launch.sh"
@@ -58,7 +59,7 @@ def test_launch_contract_is_one_gpu_dp2_without_weight_sharing(tmp_path: Path) -
 def test_launch_spec_rejects_a_control_socket_over_the_sun_path_limit(
     tmp_path: Path,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_sun_path")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_sun_path")
     config = tmp_path / "config.yaml"
     config.write_text("config_cls: HiggsTtsPipelineConfig\n", encoding="utf-8")
     launcher = tmp_path / "examples/mps_dp/launch.sh"
@@ -84,7 +85,7 @@ def test_core_blocks_preserve_the_pci_domain(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_pci_domain")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_pci_domain")
     pci_devices = tmp_path / "pci"
     numa_nodes = tmp_path / "nodes"
     for domain, numa_node in (("0000", 0), ("0001", 1)):
@@ -101,7 +102,7 @@ def test_core_blocks_preserve_the_pci_domain(
     monkeypatch.setattr(
         runtime.subprocess,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(stdout="00000000:08:00.0\n"),
+        lambda *args, **_kwargs: SimpleNamespace(stdout="00000000:08:00.0\n"),
     )
     monkeypatch.setattr(
         runtime.os,
@@ -123,7 +124,7 @@ def test_core_blocks_keep_the_hard_minimum_when_the_node_is_small(
     tmp_path: Path,
     core_count: int,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, f"tts_mps_runtime_small_node_{core_count}")
+    runtime = load(RUNTIME_SCRIPT, f"tts_mps_runtime_small_node_{core_count}")
     pci_devices = tmp_path / "pci"
     numa_nodes = tmp_path / "nodes"
     device = pci_devices / "0000:08:00.0"
@@ -136,7 +137,7 @@ def test_core_blocks_keep_the_hard_minimum_when_the_node_is_small(
     monkeypatch.setattr(
         runtime.subprocess,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(stdout="00000000:08:00.0\n"),
+        lambda *args, **_kwargs: SimpleNamespace(stdout="00000000:08:00.0\n"),
     )
     monkeypatch.setattr(
         runtime.os,
@@ -158,7 +159,7 @@ def test_stale_launcher_state_is_archived_and_reconciled_before_launch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_stale_reconcile")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_stale_reconcile")
     config = tmp_path / "config.yaml"
     config.write_text("config_cls: HiggsTtsPipelineConfig\n", encoding="utf-8")
     launcher = tmp_path / "examples/mps_dp/launch.sh"
@@ -222,7 +223,7 @@ def test_stale_launcher_state_is_archived_and_reconciled_before_launch(
 def test_launcher_state_rejects_shared_weights_and_consumes_verified_kv(
     tmp_path: Path,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_state")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_state")
     state = tmp_path / "run-unit"
     logs = state / "logs"
     logs.mkdir(parents=True)
@@ -270,7 +271,7 @@ def test_launcher_state_rejects_shared_weights_and_consumes_verified_kv(
 
 
 def test_overlap_requires_repeated_server_monotonic_intervals() -> None:
-    overlap = _load(OVERLAP_SCRIPT, "tts_mps_overlap")
+    overlap = load(OVERLAP_SCRIPT, "tts_mps_overlap")
     events = []
     for replica, intervals in {
         0: [(100, 500), (600, 1000)],
@@ -329,7 +330,7 @@ def test_overlap_requires_repeated_server_monotonic_intervals() -> None:
 def test_atomic_summary_validation_rejects_dirty_or_partial_evidence(
     tmp_path: Path,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_summary")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_summary")
     summary = runtime.new_summary(
         exact_sha="a" * 40,
         run_id="run-unit",
@@ -362,7 +363,7 @@ def test_scheduler_model_path_activity_is_monotonic_and_default_off(
 
     path = recorder.start("run-unit", str(tmp_path), "tts_engine")
     monkeypatch.setattr(event_recorder.time, "monotonic_ns", lambda: 123456)
-    monkeypatch.setattr(event_recorder, "_read_host_boot_id", lambda: "boot-test")
+    monkeypatch.setattr(event_recorder, "read_host_boot_id", lambda: "boot-test")
     event_recorder.emit_model_path_start("request-on")
     event_recorder.emit_model_path_end("request-on", status="success")
     recorder.stop()
@@ -423,7 +424,7 @@ def test_profile_start_waits_for_each_engine_process_recorder(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_profile_start")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_profile_start")
     snapshot = SimpleNamespace(
         state_dir=tmp_path,
         replicas=(SimpleNamespace(index=0), SimpleNamespace(index=1)),
@@ -451,7 +452,7 @@ def test_activity_reader_waits_for_all_terminal_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_profile_stop")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_profile_stop")
     snapshot = SimpleNamespace(
         state_dir=tmp_path,
         replicas=(SimpleNamespace(index=0), SimpleNamespace(index=1)),
@@ -493,7 +494,7 @@ def test_activity_reader_does_not_count_failed_terminal_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_failed_terminal")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_failed_terminal")
     snapshot = SimpleNamespace(state_dir=tmp_path, replicas=())
     events = [
         {
@@ -504,7 +505,7 @@ def test_activity_reader_does_not_count_failed_terminal_events(
     ]
     monkeypatch.setattr(
         runtime,
-        "_read_model_path_activity_once",
+        "read_model_path_activity_once",
         lambda _snapshot: events,
     )
 
@@ -517,7 +518,7 @@ def test_activity_reader_does_not_count_failed_terminal_events(
 
 
 def test_canary_request_counts_require_every_request_to_succeed() -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_request_counts")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_request_counts")
     assert runtime.require_exact_request_counts(
         {
             "total_requests": 8,
@@ -546,13 +547,14 @@ def test_managed_router_lifecycle_accepts_two_external_mps_workers(
     tmp_path: Path,
 ) -> None:
     from tests.test_model import omni_router_utils
+    from tests.test_model.rust_router_config import CiRouterTopology
 
     command: list[str] = []
     process = SimpleNamespace(pid=123)
     monkeypatch.setattr(
         omni_router_utils,
         "start_server_from_cmd",
-        lambda cmd, *_args, **_kwargs: command.extend(cmd) or process,
+        lambda cmd, *args, **_kwargs: command.extend(cmd) or process,
     )
     monkeypatch.setattr(
         omni_router_utils.os,
@@ -560,13 +562,20 @@ def test_managed_router_lifecycle_accepts_two_external_mps_workers(
         lambda _pid: 123,
         raising=False,
     )
+    router_binary = tmp_path / "sgl-omni-router"
+    router_binary.touch(mode=0o755)
+    monkeypatch.setattr(
+        omni_router_utils,
+        "rust_router_binary",
+        lambda: router_binary,
+    )
     for name in (
-        "_record_process_group",
+        "record_process_group",
         "wait_for_all_router_workers",
         "stop_server",
         "cleanup_process_groups_from_manifest",
     ):
-        monkeypatch.setattr(omni_router_utils, name, lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(omni_router_utils, name, lambda *args, **_kwargs: None)
 
     factory = SimpleNamespace(mktemp=lambda _name: tmp_path)
     worker_urls = ["http://127.0.0.1:8801", "http://127.0.0.1:8802"]
@@ -575,18 +584,25 @@ def test_managed_router_lifecycle_accepts_two_external_mps_workers(
         model_path="unused-for-external-workers",
         model_name="model-under-test",
         worker_extra_args="",
+        router_topology=CiRouterTopology.TTS,
         external_worker_urls=worker_urls,
         wait_timeout=30,
     ) as handle:
         assert handle.worker_ports == [8801, 8802]
+        assert handle.router_config is not None
+        router_config = tomllib.loads(handle.router_config.read_text(encoding="utf-8"))
 
-    worker_index = command.index("--worker-urls")
-    assert command[worker_index + 1 : worker_index + 3] == worker_urls
-    assert command[command.index("--model") + 1] == "model-under-test"
-    assert "--launcher-config" not in command
+    assert command == [str(router_binary), "--config", str(handle.router_config)]
+    assert [worker["base_url"] for worker in router_config["workers"]] == [
+        f"{url}/" for url in worker_urls
+    ]
+    assert all(
+        worker["default_model_id"] == "model-under-test"
+        for worker in router_config["workers"]
+    )
 
 
-def _healthy_mps_summary() -> dict:
+def healthy_mps_summary() -> dict:
     from benchmarks.benchmarker.data import RequestResult
     from benchmarks.metrics.performance import compute_speed_metrics
 
@@ -620,12 +636,12 @@ def test_mps_performance_fails_closed_on_an_uncalibrated_reference(
     verdict = tts_mps_ci_config.check_mps_performance(
         model="higgs",
         concurrency=tts_mps_ci_config.MPS_CONCURRENCY,
-        summary=_healthy_mps_summary(),
+        summary=healthy_mps_summary(),
     )
 
     assert verdict["status"] == "fail"
     assert verdict["uncalibrated"] == ["throughput_qps"]
-    assert any("tune-ci-thresholds" in check for check in verdict["failed_checks"])
+    assert any("calibrate-h100-ci" in check for check in verdict["failed_checks"])
 
 
 def test_shipped_mps_references_are_all_calibrated() -> None:
@@ -645,7 +661,7 @@ def test_mps_performance_applies_slack_to_calibrated_references(
 ) -> None:
     from tests.test_ci import tts_mps_ci_config
 
-    healthy = _healthy_mps_summary()
+    healthy = healthy_mps_summary()
     calibrated = {
         "higgs": {
             "throughput_qps": (healthy["throughput_qps"], "minimum", "req/s"),
@@ -678,8 +694,22 @@ def test_mps_performance_applies_slack_to_calibrated_references(
     assert any("throughput_qps" in check for check in verdict["failed_checks"])
 
 
+def test_similarity_floor_applies_slack_and_fails_closed_when_uncalibrated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_ci import tts_mps_ci_config
+
+    monkeypatch.setitem(tts_mps_ci_config.MPS_SIMILARITY_MEAN_MIN, "higgs", 66.0)
+    monkeypatch.setitem(tts_mps_ci_config.MPS_SIMILARITY_MEAN_MIN, "moss", None)
+
+    floor = tts_mps_ci_config.similarity_floor("higgs")
+    assert floor == pytest.approx(66.0 * tts_mps_ci_config.MPS_SIMILARITY_SLACK)
+    assert 60.0 < floor < 66.0
+    assert tts_mps_ci_config.similarity_floor("moss") is None
+
+
 def test_gpu_client_delta_flags_only_clients_created_by_the_mps_stage() -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_gpu")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_gpu")
     baseline = [
         {"gpu_uuid": "GPU-0", "pid": 10, "process_name": "foreign"},
     ]
@@ -707,7 +737,7 @@ def test_gpu_client_delta_flags_only_clients_created_by_the_mps_stage() -> None:
 
 
 def test_dirty_cleanup_verdict_is_not_treated_as_success() -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_cleanup")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_cleanup")
     dirty = {
         "status": "dirty",
         "checks": {"tracked_processes_exited": False},
@@ -726,7 +756,7 @@ def test_dirty_cleanup_verdict_is_not_treated_as_success() -> None:
 def test_gpu_client_cleanup_waits_for_nvml_to_settle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = _load(RUNTIME_SCRIPT, "tts_mps_runtime_settle")
+    runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_settle")
     baseline = [{"gpu_uuid": "GPU-0", "pid": 10, "process_name": "foreign"}]
     lingering = [
         *baseline,

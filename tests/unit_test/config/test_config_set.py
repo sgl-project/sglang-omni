@@ -276,8 +276,8 @@ class TestStageDefaults:
         ]
 
     def test_the_false_engine_selector_matches_non_engine_stages_only(
-        self, pipeline_config
-    ):
+        self, pipeline_config: PipelineConfig
+    ) -> None:
         patches = patches_from_shared_block(
             [{"select": {"engine": False}, "factory": {"max_seq_len": 4096}}],
             type(pipeline_config),
@@ -366,7 +366,7 @@ class TestStageDefaults:
 
     @pytest.mark.parametrize("exclude", [False, 0, "", None])
     def test_a_falsy_non_list_exclusion_is_refused(
-        self, pipeline_config, exclude
+        self, pipeline_config: PipelineConfig, exclude: bool | int | str | None
     ) -> None:
         """A mistyped exclusion must not silently select every stage."""
         with pytest.raises(ValueError, match="exclude must be a list"):
@@ -445,7 +445,7 @@ class TestPerStageTypedGroup:
     treatment to a field declared on the shared group, scoped to one stage."""
 
     @staticmethod
-    def _pipeline_cls():
+    def pipeline_cls():
         from typing import ClassVar
 
         from pydantic import Field
@@ -476,7 +476,7 @@ class TestPerStageTypedGroup:
         return TypedGroupPipelineConfig
 
     def test_the_declared_range_is_enforced_at_resolution(self):
-        cls = self._pipeline_cls()
+        cls = self.pipeline_cls()
         config = cls(model_path="dummy")
         with pytest.raises(ValueError, match="stream_slots"):
             ConfigManager(config).merge_config(
@@ -484,7 +484,7 @@ class TestPerStageTypedGroup:
             )
 
     def test_the_lossless_conversion_rule_applies(self):
-        cls = self._pipeline_cls()
+        cls = self.pipeline_cls()
         config = cls(model_path="dummy")
         with pytest.raises(ConfigPathError, match="got a boolean"):
             ConfigManager(config).merge_config(
@@ -492,9 +492,31 @@ class TestPerStageTypedGroup:
             )
 
     def test_a_legal_value_lands_on_the_typed_field(self):
-        cls = self._pipeline_cls()
+        cls = self.pipeline_cls()
         config = cls(model_path="dummy")
         merged = ConfigManager(config).merge_config(
             [("vocoder.factory.stream_slots", "8")]
         )
         assert merged.stage_named("vocoder").factory.stream_slots == 8
+
+
+def test_placement_owned_factory_keys_are_rejected_at_config_validation():
+    """factory.gpu_id would silently override the planner's placement; the
+    final config (initial construction and every patch rebuild) refuses it."""
+    import pytest
+
+    from sglang_omni.config.schema import PipelineConfig, StageConfig
+
+    with pytest.raises(ValueError, match="owned by placement"):
+        PipelineConfig(
+            model_path="dummy-model",
+            stages=[
+                StageConfig(
+                    name="s",
+                    factory_path="tests.unit_test.fixtures.pipeline_fakes.runtime_factory",
+                    factory={"gpu_id": 4},
+                    gpu=0,
+                    terminal=True,
+                )
+            ],
+        )

@@ -25,7 +25,8 @@ def test_custom_voice_config_uses_engine_checkpoint_metadata(
     download = Mock(side_effect=AssertionError("Local checkpoint must not use HF"))
     monkeypatch.setattr("huggingface_hub.hf_hub_download", download)
     config = Qwen3TTSPipelineConfig(model_path=str(root))
-    config.stages[1].factory = config.stages[1].factory.model_copy(
+    engine_stage = config.stage_named("tts_engine")
+    engine_stage.factory = engine_stage.factory.model_copy(
         update={"model_path": str(engine)}
     )
     monkeypatch.setattr(

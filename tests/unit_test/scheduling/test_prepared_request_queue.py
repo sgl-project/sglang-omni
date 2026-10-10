@@ -4,14 +4,14 @@
 from sglang_omni.scheduling.prepared_request_queue import PreparedRequestQueue
 
 
-def _active_queue() -> PreparedRequestQueue:
+def active_queue() -> PreparedRequestQueue:
     q: PreparedRequestQueue = PreparedRequestQueue()
     q.set_context(object())
     return q
 
 
 def test_begin_then_publish_stores_and_pop_returns():
-    q = _active_queue()
+    q = active_queue()
     assert q.begin("a") is not None
     assert "a" in q.snapshot().inflight
     assert q.publish("a", "PREP-a") is True
@@ -21,7 +21,7 @@ def test_begin_then_publish_stores_and_pop_returns():
 
 
 def test_abort_while_inflight_then_publish_drops():
-    q = _active_queue()
+    q = active_queue()
     q.begin("a")
     q.abort("a")
     assert "a" in q.snapshot().aborted
@@ -31,7 +31,7 @@ def test_abort_while_inflight_then_publish_drops():
 
 
 def test_abort_published_drops_it():
-    q = _active_queue()
+    q = active_queue()
     q.begin("a")
     q.publish("a", "PREP-a")
     assert "a" in q.snapshot().prepared
@@ -41,7 +41,7 @@ def test_abort_published_drops_it():
 
 
 def test_abort_unknown_request_is_noop():
-    q = _active_queue()
+    q = active_queue()
     q.abort("ghost")
     assert not q.snapshot().aborted
     assert not q.snapshot().inflight
@@ -49,7 +49,7 @@ def test_abort_unknown_request_is_noop():
 
 
 def test_fail_inflight_discards_and_stores_nothing():
-    q = _active_queue()
+    q = active_queue()
     q.begin("a")
     q.fail_inflight("a")
     assert not q.snapshot().inflight
@@ -58,7 +58,7 @@ def test_fail_inflight_discards_and_stores_nothing():
 
 
 def test_set_and_clear_context_reset_state():
-    q = _active_queue()
+    q = active_queue()
     q.begin("a")
     q.publish("a", "PREP-a")
     q.begin("b")
@@ -85,13 +85,13 @@ def test_begin_without_context_returns_none_and_no_inflight():
 
 
 def test_publish_without_begin_drops():
-    q = _active_queue()
+    q = active_queue()
     assert q.publish("a", "PREP-a") is False
     assert "a" not in q.snapshot().prepared
 
 
 def test_publish_after_reset_drops():
-    q = _active_queue()
+    q = active_queue()
     q.begin("a")
     q.set_context(object())
     assert q.publish("a", "PREP-a") is False

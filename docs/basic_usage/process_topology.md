@@ -83,9 +83,14 @@ unaffected and stay on the host.
 
 A GPU Process with `num_replicas > 1` must declare `replica_devices`: `N`
 device ids for a non-TP Process, `N x T` for a Process with TP size `T`. Every
-GPU stage in that Process must also come from a factory that declares a
-`gpu_id` parameter, otherwise startup refuses the placement by name; not all
-model stages do yet.
+GPU stage factory declares `device: str | None = None` and
+`gpu_id: int | None = None` and resolves them through
+`sglang_omni.utils.device.resolve_concrete_device`, so any GPU stage can be
+replicated; a factory that lacks `gpu_id` is refused at startup by name, and
+`tests/unit_test/test_stage_device_contract.py` keeps every model on that
+contract. Configs never set `factory.gpu_id`; a `factory.device` names a
+device type only (for example `cpu` to keep a stage on the host) and must not
+carry an index — the card comes from `stage.gpu` or `replica_devices`.
 Different replicas may repeat a device id, which is how same-GPU data
 parallelism is expressed:
 

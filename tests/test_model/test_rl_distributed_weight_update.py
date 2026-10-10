@@ -29,7 +29,7 @@ import time
 import pytest
 import requests
 
-from tests.unit_test._util.process import _wait_for, _wait_for_process_line
+from tests.unit_test._util.process import wait_for, wait_for_process_line
 
 HF_TTS_MODEL = "bosonai/higgs-audio-v3-tts-4b"
 BASE_CACHE_DIRNAME = "models--boson-sglang--higgs-audio-v3-generation-4B-base"
@@ -40,26 +40,24 @@ MASTER_PORT = int(os.environ.get("OMNI_E2E_MASTER_PORT", "29570"))
 GROUP_NAME = "rl_e2e_weight_update_group"
 
 
-def _hf_hub_root() -> str:
+def hf_hub_root() -> str:
     return os.path.join(
         os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "hub"
     )
 
 
-def _resolve_snapshot(cache_dirname: str) -> str | None:
-    for snap in glob.glob(
-        os.path.join(_hf_hub_root(), cache_dirname, "snapshots", "*")
-    ):
+def resolve_snapshot(cache_dirname: str) -> str | None:
+    for snap in glob.glob(os.path.join(hf_hub_root(), cache_dirname, "snapshots", "*")):
         if glob.glob(os.path.join(snap, "*.safetensors")):
             return snap
     return None
 
 
-def _resolve_base_dir() -> str | None:
-    return _resolve_snapshot(BASE_CACHE_DIRNAME)
+def resolve_base_dir() -> str | None:
+    return resolve_snapshot(BASE_CACHE_DIRNAME)
 
 
-def _two_gpus() -> bool:
+def two_gpus() -> bool:
     try:
         import torch
 
@@ -71,7 +69,7 @@ def _two_gpus() -> bool:
 pytestmark = pytest.mark.accelerator
 
 
-def _run_trainer() -> None:
+def run_trainer() -> None:
     os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
     os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
     import torch
@@ -121,9 +119,9 @@ def _run_trainer() -> None:
         pass
 
 
-def _boot_server(model_path: str, port: int, gpu: int, timeout: int = 600):
+def boot_server(model_path: str, port: int, gpu: int, timeout: int = 600):
     # Own process group: proc.kill() leaves the per-stage children leaking GPU
-    # memory; start_new_session + killpg (see _kill_server) reaps the whole tree.
+    # memory; start_new_session + killpg (see kill_server) reaps the whole tree.
     env = dict(
         os.environ,
         CUDA_VISIBLE_DEVICES=str(gpu),
@@ -147,21 +145,21 @@ def _boot_server(model_path: str, port: int, gpu: int, timeout: int = 600):
     )
     url = f"http://localhost:{port}"
 
-    def _ready() -> bool:
+    def ready() -> bool:
         try:
             return requests.get(f"{url}/model_info", timeout=5).status_code == 200
         except Exception:
             return False
 
-    if not _wait_for(_ready, timeout=timeout):
-        _kill_server(proc)
+    if not wait_for(ready, timeout=timeout):
+        kill_server(proc)
         pytest.fail(
             f"omni server ({model_path}) did not become ready within {timeout}s"
         )
     return proc, url
 
 
-def _kill_server(proc) -> None:
+def kill_server(proc) -> None:
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except Exception:
@@ -172,7 +170,7 @@ def _kill_server(proc) -> None:
         pass
 
 
-def _tts_checksums(url: str) -> dict:
+def tts_checksums(url: str) -> dict:
     r = requests.post(
         f"{url}/weights_checker", json={"action": "checksum"}, timeout=600
     )
@@ -184,23 +182,23 @@ def _tts_checksums(url: str) -> dict:
 
 
 def test_distributed_refit_matches_base_and_keeps_serving(tmp_path):
-    base_dir = _resolve_base_dir()
-    if not (base_dir and _resolve_snapshot(INSTRUCT_CACHE_DIRNAME) and _two_gpus()):
+    base_dir = resolve_base_dir()
+    if not (base_dir and resolve_snapshot(INSTRUCT_CACHE_DIRNAME) and two_gpus()):
         pytest.skip(
             "requires 2 GPUs + Higgs 4B-base and 4B-instruct checkpoints in the HF cache"
         )
 
-    proc_b, url_b = _boot_server(base_dir, BASE_REF_PORT, gpu=1)
+    proc_b, url_b = boot_server(base_dir, BASE_REF_PORT, gpu=1)
     try:
-        base_ck = _tts_checksums(url_b)
+        base_ck = tts_checksums(url_b)
     finally:
-        _kill_server(proc_b)
+        kill_server(proc_b)
     assert base_ck, "base reference server returned no tts_engine checksums"
 
-    proc_i, url_i = _boot_server(HF_TTS_MODEL, SERVER_PORT, gpu=1)
+    proc_i, url_i = boot_server(HF_TTS_MODEL, SERVER_PORT, gpu=1)
     trainer = None
     try:
-        instruct_ck = _tts_checksums(url_i)
+        instruct_ck = tts_checksums(url_i)
         target = [n for n in base_ck if base_ck.get(n) != instruct_ck.get(n)]
         assert (
             len(target) > 50
@@ -225,8 +223,8 @@ def test_distributed_refit_matches_base_and_keeps_serving(tmp_path):
             text=True,
             bufsize=1,
         )
-        _wait_for_process_line(trainer, "MANIFEST_WRITTEN", timeout=180)
-        _wait_for_process_line(trainer, "RENDEZVOUS_START", timeout=30)
+        wait_for_process_line(trainer, "MANIFEST_WRITTEN", timeout=180)
+        wait_for_process_line(trainer, "RENDEZVOUS_START", timeout=30)
         with open(manifest) as fh:
             spec = json.load(fh)
 
@@ -244,7 +242,7 @@ def test_distributed_refit_matches_base_and_keeps_serving(tmp_path):
             timeout=180,
         )
         assert r.status_code == 200 and r.json()["success"], r.text
-        _wait_for_process_line(trainer, "RENDEZVOUS_OK", timeout=180)
+        wait_for_process_line(trainer, "RENDEZVOUS_OK", timeout=180)
 
         t0 = time.perf_counter()
         r = requests.post(
@@ -265,7 +263,7 @@ def test_distributed_refit_matches_base_and_keeps_serving(tmp_path):
             flush=True,
         )
 
-        refit_ck = _tts_checksums(url_i)
+        refit_ck = tts_checksums(url_i)
         changed = [n for n in refit_ck if refit_ck.get(n) != instruct_ck.get(n)]
         assert len(changed) >= len(target) - 32, (
             f"refit changed only {len(changed)} params but base differs from instruct on "
@@ -297,11 +295,11 @@ def test_distributed_refit_matches_base_and_keeps_serving(tmp_path):
                 trainer.wait(timeout=120)
             except Exception:
                 trainer.kill()
-        _kill_server(proc_i)
+        kill_server(proc_i)
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "trainer":
-        _run_trainer()
+        run_trainer()
     else:
         raise SystemExit("run via pytest; 'trainer' subcommand is internal")

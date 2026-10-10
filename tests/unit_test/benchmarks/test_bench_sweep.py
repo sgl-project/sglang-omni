@@ -15,7 +15,7 @@ from benchmarks.eval.bench_sweep import (
 )
 
 
-def _write_result(stage_dir, i, qps=1.0):
+def write_result(stage_dir, i, qps=1.0):
     cdir = stage_dir / f"client{i}"
     cdir.mkdir(parents=True)
     (cdir / "speed_results.json").write_text(
@@ -75,22 +75,22 @@ def test_fresh_dir_fails_loudly_on_readonly_parent(tmp_path):
 
 
 def test_nonzero_exit_invalidates_the_whole_stage(tmp_path):
-    _write_result(tmp_path, 0)
-    _write_result(tmp_path, 1)
+    write_result(tmp_path, 0)
+    write_result(tmp_path, 1)
     results, invalid = _collect_stage(str(tmp_path), 2, [0, 3])
     assert results is None
     assert "exit codes" in invalid
 
 
 def test_missing_result_invalidates_the_whole_stage(tmp_path):
-    _write_result(tmp_path, 0)
+    write_result(tmp_path, 0)
     results, invalid = _collect_stage(str(tmp_path), 2, [0, 0])
     assert results is None
     assert "client1 result unreadable" in invalid
 
 
 def test_corrupt_result_invalidates_the_whole_stage(tmp_path):
-    _write_result(tmp_path, 0)
+    write_result(tmp_path, 0)
     cdir = tmp_path / "client1"
     cdir.mkdir()
     (cdir / "speed_results.json").write_text("{truncated", encoding="utf-8")
@@ -100,8 +100,8 @@ def test_corrupt_result_invalidates_the_whole_stage(tmp_path):
 
 
 def test_complete_stage_collects_and_aggregates(tmp_path):
-    _write_result(tmp_path, 0, qps=1.5)
-    _write_result(tmp_path, 1, qps=2.5)
+    write_result(tmp_path, 0, qps=1.5)
+    write_result(tmp_path, 1, qps=2.5)
     results, invalid = _collect_stage(str(tmp_path), 2, [0, 0])
     assert invalid is None
     stage = _stage_metrics(8.0, 10.0, results)

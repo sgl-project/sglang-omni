@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
+import msgpack
 import numpy as np
 import pytest
 import torch
@@ -16,8 +17,8 @@ from sglang_omni.models.fun_cosyvoice3 import request_builders
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3PreparedRequest,
+    CosyVoice3ReferenceEncodeHook,
     CosyVoice3SGLangRequestData,
-    _CosyVoice3ReferenceEncodeHook,
     apply_sglang_cosyvoice3_result,
     build_cosyvoice3_state,
     build_generation_kwargs,
@@ -29,7 +30,7 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     set_cosyvoice3_preprocessing_context,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 
@@ -47,7 +48,7 @@ def stable_sampling_params(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     clear_cosyvoice3_preprocessing_context()
 
 
-def _payload(
+def make_payload(
     inputs: Any,
     *,
     params: dict[str, Any] | None = None,
@@ -67,7 +68,7 @@ def _payload(
 
 def test_build_cosyvoice3_state_merges_input_params_and_tts_metadata() -> None:
     state = build_cosyvoice3_state(
-        _payload(
+        make_payload(
             {"text": "你好", "ref_audio": "reference.wav", "ref_text": "原文"},
             params={"language": "en", "stream": True, "speed": 1.1, "seed": 4},
             tts_params={"language": "zh", "max_new_tokens": 64},
@@ -89,7 +90,7 @@ def test_build_cosyvoice3_state_merges_input_params_and_tts_metadata() -> None:
 
 
 def test_build_cosyvoice3_state_accepts_plain_text_input() -> None:
-    state = build_cosyvoice3_state(_payload("hello", params={"language": ""}))
+    state = build_cosyvoice3_state(make_payload("hello", params={"language": ""}))
     assert state.text == "hello"
     assert state.language == "auto"
     assert state.ref_audio is None
@@ -98,7 +99,7 @@ def test_build_cosyvoice3_state_accepts_plain_text_input() -> None:
 
 def test_build_cosyvoice3_state_accepts_structured_reference() -> None:
     state = build_cosyvoice3_state(
-        _payload(
+        make_payload(
             {
                 "text": "hello",
                 "references": [{"audio_path": "reference.wav", "text": "reference"}],
@@ -113,7 +114,7 @@ def test_build_cosyvoice3_state_accepts_structured_reference() -> None:
 def test_build_cosyvoice3_state_rejects_multiple_references() -> None:
     with pytest.raises(ValueError, match="exactly one reference"):
         build_cosyvoice3_state(
-            _payload(
+            make_payload(
                 {
                     "text": "hello",
                     "references": [{"audio_path": "a.wav"}, {"audio_path": "b.wav"}],
@@ -125,7 +126,7 @@ def test_build_cosyvoice3_state_rejects_multiple_references() -> None:
 def test_build_cosyvoice3_state_rejects_reference_text_and_instructions() -> None:
     with pytest.raises(ValueError, match="either ref_text or instructions"):
         build_cosyvoice3_state(
-            _payload(
+            make_payload(
                 {
                     "text": "hello",
                     "ref_audio": "reference.wav",
@@ -143,13 +144,13 @@ def test_build_cosyvoice3_state_rejects_reference_text_and_instructions() -> Non
 def test_build_cosyvoice3_state_normalizes_sampling_seed(
     public_seed: int, normalized_seed: int
 ) -> None:
-    state = build_cosyvoice3_state(_payload("hello", params={"seed": public_seed}))
+    state = build_cosyvoice3_state(make_payload("hello", params={"seed": public_seed}))
     assert state.seed == normalized_seed
 
 
 def test_build_cosyvoice3_state_rejects_non_integer_sampling_seed() -> None:
     with pytest.raises(ValueError, match="seed must be an integer"):
-        build_cosyvoice3_state(_payload("hello", params={"seed": 1.5}))
+        build_cosyvoice3_state(make_payload("hello", params={"seed": 1.5}))
 
 
 def test_cosyvoice3_reference_cache_reuses_audio_derived_tensors(
@@ -165,28 +166,28 @@ def test_cosyvoice3_reference_cache_reuses_audio_derived_tensors(
         calls["audio_24k"] += 1
         return np.zeros(2400, dtype=np.float32)
 
-    class _CountingSpeechTokenizer(_FakeSpeechTokenizer):
+    class CountingSpeechTokenizer(FakeSpeechTokenizer):
         def extract_speech_token(self, audio, sample_rate):
             calls["speech"] += 1
             return super().extract_speech_token(audio, sample_rate)
 
-    class _CountingSpeakerEncoder(_FakeSpeakerEncoder):
+    class CountingSpeakerEncoder(FakeSpeakerEncoder):
         def extract_embedding(self, audio, sample_rate):
             calls["speaker"] += 1
             return super().extract_embedding(audio, sample_rate)
 
-    monkeypatch.setattr(request_builders, "_load_prompt_audio", load_16k)
-    monkeypatch.setattr(request_builders, "_load_prompt_audio_24k", load_24k)
+    monkeypatch.setattr(request_builders, "load_prompt_audio", load_16k)
+    monkeypatch.setattr(request_builders, "load_prompt_audio_24k", load_24k)
     monkeypatch.setattr(
         request_builders,
         "extract_prompt_speech_feat",
         lambda audio, sample_rate: torch.ones(1, 4, 80),
     )
 
-    hook = _CosyVoice3ReferenceEncodeHook(model=_FakeModel(), model_revision="test")
+    hook = CosyVoice3ReferenceEncodeHook(model=FakeModel(), model_revision="test")
     hook.bind_encoders(
-        speech_tokenizer=_CountingSpeechTokenizer(),
-        speaker_encoder=_CountingSpeakerEncoder(),
+        speech_tokenizer=CountingSpeechTokenizer(),
+        speaker_encoder=CountingSpeakerEncoder(),
     )
     service = ReferenceEncodeService(hook, max_items=4, max_bytes=1 << 20)
 
@@ -204,11 +205,11 @@ def test_cosyvoice3_reference_cache_normalizes_equivalent_data_uris() -> None:
     first = "data:audio/wav;base64,QUJD"
     second = "data:audio/x-wav;base64,QUJD"
 
-    assert request_builders._cosyvoice3_reference_input_key(first) == (
-        request_builders._cosyvoice3_reference_input_key(second)
+    assert request_builders.cosyvoice3_reference_input_key(first) == (
+        request_builders.cosyvoice3_reference_input_key(second)
     )
     assert (
-        request_builders._cosyvoice3_reference_input_key(
+        request_builders.cosyvoice3_reference_input_key(
             "https://example.com/reference.wav"
         )
         is None
@@ -222,12 +223,12 @@ def test_cosyvoice3_reference_cache_separates_audio_content(
 
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio",
+        "load_prompt_audio",
         lambda source: np.zeros(1600, dtype=np.float32),
     )
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio_24k",
+        "load_prompt_audio_24k",
         lambda source: np.zeros(2400, dtype=np.float32),
     )
     monkeypatch.setattr(
@@ -236,16 +237,16 @@ def test_cosyvoice3_reference_cache_separates_audio_content(
         lambda audio, sample_rate: torch.ones(1, 4, 80),
     )
 
-    class _SpeechTokenizer(_FakeSpeechTokenizer):
+    class SpeechTokenizer(FakeSpeechTokenizer):
         def extract_speech_token(self, audio, sample_rate):
             nonlocal calls
             calls += 1
             return super().extract_speech_token(audio, sample_rate)
 
-    hook = _CosyVoice3ReferenceEncodeHook(model=_FakeModel(), model_revision="test")
+    hook = CosyVoice3ReferenceEncodeHook(model=FakeModel(), model_revision="test")
     hook.bind_encoders(
-        speech_tokenizer=_SpeechTokenizer(),
-        speaker_encoder=_FakeSpeakerEncoder(),
+        speech_tokenizer=SpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
     )
     service = ReferenceEncodeService(hook, max_items=4, max_bytes=1 << 20)
 
@@ -264,12 +265,12 @@ def test_cosyvoice3_reference_cache_retries_after_encode_failure(
 
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio",
+        "load_prompt_audio",
         lambda source: np.zeros(1600, dtype=np.float32),
     )
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio_24k",
+        "load_prompt_audio_24k",
         lambda source: np.zeros(2400, dtype=np.float32),
     )
     monkeypatch.setattr(
@@ -278,7 +279,7 @@ def test_cosyvoice3_reference_cache_retries_after_encode_failure(
         lambda audio, sample_rate: torch.ones(1, 4, 80),
     )
 
-    class _RetrySpeechTokenizer(_FakeSpeechTokenizer):
+    class RetrySpeechTokenizer(FakeSpeechTokenizer):
         def extract_speech_token(self, audio, sample_rate):
             nonlocal attempts
             attempts += 1
@@ -286,10 +287,10 @@ def test_cosyvoice3_reference_cache_retries_after_encode_failure(
                 raise RuntimeError("temporary tokenizer failure")
             return super().extract_speech_token(audio, sample_rate)
 
-    hook = _CosyVoice3ReferenceEncodeHook(model=_FakeModel(), model_revision="test")
+    hook = CosyVoice3ReferenceEncodeHook(model=FakeModel(), model_revision="test")
     hook.bind_encoders(
-        speech_tokenizer=_RetrySpeechTokenizer(),
-        speaker_encoder=_FakeSpeakerEncoder(),
+        speech_tokenizer=RetrySpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
     )
     service = ReferenceEncodeService(hook, max_items=4, max_bytes=1 << 20)
 
@@ -309,7 +310,7 @@ def test_generation_kwargs_omit_implicit_sampling_defaults_but_keep_explicit_val
         "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
-        "repetition_penalty": 1.1,
+        "repetition_penalty": 1.21,
         "do_sample": False,
         "max_new_tokens": 12,
     }
@@ -327,7 +328,7 @@ def test_generation_kwargs_omit_implicit_sampling_defaults_but_keep_explicit_val
     }
 
 
-class _FakeTokenizer:
+class FakeTokenizer:
     def __call__(self, text: str) -> torch.Tensor:
         if text == "hello":
             return torch.tensor([[1, 2]], dtype=torch.int32)
@@ -337,20 +338,20 @@ class _FakeTokenizer:
         return torch.tensor([[3, 4, 5]], dtype=torch.int32)
 
 
-class _FakeSpeechTokenizer:
+class FakeSpeechTokenizer:
     def extract_speech_token(self, audio, sample_rate):
         assert sample_rate == 16000
         assert audio.shape == (1600,)
         return torch.tensor([[40, 41]], dtype=torch.int32)
 
 
-class _FakeSpeakerEncoder:
+class FakeSpeakerEncoder:
     def extract_embedding(self, audio, sample_rate):
         assert sample_rate == 16000
         return torch.full((1, 192), 2.0)
 
 
-class _FakeModel(torch.nn.Module):
+class FakeModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
@@ -363,17 +364,19 @@ class _FakeModel(torch.nn.Module):
         )
 
 
+@pytest.mark.parametrize("repetition_penalty", [None, 1.1, 1.21])
 def test_preprocess_and_build_request_share_prepared_state(
     monkeypatch: pytest.MonkeyPatch,
+    repetition_penalty: float | None,
 ) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio",
+        "load_prompt_audio",
         lambda source: torch.zeros(1600).numpy(),
     )
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio_24k",
+        "load_prompt_audio_24k",
         lambda source: torch.zeros(2400).numpy(),
     )
     monkeypatch.setattr(
@@ -381,25 +384,46 @@ def test_preprocess_and_build_request_share_prepared_state(
         "extract_prompt_speech_feat",
         lambda audio, sample_rate: torch.ones(1, 2, 80),
     )
-    model = _FakeModel()
+    model = FakeModel()
     set_cosyvoice3_preprocessing_context(
         model=model,
-        tokenizer=_FakeTokenizer(),
-        speech_tokenizer=_FakeSpeechTokenizer(),
-        speaker_encoder=_FakeSpeakerEncoder(),
+        tokenizer=FakeTokenizer(),
+        speech_tokenizer=FakeSpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
     )
-    payload = _payload(
+    payload = make_payload(
         {"text": "hello", "ref_audio": "reference.wav"},
-        params={"max_new_tokens": 5, "do_sample": False, "seed": 7},
+        params={
+            "max_new_tokens": 5,
+            "do_sample": False,
+            "seed": 7,
+            **(
+                {}
+                if repetition_penalty is None
+                else {"repetition_penalty": repetition_penalty}
+            ),
+        },
+        tts_params=(
+            {}
+            if repetition_penalty is None
+            else {"explicit_generation_params": ["repetition_penalty"]}
+        ),
     )
 
     prepared_payload = preprocess_cosyvoice3_payload(payload)
     assert (
-        prepared_payload.data[request_builders._COSYVOICE3_PREPARED_MARKER]
+        prepared_payload.data[
+            request_builders._COSYVOICE3_PREPARED_MARKER
+        ]  # noqa: leading-underscore  # production name
         == "req-cosy"
     )
     assert prepared_payload.data["flow_prompt_speech_token"] == [[40]]
-    assert prepared_payload.data["flow_prompt_speech_feat"] == [[[1.0] * 80] * 2]
+    torch.testing.assert_close(
+        torch.as_tensor(prepared_payload.data["flow_prompt_speech_feat"]),
+        torch.ones(1, 2, 80),
+        rtol=0,
+        atol=0,
+    )
     assert prepared_payload.data["flow_embedding"] == [[2.0] * 192]
 
     prepared = request_builders.pop_prepared_cosyvoice3_request(prepared_payload)
@@ -409,10 +433,15 @@ def test_preprocess_and_build_request_share_prepared_state(
     assert prepared.llm_prompt_speech_token.shape == (1, 0)
     assert prepared.flow_prompt_speech_token.tolist() == [[40]]
 
-    request_builders._PREPARED_REQUESTS["req-cosy"] = prepared
+    request_builders._PREPARED_REQUESTS["req-cosy"] = (
+        prepared  # noqa: leading-underscore  # production name
+    )
     request_data = build_sglang_cosyvoice3_request(prepared_payload, model=model)
     assert request_data.max_new_tokens == 5
     assert request_data.temperature == 0.0
+    assert request_data.req.sampling_params.repetition_penalty == (
+        1.21 if repetition_penalty is None else repetition_penalty
+    )
     assert request_data.req.sampling_params.sampling_seed == 7
     # Stop on the full 200-id control range, not only EOS_ID.
     assert request_data.req.sampling_params.stop_token_ids == set(
@@ -421,11 +450,78 @@ def test_preprocess_and_build_request_share_prepared_state(
     # target text is "hello" -> 2 tokens; min_new_tokens = 2x that, capped by
     # the explicit max_new_tokens=5.
     assert request_data.req.sampling_params.min_new_tokens == 4
-    assert request_data.req._input_embeds_are_projected is True
+    assert (
+        request_data.req._input_embeds_are_projected is True
+    )  # noqa: leading-underscore  # production name
     assert request_data.stream_metadata is None
     assert request_data.flow_prompt_speech_token.tolist() == [[40]]
     with pytest.raises(RuntimeError, match="state is missing"):
         build_sglang_cosyvoice3_request(prepared_payload, model=model)
+
+
+def test_mlx_preprocessing_uses_token_metadata_without_torch_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "load_prompt_audio",
+        lambda source: torch.zeros(1600).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "load_prompt_audio_24k",
+        lambda source: torch.zeros(2400).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 4, 80),
+    )
+    set_cosyvoice3_preprocessing_context(
+        model=None,
+        tokenizer=FakeTokenizer(),
+        speech_tokenizer=FakeSpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
+        use_mlx=True,
+        model_revision="mlx-test",
+    )
+    payload = make_payload(
+        {
+            "text": "hello",
+            "ref_audio": "reference.wav",
+            "ref_text": "reference",
+        },
+        params={"do_sample": False},
+        request_id="req-mlx",
+    )
+
+    prepared_payload = preprocess_cosyvoice3_payload(payload)
+    prepared = pop_prepared_cosyvoice3_request(prepared_payload)
+
+    assert prepared is not None
+    assert prepared.prompt_input_embeds is None
+    assert prepared.input_ids_list == [0] * 9
+    assert prepared.input_ids.tolist() == [0] * 9
+    assert prepared.text_token_ids == [3, 4, 5, 1, 2]
+    assert prepared.llm_prompt_speech_token_ids == [40, 41]
+
+    request_builders._PREPARED_REQUESTS["req-mlx"] = (
+        prepared  # noqa: leading-underscore  # production name
+    )
+    request_data = build_sglang_cosyvoice3_request(prepared_payload, model=None)
+
+    assert request_data.prompt_input_embeds is None
+    assert request_data.req._cosyvoice3_text_token_ids == [
+        3,
+        4,
+        5,
+        1,
+        2,
+    ]  # noqa: leading-underscore  # production name
+    assert request_data.req._cosyvoice3_prompt_speech_token_ids == [
+        40,
+        41,
+    ]  # noqa: leading-underscore  # production name
 
 
 def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
@@ -433,26 +529,26 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
 ) -> None:
     from sglang_omni.models.fun_cosyvoice3 import stages
 
-    class _TrackingLock:
+    class TrackingLock:
         def __init__(self) -> None:
-            self._lock = threading.Lock()
-            self._attempt_lock = threading.Lock()
+            self.lock = threading.Lock()
+            self.attempt_lock = threading.Lock()
             self.attempt_count = 0
             self.second_attempted = threading.Event()
 
-        def __enter__(self) -> _TrackingLock:
-            with self._attempt_lock:
+        def __enter__(self) -> TrackingLock:
+            with self.attempt_lock:
                 self.attempt_count += 1
                 if self.attempt_count == 2:
                     self.second_attempted.set()
-            self._lock.acquire()
+            self.lock.acquire()
             return self
 
         def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
             del exc_type, exc, traceback
-            self._lock.release()
+            self.lock.release()
 
-    tracking_lock = _TrackingLock()
+    tracking_lock = TrackingLock()
     monkeypatch.setattr(
         request_builders,
         "_PREPROCESSING_FINALIZE_LOCK",
@@ -463,7 +559,7 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
     reference_lock = threading.Lock()
 
     def encode_one(
-        hook: _CosyVoice3ReferenceEncodeHook,
+        hook: CosyVoice3ReferenceEncodeHook,
         item: Any,
     ) -> Any:
         del hook
@@ -475,7 +571,7 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
             raise AssertionError(
                 "different Fun-CosyVoice3 references did not enter encoding concurrently"
             ) from exc
-        return request_builders._CosyVoice3ReferenceArtifact(
+        return request_builders.CosyVoice3ReferenceArtifact(
             llm_prompt_speech_token=torch.tensor([[40]], dtype=torch.int32),
             flow_prompt_speech_token=torch.tensor([[40]], dtype=torch.int32),
             flow_prompt_speech_feat=torch.ones(1, 2, 80),
@@ -483,12 +579,12 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
         )
 
     monkeypatch.setattr(
-        request_builders._CosyVoice3ReferenceEncodeHook,
+        request_builders.CosyVoice3ReferenceEncodeHook,
         "encode_one",
         encode_one,
     )
 
-    model = _FakeModel()
+    model = FakeModel()
     original_text_embed_tokens = model.text_embed_tokens
     finalization_started = threading.Event()
     finalization_lock = threading.Lock()
@@ -516,9 +612,9 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
     model.text_embed_tokens = text_embed_tokens
     set_cosyvoice3_preprocessing_context(
         model=model,
-        tokenizer=_FakeTokenizer(),
-        speech_tokenizer=_FakeSpeechTokenizer(),
-        speaker_encoder=_FakeSpeakerEncoder(),
+        tokenizer=FakeTokenizer(),
+        speech_tokenizer=FakeSpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
     )
 
     request_ids = {"req-reference-a", "req-reference-b"}
@@ -535,7 +631,7 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
                 IncomingMessage(
                     request_id=request_id,
                     type="new_request",
-                    data=_payload(
+                    data=make_payload(
                         {"text": "hello", "ref_audio": reference},
                         request_id=request_id,
                     ),
@@ -571,12 +667,12 @@ def test_build_request_attaches_stream_metadata_when_stream_true(
 ) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio",
+        "load_prompt_audio",
         lambda source: torch.zeros(1600).numpy(),
     )
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio_24k",
+        "load_prompt_audio_24k",
         lambda source: torch.zeros(2400).numpy(),
     )
     monkeypatch.setattr(
@@ -584,14 +680,14 @@ def test_build_request_attaches_stream_metadata_when_stream_true(
         "extract_prompt_speech_feat",
         lambda audio, sample_rate: torch.ones(1, 2, 80),
     )
-    model = _FakeModel()
+    model = FakeModel()
     set_cosyvoice3_preprocessing_context(
         model=model,
-        tokenizer=_FakeTokenizer(),
-        speech_tokenizer=_FakeSpeechTokenizer(),
-        speaker_encoder=_FakeSpeakerEncoder(),
+        tokenizer=FakeTokenizer(),
+        speech_tokenizer=FakeSpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
     )
-    payload = _payload(
+    payload = make_payload(
         {"text": "hello", "ref_audio": "reference.wav"},
         params={"stream": True, "max_new_tokens": 8},
     )
@@ -613,12 +709,12 @@ def test_build_request_derives_generation_length_contract_when_unset(
     not a fixed default."""
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio",
+        "load_prompt_audio",
         lambda source: torch.zeros(1600).numpy(),
     )
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio_24k",
+        "load_prompt_audio_24k",
         lambda source: torch.zeros(2400).numpy(),
     )
     monkeypatch.setattr(
@@ -626,14 +722,14 @@ def test_build_request_derives_generation_length_contract_when_unset(
         "extract_prompt_speech_feat",
         lambda audio, sample_rate: torch.ones(1, 2, 80),
     )
-    model = _FakeModel()
+    model = FakeModel()
     set_cosyvoice3_preprocessing_context(
         model=model,
-        tokenizer=_FakeTokenizer(),
-        speech_tokenizer=_FakeSpeechTokenizer(),
-        speaker_encoder=_FakeSpeakerEncoder(),
+        tokenizer=FakeTokenizer(),
+        speech_tokenizer=FakeSpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
     )
-    payload = _payload(
+    payload = make_payload(
         {"text": "hello", "ref_audio": "reference.wav"},
         params={"do_sample": False},
         request_id="req-contract",
@@ -644,7 +740,9 @@ def test_build_request_derives_generation_length_contract_when_unset(
     assert prepared is not None
     assert prepared.target_text_token_count == 2  # "hello" -> 2 tokens
 
-    request_builders._PREPARED_REQUESTS["req-contract"] = prepared
+    request_builders._PREPARED_REQUESTS["req-contract"] = (
+        prepared  # noqa: leading-underscore  # production name
+    )
     request_data = build_sglang_cosyvoice3_request(prepared_payload, model=model)
     # max_new_tokens = min(2048, 20 * 2) = 40; min_new_tokens = 2 * 2 = 4.
     assert request_data.max_new_tokens == 40
@@ -656,12 +754,12 @@ def test_preprocess_includes_reference_text_before_target_text(
 ) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio",
+        "load_prompt_audio",
         lambda source: torch.zeros(1600).numpy(),
     )
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio_24k",
+        "load_prompt_audio_24k",
         lambda source: torch.zeros(2400).numpy(),
     )
     monkeypatch.setattr(
@@ -669,14 +767,14 @@ def test_preprocess_includes_reference_text_before_target_text(
         "extract_prompt_speech_feat",
         lambda audio, sample_rate: torch.ones(1, 2, 80),
     )
-    model = _FakeModel()
+    model = FakeModel()
     set_cosyvoice3_preprocessing_context(
         model=model,
-        tokenizer=_FakeTokenizer(),
-        speech_tokenizer=_FakeSpeechTokenizer(),
-        speaker_encoder=_FakeSpeakerEncoder(),
+        tokenizer=FakeTokenizer(),
+        speech_tokenizer=FakeSpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
     )
-    payload = _payload(
+    payload = make_payload(
         {
             "text": "hello",
             "ref_audio": "reference.wav",
@@ -699,12 +797,12 @@ def test_preprocess_excludes_reference_speech_from_instruct_llm_prompt(
 ) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio",
+        "load_prompt_audio",
         lambda source: torch.zeros(1600).numpy(),
     )
     monkeypatch.setattr(
         request_builders,
-        "_load_prompt_audio_24k",
+        "load_prompt_audio_24k",
         lambda source: torch.zeros(2400).numpy(),
     )
     monkeypatch.setattr(
@@ -713,20 +811,20 @@ def test_preprocess_excludes_reference_speech_from_instruct_llm_prompt(
         lambda audio, sample_rate: torch.ones(1, 2, 80),
     )
 
-    class _InstructTokenizer(_FakeTokenizer):
+    class InstructTokenizer(FakeTokenizer):
         def __call__(self, text: str) -> torch.Tensor:
             if text == "You are a helpful assistant. speak warmly<|endofprompt|>":
                 return torch.tensor([[3, 4, 5]], dtype=torch.int32)
             return super().__call__(text)
 
-    model = _FakeModel()
+    model = FakeModel()
     set_cosyvoice3_preprocessing_context(
         model=model,
-        tokenizer=_InstructTokenizer(),
-        speech_tokenizer=_FakeSpeechTokenizer(),
-        speaker_encoder=_FakeSpeakerEncoder(),
+        tokenizer=InstructTokenizer(),
+        speech_tokenizer=FakeSpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
     )
-    payload = _payload(
+    payload = make_payload(
         {"text": "hello", "ref_audio": "reference.wav"},
         tts_params={"instructions": "speak warmly"},
         request_id="req-instruct",
@@ -761,6 +859,7 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
         output_codes=[torch.tensor([50]), torch.tensor([51])],
         stage_payload=payload,
         engine_start_s=10.0,
+        finish_reason="length",
     )
     monkeypatch.setattr(request_builders.time, "perf_counter", lambda: 10.5)
 
@@ -770,12 +869,89 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
     assert restored.speed == 1.25
     assert restored.flow_embedding == [[1.0] * 192]
     assert restored.flow_prompt_speech_token == [[40, 41]]
-    assert restored.flow_prompt_speech_feat[0][0] == [1.0] * 80
+    torch.testing.assert_close(
+        torch.as_tensor(restored.flow_prompt_speech_feat),
+        torch.ones(1, 2, 80),
+        rtol=0,
+        atol=0,
+    )
     assert restored.audio_codes == [[50], [51]]
     assert restored.prompt_tokens == 7
     assert restored.completion_tokens == 2
     assert restored.sample_rate == 24000
     assert restored.engine_time_s == pytest.approx(0.5)
+    assert restored.finish_reason == "length"
+
+
+def test_result_adapter_filters_silent_runs_without_mutating_ar_history() -> None:
+    state = FunCosyVoice3State(text="hello")
+    payload = StagePayload(
+        request_id="req-silent-result",
+        request=OmniRequest(inputs="hello"),
+        data=state.to_dict(),
+    )
+    generated_token_ids = [1, 2, 28, 29, 55, 248, 99, 494, 2241, 2242, 2322, 2323, 1]
+    output_codes = [torch.tensor([token_id]) for token_id in generated_token_ids]
+    output_ids = list(generated_token_ids)
+    data = CosyVoice3SGLangRequestData(
+        output_codes=output_codes,
+        output_ids=output_ids,
+        stage_payload=payload,
+    )
+
+    result = apply_sglang_cosyvoice3_result(payload, data)
+    restored = FunCosyVoice3State.from_dict(result.data)
+
+    assert restored.audio_codes == [
+        [1],
+        [2],
+        [28],
+        [29],
+        [55],
+        [99],
+        [494],
+        [2241],
+        [2242],
+        [2322],
+        [2323],
+    ]
+    assert restored.completion_tokens == len(generated_token_ids)
+    assert data.output_ids == generated_token_ids
+    assert [int(code.item()) for code in data.output_codes] == generated_token_ids
+
+
+def test_filter_silent_runs_preserves_shape_dtype_and_resets_on_speech() -> None:
+    codes = torch.tensor(
+        [[1], [2], [28], [29], [55], [248], [7], [2322], [2323], [1]],
+        dtype=torch.int32,
+    )
+
+    filtered = request_builders.filter_cosyvoice3_silent_runs(codes)
+
+    assert filtered.tolist() == [[1], [2], [28], [29], [55], [7], [2322], [2323], [1]]
+    assert filtered.shape == (9, 1)
+    assert filtered.dtype == torch.int32
+    assert codes.tolist() == [
+        [1],
+        [2],
+        [28],
+        [29],
+        [55],
+        [248],
+        [7],
+        [2322],
+        [2323],
+        [1],
+    ]
+
+
+def test_filter_silent_runs_preserves_empty_shape_and_dtype() -> None:
+    codes = torch.empty((0, 1), dtype=torch.int16)
+
+    filtered = request_builders.filter_cosyvoice3_silent_runs(codes)
+
+    assert filtered.shape == (0, 1)
+    assert filtered.dtype == torch.int16
 
 
 def test_result_adapter_serializes_empty_generation_without_losing_state(
@@ -805,14 +981,22 @@ def test_preprocessing_abort_cleans_prepared_request() -> None:
     from sglang_omni.models.fun_cosyvoice3 import stages
 
     request_id = "req-preprocess-abort"
-    with request_builders._PREPARED_REQUESTS_LOCK:
-        request_builders._PREPARED_REQUESTS[request_id] = object()
+    with (
+        request_builders._PREPARED_REQUESTS_LOCK
+    ):  # noqa: leading-underscore  # production name
+        request_builders._PREPARED_REQUESTS[request_id] = (
+            object()
+        )  # noqa: leading-underscore  # production name
 
     scheduler = stages.create_preprocessing_executor("model")
     scheduler.abort(request_id)
 
-    with request_builders._PREPARED_REQUESTS_LOCK:
-        assert request_id not in request_builders._PREPARED_REQUESTS
+    with (
+        request_builders._PREPARED_REQUESTS_LOCK
+    ):  # noqa: leading-underscore  # production name
+        assert (
+            request_id not in request_builders._PREPARED_REQUESTS
+        )  # noqa: leading-underscore  # production name
 
 
 def test_preprocessing_abort_race_cleans_late_prepared_request(
@@ -827,19 +1011,23 @@ def test_preprocessing_abort_race_cleans_late_prepared_request(
     def delayed_preprocess(payload: StagePayload) -> StagePayload:
         started.set()
         assert release.wait(timeout=2.0)
-        with request_builders._PREPARED_REQUESTS_LOCK:
-            request_builders._PREPARED_REQUESTS[payload.request_id] = object()
+        with (
+            request_builders._PREPARED_REQUESTS_LOCK
+        ):  # noqa: leading-underscore  # production name
+            request_builders._PREPARED_REQUESTS[payload.request_id] = (
+                object()
+            )  # noqa: leading-underscore  # production name
         return payload
 
     monkeypatch.setattr(stages, "preprocess_cosyvoice3_payload", delayed_preprocess)
     scheduler = stages.create_preprocessing_executor("model")
-    payload = _payload("hello", request_id=request_id)
+    payload = make_payload("hello", request_id=request_id)
     loop = asyncio.new_event_loop()
     errors: list[Exception] = []
 
     def run_preprocessing() -> None:
         try:
-            scheduler._run_single(
+            scheduler.run_single(
                 IncomingMessage(
                     request_id=request_id, type="new_request", data=payload
                 ),
@@ -859,8 +1047,12 @@ def test_preprocessing_abort_race_cleans_late_prepared_request(
         assert not thread.is_alive()
         assert errors == []
         assert scheduler.outbox.empty()
-        with request_builders._PREPARED_REQUESTS_LOCK:
-            assert request_id not in request_builders._PREPARED_REQUESTS
+        with (
+            request_builders._PREPARED_REQUESTS_LOCK
+        ):  # noqa: leading-underscore  # production name
+            assert (
+                request_id not in request_builders._PREPARED_REQUESTS
+            )  # noqa: leading-underscore  # production name
     finally:
         release.set()
         thread.join(timeout=2.0)
@@ -869,17 +1061,19 @@ def test_preprocessing_abort_race_cleans_late_prepared_request(
 
 
 def test_prepared_request_cleanup_and_missing_marker_are_explicit() -> None:
-    payload = _payload("hello", request_id="req-cleanup")
-    request_builders._PREPARED_REQUESTS["req-cleanup"] = CosyVoice3PreparedRequest(
-        state=FunCosyVoice3State(text="hello"),
-        input_ids_list=[1],
-        input_ids=torch.tensor([1]),
-        prompt_input_embeds=torch.ones(1, 4),
-        llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
-        flow_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
-        flow_prompt_speech_feat=torch.zeros(1, 0, 80),
-        flow_embedding=torch.zeros(0, 192),
-        gen_kwargs={"max_new_tokens": 1},
+    payload = make_payload("hello", request_id="req-cleanup")
+    request_builders._PREPARED_REQUESTS["req-cleanup"] = (
+        CosyVoice3PreparedRequest(  # noqa: leading-underscore  # production name
+            state=FunCosyVoice3State(text="hello"),
+            input_ids_list=[1],
+            input_ids=torch.tensor([1]),
+            prompt_input_embeds=torch.ones(1, 4),
+            llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
+            flow_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
+            flow_prompt_speech_feat=torch.zeros(1, 0, 80),
+            flow_embedding=torch.zeros(0, 192),
+            gen_kwargs={"max_new_tokens": 1},
+        )
     )
     cleanup_prepared_cosyvoice3_request("req-cleanup")
     assert pop_prepared_cosyvoice3_request(payload) is None
@@ -889,3 +1083,58 @@ def test_prepared_request_cleanup_and_missing_marker_are_explicit() -> None:
     )
     with pytest.raises(RuntimeError, match="state is missing"):
         pop_prepared_cosyvoice3_request(marked)
+
+
+@pytest.mark.parametrize("strided", [False, True])
+def test_reference_features_survive_terminal_messagepack(strided: bool) -> None:
+    features = torch.linspace(-2, 2, 640).reshape(1, 8, 80)
+    if strided:
+        features = features[:, ::2, :]
+    else:
+        pass
+    state = FunCosyVoice3State(flow_prompt_speech_feat=features)
+    first = state.to_dict()
+    second = state.to_dict()
+    terminal = state.to_terminal_dict()
+    decoded = FunCosyVoice3State.from_dict(
+        msgpack.unpackb(msgpack.packb(terminal, use_bin_type=True), raw=False)
+    )
+    torch.testing.assert_close(
+        decoded.flow_prompt_speech_feat, features, rtol=0, atol=0
+    )
+    expected = features.clone()
+    first["flow_prompt_speech_feat"].fill_(99)
+    features.fill_(88)
+    torch.testing.assert_close(
+        second["flow_prompt_speech_feat"], expected, rtol=0, atol=0
+    )
+    torch.testing.assert_close(
+        decoded.flow_prompt_speech_feat, expected, rtol=0, atol=0
+    )
+    assert terminal["flow_prompt_speech_feat_dtype"] == "float32"
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float64])
+def test_reference_features_preserve_fallback_lists(dtype: torch.dtype) -> None:
+    features = torch.arange(160, dtype=dtype).reshape(1, 2, 80)
+    state = FunCosyVoice3State(flow_prompt_speech_feat=features)
+    wire = state.to_dict()
+    assert wire["flow_prompt_speech_feat"] == features.tolist()
+    decoded = FunCosyVoice3State.from_dict(wire)
+    assert decoded.flow_prompt_speech_feat == features.tolist()
+    msgpack.packb(state.to_terminal_dict(), use_bin_type=True)
+
+
+@pytest.mark.parametrize("features", [None, [], [[1.0, 2.0]]])
+def test_reference_features_preserve_legacy_payloads(
+    features: list[list[float]] | list[float] | None,
+) -> None:
+    wire = {"flow_prompt_speech_feat": features, "text": "hello"}
+    state = FunCosyVoice3State.from_dict(wire)
+    assert state.flow_prompt_speech_feat == features
+    assert state.text == "hello"
+    assert wire == {"flow_prompt_speech_feat": features, "text": "hello"}
+    assert (
+        FunCosyVoice3State.from_dict(state.to_terminal_dict()).flow_prompt_speech_feat
+        == features
+    )

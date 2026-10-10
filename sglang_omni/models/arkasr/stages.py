@@ -3,22 +3,23 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 
 def create_sglang_arkasr_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 32,
     encoder_max_batch_size: int = 8,
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
-    enable_torch_compile: bool = False,
+    enable_torch_compile: bool | None = None,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
@@ -34,7 +35,7 @@ def create_sglang_arkasr_executor(
     pre_lm_max_pending: int = 32,
     enable_encoder_cuda_graph: bool = False,
     stream_emit_interval_s: float = 0.05,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
 
@@ -67,6 +68,7 @@ def create_sglang_arkasr_executor(
     ).build(
         model_path,
         device=device,
+        gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,
     )

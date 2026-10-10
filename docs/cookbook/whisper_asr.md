@@ -20,6 +20,8 @@ sgl-omni serve \
   --port 8000
 ```
 
+For Intel XPU installation and launch, see the [Whisper XPU recipe](../get_started/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
+
 ## Encoder CUDA Graph
 
 The encoder CUDA Graph is enabled by default. With pre-LM encoding (the default), capture buckets follow `pre_lm_max_batch_size` (8), so batches **1/2/4/8** are captured. `request_build_max_workers` defaults to 8, matching Qwen3-ASR and Fun-ASR. When `enable_pre_lm_encoder` is false, buckets follow the atomic prefill budget (`6144 // 1500 = 4`). To use eager encoder execution, override the pipeline configuration:
@@ -104,7 +106,7 @@ stages:
 
 ## Async Decode
 
-Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 64. Disable async decode on the stage to compare against synchronous decode or diagnose a request lifecycle issue:
+Whisper enables the shared one-step-lookahead decode path at every batch size, including a single request. It overlaps the current decode step's GPU work with the previous step's host-side result processing. The default running-request limit is 64. Disable async decode on the stage to compare against synchronous decode or diagnose a request lifecycle issue:
 
 ```bash
 sgl-omni serve \
@@ -208,7 +210,18 @@ YAML keys:
 |---|---|---|
 | `--audio_chunking.max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR you can only lower it: 30s is the hard edge of the model's mel window. |
 | `--audio_chunking.max_concurrent_chunks` | `8` | Per-request concurrency cap used while chunks are independent. When previous-text conditioning is enabled, one request's Whisper chunks decode in order while chunks from different requests can still batch together. |
-| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
+| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on one upload; you get HTTP 400 above it. It bounds a single decoded waveform, not the total across uploads; that is the next knob's job. |
+| `--audio_chunking.max_concurrent_long_audio_requests` | `max_running_requests // (2 × max_concurrent_chunks)`, at least 1; `4` with the stock defaults | How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated. The slot is taken before the upload is decoded and returned when its chunks are done. |
+
+The last knob is the aggregate guard: decoded waveforms held at once are at
+most `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4`
+bytes (decoding itself has transient peaks above that), and long audio holds
+at most
+`max_concurrent_long_audio_requests × max_concurrent_chunks` engine slots at
+once. The default keeps that product at half of
+`--asr.engine.max_running_requests`; an explicit value whose product reaches
+`max_running_requests` logs a warning at startup, since short requests would
+then queue behind long audio whenever it is saturated.
 
 The model properties are ClassVars on `WhisperASRPipelineConfig`; no
 configuration path reaches them:

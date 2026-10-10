@@ -15,6 +15,7 @@ disk, which these tests have no weights for.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -24,6 +25,7 @@ from typer.testing import CliRunner
 from sglang_omni.cli.config import config_app
 from sglang_omni.cli.serve import patches_from_broadcast_flags
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import dump_user_config
 
 
@@ -109,8 +111,8 @@ class TestResolve:
         [("stages", "must be a mapping"), ("shared", "must be a list")],
     )
     def test_an_explicit_null_block_is_not_treated_as_absent(
-        self, tmp_path, base_config, block, message
-    ):
+        self, tmp_path: Path, base_config: PipelineConfig, block: str, message: str
+    ) -> None:
         path = tmp_path / "null-block.yaml"
         path.write_text(
             yaml.safe_dump(

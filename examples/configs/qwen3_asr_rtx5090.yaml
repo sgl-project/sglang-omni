@@ -1,0 +1,14 @@
+# Single-GPU profile from the RTX 5090 qualification in upstream issue #1212.
+config_cls: Qwen3ASRPipelineConfig
+name: qwen3-asr-rtx5090
+model_path: Qwen/Qwen3-ASR-1.7B
+
+stages:
+  asr:
+    factory:
+      dtype: bfloat16
+    engine:
+      max_running_requests: 16
+      cuda_graph_max_bs: 16
+      mem_fraction_static: 0.65
+      enable_torch_compile: false

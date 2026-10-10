@@ -73,25 +73,25 @@ class Scenario:
     expect_lookahead: bool = True  # False only for the rep-penalty sync route
 
 
-_TEXT = "The quick brown fox jumps over the lazy dog."
+TEXT = "The quick brown fox jumps over the lazy dog."
 
 # The scenario contract (mirrors the operational driver's SCENARIOS table). S1 is
 # the only exact scenario: bs=1 with min_batch_size=1 is both deterministic and
 # lookahead-forced. S2-S5 are structural; S5 expects no lookahead (sync routing).
 SCENARIOS: dict[str, Scenario] = {
-    "S1": Scenario("S1", "exact", [Req(_TEXT, 1234, 64)]),
-    "S2": Scenario("S2", "structural", [Req(_TEXT, 1000 + i, 48) for i in range(4)]),
+    "S1": Scenario("S1", "exact", [Req(TEXT, 1234, 64)]),
+    "S2": Scenario("S2", "structural", [Req(TEXT, 1000 + i, 48) for i in range(4)]),
     "S3a": Scenario(
         "S3a",
         "structural",
-        [Req(_TEXT, 2000 + i, 64) for i in range(6)] + [Req(_TEXT, 2099, 16)],
+        [Req(TEXT, 2000 + i, 64) for i in range(6)] + [Req(TEXT, 2099, 16)],
     ),
-    "S3b": Scenario("S3b", "structural", [Req(_TEXT, 3000, 64), Req(_TEXT, 3001, 32)]),
-    "S4": Scenario("S4", "structural", [Req(_TEXT, 4000 + i, 64) for i in range(4)]),
+    "S3b": Scenario("S3b", "structural", [Req(TEXT, 3000, 64), Req(TEXT, 3001, 32)]),
+    "S4": Scenario("S4", "structural", [Req(TEXT, 4000 + i, 64) for i in range(4)]),
     "S5": Scenario(
         "S5",
         "structural",
-        [Req(_TEXT, 5000, 48, 1.0), Req(_TEXT, 5001, 48, 1.3)],
+        [Req(TEXT, 5000, 48, 1.0), Req(TEXT, 5001, 48, 1.3)],
         expect_lookahead=False,
     ),
 }

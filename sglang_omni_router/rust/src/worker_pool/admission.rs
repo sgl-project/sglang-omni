@@ -79,6 +79,7 @@ pub(crate) struct RequestLease {
 impl RequestLease {
     pub(super) fn new(admission: AdmissionLease, registration: Arc<WorkerRecord>) -> Self {
         let weight = admission.credits;
+        registration.record_dispatch(admission.class);
         Self {
             _admission: Some(admission),
             _envelope: None,
@@ -93,6 +94,7 @@ impl RequestLease {
         registration: Arc<WorkerRecord>,
     ) -> Self {
         let weight = admission.credits;
+        registration.record_dispatch(admission.class);
         Self {
             _admission: Some(admission),
             _envelope: None,
@@ -102,6 +104,16 @@ impl RequestLease {
     }
 
     pub(super) fn new_owner(envelope: EnvelopeLease, registration: Arc<WorkerRecord>) -> Self {
+        registration.record_voice_control_dispatch();
+        Self {
+            _admission: None,
+            _envelope: Some(envelope),
+            _capacity: None,
+            load: WorkerLoadGuard::new(registration, 1),
+        }
+    }
+
+    pub(super) fn new_pinned(envelope: EnvelopeLease, registration: Arc<WorkerRecord>) -> Self {
         Self {
             _admission: None,
             _envelope: Some(envelope),
@@ -112,6 +124,10 @@ impl RequestLease {
 
     pub(crate) fn target(&self) -> &ResolvedTarget {
         &self.load.registration.target
+    }
+
+    pub(crate) fn worker_id(&self) -> &str {
+        self.load.registration.worker_id.as_str()
     }
 
     pub(crate) fn request_immediate_probe(&self) {

@@ -4,109 +4,189 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING
+
+from typing_extensions import NotRequired, TypedDict
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorkerConfig
+from sglang_omni.scheduling.types import (
+    ModelRunnerOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxLaunch, MlxTpModelWorker
+    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+else:
+    pass
+
+
+MlxModelRunnerOptions = TypedDict(
+    "MlxModelRunnerOptions",
+    {
+        "model_path": str,
+        "trust_remote_code": bool,
+        "disable_radix_cache": bool,
+        "pool_size": NotRequired[int | None],
+        "mem_fraction_static": float,
+        "quantization": str | None,
+        "revision": str | None,
+        "enable_sampling": bool,
+        "sampling_rng_seed": int,
+        "deterministic_seeding": bool,
+    },
+)
 
 
 @dataclass(slots=True)
-class _MlxSchedulerPendingStep:
-    launch: Any
-    reqs: list[Any]
-    scheduler_output: Any
-    schedule_batch: Any
+class MlxSchedulerPendingStep:
+    launch: MlxLaunch
+    reqs: list[Req]
+    scheduler_output: SchedulerOutput
+    schedule_batch: ScheduleBatch
 
 
 class MlxSchedulerModelRunner(ModelRunner):
     """Bridge Omni's decode lookahead to SGLang's lazy MLX worker API."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
-        super().__init__(tp_worker, output_processor)
-        # note (yexiaodong): The scheduler still owns every pending handle;
-        # this reference is only the lazy decode root used to build its successor.
-        self._last_mlx_pending: _MlxSchedulerPendingStep | None = None
+    tp_worker: MlxTpModelWorker
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def __init__(
+        self,
+        tp_worker: MlxTpModelWorker,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
+        super().__init__(tp_worker, output_processor)
+        import mlx.core as mx
+
+        # Note (yexiaodong): The scheduler still owns every pending handle;
+        # this reference is only the lazy decode root used to build its successor.
+        self.last_mlx_pending: MlxSchedulerPendingStep | None = None
+        self.resolve_skip_rids: set[str] = set()
+        # Note (yexiaodong): MLX 0.32 streams are thread-local, so the
+        # scheduler thread needs its own stream for async evaluation.
+        self.mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
+
+    def mlx_stream_context(self):
+        import mlx.core as mx
+
+        return mx.stream(self.mlx_thread_stream)
+
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         if len(batch.reqs) != 1:
             return False
-        previous = self._last_mlx_pending
+        else:
+            pass
+        previous = self.last_mlx_pending
         if previous is not None:
             previous_ids = [req.rid for req in previous.reqs]
             current_ids = [req.rid for req in batch.reqs]
             if previous.launch.mode != "decode" or previous_ids != current_ids:
-                # note (yexiaodong): Returning false makes Omni resolve the
+                # Note (yexiaodong): Returning false makes Omni resolve the
                 # in-flight step before it runs a changed batch synchronously.
                 return False
+            else:
+                pass
+        else:
+            pass
         return super().lookahead_eligible(batch)
 
-    def _build_forward_batch(self, scheduler_output: Any):
+    def build_forward_batch(
+        self, scheduler_output: SchedulerOutput
+    ) -> tuple[None, ScheduleBatch, bool] | None:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
-        # note (yexiaodong): SGLang's MLX worker consumes ScheduleBatch
+        else:
+            pass
+        # Note (yexiaodong): SGLang's MLX worker consumes ScheduleBatch
         # directly. Its bookkeeping stub intentionally has no Torch attention
         # backend state from which ForwardBatch could be constructed.
         return None, schedule_batch, bool(schedule_batch.forward_mode.is_extend())
 
     def custom_prefill_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list[Any],
-    ) -> Any:
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
         del requests
-        return self.tp_worker.forward_batch_generation(
-            batch=schedule_batch,
-            forward_batch=forward_batch,
-        )
+        with self.mlx_stream_context():
+            return self.tp_worker.forward_batch_generation(
+                batch=schedule_batch,
+                forward_batch=forward_batch,
+            )
 
     def custom_decode_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list[Any],
-    ) -> Any:
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
         del requests
-        return self.tp_worker.forward_batch_generation(
-            batch=schedule_batch,
-            forward_batch=forward_batch,
-        )
+        with self.mlx_stream_context():
+            return self.tp_worker.forward_batch_generation(
+                batch=schedule_batch,
+                forward_batch=forward_batch,
+            )
 
-    def execute_launch(self, scheduler_output: Any):
+    def execute_launch(
+        self, scheduler_output: SchedulerOutput
+    ) -> MlxSchedulerPendingStep | None:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
+        else:
+            pass
         if not schedule_batch.forward_mode.is_decode():
             raise RuntimeError("MLX lookahead launch requires a decode batch")
+        else:
+            pass
 
-        # note (yexiaodong): A batch may carry deferred CPU prefill inputs or a
+        # Note (yexiaodong): A batch may carry deferred CPU prefill inputs or a
         # preceding decode token instead of input_ids, so MLX must resolve the
         # same FutureMap contract as SGLang's scheduler.
-        if self._execution_bridge is not None:
+        if self.execution_bridge is not None:
             from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 
-            resolve_forward_inputs(schedule_batch, self._execution_bridge.future_map)
+            resolve_forward_inputs(schedule_batch, self.execution_bridge.future_map)
+        else:
+            pass
 
         reqs = list(schedule_batch.reqs)
-        previous = self._last_mlx_pending
-        if previous is None:
-            launch = self.tp_worker.async_forward_batch_generation_mlx(schedule_batch)
-        else:
-            previous_ids = [req.rid for req in previous.reqs]
-            current_ids = [req.rid for req in reqs]
-            if previous.launch.mode != "decode" or previous_ids != current_ids:
-                # note (yexiaodong): The scheduler still owns the previous
-                # pending step. Keep this reference until resolve so both sides
-                # retain the same lazy cache root.
-                raise RuntimeError(
-                    "MLX chained decode requires an unchanged request batch; "
-                    "resolve the outstanding pending step before launching a "
-                    "changed batch"
+        previous = self.last_mlx_pending
+        with self.mlx_stream_context():
+            if previous is None:
+                launch = self.tp_worker.async_forward_batch_generation_mlx(
+                    schedule_batch
                 )
-            launch = self.tp_worker.async_chained_decode_mlx(previous.launch.decode)
+            else:
+                previous_ids = [req.rid for req in previous.reqs]
+                current_ids = [req.rid for req in reqs]
+                if previous.launch.mode != "decode" or previous_ids != current_ids:
+                    # Note (yexiaodong): The scheduler still owns the previous
+                    # pending step. Keep this reference until resolve so both sides
+                    # retain the same lazy cache root.
+                    raise RuntimeError(
+                        "MLX chained decode requires an unchanged request batch; "
+                        "resolve the outstanding pending step before launching a "
+                        "changed batch"
+                    )
+                else:
+                    pass
+                launch = self.tp_worker.async_chained_decode_mlx(previous.launch.decode)
 
         schedule_batch_copy = schedule_batch.copy()
-        pending = _MlxSchedulerPendingStep(
+        pending = MlxSchedulerPendingStep(
             launch=launch,
             reqs=reqs,
             scheduler_output=replace(
@@ -115,114 +195,173 @@ class MlxSchedulerModelRunner(ModelRunner):
             ),
             schedule_batch=schedule_batch_copy,
         )
-        self._last_mlx_pending = pending
+        self.last_mlx_pending = pending
         return pending
 
-    def execute_resolve(self, pending: _MlxSchedulerPendingStep | None):
+    def execute_resolve(
+        self, pending: MlxSchedulerPendingStep | None
+    ) -> ModelRunnerOutput | None:
         if pending is None:
             return None
+        else:
+            pass
 
         try:
-            batch_result = self.tp_worker.finalize_mlx_result(
-                pending.launch,
-                pending.reqs,
-            )
+            with self.mlx_stream_context():
+                batch_result = self.tp_worker.finalize_mlx_result(
+                    pending.launch,
+                    pending.reqs,
+                )
         except Exception:
-            # note (yexiaodong): A predecessor failure invalidates any chained
+            # Note (yexiaodong): A predecessor failure invalidates any chained
             # successor that shares its lazily updated cache objects.
-            self._last_mlx_pending = None
+            self.last_mlx_pending = None
             raise
         else:
-            if self._last_mlx_pending is pending:
-                self._last_mlx_pending = None
+            if self.last_mlx_pending is pending:
+                self.last_mlx_pending = None
+            else:
+                pass
 
         if (
-            self._execution_bridge is not None
+            self.execution_bridge is not None
             and batch_result.next_token_ids is not None
         ):
-            # note (yexiaodong): The custom MLX worker owns forward execution,
+            # Note (yexiaodong): The custom MLX worker owns forward execution,
             # so publish its sampled token for a later batch that breaks a chain.
-            self._execution_bridge.publish_next_tokens(
+            self.execution_bridge.publish_next_tokens(
                 pending.schedule_batch,
                 batch_result.next_token_ids,
             )
+        else:
+            pass
 
         skip_rids = {
             request.request_id
             for request in pending.scheduler_output.requests
-            if request.data.req.finished() or self._req_is_retracted(request.data.req)
+            if request.data.req.finished() or self.req_is_retracted(request.data.req)
         }
-        return self._finalize(
-            batch_result,
-            None,
-            pending.schedule_batch,
-            pending.scheduler_output,
-            skip_rids=skip_rids,
-        )
+        self.resolve_skip_rids = skip_rids
+        try:
+            return self.finalize(
+                batch_result,
+                None,
+                pending.schedule_batch,
+                pending.scheduler_output,
+                skip_rids=skip_rids,
+            )
+        finally:
+            self.resolve_skip_rids = set()
 
 
 def create_mlx_model_worker(
     *,
-    config: Any,
-    server_args: Any,
+    config: ModelWorkerConfig,
+    server_args: ServerArgs,
     gpu_id: int,
     tp_rank: int = 0,
 ):
     """Construct an MLX worker with the same scheduler-facing contract as Omni."""
-    if config.model_arch_override != "Qwen3ASRForConditionalGeneration":
-        raise NotImplementedError(
-            "Omni's MLX worker currently supports only "
-            "Qwen3ASRForConditionalGeneration"
+    model_arch = config.model_arch_override
+    if model_arch == "Qwen3ASRForConditionalGeneration":
+        from sglang_omni.models.qwen3_asr.mlx.runner import (
+            make_qwen3_asr_mlx_runner_class,
         )
 
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+        make_runner_class = make_qwen3_asr_mlx_runner_class
+    elif model_arch == "ArkasrForConditionalGeneration":
+        from sglang_omni.models.arkasr.mlx.runner import make_arkasr_mlx_runner_class
+
+        make_runner_class = make_arkasr_mlx_runner_class
+    elif model_arch == "FunCosyVoice3SGLangModel":
+        from sglang_omni.models.fun_cosyvoice3.mlx.runner import (
+            make_fun_cosyvoice3_mlx_runner_class,
+        )
+
+        make_runner_class = make_fun_cosyvoice3_mlx_runner_class
+    else:
+        raise NotImplementedError(
+            f"Omni's MLX worker does not support model architecture {model_arch!r}"
+        )
+
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.distributed import bootstrap
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-    from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
-    from sglang.srt.runtime_context import publish
+    from sglang.srt.runtime_context import (
+        SpawnRanks,
+        get_device,
+        get_exec,
+        get_memory,
+        get_model,
+        get_parallel,
+        get_schedule,
+        publish,
+        spawn_world_rank,
+    )
     from sglang.srt.server_args import PortArgs
 
-    from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
-
-    class OmniQwen3ASRMlxWorker(MlxTpModelWorker):
+    class OmniMlxWorker(MlxTpModelWorker):
         @property
         def tp_rank(self) -> int:
-            return self.ps.tp_rank
+            return get_parallel().tp_rank
 
-        def _init_model_runner(self):
-            MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
-            runner_class = make_qwen3_asr_mlx_runner_class()
-            init_kwargs = {
-                "model_path": self.server_args.model_path,
-                "trust_remote_code": self.server_args.trust_remote_code,
-                "disable_radix_cache": self.server_args.disable_radix_cache,
-                "mem_fraction_static": self.server_args.mem_fraction_static,
-                "quantization": self.server_args.quantization,
-                "revision": self.server_args.revision,
-                "enable_sampling": self.server_args.mlx_enable_sampling,
-                "sampling_rng_seed": self.server_args.random_seed,
+        def _init_model_runner(self) -> None:
+            MlxModelRunnerStub.validate_startup_weight_load_mode()
+            if model_arch == "FunCosyVoice3SGLangModel":
+                # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
+                # 6,761-codec-token vocabulary rather than Qwen2 text tokens.
+                self.model_config.vocab_size = 6561 + 200
+            else:
+                pass
+            runner_class = make_runner_class()
+            mlx_model_path = (
+                config.mlx_model_path
+                if model_arch == "FunCosyVoice3SGLangModel"
+                else get_model().model_path
+            )
+            if mlx_model_path is None:
+                raise RuntimeError(
+                    "Fun-CosyVoice3 MLX worker requires its model bundle path"
+                )
+            else:
+                pass
+            init_kwargs: MlxModelRunnerOptions = {
+                "model_path": mlx_model_path,
+                "trust_remote_code": get_model().trust_remote_code,
+                "disable_radix_cache": get_memory().disable_radix_cache,
+                "mem_fraction_static": get_schedule().mem_fraction_static,
+                "quantization": get_model().quantization,
+                "revision": (
+                    config.mlx_model_revision
+                    if model_arch == "FunCosyVoice3SGLangModel"
+                    else get_model().revision
+                ),
+                "enable_sampling": get_device().mlx_enable_sampling,
+                "sampling_rng_seed": get_device().random_seed,
                 "deterministic_seeding": (
-                    self.server_args.enable_deterministic_inference
+                    get_exec().deterministic.enable_deterministic_inference
                 ),
             }
-            if self.server_args.max_total_tokens is not None:
-                init_kwargs["pool_size"] = self.server_args.max_total_tokens
-            self._mlx_runner = runner_class(**init_kwargs)
-            self._model_runner = MlxModelRunnerStub(
+            if get_schedule().max_total_tokens is not None:
+                init_kwargs["pool_size"] = get_schedule().max_total_tokens
+            else:
+                pass
+            self._mlx_runner = runner_class(**init_kwargs)  # noqa: leading-underscore
+            self._model_runner = MlxModelRunnerStub(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 model_config=self.model_config,
-                mem_fraction_static=self.server_args.mem_fraction_static,
+                mem_fraction_static=get_schedule().mem_fraction_static,
                 gpu_id=self.gpu_id,
-                ps=self.ps,
                 nccl_port=self.nccl_port,
                 server_args=self.server_args,
                 is_draft_worker=self.is_draft_worker,
                 req_to_token_pool=self.req_to_token_pool,
                 token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
                 memory_pool_config=self.memory_pool_config,
-                mlx_pool_size=self._mlx_runner.pool_size,
+                mlx_pool_size=self._mlx_runner.pool_size,  # noqa: leading-underscore
             )
-            self._mlx_active_rids = set()
-            self._mlx_pool_initialized = False
+            self._mlx_active_rids = set()  # noqa: leading-underscore
+            self._mlx_pool_initialized = False  # noqa: leading-underscore
 
         def get_tp_group(self):
             return self.model_runner.tp_group
@@ -233,45 +372,27 @@ def create_mlx_model_worker(
         def get_attention_tp_cpu_group(self):
             return self.model_runner.attention_tp_group.cpu_group
 
-    attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
-        compute_dp_attention_world_info(
-            server_args.enable_dp_attention,
-            tp_rank,
-            server_args.tp_size,
-            server_args.dp_size,
-            server_args.attn_cp_size,
-        )
-    )
-    ps = ParallelState(
-        tp_rank=tp_rank,
-        tp_size=server_args.tp_size,
-        pp_rank=0,
-        pp_size=1,
-        dp_rank=None,
-        dp_size=server_args.dp_size,
-        attn_tp_rank=attn_tp_rank,
-        attn_tp_size=attn_tp_size,
-        attn_cp_rank=0,
-        attn_cp_size=server_args.attn_cp_size,
-        attn_dcp_rank=tp_rank % server_args.dcp_size,
-        attn_dcp_size=server_args.dcp_size,
-        attn_dp_rank=attn_dp_rank,
-        attn_dp_size=attn_dp_size,
-        moe_ep_rank=0,
-        moe_ep_size=1,
-        moe_dp_rank=None,
-        moe_dp_size=server_args.moe_dp_size,
-        gpu_id=gpu_id,
+    publish(
+        server_args,
+        role="scheduler",
+        ranks=SpawnRanks(
+            world_rank=spawn_world_rank(server_args, tp_rank=tp_rank, pp_rank=0),
+            gpu_id=gpu_id,
+        ),
     )
     nccl_port = config.nccl_port
     if nccl_port is None:
         nccl_port = PortArgs.init_new(server_args).nccl_port
-    # note (yexiaodong): MlxTpModelWorker reads the split runtime configuration
-    # while building its model config, before the bookkeeping stub exists.
-    publish(server_args, role="scheduler")
-    return OmniQwen3ASRMlxWorker(
+    else:
+        pass
+    bootstrap.init_parallel_runtime(
+        server_args=server_args,
+        device=get_device().device,
+        dist_port=nccl_port,
+    )
+    bootstrap.init_layer_runtime(model_config=ModelConfig.from_server_args(server_args))
+    return OmniMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,
-        ps=ps,
         nccl_port=nccl_port,
     )

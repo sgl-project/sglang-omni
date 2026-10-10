@@ -18,6 +18,9 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import engine_builder as whisper_asr_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -25,7 +28,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 
 
-def _encoder_graph_builder(**kwargs):
+def encoder_graph_builder(**kwargs):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
     params = {
@@ -51,7 +54,7 @@ def test_whisper_stage_defaults() -> None:
     assert signature.parameters["encoder_graph_batch_buckets"].default is None
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
     assert signature.parameters["request_build_max_pending"].default == 16
     assert signature.parameters["prefill_coalesce_requests"].default == 2
     assert signature.parameters["prefill_coalesce_wait_ms"].default == 6.0
@@ -67,47 +70,56 @@ def test_whisper_stage_defaults() -> None:
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
 
 
-def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -> None:
+def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs(
+    monkeypatch,
+) -> None:
     calls: list[tuple[list[int], int]] = []
-    builder = _encoder_graph_builder(max_running_requests=4)
+    builder = encoder_graph_builder(max_running_requests=4)
     assert builder.encoder_graph_batch_buckets == (1, 2, 4, 8, 12, 16)
     model = SimpleNamespace(
         init_encoder_graphs=lambda buckets, feature_len: calls.append(
             (list(buckets), feature_len)
         )
     )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+    )
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
     assert calls == [([1, 2, 4], 3000)]
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=False,
     )
     assert calls == [([1, 2, 4], 3000)]
 
 
-def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -> None:
+def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm(
+    monkeypatch,
+) -> None:
     calls: list[list[int]] = []
-    builder = _encoder_graph_builder(
+    builder = encoder_graph_builder(
         enable_pre_lm_encoder=False,
         max_running_requests=32,
     )
     model = SimpleNamespace(
         init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
     )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(max_prefill_tokens=6144, max_running_requests=32),
+    )
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(
-            max_prefill_tokens=6144,
-            max_running_requests=32,
-        ),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
 
@@ -123,25 +135,30 @@ def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -
     ids=["pre_lm", "prefill_without_pre_lm"],
 )
 def test_whisper_encoder_cuda_graph_buckets_are_filtered(
+    monkeypatch,
     builder_kwargs: dict[str, object],
     max_prefill_tokens: int,
     expected: list[int],
 ) -> None:
     calls: list[list[int]] = []
-    builder = _encoder_graph_builder(
+    builder = encoder_graph_builder(
         encoder_graph_batch_buckets=[8, 1, 4, 4, 16],
         **builder_kwargs,
     )
     model = SimpleNamespace(
         init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
     )
-
-    builder.setup_model_resources(
-        model,
-        server_args=SimpleNamespace(
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(
             max_prefill_tokens=max_prefill_tokens,
             max_running_requests=16,
         ),
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
 
@@ -168,6 +185,28 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
 
     with pytest.raises(ValueError, match="encoder prefix must be admitted atomically"):
         builder.adjust_overrides({"chunked_prefill_size": 4096})
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "expected_backend"),
+    [(XPUOmniPlatform, "torch_native"), (CUDAOmniPlatform, None)],
+)
+def test_whisper_encoder_decoder_attention_backend_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_type: type[OmniPlatform],
+    expected_backend: str | None,
+) -> None:
+    monkeypatch.setattr(whisper_asr_builder, "current_platform", platform_type())
+    defaults = whisper_asr_builder.WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    ).generation_defaults(dtype="float16")
+
+    if expected_backend is None:
+        assert "attention_backend" not in defaults
+    else:
+        assert defaults["attention_backend"] == expected_backend
 
 
 def test_whisper_breakable_prefill_graph_policy() -> None:
@@ -230,7 +269,7 @@ def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
 
     assert builder.extra_scheduler_kwargs() == {
         "enable_async_decode": True,
-        "async_decode_min_batch_size": 2,
+        "async_decode_min_batch_size": 1,
         "request_build_max_workers": 8,
         "request_build_max_pending": 16,
         "prefill_coalesce_requests": 2,
@@ -271,11 +310,12 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert stage.factory_path.endswith("create_sglang_whisper_asr_executor")
     assert stage.engine.max_running_requests == 64
     factory = stage.factory
-    assert factory.device == "cuda:0"
+    assert factory.device is None
+    assert stage.gpu == 0
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True
-    assert factory.async_decode_min_batch_size == 2
+    assert factory.async_decode_min_batch_size == 1
     assert factory.request_build_max_pending == 16
     assert factory.prefill_coalesce_requests == 2
     assert factory.prefill_coalesce_wait_ms == 6.0
@@ -357,13 +397,13 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         lambda **kwargs: object(),
     )
 
-    def _fake_scheduler(**kwargs):
+    def fake_scheduler(**kwargs):
         scheduler_kwargs.update(kwargs)
         return SimpleNamespace(**kwargs)
 
-    monkeypatch.setattr(omni_scheduler, "OmniScheduler", _fake_scheduler)
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", fake_scheduler)
 
-    def _fake_server_args_builder(model_path, context_length, **overrides):
+    def fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs["context_length"] = context_length
         build_kwargs.update(overrides)
         server_args = SimpleNamespace(**overrides)
@@ -387,17 +427,19 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
                 max_bs=overrides.get("cuda_graph_max_bs_prefill"),
             ),
         )
-        server_args._cuda_graph_config_locked = {
-            ("prefill", field)
-            for field, key in (
-                ("backend", "cuda_graph_backend_prefill"),
-                ("bs", "cuda_graph_bs_prefill"),
-            )
-            if key in overrides
-        }
+        server_args._cuda_graph_config_locked = (
+            {  # noqa: leading-underscore  # upstream name
+                ("prefill", field)
+                for field, key in (
+                    ("backend", "cuda_graph_backend_prefill"),
+                    ("bs", "cuda_graph_bs_prefill"),
+                )
+                if key in overrides
+            }
+        )
         return server_args
 
-    def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
+    def fake_create_infrastructure(server_args, gpu_id, **kwargs):
         model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
         return True, (
             model_worker,
@@ -410,12 +452,12 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     monkeypatch.setattr(
         sglang_backend,
         "build_sglang_server_args",
-        _fake_server_args_builder,
+        fake_server_args_builder,
     )
     monkeypatch.setattr(
         bootstrap,
         "create_sglang_infrastructure_defer_cuda_graph",
-        _fake_create_infrastructure,
+        fake_create_infrastructure,
     )
     monkeypatch.setattr(
         bootstrap,
@@ -425,8 +467,8 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda model_runner, server_args: attest_calls.append(
-            (model_runner, server_args)
+        lambda model_runner, *, operator_selected: attest_calls.append(
+            (model_runner, operator_selected)
         ),
     )
 
