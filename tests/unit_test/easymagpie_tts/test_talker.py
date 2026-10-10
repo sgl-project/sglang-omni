@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
 
 import torch
 from torch import nn
 
 from sglang_omni.models.easymagpie_tts.decode_buffers import EasyMagpieDecodeBuffers
-from sglang_omni.models.easymagpie_tts.sglang_model import patch_silu_shared_experts
+from sglang_omni.models.easymagpie_tts.sglang_model import (
+    keep_shared_expert_input_intact,
+    patch_silu_shared_experts,
+)
 
 
 def decode_buffers(
@@ -137,3 +141,50 @@ def test_shared_experts_are_patched_to_silu() -> None:
     torch.testing.assert_close(
         layers[0].mixer.shared_experts.act_fn(values), nn.functional.silu(values)
     )
+
+
+def moe_layer(*, shared: bool, latent: bool, inplace: bool) -> nn.Module:
+    layer = nn.Module()
+    layer.mixer = nn.Module()
+    layer.mixer.experts = nn.Module()
+    layer.mixer.experts.moe_runner_config = SimpleNamespace(inplace=inplace)
+    layer.mixer.shared_experts = nn.Module() if shared else None
+    layer.mixer.use_latent_moe = latent
+    return layer
+
+
+def test_routed_experts_stop_overwriting_the_shared_expert_input(caplog) -> None:
+    layers = nn.ModuleList(
+        [
+            moe_layer(shared=True, latent=False, inplace=True),
+            moe_layer(shared=True, latent=True, inplace=True),
+            moe_layer(shared=False, latent=False, inplace=True),
+            moe_layer(shared=True, latent=False, inplace=False),
+        ]
+    )
+    mamba = nn.Module()
+    mamba.mixer = nn.Module()
+    layers.append(mamba)
+    backbone = nn.Module()
+    backbone.model = nn.Module()
+    backbone.model.layers = layers
+
+    assert keep_shared_expert_input_intact(backbone) == 1
+    assert [layer.mixer.experts.moe_runner_config.inplace for layer in layers[:4]] == [
+        False,
+        True,
+        True,
+        False,
+    ]
+    assert len(caplog.records) == 1
+
+
+def test_fixed_sglang_needs_no_fallback(caplog) -> None:
+    backbone = nn.Module()
+    backbone.model = nn.Module()
+    backbone.model.layers = nn.ModuleList(
+        [moe_layer(shared=True, latent=False, inplace=False)]
+    )
+
+    assert keep_shared_expert_input_intact(backbone) == 0
+    assert not caplog.records

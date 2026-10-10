@@ -8,6 +8,7 @@ feedback, and continue/stop logits over the dummy two-token vocabulary.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 
 import torch
@@ -28,6 +29,8 @@ from sglang_omni.models.easymagpie_tts.hf_config import (
 from sglang_omni.models.easymagpie_tts.local_transformer import EasyMagpieTTSHeads
 
 STOP_LOGIT = 30.0
+
+logger = logging.getLogger(__name__)
 
 
 class SiluActivation(nn.Module):
@@ -52,6 +55,40 @@ def patch_silu_shared_experts(backbone: nn.Module) -> int:
     return patched
 
 
+def keep_shared_expert_input_intact(backbone: nn.Module) -> int:
+    """Stop routed experts from overwriting the input the shared experts read.
+
+    NemotronHMoE runs shared and routed experts on separate CUDA streams over
+    the same hidden states; SGLang releases without the upstream fix build
+    the routed experts in place, which corrupts batched decode output.
+    """
+    patched = 0
+    for layer in backbone.model.layers:
+        mixer = layer.mixer
+        experts = getattr(mixer, "experts", None)
+        racy = (
+            experts is not None
+            and getattr(mixer, "shared_experts", None) is not None
+            and not getattr(mixer, "use_latent_moe", False)
+            and experts.moe_runner_config.inplace
+        )
+        if racy:
+            experts.moe_runner_config.inplace = False
+            patched += 1
+        else:
+            pass
+    if patched:
+        logger.warning(
+            "SGLang builds Nemotron-H routed experts in place over the "
+            "shared-expert input; disabled in-place output on %d MoE layers. "
+            "Upgrade SGLang to drop this fallback.",
+            patched,
+        )
+    else:
+        pass
+    return patched
+
+
 class EasyMagpieTTSForConditionalGeneration(nn.Module):
     def __init__(
         self,
@@ -68,6 +105,7 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
         )
         self.heads = EasyMagpieTTSHeads(self.tts_config)
         patch_silu_shared_experts(self.backbone)
+        keep_shared_expert_input_intact(self.backbone)
         self.decode_buffers: EasyMagpieDecodeBuffers | None = None
         self.last_phoneme_tokens: torch.Tensor | None = None
 
