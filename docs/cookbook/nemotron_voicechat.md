@@ -54,6 +54,22 @@ Headphones help avoid acoustic feedback. The example uses the shared realtime
 playground and supports one session on one GPU, with a four-minute browser limit.
 It uses the checkpoint's default prompt and voice.
 
+## Tool calling
+
+VoiceChat writes tool calls on its function channel. `NemotronVoiceChatToolPipelineConfig` runs it together with a CPU tool node as one two-node session graph (see [Session Graph](../developer_reference/session_graph.md)): the thinker gets the checkpoint's tool-calling system prompt, a completed `<TOOLCALL>` span is routed to the tool node, and the tool response is fed back on the function channel. The example ships the checkpoint's `generate_random_number` tool:
+
+```bash
+python examples/run_nemotron_voicechat_tool.py \
+  --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B \
+  --audio /path/to/NVIDIA-NemotronLabs-VoiceChat-11B/tool_call.wav \
+  --seconds 10 --tail-seconds 15 \
+  --out tool_reply.wav
+```
+
+The recording streams in real time. On one H200 the run prints the parsed call (`generate_random_number` with `min=1, max=50`), logs the tool result, and the reply ends with the spoken number, for example "The random number is fifteen." `--seconds 10` stops the recording after the request: the recording's user keeps talking at 18.7 s, and the model yields the floor when it hears speech, so a longer clip can cut the spoken answer short.
+
+A tool response is fed back one token per 80 ms frame, about 1.7 s for a short response. The model was trained with silence on the user channel during that window and the checkpoint documents that the user cannot interrupt during tool execution, so speech in that window can degrade the answer.
+
 ## Offline request parameters
 
 | Parameter | Effect |
@@ -67,7 +83,7 @@ Audio randomness is governed by the checkpoint's own settings, read from `config
 
 - The offline pipeline handles one request at a time (`max_running_requests=1` for both engines), without a barge-in or interrupt API.
 - Single speaker (`Aria`, the checkpoint's baked-in prompt latents).
-- The `function_head` tool-call channel is decoded and carried through but nothing acts on it.
+- Tool calling runs only through the session graph example below; the realtime WebSocket path does not offer tools yet.
 - Classifier-free guidance is off (`guidance_scale=0`) although the checkpoint config enables it at 0.2.
 - Talker output is not bit-identical to NeMo's offline script even with deterministic sampling on both sides (about 82 % of quantizer cells and 63 of 150 frames agree on a 12 s fixture; transcripts and amplitude envelopes match). Known causes: the backbone and KV cache run in bfloat16 because SGLang's attention backends and `sgl_kernel`'s Gemma RMSNorm have no fp32 path, while NeMo runs the whole talker in fp32; NeMo's offline script enables classifier-free guidance by default; and NeMo's offline recipe walks the system-prompt region before frame 0 (realtime convention here; see `prompt_region_steps`). The thinker is frame-exact with NeMo.
 - NeMo decodes the perception encoder's flush row as a 151st frame; this pipeline computes it but does not decode it, so replies are one frame (80 ms) shorter.

@@ -29,10 +29,15 @@ from sglang_omni.models.nemotron_voicechat.engine_builder import (
     NemotronVoiceChatEngineBuilder,
     NemotronVoiceChatTalkerEngineBuilder,
 )
+from sglang_omni.models.nemotron_voicechat.request_builders import SYSTEM_PROMPT
 from sglang_omni.models.nemotron_voicechat.stages import (
     PERCEPTION_PREFIX,
     create_code2wav_executor,
     perception_config,
+)
+from sglang_omni.models.nemotron_voicechat.tools import (
+    ToolDefinition,
+    tool_system_prompt,
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 from sglang_omni.proto.request import StagePayload
@@ -136,10 +141,15 @@ def create_thinker(
     dtype: str = "bfloat16",
     device: str | None = None,
     gpu_id: int | None = None,
+    tool_definitions: list[ToolDefinition] | None = None,
     server_args_overrides: dict[str, EngineOverrideValue] | None = None,
     **overrides: EngineOverrideValue,
 ) -> OmniScheduler:
-    return ThinkerBuilder().build(
+    """tool_definitions switches the system prompt to the checkpoint's tool-calling prompt."""
+    system_prompt = (
+        tool_system_prompt(tool_definitions) if tool_definitions else SYSTEM_PROMPT
+    )
+    return ThinkerBuilder(system_prompt=system_prompt).build(
         model_path,
         dtype=dtype,
         device=device,

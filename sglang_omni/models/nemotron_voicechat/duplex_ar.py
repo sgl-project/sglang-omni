@@ -25,9 +25,19 @@ from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
     NUM_ITER,
     NemotronVoiceChatTalkerModelRunner,
 )
+from sglang_omni.models.nemotron_voicechat.tools import (
+    END_OF_TOOL_CALL_TOKEN,
+    START_OF_TOOL_CALL_TOKEN,
+    ToolCall,
+    format_tool_response,
+    parse_tool_calls,
+)
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
+from sglang_omni.scheduling.sglang_backend.ar_session import (
+    ARSessionAdapter,
+    ARSessionPreparation,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -42,6 +52,9 @@ class FrameHistory:
     previous_codes: torch.Tensor | None = None
     text_token_ids: list[int] = field(default_factory=list)
     emitted_text: str = ""
+    # None outside a tool call; the function-channel ids of the open call otherwise.
+    tool_call_token_ids: list[int] | None = None
+    forced_function_token_ids: list[int] = field(default_factory=list)
 
 
 def attach_fusion_rows(
@@ -205,6 +218,15 @@ class FrameAdapter(ARSessionAdapter):
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity, None)
 
+    def prepare_unit(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        payload: StagePayload,
+    ) -> ARSessionPreparation:
+        # A tool response is relayed without a model frame; the thinker consumes it in later frames.
+        return ARSessionPreparation(bypass_generation="tool_response" in payload.data)
+
     def finish_input(
         self, session_identity: SessionIdentity, payload: StagePayload
     ) -> StagePayload | None:
@@ -262,6 +284,30 @@ class ThinkerAdapter(FrameAdapter):
         self.silent_token_ids = set(tokenizer.all_special_ids) | {
             tokenizer.convert_tokens_to_ids(t) for t in ("<s>", "</s>")
         }
+        self.start_of_tool_call_id = tokenizer.convert_tokens_to_ids(
+            START_OF_TOOL_CALL_TOKEN
+        )
+        self.end_of_tool_call_id = tokenizer.convert_tokens_to_ids(
+            END_OF_TOOL_CALL_TOKEN
+        )
+
+    def prepare_unit(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        payload: StagePayload,
+    ) -> ARSessionPreparation:
+        tool_response = payload.data.get("tool_response")
+        if tool_response is not None:
+            self.states[session_identity].forced_function_token_ids.extend(
+                self.tokenizer.encode(
+                    format_tool_response(tool_response["responses"]),
+                    add_special_tokens=False,
+                )
+            )
+        else:
+            pass
+        return super().prepare_unit(session_identity, chunk, payload)
 
     @torch.inference_mode()
     def build(
@@ -288,9 +334,16 @@ class ThinkerAdapter(FrameAdapter):
             )
         else:
             opening_token_ids = []
+            # Response tokens replace the model's own function input, one per frame.
+            # Note (Dayuxiaoshui): Training saw silence on the user channel here; live input is kept since the user is waiting.
+            function_token_id = (
+                state.forced_function_token_ids.pop(0)
+                if state.forced_function_token_ids
+                else state.previous_function_token_id
+            )
             text, function = embeddings(
                 torch.tensor(
-                    [state.previous_text_token_id, state.previous_function_token_id],
+                    [state.previous_text_token_id, function_token_id],
                     device=embeddings.weight.device,
                 )
             )
@@ -313,6 +366,7 @@ class ThinkerAdapter(FrameAdapter):
         state.previous_function_token_id = int(
             request_data.extra_model_outputs["function_ids"][-1]
         )
+        tool_calls = self.collect_tool_calls(state)
         delta = ""
         if state.previous_text_token_id not in self.silent_token_ids:
             state.text_token_ids.append(state.previous_text_token_id)
@@ -332,8 +386,32 @@ class ThinkerAdapter(FrameAdapter):
             text_token=state.previous_text_token_id,
             function_token=state.previous_function_token_id,
             text=delta,
+            tool_calls=tool_calls,
         )
         return payload
+
+    def collect_tool_calls(self, state: FrameHistory) -> list[ToolCall]:
+        """Track the function channel; return the calls of a span that just closed."""
+        function_token_id = state.previous_function_token_id
+        assert function_token_id is not None
+        if state.forced_function_token_ids:
+            # Predictions under a forced response are not the model's own calls.
+            return []
+        elif function_token_id == self.start_of_tool_call_id:
+            state.tool_call_token_ids = [function_token_id]
+            return []
+        elif (
+            state.tool_call_token_ids is None or function_token_id == self.pad_token_id
+        ):
+            return []
+        elif function_token_id != self.end_of_tool_call_id:
+            state.tool_call_token_ids.append(function_token_id)
+            return []
+        else:
+            state.tool_call_token_ids.append(function_token_id)
+            call_text = self.tokenizer.decode(state.tool_call_token_ids)
+            state.tool_call_token_ids = None
+            return parse_tool_calls(call_text)
 
 
 class TalkerAdapter(FrameAdapter):

@@ -53,6 +53,10 @@ class PerceptionHooks(SessionHooks):
         state = self.states[context.session_identity]
         if state.is_ended:
             raise ValueError("VoiceChat input already ended")
+        elif chunk.modality == "tool_response":
+            # Relayed to the thinker without a perception frame.
+            payload.data = {"tool_response": chunk.payload, "eos": False}
+            return payload
         else:
             pass
         if chunk.modality != "audio" or chunk.format != "pcm16":
@@ -153,6 +157,11 @@ class CodecHooks(SessionHooks):
         else:
             pass
         model_output = payload.data
+        if "tool_response" in model_output:
+            payload.data = {}
+            return payload
+        else:
+            pass
         codes = model_output.get("codes")
         if codes is not None:
             state.code_frames.append(codes.reshape(-1).to(self.device))
@@ -200,6 +209,15 @@ class CodecHooks(SessionHooks):
                 eos=eos,
             )
         )
+        tool_calls = model_output.get("tool_calls")
+        if tool_calls:
+            context.emit(
+                TimedChunk(
+                    "tool_call", chunk.t_start_ms, 0, chunk.seq, {"calls": tool_calls}
+                )
+            )
+        else:
+            pass
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:

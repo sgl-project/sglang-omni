@@ -9,13 +9,18 @@ from sglang_omni.config.schema import (
     EngineArgs,
     EngineStageConfig,
     FactoryArgs,
+    GraphConfig,
+    GraphEdgeConfig,
+    GraphNodeConfig,
     PipelineConfig,
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.nemotron_voicechat.tools import RANDOM_NUMBER_TOOL
 
 PREFIX = "sglang_omni.models.nemotron_voicechat.duplex_stages"
 STAGES = ["perception", "thinker", "talker", "code2wav"]
+TOOL_STAGE = "tool"
 
 
 def stages() -> list[StageConfig]:
@@ -70,3 +75,53 @@ class NemotronVoiceChatDuplexPipelineConfig(PipelineConfig):
             require_memory_fraction_for_colocation=False
         )
     )
+
+
+def tool_stages() -> list[StageConfig]:
+    """The duplex chain with tool prompting, plus a CPU tool node."""
+    duplex_stages = stages()
+    for stage in duplex_stages:
+        if stage.name == "thinker":
+            stage.factory = FactoryArgs(
+                dtype="bfloat16", tool_definitions=[RANDOM_NUMBER_TOOL]
+            )
+        else:
+            pass
+    return [
+        *duplex_stages,
+        StageConfig(
+            name=TOOL_STAGE,
+            process=TOOL_STAGE,
+            factory_path="sglang_omni.scheduling.tool_session.create_tool_scheduler",
+            factory=FactoryArgs(
+                tools={
+                    "generate_random_number": "sglang_omni.models.nemotron_voicechat.tools.generate_random_number"
+                }
+            ),
+            terminal=True,
+        ),
+    ]
+
+
+def tool_graph() -> GraphConfig:
+    return GraphConfig(
+        nodes={
+            "voicechat": GraphNodeConfig(stages=STAGES),
+            "tool": GraphNodeConfig(stages=[TOOL_STAGE]),
+        },
+        inputs={"audio": ["voicechat"]},
+        output="voicechat",
+        edges=[
+            GraphEdgeConfig(source="voicechat", target="tool", modality="tool_call"),
+            GraphEdgeConfig(
+                source="tool", target="voicechat", modality="tool_response"
+            ),
+        ],
+    )
+
+
+class NemotronVoiceChatToolPipelineConfig(NemotronVoiceChatDuplexPipelineConfig):
+    """VoiceChat and an external tool node as one two-node session graph."""
+
+    stages: list[StageConfig] = Field(default_factory=tool_stages)
+    graph: GraphConfig | None = Field(default_factory=tool_graph)
