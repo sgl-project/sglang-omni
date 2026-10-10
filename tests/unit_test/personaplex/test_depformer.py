@@ -96,7 +96,7 @@ def test_sixteen_step_checkpoint_loads_its_first_eight_steps():
 def test_forced_codes_are_kept_and_condition_later_steps():
     model = Depformer(SPEC)
     model.load_reference_weights(reference_weights(8))
-    greedy = lambda logits: sample_token(logits, AudioSampling(0.0, 0))
+    greedy = lambda logits: sample_token(logits, AudioSampling(0.0, 0), [None, None])
     text = torch.tensor([3, 3])
     hidden = torch.randn(2, SPEC.input_dim)
     free = torch.full((2, 8), -1, dtype=torch.long)
@@ -196,14 +196,36 @@ def test_fused_projections_match_separate_linears(
 def test_greedy_sampling_is_argmax_and_top_k_stays_inside_k():
     logits = torch.randn(4, 50)
     assert (
-        sample_token(logits, AudioSampling(0.0, 25)).tolist()
+        sample_token(logits, AudioSampling(0.0, 25), [None] * 4).tolist()
         == logits.argmax(-1).tolist()
     )
     generator = torch.Generator().manual_seed(7)
-    picks = sample_token(logits, AudioSampling(0.8, 3), generator)
+    picks = sample_token(logits, AudioSampling(0.8, 3), [generator] * 4)
     top3 = torch.topk(logits, 3).indices
     assert all(pick in top3[row].tolist() for row, pick in enumerate(picks.tolist()))
     again = sample_token(
-        logits, AudioSampling(0.8, 3), torch.Generator().manual_seed(7)
+        logits, AudioSampling(0.8, 3), [torch.Generator().manual_seed(7)] * 4
     )
     assert again.tolist() == picks.tolist()
+
+
+def test_each_row_draws_from_its_own_generator():
+    logits = torch.randn(4, 50)
+    sampling = AudioSampling(1.0, 20)
+
+    def alone(row: int, seed: int) -> list[int]:
+        generator = torch.Generator().manual_seed(seed)
+        return [
+            int(sample_token(logits[row : row + 1], sampling, [generator]))
+            for _ in range(20)
+        ]
+
+    generators = [
+        torch.Generator().manual_seed(7),
+        None,
+        None,
+        torch.Generator().manual_seed(8),
+    ]
+    batched = [sample_token(logits, sampling, generators) for _ in range(20)]
+    assert [int(picks[0]) for picks in batched] == alone(0, 7)
+    assert [int(picks[3]) for picks in batched] == alone(3, 8)

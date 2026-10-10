@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -16,9 +17,102 @@ from sglang_omni.pipeline.mp_runner import (
     resolve_same_process_targets,
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from sglang_omni.pipeline.stage_workers import (
+    StageLaunchConfig,
+    StageWorkerProcessSpec,
+    patched_spawn_env,
+)
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
+
+
+@pytest.mark.parametrize(("process_count", "threads"), [(1, 72), (8, 18)])
+def test_cpu_thread_plan_caps_threads_at_the_bound_cpus(
+    monkeypatch: pytest.MonkeyPatch, process_count: int, threads: int
+) -> None:
+    near = frozenset(range(72))
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.effective_cpu_count", Mock(return_value=144)
+    )
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.gpu_local_affinity", lambda _ids: near
+    )
+    specs = [
+        StageWorkerProcessSpec(f"p{i}", [StageLaunchConfig(f"s{i}", gpu_id=0)])
+        for i in range(process_count)
+    ]
+
+    apply_cpu_thread_plan([Mock(process_specs=specs)])
+
+    assert {(spec.cpu_threads, spec.cpu_affinity) for spec in specs} == {
+        (threads, near)
+    }
+
+
+def test_cpu_thread_plan_binds_cpu_only_processes_near_the_pipeline_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    near = frozenset(range(72))
+    asked = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.gpu_local_affinity",
+        lambda ids: asked.append(list(ids)) or near,
+    )
+    cpu_only = StageWorkerProcessSpec("pre", [StageLaunchConfig("pre")])
+    gpu = StageWorkerProcessSpec("thinker", [StageLaunchConfig("thinker", gpu_id=1)])
+    no_gpu = StageWorkerProcessSpec("decode", [StageLaunchConfig("decode")])
+
+    apply_cpu_thread_plan([Mock(process_specs=[cpu_only, gpu])])
+    apply_cpu_thread_plan([Mock(process_specs=[no_gpu])])
+
+    assert asked == [[1], [1]]
+    assert (cpu_only.cpu_affinity, no_gpu.cpu_affinity) == (near, None)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [("derived", "72"), ("pipeline", "144"), ("stage", "144"), ("process", "144")],
+)
+def test_bound_process_caps_only_a_derived_thread_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, expected: str
+) -> None:
+    written = {"OMP_NUM_THREADS": "144"}
+
+    class DerivingConfig(PipelineConfig):
+        def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+            return {**written, **super().resolved_stage_env_defaults(stage_name)}
+
+    config = DerivingConfig(
+        model_path="model",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        env_defaults=written if source == "pipeline" else {},
+        stages=[
+            stage(
+                "preprocessing",
+                terminal=True,
+                env=written if source == "stage" else {},
+            )
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    try:
+        groups = build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+        )
+    finally:
+        prep.runtime_dir.close()
+    spec = groups[0].process_specs[0]
+    spec.cpu_affinity = frozenset(range(72))
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+
+    with patched_spawn_env(spec, extra_env=written if source == "process" else None):
+        assert os.environ["OMP_NUM_THREADS"] == expected
 
 
 def test_cpu_thread_plan_counts_final_workers(
