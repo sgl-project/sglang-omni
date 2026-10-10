@@ -20,6 +20,7 @@ import torch._dynamo as dynamo
 import torch.nn.functional as F
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
+    CONV_CONTEXT_FRAMES,
     FA3_PAGE_SIZE,
     PACKED_INDUCTOR_OPTIONS,
     PackedDiT,
@@ -30,9 +31,6 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
 )
 
 BLOCK_FRAMES = 64
-# Note (Jiaxin Deng): each positional conv has kernel 31, so it reads the 30
-# frames before its input frame.
-CONV_CONTEXT_FRAMES = 30
 # note(ratish): FA3's pick for these segments with a tight page table; pinned, since a
 # graph's wider table would change the pick and the result.
 PREFIX_FA3_SPLITS = 1
