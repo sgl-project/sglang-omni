@@ -16,7 +16,7 @@ The pipeline has three steps:
 | 2. ASR | `asr` | Transcribes the input and output audio with word timestamps (Parakeet), then computes VAD speech intervals with the official timing code |
 | 3. Judge | `judge` | Starts the judge server, sends the four transcripts of each pair to an LLM with the official prompt, runs the semantic A/F/U judge (Qwen only), stops the server, then writes `summary.json` and `report.txt` |
 
-Every step takes `--run-name` and `--repeat`. A run is one fixed set of pairs under `$FDB_WORK/runs/RUN_NAME`. A repeat is one independent generation of those pairs, scored on its own in `repeat-N/`; sampling is on, so repeats differ. `aggregate --run-name RUN_NAME` reports the mean ± standard deviation over the finished repeats.
+Every step takes `--run-name` and `--repeat`. A run is one fixed set of pairs under `$FDB_WORK/runs/RUN_NAME`. `--repeat N` does not run the benchmark N times, and it does not mean "repeat three times." One command runs once. The value is only a string inserted into the output path, `$FDB_WORK/runs/RUN_NAME/repeat-N/`, so you can tell that invocation apart from another invocation of the same run. The default is `--repeat 1`, which writes `repeat-1/`. `--repeat 3` still runs once, and it writes `repeat-3/`. To measure variance, invoke the three steps again yourself with a different N (`--repeat 2`, then `--repeat 3`). Each invocation generates the same pairs once; sampling is on, so the generations differ. `aggregate --run-name RUN_NAME` reports the mean ± standard deviation over the finished `repeat-*` directories.
 
 The results are:
 
@@ -73,7 +73,7 @@ python -m benchmarks.duplex.fdb_v15 aggregate --run-name preflight
 
 The preflight passes when `generate` prints `{"pass": 8}` and `{"eligible_pairs": 4, ...}`, `asr` prints `{"ok": 16}` and `{"ok": 8}`, and `judge` prints `{"valid": 4}` and `controls: 18/18 axis statuses match`. If anything differs, see [Troubleshooting](#troubleshooting).
 
-To do repeative evaluation, run the measured benchmark:
+The loop below is an ordinary shell loop. It calls the benchmark three times. `--repeat` does not loop by itself. The first iteration writes `$FDB_WORK/runs/minicpmo-48/repeat-1/`, the second writes `repeat-2/`, and the third writes `repeat-3/`. A later iteration does not overwrite an earlier one.
 
 ```bash
 for repeat in 1 2 3; do
@@ -179,7 +179,7 @@ Per-run choices (`--run-name`, `--repeat`, pair selection, `--num-shards`) are c
 
 ## Notes
 
-- **Repeat directories are write-once.** `generate --repeat N` refuses to overwrite `repeat-N`. To redo a repeat, delete `$FDB_WORK/runs/RUN_NAME/repeat-N` and rerun all three steps. `asr` and `judge` resume finished work when rerun.
+- **`--repeat` only labels the directory.** It does not repeat the run. `generate --repeat 1` and `generate --repeat 2` write `repeat-1/` and `repeat-2/` and leave each other alone. `generate --repeat N` also refuses to overwrite an existing `repeat-N/recording`. To redo that one invocation, delete `$FDB_WORK/runs/RUN_NAME/repeat-N` and rerun all three steps for the same N. `asr` and `judge` resume finished work when rerun.
 - **Keep the settings fixed across the repeats of one run.** Never mix repeats with different pair selections, `--num-shards`, `SERVER_CONFIG` or judge; use a new `--run-name` instead.
 - **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so latencies are measured under load and are not comparable to one shard. It must not exceed `max_sessions` in `SERVER_CONFIG` (2 by default); extra connections are rejected with HTTP 503.
 - **Repeats need sampling.** `minicpmo-parity.yaml` decodes greedily, so its repeats are nearly identical. Use it for regression checks against a fixed recording, not for variance.
