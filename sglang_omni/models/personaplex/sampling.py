@@ -4,8 +4,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import torch
+
+
+class AudioTokenSampler(Protocol):
+    def __call__(self, logits: torch.Tensor) -> torch.Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,8 @@ def sample_token(
     logits: torch.Tensor,
     sampling: AudioSampling,
     generator: torch.Generator | None = None,
+    *,
+    noise: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """[B, card] float logits → [B] token ids.
 
@@ -37,7 +44,10 @@ def sample_token(
         probs, indices = torch.topk(probs, min(sampling.top_k, probs.shape[-1]), dim=-1)
     else:
         indices = None
-    noise = torch.empty_like(probs).exponential_(1.0, generator=generator)
+    if noise is None:
+        noise = torch.empty_like(probs).exponential_(1.0, generator=generator)
+    else:
+        assert noise.shape == probs.shape
     choice = (probs / noise).argmax(dim=-1, keepdim=True)
     if indices is not None:
         choice = indices.gather(-1, choice)
@@ -46,4 +56,4 @@ def sample_token(
     return choice[:, 0]
 
 
-__all__ = ["AudioSampling", "sample_token"]
+__all__ = ["AudioSampling", "AudioTokenSampler", "sample_token"]

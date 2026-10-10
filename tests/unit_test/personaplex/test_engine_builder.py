@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.personaplex.config import PersonaPlexPipelineConfig
 from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexEngineBuilder,
     shim_checkpoint_dir,
@@ -69,3 +71,16 @@ def test_generation_defaults_keep_the_runner_assumptions():
     assert defaults["disable_overlap_schedule"] is True
     assert defaults["disable_cuda_graph"] is True
     assert defaults["sampling_backend"] == "pytorch"
+
+
+@pytest.mark.parametrize("batch_sizes", [[], [1, 4]])
+def test_depformer_cuda_graph_buckets_accept_dotted_cli(batch_sizes: list[int]) -> None:
+    config = ConfigManager(
+        PersonaPlexPipelineConfig(model_path="personaplex")
+    ).merge_config(
+        {"lm.factory.depformer_cuda_graph_batch_sizes": json.dumps(batch_sizes)}
+    )
+    assert (
+        config.stage_factory_kwargs("lm")["depformer_cuda_graph_batch_sizes"]
+        == batch_sizes
+    )

@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Depformer weight slicing and teacher forcing, on a scaled-down spec."""
 
+import pytest
 import torch
 
 from sglang_omni.models.personaplex.architecture import AUDIO_CARD, DepformerSpec
 from sglang_omni.models.personaplex.components.depformer import Depformer
+from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
+    DepformerCudaGraphRunner,
+)
 from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
 
 SPEC = DepformerSpec(
@@ -122,3 +126,87 @@ def test_greedy_sampling_is_argmax_and_top_k_stays_inside_k():
         logits, AudioSampling(0.8, 3), torch.Generator().manual_seed(7)
     )
     assert again.tolist() == picks.tolist()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    "sampling", [AudioSampling(0.0, 0), AudioSampling(0.8, 7), AudioSampling(0.8, 0)]
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@torch.inference_mode()
+def test_cuda_graph_codes_and_request_rng_match_eager(
+    sampling: AudioSampling, dtype: torch.dtype
+) -> None:
+    model = Depformer(SPEC).to(device="cuda", dtype=dtype).eval()
+    for parameter in model.parameters():
+        parameter.normal_(std=0.05)
+    runner = DepformerCudaGraphRunner(model, (1, 4))
+    eager_generators = [
+        torch.Generator(device="cuda").manual_seed(seed) for seed in (7, 9)
+    ]
+    graph_generators = [
+        torch.Generator(device="cuda").manual_seed(seed) for seed in (7, 9)
+    ]
+    retained_codes: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    for request_index, batch_size in ((0, 1), (1, 4), (0, 3), (1, 1), (0, 1)):
+        text_tokens = torch.arange(batch_size, device="cuda") + 3
+        hidden_states = torch.randn(
+            batch_size, SPEC.input_dim, device="cuda", dtype=dtype
+        )
+        forced_codes = torch.full((batch_size, SPEC.steps), -1, device="cuda")
+        forced_codes[0, 0] = 17
+        forced_codes[-1, 2:4] = 23
+        expected_codes = model.generate(
+            text_tokens,
+            hidden_states,
+            forced_codes,
+            lambda logits: sample_token(
+                logits, sampling, eager_generators[request_index]
+            ),
+        )
+        actual_codes = runner.generate(
+            text_tokens,
+            hidden_states,
+            forced_codes,
+            sampling,
+            graph_generators[request_index],
+        )
+        torch.testing.assert_close(actual_codes, expected_codes, atol=0, rtol=0)
+        assert torch.equal(
+            eager_generators[request_index].get_state(),
+            graph_generators[request_index].get_state(),
+        )
+        retained_codes.append((actual_codes, actual_codes.clone()))
+
+    assert runner.graphs and all(
+        captured is not None for captured in runner.graphs.values()
+    )
+    for actual_codes, saved_codes in retained_codes:
+        torch.testing.assert_close(actual_codes, saved_codes, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("batch_sizes", [(), (1,), (1, 4)])
+@torch.inference_mode()
+def test_cuda_graph_runner_falls_back_on_cpu(batch_sizes: tuple[int, ...]) -> None:
+    model = Depformer(SPEC).eval()
+    model.load_reference_weights(reference_weights(SPEC.steps))
+    runner = DepformerCudaGraphRunner(model, batch_sizes)
+    sampling = AudioSampling(0.8, 7)
+    text_tokens = torch.tensor([3, 4])
+    hidden_states = torch.randn(2, SPEC.input_dim)
+    forced_codes = torch.full((2, SPEC.steps), -1)
+    expected_generator = torch.Generator().manual_seed(7)
+    actual_generator = torch.Generator().manual_seed(7)
+    expected_codes = model.generate(
+        text_tokens,
+        hidden_states,
+        forced_codes,
+        lambda logits: sample_token(logits, sampling, expected_generator),
+    )
+    actual_codes = runner.generate(
+        text_tokens, hidden_states, forced_codes, sampling, actual_generator
+    )
+    torch.testing.assert_close(actual_codes, expected_codes, atol=0, rtol=0)
+    assert torch.equal(actual_generator.get_state(), expected_generator.get_state())

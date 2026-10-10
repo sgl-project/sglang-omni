@@ -15,6 +15,9 @@ from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME
+from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
+    DepformerCudaGraphRunner,
+)
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
     PERSONAPLEX_ARCH,
@@ -73,9 +76,16 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     supports_context_length_override = True
 
     def __init__(
-        self, *, max_running_requests: int = 1, context_length: int | None = None
+        self,
+        *,
+        max_running_requests: int = 1,
+        context_length: int | None = None,
+        depformer_cuda_graph_batch_sizes: list[int] | None = None,
     ) -> None:
         self.max_running_requests = max_running_requests
+        self.depformer_cuda_graph_batch_sizes: tuple[int, ...] = tuple(
+            depformer_cuda_graph_batch_sizes or ()
+        )
         self.model_arch_override = PERSONAPLEX_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
@@ -116,7 +126,14 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> PersonaPlexModelRunner:
-        return PersonaPlexModelRunner(model_worker, output_proc)
+        runner = PersonaPlexModelRunner(model_worker, output_proc)
+        if self.depformer_cuda_graph_batch_sizes:
+            runner.depformer_cuda_graph = DepformerCudaGraphRunner(
+                runner.model.depformer, self.depformer_cuda_graph_batch_sizes
+            )
+        else:
+            pass
+        return runner
 
     def make_adapters(self, model: PersonaPlexForCausalLM) -> tuple[
         LMRequestBuilder,
