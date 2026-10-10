@@ -549,9 +549,12 @@
 <p>LLaDA2.0-Uni runs a 4-stage pipeline
 (<code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">image_encoder</span> <span class="pre">→</span> <span class="pre">thinker</span> <span class="pre">→</span> <span class="pre">decode</span></code>) on a single GPU. The
 thinker disables CUDA graph by default for this experimental DLLM path.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/LLaDA2.0-Uni<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/LLaDA2.0-Uni<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.enable_torch_compile<span class="w"> </span><span class="nb">false</span>
 </pre></div>
 </div>
+<p>The cookbook explicitly disables <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> to match the validated
+generation settings. CUDA Graph execution is controlled separately.</p>
 </section>
 <section id="text-input">
 <h2>Text Input<a class="headerlink" href="#text-input" title="Link to this heading">#</a></h2>
