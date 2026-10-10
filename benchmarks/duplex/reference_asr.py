@@ -41,6 +41,8 @@ from benchmarks.duplex.reference_core import (
 )
 from benchmarks.duplex.run_artifacts import file_sha256
 
+USE_CUDA_GRAPH_DECODER = False
+
 
 class WordTimestamp(TypedDict):
     word: str
@@ -70,6 +72,7 @@ def asr_config(asr_path: Path, nemo_sha: str, device: str) -> dict[str, JsonValu
         "model_id": ASR_MODEL_ID,
         "checkpoint_sha256": nemo_sha,
         "device_type": device,
+        "use_cuda_graph_decoder": USE_CUDA_GRAPH_DECODER,
         "entry": "get_time_aligned_transcription(root, 'default', 'audio.wav')",
         "model_bridge": "nemo_asr.models.ASRModel.from_pretrained -> preloaded restore_from(local .nemo)",
         "nemo_toolkit": package_versions()["nemo_toolkit"],
@@ -116,6 +119,13 @@ def load_nemo_model(nemo_path: Path, device: str) -> ParakeetModel:
     model = nemo_asr.models.ASRModel.restore_from(
         restore_path=str(nemo_path), map_location=torch.device(device)
     )
+    # Note (wenyao): NeMo 3.0 graph decoding truncates Parakeet transcripts on H100.
+    decoding_config = dict(model.cfg.decoding)
+    decoding_config["greedy"] = {
+        **decoding_config["greedy"],
+        "use_cuda_graph_decoder": USE_CUDA_GRAPH_DECODER,
+    }
+    model.change_decoding_strategy(decoding_config)
     model.eval()
     return model
 

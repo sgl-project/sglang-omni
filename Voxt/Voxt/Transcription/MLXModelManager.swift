@@ -840,7 +840,7 @@ class MLXModelManager: ObservableObject {
         }
         try Task.checkCancellation()
         if let kind = OmniASRBackend.modelKind(for: repo),
-           let configuration = OmniASRBackend.configuration() {
+           let configuration = OmniASRBackend.configuration(for: kind) {
             // One server at a time: earlier runtimes stop before this one starts.
             await omniLedger.waitForRetirements()
             try Task.checkCancellation()

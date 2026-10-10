@@ -75,6 +75,9 @@ class StreamingDetokenizeScheduler:
         self.request_states: dict[str, RequestState] = {}
         self.done_seen: OrderedDict[str, None] = OrderedDict()
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.is_running = True
         while self.is_running:

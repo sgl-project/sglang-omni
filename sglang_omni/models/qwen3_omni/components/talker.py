@@ -598,7 +598,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         forward_batch: ForwardBatch,
     ):
         """
-        Forward through the code predictor (matches vLLM-Omni's mtp_block pattern).
+        Forward through the code predictor (MTP block).
 
         Args:
             inputs_embeds: [batch, seq_len, hidden_size] or [total_tokens, hidden_size]

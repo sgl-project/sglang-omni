@@ -106,7 +106,7 @@ enum MeetingASRSupport {
         guard MLXModelCatalog.isAvailableModelRepo(repo) else {
             return .chunk(profile: .quality)
         }
-        let liveMode = MLXModelCatalog.liveMode(for: repo)
+        let liveMode = MLXModelManager.liveMode(for: repo)
         switch liveMode {
         case .nativeQwenLive, .nativeStreamingLive, .nativeNemotronLive:
             return .liveLocal(mode: liveMode)

@@ -29,23 +29,56 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
 // Join segment texts, with a space only between two spaced scripts.
 std::string JoinTranscriptParts(const std::vector<std::string> &parts);
 
-// Manual-turn session: audio becomes one segment, cut every max segment
-// length. Handle runs on the socket's thread; preview decodes run on the
-// worker and report back through the sender.
-class RealtimeSession : public std::enable_shared_from_this<RealtimeSession> {
+// One realtime socket's session: numbered events out, client events in.
+// Handle runs on the socket's thread; decodes run on the worker and report
+// back through the sender.
+class RealtimeConnection
+    : public std::enable_shared_from_this<RealtimeConnection> {
 public:
   // Writes one serialized event; false once the socket is gone.
   using Sender = std::function<bool(const std::string &)>;
 
-  RealtimeSession(TranscriptionWorker &worker, RealtimeSettings settings,
-                  Sender sender);
+  explicit RealtimeConnection(Sender sender);
+  virtual ~RealtimeConnection() = default;
 
   // Applies one client event; false once the session has completed.
-  bool Handle(const nlohmann::json &message);
+  virtual bool Handle(const nlohmann::json &message) = 0;
   void SendError(const std::string &type, const std::string &code,
                  const std::string &message);
   // The client left: stop any decode in flight and send nothing more.
   void Close();
+
+protected:
+  void Send(nlohmann::ordered_json event);
+  // The samples of an append event's base64 PCM16 audio; reports anything
+  // else to the client and returns nothing.
+  std::optional<std::vector<float>>
+  AppendedSamples(const nlohmann::json &audio);
+  // A session.update's session object when it asks for manual turns; reports
+  // anything else to the client and returns nothing.
+  std::optional<nlohmann::json>
+  ManualTurnSession(const nlohmann::json &message);
+  // Reports a failed decode; a cancelled one ended with the client.
+  void ReportDecodeFailure(std::exception_ptr error);
+
+  CancelFlag cancel_ = NewCancelFlag();
+
+private:
+  Sender sender_;
+  std::mutex send_mutex_;
+  int event_index_ = 0;
+  bool closed_ = false;
+};
+
+// Qwen3-ASR manual-turn session: audio becomes one segment, cut every max
+// segment length, with preview decodes on a cadence.
+class RealtimeSession : public RealtimeConnection {
+public:
+  RealtimeSession(TranscriptionWorker &worker,
+                  const Qwen3ASRTranscriber &transcriber,
+                  RealtimeSettings settings, Sender sender);
+
+  bool Handle(const nlohmann::json &message) override;
 
 private:
   struct Segment {
@@ -58,7 +91,6 @@ private:
     std::string last_text;
   };
 
-  void Send(nlohmann::ordered_json event);
   void Append(const nlohmann::json &audio);
   void StartSegment(long start_sample);
   long EndSample() const {
@@ -69,15 +101,15 @@ private:
                                     long end_sample) const;
   // Builds the request for a decode of segment and counts it.
   TranscriptionOptions DecodeOptions(Segment &segment);
+  Transcription Decode(std::vector<float> samples,
+                       TranscriptionOptions options) const;
   void ApplyResult(Segment &segment, const TranscriptionResult &result);
   void MaybeStartRefresh();
   void FinalizeThrough(long end_sample);
-  void ReportDecodeFailure(std::exception_ptr error);
 
   TranscriptionWorker &worker_;
+  const Qwen3ASRTranscriber &transcriber_;
   const RealtimeSettings settings_;
-  Sender sender_;
-  CancelFlag cancel_ = NewCancelFlag();
 
   // Session state; refreshes finish on the worker thread.
   std::mutex mutex_;
@@ -90,11 +122,6 @@ private:
   std::vector<std::pair<int, std::string>> committed_;
   bool refreshing_ = false;
   bool finalizing_ = false;
-
-  // Event order and the socket's lifetime.
-  std::mutex send_mutex_;
-  int event_index_ = 0;
-  bool closed_ = false;
 };
 
 } // namespace qwen3_asr

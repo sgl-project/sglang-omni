@@ -189,7 +189,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         encoder_graph_batch_buckets: list[int] | None = None,
         request_build_max_workers: int = 8,
         enable_async_decode: bool = True,
-        async_decode_min_batch_size: int = 2,
+        async_decode_min_batch_size: int = 1,
         request_build_max_pending: int | None = 16,
         prefill_coalesce_requests: int = 2,
         prefill_coalesce_wait_ms: float = 6.0,

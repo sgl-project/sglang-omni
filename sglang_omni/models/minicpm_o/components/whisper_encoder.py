@@ -13,34 +13,24 @@ from transformers.activations import ACT2FN
 
 
 @dataclass(frozen=True, kw_only=True)
-class AudioAttentionState:
-    """Read-only attention history; empty fields start cached attention."""
-
-    key_states: torch.Tensor | None = None
-    value_states: torch.Tensor | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
 class AudioEncoderState:
-    """Read-only per-layer audio history retained by one perception session."""
+    """Read-only attention history of one session, shaped (layers, 2, 1, heads, frames, head_dim)."""
 
-    layers: tuple[AudioAttentionState, ...] = ()
+    key_value_states: torch.Tensor | None = None
 
     @property
     def past_length(self) -> int:
-        if self.layers and self.layers[0].key_states is not None:
-            return self.layers[0].key_states.shape[2]
-        else:
+        if self.key_value_states is None:
             return 0
+        else:
+            return self.key_value_states.shape[4]
 
     @property
     def nbytes(self) -> int:
-        return sum(
-            tensor.numel() * tensor.element_size()
-            for layer in self.layers
-            for tensor in (layer.key_states, layer.value_states)
-            if tensor is not None
-        )
+        if self.key_value_states is None:
+            return 0
+        else:
+            return self.key_value_states.numel() * self.key_value_states.element_size()
 
 
 class MiniCPMWhisperEncoderAttention(nn.Module):
@@ -67,21 +57,18 @@ class MiniCPMWhisperEncoderAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attn_mask: torch.Tensor,
-        state: AudioAttentionState | None = None,
-    ) -> tuple[torch.Tensor, AudioAttentionState | None]:
+        key_value_states: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Attend over this chunk; when streaming, first write its keys and values into the tail of key_value_states."""
         query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
         key, value = self.reshape_heads(key), self.reshape_heads(value)
-        if state is not None and state.key_states is not None:
-            assert state.value_states is not None
-            key = torch.cat((state.key_states, key), dim=2)
-            value = torch.cat((state.value_states, value), dim=2)
+        if key_value_states is not None:
+            current_length = key.shape[2]
+            key_value_states[0, :, :, -current_length:] = key
+            key_value_states[1, :, :, -current_length:] = value
+            key, value = key_value_states[0], key_value_states[1]
         else:
             pass
-        new_state = (
-            AudioAttentionState(key_states=key, value_states=value)
-            if state is not None
-            else None
-        )
         attn_output = F.scaled_dot_product_attention(
             self.reshape_heads(query),
             key,
@@ -94,7 +81,7 @@ class MiniCPMWhisperEncoderAttention(nn.Module):
             hidden_states.shape[1],
             self.embed_dim,
         )
-        return self.out_proj(attn_output), new_state
+        return self.out_proj(attn_output)
 
 
 class MiniCPMWhisperEncoderLayer(nn.Module):
@@ -111,17 +98,17 @@ class MiniCPMWhisperEncoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attn_mask: torch.Tensor,
-        state: AudioAttentionState | None = None,
-    ) -> tuple[torch.Tensor, AudioAttentionState | None]:
+        key_value_states: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
-        hidden_states, new_state = self.self_attn(hidden_states, attn_mask, state)
+        hidden_states = self.self_attn(hidden_states, attn_mask, key_value_states)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
         hidden_states = self.fc2(self.activation_fn(self.fc1(hidden_states)))
-        return residual + hidden_states, new_state
+        return residual + hidden_states
 
 
 class MiniCPMWhisperEncoder(nn.Module):
@@ -153,10 +140,12 @@ class MiniCPMWhisperEncoder(nn.Module):
         self,
         input_features: torch.Tensor,
         attn_mask: torch.Tensor,
-        state: AudioEncoderState | None = None,
+        key_value_states: torch.Tensor | None = None,
+        positions: torch.Tensor | None = None,
         prefix_extra_frames: int = 0,
         suffix_extra_frames: int = 0,
-    ) -> tuple[torch.Tensor, AudioEncoderState | None]:
+    ) -> torch.Tensor:
+        """Encode mel frames; when streaming, key_value_states holds the batch history and positions holds each row's frame positions."""
         hidden_states = input_features.to(
             device=self.conv1.weight.device, dtype=self.conv1.weight.dtype
         )
@@ -172,28 +161,16 @@ class MiniCPMWhisperEncoder(nn.Module):
             pass
         hidden_states = hidden_states.permute(0, 2, 1)
 
-        position = state.past_length if state is not None else 0
-        embed_pos = self.embed_positions.weight[
-            position : position + hidden_states.shape[1]
-        ]
-        hidden_states = hidden_states + embed_pos.to(hidden_states.device)
+        if positions is None:
+            embed_pos = self.embed_positions.weight[: hidden_states.shape[1]]
+        else:
+            embed_pos = self.embed_positions.weight[positions]
+        hidden_states = hidden_states + embed_pos
 
-        new_layers: list[AudioAttentionState] = []
         for layer_index, layer in enumerate(self.layers):
-            if state is None:
-                layer_state = None
-            elif layer_index < len(state.layers):
-                layer_state = state.layers[layer_index]
+            if key_value_states is None:
+                layer_states = None
             else:
-                layer_state = AudioAttentionState()
-            hidden_states, new_layer_state = layer(
-                hidden_states, attn_mask, layer_state
-            )
-            if new_layer_state is not None:
-                new_layers.append(new_layer_state)
-            else:
-                pass
-        new_state = (
-            AudioEncoderState(layers=tuple(new_layers)) if state is not None else None
-        )
-        return self.layer_norm(hidden_states), new_state
+                layer_states = key_value_states[layer_index]
+            hidden_states = layer(hidden_states, attn_mask, layer_states)
+        return self.layer_norm(hidden_states)

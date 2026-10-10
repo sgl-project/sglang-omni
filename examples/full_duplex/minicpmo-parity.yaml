@@ -30,8 +30,10 @@ stages:
   thinker:
     gpu_memory_fraction: 0.52
     engine:
-      context_length: 8192
+      disable_cuda_graph: true
   talker:
     gpu_memory_fraction: 0.15
+    engine:
+      disable_cuda_graph: true
   speech:
     gpu_memory_fraction: 0.15

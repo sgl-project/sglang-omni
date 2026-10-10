@@ -117,7 +117,10 @@ extension MLXModelManager {
     }
 
     nonisolated static func liveMode(for repo: String) -> MLXLiveMode {
-        MLXModelCatalog.liveMode(for: repo)
+        if OmniASRBackend.modelKind(for: repo) == .cohereTranscribe {
+            return .batchPreview
+        }
+        return MLXModelCatalog.liveMode(for: repo)
     }
 
     nonisolated static func transcriptionBehavior(for _: String) -> TranscriptionBehavior {
