@@ -37,6 +37,7 @@ from sglang_omni.preprocessing.transcription import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
@@ -52,7 +53,9 @@ def perception_config(model_path: str) -> dict:
     return config["model"]["stt"]["model"]["perception"]
 
 
-def create_preprocessing_executor(model_path: str, **_):
+def create_preprocessing_executor(
+    model_path: str, *, max_concurrency: int = 4, **_
+) -> ThreadedSimpleScheduler[StagePayload, StagePayload]:
     del model_path
 
     def preprocess(payload: StagePayload) -> StagePayload:
@@ -70,6 +73,7 @@ def create_preprocessing_executor(model_path: str, **_):
             waveform = nn.functional.pad(waveform, (0, SAMPLES_PER_FRAME - remainder))
         else:
             pass
+        waveform = waveform.contiguous()
 
         state = NemotronVoiceChatState.from_dict(payload.data)
         state.waveform = waveform
@@ -77,7 +81,7 @@ def create_preprocessing_executor(model_path: str, **_):
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(preprocess)
+    return ThreadedSimpleScheduler(preprocess, max_concurrency=max_concurrency)
 
 
 def create_perception_executor(
