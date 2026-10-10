@@ -81,6 +81,47 @@ def test_graph_buckets_follow_a_stage_running_limit_override(sglang_fixes) -> No
         builder.adjust_overrides({"tp_size": 2})
 
 
+def test_coalesced_prefills_split_at_the_top_prefill_graph(
+    monkeypatch, sglang_fixes
+) -> None:
+    monkeypatch.setattr(engine_builder, "sglang_captures_mamba_prefill", lambda: True)
+    builder = EasyMagpieTTSEngineBuilder()
+    overrides = builder.generation_defaults(dtype="float16")
+    builder.adjust_overrides(overrides)
+    assert overrides["max_prefill_tokens"] == PREFILL_GRAPH_MAX_TOKENS + 1
+
+    overrides = {**builder.generation_defaults(dtype="float16")}
+    overrides["cuda_graph_max_bs_prefill"] = 512
+    builder.adjust_overrides(overrides)
+    assert overrides["max_prefill_tokens"] == 513
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"max_prefill_tokens": 4096},
+        {"chunked_prefill_size": 1024},
+        {"disable_prefill_cuda_graph": True},
+    ],
+)
+def test_the_prefill_cap_yields_to_explicit_settings(
+    monkeypatch, sglang_fixes, change
+) -> None:
+    monkeypatch.setattr(engine_builder, "sglang_captures_mamba_prefill", lambda: True)
+    builder = EasyMagpieTTSEngineBuilder()
+    overrides = {**builder.generation_defaults(dtype="float16"), **change}
+    builder.adjust_overrides(overrides)
+    assert overrides.get("max_prefill_tokens") == change.get("max_prefill_tokens")
+
+
+def test_prefill_is_uncapped_without_a_prefill_graph(sglang_fixes) -> None:
+    overrides = EasyMagpieTTSEngineBuilder(cuda_graph=False).generation_defaults(
+        dtype="float16"
+    )
+    EasyMagpieTTSEngineBuilder(cuda_graph=False).adjust_overrides(overrides)
+    assert "max_prefill_tokens" not in overrides
+
+
 @pytest.fixture
 def sglang_fixes(monkeypatch):
     """Which compile fixes the installed SGLang is missing."""

@@ -53,6 +53,34 @@ def sglang_captures_mamba_prefill() -> bool:
     return hasattr(AttentionBackend, "breakable_cuda_graph_request_slots")
 
 
+def cap_prefill_to_graph(overrides: dict[str, Any]) -> None:
+    """Split coalesced prefills at the largest captured prefill graph.
+
+    Arrivals past the top bucket wait one step for their own replayed prefill
+    instead of pushing the whole batch onto the eager path. Unchunked prefill
+    still admits a single prompt longer than the cap, and an explicit
+    ``max_prefill_tokens`` wins.
+    """
+    buckets = overrides.get("cuda_graph_bs_prefill")
+    if (
+        not buckets
+        or overrides.get("disable_prefill_cuda_graph")
+        or int(overrides.get("chunked_prefill_size") or 0) > 0
+        or "max_prefill_tokens" in overrides
+    ):
+        return
+    else:
+        pass
+    top_bucket = max(buckets)
+    if overrides.get("cuda_graph_max_bs_prefill") is not None:
+        top_bucket = min(top_bucket, int(overrides["cuda_graph_max_bs_prefill"]))
+    else:
+        pass
+    # PrefillAdder stops once a request's tokens reach the remaining budget
+    # (>=), so +1 admits a batch of exactly the top bucket.
+    overrides["max_prefill_tokens"] = top_bucket + 1
+
+
 class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
     model_name = "EasyMagpie-TTS"
     context_length = EASYMAGPIE_CONTEXT_LENGTH
@@ -139,6 +167,7 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
             and not overrides.get("disable_cuda_graph", False)
         )
         overrides["torch_compile_max_bs"] = max_running
+        cap_prefill_to_graph(overrides)
 
     def customize_server_args(self, server_args: Any) -> None:
         initialize_mamba_selective_state_update_backend(server_args)
