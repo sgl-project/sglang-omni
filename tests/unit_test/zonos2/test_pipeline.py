@@ -383,3 +383,10 @@ def test_zonos2_speaker_stage_decodes_only_data_uri_references(
     else:
         speaker(payload)
         assert len(received) == 1 and received[0] is ref_audio
+
+
+def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:
+    """Without this flag validate_input_length never runs for this model."""
+    from sglang_omni.models.zonos2.request_builders import Zonos2SGLangRequestData
+
+    assert Zonos2SGLangRequestData().enforce_request_limits is True

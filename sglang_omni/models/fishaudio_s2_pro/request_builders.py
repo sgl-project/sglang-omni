@@ -23,6 +23,8 @@ _S2PRO_GRAPH_TOP_K = 30
 class S2ProSGLangRequestData(SGLangARRequestData):
     """S2-Pro per-request state."""
 
+    enforce_request_limits: bool = True
+
     vq_mask_tokens: torch.Tensor | None = None
     vq_parts: list[torch.Tensor] | None = None
     num_codebooks: int = 10

@@ -1138,3 +1138,12 @@ def test_reference_features_preserve_legacy_payloads(
         FunCosyVoice3State.from_dict(state.to_terminal_dict()).flow_prompt_speech_feat
         == features
     )
+
+
+def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:
+    """Without this flag validate_input_length never runs for this model."""
+    from sglang_omni.models.fun_cosyvoice3.request_builders import (
+        CosyVoice3SGLangRequestData,
+    )
+
+    assert CosyVoice3SGLangRequestData().enforce_request_limits is True
