@@ -27,6 +27,7 @@ from sglang_omni.relay.cuda_ipc import (
     CudaIpcPutOperation,
     CudaIpcRelay,
 )
+from tests.unit_test.fixtures.trace_capture import capture_comm_trace
 
 N = 1024 * 1024  # 1 MiB payload
 PAGED_PAGE_COUNT = 9
@@ -46,7 +47,9 @@ def make_expected(n: int) -> torch.Tensor:
     return (torch.arange(n, dtype=torch.int64) % 251).to(torch.uint8)
 
 
-def test_cuda_ipc_put_timeout_fails_relay_without_releasing_slot() -> None:
+def test_cuda_ipc_put_timeout_fails_relay_without_releasing_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     released = False
     failed: list[BaseException] = []
 
@@ -68,11 +71,67 @@ def test_cuda_ipc_put_timeout_fails_relay_without_releasing_slot() -> None:
         with pytest.raises(TimeoutError):
             await op.wait_for_completion(timeout=0.0)
 
-    asyncio.run(run())
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(run())
 
     assert released is False
     assert len(failed) == 1
     assert isinstance(failed[0], TimeoutError)
+    stranded = [
+        event for event in events if event["event"] == "cuda_ipc_slots_stranded"
+    ]
+    assert len(stranded) == 1
+    assert stranded[0]["request_id"] == "r"
+    assert stranded[0]["slot_index"] == 0
+    assert stranded[0]["num_slots"] == 1
+    assert stranded[0]["bytes"] == 1
+    assert stranded[0]["reason"] == "TimeoutError"
+
+
+def test_cuda_ipc_relay_traces_pool_state_when_slots_are_stranded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
+        allocator = ContiguousSlotAllocator(slot_count=4, slot_size=8)
+        await allocator.acquire_async(2)
+        relay.record_stranded_slots(allocator, 2, TimeoutError("ack timeout"))
+
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(run())
+
+    pool_state = [event for event in events if event["event"] == "cuda_ipc_pool_state"]
+    assert len(pool_state) == 1
+    assert pool_state[0]["engine_id"] == "sender"
+    assert pool_state[0]["device"] == "cuda:0"
+    assert pool_state[0]["free_slots"] == 2
+    assert pool_state[0]["largest_free_run"] == 2
+    assert pool_state[0]["stranded_slots_total"] == 2
+
+
+def test_cuda_ipc_relay_traces_final_pool_state_on_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
+    allocator = ContiguousSlotAllocator(slot_count=4, slot_size=8)
+
+    async def reserve_slots() -> None:
+        await allocator.acquire_async(2)
+
+    asyncio.run(reserve_slots())
+    relay.allocator = allocator
+    relay.stranded_slots_total = 2
+
+    with capture_comm_trace(monkeypatch) as events:
+        relay.close()
+
+    pool_state = [event for event in events if event["event"] == "cuda_ipc_pool_state"]
+    assert len(pool_state) == 1
+    assert pool_state[0]["engine_id"] == "sender"
+    assert pool_state[0]["device"] == "cuda:0"
+    assert pool_state[0]["free_slots"] == 2
+    assert pool_state[0]["largest_free_run"] == 2
+    assert pool_state[0]["stranded_slots_total"] == 2
 
 
 def test_cuda_ipc_relay_failure_wakes_blocked_slot_acquire() -> None:
