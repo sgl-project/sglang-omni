@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import time
@@ -21,6 +20,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.streaming import build_cosyvoice3_stream_metadata
+from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
@@ -422,6 +422,7 @@ class CosyVoice3PreprocessingContext:
         CosyVoice3ReferenceArtifact,
         CosyVoice3StoredReference,
     ]
+    prompt_row_cache_keys: PromptRowCacheKeys | None
 
 
 _PREPROCESSING_CONTEXT: CosyVoice3PreprocessingContext | None = None
@@ -449,6 +450,14 @@ def set_cosyvoice3_preprocessing_context(
         speech_tokenizer=speech_tokenizer,
         speaker_encoder=speaker_encoder,
     )
+    if model is None:
+        prompt_row_cache_keys = None
+    else:
+        parameter = next(model.parameters())
+        prompt_row_cache_keys = PromptRowCacheKeys.for_rows(
+            row_bytes=int(model.config.hidden_size) * parameter.element_size(),
+            device=parameter.device,
+        )
     with _PREPARED_REQUESTS_LOCK:
         _PREPROCESSING_CONTEXT = CosyVoice3PreprocessingContext(
             model=model,
@@ -463,6 +472,7 @@ def set_cosyvoice3_preprocessing_context(
                 timeout_s=130.0,
                 log_prefix="Fun-CosyVoice3",
             ),
+            prompt_row_cache_keys=prompt_row_cache_keys,
         )
         _PREPARED_REQUESTS.clear()
 
@@ -753,21 +763,13 @@ def build_generation_kwargs(
     return generation_kwargs
 
 
-def build_embedding_cache_key_ids(input_embeds: torch.Tensor) -> list[int]:
-    rows = input_embeds.detach().to(dtype=torch.float32, device="cpu")
-    key_ids: list[int] = []
-    for row in rows:
-        digest = hashlib.blake2b(row.numpy().tobytes(), digest_size=8).digest()
-        key_ids.append(int.from_bytes(digest, "little") & ((1 << 63) - 1))
-    return key_ids
-
-
 def prepare_cosyvoice3_request(
     *,
     model: FunCosyVoice3SGLangModel | None,
     tokenizer: CosyVoice3Tokenizer,
     state: FunCosyVoice3State,
     reference_artifact: CosyVoice3ReferenceArtifact | None,
+    prompt_row_cache_keys: PromptRowCacheKeys | None,
     use_mlx: bool = False,
 ) -> CosyVoice3PreparedRequest:
     gen_kwargs = state.generation_kwargs
@@ -817,7 +819,7 @@ def prepare_cosyvoice3_request(
         input_ids_list = [0] * prompt_length
         prompt_input_embeds = None
     else:
-        if model is None:
+        if model is None or prompt_row_cache_keys is None:
             raise RuntimeError("Torch CosyVoice3 preprocessing model is missing")
         else:
             pass
@@ -842,7 +844,7 @@ def prepare_cosyvoice3_request(
         prompt_input_embeds = (
             prompt_input_embeds.squeeze(0).detach().to(device=device, dtype=dtype)
         )
-        input_ids_list = build_embedding_cache_key_ids(prompt_input_embeds)
+        input_ids_list = prompt_row_cache_keys.key_ids(prompt_input_embeds)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
 
     return CosyVoice3PreparedRequest(
@@ -885,6 +887,7 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
             tokenizer=context.tokenizer,
             state=state,
             reference_artifact=reference_artifact,
+            prompt_row_cache_keys=context.prompt_row_cache_keys,
             use_mlx=context.use_mlx,
         )
 
