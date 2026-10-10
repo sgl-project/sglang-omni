@@ -337,7 +337,7 @@ The first line from `generate` must be exactly the `Job GPU ...` line written un
 Terminal 1:
 
 ```bash
-cd /root/sglang-omni
+cd <path/to/sglang-omni>
 export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
 unset GPU SERVER_PORT JUDGE_PORT
 export CUDA_VISIBLE_DEVICES=0
@@ -352,7 +352,7 @@ python -m benchmarks.duplex.fdb_v15 aggregate --run-name minicpmo-30-t1
 Terminal 2:
 
 ```bash
-cd /root/sglang-omni
+cd <path/to/sglang-omni>
 export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
 unset GPU SERVER_PORT JUDGE_PORT
 export CUDA_VISIBLE_DEVICES=1

@@ -32,10 +32,10 @@ def claim_tcp_port(
         raise ValueError(f"span must be positive, got {span}")
     else:
         pass
-    directory = _claim_directory()
+    directory = claim_directory()
     end_port = base_port + span
     for port in range(base_port, end_port):
-        if _try_claim(directory, port):
+        if try_claim(directory, port):
             return port
         else:
             pass
@@ -44,14 +44,14 @@ def claim_tcp_port(
 
 def release_tcp_port(port: int) -> None:
     """Drop a claim created in this process. Used by tests."""
-    path = _claim_directory() / str(port)
+    path = claim_directory() / str(port)
     try:
         path.unlink()
     except FileNotFoundError:
         pass
 
 
-def _claim_directory() -> Path:
+def claim_directory() -> Path:
     override = os.environ.get(CLAIM_DIR_ENV)
     if override:
         directory = Path(override)
@@ -61,9 +61,9 @@ def _claim_directory() -> Path:
     return directory
 
 
-def _try_claim(directory: Path, port: int) -> bool:
+def try_claim(directory: Path, port: int) -> bool:
     path = directory / str(port)
-    if path.exists() and not _remove_stale_claim(path):
+    if path.exists() and not remove_stale_claim(path):
         return False
     else:
         pass
@@ -72,7 +72,7 @@ def _try_claim(directory: Path, port: int) -> bool:
     except FileExistsError:
         return False
     try:
-        bindable = _port_is_bindable(port)
+        bindable = port_is_bindable(port)
     except PermissionError:
         os.close(claim_fd)
         path.unlink(missing_ok=True)
@@ -85,11 +85,11 @@ def _try_claim(directory: Path, port: int) -> bool:
         pass
     os.write(claim_fd, f"{os.getpid()}\n".encode())
     _HELD_CLAIM_FDS.append(claim_fd)
-    atexit.register(_release_claim, claim_fd, path)
+    atexit.register(release_claim, claim_fd, path)
     return True
 
 
-def _remove_stale_claim(path: Path) -> bool:
+def remove_stale_claim(path: Path) -> bool:
     """Delete a claim whose owner is dead. True when the path is gone.
 
     An empty file is a claim whose owner has not written its pid yet, so it
@@ -108,7 +108,7 @@ def _remove_stale_claim(path: Path) -> bool:
         owner = int(text)
     except ValueError:
         owner = 0
-    if _process_is_alive(owner):
+    if process_is_alive(owner):
         return False
     else:
         pass
@@ -119,7 +119,7 @@ def _remove_stale_claim(path: Path) -> bool:
     return True
 
 
-def _process_is_alive(pid: int) -> bool:
+def process_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     else:
@@ -133,7 +133,7 @@ def _process_is_alive(pid: int) -> bool:
     return True
 
 
-def _port_is_bindable(port: int) -> bool:
+def port_is_bindable(port: int) -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", port))
@@ -144,7 +144,7 @@ def _port_is_bindable(port: int) -> bool:
     return True
 
 
-def _release_claim(claim_fd: int, path: Path) -> None:
+def release_claim(claim_fd: int, path: Path) -> None:
     try:
         os.close(claim_fd)
     except OSError:

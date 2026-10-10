@@ -25,7 +25,7 @@ _DEAD_PID_SCAN_START = 1_000_000
 _DEAD_PID_SCAN_COUNT = 200
 
 
-def _dead_pid() -> int:
+def dead_pid() -> int:
     for pid in range(_DEAD_PID_SCAN_START, _DEAD_PID_SCAN_START + _DEAD_PID_SCAN_COUNT):
         try:
             os.kill(pid, 0)
@@ -151,7 +151,9 @@ def test_concurrent_claims_take_different_ports(tmp_path: Path) -> None:
         assert process.returncode == 0, stderr
         claimed_ports.append(int(stdout.strip()))
     assert claimed_ports[0] != claimed_ports[1]
-    assert all(CLAIM_BASE_PORT <= port < CLAIM_BASE_PORT + CLAIM_SPAN for port in claimed_ports)
+    assert all(
+        CLAIM_BASE_PORT <= port < CLAIM_BASE_PORT + CLAIM_SPAN for port in claimed_ports
+    )
 
 
 def test_live_claim_is_skipped_and_stale_claim_is_reused(
@@ -165,7 +167,7 @@ def test_live_claim_is_skipped_and_stale_claim_is_reused(
     release_tcp_port(claimed)
 
     stale_port = CLAIM_BASE_PORT + 2
-    (tmp_path / str(stale_port)).write_text(f"{_dead_pid()}\n")
+    (tmp_path / str(stale_port)).write_text(f"{dead_pid()}\n")
     reclaimed = claim_tcp_port(stale_port, 1)
     assert reclaimed == stale_port
     release_tcp_port(reclaimed)
