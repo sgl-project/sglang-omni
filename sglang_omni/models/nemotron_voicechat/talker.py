@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 from sglang.srt.models.gemma3_causal import Gemma3ForCausalLM
-from sglang.srt.runtime_context import get_schedule
+from sglang.srt.runtime_context import get_exec, get_schedule
 from torch import nn
 from torch.nn import functional
 from transformers import T5GemmaConfig, T5GemmaEncoderModel, T5GemmaModuleConfig
@@ -269,9 +269,14 @@ class NemotronVoiceChatTalker(nn.Module):
     def forward(self, input_ids, positions, forward_batch, input_embeds=None, **_):
         if input_embeds is None:
             batch = input_ids.shape[0]
-            assert bool(
-                self.fusion_mask[:batch].all()
-            ), "talker decode step reached the model without fused inputs"
+            # note: with decode graphs this body runs only for capture and its
+            # warm-up, before before_decode fills the mask; replay skips it.
+            if get_exec().graph.disable_cuda_graph:
+                assert bool(
+                    self.fusion_mask[:batch].all()
+                ), "talker decode step reached the model without fused inputs"
+            else:
+                pass
             input_embeds = self.fusion_buffer[:batch]
             self.fusion_mask[:batch] = False
         else:
