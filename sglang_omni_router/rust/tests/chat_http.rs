@@ -298,6 +298,22 @@ fn serve_connection(
                 &mut stream,
                 b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 24\r\nConnection: close\r\n\r\n{\"worker\":\"unsupported\"}",
             ),
+            b"diagnostic-headers" | b"diagnostic-connection" | b"diagnostic-error" => {
+                let status = if body == b"diagnostic-error" {
+                    "503 Service Unavailable"
+                } else {
+                    "200 OK"
+                };
+                let connection = if body == b"diagnostic-connection" {
+                    "close, X-SGLang-Omni-Worker, X-SGLang-Omni-Route-Attempt"
+                } else {
+                    "close"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: 8\r\nX-Request-ID: worker-spoof\r\nX-SGLang-Omni-Worker: worker-spoof\r\nX-SGLang-Omni-Worker: second-spoof\r\nX-SGLang-Omni-Route-Attempt: 99\r\nX-SGLang-Omni-Route-Attempt: 100\r\nConnection: {connection}\r\n\r\n{{\"ok\":1}}"
+                );
+                write_response(&mut stream, response.as_bytes());
+            }
             b"slow" => {
                 write_response(
                     &mut stream,
@@ -721,6 +737,54 @@ fn response_head(response: &[u8]) -> &str {
     std::str::from_utf8(&response[..end]).expect("ASCII response head")
 }
 
+fn assert_routing_diagnostics(response: &[u8], worker_id: Option<&str>) {
+    let head = response_head(response);
+    for (name, expected) in [
+        ("x-sglang-omni-worker", worker_id),
+        ("x-sglang-omni-route-attempt", worker_id.map(|_| "1")),
+    ] {
+        assert_eq!(header(head, name), expected);
+        assert_eq!(
+            head.to_ascii_lowercase()
+                .matches(&format!("{name}:"))
+                .count(),
+            usize::from(expected.is_some())
+        );
+    }
+}
+
+#[test]
+fn router_owns_routing_diagnostics_and_ignores_spoofed_headers() {
+    let worker = Worker::start();
+    let router = RouterProcess::start(worker.address, 8, 2_000, false);
+    for (body, expected_status) in [
+        ("diagnostic-headers", 200),
+        ("diagnostic-connection", 200),
+        ("diagnostic-error", 503),
+    ] {
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Request-ID: diagnostic-id\r\nX-SGLang-Omni-Worker: caller-spoof\r\nX-SGLang-Omni-Route-Attempt: 42\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let response =
+            raw_request(router.address, request.as_bytes()).expect("diagnostic response");
+        assert_eq!(status(&response), expected_status);
+        assert_routing_diagnostics(&response, Some("worker-a"));
+        assert_eq!(
+            header(response_head(&response), "x-request-id"),
+            Some("diagnostic-id")
+        );
+        assert!(response.ends_with(br#"{"ok":1}"#));
+    }
+    let captures = worker.captures();
+    assert_eq!(captures.len(), 3);
+    for capture in captures {
+        assert!(header(&capture.head, "x-sglang-omni-worker").is_none());
+        assert!(header(&capture.head, "x-sglang-omni-route-attempt").is_none());
+        assert_eq!(header(&capture.head, "x-request-id"), Some("diagnostic-id"));
+    }
+}
+
 #[test]
 fn worker_owns_body_semantics_and_receives_exact_bytes_and_request_id() {
     for (body, expected_status, marker) in [
@@ -737,6 +801,7 @@ fn worker_owns_body_semantics_and_receives_exact_bytes_and_request_id() {
             String::from_utf8_lossy(&response),
             worker.captures()
         );
+        assert_routing_diagnostics(&response, Some("worker-a"));
         assert!(response.windows(marker.len()).any(|part| part == marker));
         assert!(
             response_head(&response)
@@ -776,6 +841,7 @@ fn strict_envelopes_fail_before_dispatch_and_missing_ids_are_generated() {
     let router = RouterProcess::start(worker.address, 8, 2_000, false);
     let valid = post(router.address, b"{}", None);
     assert_eq!(status(&valid), 200);
+    assert_routing_diagnostics(&valid, Some("worker-a"));
     let generated =
         header(response_head(&valid), "x-request-id").expect("generated downstream request ID");
     worker.wait_for_requests(1);
@@ -791,6 +857,11 @@ fn strict_envelopes_fail_before_dispatch_and_missing_ids_are_generated() {
             Some("live-id"),
         ),
         (
+            b"GET /diagnostics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".as_slice(),
+            200,
+            None,
+        ),
+        (
             b"GET /missing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".as_slice(),
             404,
             None,
@@ -798,6 +869,7 @@ fn strict_envelopes_fail_before_dispatch_and_missing_ids_are_generated() {
     ] {
         let response = raw_request(router.address, request).expect("canonical route response");
         assert_eq!(status(&response), expected_status);
+        assert_routing_diagnostics(&response, None);
         let response_id =
             header(response_head(&response), "x-request-id").expect("canonical response ID");
         if let Some(expected_id) = expected_id {
@@ -813,6 +885,7 @@ fn strict_envelopes_fail_before_dispatch_and_missing_ids_are_generated() {
     )
     .expect("canonical method response");
     assert_eq!(status(&get), 405);
+    assert_routing_diagnostics(&get, None);
     let method_code = b"\"method_not_allowed\"";
     assert!(
         get.windows(method_code.len())
@@ -849,6 +922,7 @@ fn strict_envelopes_fail_before_dispatch_and_missing_ids_are_generated() {
     ] {
         let response = raw_request(router.address, request).expect("invalid request-ID response");
         assert_eq!(status(&response), 400);
+        assert_routing_diagnostics(&response, None);
         let head = response_head(&response);
         let replacement = header(head, "x-request-id").expect("generated canonical replacement");
         assert!(replacement.starts_with("sglang-omni-"));
@@ -929,10 +1003,12 @@ fn relay_holds_admission_and_is_not_cut_off_after_commitment() {
     assert_eq!(status(&oversized), 413);
     let overloaded = post(router.address, b"{}", None);
     assert_eq!(status(&overloaded), 429);
+    assert_routing_diagnostics(&overloaded, None);
 
     worker.release_response();
     let slow_response = slow.join().expect("join slow client");
     assert_eq!(status(&slow_response), 200);
+    assert_routing_diagnostics(&slow_response, Some("worker-a"));
     assert!(slow_response.windows(6).any(|part| part == b"[DONE]"));
     assert!(metrics(router.address).contains(
         "sglang_omni_router_http_response_body_terminations_total{outcome=\"complete\"} 1\n"
@@ -1015,8 +1091,25 @@ fn homogeneous_replicas_rotate_and_unhealthy_workers_are_filtered() {
         2_000,
     );
 
-    for _ in 0..6 {
-        assert_eq!(status(&post(router.address, b"{}", None)), 200);
+    for request_index in 0..6 {
+        let request_id = format!("rotating-{request_index}");
+        let response = post(router.address, b"{}", Some(&request_id));
+        assert_eq!(status(&response), 200);
+        let first_received = first
+            .captures()
+            .iter()
+            .any(|capture| header(&capture.head, "x-request-id") == Some(request_id.as_str()));
+        let second_received = second
+            .captures()
+            .iter()
+            .any(|capture| header(&capture.head, "x-request-id") == Some(request_id.as_str()));
+        assert_ne!(first_received, second_received);
+        let selected_worker = if first_received {
+            "worker-a"
+        } else {
+            "worker-b"
+        };
+        assert_routing_diagnostics(&response, Some(selected_worker));
     }
     first.wait_for_requests(3);
     second.wait_for_requests(3);
@@ -1028,7 +1121,9 @@ fn homogeneous_replicas_rotate_and_unhealthy_workers_are_filtered() {
     let first_before = first.captures().len();
     let second_before = second.captures().len();
     for _ in 0..4 {
-        assert_eq!(status(&post(router.address, b"{}", None)), 200);
+        let response = post(router.address, b"{}", None);
+        assert_eq!(status(&response), 200);
+        assert_routing_diagnostics(&response, Some("worker-b"));
     }
     assert_eq!(first.captures().len(), first_before);
     assert_eq!(second.captures().len(), second_before + 4);
@@ -1263,6 +1358,7 @@ fn precommit_timeout_and_upstream_reset_are_bounded_and_release_admission() {
         String::from_utf8_lossy(&timeout),
         worker.captures()
     );
+    assert_routing_diagnostics(&timeout, None);
     let recovered = post_when_capacity_releases(router.address);
     assert_ne!(
         status(&recovered),
@@ -1276,6 +1372,7 @@ fn precommit_timeout_and_upstream_reset_are_bounded_and_release_admission() {
     let router = RouterProcess::start(worker.address, 1, 500, false);
     let reset = post(router.address, b"reset", None);
     assert_eq!(status(&reset), 502);
+    assert_routing_diagnostics(&reset, None);
 }
 
 #[test]
