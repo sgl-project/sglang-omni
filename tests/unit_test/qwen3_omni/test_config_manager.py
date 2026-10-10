@@ -7,7 +7,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
+from sglang_omni.config import (
+    EngineArgs,
+    build_stage_placement_plan,
+    resolve_stage_factory_args,
+)
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni import config as qwen3_omni_config
 from sglang_omni.models.qwen3_omni.config import (
@@ -377,6 +381,45 @@ def test_qwen3_omni_talker_stage_env_defaults(
 
         assert make_stage(config, "talker_ar").env == expected_env
         assert make_stage(config, "thinker").env == {}
+
+
+def test_qwen3_omni_admission_estimate_is_unset_until_configured() -> None:
+    """The knob declares no model default; stages admit by SGLang's own estimate
+    until a profile sets engine.admission_new_tokens_estimate."""
+    for config_cls in (
+        Qwen3OmniSpeechPipelineConfig,
+        Qwen3OmniSpeechColocatedPipelineConfig,
+    ):
+        config = config_cls(model_path="dummy")
+        for name in ("talker_ar", "thinker"):
+            stage = make_stage(config, name)
+            assert stage.engine is not None
+            assert stage.engine.admission_new_tokens_estimate is None
+            assert EngineArgs.ADMISSION_NEW_TOKENS_ESTIMATE_ENV not in (
+                stage.resolved_env_defaults()
+            )
+
+
+def test_qwen3_omni_admission_estimate_overrides_reach_the_stage_env() -> None:
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    config = manager.merge_config(
+        {
+            "talker_ar.engine.max_running_requests": 64,
+            "talker_ar.engine.admission_new_tokens_estimate": 256,
+            "thinker.engine.admission_new_tokens_estimate": 32,
+        }
+    )
+    talker = make_stage(config, "talker_ar")
+
+    assert talker.engine.admission_new_tokens_estimate == 256
+    assert talker.engine.overrides() == {"max_running_requests": 64}
+    assert (
+        talker.resolved_env_defaults()[EngineArgs.ADMISSION_NEW_TOKENS_ESTIMATE_ENV]
+        == "256"
+    )
+    assert make_stage(config, "thinker").resolved_env_defaults() == {
+        EngineArgs.ADMISSION_NEW_TOKENS_ESTIMATE_ENV: "32"
+    }
 
 
 def test_qwen3_omni_xpu_b60_example_config_loads_and_plans() -> None:

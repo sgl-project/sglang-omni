@@ -164,7 +164,24 @@ class EngineArgs(BaseModel):
         default=None,
         description="Authoritative KV pool size in bytes, per rank; accepts an int or an exact binary-size string such as 2GiB. Consumed by the omni KV configurator, never forwarded to SGLang ServerArgs.",
     )
-    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset({"kv_cache_bytes"})
+    admission_new_tokens_estimate: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "New tokens the SGLang prefill admitter charges per running request, "
+            "min(max_new_tokens, this). Becomes the stage process's "
+            "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION environment default, read once at "
+            "import, so stages sharing a process must agree; never forwarded to "
+            "ServerArgs."
+        ),
+    )
+
+    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"kv_cache_bytes", "admission_new_tokens_estimate"}
+    )
+    ADMISSION_NEW_TOKENS_ESTIMATE_ENV: ClassVar[str] = (
+        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION"
+    )
 
     @field_validator("kv_cache_bytes", mode="before")
     @classmethod
@@ -202,6 +219,18 @@ class EngineArgs(BaseModel):
             for key, value in self.model_dump().items()
             if (value is not None or key in extra) and key not in self.NON_SERVER_KEYS
         }
+
+    def derived_env_defaults(self) -> dict[str, str]:
+        """Environment entries derived from typed keys that SGLang reads only as
+        import-time environment globals, applied in the stage's process."""
+        if self.admission_new_tokens_estimate is None:
+            return {}
+        else:
+            return {
+                self.ADMISSION_NEW_TOKENS_ESTIMATE_ENV: str(
+                    self.admission_new_tokens_estimate
+                )
+            }
 
 
 class FactoryArgs(BaseModel):
@@ -416,6 +445,24 @@ class StageConfig(BaseModel):
             )
         else:
             pass
+        if self.engine is not None and (
+            self.engine.admission_new_tokens_estimate is not None
+        ):
+            env_name = EngineArgs.ADMISSION_NEW_TOKENS_ESTIMATE_ENV
+            written_env_value = self.env.get(env_name)
+            derived_env_value = str(self.engine.admission_new_tokens_estimate)
+            if written_env_value is not None and (
+                written_env_value != derived_env_value
+            ):
+                raise ValueError(
+                    f"Stage {self.name!r}: env.{env_name}={written_env_value!r} "
+                    f"disagrees with engine.admission_new_tokens_estimate "
+                    f"({derived_env_value!r}); set exactly one of the two"
+                )
+            else:
+                pass
+        else:
+            pass
         if (
             self.total_reserve_bytes is not None
             and self.gpu_memory_fraction is not None
@@ -462,6 +509,13 @@ class StageConfig(BaseModel):
             raise ValueError(f"Stage {self.name!r}: GPU ids must be unique")
         else:
             pass
+
+    def resolved_env_defaults(self) -> dict[str, str]:
+        """Worker-process environment defaults: entries derived from typed engine
+        keys with the written env mapping laid over them (validation refused any
+        disagreeing written entry, so the overlay only adds keys)."""
+        derived = self.engine.derived_env_defaults() if self.engine is not None else {}
+        return {**derived, **self.env}
 
 
 class EngineStageConfig(StageConfig):
@@ -791,10 +845,14 @@ class PipelineConfig(BaseModel):
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
         """Resolve launch-time environment defaults for a logical stage.
 
-        Stage settings override pipeline defaults; model policies may derive
-        missing values here without persisting them in the configuration.
+        Stage entries, written or derived from typed engine keys, override
+        pipeline defaults; model policies may derive missing values here
+        without persisting them in the configuration.
         """
-        return {**self.resolved_env_defaults(), **self.stage_named(stage_name).env}
+        return {
+            **self.resolved_env_defaults(),
+            **self.stage_named(stage_name).resolved_env_defaults(),
+        }
 
     @classmethod
     def generation_admission_defaults(cls) -> dict[str, int]:
@@ -992,6 +1050,25 @@ class PipelineConfig(BaseModel):
                 )
             else:
                 pass
+            # note (wenyao): one process has one environment, and SGLang reads it once at import
+            env_default_owners: dict[str, tuple[StageConfig, str]] = {}
+            for stage in stages:
+                for env_name, env_value in stage.resolved_env_defaults().items():
+                    owner = env_default_owners.get(env_name)
+                    if owner is not None and owner[1] != env_value:
+                        owner_stage, owner_value = owner
+                        owner_source = (
+                            "written" if env_name in owner_stage.env else "derived"
+                        )
+                        stage_source = "written" if env_name in stage.env else "derived"
+                        raise ValueError(
+                            f"Process {process_name!r}: stages {owner_stage.name!r} and "
+                            f"{stage.name!r} resolve different {env_name} defaults "
+                            f"({owner_value!r} {owner_source} vs "
+                            f"{env_value!r} {stage_source})"
+                        )
+                    else:
+                        env_default_owners[env_name] = (stage, env_value)
         unknown = sorted(set(self.processes) - set(members))
         if unknown:
             raise ValueError(

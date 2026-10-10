@@ -366,6 +366,48 @@ def test_spawn_env_preserves_operator_stage_defaults(monkeypatch) -> None:
     assert os.environ["SGLANG_TEST_STAGE_ENV"] == "operator"
 
 
+def test_spawn_env_logs_a_shadowed_stage_default_once_per_process(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("SGLANG_TEST_STAGE_ENV", "operator")
+    thinker = StageLaunchConfig(
+        stage_name="thinker",
+        env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
+    )
+    talker = StageLaunchConfig(
+        stage_name="talker",
+        env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
+    )
+
+    with caplog.at_level("INFO", logger=stage_workers.__name__):
+        with patched_spawn_env(worker_spec(thinker, talker)):
+            assert os.environ["SGLANG_TEST_STAGE_ENV"] == "operator"
+
+    notices = [
+        record for record in caplog.records if "takes precedence" in record.message
+    ]
+    assert len(notices) == 1
+    assert "SGLANG_TEST_STAGE_ENV='operator' takes precedence" in notices[0].message
+    assert "'default'" in notices[0].message
+    assert "first seen on stage 'thinker'" in notices[0].message
+
+
+def test_spawn_env_stays_quiet_when_environment_matches_stage_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("SGLANG_TEST_STAGE_ENV", "default")
+    spec = StageLaunchConfig(
+        stage_name="thinker",
+        env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
+    )
+
+    with caplog.at_level("INFO", logger=stage_workers.__name__):
+        with patched_spawn_env(worker_spec(spec)):
+            pass
+
+    assert "takes precedence" not in caplog.text
+
+
 def test_spawn_env_combines_stage_defaults_with_tp_visible_device(monkeypatch) -> None:
     monkeypatch.delenv("SGLANG_TEST_STAGE_ENV", raising=False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,4")

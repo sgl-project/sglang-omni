@@ -205,3 +205,113 @@ def test_engine_kv_cache_bytes_rejects_max_total_tokens() -> None:
 
     with pytest.raises(ValueError, match="cannot be set together"):
         EngineArgs(kv_cache_bytes="2GiB", max_total_tokens=4096)
+
+
+ADMISSION_ENV = EngineArgs.ADMISSION_NEW_TOKENS_ESTIMATE_ENV
+
+
+def test_engine_admission_estimate_is_derived_into_env_not_server_args() -> None:
+    engine = EngineArgs(admission_new_tokens_estimate=256, max_running_requests=64)
+
+    assert ADMISSION_ENV == "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION"
+    assert engine.overrides() == {"max_running_requests": 64}
+    assert engine.derived_env_defaults() == {ADMISSION_ENV: "256"}
+
+
+def test_engine_without_an_admission_estimate_derives_nothing() -> None:
+    assert EngineArgs().derived_env_defaults() == {}
+    assert EngineArgs(max_running_requests=8).derived_env_defaults() == {}
+
+
+@pytest.mark.parametrize("estimate", [0, -1])
+def test_engine_args_reject_a_non_positive_admission_estimate(estimate: int) -> None:
+    with pytest.raises(ValueError):
+        EngineArgs(admission_new_tokens_estimate=estimate)
+
+
+def test_stage_lays_written_env_over_the_derived_admission_estimate() -> None:
+    stage = engine_stage(
+        engine=EngineArgs(admission_new_tokens_estimate=256),
+        env={"SGLANG_OTHER": "1"},
+    )
+
+    assert stage.resolved_env_defaults() == {ADMISSION_ENV: "256", "SGLANG_OTHER": "1"}
+    assert stage.env == {"SGLANG_OTHER": "1"}
+
+
+def test_stage_accepts_env_that_agrees_with_the_derived_admission_estimate() -> None:
+    stage = engine_stage(
+        engine=EngineArgs(admission_new_tokens_estimate=256),
+        env={ADMISSION_ENV: "256"},
+    )
+
+    assert stage.resolved_env_defaults() == {ADMISSION_ENV: "256"}
+
+
+def test_stage_rejects_env_that_disagrees_with_the_derived_admission_estimate() -> None:
+    with pytest.raises(
+        ValueError, match="disagrees with engine.admission_new_tokens_estimate"
+    ):
+        engine_stage(
+            engine=EngineArgs(admission_new_tokens_estimate=256),
+            env={ADMISSION_ENV: "512"},
+        )
+
+
+def test_stage_without_engine_block_resolves_written_env_only() -> None:
+    stage = make_stage(name="code2wav", env={ADMISSION_ENV: "64"})
+
+    assert stage.resolved_env_defaults() == {ADMISSION_ENV: "64"}
+
+
+def test_engine_stage_default_block_derives_nothing() -> None:
+    assert engine_stage().resolved_env_defaults() == {}
+
+
+def test_pipeline_rejects_shared_process_stages_with_different_estimates() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"stages 'talker' and 'code2wav' resolve different "
+            r"SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION defaults \('256' derived vs "
+            r"'64' derived\)"
+        ),
+    ):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                engine_stage(
+                    name="talker",
+                    next="code2wav",
+                    terminal=False,
+                    engine=EngineArgs(admission_new_tokens_estimate=256),
+                ),
+                engine_stage(
+                    name="code2wav",
+                    engine=EngineArgs(admission_new_tokens_estimate=64),
+                ),
+            ],
+        )
+
+
+def test_pipeline_rejects_mixed_written_and_derived_estimates_in_one_process() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"stages 'talker' and 'code2wav' resolve different "
+            r"SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION defaults \('256' derived vs "
+            r"'64' written\)"
+        ),
+    ):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                engine_stage(
+                    name="talker",
+                    next="code2wav",
+                    terminal=False,
+                    engine=EngineArgs(admission_new_tokens_estimate=256),
+                ),
+                make_stage(name="code2wav", env={ADMISSION_ENV: "64"}),
+            ],
+        )
