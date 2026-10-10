@@ -115,12 +115,29 @@ class SGLangARRequestData(ARRequestData):
     thinker_chunks_done: bool = True
 
 
+class DllmRequest(Req):
+    """SGLang request with explicit CFG grouping and padding state."""
+
+    _uncond_input_ids: list[int] | None = (
+        None  # noqa: leading-underscore  # DLLM protocol
+    )
+    _uncond_img_input_ids: list[int] | None = (
+        None  # noqa: leading-underscore  # DLLM protocol
+    )
+    _uncond_left_pad_len: int = 0  # noqa: leading-underscore  # DLLM protocol
+    _uncond_img_left_pad_len: int = 0  # noqa: leading-underscore  # DLLM protocol
+    _dllm_left_pad_len: int = 0  # noqa: leading-underscore  # DLLM protocol
+    _is_uncond: bool = False  # noqa: leading-underscore  # DLLM protocol
+    _is_uncond_img: bool = False  # noqa: leading-underscore  # DLLM protocol
+    _cfg_group_rid: str | None = None  # noqa: leading-underscore  # DLLM protocol
+
+
 @dataclass
 class SGLangDLLMRequestData:
     """Per-request state for SGLang-backed dLLM stages."""
 
     output_ids: list[int] = field(default_factory=list)
-    req: Req | None = None
+    req: DllmRequest | None = None
     stage_payload: StagePayload | None = None
     finish_reason: str | None = None
 

@@ -480,6 +480,57 @@ extension OmniASRRuntime {
         )
     }
 
+    /// Whisper Final as MLXAudio decoded it: the server cuts the recording into
+    /// 30 s windows and decodes each with the same budget, so one request
+    /// carries the whole recording.
+    nonisolated static func whisperFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?,
+        maxNewTokens: Int,
+        temperature: Float
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: maxNewTokens,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            temperature: temperature
+        )
+    }
+
+    /// Cohere Transcribe Final as MLXAudio decoded it: energy-cut chunks, or
+    /// speech segments for long audio, share one token budget on the server.
+    nonisolated static func cohereFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?,
+        usePunctuation: Bool?,
+        maxNewTokens: Int,
+        temperature: Float,
+        chunkDuration: Float,
+        minChunkDuration: Float,
+        speechSegments: OmniSpeechSegments?
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: maxNewTokens,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            temperature: temperature,
+            usePunctuation: usePunctuation,
+            chunkDuration: chunkDuration,
+            minChunkDuration: minChunkDuration,
+            speechSegments: speechSegments
+        )
+    }
+
     func transcribeQwenFinal(
         samples: [Float],
         sampleRate: Int,
@@ -522,5 +573,27 @@ extension OmniASRRuntime {
             text += result.text
         }
         return (text.trimmingCharacters(in: .whitespacesAndNewlines), resolvedLanguage)
+    }
+}
+
+extension OmniASRRuntime {
+    /// MOSS-Transcribe-Diarize Final as MLXAudio decoded it: one request for the
+    /// whole recording, which the server cuts into 1200 s chunks, each with the
+    /// token budget, decoded greedily with both end tokens and the loop guard.
+    func transcribeMossFinal(
+        samples: [Float],
+        sampleRate: Int,
+        prompt: String?,
+        maxTokens: Int
+    ) async throws -> OmniTranscriptionResult {
+        try await transcribe(OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: nil,
+            prompt: prompt,
+            maxNewTokens: maxTokens,
+            stopAtEndOfText: true,
+            stopOnTokenLoop: true
+        ))
     }
 }

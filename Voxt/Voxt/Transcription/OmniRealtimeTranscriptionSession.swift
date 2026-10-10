@@ -4,7 +4,7 @@ import os
 /// Live preview events from the local Omni realtime transcription socket.
 nonisolated enum OmniLiveEvent: Sendable, Equatable {
     case display(confirmedText: String, provisionalText: String)
-    case ended(text: String)
+    case ended(text: String, segments: [OmniSpeakerSegment])
     case failed(message: String)
 }
 
@@ -13,12 +13,27 @@ nonisolated enum OmniLiveEvent: Sendable, Equatable {
 /// Each segment's latest hypothesis replaces the previous one for the same
 /// segment id, and a replayed or reordered event index is ignored.
 nonisolated struct OmniLiveTranscriptAssembler: Equatable {
+    /// How final segments join into the confirmed text.
+    enum Joining: Sendable {
+        /// A space only between scripts that separate words with spaces (Qwen3-ASR).
+        case scriptAware
+        /// One line per segment, as MLXAudio's MOSS session joined its windows;
+        /// Voxt's MOSS rendering then merges the lines.
+        case lines
+    }
+
+    let joining: Joining
     private(set) var lastEventIndex = 0
     private var finalTextBySegment: [Int: String] = [:]
     private var provisional: (segment: Int, text: String)?
 
+    init(joining: Joining = .scriptAware) {
+        self.joining = joining
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.lastEventIndex == rhs.lastEventIndex
+        lhs.joining == rhs.joining
+            && lhs.lastEventIndex == rhs.lastEventIndex
             && lhs.finalTextBySegment == rhs.finalTextBySegment
             && lhs.provisional?.segment == rhs.provisional?.segment
             && lhs.provisional?.text == rhs.provisional?.text
@@ -38,11 +53,26 @@ nonisolated struct OmniLiveTranscriptAssembler: Equatable {
         } else {
             return nil
         }
-        return .display(confirmedText: confirmedText, provisionalText: provisional?.text ?? "")
+        let provisionalText = provisional?.text ?? ""
+        var confirmed = confirmedText
+        // MLXAudio's MOSS session put the pending window on its own line.
+        if joining == .lines, !confirmed.isEmpty, !provisionalText.isEmpty {
+            confirmed += "\n"
+        }
+        return .display(confirmedText: confirmed, provisionalText: provisionalText)
     }
 
     var confirmedText: String {
-        OmniTranscriptJoining.join(finalTextBySegment.keys.sorted().compactMap { finalTextBySegment[$0] })
+        let finals = finalTextBySegment.keys.sorted().compactMap { finalTextBySegment[$0] }
+        switch joining {
+        case .scriptAware:
+            return OmniTranscriptJoining.join(finals)
+        case .lines:
+            return finals
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+        }
     }
 }
 
@@ -57,11 +87,11 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
     private let socket: URLSessionWebSocketTask
     private let session: URLSession
     private struct Shared {
-        var assembler = OmniLiveTranscriptAssembler()
+        var assembler: OmniLiveTranscriptAssembler
         var queuedSamples = 0
         var closed = false
     }
-    private let shared = OSAllocatedUnfairLock(initialState: Shared())
+    private let shared: OSAllocatedUnfairLock<Shared>
     private struct Outbound: Sendable {
         let text: String
         let sampleCount: Int
@@ -70,7 +100,13 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
     private let sender: Task<Void, Never>
     private let receiver: Task<Void, Never>
 
-    init(endpoint: OmniServerEndpoint, language: String?) {
+    init(
+        endpoint: OmniServerEndpoint,
+        language: String?,
+        prompt: String? = nil,
+        joining: OmniLiveTranscriptAssembler.Joining = .scriptAware
+    ) {
+        shared = OSAllocatedUnfairLock(initialState: Shared(assembler: OmniLiveTranscriptAssembler(joining: joining)))
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
         session = URLSession(configuration: configuration)
@@ -89,7 +125,7 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
         self.outbound = outbound
         socket.resume()
 
-        let update = Self.sessionUpdate(language: language)
+        let update = Self.sessionUpdate(language: language, prompt: prompt)
         let socket = socket
         let shared = shared
         sender = Task.detached {
@@ -138,7 +174,10 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
                     }
                     if let display { continuation.yield(display) }
                 case "transcription.completed":
-                    continuation.yield(.ended(text: event["text"] as? String ?? ""))
+                    continuation.yield(.ended(
+                        text: event["text"] as? String ?? "",
+                        segments: OmniSpeakerSegment.parse(event["segments"])
+                    ))
                     shared.withLock { $0.closed = true }
                     socket.cancel(with: .normalClosure, reason: nil)
                     urlSession.invalidateAndCancel()
@@ -208,13 +247,15 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
     }
 
     /// The session settings Voxt's Swift live session implies: continuous
-    /// decoding with no voice-activity onset to wait for.
-    static func sessionUpdate(language: String?) -> String {
+    /// decoding with no voice-activity onset to wait for. The prompt is MOSS's
+    /// task instruction.
+    static func sessionUpdate(language: String?, prompt: String? = nil) -> String {
         var sessionConfig: [String: Any] = [
             "input_audio_format": "pcm16",
             "turn_detection": NSNull(),
         ]
         if let language { sessionConfig["language"] = language }
+        if let prompt { sessionConfig["prompt"] = prompt }
         return json(["type": "session.update", "session": sessionConfig])
     }
 

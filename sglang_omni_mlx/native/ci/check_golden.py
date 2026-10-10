@@ -16,6 +16,10 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+from typing import Callable
+
+# (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
+TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
 import sortformer_golden
 import vad_golden
@@ -28,6 +32,9 @@ QUALITY_GROUPS = {
     "cer_zh": lambda clip: clip["lang"] == "zh",
     "mer_mixed": lambda clip: clip["stratum"] == "mixed",
 }
+# MOSS-Transcribe-Diarize tags: timestamps, speaker labels and acoustic events,
+# which Voxt's plain-text rendering drops before the text is shown.
+MOSS_TAG = re.compile(r"\[\d+(?:[.,]\d+)?\]|\[S\d+\]|\[[a-z][a-z0-9 _-]{0,31}\]")
 
 
 def tokens(text: str, lang: str) -> list[str]:
@@ -72,6 +79,14 @@ def quality(manifest: dict[str, dict], texts: dict[str, str]) -> dict[str, float
     return metrics
 
 
+def spoken_text(text: str, model_kind: str | None) -> str:
+    """The text error rates are scored on: what Voxt shows of a model's output."""
+    if model_kind == "moss_transcribe_diarize":
+        return " ".join(MOSS_TAG.sub(" ", text).split())
+    else:
+        return text
+
+
 def transcribe(
     runtime_bin: Path, model_directory: Path, clips: list[Path], request: dict
 ) -> dict[str, dict]:
@@ -103,6 +118,10 @@ def transcribe(
             field: row[field] for field in COMPARED_FIELDS
         }
     return results
+
+
+def model_directory(data_root: Path, repo: str) -> Path:
+    return data_root / "models" / repo.replace("/", "_")
 
 
 def chip() -> str:
@@ -183,14 +202,18 @@ def check(
         "|---|---|---|---|",
     ]
     for name, value in metrics.items():
-        baseline = golden["baseline"][name]
-        lines.append(
-            f"| {name} | {baseline:.2%} | {value:.2%} | {(value - baseline) * 100:+.2f} pp |"
-        )
+        if golden["baseline"].get("source") == "pending":
+            lines.append(f"| {name} | pending | {value:.2%} | n/a |")
+        else:
+            baseline = golden["baseline"][name]
+            lines.append(
+                f"| {name} | {baseline:.2%} | {value:.2%} | {(value - baseline) * 100:+.2f} pp |"
+            )
     return lines, failures
 
 
-def main() -> None:
+def run(transcribe_corpus: TranscribeCorpus) -> None:
+    """Checks, records or imports one golden file; transcribe_corpus runs the model."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-bin", type=Path)
     parser.add_argument("--data-root", type=Path)
@@ -225,6 +248,7 @@ def main() -> None:
             json.loads,
             (CI_DIRECTORY / "corpus" / "manifest.jsonl").read_text().splitlines(),
         )
+        if row["duration"] > golden.get("clips_over_seconds", 0)
     }
     if golden.get("kind") == "silero_vad":
         report(
@@ -238,16 +262,15 @@ def main() -> None:
         )
     else:
         pass
-    model_directory = arguments.data_root / "models" / golden["model"].replace("/", "_")
-    clips = [
-        arguments.data_root / "corpus" / "v1" / "clips" / f"{clip_id}.wav"
-        for clip_id in manifest
-    ]
-    results = transcribe(
-        arguments.runtime_bin, model_directory, clips, golden["request"]
+    results = transcribe_corpus(
+        arguments.runtime_bin, arguments.data_root, golden, manifest
     )
     metrics = quality(
-        manifest, {clip_id: row["text"] for clip_id, row in results.items()}
+        manifest,
+        {
+            clip_id: spoken_text(row["text"], golden.get("model_kind"))
+            for clip_id, row in results.items()
+        },
     )
     device = chip()
 
@@ -278,5 +301,19 @@ def main() -> None:
     report(*check(golden, device, results, metrics))
 
 
+def transcribe_qwen3_asr(
+    runtime_bin: Path, data_root: Path, golden: dict, manifest: dict[str, dict]
+) -> dict[str, dict]:
+    clips = [
+        data_root / "corpus" / "v1" / "clips" / f"{clip_id}.wav" for clip_id in manifest
+    ]
+    return transcribe(
+        runtime_bin,
+        model_directory(data_root, golden["model"]),
+        clips,
+        golden["request"],
+    )
+
+
 if __name__ == "__main__":
-    main()
+    run(transcribe_qwen3_asr)

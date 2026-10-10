@@ -97,3 +97,27 @@ def test_bounded_intraop_threads_accounts_for_outer_workers(
     monkeypatch.setattr(cpu, "effective_cpu_count", lambda: 32)
 
     assert cpu.bounded_intraop_threads(worker_count=16, max_threads=8) == 2
+
+
+@pytest.mark.parametrize(
+    ("current", "near", "switch", "expected"),
+    [
+        pytest.param(
+            range(36, 144), range(72), "1", frozenset(range(36, 72)), id="narrowed"
+        ),
+        pytest.param(range(144), [], "1", None, id="unknown"),
+        pytest.param(range(144), range(72), "0", None, id="switched-off"),
+    ],
+)
+def test_gpu_local_affinity(
+    monkeypatch: pytest.MonkeyPatch,
+    current: range,
+    near: range | list[int],
+    switch: str,
+    expected: frozenset[int] | None,
+) -> None:
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(current))
+    monkeypatch.setattr(cpu, "gpu_local_cpus", lambda _ids: set(near))
+    monkeypatch.setenv(cpu.GPU_LOCAL_CPUS_ENV, switch)
+
+    assert cpu.gpu_local_affinity([0]) == expected

@@ -12,12 +12,10 @@ actor OmniSharedModelRuntime {
 
     init(
         kind: OmniASRModelKind,
-        configuration: @escaping @Sendable () -> OmniBackendConfiguration? = {
-            OmniASRBackend.configuration()
-        }
+        configuration: (@Sendable () -> OmniBackendConfiguration?)? = nil
     ) {
         self.kind = kind
-        self.configuration = configuration
+        self.configuration = configuration ?? { @Sendable in OmniASRBackend.configuration(for: kind) }
     }
 
     /// A ready endpoint, held until `release()`.
