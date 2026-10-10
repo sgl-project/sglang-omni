@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from queue import Queue
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,6 +12,15 @@ from torch import nn
 
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.message import OutgoingMessage
+
+
+class RecordingOutbox(Queue):
+    """A real scheduler outbox whose messages a test reads back in order."""
+
+    @property
+    def sent(self) -> list[OutgoingMessage]:
+        return list(self.queue)
 
 
 class FakeQwenTokenizer:

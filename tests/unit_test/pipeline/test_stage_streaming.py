@@ -16,12 +16,14 @@ from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher, LocalStreamChunk
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
+from tests.unit_test.pipeline.helpers import make_stage
 
 
 class FakeControlPlane:
@@ -1144,5 +1146,179 @@ def test_stage_drops_payload_after_abort_during_relay_read() -> None:
         await stage.on_data_ready(await make_relay_payload(relay, payload))
 
         assert scheduler.inbox.empty()
+
+    asyncio.run(run())
+
+
+class RecordingLocalDispatcher(LocalStageDispatcher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.chunk_batches: list[tuple[str, list[tuple[str, int]]]] = []
+
+    async def send_stream_chunks(
+        self, *, from_stage: str, to_stage: str, chunks: list[LocalStreamChunk]
+    ) -> None:
+        self.chunk_batches.append(
+            (to_stage, [(chunk.request_id, chunk.chunk_id) for chunk in chunks])
+        )
+        await super().send_stream_chunks(
+            from_stage=from_stage, to_stage=to_stage, chunks=chunks
+        )
+
+
+def make_local_stream_pair(
+    *, targets: tuple[str, ...] = ("vocoder",), accept_before_payload: bool = True
+) -> tuple[RecordingLocalDispatcher, Stage, dict[str, Stage]]:
+    dispatcher = RecordingLocalDispatcher()
+    sender = make_stage(
+        name="tts_engine",
+        endpoints={target: f"inproc://{target}" for target in targets},
+        stream_targets=list(targets),
+        same_process_targets=set(targets),
+        local_dispatcher=dispatcher,
+    )
+    receivers = {
+        target: make_stage(
+            name=target, can_accept_stream_before_payload=accept_before_payload
+        )
+        for target in targets
+    }
+    for receiver in receivers.values():
+        receiver.stream_queue = StreamQueue()
+    dispatcher.register_many([sender, *receivers.values()])
+    return dispatcher, sender, receivers
+
+
+def frame_message(request_id: str, frame: int, target: str = "vocoder"):
+    return OutgoingMessage(
+        request_id=request_id, type="stream", data=frame, target=target
+    )
+
+
+def test_same_process_stream_run_reaches_the_target_in_one_dispatch() -> None:
+    async def run() -> None:
+        dispatcher, sender, receivers = make_local_stream_pair()
+        sender.active_requests.update({"req-a", "req-b"})
+        put_messages(
+            sender.scheduler.outbox,
+            [
+                frame_message("req-a", 0),
+                frame_message("req-b", 0),
+                frame_message("req-a", 1),
+                frame_message("req-b", 1),
+                OutgoingMessage(request_id="req-a", type="result", data={"ok": 1}),
+            ],
+        )
+
+        await sender.drain_outbox_external()
+
+        assert dispatcher.chunk_batches == [
+            ("vocoder", [("req-a", 0), ("req-b", 0), ("req-a", 1), ("req-b", 1)])
+        ]
+        inbox = receivers["vocoder"].scheduler.inbox
+        delivered = [inbox.get_nowait() for _ in range(5)]
+        assert inbox.empty()
+        assert [(message.request_id, message.type) for message in delivered] == [
+            ("req-a", "stream_chunk"),
+            ("req-b", "stream_chunk"),
+            ("req-a", "stream_chunk"),
+            ("req-b", "stream_chunk"),
+            ("req-a", "stream_done"),
+        ]
+        assert [message.data.data for message in delivered[:4]] == [0, 0, 1, 1]
+        assert {message.data.from_stage for message in delivered[:4]} == {"tts_engine"}
+
+    asyncio.run(run())
+
+
+def test_stream_run_drops_inactive_and_receiver_aborted_requests() -> None:
+    async def run() -> None:
+        dispatcher, sender, receivers = make_local_stream_pair()
+        sender.active_requests.update({"req-a", "req-b"})
+        receivers["vocoder"].aborted.add("req-b")
+        put_messages(
+            sender.scheduler.outbox,
+            [
+                frame_message("req-stale", 0),
+                frame_message("req-a", 0),
+                frame_message("req-b", 0),
+                frame_message("req-a", 1),
+            ],
+        )
+
+        await sender.drain_outbox_external()
+
+        assert dispatcher.chunk_batches == [
+            ("vocoder", [("req-a", 0), ("req-b", 0), ("req-a", 1)])
+        ]
+        assert ("req-stale", "vocoder") not in sender.stream_chunk_counters
+        inbox = receivers["vocoder"].scheduler.inbox
+        delivered = [inbox.get_nowait() for _ in range(2)]
+        assert inbox.empty()
+        assert [(message.request_id, message.data.data) for message in delivered] == [
+            ("req-a", 0),
+            ("req-a", 1),
+        ]
+
+    asyncio.run(run())
+
+
+def test_stream_run_rejects_only_the_request_without_its_payload() -> None:
+    async def run() -> None:
+        _, sender, receivers = make_local_stream_pair(accept_before_payload=False)
+        receiver = receivers["vocoder"]
+        receiver.stream_queue.open("req-a")
+        sender.active_requests.update({"req-a", "req-b"})
+        put_messages(
+            sender.scheduler.outbox,
+            [
+                frame_message("req-a", 0),
+                frame_message("req-b", 0),
+                frame_message("req-a", 1),
+            ],
+        )
+
+        await sender.drain_outbox_external()
+
+        inbox = receiver.scheduler.inbox
+        delivered = [inbox.get_nowait() for _ in range(2)]
+        assert inbox.empty()
+        assert [(message.request_id, message.data.data) for message in delivered] == [
+            ("req-a", 0),
+            ("req-a", 1),
+        ]
+        assert [
+            (completion.request_id, completion.success)
+            for completion in receiver.control_plane.completions
+        ] == [("req-b", False)]
+        assert receiver.scheduler.aborted == ["req-b"]
+
+    asyncio.run(run())
+
+
+def test_stream_run_keeps_the_order_across_alternating_targets() -> None:
+    async def run() -> None:
+        dispatcher, sender, receivers = make_local_stream_pair(
+            targets=("vocoder", "monitor")
+        )
+        sender.active_requests.add("req-a")
+        put_messages(
+            sender.scheduler.outbox,
+            [
+                frame_message("req-a", 0, "vocoder"),
+                frame_message("req-a", 0, "monitor"),
+                frame_message("req-a", 1, "vocoder"),
+            ],
+        )
+
+        await sender.drain_outbox_external()
+
+        assert dispatcher.chunk_batches == [
+            ("vocoder", [("req-a", 0)]),
+            ("monitor", [("req-a", 0)]),
+            ("vocoder", [("req-a", 1)]),
+        ]
+        assert receivers["monitor"].scheduler.inbox.qsize() == 1
+        assert receivers["vocoder"].scheduler.inbox.qsize() == 2
 
     asyncio.run(run())

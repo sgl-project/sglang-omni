@@ -178,9 +178,12 @@ class Qwen3TTSCodecStateArena:
         ]
 
     def zero_slot(self, slot: int) -> None:
-        for buffer in self._buffers(self.storage):
-            buffer[slot].zero_()
-        self.storage.frame_positions[slot] = 0
+        # note (ratish): one multi-tensor launch for the slot's buffers: an initial decode resets
+        # a fresh slot per row, and every row of its batch waits for all the resets before launch.
+        torch._foreach_zero_(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            [buffer[slot] for buffer in self._buffers(self.storage)]
+        )
+        self.storage.frame_positions[slot].zero_()
 
     STAGING_RING = 4
 

@@ -82,7 +82,11 @@ from sglang_omni.proto.admin import (
 )
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import find_session_operation
-from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import (
+    IncomingMessage,
+    OutgoingMessage,
+    put_messages,
+)
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionBridge,
@@ -2028,6 +2032,7 @@ class OmniScheduler(Generic[RequestDataT]):
             return
         else:
             pass
+        step_messages: list[OutgoingMessage] = []
         for sched_req in sched_output.requests:
             rid = sched_req.request_id
             if rid in skip_rids or rid in self.aborted_request_ids:
@@ -2043,27 +2048,33 @@ class OmniScheduler(Generic[RequestDataT]):
                 messages = self.stream_output_builder(rid, sched_req.data, req_output)
             else:
                 continue
-            self.put_stream_messages(rid, messages)
+            self.stage_stream_messages(rid, messages, step_messages)
+        put_messages(self.outbox, step_messages)
+
+    def stage_stream_messages(
+        self,
+        request_id: str,
+        messages: Iterable[OutgoingMessage],
+        staged: list[OutgoingMessage],
+    ) -> None:
+        staged_count = len(staged)
+        staged.extend(messages)
+        if len(staged) > staged_count and request_id not in self.first_emit_done:
+            self.first_emit_done.add(request_id)
+            _emit_event(
+                request_id=request_id,
+                stage=None,
+                event_name="scheduler_first_emit",
+            )
+        else:
+            pass
 
     def put_stream_messages(
         self, request_id: str, messages: Iterable[OutgoingMessage]
     ) -> None:
-        emitted_any = False
-        for msg in messages:
-            if not emitted_any:
-                if request_id not in self.first_emit_done:
-                    self.first_emit_done.add(request_id)
-                    _emit_event(
-                        request_id=request_id,
-                        stage=None,
-                        event_name="scheduler_first_emit",
-                    )
-                else:
-                    pass
-                emitted_any = True
-            else:
-                pass
-            self.outbox.put(msg)
+        staged: list[OutgoingMessage] = []
+        self.stage_stream_messages(request_id, messages, staged)
+        put_messages(self.outbox, staged)
 
     def flush_stream_output(self, request_id: str, req_data: ARRequestData) -> None:
         session_unit = self.active_session_unit(request_id)

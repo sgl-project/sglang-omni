@@ -17,7 +17,11 @@ from sglang_omni.models.qwen3_omni.config import (
 )
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_payload
+from tests.unit_test.fixtures.qwen_fakes import (
+    FakeCode2WavModel,
+    RecordingOutbox,
+    make_qwen_payload,
+)
 
 
 def fake_model(n: int, hidden: int, code_groups: int, step: int = 0) -> SimpleNamespace:
@@ -45,8 +49,7 @@ def make_runner(
     runner.codec_coalesce_frames = coalesce
     runner.codec_coalesce_early_frames = 0
     runner.codec_coalesce_first_frames = first_frames
-    runner.outbox = SimpleNamespace(sent=[])
-    runner.outbox.put = runner.outbox.sent.append
+    runner.outbox = RecordingOutbox()
     return runner
 
 

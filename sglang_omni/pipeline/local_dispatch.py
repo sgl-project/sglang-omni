@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
@@ -10,6 +11,17 @@ if TYPE_CHECKING:
     from sglang_omni.proto.request import StagePayload
 else:
     pass
+
+
+@dataclass(frozen=True, kw_only=True)
+class LocalStreamChunk:
+    """One stream chunk passed by reference to a stage in the same process."""
+
+    request_id: str
+    chunk_id: int
+    data: object
+    metadata: dict[str, object] | None
+    replica_bindings: dict[str, int] | None
 
 
 class LocalStageDispatcher:
@@ -55,26 +67,15 @@ class LocalStageDispatcher:
             request_id, from_stage, payload, replica_bindings
         )
 
-    async def send_stream_chunk(
+    async def send_stream_chunks(
         self,
         *,
         from_stage: str,
         to_stage: str,
-        request_id: str,
-        chunk_id: int,
-        data: object,
-        metadata: dict[str, object] | None = None,
-        replica_bindings: dict[str, int] | None = None,
+        chunks: list[LocalStreamChunk],
     ) -> None:
         target = self.get_stage(from_stage, to_stage)
-        await target.receive_local_stream_chunk(
-            request_id,
-            from_stage,
-            chunk_id,
-            data,
-            metadata,
-            replica_bindings,
-        )
+        await target.receive_local_stream_chunks(from_stage, chunks)
 
     async def send_stream_signal(
         self,

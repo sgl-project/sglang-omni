@@ -807,6 +807,29 @@ def test_arena_slot_reuse_starts_from_a_cold_state() -> None:
     torch.testing.assert_close(again, cold)
 
 
+def test_arena_acquire_zeroes_only_the_acquired_slot() -> None:
+    torch.manual_seed(16)
+    _, arena = make_arena(Decoder(), slots=2)
+    storage = arena.storage
+    buffers = [
+        *storage.conv_histories.values(),
+        *storage.transconv_overlaps.values(),
+        *storage.transformer_keys.values(),
+        *storage.transformer_values.values(),
+    ]
+    for buffer in buffers:
+        buffer.uniform_(1.0, 2.0)
+    storage.frame_positions.fill_(7)
+
+    slot = arena.acquire()
+
+    assert slot == 0
+    for buffer in buffers:
+        assert not buffer[0].any()
+        assert bool((buffer[1:] >= 1.0).all())
+    assert storage.frame_positions.tolist() == [0, 7, 7]
+
+
 def test_arena_reports_exhaustion_and_retirement() -> None:
     decoder = Decoder()
     _, arena = make_arena(decoder, slots=1)

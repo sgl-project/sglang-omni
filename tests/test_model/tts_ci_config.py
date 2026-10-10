@@ -333,14 +333,6 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
         model=TtsCiModelPreset(
             model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
             ref_format="references",
-            # Note: (Jiaxin Deng) the shipped defaults colocate every stage in one
-            # process, which is what kept this variant behind, so CI splits the
-            # vocoder out and measures the tuned point.
-            worker_extra_args=(
-                "--vocoder.process vocoder "
-                "--tts_engine.gpu_memory_fraction 0.85 "
-                "--vocoder.gpu_memory_fraction 0.10"
-            ),
             # note (luojiaxuan): a cold Inductor cache compiles the vocoder steady
             # shapes at startup, which takes two workers past five minutes.
             startup_timeout=900,
@@ -366,10 +358,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             worker_extra_args=(
                 "--tts_engine.engine.max_running_requests 64 "
                 "--tts_engine.engine.cuda_graph_max_bs 64 "
-                "--tts_engine.engine.torch_compile_max_bs 64 "
-                "--vocoder.process vocoder "
-                "--tts_engine.gpu_memory_fraction 0.85 "
-                "--vocoder.gpu_memory_fraction 0.10"
+                "--tts_engine.engine.torch_compile_max_bs 64"
             ),
             # note (luojiaxuan): a cold Inductor cache compiles the vocoder steady
             # shapes at startup, which takes two workers past five minutes.

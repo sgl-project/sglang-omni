@@ -32,7 +32,11 @@ from sglang.srt.runtime_context import get_context
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
-from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.message import (
+    IncomingMessage,
+    OutgoingMessage,
+    put_messages,
+)
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -1406,6 +1410,86 @@ def test_omni_scheduler_emit_stream_output_skips_aborted_requests() -> None:
 
     assert scheduler.outbox.get_nowait().request_id == "req-live"
     assert scheduler.outbox.empty()
+
+
+def test_put_messages_wakes_the_consumer_once_every_message_is_queued() -> None:
+    outbox: Queue[OutgoingMessage] = Queue()
+    queued_at_notify: list[int] = []
+    notify = outbox.not_empty.notify
+
+    def recording_notify(count: int = 1) -> None:
+        queued_at_notify.append(len(outbox.queue))
+        notify(count)
+
+    outbox.not_empty.notify = recording_notify
+    messages = [
+        OutgoingMessage(request_id=f"req-{index}", type="stream", data=index)
+        for index in range(3)
+    ]
+
+    put_messages(outbox, messages)
+
+    assert queued_at_notify == [3]
+    assert [outbox.get_nowait() for _ in messages] == messages
+    for _ in messages:
+        outbox.task_done()
+    outbox.join()
+
+
+def test_put_messages_wakes_a_blocked_consumer() -> None:
+    outbox: Queue[OutgoingMessage] = Queue()
+    received: list[OutgoingMessage] = []
+
+    def consume() -> None:
+        received.append(outbox.get(timeout=2.0))
+        received.append(outbox.get_nowait())
+
+    consumer = threading.Thread(target=consume)
+    consumer.start()
+    messages = [
+        OutgoingMessage(request_id="req", type="stream", data=index)
+        for index in range(2)
+    ]
+
+    put_messages(outbox, messages)
+    consumer.join(timeout=2.0)
+
+    assert received == messages
+
+
+def test_omni_scheduler_emit_stream_output_enqueues_the_step_together(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.aborted_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.session_bridge = None
+    scheduler.stream_output_builder = lambda rid, data, output: [
+        OutgoingMessage(request_id=rid, type="stream", data=frame, target="vocoder")
+        for frame in range(2)
+    ]
+    enqueued: list[list[str]] = []
+
+    def recording_put_messages(outbox, messages) -> None:
+        enqueued.append(
+            [f"{message.request_id}:{message.data}" for message in messages]
+        )
+        put_messages(outbox, messages)
+
+    monkeypatch.setattr(omni_scheduler_module, "put_messages", recording_put_messages)
+    sched_output = SimpleNamespace(
+        requests=[
+            SimpleNamespace(request_id="req-a", data=None),
+            SimpleNamespace(request_id="req-b", data=None),
+        ]
+    )
+    mr_output = SimpleNamespace(outputs={"req-a": object(), "req-b": object()})
+
+    scheduler.emit_stream_output(sched_output, mr_output)
+
+    assert enqueued == [["req-a:0", "req-a:1", "req-b:0", "req-b:1"]]
+    assert scheduler.first_emit_done == {"req-a", "req-b"}
 
 
 def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> None:
