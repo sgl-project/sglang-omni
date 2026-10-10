@@ -31,6 +31,12 @@ from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.session import (
+    SESSION_METADATA_KEY,
+    SessionIdentity,
+    SessionOperation,
+    TimedChunk,
+)
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
@@ -121,6 +127,82 @@ def new_stage_payload(request_id: str) -> StagePayload:
         request=OmniRequest(inputs={}),
         data=None,
     )
+
+
+@pytest.mark.parametrize(
+    ("bypass_generation", "chunk", "reason"),
+    [
+        (
+            True,
+            TimedChunk("audio", 0, 20, 0, b"pcm"),
+            "generation_bypassed",
+        ),
+        (
+            False,
+            TimedChunk("audio", 20, 0, 1, b"", eos=True),
+            "finish_input",
+        ),
+    ],
+)
+def test_route_session_input_records_authoritative_ar_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+    bypass_generation: bool,
+    chunk: TimedChunk,
+    reason: str,
+) -> None:
+    emit_bypassed = Mock()
+    monkeypatch.setattr(
+        omni_scheduler_module, "emit_session_stage_bypassed", emit_bypassed
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "_get_active_stage",
+        lambda: "ar-stage",
+    )
+    identity = SessionIdentity("session-route", 1)
+    operation = SessionOperation(
+        operation="append",
+        session_identity=identity,
+        stages=("ar-stage",),
+        chunk=chunk,
+    )
+    payload = StagePayload(
+        request_id="request-route",
+        request=OmniRequest(
+            inputs={}, metadata={SESSION_METADATA_KEY: operation.to_dict()}
+        ),
+        data=None,
+    )
+    unit = SimpleNamespace(
+        session_identity=identity,
+        chunk=chunk,
+    )
+    eos_payload = StagePayload(
+        request_id="request-route",
+        request=OmniRequest(inputs={}),
+        data={"input_done": True},
+    )
+    bridge = SimpleNamespace(
+        accept=Mock(return_value=unit),
+        prepare_unit=Mock(return_value=bypass_generation),
+        complete=Mock(),
+        adapter=SimpleNamespace(finish_input=Mock(return_value=eos_payload)),
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.session_bridge = bridge
+    scheduler.aborted_request_ids = set()
+    scheduler.outbox = Queue()
+
+    assert OmniScheduler.route_session_input(scheduler, payload) is False
+
+    assert bridge.complete.call_args.args == (payload.request_id,)
+    assert emit_bypassed.call_args.kwargs == {
+        "request_id": payload.request_id,
+        "session_identity": identity,
+        "input_chunk": chunk,
+        "reason": reason,
+        "stage": "ar-stage",
+    }
 
 
 def make_abortable_req(request_id: str, **attributes):

@@ -12,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from sglang_omni.client.client import Client
+from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
     OutputChunk,
@@ -44,6 +45,8 @@ class SessionCoordinator:
         self.replies = replies
         self.stale_reply = stale_reply
         self.appended: list[TimedChunk] = []
+        self.ready_timestamps_ns: list[int | None] = []
+        self.ready_run_ids: list[str | None] = []
         self.opened: list[tuple[OmniRequest, list[str], str | None]] = []
         self.is_closed = False
         self.outputs: asyncio.Queue[OutputChunk | None] = asyncio.Queue()
@@ -60,9 +63,16 @@ class SessionCoordinator:
         return SessionIdentity(session_id or "session")
 
     async def append_session(
-        self, session_identity: SessionIdentity, chunk: TimedChunk
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
     ) -> int:
         self.appended.append(chunk)
+        self.ready_timestamps_ns.append(ready_timestamp_ns)
+        self.ready_run_ids.append(ready_run_id)
         if self.stale_reply is not None:
             self.put(session_identity, chunk.seq + 1, "data", self.stale_reply)
         else:
@@ -130,9 +140,27 @@ def build_adapter(
     )
 
 
-def build_unit(seq: int, *, is_eos: bool = False) -> Unit:
+def build_unit(
+    seq: int,
+    *,
+    is_eos: bool = False,
+    ready_timestamp_ns: int | None = None,
+    ready_run_id: str | None = None,
+) -> Unit:
     return Unit(
-        seq, seq * UNIT_SAMPLES, b"\1\0" * UNIT_SAMPLES, UNIT_SAMPLES, is_eos, ("text",)
+        seq,
+        seq * UNIT_SAMPLES,
+        b"\1\0" * UNIT_SAMPLES,
+        UNIT_SAMPLES,
+        is_eos,
+        ("text",),
+        ready_observation=(
+            SessionUnitReadyObservation(
+                timestamp_ns=ready_timestamp_ns, run_id=ready_run_id
+            )
+            if ready_timestamp_ns is not None and ready_run_id is not None
+            else None
+        ),
     )
 
 
@@ -156,7 +184,9 @@ async def test_process_sends_timed_chunk_and_consumes_whole_unit() -> None:
     adapter = build_adapter(coordinator)
     await adapter.open("sess_1", SESSION_CONFIG, RecordingSink())
 
-    consumed = await adapter.process(build_unit(2, is_eos=True))
+    consumed = await adapter.process(
+        build_unit(2, is_eos=True, ready_timestamp_ns=123, ready_run_id="run-1")
+    )
     await adapter.close()
 
     assert consumed == UNIT_SAMPLES
@@ -171,6 +201,8 @@ async def test_process_sends_timed_chunk_and_consumes_whole_unit() -> None:
             eos=True,
         )
     ]
+    assert coordinator.ready_timestamps_ns == [123]
+    assert coordinator.ready_run_ids == ["run-1"]
 
 
 @pytest.mark.asyncio

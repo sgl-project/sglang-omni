@@ -61,6 +61,7 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.weight_checker import WeightCheckResult
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
+from sglang_omni.profiler.duplex_events import emit_session_stage_bypassed
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import (
     emit_model_path_end as _emit_model_path_end,
@@ -1126,6 +1127,13 @@ class OmniScheduler(Generic[RequestDataT]):
                 and not chunk.payload
             )
             if bypass_generation:
+                emit_session_stage_bypassed(
+                    request_id=payload.request_id,
+                    session_identity=unit.session_identity,
+                    input_chunk=unit.chunk,
+                    reason="generation_bypassed",
+                    stage=_get_active_stage(),
+                )
                 bridge.complete(payload.request_id)
                 self.outbox.put(
                     OutgoingMessage(
@@ -1148,6 +1156,13 @@ class OmniScheduler(Generic[RequestDataT]):
                 if eos_payload is None:
                     return True
                 else:
+                    emit_session_stage_bypassed(
+                        request_id=payload.request_id,
+                        session_identity=unit.session_identity,
+                        input_chunk=unit.chunk,
+                        reason="finish_input",
+                        stage=_get_active_stage(),
+                    )
                     bridge.complete(payload.request_id)
                     self.outbox.put(
                         OutgoingMessage(

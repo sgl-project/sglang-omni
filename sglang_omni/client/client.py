@@ -133,9 +133,19 @@ class Client:
         )
 
     async def append_session(
-        self, session_identity: SessionIdentity, chunk: TimedChunk
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
     ) -> int:
-        return await self.coordinator.append_session(session_identity, chunk)
+        return await self.coordinator.append_session(
+            session_identity,
+            chunk,
+            ready_timestamp_ns=ready_timestamp_ns,
+            ready_run_id=ready_run_id,
+        )
 
     def session_outputs(
         self, session_identity: SessionIdentity

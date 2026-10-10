@@ -160,6 +160,19 @@ class RequestEventRecorder:
     def active_run_id(self) -> str | None:
         return self.run_id
 
+    def capture_active_run_timestamp_ns(self) -> tuple[str, int] | None:
+        """Capture the active run ID and wall-clock timestamp together."""
+        if self.fp is None:
+            return None
+        else:
+            pass
+        with self.lock:
+            if self.fp is None or self.run_id is None:
+                return None
+            else:
+                pass
+            return self.run_id, time.time_ns()
+
     def active_path(self) -> str | None:
         return None if self.path is None else str(self.path)
 
@@ -256,6 +269,7 @@ class RequestEventRecorder:
         event_name: str,
         metadata: Mapping[str, object] | None = None,
         timestamp_ns: int | None = None,
+        expected_run_id: str | None = None,
     ) -> None:
         """Append one event. No-op when inactive; errors are swallowed."""
         if self.fp is None:
@@ -266,6 +280,10 @@ class RequestEventRecorder:
         with self.lock:
             fp = self.fp
             if fp is None:
+                return
+            else:
+                pass
+            if expected_run_id is not None and self.run_id != expected_run_id:
                 return
             else:
                 pass

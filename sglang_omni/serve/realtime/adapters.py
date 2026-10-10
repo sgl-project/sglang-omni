@@ -179,7 +179,19 @@ class CoordinatorAdapter(InteractionAdapter):
             eos=unit.eos,
         )
         try:
-            await self.client.append_session(self.session_identity, timed_chunk)
+            ready_observation = unit.ready_observation
+            await self.client.append_session(
+                self.session_identity,
+                timed_chunk,
+                ready_timestamp_ns=(
+                    ready_observation.timestamp_ns
+                    if ready_observation is not None
+                    else None
+                ),
+                ready_run_id=(
+                    ready_observation.run_id if ready_observation is not None else None
+                ),
+            )
             return await self.unit_completion
         finally:
             self.active_unit = None
