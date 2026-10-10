@@ -26,6 +26,7 @@ import requests
 
 from sglang_omni.http.admin_auth import admin_auth_headers
 from sglang_omni.profiler.views import ProfilerReport, build_report
+from sglang_omni.utils.gpu_backend import gpu_device_type
 
 _NO_PROXIES = {"http": None, "https": None}
 _PROFILE_TIMEOUT_S = 30
@@ -160,10 +161,11 @@ def _read_proc_stat() -> tuple[int, int] | None:
 
 
 def _query_gpu_utilization(gpu_ids: list[int]) -> dict[str, dict[str, float]]:
+    selected_backend = gpu_device_type()
     try:
         raw = subprocess.run(
             [
-                "nvidia-smi",
+                "xpu-smi" if selected_backend == "xpu" else "nvidia-smi",
                 "--query-gpu=index,utilization.gpu,memory.used",
                 "--format=csv,noheader,nounits",
             ],
@@ -196,7 +198,7 @@ class UtilizationSampler:
 
     CPU usage comes from /proc/stat deltas (Linux; None elsewhere) so the
     benchmark does not grow a psutil dependency. GPU stats come from a
-    best-effort ``nvidia-smi`` query and are empty when unavailable.
+    detected backend's nvidia-smi or xpu-smi query and are empty when unavailable.
     """
 
     gpu_ids: list[int] = field(default_factory=list)

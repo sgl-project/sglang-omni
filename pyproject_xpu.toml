@@ -32,6 +32,8 @@ dependencies = [
     "tabulate",
     "pandas",
     "typer>=0.9.0",
+    "pyzes>=0.1.2",          # Level Zero Sysman memory, diagnostics and telemetry
+    "psutil>=5.9.0",         # Host CPU metrics for benchmark resource sampling
 
     # --- PyTorch XPU builds (from --extra-index-url .../whl/xpu) -------------
     # Pins match SGLang's pyproject_xpu.toml / xpu.Dockerfile.

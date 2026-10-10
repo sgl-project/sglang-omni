@@ -15,9 +15,12 @@ from typing import TypedDict
 
 import requests
 
+from sglang_omni.utils.gpu_backend import gpu_device_type
+
 _NO_PROXIES = {"http": None, "https": None}
 _FINGERPRINT_ENV_KEYS = (
     "CUDA_VISIBLE_DEVICES",
+    "ZE_AFFINITY_MASK",
     "HF_HOME",
     "HF_ENDPOINT",
     "TORCHINDUCTOR_CACHE_DIR",
@@ -121,6 +124,7 @@ def collect_environment_fingerprint(
     A missing tool yields None so fingerprinting never blocks a run.
     """
     pip_freeze = _run_command([sys.executable, "-m", "pip", "freeze"])
+    selected_backend = gpu_device_type()
     fingerprint: EnvironmentFingerprint = {
         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "hostname": platform.node(),
@@ -142,7 +146,7 @@ def collect_environment_fingerprint(
         ),
         "gpus": _run_command(
             [
-                "nvidia-smi",
+                "xpu-smi" if selected_backend == "xpu" else "nvidia-smi",
                 "--query-gpu=index,name,driver_version,memory.total",
                 "--format=csv,noheader",
             ]

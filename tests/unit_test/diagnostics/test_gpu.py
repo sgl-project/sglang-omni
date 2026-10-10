@@ -5,12 +5,14 @@ import importlib
 import json
 import subprocess
 import sys
+from ctypes import c_void_p
 from types import ModuleType, SimpleNamespace
 
 from typer.testing import CliRunner
 
 import sglang_omni.diagnostics.gpu as gpu_diagnostics
 from sglang_omni.cli import app
+from sglang_omni.utils.xpu_management import SysmanError
 
 
 class FakeCuda:
@@ -125,6 +127,71 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     rendered = gpu_diagnostics.render_gpu_diagnostics(report)
     assert "logical 0 -> physical 1" in rendered
     assert fake_nvml.shutdown_called is True
+
+
+def test_xpu_diagnostics_maps_uuid_and_strict_accepts_visible_xpu(monkeypatch) -> None:
+    fake_torch = FakeTorch()
+    fake_torch.cuda.is_available = lambda: False
+    fake_torch.xpu = FakeCuda()
+    devices = [
+        dict(
+            physical_index=index,
+            handle=c_void_p(index + 1),
+            uuid=uuid,
+            name="Intel GPU",
+            driver_version="1.2",
+            pci_bus_id=f"0000:0{index}:00.0",
+        )
+        for index, uuid in enumerate(("uuid-b", "uuid-a"))
+    ]
+    monkeypatch.setattr(gpu_diagnostics, "enumerate_xpu_devices", lambda: devices)
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "get_xpu_memory_bytes",
+        lambda handle: (8 * 1024**3, 24 * 1024**3),
+    )
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+
+    def refuse_nvml() -> None:
+        raise AssertionError("XPU diagnostics must not query NVML")
+
+    monkeypatch.setattr(gpu_diagnostics, "try_import_pynvml", refuse_nvml)
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        torch_module=fake_torch,
+        env={"ZE_AFFINITY_MASK": "1,0"},
+    )
+    assert [device["physical_index"] for device in report["gpus"]] == [1, 0]
+    assert report["environment"]["xpu_available"]
+    assert report["environment"]["driver_version"] == "1.2"
+    assert report["gpus"][0]["free_memory_bytes"] == 8 * 1024**3
+    assert report["gpus"][0]["compute_capability"] is None
+    assert not report["warnings"]
+    rendered = gpu_diagnostics.render_gpu_diagnostics(report)
+    assert "ZE_AFFINITY_MASK: 1,0" in rendered
+    assert "PyTorch/XPU build:" in rendered
+    assert "CUDA driver/runtime" not in rendered
+    check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
+    monkeypatch.setattr(check_gpu_module, "collect_gpu_diagnostics", lambda: report)
+    result = CliRunner().invoke(app, ["check-gpu", "--json", "--strict"])
+    assert result.exit_code == 0
+
+
+def test_xpu_diagnostics_keeps_torch_metadata_without_sysman(monkeypatch) -> None:
+    fake_torch = FakeTorch()
+    fake_torch.cuda.is_available = lambda: False
+    fake_torch.xpu = FakeCuda()
+
+    def unavailable() -> None:
+        raise SysmanError("Level Zero unavailable")
+
+    monkeypatch.setattr(gpu_diagnostics, "enumerate_xpu_devices", unavailable)
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    report = gpu_diagnostics.collect_gpu_diagnostics(torch_module=fake_torch, env={})
+    assert len(report["gpus"]) == 2
+    assert report["gpus"][0]["total_memory_bytes"] == 32 * 1024**3
+    assert report["gpus"][0]["free_memory_bytes"] is None
+    assert report["gpus"][0]["physical_index"] is None
+    assert "Level Zero unavailable" in report["warnings"]
 
 
 def test_nvml_inventory_failure_is_isolated_per_physical_device(

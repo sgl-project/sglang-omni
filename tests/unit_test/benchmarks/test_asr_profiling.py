@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import subprocess
 import time
 from types import SimpleNamespace
 
@@ -349,6 +350,100 @@ def test_environment_fingerprint_is_best_effort(
     assert environment["model_path"] == "Qwen/Qwen3-ASR-1.7B"
     assert "torch" in environment["packages"]
     assert "CUDA_VISIBLE_DEVICES" in environment["env"]
+
+
+def test_environment_fingerprint_detects_xpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run_command(command: list[str]) -> str | None:
+        commands.append(command)
+        return (
+            "0, Intel GPU, driver, 24480 MiB"
+            if command[0] == "xpu-smi"
+            else "NVIDIA GPU"
+        )
+
+    monkeypatch.setattr(fingerprint, "_run_command", run_command)
+    monkeypatch.setattr(fingerprint, "gpu_device_type", lambda: "xpu")
+    environment = collect_environment_fingerprint()
+    assert environment["gpus"] == "0, Intel GPU, driver, 24480 MiB"
+    assert commands[-1] == [
+        "xpu-smi",
+        "--query-gpu=index,name,driver_version,memory.total",
+        "--format=csv,noheader",
+    ]
+    assert "ZE_AFFINITY_MASK" in environment["env"]
+    assert not any(command[0] == "nvidia-smi" for command in commands)
+
+
+@pytest.mark.parametrize("executable", ["nvidia-smi", "xpu-smi"])
+def test_utilization_query_uses_cli_units_and_filters_device_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    executable: str,
+) -> None:
+    def run(
+        command: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: int,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert command[0] == executable
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="0, 10.5, 512.25\n2, 35.0, 1024.5\n3, N/A, N/A\n",
+        )
+
+    monkeypatch.setattr(asr_profiling.subprocess, "run", run)
+    monkeypatch.setattr(
+        asr_profiling,
+        "gpu_device_type",
+        lambda: "xpu" if executable == "xpu-smi" else "cuda",
+    )
+    sampler = UtilizationSampler(
+        gpu_ids=[2],
+        interval_s=0.005,
+    )
+    sampler.start()
+    try:
+        deadline = time.monotonic() + 1
+        while len(sampler.samples) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        summary = sampler.stop()
+    assert set(summary.gpu) == {"2"}
+    assert summary.gpu["2"]["util_percent_mean"] == 35.0
+    assert summary.gpu["2"]["memory_mib_max"] == 1024.5
+
+
+def test_utilization_query_keeps_missing_tools_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(
+        command: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: int,
+        check: bool,
+    ) -> None:
+        raise subprocess.TimeoutExpired(command, 10)
+
+    monkeypatch.setattr(asr_profiling.subprocess, "run", run)
+    sampler = UtilizationSampler(interval_s=0.005)
+    sampler.start()
+    try:
+        deadline = time.monotonic() + 1
+        while len(sampler.samples) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        summary = sampler.stop()
+    assert summary.samples >= 2
+    assert summary.gpu == {}
 
 
 def make_repeat_result(concurrency: int, repeat: int, median: float) -> dict:
