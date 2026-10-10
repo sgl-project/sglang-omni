@@ -334,6 +334,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             replica_topology=None,
             logical_process_plan=None,
             max_in_flight=None,
+            max_total_backlog_bytes: int | None = None,
         ) -> None:
             del (
                 abort_endpoint,
@@ -344,6 +345,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
                 logical_process_plan,
                 max_in_flight,
             )
+            self.max_total_backlog_bytes = max_total_backlog_bytes
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
             )
@@ -406,6 +408,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     await runner.start()
     capacity.assert_called_once_with()
     assert len([path for path in tmp_path.iterdir() if path.is_dir()]) == 1
+    assert runner.coordinator.max_total_backlog_bytes == 1024**3
 
     await runner.stop()
 

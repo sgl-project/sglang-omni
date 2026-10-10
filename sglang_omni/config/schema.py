@@ -511,6 +511,16 @@ class AudioChunkingConfig(BaseModel):
             pass
 
 
+class StreamDeliveryConfig(BaseModel):
+    """Cap on undelivered stream bytes the coordinator holds for all readers together.
+
+    None turns it off.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    max_total_backlog_bytes: int | None = Field(default=1024 * 1024 * 1024, ge=1)
+
+
 @dataclass(frozen=True)
 class ResolvedAudioChunking:
     """The merged long-audio contract the transcription handlers consume.
@@ -599,6 +609,7 @@ class PipelineConfig(BaseModel):
     "Stage name -> ``StageConfig`` subclass for this pipeline's stage types.\n\n    The mapping is what makes a stage's type survive a dump/rebuild round\n    trip: the resolver mutates ``model_dump()`` output and reconstructs the\n    config, and this is how each stage document gets validated against its\n    own subclass (engine marker, model-specific ``model.*`` fields) instead\n    of the base ``StageConfig``. Stage names absent from the mapping --\n    including stages a user file adds -- validate as plain ``StageConfig``.\n    "
     model_path: str
     audio_chunking: AudioChunkingConfig = Field(default_factory=AudioChunkingConfig)
+    stream_delivery: StreamDeliveryConfig = Field(default_factory=StreamDeliveryConfig)
     stages: list[StageConfig]
     name: str | None = None
     entry_stage: str | None = None
