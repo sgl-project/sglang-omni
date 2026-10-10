@@ -108,6 +108,22 @@ def test_streams_waiting_on_the_same_chunk_size_decode_together(
     assert {m.request_id for m in drain(vocoder)} == {"a", "b"}
 
 
+def test_finished_streams_return_their_codec_slots(vocoder) -> None:
+    free = len(vocoder.runner.free)
+    for request_id in ("a", "b"):
+        vocoder.handle_streaming_new_request(
+            request_id, make_payload(request_id, stream=True)
+        )
+        vocoder.handle_stream_chunk_batch(
+            [chunk(request_id, torch.randint(0, 16, (3, 4)), 0)]
+        )
+    assert len(vocoder.runner.free) == free - 2
+
+    for request_id in ("a", "b"):
+        vocoder.handle_stream_done(request_id)
+    assert len(vocoder.runner.free) == free
+
+
 def test_first_chunks_take_priority_over_steady_chunks(vocoder) -> None:
     vocoder.stream_states["warm"] = EasyMagpieStreamState(
         pending=[torch.zeros(8, 4, dtype=torch.long)] * 2,

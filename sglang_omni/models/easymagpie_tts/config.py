@@ -22,10 +22,12 @@ _PKG = "sglang_omni.models.easymagpie_tts"
 
 
 class EasyMagpieVocoderFactoryArgs(FactoryArgs):
-    """Streaming chunk schedule, in stacked acoustic frames."""
+    """Streaming chunk schedule, in stacked acoustic frames, and whether the
+    streaming codec replays CUDA graphs."""
 
     startup_chunk_frames: list[int] | None = None
     steady_chunk_frames: int | None = Field(default=None, ge=1)
+    cuda_graph: bool = True
 
 
 class EasyMagpieVocoderStageConfig(StageConfig):

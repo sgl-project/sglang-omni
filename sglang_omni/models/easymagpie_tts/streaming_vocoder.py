@@ -10,7 +10,8 @@ from typing import Any
 
 import torch
 
-from sglang_omni.models.easymagpie_tts.codec import CodecStreamState, EasyMagpieCodec
+from sglang_omni.models.easymagpie_tts.codec import EasyMagpieCodec
+from sglang_omni.models.easymagpie_tts.codec_graphs import StreamingCodecRunner
 from sglang_omni.models.easymagpie_tts.payload_types import EasyMagpieTTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -25,7 +26,7 @@ class EasyMagpieStreamState:
     pending: list[torch.Tensor] = field(default_factory=list)
     pending_frames: int = 0
     decoded_chunks: int = 0
-    codec_state: CodecStreamState | None = None
+    codec_slot: int = -1
 
 
 class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int]):
@@ -33,7 +34,8 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
 
     Small first chunks cut time to first audio; later chunks are larger so
     each codec launch covers more audio. Streams waiting on the same chunk
-    size decode together in one batched codec call.
+    size decode together in one batched codec call, replayed from a CUDA
+    graph when ``cuda_graph`` is set and the device is CUDA.
     """
 
     can_batch_stream_chunks = True
@@ -46,6 +48,8 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
         steady_chunk_frames: int = DEFAULT_STEADY_CHUNK_FRAMES,
         max_batch_size: int = 64,
         max_batch_wait_ms: float = 5,
+        max_streams: int = 256,
+        cuda_graph: bool = True,
     ) -> None:
         if steady_chunk_frames < 1 or any(f < 1 for f in startup_chunk_frames):
             raise ValueError("EasyMagpie vocoder chunk sizes must be positive")
@@ -57,10 +61,11 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
             pass
         self.codec = codec
         self.codec_lock = threading.Lock()
-        self.device = codec.dequantizer.levels.device
         self.startup_chunk_frames = tuple(int(f) for f in startup_chunk_frames)
         self.steady_chunk_frames = int(steady_chunk_frames)
         self.stream_chunk_batch_max = int(max_batch_size)
+        self.runner = StreamingCodecRunner(codec, max_streams=max_streams)
+        self.cuda_graph = cuda_graph
         super().__init__(
             self.decode_payload,
             batch_compute_fn=self.decode_payloads,
@@ -98,9 +103,25 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
         else:
             return self.steady_chunk_frames
 
+    def warmup_now(self) -> None:
+        if self.cuda_graph:
+            frames = {*self.startup_chunk_frames, self.steady_chunk_frames}
+            self.runner.capture(sorted(frames), self.stream_chunk_batch_max)
+        else:
+            pass
+
     def create_stream_state(self, request_id: str) -> EasyMagpieStreamState:
         del request_id
-        return EasyMagpieStreamState()
+        return EasyMagpieStreamState(codec_slot=self.runner.acquire())
+
+    def release_stream_resources(
+        self, request_id: str, state: EasyMagpieStreamState
+    ) -> None:
+        del request_id
+        if state.codec_slot >= 0:
+            self.runner.release(state.codec_slot)
+        else:
+            pass
 
     def validate_chunk(
         self, request_id: str, state: EasyMagpieStreamState, codes: torch.Tensor
@@ -183,15 +204,12 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
     ) -> list[torch.Tensor]:
         codes = torch.stack([take_frames(state, frames) for state in states])
         with self.codec_lock:
-            histories = [
-                state.codec_state or self.codec.empty_stream_state(1)
-                for state in states
-            ]
-            codec_state = [torch.cat(layer, dim=0) for layer in zip(*histories)]
-            audio, codec_state = self.codec.stream(codes.to(self.device), codec_state)
-            audio = audio.float().cpu()
-        for row, state in enumerate(states):
-            state.codec_state = [layer[row : row + 1] for layer in codec_state]
+            audio = self.runner.decode(
+                codes,
+                [state.codec_slot for state in states],
+                [state.decoded_chunks > 0 for state in states],
+            )
+        for state in states:
             state.decoded_chunks += 1
         return list(audio)
 
