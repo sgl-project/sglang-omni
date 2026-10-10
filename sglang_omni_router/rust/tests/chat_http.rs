@@ -298,6 +298,18 @@ fn serve_connection(
                 &mut stream,
                 b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 24\r\nConnection: close\r\n\r\n{\"worker\":\"unsupported\"}",
             ),
+            b"server-error" => write_response(
+                &mut stream,
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ),
+            b"server-error-reset" => {
+                write_response(
+                    &mut stream,
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 10\r\nConnection: close\r\n\r\n{}",
+                );
+                wait_for_response_release(&response_gate);
+                return;
+            }
             b"slow" => {
                 write_response(
                     &mut stream,
@@ -528,6 +540,27 @@ impl RouterProcess {
         strategy: &str,
         streamed_request_max_bytes: u64,
     ) -> Self {
+        Self::start_with_circuit(
+            workers,
+            global,
+            timeout_ms,
+            strategy,
+            streamed_request_max_bytes,
+            None,
+        )
+    }
+
+    fn start_with_circuit(
+        workers: &[(&str, SocketAddr, bool, GenerationProfile, &str)],
+        global: u32,
+        timeout_ms: u64,
+        strategy: &str,
+        streamed_request_max_bytes: u64,
+        circuit: Option<(u8, u64)>,
+    ) -> Self {
+        let circuit_config = circuit.map(|(threshold, cooldown_ms)| format!(
+            "request_failure_threshold = {threshold}\nrequest_failure_cooldown_ms = {cooldown_ms}\n"
+        )).unwrap_or_default();
         let reservation = TcpListener::bind("127.0.0.1:0").expect("reserve router address");
         let address = reservation.local_addr().expect("read router address");
         drop(reservation);
@@ -553,7 +586,7 @@ impl RouterProcess {
         fs::write(
             &config,
             format!(
-                "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 128\n\n[shutdown]\ndrain_timeout_ms = 2000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"{strategy}\"\n\n[admission]\nglobal = {global}\ngeneration_http = {global}\n\n[health]\ninterval_ms = 100\ntimeout_ms = 50\nsuccess_threshold = 1\nfailure_threshold = 1\n\n[http]\nbuffered_request_total_bytes = 2097152\nconnect_timeout_ms = 100\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[http_generation]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = {streamed_request_max_bytes}\nrequest_timeout_ms = {timeout_ms}\n{worker_config}"
+                "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 128\n\n[shutdown]\ndrain_timeout_ms = 2000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"{strategy}\"\n\n[admission]\nglobal = {global}\ngeneration_http = {global}\n\n[health]\ninterval_ms = 100\ntimeout_ms = 50\nsuccess_threshold = 1\nfailure_threshold = 1\n{circuit_config}\n[http]\nbuffered_request_total_bytes = 2097152\nconnect_timeout_ms = 100\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[http_generation]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = {streamed_request_max_bytes}\nrequest_timeout_ms = {timeout_ms}\n{worker_config}"
             ),
         )
         .expect("write router config");
@@ -1464,4 +1497,234 @@ fn graceful_drain_waits_for_a_committed_relay() {
     assert_eq!(status(&response), 200);
     assert!(response.windows(6).any(|part| part == b"[DONE]"));
     assert!(router.child.wait().expect("wait for router").success());
+}
+
+#[test]
+fn request_circuit_routes_around_a_worker_with_healthy_probes() {
+    let (first, second) = Worker::start_pair();
+    let router = RouterProcess::start_with_circuit(
+        &[
+            (
+                "worker-a",
+                first.address,
+                false,
+                GenerationProfile::Text,
+                "omni",
+            ),
+            (
+                "worker-b",
+                second.address,
+                false,
+                GenerationProfile::Text,
+                "omni",
+            ),
+        ],
+        4,
+        2_000,
+        "round_robin",
+        1_048_576,
+        Some((1, 5_000)),
+    );
+    assert_eq!(status(&post(router.address, b"server-error", None)), 503);
+    first.wait_for_requests(1);
+    for _ in 0..4 {
+        assert_eq!(status(&post(router.address, b"ok", None)), 200);
+    }
+    assert_eq!(first.captures().len(), 1);
+    assert_eq!(second.captures().len(), 4);
+    let diagnostics = raw_request(
+        router.address,
+        b"GET /diagnostics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .expect("read diagnostics");
+    assert!(String::from_utf8_lossy(&diagnostics).contains("\"circuit_open\":true"));
+    assert!(metrics(router.address).contains("sglang_omni_router_workers_circuit_open 1\n"));
+}
+
+#[test]
+fn request_circuit_resets_on_worker_4xx_and_sheds_without_dispatch() {
+    let worker = Worker::start();
+    let router = RouterProcess::start_with_circuit(
+        &[(
+            "worker-a",
+            worker.address,
+            false,
+            GenerationProfile::Text,
+            "omni",
+        )],
+        1,
+        2_000,
+        "round_robin",
+        1_048_576,
+        Some((2, 5_000)),
+    );
+    for (body, expected_status) in [
+        (b"server-error".as_slice(), 503),
+        (b"unsupported-model".as_slice(), 400),
+        (b"server-error".as_slice(), 503),
+        (b"server-error".as_slice(), 503),
+    ] {
+        assert_eq!(status(&post(router.address, body, None)), expected_status);
+    }
+    assert_eq!(status(&post(router.address, b"ok", None)), 503);
+    assert_eq!(worker.captures().len(), 4);
+    let ready = raw_request(
+        router.address,
+        b"GET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .expect("read readiness");
+    assert_eq!(status(&ready), 503);
+    let live = raw_request(
+        router.address,
+        b"GET /live HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .expect("read liveness");
+    assert_eq!(status(&live), 200);
+}
+
+#[test]
+fn request_circuit_counts_stream_failure_and_5xx_only_once() {
+    let worker = Worker::start();
+    let router = RouterProcess::start_with_circuit(
+        &[(
+            "worker-a",
+            worker.address,
+            false,
+            GenerationProfile::Text,
+            "omni",
+        )],
+        1,
+        2_000,
+        "round_robin",
+        1_048_576,
+        Some((2, 5_000)),
+    );
+    let mut client = TcpStream::connect(router.address).expect("connect failing 5xx stream");
+    client
+        .set_read_timeout(Some(DEADLINE))
+        .expect("bound failing stream read");
+    client.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 18\r\nConnection: close\r\n\r\nserver-error-reset").expect("send failing 5xx request");
+    let mut prefix = [0_u8; 256];
+    let count = client
+        .read(&mut prefix)
+        .expect("read committed 5xx response");
+    assert_eq!(status(&prefix[..count]), 500);
+    worker.release_response();
+    let mut remainder = Vec::new();
+    client
+        .read_to_end(&mut remainder)
+        .expect("read failed 5xx body");
+    let response = post(router.address, b"mid-body-reset", None);
+    assert_eq!(status(&response), 200);
+    assert!(!response.windows(6).any(|part| part == b"[DONE]"));
+    assert_eq!(status(&post(router.address, b"ok", None)), 503);
+    assert_eq!(worker.captures().len(), 2);
+}
+
+#[test]
+fn request_circuit_recovers_after_cooldown_and_health_probe() {
+    let worker = Worker::start();
+    let mut router = RouterProcess::start_with_circuit(
+        &[(
+            "worker-a",
+            worker.address,
+            false,
+            GenerationProfile::Text,
+            "omni",
+        )],
+        1,
+        2_000,
+        "round_robin",
+        1_048_576,
+        Some((1, 200)),
+    );
+    assert_eq!(status(&post(router.address, b"server-error", None)), 503);
+    assert_eq!(status(&post(router.address, b"ok", None)), 503);
+    worker.set_healthy(false);
+    worker.wait_for_health_requests(worker.health_requests.load(Ordering::Acquire) + 4);
+    assert_eq!(status(&post(router.address, b"ok", None)), 503);
+    worker.set_healthy(true);
+    router.wait_ready();
+    assert_eq!(status(&post(router.address, b"ok", None)), 200);
+    assert_eq!(worker.captures().len(), 2);
+    assert!(metrics(router.address).contains("sglang_omni_router_workers_circuit_open 0\n"));
+}
+
+#[test]
+fn request_circuit_counts_upstream_timeout_and_connection_reset() {
+    for (body, expected_status) in [(b"timeout".as_slice(), 504), (b"reset".as_slice(), 502)] {
+        let worker = Worker::start();
+        let router = RouterProcess::start_with_circuit(
+            &[(
+                "worker-a",
+                worker.address,
+                false,
+                GenerationProfile::Text,
+                "omni",
+            )],
+            1,
+            300,
+            "round_robin",
+            1_048_576,
+            Some((1, 5_000)),
+        );
+        assert_eq!(status(&post(router.address, body, None)), expected_status);
+        assert_eq!(status(&post(router.address, b"ok", None)), 503);
+        assert_eq!(worker.captures().len(), 1);
+    }
+}
+
+#[test]
+fn request_circuit_does_not_count_invalid_upload_or_downstream_cancellation() {
+    let worker = Worker::start();
+    let router = RouterProcess::start_with_circuit(
+        &[(
+            "worker-a",
+            worker.address,
+            false,
+            GenerationProfile::Text,
+            "omni",
+        )],
+        1,
+        2_000,
+        "round_robin",
+        1_048_576,
+        Some((1, 5_000)),
+    );
+    let mut short = TcpStream::connect(router.address).expect("connect short upload");
+    short
+        .set_read_timeout(Some(DEADLINE))
+        .expect("bound short response");
+    short.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 10\r\nConnection: close\r\n\r\n{}").expect("send short upload");
+    short
+        .shutdown(std::net::Shutdown::Write)
+        .expect("finish short upload");
+    let mut response = Vec::new();
+    short
+        .read_to_end(&mut response)
+        .expect("read short upload rejection");
+    assert_eq!(status(&response), 400);
+    assert_eq!(status(&post(router.address, b"ok", None)), 200);
+
+    let mut client = TcpStream::connect(router.address).expect("connect cancellable stream");
+    client
+        .set_read_timeout(Some(DEADLINE))
+        .expect("bound stream prefix read");
+    client.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 17\r\nConnection: close\r\n\r\ncontrolled-stream").expect("send cancellable stream");
+    let mut prefix = [0_u8; 256];
+    assert_ne!(client.read(&mut prefix).expect("read committed stream"), 0);
+    drop(client);
+    let deadline = Instant::now() + DEADLINE;
+    while !metrics(router.address).contains(
+        "sglang_omni_router_http_response_body_terminations_total{outcome=\"dropped\"} 1\n",
+    ) {
+        assert!(
+            Instant::now() < deadline,
+            "cancellation did not release stream"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(status(&post(router.address, b"ok", None)), 200);
+    assert!(metrics(router.address).contains("sglang_omni_router_workers_circuit_open 0\n"));
+    worker.release_response();
 }
