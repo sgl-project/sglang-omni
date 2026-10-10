@@ -5,20 +5,19 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from sglang_omni.utils.logging import configure_dependency_loggers
+from tests.test_model.omni_router_utils import ManagedRouterHandle
 
 pytest_plugins = ["tests.utils"]
 
 if TYPE_CHECKING:
-    from typing import Generator
-
     from tests.test_model.omni_ci_config import OmniCiModelPreset
-    from tests.test_model.omni_router_utils import ManagedRouterHandle
     from tests.utils import ServerHandle
 
 
@@ -152,7 +151,7 @@ OMNI_CI_QWEN_FIXTURES = {
     "test_qwen3_omni_mmmu_ci": "qwen3_omni_fp8_colocated_server",
     "test_qwen3_omni_mmmu_talker_ci": "qwen3_omni_bf16_disagg_server",
     "test_qwen3_omni_mmsu_ci": "qwen3_omni_bf16_colocated_thinker_server",
-    "test_qwen3_omni_mmsu_talker_ci": "qwen3_omni_fp8_tp2_server",
+    "test_qwen3_omni_mmsu_talker_ci": "qwen3_omni_mmsu_talker_server",
     "test_qwen3_omni_videomme_ci": "qwen3_omni_bf16_disagg_server",
     "test_qwen3_omni_videomme_talker_ci": "qwen3_omni_bf16_disagg_server",
     "test_qwen3_omni_videoamme_ci": "qwen3_omni_fp8_colocated_server",
@@ -263,6 +262,14 @@ def qwen3_omni_fp8_tp2_server(tmp_path_factory: pytest.TempPathFactory):
 
 
 @pytest.fixture(scope="module")
+def qwen3_omni_mmsu_talker_server(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[ManagedRouterHandle, None, None]:
+    """Use deterministic Thinker computation for MMSU Talker quality checks."""
+    yield from start_qwen3_omni_fp8_tp2(tmp_path_factory, deterministic_thinker=True)
+
+
+@pytest.fixture(scope="module")
 def qwen3_omni_bf16_tp2_server(tmp_path_factory: pytest.TempPathFactory):
     """BF16 thinker-TP=2 (short context); thinker_length context-length checks."""
     yield from start_qwen3_omni_tp2(tmp_path_factory, thinker_max_seq_len=128)
@@ -354,10 +361,12 @@ def start_qwen3_omni_disagg(tmp_path_factory: pytest.TempPathFactory):
         gen.close()
 
 
-def start_qwen3_omni_fp8_tp2(tmp_path_factory: pytest.TempPathFactory):
+def start_qwen3_omni_fp8_tp2(
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    deterministic_thinker: bool = False,
+) -> Generator[ManagedRouterHandle, None, None]:
     """Start an FP8 thinker-TP=2 server (talker stacked on GPU 1) as a non-router handle."""
-    from tests.test_model.omni_router_utils import ManagedRouterHandle
-
     extra_args = [
         "--thinker-tp-size",
         "2",
@@ -372,6 +381,10 @@ def start_qwen3_omni_fp8_tp2(tmp_path_factory: pytest.TempPathFactory):
         "--talker-mem-fraction-static",
         QWEN3_OMNI_TP2_TALKER_MEM_FRACTION,
     ]
+    if deterministic_thinker:
+        extra_args.append("--thinker-enable-deterministic-inference")
+    else:
+        pass
     gen = start_qwen3_omni_speech_server(
         tmp_path_factory,
         model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
