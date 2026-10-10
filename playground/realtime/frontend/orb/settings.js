@@ -169,11 +169,15 @@ export class Settings {
     const sampling = {};
     const keys = new Set(this.samplingKeys);
     if (keys.has("greedy") && this.state.sampling.greedy) sampling.greedy = true;
-    for (const { key } of SAMPLING_FIELDS) {
+    for (const { key, min, max } of SAMPLING_FIELDS) {
       const raw = this.state.sampling[key];
       if (!keys.has(key) || raw === undefined || raw === "") continue;
-      const value = INTEGER_FIELDS.has(key) ? parseInt(raw, 10) : parseFloat(raw);
-      if (Number.isFinite(value)) sampling[key] = value;
+      let value = INTEGER_FIELDS.has(key) ? parseInt(raw, 10) : parseFloat(raw);
+      if (!Number.isFinite(value)) continue;
+      // A number input's min/max only bound the spinner; a typed value passes through.
+      if (min !== undefined) value = Math.max(value, Number(min));
+      if (max !== undefined) value = Math.min(value, Number(max));
+      sampling[key] = value;
     }
     if (Object.keys(sampling).length) extension.sampling = sampling;
     const voice = this.currentVoice();
