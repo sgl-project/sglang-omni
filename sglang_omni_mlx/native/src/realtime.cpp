@@ -24,67 +24,6 @@ constexpr std::pair<uint32_t, uint32_t> kUnspacedScriptRanges[] = {
     {0xF900, 0xFAFF}, {0xFF00, 0xFFEF}, {0x20000, 0x2FA1F},
 };
 
-bool IsUnicodeSpace(uint32_t code_point) {
-  return code_point == ' ' || (code_point >= 0x09 && code_point <= 0x0D) ||
-         (code_point >= 0x1C && code_point <= 0x1F) || code_point == 0x85 ||
-         code_point == 0xA0 || code_point == 0x1680 ||
-         (code_point >= 0x2000 && code_point <= 0x200A) ||
-         code_point == 0x2028 || code_point == 0x2029 || code_point == 0x202F ||
-         code_point == 0x205F || code_point == 0x3000;
-}
-
-// Note (Jiaxin Deng): assumes valid UTF-8, the only kind the tokenizer emits.
-std::vector<uint32_t> CodePoints(const std::string &text) {
-  std::vector<uint32_t> code_points;
-  size_t i = 0;
-  while (i < text.size()) {
-    const auto byte = [&](size_t k) { return static_cast<uint8_t>(text[k]); };
-    const uint8_t lead = byte(i);
-    uint32_t cp = lead;
-    size_t length = 1;
-    if (lead >= 0xF0 && i + 3 < text.size()) {
-      cp = ((lead & 0x07) << 18) | ((byte(i + 1) & 0x3F) << 12) |
-           ((byte(i + 2) & 0x3F) << 6) | (byte(i + 3) & 0x3F);
-      length = 4;
-    } else if (lead >= 0xE0 && i + 2 < text.size()) {
-      cp = ((lead & 0x0F) << 12) | ((byte(i + 1) & 0x3F) << 6) |
-           (byte(i + 2) & 0x3F);
-      length = 3;
-    } else if (lead >= 0xC0 && i + 1 < text.size()) {
-      cp = ((lead & 0x1F) << 6) | (byte(i + 1) & 0x3F);
-      length = 2;
-    } else {
-    }
-    code_points.push_back(cp);
-    i += length;
-  }
-  return code_points;
-}
-
-std::string StripUnicode(const std::string &text) {
-  const std::vector<uint32_t> code_points = CodePoints(text);
-  size_t begin_cp = 0;
-  size_t end_cp = code_points.size();
-  while (begin_cp < end_cp && IsUnicodeSpace(code_points[begin_cp]))
-    ++begin_cp;
-  while (end_cp > begin_cp && IsUnicodeSpace(code_points[end_cp - 1]))
-    --end_cp;
-  size_t byte = 0;
-  size_t begin_byte = 0;
-  size_t end_byte = 0;
-  for (size_t cp = 0; cp <= code_points.size(); ++cp) {
-    if (cp == begin_cp)
-      begin_byte = byte;
-    if (cp == end_cp)
-      end_byte = byte;
-    if (cp == code_points.size())
-      break;
-    const uint8_t lead = static_cast<uint8_t>(text[byte]);
-    byte += lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
-  }
-  return text.substr(begin_byte, end_byte - begin_byte);
-}
-
 bool IsSpacedScript(uint32_t code_point) {
   if (IsUnicodeSpace(code_point)) {
     return false;
@@ -167,7 +106,7 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
 std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
   std::string joined;
   for (const std::string &raw_part : parts) {
-    const std::string part = StripUnicode(raw_part);
+    const std::string part = StripUnicodeWhitespace(raw_part);
     if (part.empty()) {
       continue;
     } else if (!joined.empty() && IsSpacedScript(CodePoints(joined).back()) &&
@@ -180,11 +119,10 @@ std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
   return joined;
 }
 
-RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
-                                 RealtimeSettings settings, Sender sender)
-    : worker_(worker), settings_(settings), sender_(std::move(sender)) {}
+RealtimeConnection::RealtimeConnection(Sender sender)
+    : sender_(std::move(sender)) {}
 
-void RealtimeSession::Send(nlohmann::ordered_json event) {
+void RealtimeConnection::Send(nlohmann::ordered_json event) {
   std::lock_guard<std::mutex> lock(send_mutex_);
   if (closed_) {
     return;
@@ -199,30 +137,79 @@ void RealtimeSession::Send(nlohmann::ordered_json event) {
   }
 }
 
-void RealtimeSession::SendError(const std::string &type,
-                                const std::string &code,
-                                const std::string &message) {
+void RealtimeConnection::SendError(const std::string &type,
+                                   const std::string &code,
+                                   const std::string &message) {
   Send({{"type", "error"},
         {"error", {{"type", type}, {"code", code}, {"message", message}}}});
 }
 
-void RealtimeSession::Close() {
+void RealtimeConnection::Close() {
   cancel_->store(true);
   std::lock_guard<std::mutex> lock(send_mutex_);
   closed_ = true;
 }
 
+std::optional<std::vector<float>>
+RealtimeConnection::AppendedSamples(const nlohmann::json &audio) {
+  const std::optional<std::vector<uint8_t>> pcm =
+      audio.is_string() ? DecodeBase64(audio.get<std::string>()) : std::nullopt;
+  if (!pcm.has_value() || pcm->empty() || pcm->size() % 2 != 0) {
+    SendError("invalid_request_error", "invalid_audio",
+              "Audio must be base64 PCM16.");
+    return std::nullopt;
+  } else {
+  }
+  std::vector<float> samples;
+  samples.reserve(pcm->size() / 2);
+  for (size_t i = 0; i + 1 < pcm->size(); i += 2) {
+    const int16_t value =
+        static_cast<int16_t>((*pcm)[i] | ((*pcm)[i + 1] << 8));
+    samples.push_back(static_cast<float>(value) / kPcm16FullScale);
+  }
+  return samples;
+}
+
+std::optional<nlohmann::json>
+RealtimeConnection::ManualTurnSession(const nlohmann::json &message) {
+  const nlohmann::json session = message.value("session", nlohmann::json());
+  if (!session.is_object() || (session.contains("turn_detection") &&
+                               !session["turn_detection"].is_null())) {
+    SendError("invalid_request_error", "unsupported_session",
+              "Only manual turns are supported.");
+    return std::nullopt;
+  } else {
+    return session;
+  }
+}
+
+void RealtimeConnection::ReportDecodeFailure(std::exception_ptr error) {
+  try {
+    std::rethrow_exception(error);
+  } catch (const TranscriptionCancelled &) {
+    return;
+  } catch (const std::exception &failure) {
+    // Note (Jiaxin Deng): log the type alone, never the audio or text.
+    std::cerr << "realtime decode failed: " << typeid(failure).name() << "\n";
+  } catch (...) {
+    std::cerr << "realtime decode failed\n";
+  }
+  SendError("server_error", "transcription_failed", "Transcription failed.");
+}
+
+RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
+                                 const Qwen3ASRTranscriber &transcriber,
+                                 RealtimeSettings settings, Sender sender)
+    : RealtimeConnection(std::move(sender)), worker_(worker),
+      transcriber_(transcriber), settings_(settings) {}
+
 bool RealtimeSession::Handle(const nlohmann::json &message) {
   const nlohmann::json type = message.value("type", nlohmann::json());
   if (type == "session.update") {
-    const nlohmann::json session = message.value("session", nlohmann::json());
-    if (!session.is_object() || (session.contains("turn_detection") &&
-                                 !session["turn_detection"].is_null())) {
-      SendError("invalid_request_error", "unsupported_session",
-                "Only manual turns are supported.");
-    } else {
+    const std::optional<nlohmann::json> session = ManualTurnSession(message);
+    if (session.has_value()) {
       const nlohmann::json language =
-          session.value("language", nlohmann::json());
+          session->value("language", nlohmann::json());
       {
         std::lock_guard<std::mutex> lock(mutex_);
         language_ = language.is_string()
@@ -230,6 +217,7 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
                         : std::nullopt;
       }
       Send({{"type", "transcription_session.updated"}});
+    } else {
     }
     return true;
   } else if (type == "input_audio_buffer.append") {
@@ -264,11 +252,8 @@ long RealtimeSession::LockedEndSample() {
 }
 
 void RealtimeSession::Append(const nlohmann::json &audio) {
-  const std::optional<std::vector<uint8_t>> pcm =
-      audio.is_string() ? DecodeBase64(audio.get<std::string>()) : std::nullopt;
-  if (!pcm.has_value() || pcm->empty() || pcm->size() % 2 != 0) {
-    SendError("invalid_request_error", "invalid_audio",
-              "Audio must be base64 PCM16.");
+  const std::optional<std::vector<float>> appended = AppendedSamples(audio);
+  if (!appended.has_value()) {
     return;
   } else {
   }
@@ -276,11 +261,7 @@ void RealtimeSession::Append(const nlohmann::json &audio) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const long start_sample = EndSample();
-    for (size_t i = 0; i + 1 < pcm->size(); i += 2) {
-      const int16_t value =
-          static_cast<int16_t>((*pcm)[i] | ((*pcm)[i + 1] << 8));
-      samples_.push_back(static_cast<float>(value) / kPcm16FullScale);
-    }
+    samples_.insert(samples_.end(), appended->begin(), appended->end());
     if (!segment_.has_value()) {
       StartSegment(start_sample);
     } else {
@@ -325,14 +306,22 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment) {
                           !segment.transcript.empty() &&
                           segment.language.has_value();
   if (use_prefix) {
-    auto [ids, text] = worker_.transcriber().RetainedPrefix(
-        segment.transcript, kPrefixRollbackTokenCount);
+    auto [ids, text] = transcriber_.RetainedPrefix(segment.transcript,
+                                                   kPrefixRollbackTokenCount);
     options.prefix_token_ids = std::move(ids);
     options.prefix_text = std::move(text);
   } else {
   }
   segment.decode_count += 1;
   return options;
+}
+
+Transcription RealtimeSession::Decode(std::vector<float> samples,
+                                      TranscriptionOptions options) const {
+  return [&transcriber = transcriber_, samples = std::move(samples),
+          options = std::move(options)](const std::atomic<bool> &cancel) {
+    return transcriber.Transcribe(samples, options, cancel);
+  };
 }
 
 void RealtimeSession::ApplyResult(Segment &segment,
@@ -342,20 +331,6 @@ void RealtimeSession::ApplyResult(Segment &segment,
   } else {
   }
   segment.transcript = result.text;
-}
-
-void RealtimeSession::ReportDecodeFailure(std::exception_ptr error) {
-  try {
-    std::rethrow_exception(error);
-  } catch (const TranscriptionCancelled &) {
-    return;
-  } catch (const std::exception &failure) {
-    // Note (Jiaxin Deng): log the type alone, never the audio or text.
-    std::cerr << "realtime decode failed: " << typeid(failure).name() << "\n";
-  } catch (...) {
-    std::cerr << "realtime decode failed\n";
-  }
-  SendError("server_error", "transcription_failed", "Transcription failed.");
 }
 
 void RealtimeSession::MaybeStartRefresh() {
@@ -389,9 +364,10 @@ void RealtimeSession::MaybeStartRefresh() {
     segment_id = segment.segment_id;
     refreshing_ = true;
   }
-  std::weak_ptr<RealtimeSession> weak_self = weak_from_this();
+  std::weak_ptr<RealtimeSession> weak_self =
+      std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      std::move(samples), std::move(options), cancel_,
+      Decode(std::move(samples), std::move(options)), cancel_,
       [weak_self, segment_id](std::optional<TranscriptionResult> result,
                               std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
@@ -465,8 +441,8 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         options = DecodeOptions(segment);
       }
       try {
-        const TranscriptionResult result =
-            worker_.Transcribe(std::move(samples), std::move(options), cancel_);
+        const TranscriptionResult result = worker_.Transcribe(
+            Decode(std::move(samples), std::move(options)), cancel_);
         ApplyResult(segment, result);
         text = result.text;
       } catch (...) {

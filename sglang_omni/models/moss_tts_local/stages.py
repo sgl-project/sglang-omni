@@ -673,7 +673,7 @@ def create_sglang_tts_engine_executor(
     dtype: str = "bfloat16",
     server_args_overrides: Mapping[str, object] | None = None,
     enable_async_decode: bool = False,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     total_gpu_memory_fraction: float | None = None,

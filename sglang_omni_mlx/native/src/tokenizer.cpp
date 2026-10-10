@@ -233,12 +233,25 @@ Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
   }
   const nlohmann::json config = nlohmann::json::parse(
       ReadFile(model_directory / "tokenizer_config.json"));
-  for (const auto &[id_text, token] :
-       config.at("added_tokens_decoder").items()) {
-    const int id = std::stoi(id_text);
-    added_token_index_by_id_[id] = added_tokens_.size();
-    added_tokens_.push_back({token.at("content").get<std::string>(), id,
-                             token.at("special").get<bool>()});
+  if (config.contains("added_tokens_decoder")) {
+    for (const auto &[id_text, token] :
+         config.at("added_tokens_decoder").items()) {
+      const int id = std::stoi(id_text);
+      added_token_index_by_id_[id] = added_tokens_.size();
+      added_tokens_.push_back({token.at("content").get<std::string>(), id,
+                               token.at("special").get<bool>()});
+    }
+  } else {
+    // Note (Dayuxiaoshui): newer checkpoints, MOSS-Transcribe-Diarize's among
+    // them, list their added tokens only in tokenizer.json.
+    const nlohmann::json tokenizer =
+        nlohmann::json::parse(ReadFile(model_directory / "tokenizer.json"));
+    for (const auto &token : tokenizer.at("added_tokens")) {
+      const int id = token.at("id").get<int>();
+      added_token_index_by_id_[id] = added_tokens_.size();
+      added_tokens_.push_back({token.at("content").get<std::string>(), id,
+                               token.at("special").get<bool>()});
+    }
   }
   size_t largest_id = 0;
   for (const auto &[token, id] : vocabulary_)

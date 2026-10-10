@@ -338,7 +338,7 @@ def create_sglang_thinker_executor_from_config(
     server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     speech_enabled: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the MiniCPM-o thinker."""

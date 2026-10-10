@@ -323,7 +323,7 @@ class OmniScheduler(Generic[RequestDataT]):
         request_finished_callback: Callable[[str], None] | None = None,
         enable_overlap: bool = False,
         enable_async_decode: bool = False,
-        async_decode_min_batch_size: int = 2,
+        async_decode_min_batch_size: int = 1,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         prefill_coalesce_when_idle: bool = False,
@@ -418,11 +418,9 @@ class OmniScheduler(Generic[RequestDataT]):
         # One-step-lookahead async decode (single stream + CUDA event). Only
         # safe for model runners that implement post_decode_launch/resolve.
         self.enable_async_decode = enable_async_decode
-        # Below this decode batch size the lookahead is bypassed for a plain
-        # synchronous step: at low concurrency the per-step collect is too small
-        # to overlap, so the lookahead's fixed overhead is a net loss (the bs=1
-        # regression — see benchmark_results.md / stall_analysis.md). Default 2
-        # = only bs=1 takes the fast path.
+        # Decode batches smaller than this run as a plain synchronous step
+        # instead of the lookahead. The default 1 sends every decode batch the
+        # runner allows through the lookahead.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         if self.enable_overlap and self.enable_async_decode:
             raise ValueError(
@@ -3565,14 +3563,12 @@ class OmniScheduler(Generic[RequestDataT]):
                     else:
                         pass
             else:
-                # Fast path (low-concurrency decode below the threshold) +
-                # prefill + empty all land here: flush any in-flight lookahead
-                # step first (preserve ordering — this is also the bs>=2 -> bs=1
-                # drain transition), then run this batch synchronously. Bypassing
-                # the lookahead at bs=1 avoids its fixed per-step overhead, which
-                # at low concurrency has no overlap payoff (the bs=1 regression).
-                # Skip the drain call entirely in the common no-pending case (the
-                # bs=1 steady state) — _resolve_pending_async would just no-op.
+                # Prefill, empty batches, decode batches below the configured
+                # threshold and batches the runner marks ineligible for the
+                # lookahead all land here. Flush any in-flight lookahead step
+                # first to keep ordering, which is also the drain when a batch
+                # leaves the lookahead, then run this batch synchronously. Skip
+                # the drain call when nothing is pending, since it would no-op.
                 if self.async_pending is not None:
                     self.resolve_pending_async()
                     # Stale-batch overrun: `batch` was built (get_next_batch_to_run,

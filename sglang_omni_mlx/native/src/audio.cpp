@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "audio.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 
 namespace qwen3_asr {
@@ -47,7 +50,7 @@ float MelToHertz(float mel, float linear_step_hz, float min_log_hz,
   }
 }
 
-std::vector<float> BuildMelFilterBank() {
+std::vector<float> BuildMelFilterBank(int mel_bin_count) {
   constexpr int frequency_bin_count = kFftSize / 2 + 1;
   const float linear_step_hz = 200.0f / 3.0f;
   const float min_log_hz = 1000.0f;
@@ -63,15 +66,15 @@ std::vector<float> BuildMelFilterBank() {
   const float mel_max =
       HertzToMel(static_cast<float>(kSampleRate) / 2.0f, linear_step_hz,
                  min_log_hz, min_log_mel, log_step);
-  std::vector<float> edges_hz(kMelBinCount + 2);
-  for (int i = 0; i < kMelBinCount + 2; ++i) {
+  std::vector<float> edges_hz(mel_bin_count + 2);
+  for (int i = 0; i < mel_bin_count + 2; ++i) {
     edges_hz[i] = MelToHertz(static_cast<float>(i) * mel_max /
-                                 static_cast<float>(kMelBinCount + 1),
+                                 static_cast<float>(mel_bin_count + 1),
                              linear_step_hz, min_log_hz, min_log_mel, log_step);
   }
   std::vector<float> filters(
-      static_cast<size_t>(frequency_bin_count) * kMelBinCount, 0.0f);
-  for (int mel_bin = 0; mel_bin < kMelBinCount; ++mel_bin) {
+      static_cast<size_t>(frequency_bin_count) * mel_bin_count, 0.0f);
+  for (int mel_bin = 0; mel_bin < mel_bin_count; ++mel_bin) {
     const float low = edges_hz[mel_bin];
     const float center = edges_hz[mel_bin + 1];
     const float high = edges_hz[mel_bin + 2];
@@ -87,7 +90,7 @@ std::vector<float> BuildMelFilterBank() {
       } else {
         weight = 0.0f;
       }
-      filters[static_cast<size_t>(frequency_bin) * kMelBinCount + mel_bin] =
+      filters[static_cast<size_t>(frequency_bin) * mel_bin_count + mel_bin] =
           weight * normalization;
     }
   }
@@ -164,9 +167,18 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
   throw std::invalid_argument("WAV file has no data chunk");
 }
 
-const std::vector<float> &MelFilterBank() {
-  static const std::vector<float> filters = BuildMelFilterBank();
-  return filters;
+const std::vector<float> &MelFilterBank(int mel_bin_count) {
+  static std::mutex mutex;
+  static std::map<int, std::vector<float>> filters_by_mel_bin_count;
+  const std::lock_guard<std::mutex> lock(mutex);
+  auto found = filters_by_mel_bin_count.find(mel_bin_count);
+  if (found == filters_by_mel_bin_count.end()) {
+    found = filters_by_mel_bin_count
+                .emplace(mel_bin_count, BuildMelFilterBank(mel_bin_count))
+                .first;
+  } else {
+  }
+  return found->second;
 }
 
 const std::vector<float> &PeriodicHannWindow() {
@@ -203,6 +215,50 @@ mx::array LogMel(const std::vector<float> &samples, AudioLayout layout) {
                           {kFftSize / 2 + 1, kMelBinCount}, mx::float32);
   mx::array log_spectrum = mx::log10(
       mx::maximum(mx::matmul(power, filters), mx::array(kLogMelFloor)));
+  log_spectrum =
+      mx::maximum(log_spectrum, mx::subtract(mx::max(log_spectrum),
+                                             mx::array(kLogMelDynamicRange)));
+  return mx::transpose(
+      mx::divide(mx::add(log_spectrum, mx::array(4.0f)), mx::array(4.0f)));
+}
+
+mx::array WhisperWindowFeatures(const float *samples, int sample_count,
+                                int mel_bin_count) {
+  // Note (Dayuxiaoshui): the reference pads before the floor, so the floor
+  // covers the padded tail too.
+  std::vector<float> window_samples(kWhisperWindowSampleCount, 0.0f);
+  std::copy(samples,
+            samples + std::min(sample_count, kWhisperWindowSampleCount),
+            window_samples.begin());
+  const mx::array audio(window_samples.data(), {kWhisperWindowSampleCount},
+                        mx::float32);
+  constexpr int padding = kFftSize / 2;
+  const mx::array head = mx::slice(audio, {padding}, {0}, {-1});
+  const mx::array tail =
+      mx::slice(audio, {kWhisperWindowSampleCount - 2},
+                {kWhisperWindowSampleCount - padding - 2}, {-1});
+  const mx::array padded = mx::concatenate({head, audio, tail});
+  const int frame_count = 1 + (padded.shape(0) - kFftSize) / kHopLength;
+  const mx::array frames =
+      mx::as_strided(padded, {frame_count, kFftSize}, {kHopLength, 1}, 0);
+  // Note (Dayuxiaoshui): Swift's Float.pi is one step below (float)M_PI, and
+  // the window must match Voxt's bit for bit.
+  const float pi = std::nextafter(static_cast<float>(M_PI), 0.0f);
+  const mx::array window = mx::multiply(
+      mx::array(0.5f),
+      mx::subtract(
+          mx::array(1.0f),
+          mx::cos(mx::divide(mx::multiply(mx::array(2.0f * pi),
+                                          mx::arange(kFftSize, mx::float32)),
+                             mx::array(static_cast<float>(kFftSize))))));
+  mx::array power = mx::square(mx::abs(
+      mx::fft::rfft(mx::multiply(frames, mx::expand_dims(window, 0)), 1)));
+  power = mx::slice(power, {0, 0}, {power.shape(0) - 1, power.shape(1)});
+  const mx::array filters(MelFilterBank(mel_bin_count).data(),
+                          {kFftSize / 2 + 1, mel_bin_count}, mx::float32);
+  mx::array log_spectrum = mx::log10(
+      mx::maximum(mx::matmul(mx::transpose(filters), mx::transpose(power)),
+                  mx::array(kLogMelFloor)));
   log_spectrum =
       mx::maximum(log_spectrum, mx::subtract(mx::max(log_spectrum),
                                              mx::array(kLogMelDynamicRange)));

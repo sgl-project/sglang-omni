@@ -22,6 +22,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
 )
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
+from sglang_omni.utils.channels_last_conv import is_channels_last_conv_device
 
 FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
@@ -111,6 +112,12 @@ class MiniCPMOCode2Wav(nn.Module):
                     fullgraph=True,
                     options={"emulate_precision_casts": True},
                 )
+        else:
+            pass
+        if is_channels_last_conv_device(resolved_device):
+            with self.device_context:
+                for block in self.token2wav.flow.decoder.estimator.blocks:
+                    block.conv.use_channels_last()
         else:
             pass
         with self.device_context:

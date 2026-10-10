@@ -54,7 +54,7 @@ def test_whisper_stage_defaults() -> None:
     assert signature.parameters["encoder_graph_batch_buckets"].default is None
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
     assert signature.parameters["request_build_max_pending"].default == 16
     assert signature.parameters["prefill_coalesce_requests"].default == 2
     assert signature.parameters["prefill_coalesce_wait_ms"].default == 6.0
@@ -269,7 +269,7 @@ def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
 
     assert builder.extra_scheduler_kwargs() == {
         "enable_async_decode": True,
-        "async_decode_min_batch_size": 2,
+        "async_decode_min_batch_size": 1,
         "request_build_max_workers": 8,
         "request_build_max_pending": 16,
         "prefill_coalesce_requests": 2,
@@ -315,7 +315,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True
-    assert factory.async_decode_min_batch_size == 2
+    assert factory.async_decode_min_batch_size == 1
     assert factory.request_build_max_pending == 16
     assert factory.prefill_coalesce_requests == 2
     assert factory.prefill_coalesce_wait_ms == 6.0
