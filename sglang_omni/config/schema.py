@@ -254,6 +254,42 @@ class PlacementConfig(BaseModel):
     require_memory_fraction_for_colocation: bool = True
 
 
+class GraphNodeConfig(BaseModel):
+    """One graph node: a linear stage chain that ends at a terminal stage."""
+
+    model_config = ConfigDict(extra="forbid")
+    stages: list[str]
+
+
+class GraphEdgeConfig(BaseModel):
+    """Routes chunks of one output modality from a source node to a target node.
+
+    A data edge appends the chunk to the target node's session. A control edge
+    delivers it as a control event to target_stages (every stage of the target
+    node when unset); preempt cancels the target's in-flight appends first.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    source: str
+    target: str
+    modality: str
+    kind: Literal["data", "control"] = "data"
+    target_stages: list[str] | None = None
+    preempt: bool = False
+
+
+class GraphConfig(BaseModel):
+    """Session-level graph over node chains, routed by the coordinator."""
+
+    model_config = ConfigDict(extra="forbid")
+    nodes: dict[str, GraphNodeConfig]
+    inputs: dict[str, list[str]]
+    "Client input modality -> nodes that receive it."
+    output: str
+    "Node whose data outputs are returned to the client."
+    edges: list[GraphEdgeConfig] = Field(default_factory=list)
+
+
 class ProcessConfig(BaseModel):
     """Replica policy for one logical process.
 
@@ -611,6 +647,7 @@ class PipelineConfig(BaseModel):
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
+    graph: GraphConfig | None = None
 
     def model_dump(self, **kwargs: Unpack[ModelDumpOptions]) -> dict[str, object]:
         """Dump with each stage serialized by its runtime class.
@@ -649,6 +686,7 @@ class PipelineConfig(BaseModel):
     def model_post_init(self, __context: object = None) -> None:
         self.validate_general()
         self.validate_processes()
+        self.validate_graph()
 
         native = type(self).max_native_clip_s
         if native is not None and self.audio_chunking.max_audio_clip_s > native:
@@ -999,6 +1037,79 @@ class PipelineConfig(BaseModel):
             )
         else:
             pass
+
+    def validate_graph(self) -> None:
+        """Check that graph nodes are disjoint linear chains and edges name real nodes."""
+        graph = self.graph
+        if graph is None:
+            return
+        else:
+            pass
+        stages_by_name = {stage.name: stage for stage in self.stages}
+        owner_by_stage: dict[str, str] = {}
+        for node_name, node in graph.nodes.items():
+            if not node.stages:
+                raise ValueError(f"graph node {node_name!r} has no stages")
+            else:
+                pass
+            for index, stage_name in enumerate(node.stages):
+                stage = stages_by_name.get(stage_name)
+                if stage is None:
+                    raise ValueError(
+                        f"graph node {node_name!r} references unknown stage {stage_name!r}"
+                    )
+                elif stage_name in owner_by_stage:
+                    raise ValueError(
+                        f"stage {stage_name!r} belongs to graph nodes {owner_by_stage[stage_name]!r} and {node_name!r}"
+                    )
+                else:
+                    owner_by_stage[stage_name] = node_name
+                is_last = index + 1 == len(node.stages)
+                expected_next = None if is_last else node.stages[index + 1]
+                actual_next = (
+                    stage.next[0]
+                    if isinstance(stage.next, list) and len(stage.next) == 1
+                    else stage.next
+                )
+                if actual_next != expected_next or stage.stream_to:
+                    raise ValueError(
+                        f"graph node {node_name!r} must be a linear chain ending at a terminal stage; stage {stage_name!r} routes to {stage.next!r}"
+                    )
+                else:
+                    pass
+        if graph.output not in graph.nodes:
+            raise ValueError(f"graph output {graph.output!r} is not a node")
+        elif not graph.inputs:
+            raise ValueError("graph must route at least one client input modality")
+        else:
+            pass
+        for modality, node_names in graph.inputs.items():
+            unknown = set(node_names) - set(graph.nodes)
+            if not node_names or unknown:
+                raise ValueError(
+                    f"graph input {modality!r} must name existing nodes, got {node_names}"
+                )
+            else:
+                pass
+        for edge in graph.edges:
+            if edge.source not in graph.nodes or edge.target not in graph.nodes:
+                raise ValueError(
+                    f"graph edge {edge.source!r} -> {edge.target!r} names an unknown node"
+                )
+            elif edge.kind == "data" and (
+                edge.target_stages is not None or edge.preempt
+            ):
+                raise ValueError(
+                    "target_stages and preempt apply only to control edges"
+                )
+            elif edge.target_stages is not None and not set(edge.target_stages) <= set(
+                graph.nodes[edge.target].stages
+            ):
+                raise ValueError(
+                    f"graph edge target_stages {edge.target_stages} are not stages of node {edge.target!r}"
+                )
+            else:
+                pass
 
     @staticmethod
     def from_dict(data: dict[str, object]) -> PipelineConfig:

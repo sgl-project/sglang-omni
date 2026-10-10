@@ -57,11 +57,15 @@ class OutputChunkDict(TypedDict):
     kind: Literal["data", "input_done"]
 
 
+SessionOperationKind = Literal["open", "append", "close", "control"]
+
+
 class SessionOperationDict(TypedDict):
-    operation: Literal["open", "append", "close"]
+    operation: SessionOperationKind
     session_identity: SessionIdentityDict
     stages: list[str]
     chunk: TimedChunkDict | None
+    should_preempt: bool
 
 
 @dataclass(frozen=True)
@@ -168,12 +172,17 @@ class SessionLimits:
 
 @dataclass(frozen=True)
 class SessionOperation:
-    """Coordinator-to-stage session operation, carried in request metadata."""
+    """Coordinator-to-stage session operation, carried in request metadata.
 
-    operation: Literal["open", "append", "close"]
+    A control operation carries its event as chunk and targets one stage;
+    should_preempt cancels that stage's in-flight appends of the session first.
+    """
+
+    operation: SessionOperationKind
     session_identity: SessionIdentity
     stages: tuple[str, ...]
     chunk: TimedChunk | None = None
+    should_preempt: bool = False
 
     def to_dict(self) -> SessionOperationDict:
         return {
@@ -181,6 +190,7 @@ class SessionOperation:
             "session_identity": self.session_identity.to_dict(),
             "stages": list(self.stages),
             "chunk": None if self.chunk is None else self.chunk.to_dict(),
+            "should_preempt": self.should_preempt,
         }
 
     @classmethod

@@ -142,6 +142,18 @@ class Client:
     ) -> AsyncIterator[OutputChunk]:
         return self.coordinator.session_outputs(session_identity)
 
+    async def control_session(
+        self,
+        session_identity: SessionIdentity,
+        event: TimedChunk,
+        *,
+        stages: list[str] | None = None,
+        should_preempt: bool = False,
+    ) -> None:
+        await self.coordinator.control_session(
+            session_identity, event, stages=stages, should_preempt=should_preempt
+        )
+
     async def close_session(self, session_identity: SessionIdentity) -> None:
         await self.coordinator.close_session(session_identity)
 

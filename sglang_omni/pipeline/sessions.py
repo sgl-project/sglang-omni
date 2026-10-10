@@ -22,6 +22,7 @@ from sglang_omni.proto.session import (
     SessionIdentity,
     SessionLimits,
     SessionOperation,
+    SessionOperationKind,
     TimedChunk,
     wire_size,
 )
@@ -112,7 +113,11 @@ class CoordinatorSessions:
         limits: SessionLimits | None = None,
         session_id: str | None = None,
     ) -> SessionIdentity:
-        """Open a fixed linear route, upstream to downstream, before accepting input."""
+        """Open a fixed linear route, upstream to downstream, before accepting input.
+
+        The route may start at any stage, so one pipeline can host several
+        independent chains, such as the nodes of a session graph.
+        """
         if (
             self.is_sessions_stopping
             or not self.running
@@ -121,12 +126,8 @@ class CoordinatorSessions:
             raise RuntimeError(self.fatal_error or "Coordinator is not running")
         else:
             pass
-        if (
-            not stages
-            or stages[0] != self.entry_stage
-            or len(set(stages)) != len(stages)
-        ):
-            raise ValueError("stages must be a unique route beginning at entry_stage")
+        if not stages or len(set(stages)) != len(stages):
+            raise ValueError("stages must be a non-empty route without repeats")
         else:
             pass
         session_id = session_id or str(uuid.uuid4())
@@ -358,13 +359,48 @@ class CoordinatorSessions:
             session.error = exc
             self.owned_session_task(self.close_session_state(session))
 
+    async def control_session(
+        self,
+        session_identity: SessionIdentity,
+        event: TimedChunk,
+        *,
+        stages: list[str] | None = None,
+        should_preempt: bool = False,
+    ) -> None:
+        """Deliver a control event to the named logical stages, or to every stage of the route."""
+        session = self.get_session(session_identity)
+        if session.is_closing or session.is_closed:
+            raise RuntimeError("session is closing")
+        else:
+            pass
+        owners = [
+            owner
+            for owner in session.stages
+            if stages is None or self.replica_topology.logical_name(owner) in stages
+        ]
+        if stages is not None and len(owners) != len(stages):
+            raise ValueError(
+                f"control stages {stages} are not all on the session route"
+            )
+        else:
+            pass
+        for owner in owners:
+            await self.session_operation(
+                session,
+                "control",
+                owner=owner,
+                chunk=event,
+                should_preempt=should_preempt,
+            )
+
     async def session_operation(
         self,
         session: Session,
-        operation: Literal["open", "append", "close"],
+        operation: SessionOperationKind,
         *,
         owner: str | None = None,
         chunk: TimedChunk | None = None,
+        should_preempt: bool = False,
     ) -> None:
         session_identity = session.session_identity
         session_operation = SessionOperation(
@@ -372,6 +408,7 @@ class CoordinatorSessions:
             session_identity=session_identity,
             stages=session.stages,
             chunk=chunk,
+            should_preempt=should_preempt,
         )
         request = replace(
             session.request,
@@ -382,7 +419,8 @@ class CoordinatorSessions:
         )
         request_id = f"session-{uuid.uuid4()}"
 
-        if chunk is not None:
+        if operation == "append":
+            assert chunk is not None, "append carries no chunk"
             input_seq = chunk.seq
 
             def output(msg: StreamMessage) -> None:
@@ -401,7 +439,7 @@ class CoordinatorSessions:
             await self.submit_request(
                 request_id,
                 request,
-                target_stage=owner,
+                target_stage=owner or session.stages[0],
                 terminal_stages=(
                     {self.replica_topology.logical_name(owner)}
                     if owner

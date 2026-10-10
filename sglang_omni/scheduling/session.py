@@ -17,12 +17,14 @@ the KV cache and token history, and encoder or codec state. When a unit
 finishes, that unit's own resources are released. The session state stays.
 Closing the session releases that state and returns the session's capacity.
 
-An operation is one action sent for a session: open, append, or close.
-append is the unit above, and it follows the stages from one to the next.
-open and close each target one stage. open visits the stages from upstream
-to downstream and creates that stage's session state. close visits them from
-downstream to upstream and releases the state. On one stage, open, append,
-and close share one arrival order.
+An operation is one action sent for a session: open, append, close, or
+control. append is the unit above, and it follows the stages from one to the
+next. open, close and control each target one stage. open visits the stages
+from upstream to downstream and creates that stage's session state. close
+visits them from downstream to upstream and releases the state. control
+delivers an event such as an interrupt; a preempting control cancels the
+in-flight append as soon as it arrives. On one stage, all operations share
+one arrival order.
 
 A cursor is one stage's record of the operations that have arrived for one
 session. It keeps them in arrival order, and it keeps the place that may
@@ -40,7 +42,7 @@ import threading
 import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Protocol
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -49,6 +51,7 @@ from sglang_omni.proto.session import (
     ResourceUsage,
     SessionIdentity,
     SessionOperation,
+    SessionOperationKind,
     TimedChunk,
     find_session_operation,
 )
@@ -96,6 +99,9 @@ class SessionHooks:
     def close(self, session_identity: SessionIdentity) -> None:
         raise NotImplementedError
 
+    def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
+        """Handle a control event; stages without control semantics ignore it."""
+
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         return ResourceUsage()
 
@@ -135,7 +141,7 @@ class OperationArrival:
     """Arrival position of one accepted operation inside its session."""
 
     session_identity: SessionIdentity
-    operation: Literal["open", "append", "close"]
+    operation: SessionOperationKind
     sequence: int
 
 
@@ -239,6 +245,19 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                     sequence=cursor.next_sequence,
                 )
                 cursor.next_sequence += 1
+                if session_operation.should_preempt:
+                    # Note (Dayuxiaoshui): Queued appends still run; only the units already in a hook stop early.
+                    for request_id, arrival in self.arrivals_by_request_id.items():
+                        cancel_event = self.append_cancel_events.get(request_id)
+                        if (
+                            arrival.session_identity == session_identity
+                            and cancel_event is not None
+                        ):
+                            cancel_event.set()
+                        else:
+                            pass
+                else:
+                    pass
 
     def finish_operation(self, request_id: str) -> None:
         with self.operation_finished:
@@ -570,6 +589,15 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                         return payload
                     elif self.is_shutting_down:
                         raise RuntimeError("session scheduler is stopping")
+                    elif operation == "control":
+                        assert (
+                            session_operation.chunk is not None
+                        ), "control carries no event"
+                        self.session_hooks.control(
+                            session_identity, session_operation.chunk
+                        )
+                        payload.data = {"controlled": True}
+                        return payload
                     else:
                         append = self.start_append(payload, session_operation)
                         try:

@@ -51,7 +51,9 @@ from sglang_omni.scheduling.session import (
 
 REPLICA_COUNT = 2
 EVENT_POLL_TIMEOUT_S = 1
-OwnerEvent = tuple[Literal["open", "close", "finished", "cancelled"], str, str]
+OwnerEvent = tuple[
+    Literal["open", "close", "finished", "cancelled", "control"], str, str
+]
 AppendEvent = tuple[Literal["append"], str, str, int]
 StageEvent = OwnerEvent | AppendEvent
 
@@ -213,7 +215,9 @@ async def pipeline(
     replicated: bool = False,
     replicate_entry: bool = False,
     list_next: bool = False,
+    stage_configs: list[StageConfig] | None = None,
 ) -> AsyncIterator[tuple[Coordinator, Queue[StageEvent], list[SpawnProcess]]]:
+    """Start one worker per stage; stage_configs replaces the default linear chain."""
     ctx = multiprocessing.get_context("spawn")
     names = ["source", "middle", "sink"] if stage_count == 3 else ["source", "sink"]
     stages = []
@@ -228,6 +232,10 @@ async def pipeline(
                 factory_path=f"{__name__}.make_session_scheduler",
             )
         )
+    if stage_configs is not None:
+        stages = stage_configs
+    else:
+        pass
     process_configs: dict[str, ProcessConfig] = {}
     if replicated:
         process_configs["sink"] = ProcessConfig(num_replicas=REPLICA_COUNT)
@@ -235,7 +243,7 @@ async def pipeline(
         process_configs["source"] = ProcessConfig(num_replicas=REPLICA_COUNT)
     config = PipelineConfig(
         model_path="mock",
-        entry_stage="source",
+        entry_stage=stages[0].name,
         stages=stages,
         processes=process_configs,
     )
@@ -246,8 +254,8 @@ async def pipeline(
     coordinator = Coordinator(
         completion,
         abort,
-        "source",
-        ["sink"],
+        stages[0].name,
+        [stage.name for stage in stages if stage.terminal],
         logical_process_plan=plan,
         replica_topology=topology,
     )
