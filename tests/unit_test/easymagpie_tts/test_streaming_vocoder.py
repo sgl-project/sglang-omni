@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.models.easymagpie_tts import streaming_vocoder
 from sglang_omni.models.easymagpie_tts.payload_types import EasyMagpieTTSState
 from sglang_omni.models.easymagpie_tts.streaming_vocoder import (
     EasyMagpieStreamingVocoder,
@@ -143,6 +144,19 @@ def test_a_row_batched_message_decodes_its_streams_together(
     assert vocoder.accepts_stream_chunk_batch is True
     assert batch_sizes == [2]
     assert {m.request_id for m in drain(vocoder)} == {"a", "b"}
+
+
+@pytest.mark.parametrize("freeze_gc", [True, False])
+def test_serving_start_freezes_the_gc_only_when_asked(
+    codec, monkeypatch, freeze_gc
+) -> None:
+    frozen = []
+    monkeypatch.setattr(streaming_vocoder, "freeze_gc_after_warmup", frozen.append)
+    vocoder = EasyMagpieStreamingVocoder(codec, cuda_graph=False, freeze_gc=freeze_gc)
+
+    vocoder.on_serving_start()
+
+    assert frozen == (["vocoder"] if freeze_gc else [])
 
 
 def test_finished_streams_return_their_codec_slots(vocoder) -> None:

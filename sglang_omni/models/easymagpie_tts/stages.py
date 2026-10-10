@@ -138,6 +138,7 @@ def create_vocoder_executor(
     startup_chunk_frames: list[int] | None = None,
     steady_chunk_frames: int | None = None,
     cuda_graph: bool = True,
+    freeze_gc: bool = True,
 ) -> EasyMagpieStreamingVocoder:
     from sglang_omni.models.easymagpie_tts.codec import load_codec
     from sglang_omni.utils.device import resolve_concrete_device
@@ -154,6 +155,7 @@ def create_vocoder_executor(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         cuda_graph=cuda_graph,
+        freeze_gc=freeze_gc,
     )
     # Capture before the stage reports ready, so no colocated stage runs GPU
     # work during capture.

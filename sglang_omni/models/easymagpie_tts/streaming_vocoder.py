@@ -16,6 +16,7 @@ from sglang_omni.models.easymagpie_tts.payload_types import EasyMagpieTTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
+from sglang_omni.utils.gc_freeze import freeze_gc_after_warmup
 
 DEFAULT_STARTUP_CHUNK_FRAMES = (2, 6)
 DEFAULT_STEADY_CHUNK_FRAMES = 8
@@ -35,7 +36,8 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
     Small first chunks cut time to first audio; later chunks are larger so
     each codec launch covers more audio. Streams waiting on the same chunk
     size decode together in one batched codec call, replayed from a CUDA
-    graph when ``cuda_graph`` is set and the device is CUDA.
+    graph when ``cuda_graph`` is set and the device is CUDA. ``freeze_gc``
+    freezes the process's garbage collector when serving starts.
     """
 
     can_batch_stream_chunks = True
@@ -51,6 +53,7 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
         max_batch_wait_ms: float = 5,
         max_streams: int = 256,
         cuda_graph: bool = True,
+        freeze_gc: bool = False,
     ) -> None:
         if steady_chunk_frames < 1 or any(f < 1 for f in startup_chunk_frames):
             raise ValueError("EasyMagpie vocoder chunk sizes must be positive")
@@ -67,6 +70,7 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
         self.stream_chunk_batch_max = int(max_batch_size)
         self.runner = StreamingCodecRunner(codec, max_streams=max_streams)
         self.cuda_graph = cuda_graph
+        self.freeze_gc = freeze_gc
         super().__init__(
             self.decode_payload,
             batch_compute_fn=self.decode_payloads,
@@ -108,6 +112,12 @@ class EasyMagpieStreamingVocoder(StreamingVocoderBase[EasyMagpieStreamState, int
         if self.cuda_graph:
             frames = {*self.startup_chunk_frames, self.steady_chunk_frames}
             self.runner.capture(sorted(frames), self.stream_chunk_batch_max)
+        else:
+            pass
+
+    def on_serving_start(self) -> None:
+        if self.freeze_gc:
+            freeze_gc_after_warmup("vocoder")
         else:
             pass
 
