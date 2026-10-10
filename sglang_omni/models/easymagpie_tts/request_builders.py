@@ -117,10 +117,10 @@ def prompt_cache_key(state: EasyMagpieTTSState) -> str:
 def max_decode_tokens(state: EasyMagpieTTSState) -> int:
     """Output-token budget that yields at most max_new_frames acoustic frames.
 
-    The prefill emits one token, and the decode steps before the speech delay
+    The prefill emits one token, and the decode steps before the emit delay
     produce no audio.
     """
-    return state.max_new_frames + state.speech_delay - state.text_prefill_num + 1
+    return state.max_new_frames + state.audio_emit_delay - state.text_prefill_num + 1
 
 
 def build_sglang_easymagpie_request(

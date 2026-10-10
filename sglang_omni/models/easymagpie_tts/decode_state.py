@@ -44,6 +44,7 @@ class DecodeStepInputs:
     phoneme_valid: torch.Tensor
     audio_codes: torch.Tensor
     audio_valid: torch.Tensor
+    emits_audio: torch.Tensor
     phoneme_ended: torch.Tensor
     temperatures: torch.Tensor
     top_ks: torch.Tensor
@@ -59,6 +60,7 @@ class EasyMagpieDecodeState:
     text_lens: torch.Tensor
     phoneme_delays: torch.Tensor
     speech_delays: torch.Tensor
+    emit_delays: torch.Tensor
     phoneme_ended: torch.Tensor
     last_phonemes: torch.Tensor
     last_audio: torch.Tensor
@@ -101,6 +103,7 @@ class EasyMagpieDecodeState:
             text_lens=zeros(rows),
             phoneme_delays=zeros(rows),
             speech_delays=zeros(rows),
+            emit_delays=zeros(rows),
             phoneme_ended=zeros(rows, dtype=torch.bool),
             last_phonemes=zeros(rows, config.phoneme_stacking_factor),
             last_audio=zeros(rows, config.num_stacked_codebooks),
@@ -146,6 +149,7 @@ class EasyMagpieDecodeState:
                     len(state.text_token_ids),
                     state.phoneme_delay,
                     state.speech_delay,
+                    state.audio_emit_delay,
                     state.top_k,
                     seed,
                 ]
@@ -159,6 +163,7 @@ class EasyMagpieDecodeState:
                 self.text_lens,
                 self.phoneme_delays,
                 self.speech_delays,
+                self.emit_delays,
                 self.top_ks,
                 self.seeds,
             )
@@ -183,7 +188,9 @@ class EasyMagpieDecodeState:
         The text token sits at the request offset. The phoneme channel opens
         with BOS at the phoneme delay, feeds back each prediction, and closes
         one step after it feeds a phoneme EOS. The audio channel opens with BOS
-        at the speech delay, then feeds back the previous frame.
+        at the speech delay, then feeds back the previous frame. Frames stream
+        as audio from the request's emit delay, which may be the step before
+        the speech delay.
         """
         config = self.config
         slots = req_pool_indices.to(torch.long)
@@ -224,6 +231,7 @@ class EasyMagpieDecodeState:
             phoneme_valid=phoneme_valid,
             audio_codes=audio_codes,
             audio_valid=audio_valid,
+            emits_audio=steps >= self.emit_delays[slots],
             phoneme_ended=self.phoneme_ended[slots] | (phoneme_valid & predicted_eos),
             temperatures=self.temperatures[slots],
             top_ks=self.top_ks[slots],
@@ -251,7 +259,10 @@ class EasyMagpieDecodeState:
         batch = int(codes.shape[0])
         output = self.step_output[:batch]
         output[:, : codes.shape[1]].copy_(codes)
-        output[:, EMIT_COLUMN].copy_(inputs.audio_valid & ~eos)
+        # A lead-in frame is sampled before audio is valid, so ``eos`` ignores
+        # its EOS code; the vocoder must still never receive it.
+        has_eos_code = (codes == self.config.audio_eos_id).any(dim=1)
+        output[:, EMIT_COLUMN].copy_(inputs.emits_audio & ~eos & ~has_eos_code)
         output[:, STOP_COLUMN].copy_(
             torch.where(
                 eos,

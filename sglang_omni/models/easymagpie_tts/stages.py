@@ -31,7 +31,10 @@ def create_preprocessing_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     max_concurrency: int = 64,
+    lead_in_frame: bool = True,
 ) -> ThreadedSimpleScheduler:
+    """``lead_in_frame`` also streams the frame of the step before the speech
+    delay, which reaches the vocoder one decode step earlier."""
     # note (Yashwant Hayaran): CPU-only stage declaring gpu only to share the
     # pipeline process; it does not touch the device.
     del device, gpu_id
@@ -72,6 +75,10 @@ def create_preprocessing_executor(
         # Every row up to and including the phoneme BOS is known before any
         # prediction exists.
         state.text_prefill_num = phoneme_delay + 1
+        if lead_in_frame:
+            state.audio_emit_delay = max(speech_delay - 1, state.text_prefill_num)
+        else:
+            state.audio_emit_delay = speech_delay
         state.text_token_ids = [
             *tokenizer.encode(state.text, add_special_tokens=False),
             text_eos_id,

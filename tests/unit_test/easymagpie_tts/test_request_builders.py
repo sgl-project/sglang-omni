@@ -108,6 +108,8 @@ def test_sglang_request_covers_speaker_context_and_text_lead_in() -> None:
     assert data.input_ids.numel() == 3 + 2 + 4
     assert data.req.sampling_params.max_new_tokens == max_decode_tokens(state)
     assert max_decode_tokens(state) == 10 + 5 - 4 + 1
+    lead_in = preprocessed_state(audio_emit_delay=4)
+    assert max_decode_tokens(lead_in) == 10 + 4 - 4 + 1
     assert data.req.eos_token_ids == {STOP_TOKEN_ID}
     assert data.sampling_seed == 5
     assert data.output_ids is data.req.output_ids

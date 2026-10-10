@@ -74,8 +74,25 @@ def test_preprocessing_tokenizes_text_context_and_attaches_the_voice(
         5,
         4,
     )
+    assert state.audio_emit_delay == 4
     assert state.speaker_frames == 2
     assert scheduler.max_concurrency == 64
+
+
+def test_preprocessing_can_drop_the_lead_in_frame(checkpoint) -> None:
+    scheduler = stages.create_preprocessing_executor(
+        str(checkpoint), lead_in_frame=False
+    )
+    state = EasyMagpieTTSState.from_dict(scheduler.fn(make_payload("ab")).data)
+    assert state.audio_emit_delay == state.speech_delay == 5
+
+
+def test_the_lead_in_frame_never_precedes_decode(checkpoint, tiny_raw_config) -> None:
+    config = dict(tiny_raw_config, streaming_speech_delay=4)
+    (checkpoint / "config.json").write_text(json.dumps(config))
+    scheduler = stages.create_preprocessing_executor(str(checkpoint))
+    state = EasyMagpieTTSState.from_dict(scheduler.fn(make_payload("ab")).data)
+    assert state.audio_emit_delay == state.text_prefill_num == 4
 
 
 def test_preprocessing_rejects_unknown_voices(checkpoint) -> None:

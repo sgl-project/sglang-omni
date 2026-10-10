@@ -136,7 +136,9 @@ def test_acoustic_eos_drives_stop_logits_only_on_audio_rows(talker) -> None:
     state.seed(
         slots=[1, 2, 3],
         states=[
-            EasyMagpieTTSState(text_prefill_num=4, speech_delay=delay)
+            EasyMagpieTTSState(
+                text_prefill_num=4, speech_delay=delay, audio_emit_delay=delay
+            )
             for delay in (4, 4, 5)
         ],
         seeds=[0, 0, 0],

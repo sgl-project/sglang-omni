@@ -105,6 +105,25 @@ def test_decode_applies_phoneme_and_speech_delays(state) -> None:
     assert inputs.text_valid.tolist() == [False]
 
 
+def test_a_lead_in_frame_streams_without_opening_the_audio_channel(state) -> None:
+    seed(state, [1], [tts_state(audio_emit_delay=4)], [[9]])
+
+    inputs = step(state, [1], codes=3)
+    assert inputs.audio_valid.tolist() == [False]
+    assert state.step_output[0, EMIT_COLUMN].item() == 1
+
+    inputs = step(state, [1], codes=4)
+    assert inputs.audio_codes.tolist() == [[16] * 4]
+    assert state.step_output[0, EMIT_COLUMN].item() == 1
+
+
+def test_a_lead_in_frame_holding_the_eos_code_is_not_streamed(state) -> None:
+    seed(state, [1], [tts_state(audio_emit_delay=4)], [[9]])
+    step(state, [1], codes=state.config.audio_eos_id)
+    assert state.step_output[0, EMIT_COLUMN].item() == 0
+    assert state.step_output[0, STOP_COLUMN].item() == 0
+
+
 def test_a_phoneme_eos_is_fed_once_then_the_channel_closes(state) -> None:
     seed(state, [1], [tts_state()], [[18]])
 
@@ -149,7 +168,12 @@ def test_seeding_resets_a_reused_slot(state) -> None:
 
 
 def test_commit_publishes_codes_audio_rows_and_stop_tokens(state) -> None:
-    seed(state, [1, 2], [tts_state(speech_delay=4), tts_state()], [[9], [9]])
+    seed(
+        state,
+        [1, 2],
+        [tts_state(speech_delay=4, audio_emit_delay=4), tts_state()],
+        [[9], [9]],
+    )
     inputs = state.read(torch.tensor([1, 2]))
     state.commit(
         inputs,

@@ -35,6 +35,8 @@ class EasyMagpieTTSState(DeclarativeStateBase):
     phoneme_delay: int = wire(3, codec="int")
     speech_delay: int = wire(5, codec="int")
     text_prefill_num: int = wire(4, codec="int")
+    # First decode step whose frame is streamed as audio.
+    audio_emit_delay: int = wire(5, codec="int")
     text_token_ids: list[int] = wire(default_factory=list, codec="list")
     context_token_ids: list[int] = wire(default_factory=list, codec="list")
     speaker_frames: int = wire(0, codec="int")
