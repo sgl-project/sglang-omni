@@ -2140,6 +2140,22 @@ def install_tp_broadcast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omni_scheduler_module, "broadcast_pyobj", broadcast_pyobj)
 
 
+def abort_from_stage_thread(scheduler: OmniScheduler, request_id: str) -> None:
+    thread_errors: list[BaseException] = []
+
+    def abort_request() -> None:
+        try:
+            scheduler.abort(request_id)
+        except BaseException as exc:
+            thread_errors.append(exc)
+
+    thread = threading.Thread(target=abort_request)
+    thread.start()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert thread_errors == []
+
+
 @pytest.mark.parametrize("tp_size", [1, 2])
 @pytest.mark.parametrize(
     "timeout_env,placement",
@@ -2173,7 +2189,7 @@ def test_request_timeout_fails_only_the_expired_request(
 
 
 @pytest.mark.parametrize(
-    "tp_size,has_session_bridge", [(2, False), (2, True), (1, True)]
+    "tp_size,has_session_bridge", [(2, False), (2, True), (1, True), (1, False)]
 )
 @pytest.mark.parametrize("placement", ["waiting", "running"])
 def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
@@ -2194,26 +2210,11 @@ def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
         else:
             pass
 
-    def abort_from_stage_thread(scheduler: OmniScheduler) -> None:
-        thread_errors: list[BaseException] = []
-
-        def abort_request() -> None:
-            try:
-                scheduler.abort("req-expired")
-            except BaseException as exc:
-                thread_errors.append(exc)
-
-        thread = threading.Thread(target=abort_request)
-        thread.start()
-        thread.join(timeout=1)
-        assert not thread.is_alive()
-        assert thread_errors == []
-
     for follower in ranks[1:]:
-        abort_from_stage_thread(follower)
+        abort_from_stage_thread(follower, "req-expired")
         assert schedulable_request_ids(follower) == ["req-expired", "req-fresh"]
         assert follower.inbox.empty()
-    abort_from_stage_thread(ranks[0])
+    abort_from_stage_thread(ranks[0], "req-expired")
     assert schedulable_request_ids(ranks[0]) == ["req-expired", "req-fresh"]
     for scheduler in ranks:
         assert scheduler.recv_requests() == []
@@ -2221,6 +2222,20 @@ def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
         ["req-fresh"]
     ] * tp_size
     assert all(scheduler.inbox.empty() for scheduler in ranks)
+
+
+def test_off_thread_abort_finishes_a_request_held_by_batch_selection() -> None:
+    """A stage thread abort between waiting-queue removal and batch publication lands."""
+    scheduler = tp_rank_scheduler(0, 1, "waiting")
+    scheduler.scheduler_thread_id = threading.get_ident()
+    selected = scheduler.waiting_queue[:1]
+    scheduler.waiting_queue = scheduler.waiting_queue[1:]
+
+    abort_from_stage_thread(scheduler, "req-expired")
+    scheduler.running_batch.reqs = selected
+
+    assert scheduler.recv_requests() == []
+    assert schedulable_request_ids(scheduler) == ["req-fresh"]
 
 
 @pytest.mark.parametrize("late_follower", [False, True])

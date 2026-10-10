@@ -1004,7 +1004,7 @@ class OmniScheduler(Generic[RequestDataT]):
         if self.is_entry_rank:
             # note (ratish): only this rank reads the clock.
             # note (Richard Wang): TP above 1 broadcasts the abort in this pass. TP1
-            # applies it now because an off-thread abort can drain it past this pass.
+            # applies it now, already on the scheduler thread.
             for timeout_abort in self.poll_request_timeout_aborts():
                 if timeout_abort.rid in self.aborted_request_ids:
                     continue
@@ -2482,10 +2482,11 @@ class OmniScheduler(Generic[RequestDataT]):
         if (
             self.scheduler_thread_id is not None
             and self.scheduler_thread_id != threading.get_ident()
-            and (bridge is not None or self.tp_size > 1)
         ):
             # note (Richard Wang): every TP rank must drop a request in the same
             # pass, so the entry rank broadcast carries it and followers skip theirs.
+            # note (Shuo_O): TP1 hands it over too, since batch selection holds
+            # requests outside every queue and batch this abort could scan.
             if self.is_entry_rank:
                 self.inbox.put(IncomingMessage(request_id=request_id, type="abort"))
             else:
