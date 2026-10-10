@@ -22,6 +22,7 @@ from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.forward_context import get_attn_backend
+from sglang.srt.model_executor.runner_utils.capture_mode import get_is_capture_mode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from torch import nn
 from transformers import WhisperConfig
@@ -173,6 +174,47 @@ class WhisperEncoder(nn.Module):
         return self.layer_norm(hidden_states)
 
 
+def whisper_npu_decode_attention(
+    query: torch.Tensor,
+    layer: RadixAttention,
+    forward_batch: ForwardBatch,
+    *,
+    cache_span: int,
+) -> torch.Tensor:
+    """Capture Whisper decode within its learned position limits."""
+    backend = get_attn_backend()
+    pool = backend.token_to_kv_pool
+    table = backend.req_to_token_pool.req_to_token
+    positions = torch.arange(cache_span, device=query.device)[None, :]
+    encoder_lengths = forward_batch.encoder_lens
+    if layer.is_cross_attention:
+        columns = positions
+        lengths = encoder_lengths
+    else:
+        columns = encoder_lengths[:, None] + positions
+        lengths = forward_batch.seq_lens
+    valid = positions < lengths[:, None]
+    columns = torch.where(valid, columns, 0)
+    token_ids = table[forward_batch.req_pool_indices.long()[:, None], columns].long()
+    token_ids = torch.where(valid, token_ids, 0)
+    keys = pool.get_key_buffer(layer.layer_id).view(
+        -1, layer.tp_k_head_num, layer.qk_head_dim
+    )
+    values = pool.get_value_buffer(layer.layer_id).view(
+        -1, layer.tp_v_head_num, layer.v_head_dim
+    )
+    keys = keys[token_ids].masked_fill(~valid[:, :, None, None], 0)
+    values = values[token_ids].masked_fill(~valid[:, :, None, None], 0)
+    output = F.scaled_dot_product_attention(
+        query.unsqueeze(2),
+        keys.permute(0, 2, 1, 3).to(query.dtype),
+        values.permute(0, 2, 1, 3).to(query.dtype),
+        attn_mask=valid[:, None, None, :],
+        scale=layer.scaling,
+    )
+    return output.squeeze(2)
+
+
 class WhisperSGLangSelfAttention(nn.Module):
     def __init__(
         self,
@@ -184,6 +226,7 @@ class WhisperSGLangSelfAttention(nn.Module):
         del quant_config, prefix
         super().__init__()
         self.embed_dim = config.d_model
+        self.cache_span = config.max_target_positions
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
@@ -208,7 +251,19 @@ class WhisperSGLangSelfAttention(nn.Module):
         query = query.view(-1, self.num_heads, self.head_dim)
         key = key.view(-1, self.num_heads, self.head_dim)
         value = value.view(-1, self.num_heads, self.head_dim)
-        attn_output = self.attn(query, key, value, forward_batch)
+        if (
+            query.device.type == "npu"
+            and get_is_capture_mode()
+            and forward_batch.forward_mode.is_decode()
+        ):
+            get_attn_backend().token_to_kv_pool.set_kv_buffer(
+                self.attn, KVWriteLoc(forward_batch.out_cache_loc), key, value
+            )
+            attn_output = whisper_npu_decode_attention(
+                query, self.attn, forward_batch, cache_span=self.cache_span
+            )
+        else:
+            attn_output = self.attn(query, key, value, forward_batch)
         attn_output = attn_output.reshape(hidden_states.shape[:-1] + (self.embed_dim,))
         return self.out_proj(attn_output)
 
@@ -224,6 +279,7 @@ class WhisperSGLangCrossAttention(nn.Module):
         del quant_config, prefix
         super().__init__()
         self.embed_dim = config.d_model
+        self.cache_span = config.max_source_positions
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
@@ -262,7 +318,16 @@ class WhisperSGLangCrossAttention(nn.Module):
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         query = self.q_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
-        attn_output = self.attn(query, None, None, forward_batch)
+        if (
+            query.device.type == "npu"
+            and get_is_capture_mode()
+            and forward_batch.forward_mode.is_decode()
+        ):
+            attn_output = whisper_npu_decode_attention(
+                query, self.attn, forward_batch, cache_span=self.cache_span
+            )
+        else:
+            attn_output = self.attn(query, None, None, forward_batch)
         attn_output = attn_output.reshape(hidden_states.shape[:-1] + (self.embed_dim,))
         return self.out_proj(attn_output)
 
