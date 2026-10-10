@@ -21,6 +21,14 @@ from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import (
 from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
     AttentionState,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
+    FixedPackedLayout,
+    unpack_fixed_capacity,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    CapturedPackedDiTGraph,
+    PackedDiTCudaGraphRunner,
+)
 from sglang_omni.utils.channels_last_conv import (
     channels_last_conv1d,
     channels_last_weight,
@@ -527,6 +535,7 @@ class DiT(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.enable_variable_length = enable_variable_length
+        self.packed_graph_runner: PackedDiTCudaGraphRunner | None = None
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.in_proj = nn.Linear(in_channels, hidden_size)
         self.blocks = nn.ModuleList(
@@ -561,6 +570,19 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
+    def prepare_inputs(
+        self,
+        x: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        speaker_embeddings: torch.Tensor | None = None,
+        mel_conditioning: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning),
+            self.t_embedder(t).unsqueeze(1),
+        )
+
     def forward(
         self,
         x: torch.Tensor,
@@ -569,20 +591,30 @@ class DiT(nn.Module):
         t: torch.Tensor,
         speaker_embeddings: torch.Tensor | None = None,
         mel_conditioning: torch.Tensor | None = None,
+        *,
+        packed_layout: FixedPackedLayout | None = None,
+        packed_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
-        t = self.t_embedder(t).unsqueeze(1)
-        x = self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning)
+        x, t = self.prepare_inputs(x, mu, t, speaker_embeddings, mel_conditioning)
         attn_mask = mask.bool()
         if (
             self.enable_variable_length
             and x.shape[0] >= MIN_PACKED_BATCH_SIZE
             and x.is_cuda
         ):
-            sequence_lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
             with torch.autocast(x.device.type, dtype=torch.bfloat16):
-                x = self.forward_packed(
-                    self.in_proj(x), t.to(torch.bfloat16), sequence_lengths
-                )
+                projected = self.in_proj(x).to(torch.bfloat16)
+                conditioning = t.to(torch.bfloat16)
+                if packed_layout is not None:
+                    assert packed_graph is not None
+                    x = self.forward_packed_fixed(
+                        projected, conditioning, packed_layout, packed_graph
+                    )
+                else:
+                    sequence_lengths = attn_mask.squeeze(1).sum(
+                        dim=1, dtype=torch.int32
+                    )
+                    x = self.forward_packed(projected, conditioning, sequence_lengths)
         else:
             x = self.in_proj(x)
             for block in self.blocks:
@@ -707,17 +739,53 @@ class DiT(nn.Module):
             dtype=torch.bool,
         )
         real_frame_mask[real_frame_positions] = True
+        x = self.run_packed_blocks(
+            x,
+            timestep_embedding,
+            sequence_ids,
+            cumulative_sequence_lengths,
+            padded_length,
+            real_frame_positions,
+            real_frame_mask,
+        )
+        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
+        dense[valid_frames] = x
+        return dense.transpose(1, 2)
+
+    def forward_packed_fixed(
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        layout: FixedPackedLayout,
+        captured_graph: CapturedPackedDiTGraph,
+    ) -> torch.Tensor:
+        """Run packed blocks at a fixed capacity for graph replay."""
+        padded_length = x.shape[1]
+        assert self.packed_graph_runner is not None
+        workspace = captured_graph.workspace
+        workspace.dense_input[: x.shape[0] * padded_length].copy_(x.flatten(0, 1))
+        workspace.conditioning[:-1].copy_(timestep_embedding.squeeze(1))
+        packed = self.packed_graph_runner.replay(captured_graph)
+        return unpack_fixed_capacity(packed, layout).transpose(1, 2)
+
+    def run_packed_blocks(
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        sequence_ids: torch.Tensor,
+        cumulative_sequence_lengths: torch.Tensor,
+        maximum_sequence_length: int,
+        real_frame_positions: torch.Tensor,
+        real_frame_mask: torch.Tensor,
+    ) -> torch.Tensor:
         for block in self.blocks:
             x = block.forward_packed(
                 x,
                 timestep_embedding,
                 sequence_ids,
                 cumulative_sequence_lengths,
-                padded_length,
+                maximum_sequence_length,
                 real_frame_positions,
                 real_frame_mask,
             )
-        x = self.final_layer.forward_packed(x, timestep_embedding, sequence_ids)
-        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
-        dense[valid_frames] = x
-        return dense.transpose(1, 2)
+        return self.final_layer.forward_packed(x, timestep_embedding, sequence_ids)

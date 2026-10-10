@@ -14,6 +14,10 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.flow_graph_shapes import (
+    SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES,
+    build_default_flow_cuda_graph_shapes,
+)
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
 
 PKG = "sglang_omni.models.minicpm_o"
@@ -112,12 +116,30 @@ def talker_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
-    return StageConfig(
+class MiniCPMOCode2WavFactoryArgs(FactoryArgs):
+    """Optional Flow execution settings for Code2Wav."""
+
+    enable_flow_cuda_graph: bool = True
+    flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = Field(
+        default_factory=build_default_flow_cuda_graph_shapes
+    )
+    packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = (
+        SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES
+    )
+
+
+class MiniCPMOCode2WavStageConfig(StageConfig):
+    factory: MiniCPMOCode2WavFactoryArgs = Field(
+        default_factory=MiniCPMOCode2WavFactoryArgs
+    )
+
+
+def code2wav_stage(*, gpu: int, process: str) -> MiniCPMOCode2WavStageConfig:
+    return MiniCPMOCode2WavStageConfig(
         name="code2wav",
         process=process,
         factory_path=f"{PKG}.stages.create_code2wav_executor",
-        factory=FactoryArgs(
+        factory=MiniCPMOCode2WavFactoryArgs(
             max_batch_size=16,
             max_batch_wait_ms=0,
             batch_wait_when_idle=False,
@@ -191,6 +213,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         THINKER_STAGE: EngineStageConfig,
         "talker": EngineStageConfig,
+        "code2wav": MiniCPMOCode2WavStageConfig,
     }
 
     # note (MayDomine): each engine manages its own static memory fraction.
