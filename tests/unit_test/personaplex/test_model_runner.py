@@ -248,10 +248,8 @@ class SamplingDepformer:
 
     def __init__(self):
         self.logits = torch.randn(8, 64, generator=torch.Generator().manual_seed(0))
-        self.batch_sizes = []
 
     def generate(self, text_token_B, transformer_out_BD, forced_BK, sample):
-        self.batch_sizes.append(forced_BK.shape[0])
         codes = []
         for step in range(8):
             sampled = sample(self.logits[step].expand(forced_BK.shape[0], -1))

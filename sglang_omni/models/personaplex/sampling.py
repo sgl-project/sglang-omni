@@ -45,9 +45,9 @@ def sample_token(
     # Note (edwardzh): A seeded row draws its slice alone, consuming its generator
     # exactly as it would at batch size one; neighbours never advance it.
     for _, run in groupby(generators, key=id):
-        run = list(run)
-        end_row = start_row + len(run)
-        noise[start_row:end_row].exponential_(1.0, generator=run[0])
+        run_generators = list(run)
+        end_row = start_row + len(run_generators)
+        noise[start_row:end_row].exponential_(1.0, generator=run_generators[0])
         start_row = end_row
     assert start_row == noise.shape[0], (start_row, noise.shape)
     choice = (probs / noise).argmax(dim=-1, keepdim=True)

@@ -11,6 +11,7 @@ one position later, a finished output frame streamed to the codec.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import groupby
 from typing import Protocol
 
@@ -29,7 +30,7 @@ from sglang_omni.models.personaplex.architecture import (
     NUM_STREAMS,
     USER_STREAM_OFFSET,
 )
-from sglang_omni.models.personaplex.sampling import sample_token
+from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -37,6 +38,15 @@ from sglang_omni.scheduling.types import SchedulerRequest
 
 class AudioTokenSampler(Protocol):
     def __call__(self, logits: torch.Tensor) -> torch.Tensor: ...
+
+
+@dataclass(frozen=True, kw_only=True)
+class SamplingRun:
+    """Adjacent batch rows that share one sample_token call."""
+
+    row_slice: slice
+    sampling: AudioSampling
+    generators: list[torch.Generator | None]
 
 
 class PersonaPlexModelRunner(ModelRunner):
@@ -119,23 +129,31 @@ class PersonaPlexModelRunner(ModelRunner):
 
     def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
         """Sample row i with requests[i]'s audio settings and generator."""
-        runs = []
+        runs: list[SamplingRun] = []
         start_row = 0
         # Note (edwardzh): Only adjacent requests share a sampling call, so rows are
         # sliced in place and no index tensor reaches the device.
-        for audio, group in groupby(
+        for sampling, run_requests in groupby(
             requests,
             key=lambda request: request.data.talker_model_inputs["sampling"].audio,
         ):
-            generators = [self.audio_generator(request.data) for request in group]
+            generators = [
+                self.audio_generator(request.data) for request in run_requests
+            ]
             end_row = start_row + len(generators)
-            runs.append((slice(start_row, end_row), audio, generators))
+            runs.append(
+                SamplingRun(
+                    row_slice=slice(start_row, end_row),
+                    sampling=sampling,
+                    generators=generators,
+                )
+            )
             start_row = end_row
 
         def sample(logits: torch.Tensor) -> torch.Tensor:
             picks = [
-                sample_token(logits[rows], audio, generators)
-                for rows, audio, generators in runs
+                sample_token(logits[run.row_slice], run.sampling, run.generators)
+                for run in runs
             ]
             return picks[0] if len(picks) == 1 else torch.cat(picks)
 
@@ -151,10 +169,10 @@ class PersonaPlexModelRunner(ModelRunner):
 
         Row i of text_token_B, forced_BK and hidden_out belongs to requests[i].
         """
-        batch = len(requests)
+        batch_size = len(requests)
         codes_BK = self.model.depformer.generate(
-            text_token_B[:batch],
-            self.model.hidden_out[:batch],
+            text_token_B[:batch_size],
+            self.model.hidden_out[:batch_size],
             forced_BK,
             self.audio_sampler(requests),
         )
