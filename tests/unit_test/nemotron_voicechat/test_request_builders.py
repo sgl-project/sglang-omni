@@ -8,6 +8,7 @@ import torch
 
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
 from sglang_omni.models.nemotron_voicechat.request_builders import (
+    apply_thinker_result,
     build_talker_request,
     build_thinker_request,
     merge_for_talker,
@@ -74,6 +75,18 @@ def test_thinker_is_greedy_and_warns_on_ignored_temperature(
     assert data.req.sampling_params.top_k == 1
     assert data.req.sampling_params.ignore_eos
     assert any("temperature" in record.getMessage() for record in caplog.records)
+
+
+def test_thinker_result_releases_acoustic_frames() -> None:
+    data = build_thinker_request(
+        make_payload(4), vocab_size=8, prompt_token_ids=[1], pad_token_id=3
+    )
+    data.output_ids = [5, 6]
+
+    payload = apply_thinker_result(data)
+
+    assert data.acoustic_frames is None
+    assert NemotronVoiceChatState.from_dict(payload.data).text_ids == [5, 6]
 
 
 def test_merge_for_talker_keeps_only_the_frame_count() -> None:

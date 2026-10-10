@@ -114,6 +114,8 @@ def apply_thinker_result(data: NemotronVoiceChatRequestData) -> StagePayload:
         raise RuntimeError("Nemotron VoiceChat Thinker result has no stage payload")
     else:
         pass
+    # Release the request-owned acoustic tensor before forwarding the result.
+    data.acoustic_frames = None
     state = NemotronVoiceChatState.from_dict(payload.data)
     state.text_ids = list(data.output_ids)
     payload.data = state.to_dict()

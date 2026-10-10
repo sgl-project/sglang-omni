@@ -151,9 +151,11 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
             pass
 
         fusion = self.model.fusion
-        fused_rows = channel_embeddings[:, 0].mul(fusion.user_weight)
-        fused_rows.add_(channel_embeddings[:, 1], alpha=fusion.text_weight)
-        fused_rows.add_(channel_embeddings[:, 2], alpha=fusion.function_weight)
+        channel_embeddings[:, 1].mul_(fusion.text_weight)
+        channel_embeddings[:, 0].mul_(fusion.user_weight)
+        fused_rows = channel_embeddings[:, 1].add_(channel_embeddings[:, 0])
+        channel_embeddings[:, 2].mul_(fusion.function_weight)
+        fused_rows.add_(channel_embeddings[:, 2])
         return fused_rows
 
     def before_prefill(
@@ -217,8 +219,10 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
         fusion_buffer = model.fusion_buffer[:batch_size]
         torch.stack(acoustic_rows, dim=0, out=fusion_buffer)
         fusion_buffer.mul_(model.fusion.user_weight)
-        fusion_buffer.add_(token_embeddings[:, 0], alpha=model.fusion.text_weight)
-        fusion_buffer.add_(token_embeddings[:, 1], alpha=model.fusion.function_weight)
+        token_embeddings[:, 0].mul_(model.fusion.text_weight)
+        fusion_buffer.add_(token_embeddings[:, 0])
+        token_embeddings[:, 1].mul_(model.fusion.function_weight)
+        fusion_buffer.add_(token_embeddings[:, 1])
         model.has_staged_decode = True
 
     def record_function_ids(self, requests: list[SchedulerRequest]) -> None:
@@ -257,8 +261,3 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
         del forward_batch, schedule_batch
         self.record_function_ids(requests)
         self.record_stream_tokens(result, requests)
-
-    def on_request_finished(
-        self, request_id: str, request_data: NemotronVoiceChatRequestData
-    ) -> None:
-        request_data.acoustic_frames = None
