@@ -273,12 +273,19 @@ Partial results are full replacements, not append-only deltas:
   "type": "transcription.segment",
   "event_index": 7,
   "segment_id": 0,
+  "audio_start_ms": 0,
+  "audio_end_ms": 2000,
   "text": "hello wor",
   "is_final": false
 }
 ```
 
-A later event for the same `segment_id` replaces this text. An event with
+A later event for the same `segment_id` replaces this text. `audio_start_ms`
+and `audio_end_ms` are the span of input audio the text was decoded from.
+A partial can trail the audio already sent, since audio that arrives while it
+decodes is left to the next partial. `audio_start_ms` stays fixed for the
+segment, including segments opened by the 30 second boundary, which have no
+`input_audio_buffer.speech_started` event. An event with
 `is_final=true` is immutable. `transcription.completed` contains the joined
 text from all final segments.
 

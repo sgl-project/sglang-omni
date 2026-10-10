@@ -366,7 +366,9 @@ only records timestamps; every metric definition lives in
 
 - `first_partial_latency_s`: per segment, from the send time of the packet that
   reached the server's first refresh point (`segment_start + decode_interval_ms`)
-  to the first partial `transcription.segment`.
+  to the first partial `transcription.segment`. `segment_start` is the
+  `audio_start_ms` carried by the segment's own events, so segments opened by
+  a hard cut are measured from the cut.
 - `partial_interval_s`: gaps between consecutive partials of one segment.
 - `final_latency_s`: `input_audio_buffer.committed` to the segment's final event.
 - `done_to_completed_s`: `transcription.done` sent to `transcription.completed`.

@@ -21,6 +21,8 @@ def valid_events() -> list[dict[str, JsonValue]]:
         {
             "type": "transcription.segment",
             "segment_id": 0,
+            "audio_start_ms": 0,
+            "audio_end_ms": 1000,
             "text": "hello",
             "is_final": True,
             "event_index": 3,
@@ -93,6 +95,8 @@ def test_partial_after_completed_fails_for_a_different_segment(
         {
             "type": "transcription.segment",
             "segment_id": 1,
+            "audio_start_ms": 1000,
+            "audio_end_ms": 2000,
             "text": "late",
             "is_final": False,
             "event_index": 5,

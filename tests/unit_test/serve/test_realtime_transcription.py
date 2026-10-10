@@ -215,7 +215,7 @@ async def test_partial_is_replaced_by_one_final_segment(
 async def test_audio_during_decode_coalesces_to_one_followup_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, _websocket, _client = await make_session(monkeypatch)
+    session, websocket, _client = await make_session(monkeypatch)
     client = BlockingClient()
     session.client = client  # type: ignore[assignment]
 
@@ -225,10 +225,20 @@ async def test_audio_during_decode_coalesces_to_one_followup_refresh(
     client.release.set()
     for _ in range(20):
         await asyncio.sleep(0)
-        if len(client.calls) == 2:
+        partials = [
+            event
+            for event in websocket.events
+            if event["type"] == "transcription.segment"
+        ]
+        if len(partials) == 2:
             break
 
     assert len(client.calls) == 2
+    # The first partial covers the audio its decode saw, not what arrived meanwhile.
+    assert [(event["audio_start_ms"], event["audio_end_ms"]) for event in partials] == [
+        (0, 2000),
+        (0, 4000),
+    ]
     await session.teardown()
 
 
@@ -370,6 +380,11 @@ async def test_hard_limit_finalizes_in_audio_order(
         if event["type"] == "transcription.segment" and event["is_final"]
     ]
     assert [event["segment_id"] for event in finals] == [0, 1, 2]
+    assert [(event["audio_start_ms"], event["audio_end_ms"]) for event in finals] == [
+        (0, 1000),
+        (1000, 2000),
+        (2000, 2250),
+    ]
     assert websocket.events[-1]["type"] == "transcription.completed"
     assert websocket.events[-1]["text"] == "text-1 text-2 text-3"
 
@@ -689,3 +704,37 @@ async def test_hard_cut_inside_trailing_silence_leaves_no_empty_segment(
         if event["type"] == "transcription.segment" and event["is_final"]
     ]
     assert committed == finals == [0]
+
+
+@pytest.mark.asyncio
+async def test_segment_opened_by_hard_cut_reports_the_cut_as_its_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket = vad_session(monkeypatch, max_segment_s=1.0)
+
+    # One utterance outlasts max_segment_s, so its second segment opens at
+    # the cut with no speech_started of its own.
+    audio = make_pcm(0.4, amplitude=0) + make_pcm(1.5) + make_pcm(0.8, amplitude=0)
+    packet_bytes = 1600 * 2
+    for start in range(0, len(audio), packet_bytes):
+        await session.dispatch(audio_event(audio[start : start + packet_bytes]))
+    await session.dispatch({"type": "transcription.done"})
+
+    starts = [
+        event
+        for event in websocket.events
+        if event["type"] == "input_audio_buffer.speech_started"
+    ]
+    assert [event["segment_id"] for event in starts] == [0]
+    speech_start_ms = starts[0]["audio_start_ms"]
+    finals = [
+        event
+        for event in websocket.events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    assert [(event["segment_id"], event["audio_start_ms"]) for event in finals] == [
+        (0, speech_start_ms),
+        (1, speech_start_ms + 1000),
+    ]
+    assert finals[0]["audio_end_ms"] == finals[1]["audio_start_ms"]
+    assert finals[1]["audio_end_ms"] > finals[1]["audio_start_ms"]

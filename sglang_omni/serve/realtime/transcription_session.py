@@ -120,6 +120,7 @@ class ActiveTranscriptionSegment:
 @dataclass(slots=True)
 class FinalDecode:
     segment: ActiveTranscriptionSegment
+    end_sample: int
     pcm: bytes
     audio: bytes
     done: asyncio.Future[None]
@@ -602,6 +603,7 @@ class RealtimeTranscriptionSession:
         self.pending_finals.append(
             FinalDecode(
                 segment=segment,
+                end_sample=end_sample,
                 pcm=pcm,
                 audio=self.audio_buffer.pcm_to_wav_bytes(pcm),
                 done=done,
@@ -660,10 +662,18 @@ class RealtimeTranscriptionSession:
                 final = self.pending_finals.popleft()
                 try:
                     if self.is_silent(final.pcm):
-                        await self.emit_hypothesis(final.segment, "", is_final=True)
+                        await self.emit_hypothesis(
+                            final.segment,
+                            "",
+                            end_sample=final.end_sample,
+                            is_final=True,
+                        )
                     else:
                         await self.decode_and_emit(
-                            final.segment, final.audio, is_final=True
+                            final.segment,
+                            final.audio,
+                            end_sample=final.end_sample,
+                            is_final=True,
                         )
                 finally:
                     if not final.done.done():
@@ -682,7 +692,7 @@ class RealtimeTranscriptionSession:
             else:
                 pass
             segment.next_refresh_sample = end_sample + self.refresh_interval_samples
-            pcm = self.audio_buffer.slice(segment.start_sample)
+            pcm = self.audio_buffer.slice(segment.start_sample, end_sample)
             if self.is_silent(pcm):
                 continue
             else:
@@ -690,6 +700,7 @@ class RealtimeTranscriptionSession:
             await self.decode_and_emit(
                 segment,
                 self.audio_buffer.pcm_to_wav_bytes(pcm),
+                end_sample=end_sample,
                 is_final=False,
             )
 
@@ -710,6 +721,7 @@ class RealtimeTranscriptionSession:
         segment: ActiveTranscriptionSegment,
         audio: bytes,
         *,
+        end_sample: int,
         is_final: bool,
     ) -> None:
         segment.decode_attempt += 1
@@ -746,19 +758,24 @@ class RealtimeTranscriptionSession:
             return
         else:
             pass
-        await self.emit_hypothesis(segment, text, is_final=is_final)
+        await self.emit_hypothesis(
+            segment, text, end_sample=end_sample, is_final=is_final
+        )
 
     async def emit_hypothesis(
         self,
         segment: ActiveTranscriptionSegment,
         text: str,
         *,
+        end_sample: int,
         is_final: bool,
     ) -> None:
         segment.last_text = text
         await self.send(
             TranscriptionSegment(
                 segment_id=segment.segment_id,
+                audio_start_ms=offsets_to_ms(segment.start_sample),
+                audio_end_ms=offsets_to_ms(end_sample),
                 text=text,
                 is_final=is_final,
             )
