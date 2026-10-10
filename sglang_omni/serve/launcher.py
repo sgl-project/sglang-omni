@@ -121,6 +121,18 @@ def find_available_port(host: str, port: int) -> int:
     return free_port
 
 
+def startup_timeout_s(pipeline_config: PipelineConfig) -> float:
+    """Seconds to wait for every stage to become ready.
+
+    SGLANG_OMNI_STARTUP_TIMEOUT overrides the pipeline's own budget.
+    """
+    raw = os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT")
+    if raw is None:
+        return float(pipeline_config.startup_timeout_s)
+    else:
+        return float(raw)
+
+
 def default_run_id() -> str:
     return time.strftime("run_%Y%m%d_%H%M%S")
 
@@ -421,8 +433,7 @@ async def run_server(
     port = find_available_port(host, port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
-    startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
-    await mp_runner.start(timeout=startup_timeout)
+    await mp_runner.start(timeout=startup_timeout_s(pipeline_config))
     coordinator = mp_runner.coordinator
 
     # Plans are resolved once inside ``mp_runner.start()`` (which applies

@@ -568,6 +568,8 @@ class PipelineConfig(BaseModel):
     realtime_deployment_factory: ClassVar[str | None] = None
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float | None] = None
+    # Pipelines that compile or autotune at startup raise this budget.
+    startup_timeout_s: ClassVar[float] = 600.0
     min_tail_s: ClassVar[float] = 0.5
     condition_on_previous_text: ClassVar[bool] = False
     max_speech_input_chars: ClassVar[int | None] = MAX_SPEECH_INPUT_CHARS
