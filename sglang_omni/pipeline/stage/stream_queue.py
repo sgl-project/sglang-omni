@@ -21,6 +21,40 @@ class StreamItem:
 
 
 @dataclass
+class StreamItemBatch:
+    """One row-batched stream transfer, delivered to a scheduler as-is.
+
+    ``request_ids[i]`` owns row ``rows[i]`` of ``data`` and carries
+    ``chunk_ids[i]``. ``rows`` skips rows the stage already dropped, so
+    ``data`` stays the sender's tensor without a gather.
+    """
+
+    request_ids: tuple[str, ...]
+    rows: tuple[int, ...]
+    chunk_ids: tuple[int, ...]
+    data: Any
+    from_stage: str
+    metadata: dict[str, Any] | None = None
+
+    def items(self) -> list[tuple[str, StreamItem]]:
+        """Per-request view of the batch."""
+        return [
+            (
+                request_id,
+                StreamItem(
+                    chunk_id=chunk_id,
+                    data=self.data[row],
+                    from_stage=self.from_stage,
+                    metadata=self.metadata,
+                ),
+            )
+            for request_id, row, chunk_id in zip(
+                self.request_ids, self.rows, self.chunk_ids
+            )
+        ]
+
+
+@dataclass
 class StreamSignal:
     """Non-data queue event such as per-source EOS or error."""
 

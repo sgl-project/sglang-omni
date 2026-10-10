@@ -28,7 +28,11 @@ from sglang_omni.comm.kv_transfer import KVPageTransfer
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
-from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
+from sglang_omni.pipeline.stage.stream_queue import (
+    StreamItem,
+    StreamItemBatch,
+    StreamQueue,
+)
 from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
@@ -52,7 +56,7 @@ from sglang_omni.proto import (
 )
 from sglang_omni.proto.session import find_session_operation
 from sglang_omni.relay.base import Relay
-from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -616,6 +620,86 @@ class Stage:
         )
         await self.route_stream_item_or_fail(request_id, item)
 
+    async def receive_local_stream_chunk_batch(
+        self,
+        request_ids: tuple[str, ...],
+        from_stage: str,
+        chunk_ids: tuple[int, ...],
+        data: Any,
+        metadata: dict[str, Any] | None = None,
+        replica_bindings: tuple[dict[str, int] | None, ...] | None = None,
+    ) -> None:
+        """Receive one colocated row batch: row ``i`` belongs to ``request_ids[i]``.
+
+        Schedulers that set ``accepts_stream_chunk_batch`` get it as a single
+        ``stream_chunk_batch`` message; every other scheduler sees the usual
+        per-request ``stream_chunk`` messages.
+        """
+        bindings = replica_bindings or (None,) * len(request_ids)
+        if not (len(request_ids) == len(chunk_ids) == len(bindings)) or not request_ids:
+            raise ValueError(
+                "local stream batch ids, chunk ids and bindings must align"
+            )
+        else:
+            pass
+        if not isinstance(data, torch.Tensor) or data.ndim < 1:
+            raise TypeError("local stream batch data must be a row-batched tensor")
+        elif data.shape[0] != len(request_ids):
+            raise ValueError(
+                f"local stream batch has {data.shape[0]} rows for "
+                f"{len(request_ids)} requests"
+            )
+        else:
+            pass
+        if not getattr(self.scheduler, "accepts_stream_chunk_batch", False):
+            for row, request_id in enumerate(request_ids):
+                await self.receive_local_stream_chunk(
+                    request_id,
+                    from_stage,
+                    chunk_ids[row],
+                    data[row],
+                    metadata,
+                    bindings[row],
+                )
+            return
+        else:
+            pass
+        source = self.logical_source(from_stage)
+        kept: list[tuple[str, int, int]] = []
+        for row, request_id in enumerate(request_ids):
+            if request_id in self.aborted:
+                continue
+            else:
+                pass
+            self.record_replica_bindings(request_id, bindings[row])
+            self.active_requests.add(request_id)
+            self.emit_stream_chunk_received(
+                request_id=request_id, from_stage=from_stage, chunk_id=chunk_ids[row]
+            )
+            if self.open_pre_payload_stream_if_allowed(request_id):
+                kept.append((request_id, row, chunk_ids[row]))
+            else:
+                await self.reject_pre_payload_stream_chunk(request_id, source)
+        if not kept:
+            return
+        else:
+            pass
+        kept_ids, kept_rows, kept_chunk_ids = zip(*kept)
+        self.scheduler.inbox.put(
+            IncomingMessage(
+                request_id=kept_ids[0],
+                type="stream_chunk_batch",
+                data=StreamItemBatch(
+                    request_ids=kept_ids,
+                    rows=kept_rows,
+                    chunk_ids=kept_chunk_ids,
+                    data=data,
+                    from_stage=source,
+                    metadata=metadata,
+                ),
+            )
+        )
+
     async def receive_local_stream_signal(
         self,
         request_id: str,
@@ -841,12 +925,17 @@ class Stage:
             return
         else:
             pass
+        await self.reject_pre_payload_stream_chunk(request_id, item.from_stage)
+
+    async def reject_pre_payload_stream_chunk(
+        self, request_id: str, from_stage: str
+    ) -> None:
         with suppress(Exception):
             self.scheduler.abort(request_id)
         await self.send_failure(
             request_id,
             (
-                f"Stage {self.name}: stream chunk from {item.from_stage!r} arrived "
+                f"Stage {self.name}: stream chunk from {from_stage!r} arrived "
                 "before the request payload, but this stage is not configured to "
                 "accept pre-payload stream data"
             ),
@@ -1255,6 +1344,8 @@ class Stage:
                         self.launch_kv_transfer(out.data)
                     else:
                         self.discard_kv_transfer(out.data)
+                elif out.type == "stream" and out.request_ids:
+                    await self.route_stream_batch(out)
                 elif out.request_id in self.active_requests:
                     if out.type == "result":
                         await self.route_result(out.request_id, out.data)
@@ -1783,6 +1874,124 @@ class Stage:
 
     def record_nonlocal_stream_target(self, request_id: str, target: str) -> None:
         self.nonlocal_stream_targets.setdefault(request_id, set()).add(target)
+
+    async def route_stream_batch(self, out: OutgoingMessage) -> None:
+        """Route a row-batched stream message, dropping rows of inactive requests."""
+        rows = [
+            row
+            for row, request_id in enumerate(out.request_ids)
+            if request_id in self.active_requests
+        ]
+        if not rows:
+            return
+        else:
+            pass
+        request_ids = tuple(out.request_ids[row] for row in rows)
+        data = out.data if len(rows) == len(out.request_ids) else out.data[rows]
+        if out.target is not None:
+            await self.send_stream_batch_to_target(
+                request_ids, data, out.target, out.metadata
+            )
+        elif self.stream_targets:
+            await asyncio.gather(
+                *(
+                    self.send_stream_batch_to_target(
+                        request_ids, data, target, out.metadata
+                    )
+                    for target in self.stream_targets
+                )
+            )
+        else:
+            for row, request_id in enumerate(request_ids):
+                await self.send_stream_to_coordinator(
+                    request_id, data[row], out.metadata
+                )
+
+    async def send_stream_batch_to_target(
+        self,
+        request_ids: tuple[str, ...],
+        data: Any,
+        target: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Send one tensor for several requests on a colocated stream edge.
+
+        Rows that resolve to different instances, or to a target in another
+        process, keep the per-request path and its ordering contracts.
+        """
+        if not self.owns_external_io:
+            return
+        else:
+            pass
+        if not isinstance(data, torch.Tensor) or data.shape[0] != len(request_ids):
+            raise ValueError(
+                "a batched stream message needs one tensor row per request"
+            )
+        else:
+            pass
+        resolved = {
+            self.resolve_target_instance(request_id, target)
+            for request_id in request_ids
+        }
+        instance = next(iter(resolved))
+        if len(resolved) == 1 and instance not in self.endpoints:
+            raise RuntimeError(
+                f"Stage {self.name}: no endpoint configured for stream target "
+                f"{instance!r}"
+            )
+        elif len(resolved) != 1 or instance not in self.same_process_targets:
+            for row, request_id in enumerate(request_ids):
+                await self.send_stream_to_target(
+                    request_id, data[row], target, metadata
+                )
+            return
+        elif self.local_dispatcher is None:
+            raise RuntimeError(
+                f"Stage {self.name}: same-process stream target {instance!r} "
+                "requires a local dispatcher"
+            )
+        else:
+            pass
+        modality = metadata.get("modality") if isinstance(metadata, dict) else None
+        chunk_ids = []
+        for request_id in request_ids:
+            key = (request_id, instance)
+            chunk_id = self.stream_chunk_counters.get(key, 0)
+            self.stream_chunk_counters[key] = chunk_id + 1
+            chunk_ids.append(chunk_id)
+            if request_id not in self.first_stream_chunk_seen:
+                self.first_stream_chunk_seen.add(request_id)
+                _emit_event(
+                    request_id=request_id,
+                    stage=self.name,
+                    event_name="stage_first_stream_chunk_sent",
+                    metadata={"to_stage": instance, "modality": modality},
+                )
+            else:
+                pass
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_stream_chunk_sent",
+                metadata={
+                    "to_stage": instance,
+                    "chunk_id": chunk_id,
+                    "modality": modality,
+                    "transport": "local_object_batch",
+                },
+            )
+            self.record_local_stream_target(request_id, instance)
+        await self.local_dispatcher.send_stream_chunk_batch(
+            from_stage=self.name,
+            to_stage=instance,
+            request_ids=request_ids,
+            chunk_ids=tuple(chunk_ids),
+            data=data,
+            metadata=metadata,
+            replica_bindings=tuple(
+                self.replica_bindings.get(request_id) for request_id in request_ids
+            ),
+        )
 
     async def send_stream_to_target(
         self,

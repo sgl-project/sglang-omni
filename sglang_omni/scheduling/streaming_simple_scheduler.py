@@ -42,6 +42,8 @@ class StreamingSimpleScheduler:
     can_batch_stream_chunks: bool = False
     stream_chunk_batch_max: int | None = None
     stream_chunk_batch_distinct_requests: bool = False
+    # Opt in to whole ``stream_chunk_batch`` messages from colocated senders.
+    accepts_stream_chunk_batch: bool = False
 
     def __init__(
         self,
@@ -153,7 +155,7 @@ class StreamingSimpleScheduler:
                         continue
                     else:
                         pass
-                if self.is_aborted(msg.request_id):
+                if self.message_aborted(msg):
                     continue
                 else:
                     pass
@@ -165,8 +167,9 @@ class StreamingSimpleScheduler:
                         self.__class__.__name__,
                         msg.request_id,
                     )
-                    self.emit_error(msg.request_id, exc)
-                    self.abort(msg.request_id)
+                    for request_id in self.message_request_ids(msg):
+                        self.emit_error(request_id, exc)
+                        self.abort(request_id)
         finally:
             loop.close()
 
@@ -197,6 +200,11 @@ class StreamingSimpleScheduler:
             return
         else:
             pass
+        if msg.type == "stream_chunk_batch":
+            self.handle_stream_chunk_batch(self.collect_stream_chunk_batch(msg))
+            return
+        else:
+            pass
         if msg.type == "stream_done":
             self.handle_stream_done(msg.request_id)
             return
@@ -215,6 +223,25 @@ class StreamingSimpleScheduler:
             return self.pending_messages.popleft()
         else:
             return self.inbox.get(timeout=timeout)
+
+    def message_request_ids(self, msg: IncomingMessage) -> tuple[str, ...]:
+        if msg.type == "stream_chunk_batch":
+            return msg.data.request_ids
+        else:
+            return (msg.request_id,)
+
+    def message_aborted(self, msg: IncomingMessage) -> bool:
+        """Batches are never dropped whole; their rows are filtered one by one."""
+        if msg.type == "stream_chunk_batch":
+            return False
+        else:
+            return self.is_aborted(msg.request_id)
+
+    def stream_message_items(self, msg: IncomingMessage) -> list[tuple[str, Any]]:
+        if msg.type == "stream_chunk_batch":
+            return msg.data.items()
+        else:
+            return [(msg.request_id, msg.data)]
 
     def record_aborted_request_id(self, request_id: str) -> None:
         with self.abort_lock:
@@ -314,7 +341,7 @@ class StreamingSimpleScheduler:
                 except queue_mod.Empty:
                     break
 
-            if self.is_aborted(msg.request_id):
+            if self.message_aborted(msg):
                 continue
             else:
                 pass
@@ -371,38 +398,43 @@ class StreamingSimpleScheduler:
         """Front-pushback of the first non-chunk message preserves arrival order; no blocking
         wait, so only already-queued chunks coalesce."""
         batch = [first_msg]
+        first_ids = self.message_request_ids(first_msg)
         seen_request_ids = (
-            {first_msg.request_id}
-            if self.stream_chunk_batch_distinct_requests
-            else None
+            set(first_ids) if self.stream_chunk_batch_distinct_requests else None
         )
+        rows = len(first_ids)
         cap = self.stream_chunk_batch_max or max(self.max_batch_size, 1)
         if cap <= 1:
             return batch
         else:
             pass
-        while len(batch) < cap:
+        while rows < cap:
             try:
                 msg = self.get_batch_message()
             except queue_mod.Empty:
                 break
-            if msg.type != "stream_chunk":
+            if msg.type not in ("stream_chunk", "stream_chunk_batch"):
                 self.pending_messages.appendleft(msg)
                 break
             else:
                 pass
-            if self.is_aborted(msg.request_id):
+            if self.message_aborted(msg):
                 continue
             else:
                 pass
-            if seen_request_ids is not None and msg.request_id in seen_request_ids:
+            msg_ids = self.message_request_ids(msg)
+            if rows + len(msg_ids) > cap or (
+                seen_request_ids is not None
+                and not seen_request_ids.isdisjoint(msg_ids)
+            ):
                 self.pending_messages.appendleft(msg)
                 break
             else:
                 pass
             batch.append(msg)
+            rows += len(msg_ids)
             if seen_request_ids is not None:
-                seen_request_ids.add(msg.request_id)
+                seen_request_ids.update(msg_ids)
             else:
                 pass
         return batch
@@ -591,18 +623,20 @@ class StreamingSimpleScheduler:
 
     def handle_stream_chunk_batch(self, batch: list[IncomingMessage]) -> None:
         items: list[tuple[str, StreamItem]] = []
-        for msg in batch:
-            if self.is_aborted(msg.request_id):
+        for request_id, data in (
+            pair for msg in batch for pair in self.stream_message_items(msg)
+        ):
+            if self.is_aborted(request_id):
                 continue
             else:
                 pass
             try:
-                item = self.validate_stream_chunk_item(msg.request_id, msg.data)
+                item = self.validate_stream_chunk_item(request_id, data)
             except Exception as exc:
-                self.emit_error(msg.request_id, exc)
-                self.abort(msg.request_id)
+                self.emit_error(request_id, exc)
+                self.abort(request_id)
                 continue
-            items.append((msg.request_id, item))
+            items.append((request_id, item))
         items = [
             (request_id, item)
             for request_id, item in items

@@ -70,6 +70,28 @@ class LocalStageDispatcher:
             replica_bindings,
         )
 
+    async def send_stream_chunk_batch(
+        self,
+        *,
+        from_stage: str,
+        to_stage: str,
+        request_ids: tuple[str, ...],
+        chunk_ids: tuple[int, ...],
+        data: Any,
+        metadata: dict[str, Any] | None = None,
+        replica_bindings: tuple[dict[str, int] | None, ...] | None = None,
+    ) -> None:
+        """Dispatch one row-batched stream tensor to a colocated stage."""
+        target = self.get_stage(from_stage, to_stage)
+        await target.receive_local_stream_chunk_batch(
+            request_ids,
+            from_stage,
+            chunk_ids,
+            data,
+            metadata,
+            replica_bindings,
+        )
+
     async def send_stream_signal(
         self,
         *,

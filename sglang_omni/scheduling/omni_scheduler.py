@@ -1902,12 +1902,18 @@ class OmniScheduler:
             return
         else:
             pass
-        for sched_req in sched_output.requests:
+        eligible = [
+            sched_req
+            for sched_req in sched_output.requests
+            if sched_req.request_id not in skip_rids
+            and sched_req.request_id not in self.aborted_request_ids
+        ]
+        if self.emit_stream_batch(eligible, mr_output):
+            return
+        else:
+            pass
+        for sched_req in eligible:
             rid = sched_req.request_id
-            if rid in skip_rids or rid in self.aborted_request_ids:
-                continue
-            else:
-                pass
             req_output = mr_output.outputs[rid]
             session_unit = self.active_session_unit(rid)
             if session_unit is not None:
@@ -1918,6 +1924,52 @@ class OmniScheduler:
             else:
                 continue
             self.put_stream_messages(rid, messages)
+
+    def emit_stream_batch(self, eligible: list, mr_output) -> bool:
+        """Emit the step through ``stream_output_builder.build_batch``.
+
+        ``build_batch`` takes ``(request_id, data, req_output)`` entries and
+        returns row-batched messages, or None to fall back to per-request
+        emission. Session-bridged requests always take the per-request path.
+        Returns whether the step was emitted here.
+        """
+        build_batch = getattr(self.stream_output_builder, "build_batch", None)
+        if build_batch is None or not eligible:
+            return False
+        elif any(
+            self.active_session_unit(sched_req.request_id) is not None
+            for sched_req in eligible
+        ):
+            return False
+        else:
+            pass
+        messages = build_batch(
+            [
+                (
+                    sched_req.request_id,
+                    sched_req.data,
+                    mr_output.outputs[sched_req.request_id],
+                )
+                for sched_req in eligible
+            ]
+        )
+        if messages is None:
+            return False
+        else:
+            pass
+        for msg in messages:
+            for request_id in msg.request_ids or (msg.request_id,):
+                if request_id not in self.first_emit_done:
+                    self.first_emit_done.add(request_id)
+                    _emit_event(
+                        request_id=request_id,
+                        stage=None,
+                        event_name="scheduler_first_emit",
+                    )
+                else:
+                    pass
+            self.outbox.put(msg)
+        return True
 
     def put_stream_messages(self, request_id: str, messages: Any) -> None:
         emitted_any = False
