@@ -105,6 +105,10 @@ audar-tts = [
     "neucodec==0.0.6",
     "torchao==0.13.0",  # NeuCodec's torchtune imports the removed torchao.dtypes.nf4tensor.
 ]
+irodori-tts = [
+    "dacvae @ git+https://github.com/facebookresearch/dacvae.git@414c20785fc3a28373073ea8ef7a1316eeeaca6e",
+    "descript-audiotools==0.7.2",
+]
 fun-cosyvoice3 = [
     "conformer==0.3.2",
     "HyperPyYAML==1.2.3",

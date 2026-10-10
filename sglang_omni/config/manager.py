@@ -12,6 +12,7 @@ from sglang_omni.utils import (
     architecture_from_hf_config,
     try_resolve_arch_from_auk_layout,
     try_resolve_arch_from_cosyvoice3_layout,
+    try_resolve_arch_from_irodori_layout,
     try_resolve_arch_from_mistral_config,
     try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_personaplex_layout,
@@ -56,6 +57,10 @@ def resolve_config_cls_for_model_path(model_path: str):
         pass
     if arch is None:
         arch = try_resolve_arch_from_auk_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_irodori_layout(repo_id)
     else:
         pass
     if arch is None:

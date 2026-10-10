@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
+from safetensors import safe_open
 from transformers import AutoConfig, PretrainedConfig
 
 try:
@@ -39,6 +40,9 @@ _AUK_MODEL_NAMES = frozenset({"auk", "auk-flash"})
 _AUK_WEIGHT_MARKERS = ("auk_base.safetensors", "auk_flash.safetensors")
 _PERSONAPLEX_ARCHITECTURE = "PersonaPlexForCausalLM"
 _PERSONAPLEX_LAYOUT_MARKER = "tokenizer_spm_32k_3.model"
+IRODORI_ARCHITECTURE = "IrodoriTTSForConditionalGeneration"
+IRODORI_MODEL_CONFIG_METADATA_KEY = "config_json"
+IRODORI_TEXT_CONFIG_METADATA_KEY = "text_encoder_config_json"
 
 
 def architecture_from_hf_config(hf_config: PretrainedConfig) -> str | None:
@@ -306,6 +310,50 @@ def try_resolve_arch_from_auk_layout(
             return architecture
         else:
             pass
+    return None
+
+
+def try_resolve_arch_from_irodori_layout(model_path: str) -> str | None:
+    """Resolve Irodori v4 from its local safetensors metadata."""
+    checkpoint = Path(model_path).expanduser()
+    if checkpoint.is_dir():
+        checkpoint = checkpoint / "model.safetensors"
+    else:
+        pass
+    if not checkpoint.is_file() or checkpoint.name != "model.safetensors":
+        return None
+    else:
+        pass
+
+    with safe_open(str(checkpoint), framework="pt", device="cpu") as handle:
+        metadata = handle.metadata() or {}
+    model_config_json = metadata.get(IRODORI_MODEL_CONFIG_METADATA_KEY)
+    text_config_json = metadata.get(IRODORI_TEXT_CONFIG_METADATA_KEY)
+    if model_config_json is None or text_config_json is None:
+        return None
+    else:
+        pass
+    try:
+        model_config = json.loads(model_config_json)
+        text_config = json.loads(text_config_json)
+    except json.JSONDecodeError:
+        return None
+    else:
+        pass
+    if not isinstance(model_config, dict) or not isinstance(text_config, dict):
+        return None
+    else:
+        pass
+    is_irodori_v4 = (
+        model_config.get("text_encoder_type") == "pretrained"
+        and model_config.get("use_duration_predictor") is True
+        and model_config.get("latent_dim") == 32
+        and text_config.get("model_type") == "modernbert"
+    )
+    if is_irodori_v4:
+        return IRODORI_ARCHITECTURE
+    else:
+        pass
     return None
 
 

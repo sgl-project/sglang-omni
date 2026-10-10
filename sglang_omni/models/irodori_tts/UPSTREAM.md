@@ -1,0 +1,1 @@
+The Irodori model core is based on Aratako/Irodori-TTS commit 89f9d8fbd4d51ea019867ee1197725ede1df13c5 (2026-09-12) and is distributed under the MIT License. SGLang Omni integrates the model-specific modules with its checkpoint loading, request batching, pipeline stages, and codec dispatch. See LICENSE for the full license text.
