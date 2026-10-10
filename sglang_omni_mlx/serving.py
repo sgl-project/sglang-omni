@@ -51,13 +51,15 @@ def bad_request(message: str) -> JSONResponse:
     return JSONResponse({"detail": message}, status_code=400)
 
 
-async def uploaded_samples(form: FormData) -> np.ndarray:
+async def uploaded_samples(
+    form: FormData, decoder: Callable[[bytes], np.ndarray] = decode_wav
+) -> np.ndarray:
     upload = form.get("file")
     if upload is None or isinstance(upload, str):
         raise ValueError("file is required")
     else:
         pass
-    return decode_wav(await upload.read())
+    return decoder(await upload.read())
 
 
 def info_routes(worker: Worker[OptionsT, ResultT], model_name: str) -> list[Route]:

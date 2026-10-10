@@ -180,9 +180,20 @@ def greedy_tokens(
     embeddings: mx.array,
     caches: list[KVCache],
     cancel: CancelCheck,
+    prefill_chunk_size: int | None = None,
 ) -> Iterator[int]:
     """Greedy token ids after the prompt embeddings, until the caller stops reading."""
-    next_token = mx.argmax(decoder(embeddings, caches))
+    chunk_size = prefill_chunk_size or embeddings.shape[1]
+    logits = None
+    for start in range(0, embeddings.shape[1], chunk_size):
+        end = start + chunk_size
+        logits = decoder(embeddings[:, start:end], caches)
+        if end < embeddings.shape[1]:
+            mx.eval(logits)
+        else:
+            pass
+    assert logits is not None
+    next_token = mx.argmax(logits)
     mx.async_eval(next_token)
     while True:
         if cancel.is_set():
