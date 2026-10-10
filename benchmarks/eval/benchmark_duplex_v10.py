@@ -7,11 +7,24 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import time
 from pathlib import Path
+
+from openai import OpenAI
 
 from benchmarks.duplex import v10_dataset
 from benchmarks.duplex.artifacts import add_server_identity_args, server_identity
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
+from benchmarks.duplex.reference_core import V10_REFERENCE_FILES
+from benchmarks.duplex.reference_source import verify_reference
+from benchmarks.duplex.reference_v10 import (
+    JudgeLedger,
+    evaluate,
+    export,
+    exported_subsets,
+    transcribe,
+)
 from benchmarks.duplex.run_artifacts import TIMELINES, accounting, load_run
 from benchmarks.duplex.v10_evaluation import RUN_KIND, score_run
 from benchmarks.duplex.v15_runner import run_samples
@@ -77,6 +90,55 @@ def score(args: argparse.Namespace) -> int:
     return 0
 
 
+def reference_export(args: argparse.Namespace) -> int:
+    manifest = export(args.run, args.dataset_root, args.out)
+    print(json.dumps(manifest["counts"], indent=2))
+    return 0
+
+
+def reference_asr(args: argparse.Namespace) -> int:
+    paths = verify_reference(args.reference_source, V10_REFERENCE_FILES)
+    counts = transcribe(args.tree, paths, args.nemo, args.nemo_sha256, args.device)
+    print(json.dumps(counts, indent=2))
+    return 0
+
+
+def reference_evaluate(args: argparse.Namespace) -> int:
+    paths = verify_reference(args.reference_source, V10_REFERENCE_FILES)
+    subsets = (
+        [subset for subset in v10_dataset.SUBSETS if subset in args.subset]
+        if args.subset
+        else exported_subsets(args.tree)
+    )
+    if any(
+        v10_dataset.SUBSET_TASKS[subset] == "user_interruption" for subset in subsets
+    ):
+        api_key = os.environ.get(args.api_key_env)
+        if not api_key:
+            raise SystemExit(
+                f"interruption relevance needs an API key in ${args.api_key_env}"
+            )
+        else:
+            pass
+        timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        judge = JudgeLedger(
+            OpenAI(api_key=api_key, base_url=args.base_url),
+            args.tree / "judge" / f"user-interruption-{timestamp}.jsonl",
+            args.base_url,
+            args.served_model,
+        )
+    else:
+        judge = None
+    summary = evaluate(args.tree, paths, subsets, judge)
+    print(
+        json.dumps(
+            {subset: summary["subsets"][subset]["result"] for subset in subsets},
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -135,7 +197,58 @@ def main(argv: list[str] | None = None) -> int:
     )
     score_parser.set_defaults(handler=score)
 
+    export_parser = commands.add_parser(
+        "reference-export",
+        help="Fixed-window output.wav plus annotations in the reference layout",
+    )
+    export_parser.add_argument("--run", type=Path, action="append", required=True)
+    export_parser.add_argument("--dataset-root", type=Path, required=True)
+    export_parser.add_argument(
+        "--out", type=Path, required=True, help="New reference tree directory"
+    )
+    export_parser.set_defaults(handler=reference_export)
+
+    reference = argparse.ArgumentParser(add_help=False)
+    reference.add_argument("--tree", type=Path, required=True)
+    reference.add_argument("--reference-source", type=Path, required=True)
+
+    asr_parser = commands.add_parser(
+        "reference-asr", parents=[reference], help="Reference Parakeet transcripts"
+    )
+    asr_parser.add_argument(
+        "--nemo", type=Path, required=True, help="Local parakeet-tdt-0.6b-v2.nemo"
+    )
+    asr_parser.add_argument("--nemo-sha256")
+    asr_parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    asr_parser.set_defaults(handler=reference_asr)
+
+    evaluate_parser = commands.add_parser(
+        "reference-evaluate",
+        parents=[reference],
+        help="Reference evaluation per subset into summary.json",
+    )
+    evaluate_parser.add_argument(
+        "--subset",
+        action="append",
+        choices=v10_dataset.SUBSETS,
+        help="Repeatable. Default: every exported subset",
+    )
+    evaluate_parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    evaluate_parser.add_argument(
+        "--base-url", help="Self-hosted OpenAI-compatible judge; non-official"
+    )
+    evaluate_parser.add_argument(
+        "--served-model", help="Model name sent to --base-url in place of gpt-4-turbo"
+    )
+    evaluate_parser.set_defaults(handler=reference_evaluate)
+
     args = parser.parse_args(argv)
+    if args.command == "reference-evaluate" and (args.base_url is None) != (
+        args.served_model is None
+    ):
+        parser.error("--base-url and --served-model go together")
+    else:
+        pass
     logging.basicConfig(level=logging.INFO)
     return args.handler(args)
 

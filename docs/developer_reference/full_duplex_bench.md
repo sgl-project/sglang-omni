@@ -4,6 +4,8 @@ This page runs [Full-Duplex-Bench](https://github.com/DanielLin94144/Full-Duplex
 
 Every step is a subcommand of `python -m benchmarks.duplex.fdb_v15`; the code lives in `benchmarks/duplex/fdb_v15/`.
 
+Full-Duplex-Bench v1.0 is scored separately; see [Full-Duplex-Bench v1.0](#full-duplex-bench-v10).
+
 ## What is Measured
 
 v1.5 has 498 sample pairs in four categories: `user_interruption` (200), `user_backchannel` (98), `talking_to_other` (100) and `background_speech` (100). Each pair contains two input audio files with the same initial user query. `input.wav` also includes a later speech event intended to overlap with the model's answer: an interruption, a backchannel, speech directed at someone else, or background speech. `clean_input.wav` contains the initial query without that later event. Each file is streamed in a separate session, and the model's output audio is recorded separately.
@@ -365,3 +367,43 @@ python -m benchmarks.duplex.fdb_v15 aggregate --run-name minicpmo-30-t2
 `generate` prints `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), judge config /data/chenyang/fdb/judge/port-30010` when `FDB_WORK` is `/data/chenyang/fdb`. `aggregate` writes `$FDB_WORK/runs/minicpmo-30-t2/RESULTS.md`.
 
 A third terminal is the same block with `export CUDA_VISIBLE_DEVICES=2`, `--run-name minicpmo-30-t3`, model port 8117 and judge port 30020. Do not point two terminals at the same `--run-name`.
+
+## Full-Duplex-Bench v1.0
+
+v1.0 tests turn taking while the user is speaking: when the model should take the turn and when it should hold it. v1.5, above, plays overlapping speech while the model is speaking. v1.0 has 727 samples in five subsets, one session each:
+
+| Subset | Samples | Task | Data | Reported numbers |
+|---|---:|---|---|---|
+| `synthetic_pause_handling` | 137 | Pause handling | Synthetic | Takeover rate (lower is better) |
+| `candor_pause_handling` | 216 | Pause handling | Candor | Takeover rate (lower is better) |
+| `candor_turn_taking` | 119 | Smooth turn-taking | Candor | Takeover rate (higher), latency (lower) |
+| `synthetic_user_interruption` | 200 | User interruption | Synthetic | Takeover rate (higher), latency (lower), relevance 0-5 (higher) |
+| `icc_backchannel` | 55 | Backchannel | ICC | Takeover rate (lower), frequency, timing JSD to human backchannels (lower) |
+
+The reference path is the primary result. It runs the pinned Full-Duplex-Bench `get_transcript/asr.py` and `evaluation/evaluate.py` unchanged (revision `3e799c4`, SHA-256 checked) on the native recordings. Call these numbers pinned-reference scoring under the SGLang-Omni capture protocol: capture, VAD and judge versions can differ from the paper, so they are not directly comparable to published rows.
+
+```bash
+OUT=results/fdb10
+python -m benchmarks.eval.benchmark_duplex_v10 record \
+    --profile nemotron-voicechat-pr2188 \
+    --dataset-root "$FDB10_DATASET" --dataset-revision "$FDB10_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --server-revision "$(git rev-parse HEAD)" --output "$OUT/recording"
+python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
+    --run "$OUT/recording" --dataset-root "$FDB10_DATASET" --out "$OUT/reference"
+python -m benchmarks.eval.benchmark_duplex_v10 reference-asr \
+    --tree "$OUT/reference" --reference-source "$FDB_SOURCE" \
+    --nemo "$PARAKEET_NEMO" --nemo-sha256 "$PARAKEET_SHA256" --device cuda
+python -m benchmarks.eval.benchmark_duplex_v10 reference-evaluate \
+    --tree "$OUT/reference" --reference-source "$FDB_SOURCE"
+```
+
+- `reference-export` writes `<subset>/<id>/output.wav` (mono 16 kHz PCM16 over `[0, T]`, the same observation window as v1.5) and the sample's dataset annotation into a new directory, with `manifest.json` at the top. Repeat `--run` for shards; a later run may replace an incomplete capture, and a sample captured completely twice is an error. Ineligible sessions get no sample folder and stay in `manifest.json` with their reasons.
+- `reference-asr` transcribes every sample with the local Parakeet checkpoint (CUDA graph decoding off). For user interruption it cuts the audio at the end of the interruption and shifts the word times back, so the transcript holds only the response. It writes `output.json` per sample and the receipt `asr.json`, and refuses to run twice on one tree.
+- `reference-evaluate` runs `evaluate.py` for each subset with the current interpreter and saves the printed `[Result]` numbers, the selected and evaluated counts and the log path per subset in `summary.json`. Synthetic and Candor pause handling are separate rows and are never pooled. `--subset` evaluates only the named subsets; the others can be added later, and repeating a subset needs a new export. The scoring venv also needs `python-dotenv` (imported by `evaluate.py`) and `torchcodec`, so that torchaudio 2.11 can read WAV files for backchannel.
+
+**Interruption relevance.** The pinned evaluator requests `gpt-4-turbo` with seed 0 for every interruption the model takes over, although the benchmark README labels this column GPT-4o. It needs a key in `OPENAI_API_KEY` (or `--api-key-env`); without one, evaluate the other subsets with `--subset`. `--base-url URL --served-model NAME` sends the identical requests to a self-hosted OpenAI-compatible judge, and `summary.json` then marks relevance `"official": false`. Every exchange is appended to `judge/user-interruption-<UTC time>.jsonl`.
+
+**Retry bug in the pinned evaluator.** When a rating does not parse, it resends the identical request without limit, and it has already appended that sample's takeover, so each retry counts the sample again in the takeover rate. Each parsed rating is also appended twice, which leaves the mean unchanged. The client stops after three identical requests, which fails the run, and `summary.json` reports `retries`. A nonzero value means the interruption takeover rate is inflated.
+
+**Diagnostic score.** `transcribe` and `score` (`fdb-v10-synthetic-v4`) remain as a diagnostic, not the headline. It windows words to the input, uses its own backchannel classifier and adds gates the reference evaluator does not have: turn-taking samples where the model already speaks at the turn end, interruptions where the model was silent at the onset (`not_exercised`), and interruptions it talks straight through. Report its gate counts next to the reference numbers, never in their place.
