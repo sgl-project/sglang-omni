@@ -708,7 +708,7 @@ class InitWeightsUpdateGroupRequest(AdminRequestBase):
     world_size: int
     rank_offset: int = 0
     group_name: str = "weight_update_group"
-    backend: str = "nccl"
+    backend: str | None = Field(default=None, pattern=r"\S")
 
 
 class DestroyWeightsUpdateGroupRequest(AdminRequestBase):

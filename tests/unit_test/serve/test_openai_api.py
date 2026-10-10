@@ -4089,6 +4089,26 @@ def test_unimplemented_tensor_weight_update_returns_501() -> None:
     assert "update_weights_from_disk" in resp.json()["error"]["message"]
 
 
+@pytest.mark.parametrize("backend", ["", " ", "\t\n"])
+def test_init_weights_update_group_rejects_a_blank_backend(backend: str) -> None:
+    """A blank backend is a trainer misconfiguration, not a request for the default."""
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    response = client.post(
+        "/init_weights_update_group",
+        json={
+            "master_address": "10.0.0.1",
+            "master_port": 12355,
+            "world_size": 2,
+            "backend": backend,
+        },
+    )
+
+    assert response.status_code == 422
+    assert admin.calls == []
+
+
 def test_distributed_weight_update_routes_forward_to_client() -> None:
     admin = AdminClient()
     client = TestClient(create_app(admin, model_name="qwen3-omni"))
@@ -4136,7 +4156,6 @@ def test_distributed_weight_update_routes_forward_to_client() -> None:
                 "world_size": 2,
                 "rank_offset": 1,
                 "group_name": "weight_update_group",
-                "backend": "nccl",
             },
             ["talker"],
             0,

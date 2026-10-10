@@ -526,13 +526,18 @@ class ModelWorker:
             world_size_int = int(world_size)
         except (TypeError, ValueError):
             return False, "master_port, rank_offset and world_size must be integers"
+        backend = payload.get("backend")
         success, message = init(
             master_address,
             master_port_int,
             rank_offset_int,
             world_size_int,
             payload.get("group_name") or "weight_update_group",
-            backend=payload.get("backend") or "nccl",
+            backend=(
+                current_platform.get_torch_distributed_backend_str()
+                if backend is None
+                else backend
+            ),
         )
         return bool(success), str(message)
 
