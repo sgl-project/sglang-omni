@@ -467,6 +467,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
 
+Sampling is repetition-aware, as in upstream CosyVoice: a sampled speech token that already appears among the last 10 generated tokens is masked and redrawn once from the full distribution at the request temperature, so a run of one repeated token cannot crowd out the stop token. Greedy requests (`top_k = 1`) and RL on-policy rollouts sample without the redraw.
+
 ## Benchmarking
 
 Measure causal streaming with Seed-TTS-Eval against a running server:

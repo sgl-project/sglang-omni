@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.sampler import SGLANG_RETURN_ORIGINAL_LOGPROB
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -32,6 +33,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     prompt_token_len,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.sampling.repetition_aware import repetition_aware_redraw
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
@@ -232,6 +234,65 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 next_token_logprobs,
                 next_token_ids,
                 requests,
+            )
+        else:
+            pass
+        return next_token_ids
+
+    def process_sampled_token_ids(
+        self,
+        logits_output: LogitsProcessorOutput,
+        forward_batch: ForwardBatch,
+        next_token_ids: torch.Tensor,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor:
+        """Redraw a sampled speech token that repeats within the recent window.
+
+        The redraw masks the candidate and samples the full distribution at the
+        request temperature, so EOS stays reachable after top-k/top-p collapses
+        onto the repeated token.
+        """
+        sampling_info = forward_batch.sampling_info
+        sampler = self.tp_worker.model_runner.sampler
+        # note (Yucheng Hu): an RL on-policy rollout must sample the trainer's
+        # distribution, and that sampler and the Ascend one leave raw logits behind.
+        if (
+            sampling_info.is_all_greedy
+            or not forward_batch.forward_mode.is_decode()
+            or sampler.rl_on_policy_target is not None
+            or sampler.use_ascend_backend
+        ):
+            return next_token_ids
+        else:
+            pass
+        # note (Yucheng Hu): the pytorch sampler softmaxes next_token_logits in place
+        # and applies top-k/top-p to a sorted copy.
+        probs = logits_output.next_token_logits
+        next_token_ids, is_repeated = repetition_aware_redraw(
+            probs,
+            next_token_ids,
+            [request.data.req.output_ids for request in requests],
+            _COSYVOICE3_RAS_WINDOW_SIZE,
+            (next_token_ids < VOCAB_SIZE) & (sampling_info.top_ks != 1),
+            sampling_info.sampling_seed,
+            forward_batch.positions,
+        )
+        if logits_output.next_token_logprobs is not None:
+            emitted_logprobs = torch.log(
+                probs.gather(1, next_token_ids.long().unsqueeze(1)).squeeze(1)
+            )
+            if SGLANG_RETURN_ORIGINAL_LOGPROB:
+                # note (Yucheng Hu): that mode reports logprobs before temperature;
+                # T * log(probs) differs from those logits by a per-row constant.
+                temperatures = sampling_info.temperatures.reshape(-1)
+                scaled_logprobs = torch.log(probs) * temperatures.unsqueeze(1)
+                emitted_logprobs = emitted_logprobs * temperatures - torch.logsumexp(
+                    scaled_logprobs, dim=1
+                )
+            else:
+                pass
+            logits_output.next_token_logprobs = torch.where(
+                is_repeated, emitted_logprobs, logits_output.next_token_logprobs
             )
         else:
             pass
