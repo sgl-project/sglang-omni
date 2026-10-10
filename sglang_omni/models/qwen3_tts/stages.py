@@ -336,7 +336,7 @@ def create_vocoder_executor(
     fused_snake_activation: bool = True,
     enable_stateful_codec_decoder: bool = True,
     codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
-    reference_codec_cache_size: int = 0,
+    reference_codec_cache_size: int = 16,
     incremental_codec_cuda_graph: bool | None = None,
     incremental_codec_compile: bool | None = None,
     incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,

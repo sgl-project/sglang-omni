@@ -2382,6 +2382,7 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
         device="cpu",
         enable_stateful_codec_decoder=True,
         codec_state_slots=12,
+        reference_codec_cache_size=0,
         incremental_codec_cuda_graph=True,
         incremental_codec_cuda_graph_cold_frames=(24, 32),
         incremental_codec_cuda_graph_window_frames=(8, 16),
@@ -2391,6 +2392,7 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
     assert isinstance(scheduler, FakeScheduler)
     assert captured["enable_stateful_codec_decoder"] is True
     assert captured["codec_state_slots"] == 12
+    assert captured["reference_codec_cache_size"] == 0
     assert captured["incremental_codec_cuda_graph"] is True
     assert captured["incremental_codec_cuda_graph_cold_frames"] == (24, 32)
     assert captured["incremental_codec_cuda_graph_window_frames"] == (8, 16)
@@ -2466,6 +2468,7 @@ def test_qwen3_tts_vocoder_factory_leaves_the_decode_policy_to_its_caller(
     async_decode through, so the pipeline config owns the platform default."""
     captured = vocoder_factory_capture(monkeypatch)
 
+    assert captured["reference_codec_cache_size"] == 16
     assert captured["initial_cuda_graph"] is True
     assert captured["followup_cuda_graph"] is True
     assert captured["incremental_codec_cuda_graph"] is True

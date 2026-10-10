@@ -10,16 +10,18 @@ endpoint.
 
 ## Reusing a reference across streaming requests
 
-For repeated Base voice-cloning requests, opt in with
-`--vocoder.factory.reference_codec_cache_size 16`. The value bounds the number of
-reference codec states; `0` (the default) disables caching. It requires the
+Reference codec state caching is enabled by default for repeated Base voice-cloning
+requests, with capacity for 16 references. Set
+`--vocoder.factory.reference_codec_cache_size N` to adjust the capacity, or `0` to
+disable caching. It requires the
 asynchronous stateful codec path and is bypassed in deterministic inference mode.
 
 The vocoder saves the decoder state immediately after the reference codes, then
 restores it for later requests with identical codes. Generated speech never
 enters the cache. The cache is local to one vocoder instance and uses LRU eviction.
 With the current BF16 codec, each entry uses about 2.49 MiB; storage, including one
-scratch entry, is reserved before the engine sizes its KV pool. Cache misses pay
+scratch entry, is reserved before the engine sizes its KV pool (about 42.3 MiB at
+the default capacity). Cache misses pay
 reference initialization cost, so this is intended for repeated references.
 Changing the first decode's chunk boundary can introduce BF16 rounding differences.
 
