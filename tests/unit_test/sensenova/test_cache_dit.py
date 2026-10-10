@@ -54,6 +54,15 @@ class TestCacheDitParameters(unittest.TestCase):
             cache_dit_batch_key({"b": 2, "a": 1}),
         )
 
+    def test_multi_output_preserves_cache_settings(self):
+        params = {"Fn_compute_blocks": 2}
+        options = SenseNovaU1Sampling.from_params(
+            {"n": 3, "enable_cache_dit": True, "cache_dit_params": params}
+        )
+        self.assertEqual(options.n, 3)
+        self.assertTrue(options.enable_cache_dit)
+        self.assertEqual(options.cache_dit_params, params)
+
     def test_three_branch_edit_ignores_parameters(self):
         for enabled in (None, False, True):
             with self.subTest(enabled=enabled):

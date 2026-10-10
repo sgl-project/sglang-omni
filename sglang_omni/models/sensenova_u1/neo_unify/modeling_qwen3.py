@@ -1,6 +1,7 @@
 # Modified for SGLang; see this directory's README.md for upstream source.
 
 import copy
+import os
 from typing import Callable, Optional, Union
 
 import torch
@@ -34,7 +35,6 @@ from sglang_omni.models.sensenova_u1.cache_dit import (
     decoder_attention_type,
     decoder_layers,
 )
-from sglang_omni.platforms import current_platform
 
 from .transformers_compat import (
     causal_mask_kwargs,
@@ -60,6 +60,10 @@ except ImportError:  # pragma: no cover - exercised only in CPU-only / no-flash 
 #                    debugging, even when flash-attn is available).
 _VALID_ATTN_BACKENDS = ("auto", "flash", "sdpa")
 _ATTN_BACKEND: str = "auto"
+
+_SENSENOVA_NPU_FUSED_ROPE_ENV = "SGLANG_SENSENOVA_NPU_FUSED_ROPE"
+_SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL = {"1", "true", "on", "rotary_mul", "mul"}
+_SENSENOVA_NPU_ROTARY_MUL_DISABLED = False
 
 
 def npu_fia_available() -> bool:
@@ -350,12 +354,57 @@ def visualize_mask(mask: torch.Tensor, i: int = 0, j: int = 12):
         print(" ".join(map(str, row)))
 
 
+class _SenseNovaRMSNorm(RMSNorm):
+    """Use shared device dispatch while keeping CPU inputs on native kernels."""
+
+    def forward_npu(
+        self,
+        x: torch.Tensor,
+        residual: Optional[torch.Tensor] = None,
+        post_residual_addition: Optional[torch.Tensor] = None,
+        quant_linear: Optional[nn.Module] = None,
+    ):
+        if x.device.type != "npu":
+            return self.forward_native(
+                x,
+                residual,
+                post_residual_addition,
+                quant_linear,
+            )
+        return super().forward_npu(
+            x,
+            residual,
+            post_residual_addition,
+            quant_linear,
+        )
+
+    def forward_aiter(
+        self,
+        x: torch.Tensor,
+        residual: Optional[torch.Tensor] = None,
+        post_residual_addition: Optional[torch.Tensor] = None,
+        quant_linear: Optional[nn.Module] = None,
+    ):
+        if not x.is_cuda:
+            return self.forward_native(
+                x,
+                residual,
+                post_residual_addition,
+                quant_linear,
+            )
+        return super().forward_aiter(
+            x,
+            residual,
+            post_residual_addition,
+            quant_linear,
+        )
+
+
 def make_qwen3_rms_norm(hidden_size: int, eps: float) -> RMSNorm:
-    return RMSNorm(
+    return _SenseNovaRMSNorm(
         hidden_size,
         eps=eps,
         cast_x_before_out_mul=True,
-        force_native=not current_platform.is_npu(),
     )
 
 
@@ -419,6 +468,62 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
+def _sensenova_npu_fused_rope_enabled() -> bool:
+    mode = os.getenv(_SENSENOVA_NPU_FUSED_ROPE_ENV, "0").strip().lower()
+    return mode in _SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL
+
+
+def _can_use_sensenova_npu_fused_rope(q, k, cos, sin, unsqueeze_dim) -> bool:
+    return (
+        q.device.type == "npu"
+        and q.dtype in (torch.float16, torch.bfloat16)
+        and q.dtype == k.dtype == cos.dtype == sin.dtype
+        and q.device == k.device == cos.device == sin.device
+        and not torch.is_grad_enabled()
+        and not torch.compiler.is_compiling()
+        and unsqueeze_dim == 1
+        and q.ndim == k.ndim == 4
+        and q.numel() > 0
+        and k.numel() > 0
+        and q.shape[0] == k.shape[0]
+        and q.shape[2:] == k.shape[2:]
+        and q.shape[0] < 1000
+        and q.shape[1] < 1000
+        and k.shape[1] < 1000
+        and q.shape[-1] < 896
+        and q.shape[-1] % 2 == 0
+        and cos.shape == sin.shape == (q.shape[0], q.shape[2], q.shape[3])
+    )
+
+
+def _sensenova_npu_rotary_mul(q, k, cos, sin):
+    global _SENSENOVA_NPU_ROTARY_MUL_DISABLED
+
+    if _SENSENOVA_NPU_ROTARY_MUL_DISABLED:
+        return None
+
+    try:
+        import torch_npu
+    except ImportError:
+        _SENSENOVA_NPU_ROTARY_MUL_DISABLED = True
+        return None
+
+    if not hasattr(torch_npu, "npu_rotary_mul"):
+        _SENSENOVA_NPU_ROTARY_MUL_DISABLED = True
+        return None
+
+    cos = cos.unsqueeze(1).contiguous()
+    sin = sin.unsqueeze(1).contiguous()
+    try:
+        return (
+            torch_npu.npu_rotary_mul(q, cos, sin, rotary_mode="half"),
+            torch_npu.npu_rotary_mul(k, cos, sin, rotary_mode="half"),
+        )
+    except (RuntimeError, TypeError):
+        _SENSENOVA_NPU_ROTARY_MUL_DISABLED = True
+        return None
+
+
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
 
@@ -439,6 +544,46 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
+    if _sensenova_npu_fused_rope_enabled() and _can_use_sensenova_npu_fused_rope(
+        q, k, cos, sin, unsqueeze_dim
+    ):
+        npu_output = _sensenova_npu_rotary_mul(q, k, cos, sin)
+        if npu_output is not None:
+            return npu_output
+
+    if (
+        q.is_cuda
+        and q.dtype is torch.bfloat16
+        and k.dtype is torch.bfloat16
+        and cos.dtype is torch.bfloat16
+        and sin.dtype is torch.bfloat16
+        and q.device == k.device == cos.device == sin.device
+        and not torch.is_grad_enabled()
+        and not torch.compiler.is_compiling()
+        and unsqueeze_dim == 1
+        and q.ndim == k.ndim == 4
+        and q.numel() > 0
+        and k.numel() > 0
+        and q.shape[2] >= 128
+        and q.shape[0] == k.shape[0]
+        and q.shape[2:] == k.shape[2:]
+        and q.shape[-1] in (32, 64)
+        and cos.shape == sin.shape == (q.shape[0], q.shape[2], q.shape[3])
+    ):
+        from sglang.kernels.ops.diffusion.rope.rope_rotate_half_bitexact import (
+            fused_rope_rotate_half_bitexact,
+        )
+
+        cos_rows = cos.reshape(-1, cos.shape[-1]).contiguous()
+        sin_rows = sin.reshape(-1, sin.shape[-1]).contiguous()
+        q_embed = fused_rope_rotate_half_bitexact(
+            q.transpose(1, 2).contiguous(), cos_rows, sin_rows
+        )
+        k_embed = fused_rope_rotate_half_bitexact(
+            k.transpose(1, 2).contiguous(), cos_rows, sin_rows
+        )
+        return q_embed.transpose(1, 2), k_embed.transpose(1, 2)
+
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     q_embed = (q * cos) + (rotate_half(q) * sin)
@@ -581,6 +726,10 @@ class Qwen3RotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
+RopeTable = tuple[torch.Tensor, torch.Tensor]
+PositionEmbeddings = tuple[RopeTable, RopeTable, RopeTable]
+
+
 class Qwen3Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -688,6 +837,27 @@ class Qwen3Attention(nn.Module):
         hw_config.max_position_embeddings = config.max_position_embeddings_hw
         self.rotary_emb_hw = Qwen3RotaryEmbedding(config=hw_config)
 
+    def _resolve_rope_tables(
+        self,
+        indexes: torch.LongTensor,
+        hidden_states: torch.Tensor,
+        position_embeddings: Optional[PositionEmbeddings] = None,
+    ) -> PositionEmbeddings:
+        if (
+            position_embeddings is None
+            or position_embeddings[0][0].dtype != hidden_states.dtype
+        ):
+            position_embeddings = (
+                self.rotary_emb(hidden_states, position_ids_from_indexes(indexes, 0)),
+                self.rotary_emb_hw(
+                    hidden_states, position_ids_from_indexes(indexes, 1)
+                ),
+                self.rotary_emb_hw(
+                    hidden_states, position_ids_from_indexes(indexes, 2)
+                ),
+            )
+        return position_embeddings
+
     def forward_und(
         self,
         hidden_states: torch.Tensor,
@@ -695,6 +865,7 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[PositionEmbeddings] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         assert self.config._attn_implementation == "eager"
@@ -715,22 +886,14 @@ class Qwen3Attention(nn.Module):
 
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        cos_t, sin_t = self.rotary_emb(
-            hidden_states, position_ids_from_indexes(indexes, 0)
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+            indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
             query_states_t, key_states_t, cos_t, sin_t
         )
-
-        cos_h, sin_h = self.rotary_emb_hw(
-            hidden_states, position_ids_from_indexes(indexes, 1)
-        )
         query_states_h, key_states_h = apply_rotary_pos_emb(
             query_states_h, key_states_h, cos_h, sin_h
-        )
-
-        cos_w, sin_w = self.rotary_emb_hw(
-            hidden_states, position_ids_from_indexes(indexes, 2)
         )
         query_states_w, key_states_w = apply_rotary_pos_emb(
             query_states_w, key_states_w, cos_w, sin_w
@@ -865,6 +1028,7 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[PositionEmbeddings] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
@@ -896,22 +1060,14 @@ class Qwen3Attention(nn.Module):
         )  # [B,H,S,D]
 
         # RoPE
-        cos_t, sin_t = self.rotary_emb(
-            hidden_states, position_ids_from_indexes(indexes, 0)
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+            indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
             query_states_t, key_states_t, cos_t, sin_t
         )
-
-        cos_h, sin_h = self.rotary_emb_hw(
-            hidden_states, position_ids_from_indexes(indexes, 1)
-        )
         query_states_h, key_states_h = apply_rotary_pos_emb(
             query_states_h, key_states_h, cos_h, sin_h
-        )
-
-        cos_w, sin_w = self.rotary_emb_hw(
-            hidden_states, position_ids_from_indexes(indexes, 2)
         )
         query_states_w, key_states_w = apply_rotary_pos_emb(
             query_states_w, key_states_w, cos_w, sin_w
@@ -1093,6 +1249,7 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[PositionEmbeddings] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         if exist_non_image_gen_tokens and not exist_image_gen_tokens:
@@ -1102,6 +1259,7 @@ class Qwen3Attention(nn.Module):
                 attention_mask,
                 past_key_values,
                 cache_position,
+                position_embeddings=position_embeddings,
                 **kwargs,
             )
         if not exist_non_image_gen_tokens and exist_image_gen_tokens:
@@ -1111,6 +1269,7 @@ class Qwen3Attention(nn.Module):
                 attention_mask,
                 past_key_values,
                 cache_position,
+                position_embeddings=position_embeddings,
                 **kwargs,
             )
 
@@ -1215,22 +1374,14 @@ class Qwen3Attention(nn.Module):
             )
         value_states = value_states.view(hidden_shape).transpose(1, 2)
 
-        cos_t, sin_t = self.rotary_emb(
-            hidden_states, position_ids_from_indexes(indexes, 0)
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+            indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
             query_states_t, key_states_t, cos_t, sin_t
         )
-
-        cos_h, sin_h = self.rotary_emb_hw(
-            hidden_states, position_ids_from_indexes(indexes, 1)
-        )
         query_states_h, key_states_h = apply_rotary_pos_emb(
             query_states_h, key_states_h, cos_h, sin_h
-        )
-
-        cos_w, sin_w = self.rotary_emb_hw(
-            hidden_states, position_ids_from_indexes(indexes, 2)
         )
         query_states_w, key_states_w = apply_rotary_pos_emb(
             query_states_w, key_states_w, cos_w, sin_w
@@ -1330,6 +1481,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[PositionEmbeddings] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         residual = hidden_states
@@ -1346,6 +1498,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             past_key_values=past_key_values,
             use_cache=use_cache,
             cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -1369,6 +1522,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[PositionEmbeddings] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         residual = hidden_states
@@ -1385,6 +1539,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             past_key_values=past_key_values,
             use_cache=use_cache,
             cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -1409,6 +1564,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[PositionEmbeddings] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         if exist_non_image_gen_tokens and not exist_image_gen_tokens:
@@ -1423,6 +1579,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
                 past_key_values,
                 use_cache,
                 cache_position,
+                position_embeddings=position_embeddings,
                 **kwargs,
             )
         if not exist_non_image_gen_tokens and exist_image_gen_tokens:
@@ -1437,6 +1594,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
                 past_key_values,
                 use_cache,
                 cache_position,
+                position_embeddings=position_embeddings,
                 **kwargs,
             )
 
@@ -1471,6 +1629,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             past_key_values=past_key_values,
             use_cache=use_cache,
             cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -1553,14 +1712,17 @@ class Qwen3Model(Qwen3PreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        image_only: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
-
         # assert position_ids is not None
         # assert cache_position is not None
         # assert past_key_values is not None
 
-        if image_gen_indicators is None:
+        if image_only:
+            exist_non_image_gen_tokens = False
+            exist_image_gen_tokens = True
+        elif image_gen_indicators is None:
             exist_non_image_gen_tokens = True
             exist_image_gen_tokens = False
         else:
@@ -1639,6 +1801,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
             has_non_image_tokens=exist_non_image_gen_tokens,
             has_image_tokens=exist_image_gen_tokens,
         )
+        # Precompute shared RoPE tables. Attention layers rebuild them if
+        # normalization changes the activation dtype.
+        position_embeddings = None
+        if layers:
+            native_layers = self.__dict__.get("_sensenova_cache_dit_native_layers")
+            rope_layer = native_layers[0] if native_layers is not None else layers[0]
+            position_embeddings = rope_layer.self_attn._resolve_rope_tables(
+                indexes, hidden_states
+            )
+
         for decoder_layer in layers[: self.config.num_hidden_layers]:
             attention_type = decoder_attention_type(self, decoder_layer)
             hidden_states = decoder_layer(
@@ -1652,6 +1824,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
+                position_embeddings=position_embeddings,
                 **kwargs,
             )
         if not exist_image_gen_tokens:

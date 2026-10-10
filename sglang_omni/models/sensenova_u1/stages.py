@@ -8,6 +8,7 @@ import binascii
 import io
 import logging
 import time
+from contextlib import nullcontext
 from typing import Any
 
 from sglang_omni.models.sensenova_u1.sampling import (
@@ -56,6 +57,9 @@ def generate_images(
                 raise
             continue
         options = _text_to_image_options(payload)
+        if options.n > 1:
+            results[index] = _generate_text_to_image(payload, model, tokenizer)
+            continue
         signature = (
             options.width,
             options.height,
@@ -113,9 +117,13 @@ def _generate_text_to_image(
         images = model.t2i_generate(
             tokenizer,
             prompt,
-            batch_size=1,
+            batch_size=options.n,
             thinking_backend=None,
-            seed=options.seed,
+            seed=(
+                options.seed
+                if options.n == 1
+                else [options.seed + index for index in range(options.n)]
+            ),
             image_size=(options.width, options.height),
             cfg_scale=options.guidance_scale,
             cfg_norm="none",
@@ -126,7 +134,25 @@ def _generate_text_to_image(
             t_eps=0.02,
             think_mode=False,
         )
-    return _encode_image(payload, images, options.width, options.height)
+    if options.n == 1:
+        return _encode_image(payload, images, options.width, options.height)
+    if not isinstance(images, torch.Tensor) or images.shape != (
+        options.n,
+        3,
+        options.height,
+        options.width,
+    ):
+        raise ValueError("SenseNova-U1 returned an invalid multi-output image tensor")
+    encoded = []
+    for index in range(options.n):
+        _encode_image(payload, images[index : index + 1], options.width, options.height)
+        encoded.append(payload.data["image_b64"])
+    payload.data = {
+        "images_b64": encoded,
+        "modality": "image",
+        "finish_reason": "stop",
+    }
+    return payload
 
 
 def _generate_text_to_image_batch(
@@ -359,7 +385,14 @@ def image_generation_request_cost(payload: StagePayload) -> int:
     else:
         options = _text_to_image_options(payload)
         branches = 1 + int(options.guidance_scale > 1)
-    return options.width * options.height * options.num_inference_steps * branches
+    outputs = options.n if isinstance(options, SenseNovaU1Sampling) else 1
+    return (
+        outputs
+        * options.width
+        * options.height
+        * options.num_inference_steps
+        * branches
+    )
 
 
 def image_generation_batch_key(payload: StagePayload) -> tuple[Any, ...]:
@@ -368,6 +401,8 @@ def image_generation_batch_key(payload: StagePayload) -> tuple[Any, ...]:
     if isinstance(inputs, dict) and inputs.get("task") == "image_edit":
         return ("image_edit", payload.request_id)
     options = _text_to_image_options(payload)
+    if options.n > 1:
+        return ("text_to_image_multi_output", payload.request_id)
     return (
         "text_to_image",
         options.width,
@@ -430,6 +465,11 @@ def create_generation_executor(
     max_batch_cost: int | None = None,
     enable_cache_dit: bool = False,
     cache_dit_params: dict[str, int | float] | None = None,
+    dit_layerwise_offload: bool = False,
+    dit_offload_prefetch_size: int = 1,
+    dit_layerwise_resident_layers: int = 0,
+    dit_layerwise_residency_policy: str = "leading",
+    pin_cpu_memory: bool = False,
 ):
     """Load the model once and optionally batch compatible T2I requests."""
     from transformers import AutoModel, AutoTokenizer
@@ -439,20 +479,39 @@ def create_generation_executor(
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
+    resolved_device = resolve_concrete_device(device, gpu_id)
+    offload_config = None
+    if dit_layerwise_offload:
+        from sglang_omni.models.sensenova_u1.offload import (
+            LayerwiseOffloadConfig,
+            SenseNovaLayerwiseOffload,
+        )
+
+        if resolved_device.type != "cuda":
+            raise ValueError("SenseNova layerwise offload currently requires CUDA")
+        offload_config = LayerwiseOffloadConfig(
+            prefetch_size=dit_offload_prefetch_size,
+            resident_layers=dit_layerwise_resident_layers,
+            residency_policy=dit_layerwise_residency_policy,
+            pin_cpu_memory=pin_cpu_memory,
+        )
+
     load_started = time.perf_counter()
     register()
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = AutoModel.from_pretrained(
         model_path, torch_dtype=resolve_dtype(dtype)
     ).eval()
-    resolved_device = resolve_concrete_device(device, gpu_id)
-    model = model.to(resolved_device)
+    offload = None
+    if offload_config is not None:
+        offload = SenseNovaLayerwiseOffload(model, resolved_device, offload_config)
+    else:
+        model = model.to(resolved_device)
     from sglang_omni.models.sensenova_u1.cache_dit import SenseNovaCacheDit
 
     enable_cache_dit, cache_dit_params = resolve_cache_dit_params(
         {"cache_dit_params": cache_dit_params}, enable_cache_dit
     )
-
     model._sensenova_cache_dit = SenseNovaCacheDit(
         enabled_by_default=enable_cache_dit,
         default_params=cache_dit_params,
@@ -488,10 +547,12 @@ def create_generation_executor(
     batch_enabled = max_batch_size > 1
 
     def _generate(payload: StagePayload) -> StagePayload:
-        return generate_image(payload, model, tokenizer)
+        with offload.request() if offload is not None else nullcontext():
+            return generate_image(payload, model, tokenizer)
 
     def _generate_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        return generate_images(payloads, model, tokenizer)
+        with offload.request() if offload is not None else nullcontext():
+            return generate_images(payloads, model, tokenizer)
 
     return SimpleScheduler(
         _generate,
@@ -501,4 +562,5 @@ def create_generation_executor(
         batch_key_fn=image_generation_batch_key if batch_enabled else None,
         request_cost_fn=image_generation_request_cost if batch_enabled else None,
         max_batch_cost=max_batch_cost if batch_enabled else None,
+        shutdown_callback=offload.close if offload is not None else None,
     )

@@ -18,12 +18,17 @@ class SenseNovaU1Sampling:
     seed: int = 42
     enable_cache_dit: bool | None = None
     cache_dit_params: dict[str, int | float] | None = None
+    n: int = 1
 
     @classmethod
     def from_params(cls, params: dict[str, Any]) -> SenseNovaU1Sampling:
+        n = params.get("n", 1)
+        if type(n) is not int or not 1 <= n <= 10:
+            raise ValueError("SenseNova-U1 n must be an integer between 1 and 10")
         enable_cache_dit, cache_dit_params = _cache_dit_values(params)
         return cls(
-            **_validated_values(cls, params, ("guidance_scale",)),
+            **_validated_values(cls, {**params, "n": 1}, ("guidance_scale",)),
+            n=n,
             enable_cache_dit=enable_cache_dit,
             cache_dit_params=cache_dit_params,
         )
