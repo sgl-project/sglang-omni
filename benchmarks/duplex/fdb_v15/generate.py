@@ -227,6 +227,18 @@ def generate(
     sample_ids = select_samples(settings.dataset, selection)
     v10_sample_ids = select_v10_samples(settings.dataset_v10, v10_selection)
     check_matches_other_repeats(repeat_dir, sample_ids, v10_sample_ids)
+    if v10_sample_ids and not settings.dataset_v10_revision_file.is_file():
+        raise SystemExit(
+            f"ERROR: {settings.dataset_v10_revision_file} is missing. Run "
+            "`python -m benchmarks.duplex.fdb_v15 setup` again, or pass "
+            "--v10-per-subset 0."
+        )
+    else:
+        pass
+    # note (luojiaxuan): both recorder commands read pinned inputs; resolving
+    # them here fails before a single session is recorded.
+    record = v15_record_command(settings)
+    v10_record = v10_record_command(settings) if v10_sample_ids else []
     (repeat_dir / "logs").mkdir(parents=True, exist_ok=True)
     (repeat_dir / "sample-ids.txt").write_text(ids_text(sample_ids))
     log(f"== Selected {len(sample_ids)} pairs: {describe(sample_ids)}")
@@ -246,9 +258,7 @@ def generate(
             f"== Recording {len(sample_ids)} pairs ({2 * len(sample_ids)} sessions) "
             f"in {num_shards} shard(s) -> {repeat_dir}"
         )
-        shard_dirs = record_shards(
-            v15_record_command(settings), repeat_dir, sample_ids, 2, num_shards
-        )
+        shard_dirs = record_shards(record, repeat_dir, sample_ids, 2, num_shards)
         v10_shard_dirs = []
         if v10_sample_ids:
             (v10_dir / "recording").mkdir()
@@ -257,7 +267,7 @@ def generate(
                 f"in {num_shards} shard(s) -> {v10_dir}"
             )
             v10_shard_dirs = record_shards(
-                v10_record_command(settings), v10_dir, v10_sample_ids, 1, num_shards
+                v10_record, v10_dir, v10_sample_ids, 1, num_shards
             )
         else:
             pass

@@ -78,14 +78,28 @@ def add_selection_arguments(parser: argparse.ArgumentParser) -> None:
     v10_selection = parser.add_argument_group(
         "v1.0 sample selection",
         "Each v1.0 subset takes its first N samples in sample-ID order. "
-        "Default: the --per-subset count, or 0 (no v1.0) with explicit pair IDs.",
+        "Default: the --per-subset count; explicit pair IDs default to 0 (no v1.0) "
+        "unless a v1.0 option is given.",
     )
-    v10_selection.add_argument(
+    v10_exclusive = v10_selection.add_mutually_exclusive_group()
+    v10_exclusive.add_argument(
         "--v10-per-subset",
         type=parse_count,
         default=V10_FOLLOWS_V15,
         metavar="N|all",
         help="Samples per v1.0 subset; 0 leaves v1.0 out; 'all' selects all 727",
+    )
+    v10_exclusive.add_argument(
+        "--v10-sample-id",
+        dest="v10_sample_ids",
+        action="append",
+        metavar="SUBSET/ID",
+        help="Explicit v1.0 sample; repeatable",
+    )
+    v10_exclusive.add_argument(
+        "--v10-sample-ids-file",
+        type=Path,
+        help="One SUBSET/ID per line, such as another run's v10/sample-ids.txt",
     )
     v10_selection.add_argument(
         "--v10-subset-count",
@@ -166,6 +180,17 @@ def sample_selection(
         parser.error("--subset-count cannot be combined with explicit sample IDs")
     else:
         pass
+    v10_sample_ids = args.v10_sample_ids
+    if args.v10_sample_ids_file is not None:
+        v10_sample_ids = args.v10_sample_ids_file.read_text().split()
+    else:
+        pass
+    if v10_sample_ids is not None and args.v10_subset_counts:
+        parser.error(
+            "--v10-subset-count cannot be combined with explicit v1.0 sample IDs"
+        )
+    else:
+        pass
     v10_per_subset = args.v10_per_subset
     if v10_per_subset is V10_FOLLOWS_V15:
         v10_per_subset = 0 if sample_ids is not None else args.per_subset
@@ -178,7 +203,9 @@ def sample_selection(
             sample_ids=sample_ids,
         ),
         SampleSelection(
-            per_subset=v10_per_subset, subset_counts=dict(args.v10_subset_counts)
+            per_subset=v10_per_subset,
+            subset_counts=dict(args.v10_subset_counts),
+            sample_ids=v10_sample_ids,
         ),
     )
 

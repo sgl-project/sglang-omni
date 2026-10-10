@@ -69,6 +69,7 @@ REFERENCE_FILES_RECORD = {
 # note (luojiaxuan): the pinned evaluator sends neither a token cap nor a thinking
 # switch; a self-hosted Qwen judge would spend SGLang's default 128 new tokens on
 # reasoning, so the non-official path turns thinking off and caps the answer.
+OFFICIAL_JUDGE_BASE_URL = "https://api.openai.com/v1/"
 SELF_HOSTED_JUDGE_OPTIONS: dict[str, JsonValue] = {
     "max_tokens": 512,
     "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
@@ -272,19 +273,21 @@ class JudgeLedger:
     """Chat client for the pinned interruption judge, recording every exchange.
 
     The pinned evaluator resends an identical request until its rating parses;
-    the JUDGE_MAX_ATTEMPTS-th identical request is the last one sent.
+    the JUDGE_MAX_ATTEMPTS-th identical request is the last one sent. base_url
+    is the endpoint the client resolved, so the summary names where the
+    requests went, whatever the CLI flag or OPENAI_BASE_URL said.
     """
 
     def __init__(
         self,
         client: OpenAI,
         ledger_path: Path,
-        base_url: str | None,
+        base_url: str,
         served_model: str | None,
     ) -> None:
         self.client: OpenAI = client
         self.ledger_path: Path = ledger_path
-        self.base_url: str | None = base_url
+        self.base_url: str = base_url
         self.served_model: str | None = served_model
         self.attempts: Counter[str] = Counter()
         self.exchanges: list[dict[str, JsonValue]] = []
@@ -333,7 +336,8 @@ class JudgeLedger:
 
     def summary(self) -> dict[str, JsonValue]:
         return {
-            "official": self.base_url is None,
+            "official": self.served_model is None
+            and self.base_url == OFFICIAL_JUDGE_BASE_URL,
             "base_url": self.base_url,
             "requested_models": sorted(
                 {exchange["requested_model"] for exchange in self.exchanges}

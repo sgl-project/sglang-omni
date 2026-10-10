@@ -121,10 +121,11 @@ def reference_evaluate(args: argparse.Namespace) -> int:
         else:
             pass
         timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        client = OpenAI(api_key=api_key, base_url=args.base_url)
         judge = JudgeLedger(
-            OpenAI(api_key=api_key, base_url=args.base_url),
+            client,
             args.tree / "judge" / f"user-interruption-{timestamp}.jsonl",
-            args.base_url,
+            str(client.base_url),
             args.served_model,
         )
     else:

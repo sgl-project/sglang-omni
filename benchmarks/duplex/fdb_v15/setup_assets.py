@@ -178,6 +178,24 @@ def setup_scoring_venv(settings: Settings) -> None:
         ],
         check=True,
     )
+    # note (luojiaxuan): torchcodec installs without FFmpeg and only fails when
+    # its decoder library loads, which the pinned backchannel evaluator does in
+    # `judge`; loading it here surfaces a missing FFmpeg during setup.
+    probe = subprocess.run(
+        [
+            str(settings.scoring_python),
+            "-c",
+            "from torchcodec.decoders import AudioDecoder",
+        ],
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise SystemExit(
+            "ERROR: torchcodec cannot load its FFmpeg libraries in the scoring venv; "
+            "install FFmpeg (shared libraries, version 4 to 7) and rerun setup."
+        )
+    else:
+        pass
 
 
 def setup_dataset(

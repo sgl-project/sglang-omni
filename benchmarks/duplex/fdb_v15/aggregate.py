@@ -59,10 +59,12 @@ V10_TASK_RESULTS = {
 }
 V10_COLUMNS = (
     ("selected", "Selected", "count"),
+    ("eligible", "Eligible", "count"),
     ("evaluated", "Evaluated", "count"),
     ("takeover", "Takeover rate", "percent"),
     ("latency_s", "Latency (s)", "seconds"),
     ("relevance", "Relevance (0-5)", "rating"),
+    ("judge_retries", "Judge retries", "count"),
     ("frequency", "Backchannel frequency", "rate"),
     ("jsd", "Backchannel JSD", "divergence"),
 )
@@ -121,19 +123,37 @@ def semantic_metrics(repeat_dir: Path) -> RepeatMetrics:
 
 
 def v10_metrics(repeat_dir: Path) -> RepeatMetrics:
-    """One row per evaluated v1.0 subset; columns its task does not report stay None."""
-    summary_path = repeat_dir / V10_DIR / "reference" / "summary.json"
-    if not summary_path.is_file():
+    """One row per selected v1.0 subset from the export manifest; summary.json
+    overlays the evaluated count and metrics, so a subset whose sessions all
+    failed, or whose evaluation did, keeps its row with n/a cells."""
+    tree = repeat_dir / V10_DIR / "reference"
+    if not (tree / "manifest.json").is_file():
         return {}
     else:
         pass
+    summary_path = tree / "summary.json"
+    evaluated = read_json(summary_path)["subsets"] if summary_path.is_file() else {}
     metrics = {}
-    for subset, entry in read_json(summary_path)["subsets"].items():
+    for subset, counts in read_json(tree / "manifest.json")["counts"].items():
+        if counts["selected"] == 0:
+            continue
+        else:
+            pass
         row = {key: None for key, _, _ in V10_COLUMNS}
-        row["selected"] = entry["selected"]
-        row["evaluated"] = entry["evaluated"]
-        for key, label in V10_TASK_RESULTS[entry["task"]].items():
-            row[key] = entry["result"][label]
+        row["selected"] = counts["selected"]
+        row["eligible"] = counts["eligible"]
+        row["evaluated"] = 0
+        if subset in evaluated:
+            entry = evaluated[subset]
+            row["evaluated"] = entry["evaluated"]
+            for key, label in V10_TASK_RESULTS[entry["task"]].items():
+                row[key] = entry["result"][label]
+            if entry["task"] == "user_interruption":
+                row["judge_retries"] = entry["judge"]["retries"]
+            else:
+                pass
+        else:
+            pass
         metrics[subset] = row
     return metrics
 
@@ -219,14 +239,27 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
         relevance_judge = (
             "the local Qwen judge, non-official" if judge == "qwen" else "GPT"
         )
+        v10_repeats = [
+            path.name for path, metrics in zip(repeat_dirs, per_repeat_v10) if metrics
+        ]
+        coverage = (
+            ""
+            if len(v10_repeats) == len(repeat_dirs)
+            else f" v1.0 cells come from {', '.join(v10_repeats)} only; "
+            "the other repeats have no v1.0 export."
+        )
         lines += [
             "",
             "## FDB v1.0 results",
             "",
             "Pinned reference evaluation per subset; subsets are never pooled. "
-            "Takeover rate should be low on pause handling and backchannel, and high "
-            "on turn taking and interruption. Relevance is a 0-5 rating of the "
-            f"interruptions the model took over, by {relevance_judge}.",
+            "Selected counts the recorded samples, Eligible the exports the "
+            "evaluator can score, Evaluated the ones it scored; n/a metrics with "
+            "Eligible above Evaluated mean the evaluation failed. Takeover rate "
+            "should be low on pause handling and backchannel, and high on turn "
+            "taking and interruption. Relevance is a 0-5 rating of the "
+            f"interruptions the model took over, by {relevance_judge}; a nonzero "
+            "Judge retries count inflates that subset's takeover rate." + coverage,
             "",
             *render_table(per_repeat_v10, V10_COLUMNS, V10_SUBSETS),
         ]

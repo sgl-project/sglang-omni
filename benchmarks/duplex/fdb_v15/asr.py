@@ -9,10 +9,10 @@ from pathlib import Path
 from benchmarks.duplex.fdb_v15.common import (
     ENGINE_LABEL,
     PARAKEET_SHA256,
-    V10_DIR,
     Settings,
     log,
     reference_command,
+    require_v10_export,
     run_command,
     step_command,
     v10_command,
@@ -54,6 +54,7 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
         )
     else:
         pass
+    v10_tree = require_v10_export(settings, repeat)
     scores = repeat_dir / "scores"
     common_arguments = [
         "--reference-source",
@@ -87,16 +88,26 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
         ),
         visible_gpus="",
     )
-    v10_tree = repeat_dir / V10_DIR / "reference"
-    is_v10_ok = (
-        v10_asr(settings, v10_tree) if (v10_tree / "manifest.json").is_file() else True
-    )
+    is_v10_ok = v10_tree is None or v10_asr(settings, v10_tree)
 
-    if not (is_asr_ok and is_timing_ok and is_v10_ok):
-        raise SystemExit(
+    problems = []
+    if not (is_asr_ok and is_timing_ok):
+        problems.append(
             f"WARNING: a phase reported failures; logs are in {scores / 'logs'}. "
             f"Rerun with: {step_command('asr', settings, repeat)} --retry-failed"
         )
+    else:
+        pass
+    if not is_v10_ok:
+        problems.append(
+            f"WARNING: the v1.0 ASR failed; its log is {v10_tree / 'logs' / 'asr.log'}. "
+            f"Rerun `{step_command('asr', settings, repeat)}`; the v1.0 ASR restarts "
+            "in full."
+        )
+    else:
+        pass
+    if problems:
+        raise SystemExit("\n".join(problems))
     else:
         pass
     log(f"Step 2 done: {scores}")

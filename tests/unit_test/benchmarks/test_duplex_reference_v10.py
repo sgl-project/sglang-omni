@@ -301,7 +301,13 @@ def test_judge_ledger_caps_identical_requests_and_records_exchanges(
     )
 
     assert [sent["model"] for sent in client.requests] == ["qwen3.8-27b"] * 4
+    # note (luojiaxuan): a self-hosted judge gets no thinking and a token cap.
+    assert client.requests[0]["max_tokens"] == 512
+    assert client.requests[0]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
     exchanges = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    assert exchanges[0]["sent_options"] == reference_v10.SELF_HOSTED_JUDGE_OPTIONS
     assert [exchange["attempt"] for exchange in exchanges] == [1, 2, 3, 1]
     assert {exchange["requested_model"] for exchange in exchanges} == {"gpt-4-turbo"}
     assert exchanges[0]["content"] == "I cannot rate this."
@@ -314,6 +320,51 @@ def test_judge_ledger_caps_identical_requests_and_records_exchanges(
         2,
     )
     assert summary["returned_models"] == {"gpt-4-turbo-2024-04-09": 4}
+
+
+def test_official_means_openai_endpoint_and_no_served_model(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    client = FakeOpenAI("I would rate the AI's response as 3.")
+    official = reference_v10.JudgeLedger(
+        client, ledger, reference_v10.OFFICIAL_JUDGE_BASE_URL, None
+    )
+    proxied = reference_v10.JudgeLedger(
+        client, ledger, "http://proxy.example/v1/", None
+    )
+    hosted = reference_v10.JudgeLedger(
+        client, ledger, reference_v10.OFFICIAL_JUDGE_BASE_URL, "qwen3.8-27b"
+    )
+    assert official.summary()["official"] is True
+    assert proxied.summary()["official"] is False
+    assert proxied.summary()["base_url"] == "http://proxy.example/v1/"
+    assert hosted.summary()["official"] is False
+
+
+def test_reference_evaluate_records_the_endpoint_the_client_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.eval import benchmark_duplex_v10
+
+    judges = []
+    monkeypatch.setattr(benchmark_duplex_v10, "verify_reference", lambda *_: {})
+    monkeypatch.setattr(
+        benchmark_duplex_v10,
+        "evaluate",
+        lambda tree, paths, subsets, judge: judges.append(judge)
+        or {"subsets": {subset: {"result": {}} for subset in subsets}},
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://proxy.example/v1")
+    argv = ["reference-evaluate", "--tree", str(tmp_path), "--reference-source", "x"]
+    with contextlib.redirect_stdout(io.StringIO()):
+        main([*argv, "--subset", "synthetic_user_interruption"])
+        monkeypatch.delenv("OPENAI_BASE_URL")
+        main([*argv, "--subset", "synthetic_user_interruption"])
+    assert [judge.base_url for judge in judges] == [
+        "http://proxy.example/v1/",
+        reference_v10.OFFICIAL_JUDGE_BASE_URL,
+    ]
+    assert [judge.summary()["official"] for judge in judges] == [False, True]
 
 
 def test_served_model_requires_base_url() -> None:
@@ -363,7 +414,10 @@ def test_reference_asr_crops_interruption_and_evaluation_runs_pinned_code(
         "Analysis: It answers the coffee question.\nI would rate the AI's response as 4."
     )
     judge = reference_v10.JudgeLedger(
-        client, tree / "judge" / "ledger.jsonl", None, None
+        client,
+        tree / "judge" / "ledger.jsonl",
+        reference_v10.OFFICIAL_JUDGE_BASE_URL,
+        None,
     )
     summary = reference_v10.evaluate(
         tree, paths, ["synthetic_user_interruption"], judge
@@ -378,6 +432,11 @@ def test_reference_asr_crops_interruption_and_evaluation_runs_pinned_code(
     assert result["judge"]["requests"] == 1 and result["judge"]["retries"] == 0
     assert client.requests[0]["model"] == "gpt-4-turbo"
     assert client.requests[0]["seed"] == 0
+    # note (luojiaxuan): the official path sends exactly what the pinned evaluator sends.
+    assert "max_tokens" not in client.requests[0]
+    assert "extra_body" not in client.requests[0]
+    ledger_line = (tree / "judge" / "ledger.jsonl").read_text().splitlines()[0]
+    assert json.loads(ledger_line)["sent_options"] == {}
     with pytest.raises(SystemExit, match="already evaluated"):
         reference_v10.evaluate(tree, paths, ["synthetic_user_interruption"], judge)
     with pytest.raises(SystemExit, match="not exported"):
