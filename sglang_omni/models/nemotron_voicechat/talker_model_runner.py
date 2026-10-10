@@ -21,8 +21,15 @@ def char_vocab_from_tokenizer(tokenizer) -> dict[str, int]:
 
 
 class NemotronVoiceChatTalkerModelRunner(ModelRunner):
-    def __init__(self, tp_worker, output_processor):
+    def __init__(
+        self,
+        tp_worker,
+        output_processor,
+        *,
+        can_use_local_code_handoff: bool = False,
+    ) -> None:
         super().__init__(tp_worker, output_processor)
+        self.can_use_local_code_handoff: bool = can_use_local_code_handoff
         speech = self.model.config.nemotron_speech
         self.tokenizer = AutoTokenizer.from_pretrained(
             speech["tokenizer_name"],
@@ -191,11 +198,40 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
             noise_scale=self.noise_scale,
         )
 
+    def sample_before_post_decode(
+        self, forward_batch, schedule_batch, requests
+    ) -> bool:
+        return self.can_use_local_code_handoff
+
     def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:
-        del result, forward_batch, schedule_batch
+        if (
+            self.can_use_local_code_handoff
+            and result is not None
+            and result.next_token_ids is not None
+            and result.next_token_ids.is_cuda
+        ):
+            self.stage_token_ids(result, result.next_token_ids)
+        else:
+            pass
         for index, request in enumerate(requests):
             inputs = request.data.talker_model_inputs
             codes = self.generate_codes(index)
             inputs["prev_codes"] = codes
             inputs["codes_rows"].append(codes[0])
-            inputs["stream_chunk"] = codes.cpu()
+            if self.can_use_local_code_handoff and codes.is_cuda:
+                inputs["stream_chunk"] = codes
+            else:
+                inputs["stream_chunk"] = codes.cpu()
+
+        codes_ready_event: torch.cuda.Event | None = None
+        if requests and self.can_use_local_code_handoff:
+            codes = requests[0].data.talker_model_inputs["stream_chunk"]
+            if codes.is_cuda:
+                codes_ready_event = torch.cuda.Event()
+                codes_ready_event.record(torch.cuda.current_stream(codes.device))
+            else:
+                pass
+        else:
+            pass
+        for request in requests:
+            request.data.talker_model_inputs["codes_ready_event"] = codes_ready_event

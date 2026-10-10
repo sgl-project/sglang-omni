@@ -135,10 +135,15 @@ def apply_talker_result(data: SGLangARRequestData) -> StagePayload:
 def talker_stream_output_builder(
     request_id: str, data: SGLangARRequestData, req_output
 ) -> list[OutgoingMessage]:
-    del req_output
     codes = data.talker_model_inputs.pop("stream_chunk", None)
+    codes_ready_event = data.talker_model_inputs.pop("codes_ready_event", None)
     if codes is None:
         return []
+    else:
+        pass
+    metadata: dict[str, str | torch.cuda.Event] = {"modality": "audio_codes"}
+    if codes_ready_event is not None:
+        metadata["codes_ready_event"] = codes_ready_event
     else:
         pass
     return [
@@ -147,7 +152,7 @@ def talker_stream_output_builder(
             type="stream",
             data=codes,
             target="code2wav",
-            metadata={"modality": "audio_codes"},
+            metadata=metadata,
         )
     ]
 
