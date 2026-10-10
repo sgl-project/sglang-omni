@@ -47,7 +47,7 @@ cd <path/to/sglang-omni>
 python -m benchmarks.duplex.fdb_v15 setup
 ```
 
-`setup` needs `git` and `uv` on `PATH`. It is safe to rerun and skips finished steps. Everything goes under `FDB_WORK` (default `$HOME/fdb`):
+`setup` needs `git` and `uv` on `PATH`. It is safe to rerun and skips finished steps. It first installs the `minicpm-o` extra of sglang-omni (`onnx` and `einops`, which the MiniCPM-o server imports) into the active venv, leaving every other package unchanged. Everything else goes under `FDB_WORK` (default `$HOME/fdb`):
 
 | Path | Content |
 |---|---|
@@ -325,6 +325,7 @@ Export is deterministic: re-exporting a recording reproduces every eligible WAV 
 | `Control check failed: this judge configuration is not accepted.` | The judge missed a control case; the printed lines show which. Do not grade with this configuration. Check that the judge server runs the pinned Qwen3.8-27B revision |
 | `... changed since this directory was created; use a new --out` | The semantic judge settings, prompt or inputs changed since this repeat was graded. Delete `repeat-N/semantic-qwen` and rerun `judge` for that repeat |
 | `model_mismatch` with `JUDGE=gpt` | The endpoint returned a model name other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
+| `model-server.log` ends with `No module named 'onnx'` (or `einops`) | Rerun `setup`; it installs the `minicpm-o` extra into the active venv |
 | `ModuleNotFoundError` in `asr` | Rerun `setup`; it reinstalls the scoring venv packages |
 
 ## Concurrent runs

@@ -7,9 +7,12 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import sys
 import zipfile
+from importlib.metadata import PackageNotFoundError, requires
 
 from huggingface_hub import hf_hub_download, model_info, snapshot_download
+from packaging.requirements import Requirement
 
 from benchmarks.duplex.fdb_v15.common import (
     FDB_SOURCE_REVISION,
@@ -53,10 +56,56 @@ DATASET_DRIVE_FILE_IDS = {
     "talking_to_other": "1Jh6ER4AUmqGgEZBTV0pcbDaMMQIWA7Kt",
     "background_speech": "1W63k1BlQ0QCgvYCb_8YJNqFfUhBwI97W",
 }
+SERVING_DISTRIBUTION = "sglang-omni"
+MODEL_EXTRA = "minicpm-o"
+
+
+def setup_model_extra() -> None:
+    log(f"== [1/7] {MODEL_EXTRA} extra in the serving venv ({sys.executable})")
+    try:
+        declared = requires(SERVING_DISTRIBUTION) or []
+    except PackageNotFoundError:
+        raise SystemExit(
+            f"ERROR: {SERVING_DISTRIBUTION} is not installed for {sys.executable}; "
+            "run `uv pip install -e .` from the repository root first."
+        ) from None
+    extra_requirements = []
+    for text in declared:
+        requirement = Requirement(text)
+        marker = requirement.marker
+        # Note (jeffro): base requirements with platform markers also evaluate true under the extra.
+        if (
+            marker is not None
+            and marker.evaluate({"extra": MODEL_EXTRA})
+            and not marker.evaluate({"extra": ""})
+        ):
+            extra_requirements.append(f"{requirement.name}{requirement.specifier}")
+        else:
+            pass
+    if not extra_requirements:
+        raise SystemExit(
+            f"ERROR: the installed {SERVING_DISTRIBUTION} metadata has no "
+            f"{MODEL_EXTRA} extra; it predates this checkout. Rerun "
+            "`uv pip install -e .` from the repository root first."
+        )
+    else:
+        pass
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--quiet",
+            "--python",
+            sys.executable,
+            *extra_requirements,
+        ],
+        check=True,
+    )
 
 
 def setup_reference_source(settings: Settings) -> None:
-    log(f"== [1/6] Full-Duplex-Bench reference checkout at {FDB_SOURCE_REVISION}")
+    log(f"== [2/7] Full-Duplex-Bench reference checkout at {FDB_SOURCE_REVISION}")
     if not (settings.fdb_source / ".git").is_dir():
         subprocess.run(
             ["git", "clone", FDB_SOURCE_URL, str(settings.fdb_source)], check=True
@@ -84,7 +133,7 @@ def setup_reference_source(settings: Settings) -> None:
 
 
 def setup_scoring_venv(settings: Settings) -> None:
-    log(f"== [2/6] Scoring venv at {settings.scoring_venv}")
+    log(f"== [3/7] Scoring venv at {settings.scoring_venv}")
     if not settings.scoring_python.is_file():
         subprocess.run(
             [
@@ -117,7 +166,7 @@ def setup_scoring_venv(settings: Settings) -> None:
 
 
 def setup_dataset(settings: Settings) -> None:
-    log(f"== [3/6] FDB v1.5 dataset at {settings.dataset}")
+    log(f"== [4/7] FDB v1.5 dataset at {settings.dataset}")
     zip_dir = settings.dataset_dir / "zips"
     zip_dir.mkdir(parents=True, exist_ok=True)
     for subset in SUBSETS:
@@ -157,7 +206,7 @@ def setup_dataset(settings: Settings) -> None:
 
 
 def setup_parakeet(settings: Settings) -> None:
-    log("== [4/6] Parakeet ASR checkpoint")
+    log("== [5/7] Parakeet ASR checkpoint")
     nemo = settings.parakeet_nemo
     if nemo.is_file() and file_sha256(nemo) == PARAKEET_SHA256:
         return
@@ -176,14 +225,14 @@ def setup_parakeet(settings: Settings) -> None:
 
 
 def setup_models(settings: Settings) -> None:
-    log(f"== [5/6] Model under test at {settings.model_path}")
+    log(f"== [6/7] Model under test at {settings.model_path}")
     if not (settings.model_path / "config.json").is_file():
         snapshot_download(
             MODEL_ID, revision=settings.model_revision, local_dir=settings.model_path
         )
     else:
         pass
-    log(f"== [6/6] Judge model at {settings.judge_model_path} (JUDGE={settings.judge})")
+    log(f"== [7/7] Judge model at {settings.judge_model_path} (JUDGE={settings.judge})")
     if settings.judge == "qwen" and not settings.judge_revision_file.is_file():
         judge_revision = model_info(JUDGE_MODEL_ID).sha
         snapshot_download(
@@ -195,6 +244,7 @@ def setup_models(settings: Settings) -> None:
 
 
 def setup(settings: Settings) -> None:
+    setup_model_extra()
     (settings.fdb_work / "models").mkdir(parents=True, exist_ok=True)
     setup_reference_source(settings)
     setup_scoring_venv(settings)
