@@ -29,6 +29,7 @@ class DisabledCodecGraphStats(TypedDict):
 class CodecCudaGraphStats(TypedDict):
     cold: IncrementalCodecGraphStats | DisabledCodecGraphStats
     window: IncrementalCodecGraphStats | DisabledCodecGraphStats
+    tail: IncrementalCodecGraphStats | DisabledCodecGraphStats
     warm: list[IncrementalCodecGraphStats]
 
 
