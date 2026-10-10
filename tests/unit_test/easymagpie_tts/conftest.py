@@ -89,8 +89,8 @@ def talker(tiny_tts_config) -> EasyMagpieTTSForConditionalGeneration:
     model.config = SimpleNamespace(vocab_size=2, eos_token_id=1)
     model.tts_config = tiny_tts_config
     model.heads = EasyMagpieTTSHeads(tiny_tts_config)
-    model.decode_step = None
-    model.last_audio_codes = None
+    model.decode_buffers = None
     model.last_phoneme_tokens = None
-    model.last_audio_eos = None
+    model.backbone = nn.Linear(1, 1)
+    model.setup_decode_buffers(max_batch=4, max_top_k=16)
     return model

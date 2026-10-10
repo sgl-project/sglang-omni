@@ -114,8 +114,9 @@ def create_sglang_tts_engine_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "float16",
-    max_running_requests: int = 8,
+    max_running_requests: int = 64,
     mem_fraction_static: float = 0.72,
+    cuda_graph: bool = True,
     server_args_overrides: dict | None = None,
 ) -> Any:
     from sglang_omni.models.easymagpie_tts.engine_builder import (
@@ -125,6 +126,7 @@ def create_sglang_tts_engine_executor(
     return EasyMagpieTTSEngineBuilder(
         max_running_requests=max_running_requests,
         mem_fraction_static=mem_fraction_static,
+        cuda_graph=cuda_graph,
     ).build(
         model_path,
         device=device,

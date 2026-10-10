@@ -11,6 +11,7 @@ from sglang.kernels.ops.mamba.triton_ops import (
 from sglang.srt.environ import envs
 
 from sglang_omni.models.easymagpie_tts.model_runner import EasyMagpieTTSModelRunner
+from sglang_omni.models.easymagpie_tts.payload_types import MAX_TOP_K
 from sglang_omni.models.easymagpie_tts.request_builders import (
     apply_easymagpie_result,
     build_sglang_easymagpie_request,
@@ -20,6 +21,13 @@ from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 EASYMAGPIE_ARCH = "EasyMagpieTTSForConditionalGeneration"
 EASYMAGPIE_CONTEXT_LENGTH = 8192
+DEFAULT_MAX_RUNNING_REQUESTS = 64
+
+
+def decode_graph_batch_sizes(max_batch: int) -> list[int]:
+    """Powers of two up to ``max_batch``, plus ``max_batch`` itself."""
+    sizes = [size for size in (1, 2, 4, 8, 16, 32, 64) if size < max_batch]
+    return [*sizes, max_batch]
 
 
 class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
@@ -28,10 +36,15 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
     model_arch_override = EASYMAGPIE_ARCH
 
     def __init__(
-        self, *, max_running_requests: int = 8, mem_fraction_static: float = 0.72
+        self,
+        *,
+        max_running_requests: int = DEFAULT_MAX_RUNNING_REQUESTS,
+        mem_fraction_static: float = 0.72,
+        cuda_graph: bool = True,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.mem_fraction_static = mem_fraction_static
+        self.cuda_graph = cuda_graph
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -49,7 +62,12 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
             # Per-step phoneme and acoustic feedback lives on request data and
             # has no rollback, so a non-final prefill chunk would corrupt it.
             "chunked_prefill_size": 0,
-            "disable_cuda_graph": True,
+            # The decode graph reads the model's fixed decode buffers; the
+            # custom prefill embeddings are not captured.
+            "disable_cuda_graph": not self.cuda_graph,
+            "disable_prefill_cuda_graph": True,
+            "cuda_graph_max_bs": self.max_running_requests,
+            "cuda_graph_bs": decode_graph_batch_sizes(self.max_running_requests),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -62,6 +80,14 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
             raise ValueError("EasyMagpie TTS supports tp_size=1 only")
         else:
             pass
+        # Graph buckets and buffers must cover every request the scheduler
+        # may batch, including a max_running_requests set per stage.
+        max_running = int(
+            overrides.get("max_running_requests", self.max_running_requests)
+        )
+        self.max_running_requests = max_running
+        overrides["cuda_graph_max_bs"] = max_running
+        overrides["cuda_graph_bs"] = decode_graph_batch_sizes(max_running)
 
     def customize_server_args(self, server_args: Any) -> None:
         initialize_mamba_selective_state_update_backend(server_args)
@@ -75,8 +101,14 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del checkpoint_dir, device, gpu_id, server_args
-        model_worker.model_runner.model.eval()
+        del checkpoint_dir, device, gpu_id
+        model = model_worker.model_runner.model
+        model.eval()
+        # Before graph capture, which the factory runs after setup_model. SGLang
+        # may lower max_running_requests to fit memory, but the graph buckets
+        # still reach the requested size.
+        max_batch = max(self.max_running_requests, server_args.max_running_requests)
+        model.setup_decode_buffers(int(max_batch), MAX_TOP_K)
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         return EasyMagpieTTSModelRunner(model_worker, output_proc)
@@ -89,4 +121,9 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         return {"stream_output_builder": easymagpie_stream_output_builder}
 
 
-__all__ = ["EASYMAGPIE_ARCH", "EasyMagpieTTSEngineBuilder"]
+__all__ = [
+    "DEFAULT_MAX_RUNNING_REQUESTS",
+    "EASYMAGPIE_ARCH",
+    "EasyMagpieTTSEngineBuilder",
+    "decode_graph_batch_sizes",
+]

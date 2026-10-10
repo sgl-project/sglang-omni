@@ -72,7 +72,13 @@ def test_state_rejects_empty_text(inputs) -> None:
 
 @pytest.mark.parametrize(
     "tts_params",
-    [{"seed": True}, {"temperature": 0}, {"top_k": -1}, {"max_new_frames": -2}],
+    [
+        {"seed": True},
+        {"temperature": 0},
+        {"top_k": -1},
+        {"top_k": 81},
+        {"max_new_frames": -2},
+    ],
 )
 def test_state_rejects_invalid_generation_params(tts_params) -> None:
     with pytest.raises(ValueError):

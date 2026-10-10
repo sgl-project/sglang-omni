@@ -18,6 +18,7 @@ from sglang_omni.models.easymagpie_tts.payload_types import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_K,
     DEFAULT_VOICE,
+    MAX_TOP_K,
     EasyMagpieTTSState,
 )
 from sglang_omni.proto import StagePayload
@@ -76,6 +77,10 @@ def build_easymagpie_state(payload: StagePayload) -> EasyMagpieTTSState:
         raise ValueError(
             "EasyMagpie TTS temperature, top_k, and max_new_frames must be positive"
         )
+    else:
+        pass
+    if top_k > MAX_TOP_K:
+        raise ValueError(f"EasyMagpie TTS top_k must be at most {MAX_TOP_K}")
     else:
         pass
 

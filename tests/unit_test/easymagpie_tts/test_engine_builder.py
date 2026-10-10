@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from sglang_omni.models.easymagpie_tts.engine_builder import (
+    EasyMagpieTTSEngineBuilder,
+    decode_graph_batch_sizes,
+)
+
+
+@pytest.mark.parametrize(
+    ("max_batch", "sizes"),
+    [
+        (1, [1]),
+        (6, [1, 2, 4, 6]),
+        (8, [1, 2, 4, 8]),
+        (128, [1, 2, 4, 8, 16, 32, 64, 128]),
+    ],
+)
+def test_decode_graph_sizes_end_at_the_running_limit(max_batch, sizes) -> None:
+    assert decode_graph_batch_sizes(max_batch) == sizes
+
+
+def test_decode_graphs_are_on_by_default_and_prefill_graphs_off() -> None:
+    builder = EasyMagpieTTSEngineBuilder(max_running_requests=8)
+    defaults = builder.generation_defaults(dtype="float16")
+    assert defaults["disable_cuda_graph"] is False
+    assert defaults["disable_prefill_cuda_graph"] is True
+    assert defaults["cuda_graph_max_bs"] == 8
+    assert defaults["cuda_graph_bs"] == [1, 2, 4, 8]
+    eager = EasyMagpieTTSEngineBuilder(cuda_graph=False).generation_defaults(
+        dtype="float16"
+    )
+    assert eager["disable_cuda_graph"] is True
+
+
+def test_graph_buckets_follow_a_stage_running_limit_override() -> None:
+    builder = EasyMagpieTTSEngineBuilder()
+    overrides = {"max_running_requests": 4}
+    builder.adjust_overrides(overrides)
+    assert overrides["cuda_graph_max_bs"] == 4
+    assert overrides["cuda_graph_bs"] == [1, 2, 4]
+    with pytest.raises(ValueError, match="tp_size"):
+        builder.adjust_overrides({"tp_size": 2})
+
+
+def test_setup_model_sizes_decode_buffers_before_capture(talker) -> None:
+    worker = SimpleNamespace(model_runner=SimpleNamespace(model=talker))
+    EasyMagpieTTSEngineBuilder(max_running_requests=6).setup_model(
+        model_worker=worker,
+        checkpoint_dir="unused",
+        device="cpu",
+        gpu_id=0,
+        server_args=SimpleNamespace(max_running_requests=3),
+    )
+    assert talker.decode_buffers.capacity == 6

@@ -124,7 +124,7 @@ def test_decode_applies_phoneme_and_speech_delays(runner, talker) -> None:
     runner.before_decode(decode_batch(1), None, [request])
     assert calls[-1]["previous_audio_codes"].tolist() == [[16] * 4]
     assert calls[-1]["text_tokens"].tolist() == [63]
-    assert talker.decode_step.audio_valid.tolist() == [True]
+    assert talker.decode_buffers.audio_valid[:1].tolist() == [True]
 
     runner.before_decode(decode_batch(1), None, [request])
     assert calls[-1]["previous_audio_codes"].tolist() == [[3] * 4]
@@ -156,24 +156,37 @@ def test_decode_sampling_controls_stay_request_local(runner, talker) -> None:
 
     runner.before_decode(batch, None, [first, second])
 
-    step = talker.decode_step
-    assert batch.input_embeds.shape == (2, 8)
-    assert step.temperatures.tolist() == pytest.approx([0.5, 0.9])
-    assert (step.top_ks.tolist(), step.max_top_k) == ([3, 6], 6)
-    assert step.seeds.tolist() == [7, 22]
-    assert step.positions.tolist() == [6 * 4, 8 * 4]
+    buffers = talker.decode_buffers
+    assert buffers.temperatures.tolist() == pytest.approx([0.5, 0.9, 1.0, 1.0])
+    assert buffers.top_ks.tolist() == [3, 6, 1, 1]
+    assert buffers.seeds[:2].tolist() == [7, 22]
+    assert buffers.positions[:2].tolist() == [6 * 4, 8 * 4]
     assert (first.data.decode_offset, second.data.decode_offset) == (6, 8)
 
 
+def test_decode_pads_unused_graph_rows(runner, talker) -> None:
+    buffers = talker.decode_buffers
+    buffers.conditioning.fill_(5)
+    buffers.audio_valid.fill_(True)
+
+    runner.before_decode(decode_batch(1), None, [make_request(5)])
+
+    assert torch.all(buffers.conditioning[1:] == 0)
+    assert buffers.audio_valid.tolist() == [True, False, False, False]
+    with pytest.raises(ValueError, match="capacity"):
+        runner.before_decode(decode_batch(5), None, [make_request(5) for _ in range(5)])
+
+
 def test_post_decode_emits_audio_frames_but_not_warmup_or_eos(runner, talker) -> None:
-    talker.last_audio_codes = torch.stack((torch.arange(4), torch.full((4,), 17)))
-    talker.last_phoneme_tokens = torch.tensor([[9], [18]])
-    talker.last_audio_eos = torch.tensor([False, True])
+    buffers = talker.decode_buffers
+    buffers.codes[:2] = torch.stack((torch.arange(4), torch.full((4,), 17)))
+    buffers.phonemes[:2] = torch.tensor([[9], [18]])
+    buffers.eos[:2] = torch.tensor([False, True])
     speaking, stopping = make_request(6), make_request(6)
     warming = make_request(5)
 
     runner.post_decode(None, None, None, [speaking, stopping])
-    talker.last_audio_eos = torch.tensor([False])
+    buffers.eos[0] = False
     runner.post_decode(None, None, None, [warming])
 
     assert [codes.tolist() for codes in speaking.data.output_codes] == [[0, 1, 2, 3]]

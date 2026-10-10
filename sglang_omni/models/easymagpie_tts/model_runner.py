@@ -20,7 +20,6 @@ from sglang_omni.model_runner.prefill_inputs import (
 from sglang_omni.models.easymagpie_tts.request_builders import (
     EasyMagpieSGLangRequestData,
 )
-from sglang_omni.models.easymagpie_tts.sglang_model import EasyMagpieDecodeStep
 
 
 class EasyMagpieTTSModelRunner(ModelRunner):
@@ -179,14 +178,13 @@ class EasyMagpieTTSModelRunner(ModelRunner):
             previous_audio_codes=torch.stack(audio_rows),
             audio_valid=audio_valid_tensor,
         )
-        forward_batch.input_embeds = conditioning.to(self.model_dtype())
-        self.model.decode_step = EasyMagpieDecodeStep(
+        self.model.decode_buffers.stage(
+            conditioning=conditioning.to(self.model_dtype()),
             audio_valid=audio_valid_tensor,
-            temperatures=torch.tensor(temperatures, device=device, dtype=torch.float32),
-            top_ks=torch.tensor(top_ks, device=device),
-            seeds=torch.tensor(seeds, device=device),
-            positions=torch.tensor(positions, device=device),
-            max_top_k=max(top_ks),
+            temperatures=torch.tensor(temperatures, dtype=torch.float32),
+            top_ks=torch.tensor(top_ks),
+            seeds=torch.tensor(seeds),
+            positions=torch.tensor(positions),
         )
 
     def post_decode(
@@ -195,10 +193,11 @@ class EasyMagpieTTSModelRunner(ModelRunner):
         del result, forward_batch, schedule_batch
         rows = len(requests)
         config = self.model.tts_config
-        codes = self.model.last_audio_codes[:rows].clone()
-        phonemes = self.model.last_phoneme_tokens[:rows].clone()
+        buffers = self.model.decode_buffers
+        codes = buffers.codes[:rows].clone()
+        phonemes = buffers.phonemes[:rows].clone()
         phoneme_eos = (phonemes == config.phoneme_eos_id).any(dim=1).tolist()
-        audio_eos = self.model.last_audio_eos[:rows].tolist()
+        audio_eos = buffers.eos[:rows].tolist()
         for row, request in enumerate(requests):
             data = request.data
             data.last_audio_codes = codes[row]
