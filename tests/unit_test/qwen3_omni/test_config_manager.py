@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -14,9 +15,15 @@ from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
+    talker_stage_env,
 )
+from sglang_omni.pipeline.mp_runner import build_stage_groups
+from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from sglang_omni.pipeline.stage_workers import patched_spawn_env
+from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
+CLIP_ENV = "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -304,22 +311,76 @@ stages:
         ConfigManager.from_file(str(config_path))
 
 
-def test_qwen3_omni_h100_bf16_config_enables_speech_prefill_graph() -> None:
-    from pathlib import Path
-
-    repo_root = Path(__file__).resolve().parents[3]
+def test_qwen3_omni_h100_bf16_profile_pins_the_measured_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The H100 profile ships the breakable prefill graph, the thinker reserve,
+    the talker admission estimate and the code2wav batching knobs."""
+    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: False)
     config_path = (
-        repo_root / "examples" / "configs" / "qwen3_omni_colocated_h100_bf16.yaml"
+        REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h100_bf16.yaml"
     )
 
     config = ConfigManager.from_file(str(config_path)).config
-    overrides = make_stage(config, "thinker").engine.overrides()
+    thinker = make_stage(config, "thinker")
+    overrides = thinker.engine.overrides()
+    thinker_args = resolve_stage_factory_args(thinker, config)
+    code2wav_args = resolve_stage_factory_args(make_stage(config, "code2wav"), config)
 
     assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
     assert "disable_radix_cache" not in overrides
     assert overrides["cuda_graph_backend_prefill"] == "breakable"
     assert "cuda_graph_bs_prefill" not in overrides
     assert overrides["cuda_graph_max_bs_prefill"] == 2048
+    assert thinker_args["encoder_mem_reserve"] == pytest.approx(0.045)
+    assert make_stage(config, "talker_ar").env == {
+        **talker_stage_env(),
+        CLIP_ENV: "256",
+    }
+    assert code2wav_args["enable_batching"] is True
+    assert code2wav_args["max_batch_wait_ms"] == 8
+    assert code2wav_args["batch_floor"] == 4
+    assert code2wav_args["batch_ceiling"] == 16
+    assert code2wav_args["initial_codec_chunk_frames"] == 2
+
+
+def test_qwen3_omni_h100_bf16_talker_clip_reaches_only_the_talker_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: False)
+    monkeypatch.delenv(CLIP_ENV, raising=False)
+    config_path = (
+        REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h100_bf16.yaml"
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+
+    prepared = prepare_pipeline_runtime(config)
+    try:
+        groups = build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prepared.stages_cfg,
+            endpoints=prepared.endpoints,
+            placement_plan=prepared.placement_plan,
+            process_plan=prepared.process_plan,
+        )
+    finally:
+        prepared.runtime_dir.close()
+    processes = [process for group in groups for process in group.process_specs]
+    talker_process = next(
+        process
+        for process in processes
+        if any(stage.stage_name == "talker_ar" for stage in process.stage_specs)
+    )
+
+    assert all(stage.stage_name != "thinker" for stage in talker_process.stage_specs)
+    for process in processes:
+        with patched_spawn_env(process):
+            if process is talker_process:
+                assert os.environ[CLIP_ENV] == "256"
+            else:
+                assert CLIP_ENV not in os.environ
+        assert CLIP_ENV not in os.environ
 
 
 def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
