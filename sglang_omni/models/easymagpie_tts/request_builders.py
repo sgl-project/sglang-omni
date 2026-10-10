@@ -18,6 +18,7 @@ from sglang_omni.models.easymagpie_tts.payload_types import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_K,
     DEFAULT_VOICE,
+    MAX_TEXT_TOKENS,
     MAX_TOP_K,
     EasyMagpieTTSState,
 )
@@ -100,11 +101,6 @@ class EasyMagpieSGLangRequestData(SGLangARRequestData):
     state: EasyMagpieTTSState = field(default_factory=EasyMagpieTTSState)
     output_codes: list[torch.Tensor] = field(default_factory=list)
     stream_code_count: int = 0
-    decode_offset: int = 0
-    last_audio_codes: torch.Tensor | None = None
-    last_phoneme_tokens: torch.Tensor | None = None
-    last_phoneme_is_eos: bool = False
-    phoneme_ended: bool = False
     sampling_seed: int = 0
     engine_start_s: float = 0.0
 
@@ -131,6 +127,13 @@ def build_sglang_easymagpie_request(
     payload: StagePayload,
 ) -> EasyMagpieSGLangRequestData:
     state = EasyMagpieTTSState.from_dict(payload.data)
+    if len(state.text_token_ids) > MAX_TEXT_TOKENS:
+        raise ValueError(
+            f"EasyMagpie TTS text has {len(state.text_token_ids)} tokens; "
+            f"at most {MAX_TEXT_TOKENS} are supported"
+        )
+    else:
+        pass
     speaker_frames = (
         0 if state.speaker_embedding is None else int(state.speaker_embedding.shape[0])
     )
@@ -156,7 +159,6 @@ def build_sglang_easymagpie_request(
     req.tokenizer = None
     return EasyMagpieSGLangRequestData(
         state=state,
-        decode_offset=state.text_prefill_num,
         stage_payload=payload,
         req=req,
         output_ids=req.output_ids,

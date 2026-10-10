@@ -20,7 +20,10 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTe
 from sglang.srt.models.nemotron_h import NemotronHForCausalLM
 from torch import nn
 
-from sglang_omni.models.easymagpie_tts.decode_buffers import EasyMagpieDecodeBuffers
+from sglang_omni.models.easymagpie_tts.decode_state import (
+    DecodeStepInputs,
+    EasyMagpieDecodeState,
+)
 from sglang_omni.models.easymagpie_tts.hf_config import (
     EasyMagpieTTSConfig,
     adapt_backbone_config,
@@ -106,21 +109,25 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
         self.heads = EasyMagpieTTSHeads(self.tts_config)
         patch_silu_shared_experts(self.backbone)
         keep_shared_expert_input_intact(self.backbone)
-        self.decode_buffers: EasyMagpieDecodeBuffers | None = None
+        self.decode_state: EasyMagpieDecodeState | None = None
+        self.decode_dtype: torch.dtype | None = None
         self.last_phoneme_tokens: torch.Tensor | None = None
 
     def get_input_embeddings(self) -> nn.Module:
         return self.backbone.get_input_embeddings()
 
-    def setup_decode_buffers(self, max_batch: int, max_top_k: int) -> None:
-        weight = self.heads.text_embedding.weight
-        self.decode_buffers = EasyMagpieDecodeBuffers.allocate(
+    def setup_decode_state(
+        self, *, num_slots: int, text_capacity: int, max_batch: int, max_top_k: int
+    ) -> None:
+        self.decode_state = EasyMagpieDecodeState.allocate(
             self.tts_config,
+            num_slots=num_slots,
+            text_capacity=text_capacity,
             max_batch=max_batch,
             max_top_k=max_top_k,
-            device=weight.device,
-            dtype=next(self.backbone.parameters()).dtype,
+            device=self.heads.text_embedding.weight.device,
         )
+        self.decode_dtype = next(self.backbone.parameters()).dtype
 
     def compose_conditioning(
         self,
@@ -142,28 +149,39 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
             + mask_rows(audio, audio_valid)
         )
 
+    def compose_decode_step(self, inputs: DecodeStepInputs) -> torch.Tensor:
+        return self.compose_conditioning(
+            text_tokens=inputs.text_tokens,
+            text_valid=inputs.text_valid,
+            phoneme_tokens=inputs.phoneme_tokens,
+            phoneme_valid=inputs.phoneme_valid,
+            previous_audio_codes=inputs.audio_codes,
+            audio_valid=inputs.audio_valid,
+        )
+
     def decode_tts_heads(
-        self, hidden_states: torch.Tensor, buffers: EasyMagpieDecodeBuffers
+        self, hidden_states: torch.Tensor, inputs: DecodeStepInputs
     ) -> torch.Tensor:
-        """Sample acoustic codes and predict phonemes into ``buffers``.
+        """Sample acoustic codes, predict phonemes, and commit both as feedback.
 
         Returns the per-row acoustic EOS flags.
         """
-        batch = hidden_states.shape[0]
+        state = self.decode_state
         codes = self.heads.sample_codes(
             hidden_states,
-            temperatures=buffers.temperatures[:batch],
-            top_ks=buffers.top_ks[:batch],
-            seeds=buffers.seeds[:batch],
-            positions=buffers.positions[:batch],
-            max_top_k=buffers.max_top_k,
+            temperatures=inputs.temperatures,
+            top_ks=inputs.top_ks,
+            seeds=inputs.seeds,
+            positions=inputs.positions,
+            max_top_k=state.max_top_k,
         )
-        eos = (codes == self.tts_config.audio_eos_id).any(dim=1) & buffers.audio_valid[
-            :batch
-        ]
-        buffers.codes[:batch].copy_(codes)
-        buffers.phonemes[:batch].copy_(self.heads.predict_phonemes(hidden_states))
-        buffers.eos[:batch].copy_(eos)
+        eos = (codes == self.tts_config.audio_eos_id).any(dim=1) & inputs.audio_valid
+        state.commit(
+            inputs,
+            codes=codes,
+            phonemes=self.heads.predict_phonemes(hidden_states),
+            eos=eos,
+        )
         return eos
 
     def make_stop_logits(
@@ -191,16 +209,17 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
     ) -> LogitsProcessorOutput:
         del input_embeds_are_projected, omni_prefill_rids
         is_extend = forward_batch.forward_mode.is_extend()
-        buffers = self.decode_buffers
+        step_inputs = None
         if is_extend:
             if input_embeds is None:
                 input_embeds = forward_batch.input_embeds
             else:
                 pass
-        elif buffers is None:
-            raise RuntimeError("EasyMagpie decode ran before setup_decode_buffers")
+        elif self.decode_state is None:
+            raise RuntimeError("EasyMagpie decode ran before setup_decode_state")
         else:
-            input_embeds = buffers.conditioning[: input_ids.shape[0]]
+            step_inputs = self.decode_state.read(forward_batch.req_pool_indices)
+            input_embeds = self.compose_decode_step(step_inputs).to(self.decode_dtype)
         hidden_states = self.backbone.model(
             input_ids,
             positions,
@@ -218,7 +237,7 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
                 hidden_states.shape[0], device=hidden_states.device, dtype=torch.bool
             )
         else:
-            eos = self.decode_tts_heads(hidden_states, buffers)
+            eos = self.decode_tts_heads(hidden_states, step_inputs)
         return LogitsProcessorOutput(
             next_token_logits=self.make_stop_logits(hidden_states, eos),
             hidden_states=hidden_states,

@@ -16,6 +16,8 @@ DEFAULT_TEMPERATURE = 0.7
 DEFAULT_TOP_K = 80
 # Width of the decode graph's top-k sampling kernels.
 MAX_TOP_K = 80
+# Text tokens per request the on-GPU decode state holds.
+MAX_TEXT_TOKENS = 8192
 DEFAULT_MAX_NEW_FRAMES = 2048
 
 
@@ -47,6 +49,7 @@ __all__ = [
     "DEFAULT_TOP_K",
     "DEFAULT_VOICE",
     "EASYMAGPIE_SAMPLE_RATE",
+    "MAX_TEXT_TOKENS",
     "MAX_TOP_K",
     "EasyMagpieTTSState",
 ]

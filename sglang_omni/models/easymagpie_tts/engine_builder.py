@@ -11,7 +11,7 @@ from sglang.kernels.ops.mamba.triton_ops import (
 from sglang.srt.environ import envs
 
 from sglang_omni.models.easymagpie_tts.model_runner import EasyMagpieTTSModelRunner
-from sglang_omni.models.easymagpie_tts.payload_types import MAX_TOP_K
+from sglang_omni.models.easymagpie_tts.payload_types import MAX_TEXT_TOKENS, MAX_TOP_K
 from sglang_omni.models.easymagpie_tts.request_builders import (
     apply_easymagpie_result,
     build_sglang_easymagpie_request,
@@ -41,10 +41,14 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         max_running_requests: int = DEFAULT_MAX_RUNNING_REQUESTS,
         mem_fraction_static: float = 0.72,
         cuda_graph: bool = True,
+        enable_async_decode: bool = True,
+        async_decode_min_batch_size: int = 1,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.mem_fraction_static = mem_fraction_static
         self.cuda_graph = cuda_graph
+        self.enable_async_decode = enable_async_decode
+        self.async_decode_min_batch_size = async_decode_min_batch_size
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -59,10 +63,10 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
             "max_running_requests": self.max_running_requests,
             "max_total_tokens": self.max_running_requests * EASYMAGPIE_CONTEXT_LENGTH,
             "mem_fraction_static": self.mem_fraction_static,
-            # Per-step phoneme and acoustic feedback lives on request data and
-            # has no rollback, so a non-final prefill chunk would corrupt it.
+            # Decode state is seeded from the prompt's last row, so the prompt
+            # must arrive in one prefill.
             "chunked_prefill_size": 0,
-            # The decode graph reads the model's fixed decode buffers; the
+            # The decode graph reads the model's decode state tables; the
             # custom prefill embeddings are not captured.
             "disable_cuda_graph": not self.cuda_graph,
             "disable_prefill_cuda_graph": True,
@@ -102,13 +106,19 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del checkpoint_dir, device, gpu_id
-        model = model_worker.model_runner.model
+        model_runner = model_worker.model_runner
+        model = model_runner.model
         model.eval()
         # Before graph capture, which the factory runs after setup_model. SGLang
         # may lower max_running_requests to fit memory, but the graph buckets
         # still reach the requested size.
         max_batch = max(self.max_running_requests, server_args.max_running_requests)
-        model.setup_decode_buffers(int(max_batch), MAX_TOP_K)
+        model.setup_decode_state(
+            num_slots=int(model_runner.req_to_token_pool.size),
+            text_capacity=MAX_TEXT_TOKENS,
+            max_batch=int(max_batch),
+            max_top_k=MAX_TOP_K,
+        )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         return EasyMagpieTTSModelRunner(model_worker, output_proc)
@@ -118,7 +128,11 @@ class EasyMagpieTTSEngineBuilder(TtsEngineBuilder):
         return build_sglang_easymagpie_request, apply_easymagpie_result
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
-        return {"stream_output_builder": easymagpie_stream_output_builder}
+        return {
+            "stream_output_builder": easymagpie_stream_output_builder,
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_min_batch_size": self.async_decode_min_batch_size,
+        }
 
 
 __all__ = [

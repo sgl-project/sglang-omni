@@ -8,6 +8,7 @@ import torch
 from sglang_omni.models.easymagpie_tts.payload_types import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_K,
+    MAX_TEXT_TOKENS,
     EasyMagpieTTSState,
 )
 from sglang_omni.models.easymagpie_tts.request_builders import (
@@ -105,12 +106,17 @@ def test_sglang_request_covers_speaker_context_and_text_lead_in() -> None:
     state = preprocessed_state()
     data = build_sglang_easymagpie_request(make_payload("hello", data=state.to_dict()))
     assert data.input_ids.numel() == 3 + 2 + 4
-    assert data.decode_offset == state.text_prefill_num
     assert data.req.sampling_params.max_new_tokens == max_decode_tokens(state)
     assert max_decode_tokens(state) == 10 + 5 - 4 + 1
     assert data.req.eos_token_ids == {STOP_TOKEN_ID}
     assert data.sampling_seed == 5
     assert data.output_ids is data.req.output_ids
+
+
+def test_sglang_request_rejects_text_the_decode_state_cannot_hold() -> None:
+    state = preprocessed_state(text_token_ids=[11] * (MAX_TEXT_TOKENS + 1))
+    with pytest.raises(ValueError, match=f"at most {MAX_TEXT_TOKENS}"):
+        build_sglang_easymagpie_request(make_payload("hello", data=state.to_dict()))
 
 
 def test_cache_key_separates_prompts_with_identical_placeholder_ids() -> None:

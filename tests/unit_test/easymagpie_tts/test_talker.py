@@ -8,45 +8,25 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from sglang_omni.models.easymagpie_tts.decode_buffers import EasyMagpieDecodeBuffers
+from sglang_omni.models.easymagpie_tts.decode_state import EMIT_COLUMN, STOP_COLUMN
+from sglang_omni.models.easymagpie_tts.payload_types import EasyMagpieTTSState
 from sglang_omni.models.easymagpie_tts.sglang_model import (
     keep_shared_expert_input_intact,
     patch_silu_shared_experts,
 )
 
 
-def decode_buffers(
-    talker, batch: int, *, top_k: int = 5, seed: int = 3, audio_valid=None
-) -> EasyMagpieDecodeBuffers:
-    buffers = EasyMagpieDecodeBuffers.allocate(
-        talker.tts_config,
-        max_batch=batch,
-        max_top_k=top_k,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-    )
-    buffers.stage(
-        conditioning=torch.zeros(batch, 8),
-        audio_valid=(
-            torch.ones(batch, dtype=torch.bool) if audio_valid is None else audio_valid
-        ),
+def sample(
+    talker, hidden: torch.Tensor, *, top_k: int = 5, seed: int = 3
+) -> torch.Tensor:
+    batch = hidden.shape[0]
+    return talker.heads.sample_codes(
+        hidden,
         temperatures=torch.full((batch,), 0.8),
         top_ks=torch.full((batch,), top_k),
         seeds=torch.full((batch,), seed),
         positions=torch.arange(batch) * 4,
-    )
-    return buffers
-
-
-def sample(talker, hidden: torch.Tensor, **kwargs) -> torch.Tensor:
-    buffers = decode_buffers(talker, hidden.shape[0], **kwargs)
-    return talker.heads.sample_codes(
-        hidden,
-        temperatures=buffers.temperatures,
-        top_ks=buffers.top_ks,
-        seeds=buffers.seeds,
-        positions=buffers.positions,
-        max_top_k=buffers.max_top_k,
+        max_top_k=top_k,
     )
 
 
@@ -108,15 +88,27 @@ def test_acoustic_eos_drives_stop_logits_only_on_audio_rows(talker) -> None:
     codes[0, 2] = talker.tts_config.audio_eos_id
     codes[2, 1] = talker.tts_config.audio_eos_id
     talker.heads.sample_codes = lambda *args, **kwargs: codes
-    buffers = decode_buffers(talker, 3, audio_valid=torch.tensor([True, True, False]))
+    state = talker.decode_state
+    state.seed(
+        slots=[1, 2, 3],
+        states=[
+            EasyMagpieTTSState(text_prefill_num=4, speech_delay=delay)
+            for delay in (4, 4, 5)
+        ],
+        seeds=[0, 0, 0],
+        prefill_phonemes=torch.zeros((3, 1), dtype=torch.long),
+    )
     hidden = torch.zeros(3, 8)
 
-    eos = talker.decode_tts_heads(hidden, buffers)
+    eos = talker.decode_tts_heads(hidden, state.read(torch.tensor([1, 2, 3])))
     logits = talker.make_stop_logits(hidden, eos)
 
-    assert buffers.codes.tolist() == codes.tolist()
-    assert buffers.phonemes.shape == (3, 1)
-    assert buffers.eos.tolist() == eos.tolist() == [True, False, False]
+    output = state.step_output[:3]
+    assert output[:, :4].tolist() == codes.tolist()
+    assert eos.tolist() == [True, False, False]
+    assert output[:, EMIT_COLUMN].tolist() == [0, 1, 0]
+    assert output[:, STOP_COLUMN].tolist() == [1, 0, 0]
+    assert state.last_audio[1:4].tolist() == codes.tolist()
     assert logits[:, 1].tolist() == [30.0, -30.0, -30.0]
     assert logits[:, 0].tolist() == [0.0, 0.0, 0.0]
 

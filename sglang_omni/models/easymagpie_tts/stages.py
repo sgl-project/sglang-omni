@@ -117,6 +117,8 @@ def create_sglang_tts_engine_executor(
     max_running_requests: int = 64,
     mem_fraction_static: float = 0.72,
     cuda_graph: bool = True,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 1,
     server_args_overrides: dict | None = None,
 ) -> Any:
     from sglang_omni.models.easymagpie_tts.engine_builder import (
@@ -127,6 +129,8 @@ def create_sglang_tts_engine_executor(
         max_running_requests=max_running_requests,
         mem_fraction_static=mem_fraction_static,
         cuda_graph=cuda_graph,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
     ).build(
         model_path,
         device=device,
