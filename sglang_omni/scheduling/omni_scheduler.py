@@ -13,7 +13,9 @@ inheriting from ``SGLangScheduler``.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import queue as _queue_mod
 import threading
 import time
@@ -106,6 +108,9 @@ else:
     pass
 
 logger = logging.getLogger(__name__)
+# note (wenyao): read per finished request like the other SGLANG_OMNI_* flags, so the
+# toggle stays live without a scheduler field.
+TERMINAL_RECEIPTS_ENV = "SGLANG_OMNI_TERMINAL_RECEIPTS"
 
 
 class RequiredAdminActionResult(TypedDict):
@@ -116,6 +121,21 @@ class RequiredAdminActionResult(TypedDict):
 class AdminActionResult(RequiredAdminActionResult, total=False):
     data: dict[str, object] | WeightCheckResult
     error: str | None
+
+
+class TerminalReceipt(TypedDict):
+    request_id: str
+    stage: str | None
+    finish_class: str | None
+    finish_detail: dict[str, str | int | list[int] | None] | None
+    output_token_count: int
+    last_token_id: int | None
+    max_new_tokens: int | None
+    eos_token_ids: list[int]
+    stop_token_ids: list[int]
+    ignore_eos: bool
+    tokenizer_eos_token_id: int | None
+    tokenizer_additional_stop_token_ids: list[int]
 
 
 _FAILED_BATCH_RESULT = object()
@@ -2224,6 +2244,50 @@ class OmniScheduler(Generic[RequestDataT]):
         self.prefill_start_done.discard(request_id)
         _emit_model_path_end(request_id, status=status)
 
+    def emit_terminal_receipt(
+        self, request_id: str, request: Req, request_data: ARRequestData
+    ) -> None:
+        """Log one OMNI_TERMINAL_RECEIPT line per non-aborted finished request,
+        per stage, on the entry rank when SGLANG_OMNI_TERMINAL_RECEIPTS=1.
+        stage is the thread-bound active stage and null when none is bound."""
+        if (os.environ.get(TERMINAL_RECEIPTS_ENV) or "").strip() != "1":
+            return
+        elif not self.is_entry_rank:
+            return
+        else:
+            pass
+        finished_reason = request.finished_reason
+        sampling_params = request.sampling_params
+        tokenizer = request.tokenizer
+        output_ids = request_data.output_ids
+        if tokenizer is None:
+            tokenizer_eos_token_id: int | None = None
+            tokenizer_additional_stop_token_ids: list[int] = []
+        else:
+            tokenizer_eos_token_id = tokenizer.eos_token_id
+            tokenizer_additional_stop_token_ids = sorted(
+                tokenizer.additional_stop_token_ids or ()
+            )
+        receipt = TerminalReceipt(
+            request_id=request_id,
+            stage=_get_active_stage(),
+            finish_class=(
+                None if finished_reason is None else type(finished_reason).__name__
+            ),
+            finish_detail=(
+                None if finished_reason is None else finished_reason.to_json()
+            ),
+            output_token_count=len(output_ids),
+            last_token_id=output_ids[-1] if output_ids else None,
+            max_new_tokens=sampling_params.max_new_tokens,
+            eos_token_ids=sorted(request.eos_token_ids or ()),
+            stop_token_ids=sorted(sampling_params.stop_token_ids or ()),
+            ignore_eos=sampling_params.ignore_eos,
+            tokenizer_eos_token_id=tokenizer_eos_token_id,
+            tokenizer_additional_stop_token_ids=tokenizer_additional_stop_token_ids,
+        )
+        logger.info(f"OMNI_TERMINAL_RECEIPT {json.dumps(receipt, sort_keys=True)}")
+
     def emit_remaining_model_path_ends(self, *, status: str) -> None:
         for request_id in tuple(self.prefill_start_done):
             self.emit_model_path_end_once(request_id, status=status)
@@ -2309,6 +2373,7 @@ class OmniScheduler(Generic[RequestDataT]):
                     pass
                 data.output_ids = list(req.output_ids)
                 data.weight_version = get_serving().weight_version
+                self.emit_terminal_receipt(rid, req, data)
                 self.flush_stream_output(rid, data)
                 session_unit = self.active_session_unit(rid)
                 if session_unit is None:
