@@ -15,7 +15,12 @@ from typing import Literal, Protocol, TypedDict
 
 import torch
 from torch.cuda import _POOL_HANDLE as CudaGraphPoolHandle
-from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
+
+try:
+    from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
+except ImportError:
+    # NPU-only PyTorch builds may not include the optional XPU pool type.
+    XpuGraphPoolHandle = CudaGraphPoolHandle
 
 
 class CudaCaptureKwargs(TypedDict, total=False):

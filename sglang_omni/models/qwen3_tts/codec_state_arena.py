@@ -186,7 +186,7 @@ class Qwen3TTSCodecStateArena:
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
         if not supports_device_streams(self.device):
-            return torch.as_tensor(list(values), dtype=torch.long)
+            return torch.as_tensor(list(values), dtype=torch.long, device=self.device)
         else:
             pass
         count = len(values)

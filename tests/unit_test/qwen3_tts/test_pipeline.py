@@ -567,7 +567,7 @@ def test_qwen3_tts_npu_configs_use_eager_sdpa_baseline(
     assert stages["vocoder"].factory.attn_implementation == "sdpa"
 
 
-def test_qwen3_tts_0_6b_base_npu_config_uses_eager_concurrency() -> None:
+def test_qwen3_tts_0_6b_base_npu_config_uses_conservative_vocoder_defaults() -> None:
     config_path = Path(__file__).parents[3] / "examples/configs/qwen3_tts_0_6b_npu.yaml"
     config = ConfigManager.from_file(str(config_path)).config
     stages = {stage.name: stage for stage in config.stages}
@@ -578,6 +578,9 @@ def test_qwen3_tts_0_6b_base_npu_config_uses_eager_concurrency() -> None:
     assert engine.max_running_requests == 16
     assert engine.max_queued_requests == 16
     assert vocoder.max_batch_size == 8
+    assert vocoder.initial_max_batch_size == 1
+    assert vocoder.followup_max_batch_size == 1
+    assert getattr(vocoder, "async_decode", None) is None
 
 
 @pytest.mark.parametrize(
@@ -5811,6 +5814,68 @@ def test_qwen3_tts_async_followup_batches_ready_requests() -> None:
     assert batch_sizes == [1, 1, 2]
 
 
+def test_qwen3_tts_async_worker_binds_accelerator_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    device = SimpleNamespace(type="npu", index=3)
+    scheduler.device = device
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_tts.streaming_vocoder.current_platform.set_device",
+        lambda device: calls.append(("device", device)),
+    )
+
+    scheduler.activate_decode_worker(None)
+
+    assert calls == [("device", device)]
+
+
+def test_qwen3_tts_async_worker_keeps_cuda_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    scheduler.device = SimpleNamespace(type="cuda", index=0)
+    stream = object()
+    calls: list[object] = []
+    scheduler.device_module = SimpleNamespace(set_stream=calls.append)
+
+    scheduler.activate_decode_worker(stream)
+
+    assert calls == [stream]
+
+
+@pytest.mark.parametrize("worker", ["initial", "followup"])
+def test_qwen3_tts_async_worker_entry_activates_device(
+    monkeypatch: pytest.MonkeyPatch,
+    worker: str,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(scheduler, "activate_decode_worker", calls.append)
+
+    if worker == "initial":
+        scheduler.initial_queue.put(None)
+        scheduler.run_initial_worker()
+    else:
+        scheduler.followup_queue.put((float("inf"), 0, "", None))
+        scheduler.run_followup_worker()
+
+    assert calls == [None]
+
+
 def test_qwen3_tts_followup_queue_prioritizes_playback_deadline() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         FakeQwen3TTSSpeechTokenizer(),
@@ -7619,6 +7684,115 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
     assert sampler_calls[1]["positions"].tolist() == [11, 11]
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_qwen3_tts_predictor_overwrites_reused_outputs(
+    monkeypatch: pytest.MonkeyPatch, dtype: torch.dtype
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker.predictor_k_cache = torch.empty(0, dtype=dtype)
+    talker.output_codes = torch.full((5, 4), -1, dtype=torch.long)
+    talker.output_embeds = torch.full((5, 8), float("nan"), dtype=dtype)
+    talker.predictor_projected_embeddings = None
+    talker.sub_has_sampled_rows = False
+    talker.sub_batch_size = 5
+    embeddings = [
+        torch.nn.Embedding.from_pretrained(
+            (torch.arange(64).reshape(8, 8) / 16 + group).to(dtype)
+        )
+        for group in range(4)
+    ]
+    projection_inputs = []
+
+    def project_input(hidden_states):
+        projection_inputs.append(hidden_states.clone())
+        return hidden_states * 2
+
+    def predictor_forward_tokens(*, token_embeds, batch_size, cache_len):
+        assert token_embeds.shape[0] == batch_size
+        assert cache_len in (0, 2, 3)
+        return token_embeds.clone()
+
+    class FixedHead:
+        def __init__(self, token: int) -> None:
+            self.token = token
+
+        def __call__(self, hidden_states):
+            logits = torch.zeros((*hidden_states.shape[:2], 8), dtype=dtype)
+            logits[..., self.token] = 1
+            return logits, None
+
+    talker.get_input_embeddings = lambda: embeddings[0]
+    talker.predictor_forward_tokens = predictor_forward_tokens
+    talker.code_predictor = SimpleNamespace(
+        model=SimpleNamespace(codec_embedding=embeddings[1:]),
+        lm_head=[FixedHead(token) for token in (1, 2, 3)],
+        project_input=project_input,
+    )
+    for step, batch_size in enumerate((3, 1, 4)):
+        layer0 = (torch.arange(batch_size) + step).remainder(8).unsqueeze(1)
+        expected_codes = torch.cat(
+            (layer0, torch.tensor([[1, 2, 3]]).expand(batch_size, -1)), dim=1
+        )
+        expected_embeds = embeddings[0](layer0[:, 0]).clone()
+        for group in range(1, 4):
+            expected_embeds.add_(embeddings[group](expected_codes[:, group]))
+        inactive_codes = talker.output_codes[batch_size:].clone()
+        inactive_embeds = talker.output_embeds[batch_size:].clone()
+        projection_inputs.clear()
+        actual_codes, actual_embeds = talker.code_predictor_forward_incremental(
+            layer0, torch.zeros((batch_size, 1, 8), dtype=dtype)
+        )
+        torch.testing.assert_close(actual_codes[..., 0], expected_codes, rtol=0, atol=0)
+        torch.testing.assert_close(actual_embeds[:, 0], expected_embeds, rtol=0, atol=0)
+        torch.testing.assert_close(talker.output_codes[batch_size:], inactive_codes)
+        torch.testing.assert_close(
+            talker.output_embeds[batch_size:], inactive_embeds, equal_nan=True
+        )
+        assert len(projection_inputs) == 3
+
+
+def test_qwen3_tts_npu_topp_sampling_stays_device_side(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sampling_kernels
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+    from sglang_omni.platforms import current_platform
+
+    if not current_platform.is_npu():
+        pytest.skip("requires Ascend NPU")
+    else:
+        pass
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.sub_temperature_tensor = torch.tensor([1.0], device="npu")
+    talker.sub_top_p_tensor = torch.tensor([0.8], device="npu")
+    talker.sub_top_k_tensor = torch.tensor([-1], device="npu")
+    talker.sub_sampling_seed_tensor = torch.tensor([17], device="npu")
+    talker.sub_sampled_has_top_p = True
+    talker.sub_sampled_max_top_k = 0
+    talker.sub_sampled_has_unbounded_top_k = True
+
+    def fail_cpu_hash(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("NPU Top-P sampling must not call the CPU hash path")
+
+    monkeypatch.setattr(sampling_kernels, "murmur_hash32_pytorch_impl", fail_cpu_hash)
+    token = Qwen3TTSTalker.sample_subtalker_token_seeded(
+        talker,
+        torch.tensor([[2.0, 1.0, 0.0, -1.0]], device="npu"),
+        sub_positions=torch.tensor([10], device="npu"),
+    )
+    torch.npu.synchronize()
+
+    assert token.device.type == "npu"
+    assert 0 <= int(token.cpu()[0]) < 4
+
+
 def test_qwen3_tts_subtalker_top_p_keeps_threshold_crossing_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9013,6 +9187,7 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
     monkeypatch.setattr(
         torch.Tensor, "device", property(lambda tensor: torch.device("cuda"))
     )
+    monkeypatch.setattr(torch, "get_device_module", lambda device: torch.cuda)
 
     ready = object()
     embeds = torch.zeros((3, 4))

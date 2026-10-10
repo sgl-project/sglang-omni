@@ -536,6 +536,18 @@ def make_arena(
     return incremental, arena
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
+def test_codec_state_arena_stages_indices_on_npu() -> None:
+    arena = Qwen3TTSCodecStateArena.__new__(Qwen3TTSCodecStateArena)
+    arena.device = torch.device("npu:0")
+
+    index = arena.stage_index([1, 3])
+
+    assert index.device.type == "npu"
+    assert index.tolist() == [1, 3]
+
+
 def test_state_spec_covers_every_key_the_decode_creates() -> None:
     """The arena preallocates from the spec, so it must match what decode uses."""
     torch.manual_seed(12)
