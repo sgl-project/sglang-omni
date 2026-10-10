@@ -155,6 +155,10 @@ class OmniPlatform(DeviceMixin):
     def supports_fp8_moe(self) -> bool:
         return True
 
+    def get_sglang_attention_backend(self) -> str | None:
+        """Attention backend for SGLang AR engines, or None to keep SGLang's default."""
+        return None
+
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""
         return True

@@ -15,6 +15,11 @@ _DECODE_CUDA_GRAPH_ALIASES = {
     "cuda_graph_max_bs": "cuda_graph_max_bs_decode",
     "cuda_graph_bs": "cuda_graph_bs_decode",
 }
+ATTENTION_BACKEND_FIELDS = (
+    "attention_backend",
+    "prefill_attention_backend",
+    "decode_attention_backend",
+)
 
 
 def platform_device_type() -> str:
@@ -75,6 +80,27 @@ def apply_platform_decode_cuda_graph_backend(kwargs: dict[str, object]) -> None:
     else:
         pass
     kwargs.setdefault("cuda_graph_backend_decode", backend)
+
+
+def apply_platform_attention_backend(kwargs: dict[str, object]) -> None:
+    """Fill an unset attention backend with the platform's choice."""
+    from sglang_omni.platforms import current_platform
+
+    backend = current_platform.get_sglang_attention_backend()
+    if backend is None:
+        return
+    else:
+        pass
+    device = str(kwargs.get("device") or "").split(":")[0]
+    if device != current_platform.device_type:
+        return
+    else:
+        pass
+    if any(kwargs.get(name) is not None for name in ATTENTION_BACKEND_FIELDS):
+        return
+    else:
+        pass
+    kwargs["attention_backend"] = backend
 
 
 def build_sglang_server_args(

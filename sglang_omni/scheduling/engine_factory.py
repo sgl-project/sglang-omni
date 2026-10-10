@@ -113,6 +113,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
     supports_full_prefill_cuda_graph: bool = False
+    # Opt in once the model is validated on the platform's attention backend.
+    uses_platform_attention_backend: ClassVar[bool] = False
 
     def allowed_prefill_cuda_graph_backends(self) -> tuple[str, ...]:
         """Prefill graph backends the policy may accept for this model.
@@ -213,6 +215,10 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         else:
             pass
         sglang_backend.pin_resolved_device_type(overrides, concrete_device.type)
+        if self.uses_platform_attention_backend:
+            sglang_backend.apply_platform_attention_backend(overrides)
+        else:
+            pass
 
         def resolve_server_args() -> ServerArgs:
             server_args = sglang_backend.build_sglang_server_args(

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 import sglang_omni.platforms as platforms
 from sglang_omni.scheduling.sglang_backend import server_args_builder
 
@@ -89,6 +91,14 @@ def drive_build(monkeypatch, *, overrides, gpu_id=0):
     """Run SGLangGenerationEngineBuilder.build() far enough to reach the device
     reconciliation, then stop. Returns the device handed to SGLang.
     """
+    return drive_build_kwargs(monkeypatch, overrides=overrides, gpu_id=gpu_id).get(
+        "device"
+    )
+
+
+def drive_build_kwargs(
+    monkeypatch, *, overrides, gpu_id=0, uses_platform_attention_backend=False
+) -> dict[str, Any]:
     import pytest
 
     from sglang_omni.scheduling import engine_factory
@@ -122,13 +132,14 @@ def drive_build(monkeypatch, *, overrides, gpu_id=0):
             raise NotImplementedError
 
     builder = Builder()
+    builder.uses_platform_attention_backend = uses_platform_attention_backend
     with pytest.raises((Stop, ValueError)) as raised:
         builder.build(
             "unused", device=None, gpu_id=gpu_id, server_args_overrides=overrides
         )
     if isinstance(raised.value, ValueError):
         raise raised.value
-    return captured.get("device")
+    return captured
 
 
 def test_an_operator_device_that_agrees_with_placement_is_passed_through(
@@ -210,3 +221,60 @@ def test_an_engine_that_asked_for_eager_decode_keeps_it(monkeypatch) -> None:
     # An engine naming its own backend keeps that too.
     pinned = build(monkeypatch, cuda_graph_backend_decode="disabled")
     assert pinned["cuda_graph_backend_decode"] == "disabled"
+
+
+def with_attention_backend(monkeypatch, backend: str | None) -> None:
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_sglang_attention_backend",
+        lambda: backend,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        (
+            {"device": "accel"},
+            {"device": "accel", "attention_backend": "platform_attn"},
+        ),
+        ({"device": "cpu"}, {"device": "cpu"}),
+        (
+            {"device": "accel", "attention_backend": "triton"},
+            {"device": "accel", "attention_backend": "triton"},
+        ),
+        (
+            {"device": "accel", "prefill_attention_backend": "triton"},
+            {"device": "accel", "prefill_attention_backend": "triton"},
+        ),
+        (
+            {"device": "accel", "decode_attention_backend": "triton"},
+            {"device": "accel", "decode_attention_backend": "triton"},
+        ),
+    ],
+)
+def test_the_platform_attention_backend_only_fills_an_unset_backend(
+    monkeypatch, kwargs: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "accel", raising=False
+    )
+    with_attention_backend(monkeypatch, "platform_attn")
+
+    server_args_builder.apply_platform_attention_backend(kwargs)
+
+    assert kwargs == expected
+
+
+def test_only_an_opted_in_builder_gets_the_platform_attention_backend(
+    monkeypatch,
+) -> None:
+    with_attention_backend(monkeypatch, "platform_attn")
+
+    opted_out = drive_build_kwargs(monkeypatch, overrides=None)
+    opted_in = drive_build_kwargs(
+        monkeypatch, overrides=None, uses_platform_attention_backend=True
+    )
+
+    assert "attention_backend" not in opted_out
+    assert opted_in["attention_backend"] == "platform_attn"

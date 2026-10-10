@@ -148,6 +148,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
     supports_full_prefill_cuda_graph = CAPABILITIES.supports_full_prefill_cuda_graph
+    uses_platform_attention_backend = True
 
     def __init__(
         self,
