@@ -51,12 +51,12 @@ class PerceptionHooks(SessionHooks):
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
         state = self.states[context.session_identity]
-        if state.is_ended:
-            raise ValueError("VoiceChat input already ended")
-        elif chunk.modality == "tool_response":
-            # Relayed to the thinker without a perception frame.
+        if chunk.modality == "tool_response":
+            # Relayed to the thinker without a perception frame; one that lands after EOS is never consumed.
             payload.data = {"tool_response": chunk.payload, "eos": False}
             return payload
+        elif state.is_ended:
+            raise ValueError("VoiceChat input already ended")
         else:
             pass
         if chunk.modality != "audio" or chunk.format != "pcm16":
@@ -152,14 +152,12 @@ class CodecHooks(SessionHooks):
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
         state = self.states[context.session_identity]
-        if state.is_ended:
-            raise ValueError("VoiceChat codec already ended")
-        else:
-            pass
         model_output = payload.data
         if "tool_response" in model_output:
             payload.data = {}
             return payload
+        elif state.is_ended:
+            raise ValueError("VoiceChat codec already ended")
         else:
             pass
         codes = model_output.get("codes")

@@ -62,6 +62,12 @@ def test_perception_preserves_pcm_and_drains_without_an_extra_frame(
     assert final_output.data == {"acoustic": None, "eos": True}
     with pytest.raises(ValueError, match="already ended"):
         hooks.append(audio_chunk(), stage_payload(), context)
+    # A tool response can return after the user's audio ended; it must not fail the session.
+    late_response = TimedChunk("tool_response", 0, 0, 0, {"responses": []})
+    assert hooks.append(late_response, stage_payload(), context).data == {
+        "tool_response": {"responses": []},
+        "eos": False,
+    }
     hooks.close(session_identity)
     assert hooks.usage(session_identity).bytes == 0
 
@@ -162,6 +168,10 @@ def test_codec_memory_stays_bounded_and_reopen_clears_audio_history() -> None:
             stage_payload({"codes": torch.zeros(1, 1, dtype=torch.long)}),
             context,
         )
+    late_relay = hooks.append(
+        audio_chunk(), stage_payload({"tool_response": {"responses": []}}), context
+    )
+    assert late_relay.data == {}
     hooks.close(session_identity)
     hooks.open(session_identity, OmniRequest(None))
     output = hooks.append(
