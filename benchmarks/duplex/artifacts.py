@@ -22,9 +22,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
+from benchmarks.duplex.client import LEGACY_TAIL_S, TurnDetection
 from benchmarks.duplex.oracle import evaluate_trace
 from benchmarks.duplex.oracle_models import TraceRecord
-from benchmarks.duplex.profiles import ProfileName
+from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 
 
 class InputArtifact(BaseModel):
@@ -80,6 +81,30 @@ def add_server_identity_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--runtime", help="Operator-supplied server runtime, e.g. container digest"
+    )
+
+
+def turn_detection_argument(text: str) -> TurnDetection:
+    try:
+        return TurnDetection.model_validate_json(text)
+    except ValidationError as exc:
+        raise argparse.ArgumentTypeError(exc.errors()[0]["msg"]) from exc
+
+
+def add_protocol_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE)
+    parser.add_argument(
+        "--turn-detection",
+        type=turn_detection_argument,
+        help="JSON turn_detection object for session.update; legacy-protocol "
+        "profiles require it and native ones reject it",
+    )
+    parser.add_argument(
+        "--legacy-tail",
+        type=float,
+        default=LEGACY_TAIL_S,
+        help="Seconds after the input ends before the liveness probe closes a "
+        "legacy-protocol session",
     )
 
 

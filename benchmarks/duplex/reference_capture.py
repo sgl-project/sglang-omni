@@ -19,6 +19,13 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 
 class TraceFormat(str, Enum):
     PCM16 = "realtime-pcm16-v1"
+    LEGACY_PCM16 = "realtime-legacy-pcm16-v1"
+
+
+AUDIO_DELTA = {
+    TraceFormat.PCM16: "response.output_audio.delta",
+    TraceFormat.LEGACY_PCM16: "response.audio.delta",
+}
 
 
 def resolve_trace_format(trace_format: str | None) -> TraceFormat:
@@ -95,10 +102,16 @@ def read_trace(trace: TextIO) -> Iterator[CaptureRecord]:
 
 
 def parse_pcm16_trace(
-    trace: TextIO, samples: NDArray[np.int16], packet_samples: int
+    trace: TextIO,
+    samples: NDArray[np.int16],
+    packet_samples: int,
+    trace_format: TraceFormat = TraceFormat.PCM16,
+    profile_rate: int | None = None,
 ) -> Iterator[CaptureRecord]:
+    """profile_rate is the recorded profile's output rate; the legacy format needs it
+    because its session.updated declares no audio format."""
     index = 0
-    output_rate = None
+    output_rate = profile_rate if trace_format is TraceFormat.LEGACY_PCM16 else None
     for record in read_trace(trace):
         if record.row is None:
             yield record
@@ -129,7 +142,11 @@ def parse_pcm16_trace(
                     raise ValueError("serialized PCM16 differs from input.pcm")
                 else:
                     pass
-            elif row.direction == "receive" and kind == "session.updated":
+            elif (
+                row.direction == "receive"
+                and kind == "session.updated"
+                and trace_format is TraceFormat.PCM16
+            ):
                 session = event.get("session") or {}
                 audio = session.get("audio") or {}
                 output = audio.get("output") or {}
@@ -142,7 +159,7 @@ def parse_pcm16_trace(
                 output_rate = rate if type(rate) is int else None
                 record.declares_output_rate = True
                 record.output_rate = output_rate
-            elif row.direction == "receive" and kind == "response.output_audio.delta":
+            elif row.direction == "receive" and kind == AUDIO_DELTA[trace_format]:
                 record.output_rate = output_rate
                 record.output_pcm = decode_b64(event.get("delta"))
             else:
