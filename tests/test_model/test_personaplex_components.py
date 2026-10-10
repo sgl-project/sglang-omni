@@ -196,7 +196,7 @@ def test_mimi_decode_matches_reference(
 ) -> None:
     codes = reference_tensors["codes"]
     whole = codec.decode(codes)
-    state = codec.init_decode_state()
+    state = codec.init_decode_state(batch_size=codes.shape[0])
     chunked = torch.cat(
         [
             codec.decode_step(codes[:, :, f : f + 1], state)

@@ -166,7 +166,7 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
     num_samples = 3 * samples_per_frame + 7
 
     class _Codec:
-        device = "cpu"
+        device = torch.device("cpu")
 
         def decode(self, codes_BKF):
             return torch.arange(float(codes_BKF.shape[-1] * samples_per_frame)).view(
@@ -174,7 +174,9 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
             )
 
     monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (_Codec(), "cpu"))
-    scheduler = stages.create_code2wav_executor("m")
+    scheduler = stages.create_code2wav_executor(
+        "m", num_decode_slots=0, max_graph_frames=0
+    )
     state = PersonaPlexState(
         num_samples=num_samples, codes=torch.zeros(frames, 8, dtype=torch.long)
     )
