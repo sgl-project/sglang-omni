@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from sglang_omni_mlx.qwen3_asr.model import (  # noqa: E402
 from sglang_omni_mlx.text_decoder import (  # noqa: E402
     KV_CACHE_STEP_TOKENS,
     TextDecoderConfig,
+    greedy_tokens,
 )
 
 AUDIO_CONFIG = {
@@ -176,6 +178,30 @@ def test_cached_decoding_matches_a_full_forward_across_cache_growth() -> None:
         )
         np.testing.assert_allclose(np.array(stepped), np.array(full), atol=1e-4)
     assert caches[0].offset == tokens.shape[1]
+
+
+def test_chunked_prefill_matches_full_prefill() -> None:
+    model = tiny_model()
+    tokens = mx.random.randint(0, TEXT_CONFIG["vocab_size"], (1, 17))
+    embeddings = model.model.embed_tokens(tokens)
+    full_caches = model.new_caches()
+    chunked_caches = model.new_caches()
+    full_token = next(
+        greedy_tokens(model.model, embeddings, full_caches, threading.Event())
+    )
+    chunked_token = next(
+        greedy_tokens(
+            model.model,
+            embeddings,
+            chunked_caches,
+            threading.Event(),
+            prefill_chunk_size=5,
+        )
+    )
+    assert chunked_token == full_token
+    assert [cache.offset for cache in chunked_caches] == [
+        cache.offset for cache in full_caches
+    ]
 
 
 def test_load_rebuilds_a_quantized_checkpoint(tmp_path: Path) -> None:
