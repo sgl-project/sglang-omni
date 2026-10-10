@@ -1,0 +1,221 @@
+name: Voxt macOS Notarized Package
+
+# Reserved release automation. This repository does not currently have the
+# required Apple certificates and notarization secrets configured. Enable the
+# job only after configuring the voxt-release environment and setting the
+# repository variable VOXT_ENABLE_NOTARIZED_RELEASE=true.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketing version (empty uses the Xcode project version)"
+        required: false
+        default: ""
+        type: string
+      build_number:
+        description: "Numeric build number (empty uses the current timestamp)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: voxt-mac-notarized-package
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Sign and notarize Voxt
+    if: ${{ vars.VOXT_ENABLE_NOTARIZED_RELEASE == 'true' }}
+    runs-on: macos-26
+    timeout-minutes: 120
+    environment:
+      name: voxt-release
+    env:
+      DEVELOPER_ID_APP_CERT_P12: ${{ secrets.DEVELOPER_ID_APP_CERT_P12 }}
+      DEVELOPER_ID_APP_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_APP_CERT_PASSWORD }}
+      DEVELOPER_ID_INSTALLER_CERT_P12: ${{ secrets.DEVELOPER_ID_INSTALLER_CERT_P12 }}
+      DEVELOPER_ID_INSTALLER_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_INSTALLER_CERT_PASSWORD }}
+      DEVELOPER_ID_APP_IDENTITY: ${{ secrets.DEVELOPER_ID_APP_IDENTITY }}
+      DEVELOPER_ID_INSTALLER_IDENTITY: ${{ secrets.DEVELOPER_ID_INSTALLER_IDENTITY }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+      APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+      APPLE_NOTARIZATION_ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Apple Silicon runner
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Validate signing and notarization secrets
+        run: |
+          set -euo pipefail
+          for key in \
+            DEVELOPER_ID_APP_CERT_P12 \
+            DEVELOPER_ID_APP_CERT_PASSWORD \
+            DEVELOPER_ID_INSTALLER_CERT_P12 \
+            DEVELOPER_ID_INSTALLER_CERT_PASSWORD \
+            DEVELOPER_ID_APP_IDENTITY \
+            DEVELOPER_ID_INSTALLER_IDENTITY \
+            KEYCHAIN_PASSWORD \
+            APPLE_NOTARIZATION_KEY \
+            APPLE_NOTARIZATION_KEY_ID \
+            APPLE_NOTARIZATION_ISSUER; do
+            if [ -z "${!key:-}" ]; then
+              echo "::error::Missing required secret: $key"
+              exit 1
+            fi
+          done
+
+      - name: Create temporary signing keychain
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          app_cert="$RUNNER_TEMP/voxt-app-cert.p12"
+          installer_cert="$RUNNER_TEMP/voxt-installer-cert.p12"
+          keychain="$RUNNER_TEMP/voxt-build.keychain-db"
+
+          printf '%s' "$DEVELOPER_ID_APP_CERT_P12" | base64 --decode > "$app_cert"
+          printf '%s' "$DEVELOPER_ID_INSTALLER_CERT_P12" | base64 --decode > "$installer_cert"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -t 3600 -u "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$app_cert" -k "$keychain" -P "$DEVELOPER_ID_APP_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/xcodebuild >/dev/null
+          security import "$installer_cert" -k "$keychain" -P "$DEVELOPER_ID_INSTALLER_CERT_PASSWORD" \
+            -T /usr/bin/productbuild -T /usr/bin/security >/dev/null
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign:,productbuild: \
+            -s -k "$KEYCHAIN_PASSWORD" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -s "$keychain"
+
+          if ! security find-identity -v -p codesigning "$keychain" | grep -F "$DEVELOPER_ID_APP_IDENTITY" >/dev/null; then
+            echo "::error::Developer ID Application identity not found"
+            exit 1
+          fi
+          if ! security find-identity -v -p basic "$keychain" | grep -F "$DEVELOPER_ID_INSTALLER_IDENTITY" >/dev/null; then
+            echo "::error::Developer ID Installer identity not found"
+            exit 1
+          fi
+
+      - name: Build Native Omni runtime
+        run: |
+          set -euo pipefail
+          sglang_omni_mlx/native/scripts/build_runtime.sh \
+            "$RUNNER_TEMP/voxt-native-runtime" \
+            "$RUNNER_TEMP/voxt-native-runtime-build"
+
+      - name: Build and sign app packages
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          BUILD_NUMBER_INPUT: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          version_args=()
+          build_number_args=()
+          if [ -n "$VERSION_INPUT" ]; then
+            version_args+=(--version "$VERSION_INPUT")
+          fi
+          if [ -n "$BUILD_NUMBER_INPUT" ]; then
+            build_number_args+=(--build-number "$BUILD_NUMBER_INPUT")
+          fi
+
+          Voxt/tools/package_local_app.sh \
+            "${version_args[@]}" \
+            "${build_number_args[@]}" \
+            --optimized \
+            --native-runtime "$RUNNER_TEMP/voxt-native-runtime" \
+            --output-dir "$RUNNER_TEMP/voxt-package" \
+            --app-sign-identity "$DEVELOPER_ID_APP_IDENTITY" \
+            --pkg-sign-identity "$DEVELOPER_ID_INSTALLER_IDENTITY"
+
+      - name: Locate package artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+          package_dir="$(find "$RUNNER_TEMP/voxt-package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$package_dir"
+          zip_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*-macOS.zip' -type f -print -quit)"
+          dmg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.dmg' -type f -print -quit)"
+          pkg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.pkg' -type f -print -quit)"
+          test -f "$zip_path"
+          test -f "$dmg_path"
+          test -f "$pkg_path"
+          {
+            echo "package_dir=$package_dir"
+            echo "zip_path=$zip_path"
+            echo "dmg_path=$dmg_path"
+            echo "pkg_path=$pkg_path"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Notarize ZIP, PKG, and DMG
+        env:
+          PACKAGE_DIR: ${{ steps.artifacts.outputs.package_dir }}
+          ZIP_PATH: ${{ steps.artifacts.outputs.zip_path }}
+          DMG_PATH: ${{ steps.artifacts.outputs.dmg_path }}
+          PKG_PATH: ${{ steps.artifacts.outputs.pkg_path }}
+        run: |
+          set -euo pipefail
+          notary_key="$RUNNER_TEMP/voxt-notary-key.p8"
+          printf '%s\n' "$APPLE_NOTARIZATION_KEY" > "$notary_key"
+          chmod 600 "$notary_key"
+
+          notarize() {
+            local path="$1"
+            local name="$2"
+            xcrun notarytool submit "$path" \
+              --key "$notary_key" \
+              --key-id "$APPLE_NOTARIZATION_KEY_ID" \
+              --issuer "$APPLE_NOTARIZATION_ISSUER" \
+              --wait \
+              --output-format json \
+              > "$RUNNER_TEMP/notary-$name.json"
+          }
+
+          notarize "$ZIP_PATH" zip
+          notarize "$PKG_PATH" pkg
+          notarize "$DMG_PATH" dmg
+
+          xcrun stapler staple "$PKG_PATH"
+          xcrun stapler validate "$PKG_PATH"
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          hdiutil verify "$DMG_PATH"
+          spctl -a -vv -t install "$PKG_PATH"
+
+          shasum -a 256 "$ZIP_PATH" | awk '{print $1}' > "$ZIP_PATH.sha256"
+          shasum -a 256 "$PKG_PATH" | awk '{print $1}' > "$PKG_PATH.sha256"
+
+      - name: Upload notarized packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxt-notarized-package-${{ inputs.version || 'project-version' }}
+          path: |
+            ${{ steps.artifacts.outputs.package_dir }}/Voxt-*-macOS.zip
+            ${{ steps.artifacts.outputs.package_dir }}/Voxt-*.dmg
+            ${{ steps.artifacts.outputs.package_dir }}/Voxt-*.pkg
+            ${{ steps.artifacts.outputs.package_dir }}/*.sha256
+            ${{ runner.temp }}/notary-*.json
+          if-no-files-found: error
+
+      - name: Remove temporary keychain and credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/voxt-build.keychain-db" >/dev/null 2>&1 || true
+          rm -f \
+            "$RUNNER_TEMP/voxt-app-cert.p12" \
+            "$RUNNER_TEMP/voxt-installer-cert.p12" \
+            "$RUNNER_TEMP/voxt-notary-key.p8"

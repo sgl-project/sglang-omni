@@ -22,6 +22,7 @@ INSTALLER_SIGN_IDENTITY="${DEVELOPER_ID_INSTALLER_IDENTITY:-}"
 VERSION=""
 BUILD_NUMBER=""
 APP_NAME="Voxt"
+NATIVE_RUNTIME_DIR="${VOXT_NATIVE_RUNTIME_DIR:-}"
 
 usage() {
   cat <<'EOF'
@@ -44,12 +45,14 @@ Options:
   --universal             Build both arm64 and x86_64 via generic macOS destination.
   --app-sign-identity ID  Developer ID Application identity for app signing.
   --pkg-sign-identity ID  Developer ID Installer identity for pkg signing.
+  --native-runtime PATH   Embed a built Omni runtime in the app bundle.
   --no-sign               Do not sign the app after building.
   -h, --help              Show this help.
 
 Optional environment:
   DEVELOPER_ID_APP_IDENTITY        Signs the app when set.
   DEVELOPER_ID_INSTALLER_IDENTITY  Signs the .pkg when set.
+  VOXT_NATIVE_RUNTIME_DIR          Runtime directory used when --native-runtime is omitted.
 
 Examples:
   tools/package_local_app.sh
@@ -127,6 +130,11 @@ while [[ "$#" -gt 0 ]]; do
       [[ -n "$INSTALLER_SIGN_IDENTITY" ]] || die "--pkg-sign-identity requires a value"
       shift 2
       ;;
+    --native-runtime)
+      NATIVE_RUNTIME_DIR="${2:-}"
+      [[ -n "$NATIVE_RUNTIME_DIR" ]] || die "--native-runtime requires a value"
+      shift 2
+      ;;
     --no-sign)
       SIGN_APP=false
       shift
@@ -145,6 +153,20 @@ done
 command -v xcodebuild >/dev/null || die "xcodebuild is required"
 command -v hdiutil >/dev/null || die "hdiutil is required"
 command -v productbuild >/dev/null || die "productbuild is required"
+
+if [[ -n "$NATIVE_RUNTIME_DIR" ]]; then
+  [[ -d "$NATIVE_RUNTIME_DIR/bin" ]] || die "native runtime bin directory not found: $NATIVE_RUNTIME_DIR/bin"
+  for required_runtime_file in \
+    qwen3_asr_server \
+    whisper_server \
+    cohere_transcribe_server \
+    moss_transcribe_diarize_server \
+    libmlx.dylib \
+    libjaccl.dylib \
+    mlx.metallib; do
+    [[ -f "$NATIVE_RUNTIME_DIR/bin/$required_runtime_file" ]] || die "native runtime file not found: $NATIVE_RUNTIME_DIR/bin/$required_runtime_file"
+  done
+fi
 
 if [[ "$OPEN_AFTER_INSTALL" == "true" && "$INSTALL_APP" != "true" ]]; then
   die "--open requires --install"
@@ -223,6 +245,19 @@ xcodebuild \
 
 [[ -d "$APP_PATH" ]] || die "built app not found: $APP_PATH"
 
+if [[ -n "$NATIVE_RUNTIME_DIR" ]]; then
+  log "Embedding Omni native runtime"
+  OMNI_RUNTIME_DESTINATION="$APP_PATH/Contents/Resources/OmniRuntime"
+  rm -rf "$OMNI_RUNTIME_DESTINATION"
+  # The native build output also contains .build/ (CMake files and a local
+  # Python virtual environment). It is build machinery, not part of the
+  # runtime, and may contain symlinks into the developer's machine that make
+  # the signed app invalid. Embed only the installed runtime binaries and
+  # resources from bin/.
+  mkdir -p "$OMNI_RUNTIME_DESTINATION"
+  ditto "$NATIVE_RUNTIME_DIR/bin" "$OMNI_RUNTIME_DESTINATION/bin"
+fi
+
 log "Validating app bundle"
 PLIST_PATH="$APP_PATH/Contents/Info.plist"
 SHORT_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST_PATH" 2>/dev/null || true)"
@@ -237,10 +272,17 @@ if [[ "$SIGN_APP" == "true" && -n "$APP_SIGN_IDENTITY" ]]; then
   [[ -n "$APP_BUNDLE_ID" ]] || die "unable to resolve CFBundleIdentifier"
 
   SIGNING_ENTITLEMENTS="$(mktemp)"
-  sed "s#\\\$(PRODUCT_BUNDLE_IDENTIFIER)#${APP_BUNDLE_ID}#g" "$ROOT/Voxt/Voxt.entitlements" > "$SIGNING_ENTITLEMENTS"
-  if grep -q '\\$(PRODUCT_BUNDLE_IDENTIFIER)' "$SIGNING_ENTITLEMENTS"; then
+  sed "s#\\\$(PRODUCT_BUNDLE_IDENTIFIER)#${APP_BUNDLE_ID}#g" \
+    "$ROOT/Voxt/Voxt.entitlements" > "$SIGNING_ENTITLEMENTS"
+  # Developer ID distribution does not use a provisioning profile. These
+  # identity and keychain-group entitlements are restricted to profile-backed
+  # signing, so custom signing must omit them for macOS to launch the app.
+  /usr/libexec/PlistBuddy -c 'Delete :com.apple.application-identifier' "$SIGNING_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c 'Delete :com.apple.developer.team-identifier' "$SIGNING_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c 'Delete :keychain-access-groups' "$SIGNING_ENTITLEMENTS"
+  if grep -qE '\\$\\([A-Za-z_][A-Za-z0-9_]*\\)' "$SIGNING_ENTITLEMENTS"; then
     rm -f "$SIGNING_ENTITLEMENTS"
-    die "failed to expand PRODUCT_BUNDLE_IDENTIFIER in entitlements"
+    die "failed to expand signing variables in entitlements"
   fi
 
   sign_if_exists() {
@@ -262,6 +304,28 @@ if [[ "$SIGN_APP" == "true" && -n "$APP_SIGN_IDENTITY" ]]; then
   while IFS= read -r dylib; do
     sign_if_exists "$dylib"
   done < <(find "$APP_PATH/Contents/Frameworks" -maxdepth 1 -type f -name '*.dylib' 2>/dev/null | sort)
+
+  if [[ -n "$NATIVE_RUNTIME_DIR" ]]; then
+    while IFS= read -r native_runtime_file; do
+      if [[ "$(file -b "$native_runtime_file")" == *"Mach-O"* ]]; then
+        sign_if_exists "$native_runtime_file"
+      else
+        echo "Skipping non-code runtime resource: $native_runtime_file"
+      fi
+    done < <(find "$APP_PATH/Contents/Resources/OmniRuntime/bin" -type f ! -name '*.metallib' -print | sort)
+  fi
+
+  while IFS= read -r framework_code; do
+    if [[ "$(file -b "$framework_code")" == *"Mach-O"* ]]; then
+      sign_if_exists "$framework_code"
+    else
+      echo "Skipping non-code framework resource: $framework_code"
+    fi
+  done < <(find "$APP_PATH/Contents/Frameworks" -type f -print | sort)
+
+  while IFS= read -r framework_bundle; do
+    sign_if_exists "$framework_bundle"
+  done < <(find "$APP_PATH/Contents/Frameworks" -maxdepth 1 -type d -name '*.framework' -print | sort)
 
   codesign \
     --force \

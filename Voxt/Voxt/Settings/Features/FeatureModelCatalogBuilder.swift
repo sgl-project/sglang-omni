@@ -259,9 +259,7 @@ struct FeatureModelCatalogBuilder {
             return FeatureModelSelectorEntry(
                 selectionID: selectionID,
                 title: model.title,
-                engine: MLXWhisperMigrationSupport.isWhisperRepo(model.id)
-                    ? localized("Whisper (MLX)")
-                    : localized("MLX Audio"),
+                engine: ModelCatalogEngineSupport.asrTitle(for: model.id),
                 sizeText: mlxModelManager.remoteSizeText(repo: model.id),
                 ratingText: MLXModelManager.ratingText(for: model.id),
                 filterTags: featureFilterTags(

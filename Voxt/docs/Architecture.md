@@ -1,6 +1,6 @@
 # Source layout and runtime boundaries
 
-Voxt is a macOS 15+ menu bar application, built with the shared `Voxt` Xcode scheme. Build instructions live in [CONTRIBUTING](../CONTRIBUTING.md); dependency pins and model validation requirements live in [MLXAudioDependency](MLXAudioDependency.md).
+Voxt is a macOS 26.2+ menu bar application, built with the shared `Voxt` Xcode scheme. Build instructions live in [CONTRIBUTING](../CONTRIBUTING.md); dependency pins and model validation requirements live in [MLXAudioDependency](MLXAudioDependency.md).
 
 ## Source map
 

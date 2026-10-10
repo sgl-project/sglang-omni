@@ -13,11 +13,11 @@ Please read this guide before opening an issue or pull request. For security vul
 
 ## Development environment
 
-Voxt is a Swift macOS menu bar app. The project currently targets macOS 15.0 or later and uses the shared `Voxt` Xcode scheme.
+Voxt is a Swift macOS menu bar app. The project currently targets macOS 26.2 or later and uses the shared `Voxt` Xcode scheme.
 
 You will need:
 
-- A Mac running macOS 15.0 or later.
+- A Mac running macOS 26.2 or later.
 - Xcode with Swift and macOS development support. CI currently runs with Xcode 26.5.
 - Git and network access for Swift package dependencies.
 
@@ -61,6 +61,64 @@ xcodebuild test \
   -only-testing:VoxtTests/SQLiteStorageRepositoryTests \
   CODE_SIGNING_ALLOWED=NO
 ```
+
+## Local packages and reserved CI release automation
+
+The repository currently does not depend on CI to create installable packages.
+The root `Voxt Mac CI` workflow is reserved and disabled by default because
+the Omni repository still needs its Apple Silicon runner and persistent CI
+storage configured. Enable the workflow only when the repository variable
+`VOXT_ENABLE_MAC_CI=true` is configured. Its package job additionally requires
+`VOXT_ENABLE_CI_PACKAGE=true`.
+
+For local development, build the Native Omni runtime and package the app with:
+
+```bash
+runtime_dir="$PWD/Voxt/build/omni-runtime"
+sglang_omni_mlx/native/scripts/build_runtime.sh "$runtime_dir"
+Voxt/tools/package_local_app.sh \
+  --optimized \
+  --native-runtime "$runtime_dir" \
+  --output-dir "$PWD/Voxt/build/local-package" \
+  --no-sign
+```
+
+The command creates a DMG, ZIP, PKG, and SHA-256 files under a timestamped
+directory. To install the locally built app for manual verification, append
+`--install --open`. If a Developer ID identity is available locally, omit
+`--no-sign` to produce a locally signed package. These local packages are for
+development and testing; they are not Apple-notarized releases.
+
+The `Voxt macOS Notarized Package` workflow is also reserved and disabled by
+default. After the Apple credentials are configured, enable it by setting
+`VOXT_ENABLE_NOTARIZED_RELEASE=true`, then run it manually. It builds the
+Native Omni runtime, signs the app and installer with Developer ID, submits
+the ZIP, PKG, and DMG to Apple notarization, staples the PKG and DMG tickets,
+and uploads checksums with the artifacts.
+
+Configure these GitHub Actions secrets before running the workflow:
+
+- `DEVELOPER_ID_APP_CERT_P12`: base64-encoded Developer ID Application certificate.
+- `DEVELOPER_ID_APP_CERT_PASSWORD`: password for that certificate.
+- `DEVELOPER_ID_INSTALLER_CERT_P12`: base64-encoded Developer ID Installer certificate.
+- `DEVELOPER_ID_INSTALLER_CERT_PASSWORD`: password for that certificate.
+- `DEVELOPER_ID_APP_IDENTITY`: exact Developer ID Application identity.
+- `DEVELOPER_ID_INSTALLER_IDENTITY`: exact Developer ID Installer identity.
+- `KEYCHAIN_PASSWORD`: temporary CI keychain password.
+- `APPLE_NOTARIZATION_KEY`: App Store Connect API key contents (`.p8`).
+- `APPLE_NOTARIZATION_KEY_ID`: App Store Connect API key ID.
+- `APPLE_NOTARIZATION_ISSUER`: App Store Connect API issuer ID.
+
+On a Mac, certificate data can be encoded for a secret with:
+
+```bash
+base64 -i developer-id-application.p12 | tr -d '\n'
+base64 -i developer-id-installer.p12 | tr -d '\n'
+```
+
+The model weights are not included in the DMG. After installation, Voxt
+downloads the selected MLX model into the user's model cache, so testers can
+install the same notarized app and download models independently.
 
 If Swift package resolution behaves differently locally than in CI, reproduce the package settings from [`.github/workflows/tests.yml`](.github/workflows/tests.yml), including the resolved package file and isolated cache paths.
 
