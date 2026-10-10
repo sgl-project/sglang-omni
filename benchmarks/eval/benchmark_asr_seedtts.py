@@ -224,6 +224,7 @@ async def run_asr_seedtts_once(
     warmup: int = 0,
     disable_tqdm: bool = True,
     stream: bool = False,
+    request_language: str | None = None,
 ) -> dict:
     """Run one SeedTTS ASR benchmark pass and return WER/speed/worker metrics."""
     before = _fetch_worker_snapshot(host, port)
@@ -232,7 +233,7 @@ async def run_asr_seedtts_once(
         host=host,
         port=port,
         model_path=model_path,
-        lang=lang,
+        lang=request_language if request_language is not None else lang,
         concurrency=concurrency,
         warmup=warmup,
         disable_tqdm=disable_tqdm,
@@ -284,6 +285,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
             port=args.port,
             model_path=args.model_path,
             lang=args.lang,
+            request_language=args.request_language,
             concurrency=concurrency,
             stream=args.stream,
         )
@@ -491,6 +493,11 @@ def add_common_args(
     parser: argparse.ArgumentParser, *, default_output: str
 ) -> argparse.ArgumentParser:
     """Add the router, sweep, provenance, monitoring, and output options."""
+    parser.add_argument(
+        "--request-language",
+        default=None,
+        help="Language sent to the server (e.g. auto); defaults to --lang. Scoring still uses --lang.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--port",
@@ -736,7 +743,11 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 host=args.host,
                 port=args.port,
                 model_path=args.model_path,
-                lang=args.lang,
+                lang=(
+                    args.request_language
+                    if args.request_language is not None
+                    else args.lang
+                ),
                 concurrency=concurrency,
                 stream=args.stream,
             )
@@ -837,6 +848,11 @@ def main() -> None:
             "port": args.port,
             "meta": args.meta,
             "lang": args.lang,
+            "request_language": (
+                args.request_language
+                if args.request_language is not None
+                else args.lang
+            ),
             "model_path": args.model_path,
             "declared_model_revision": model_revision,
             "dataset_revision": dataset_revision,

@@ -18,6 +18,8 @@ benchmarks/
 └── results/        # (gitignored) evaluation outputs
 ```
 
+Nemotron ASR service measurements and reference transcripts: [reproduction guide](eval/nemotron.md).
+
 PersonaPlex reference comparisons: [evaluation setup and limits](eval/personaplex.md).
 
 ## Quick Start

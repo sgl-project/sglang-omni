@@ -27,7 +27,7 @@ Usage:
 
 --stream still uploads each complete file; it does not simulate real-time
 audio arrival. The dataset is English only, so WER uses the Whisper English
-normalizer and the request language is fixed to en.
+normalizer. The request language defaults to en; --request-language overrides it.
 """
 
 from __future__ import annotations
@@ -140,6 +140,11 @@ def main() -> None:
             "repo_id": config.repo_id,
             "split": config.split,
             "lang": args.lang,
+            "request_language": (
+                args.request_language
+                if args.request_language is not None
+                else args.lang
+            ),
             "model_path": args.model_path,
             "declared_model_revision": args.model_revision,
             "dataset_revision": dataset_revision,

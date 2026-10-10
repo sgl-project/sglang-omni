@@ -173,6 +173,11 @@ def main() -> None:
             "config_name": args.config_name,
             "split": args.split,
             "lang": args.lang,
+            "request_language": (
+                args.request_language
+                if args.request_language is not None
+                else args.lang
+            ),
             "model_path": args.model_path,
             "declared_model_revision": args.model_revision,
             "dataset_revision": dataset_revision,

@@ -304,6 +304,7 @@ async def test_asr_repeat_stops_resource_monitor_when_request_fails(
         port=8000,
         model_path="model",
         lang="en",
+        request_language=None,
         stream=False,
     )
 
