@@ -6,9 +6,12 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -48,6 +51,62 @@ MODEL_FAMILIES = {
     "s2-pro": "vocoder",
     "voxtral": "vocoder",
 }
+
+
+def test_chat_api_client_preserves_ordered_media_and_turns() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Before"},
+                {"type": "image_url", "image_url": {"url": "first.png"}},
+                {"type": "text", "text": "After"},
+            ],
+        },
+        {"role": "assistant", "content": "First answer."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio_url", "audio_url": {"url": "second.wav"}},
+                {"type": "text", "text": "Second question."},
+            ],
+        },
+    ]
+    request = ChatCompletionRequest(model="minicpm-o", messages=messages)
+    client_request = build_chat_generate_request(request)
+    assert extract_inputs(client_request) == messages
+
+
+@pytest.mark.parametrize("input_style", ["inline", "top-level"])
+def test_live_chat_frontend_transcribes_audio(input_style: str) -> None:
+    api_url = os.environ.get("OMNI_PARITY_API_URL")
+    fixture_path = os.environ.get("OMNI_PARITY_MANIFEST")
+    if not api_url or not fixture_path:
+        pytest.skip(
+            "Set OMNI_PARITY_API_URL and OMNI_PARITY_MANIFEST for live correctness checks"
+        )
+    else:
+        manifest = json.loads(Path(fixture_path).read_text())
+    sample = next(
+        sample for sample in manifest["samples"] if sample["id"] == "asr_zh-0000"
+    )
+    request = {
+        "model": "omni",
+        "messages": sample["messages"],
+        "temperature": 0,
+        "max_tokens": 256,
+        "modalities": ["text"],
+    }
+    if input_style == "top-level":
+        content = sample["messages"][0]["content"]
+        request["messages"] = [{"role": "user", "content": content[0]["text"]}]
+        request["audios"] = [content[1]["audio_url"]["url"]]
+    else:
+        pass
+    response = httpx.post(api_url + "/v1/chat/completions", json=request, timeout=120)
+    response.raise_for_status()
+    transcript = response.json()["choices"][0]["message"]["content"]
+    assert sample["answer"].rstrip("。") in transcript
 
 
 class FaultInjectingCoordinator(Coordinator):

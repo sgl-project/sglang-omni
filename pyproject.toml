@@ -53,6 +53,8 @@ dependencies = [
     # a port.
     "sox>=1.4.1",
     "av>=16.1.0",
+    "decord==0.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "audioread>=3.0.0",
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",  # Match the pinned sglang stack
     "librosa>=0.11.0",
