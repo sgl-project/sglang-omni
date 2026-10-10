@@ -57,6 +57,11 @@ struct TextAPISettings: Codable, Equatable {
 struct Preferences: Codable, Equatable {
     var pythonExecutable = ""
     var asrModel = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    var hfEndpoint: String?
+    var hfEndpointText: String {
+        get { hfEndpoint ?? "" }
+        set { hfEndpoint = newValue }
+    }
     // Note (Codex): Optional fields preserve decoding of libraries saved before these settings existed.
     var textAPI: TextAPISettings?
     var textSettings: TextAPISettings {
