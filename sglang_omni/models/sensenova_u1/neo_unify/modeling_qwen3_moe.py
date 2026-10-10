@@ -22,6 +22,7 @@ from sglang_omni.models.sensenova_u1.cache_dit import (
     decoder_attention_type,
     decoder_layers,
 )
+
 from .configuration_neo_chat import NEOMoELLMConfig
 from .modeling_qwen3 import (
     Qwen3Attention,

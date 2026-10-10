@@ -562,9 +562,7 @@ def test_sensenova_dp_expands_to_distinct_gpu_replicas():
     config = SenseNovaU1PipelineConfig(
         model_path="/model/sensenova",
         processes={
-            "sensenova_generate": ProcessConfig(
-                num_replicas=2, replica_devices=[0, 1]
-            )
+            "sensenova_generate": ProcessConfig(num_replicas=2, replica_devices=[0, 1])
         },
     )
 

@@ -33,7 +33,6 @@ from sglang_omni.models.sensenova_u1.sampling import (
     cache_dit_batch_key,
     image_guidance_branch_count,
     resolve_cache_dit_defaults,
-    resolve_cache_dit_params,
 )
 from sglang_omni.models.weight_loader import resolve_dtype
 from sglang_omni.proto.request import StagePayload
@@ -58,7 +57,7 @@ def generate_image(
             pass
         return _generate_text_to_image(payload, model, tokenizer)
     except Exception:
-        _unmount_cache_dit_after_failure(model)
+        unmount_cache_dit_after_failure(model)
         raise
 
 
@@ -83,7 +82,7 @@ def generate_images(
             try:
                 results[index] = _generate_image_edit(payload, model, tokenizer)
             except Exception:
-                _unmount_cache_dit_after_failure(model)
+                unmount_cache_dit_after_failure(model)
                 raise
             continue
         else:
@@ -116,7 +115,7 @@ def generate_images(
                     list(compatible_payloads), model, tokenizer
                 )
         except Exception:
-            _unmount_cache_dit_after_failure(model)
+            unmount_cache_dit_after_failure(model)
             raise
         for index, result in zip(indexes, batch_results):
             results[index] = result
@@ -142,7 +141,7 @@ def _generate_text_to_image(
 ) -> StagePayload:
     prompt = payload.request.inputs
     options = _text_to_image_options(payload)
-    _prepare_cache_dit(
+    prepare_cache_dit(
         model,
         enable_cache_dit=options.enable_cache_dit,
         params=options.cache_dit_params,
@@ -231,7 +230,7 @@ def _generate_text_to_image_batch(
     else:
         pass
 
-    _prepare_cache_dit(
+    prepare_cache_dit(
         model,
         enable_cache_dit=first.enable_cache_dit,
         params=first.cache_dit_params,
@@ -276,7 +275,7 @@ def _generate_image_edit(
     options = SenseNovaU1ImageEditSampling.from_params(payload.request.params)
     references = _prepare_reference_images(inputs.get("image_b64"), options)
     width, height = _resolve_edit_output_size(references, options)
-    _prepare_cache_dit(
+    prepare_cache_dit(
         model,
         enable_cache_dit=options.enable_cache_dit,
         params=options.cache_dit_params,
@@ -306,7 +305,7 @@ def _generate_image_edit(
     return _encode_image(payload, images, width, height)
 
 
-def _decode_reference_images(value: str | list[str] | None) -> list[Image.Image]:
+def decode_reference_images(value: str | list[str] | None) -> list[Image.Image]:
     values = value if isinstance(value, list) else [value]
     if not values or any(not isinstance(item, str) or not item for item in values):
         raise ValueError("SenseNova-U1 requires at least one reference image")
@@ -341,7 +340,7 @@ def _auto_input_max_pixels(num_images: int) -> int:
 def _prepare_reference_images(
     value: str | list[str] | None, options: SenseNovaU1ImageEditSampling
 ) -> list[Image.Image]:
-    images = _decode_reference_images(value)
+    images = decode_reference_images(value)
     input_max_pixels = options.input_max_pixels or _auto_input_max_pixels(len(images))
     prepared = []
     for image in images:
@@ -464,8 +463,8 @@ def image_generation_batch_key(
     )
 
 
-def _unmount_cache_dit_after_failure(model: NEOChatModel) -> None:
-    controller = model.__dict__.get("_sensenova_cache_dit")
+def unmount_cache_dit_after_failure(model: NEOChatModel) -> None:
+    controller = model.__dict__.get("sensenova_cache_dit")
     if isinstance(controller, SenseNovaCacheDit):
         try:
             controller.unmount()
@@ -477,7 +476,7 @@ def _unmount_cache_dit_after_failure(model: NEOChatModel) -> None:
         pass
 
 
-def _prepare_cache_dit(
+def prepare_cache_dit(
     model: NEOChatModel,
     *,
     enable_cache_dit: bool | None,
@@ -488,7 +487,7 @@ def _prepare_cache_dit(
     is_edit: bool = False,
 ) -> None:
     # note (Codex): Direct generation calls may bypass the factory controller.
-    controller = model.__dict__.get("_sensenova_cache_dit")
+    controller = model.__dict__.get("sensenova_cache_dit")
     if not isinstance(controller, SenseNovaCacheDit):
         return
     else:
@@ -555,7 +554,7 @@ def create_generation_executor(
     enable_cache_dit, cache_dit_params = resolve_cache_dit_defaults(
         enable_cache_dit, cache_dit_params
     )
-    model._sensenova_cache_dit: SenseNovaCacheDit = SenseNovaCacheDit(
+    model.sensenova_cache_dit: SenseNovaCacheDit = SenseNovaCacheDit(
         enabled_by_default=enable_cache_dit,
         default_params=cache_dit_params,
     )

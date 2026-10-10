@@ -19,6 +19,7 @@ from sglang_omni.models.sensenova_u1.sampling import (
     SenseNovaU1Sampling,
     cache_dit_batch_key,
     image_guidance_branch_count,
+    resolve_cache_dit_defaults,
     resolve_cache_dit_params,
 )
 
@@ -56,6 +57,12 @@ class TestCacheDitParameters(unittest.TestCase):
             cache_dit_batch_key({"a": 1, "b": 2}),
             cache_dit_batch_key({"b": 2, "a": 1}),
         )
+
+    def test_zero_front_blocks_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            resolve_cache_dit_params(
+                {"cache_dit_params": {"Fn_compute_blocks": 0}}, True
+            )
 
     def test_multi_output_preserves_cache_settings(self) -> None:
         params = {"Fn_compute_blocks": 2}
@@ -96,17 +103,22 @@ class TestCacheDitParameters(unittest.TestCase):
 class TestCacheDitLifecycle(unittest.TestCase):
     def setUp(self) -> None:
         self.native: list[SimpleNamespace] = [
-            SimpleNamespace(attention_type="full_attention")
+            SimpleNamespace(attention_type="full_attention") for _ in range(32)
         ]
         self.transformer: SimpleNamespace = SimpleNamespace(
-            layers=self.native, config=SimpleNamespace(num_hidden_layers=1)
+            layers=self.native,
+            config=SimpleNamespace(num_hidden_layers=len(self.native)),
         )
         self.controller: SenseNovaCacheDit = SenseNovaCacheDit(
             enabled_by_default=True, default_params={"residual_diff_threshold": 0.1}
         )
         self.backend: SimpleNamespace = SimpleNamespace(
             BlockAdapter=Mock(side_effect=lambda **kw: SimpleNamespace(**kw)),
-            DBCacheConfig=Mock(side_effect=lambda **kw: kw),
+            DBCacheConfig=Mock(
+                side_effect=lambda **kw: SimpleNamespace(
+                    **{"Fn_compute_blocks": 8, "Bn_compute_blocks": 0, **kw}
+                )
+            ),
             ForwardPattern=SimpleNamespace(Pattern_3=3),
             enable_cache=Mock(side_effect=self.enable),
             disable_cache=Mock(side_effect=self.disable),
@@ -119,7 +131,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
         self.addCleanup(module_patch.stop)
 
     def enable(
-        self, adapter: SimpleNamespace, *, cache_config: dict[str, int | float]
+        self, adapter: SimpleNamespace, *, cache_config: SimpleNamespace
     ) -> None:
         # note (Codex): Match the backend callback; the fake only swaps layers.
         adapter.transformer.layers = [SimpleNamespace(cached=True)]
@@ -153,12 +165,46 @@ class TestCacheDitLifecycle(unittest.TestCase):
         self.backend.enable_cache.assert_called_once()
         self.backend.refresh_context.assert_called_once_with(
             self.transformer,
-            cache_config={
-                "num_inference_steps": 30,
-                "Fn_compute_blocks": 4,
-                "residual_diff_threshold": 0.1,
-            },
+            cache_config=SimpleNamespace(
+                num_inference_steps=30,
+                Fn_compute_blocks=4,
+                Bn_compute_blocks=0,
+                residual_diff_threshold=0.1,
+            ),
         )
+
+    def test_block_counts_use_backend_defaults(self) -> None:
+        for params in (
+            {"Bn_compute_blocks": 25},
+            {"Fn_compute_blocks": 31, "Bn_compute_blocks": 2},
+            {"Fn_compute_blocks": 33},
+        ):
+            with (
+                self.subTest(params=params),
+                self.assertRaisesRegex(ValueError, "decoder layer count"),
+            ):
+                self.prepare(params=params)
+        self.backend.enable_cache.assert_not_called()
+        for params in (
+            {"Bn_compute_blocks": 24},
+            {"Fn_compute_blocks": 1, "Bn_compute_blocks": 31},
+        ):
+            with self.subTest(params=params):
+                self.prepare(params=params)
+        self.assertEqual(self.backend.enable_cache.call_count, 2)
+
+    def test_disabled_server_defaults_survive_request_enable(self) -> None:
+        enabled, params = resolve_cache_dit_defaults(
+            False, {"residual_diff_threshold": 0.01}
+        )
+        self.controller = SenseNovaCacheDit(
+            enabled_by_default=enabled, default_params=params
+        )
+        self.prepare()
+        self.backend.enable_cache.assert_not_called()
+        self.prepare(enabled=True)
+        config = self.backend.enable_cache.call_args.kwargs["cache_config"]
+        self.assertEqual(config.residual_diff_threshold, 0.01)
 
     def test_cfg_and_parameter_changes_remount(self) -> None:
         self.prepare()
@@ -183,7 +229,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
                 self.assertIs(self.transformer.layers, self.native)
                 self.assertIsNone(self.controller.adapter)
                 self.assertNotIn(
-                    "_sensenova_cache_dit_native_layers", self.transformer.__dict__
+                    "sensenova_cache_dit_native_layers", self.transformer.__dict__
                 )
 
     def test_inherited_disabled_request_skips_invalid_parameters(self) -> None:
@@ -196,7 +242,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
 
     def test_failed_mount_retains_recovery_and_original_exception(self) -> None:
         def fail_enable(
-            adapter: SimpleNamespace, *, cache_config: dict[str, int | float]
+            adapter: SimpleNamespace, *, cache_config: SimpleNamespace
         ) -> None:
             self.enable(adapter, cache_config=cache_config)
             raise RuntimeError("original mount failure")
@@ -235,9 +281,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
             self.prepare()
         self.assertIs(self.transformer.layers, self.native)
         self.assertIsNone(self.controller.adapter)
-        self.assertNotIn(
-            "_sensenova_cache_dit_native_layers", self.transformer.__dict__
-        )
+        self.assertNotIn("sensenova_cache_dit_native_layers", self.transformer.__dict__)
 
     def test_only_pure_denoising_uses_cached_layers(self) -> None:
         self.prepare(branch_count=2)
@@ -275,6 +319,27 @@ class TestCacheDitLifecycle(unittest.TestCase):
     "requires torch and cache-dit for real residual isolation",
 )
 class TestRealCacheDitIsolation(unittest.TestCase):
+    def test_implicit_front_blocks_cannot_overlap_back_blocks(self) -> None:
+        import cache_dit
+
+        defaults = cache_dit.DBCacheConfig()
+        num_layers = defaults.Fn_compute_blocks + 2
+        transformer = torch.nn.Module()
+        transformer.layers = torch.nn.ModuleList(
+            [torch.nn.Identity() for _ in range(num_layers)]
+        )
+        transformer.config = SimpleNamespace(num_hidden_layers=num_layers)
+        controller = SenseNovaCacheDit(enabled_by_default=True, default_params=None)
+        with self.assertRaisesRegex(ValueError, "decoder layer count"):
+            controller.prepare(
+                transformer,
+                enabled=True,
+                params={"Bn_compute_blocks": 3},
+                steps=6,
+                branch_count=1,
+                cfg_interval=(0.0, 1.0),
+            )
+
     def test_two_guidance_branches_keep_distinct_residuals(self) -> None:
         class Block(torch.nn.Module):
             attention_type = "full_attention"

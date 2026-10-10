@@ -28,7 +28,7 @@ class SenseNovaU1Sampling:
             raise ValueError("SenseNova-U1 n must be an integer between 1 and 10")
         else:
             pass
-        enable_cache_dit, cache_dit_params = _cache_dit_values(params)
+        enable_cache_dit, cache_dit_params = cache_dit_values(params)
         return cls(
             **_validated_values(cls, {**params, "n": 1}, ("guidance_scale",)),
             n=n,
@@ -83,7 +83,7 @@ class SenseNovaU1ImageEditSampling:
             cache_options["cache_dit_params"] = None
         else:
             pass
-        enable_cache_dit, cache_dit_params = _cache_dit_values(cache_options)
+        enable_cache_dit, cache_dit_params = cache_dit_values(cache_options)
         return cls(
             **values,
             input_max_pixels=input_max_pixels,
@@ -156,7 +156,7 @@ CACHE_DIT_PARAMETER_NAMES = frozenset(
 )
 
 
-def _cache_dit_values(
+def cache_dit_values(
     params: dict[str, JsonValue],
 ) -> tuple[bool | None, JsonValue]:
     enabled = params.get("enable_cache_dit")
@@ -217,7 +217,7 @@ def resolve_cache_dit_params(
         resolved["enable_cache_dit"] = default_enabled
     else:
         pass
-    enabled, cache_params = _cache_dit_values(resolved)
+    enabled, cache_params = cache_dit_values(resolved)
     if cache_params is None:
         return bool(enabled), None
     elif isinstance(cache_params, dict):

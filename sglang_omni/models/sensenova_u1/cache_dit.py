@@ -84,6 +84,18 @@ class SenseNovaCacheDit:
         else:
             pass
 
+        config = cache_dit.DBCacheConfig(num_inference_steps=steps, **effective_params)
+        if (
+            config.Fn_compute_blocks + config.Bn_compute_blocks
+            > transformer.config.num_hidden_layers
+        ):
+            raise ValueError(
+                "SenseNova Cache-DiT Fn_compute_blocks and Bn_compute_blocks "
+                "must not exceed the decoder layer count"
+            )
+        else:
+            pass
+
         key = (
             *sorted(effective_params.items()),
             ("separate_cfg", int(branch_count > 1)),
@@ -97,37 +109,20 @@ class SenseNovaCacheDit:
                 self.unmount()
             else:
                 pass
-            self.mount(transformer, steps, effective_params, branch_count > 1)
+            self.mount(transformer, config, branch_count > 1)
             self.active_key = key
         else:
-            cache_dit.refresh_context(
-                transformer,
-                cache_config=cache_dit.DBCacheConfig(
-                    num_inference_steps=steps, **effective_params
-                ),
-            )
+            cache_dit.refresh_context(transformer, cache_config=config)
 
     def mount(
         self,
         transformer: torch.nn.Module,
-        steps: int,
-        params: dict[str, int | float],
+        config: cache_dit.DBCacheConfig,
         has_separate_cfg: bool,
     ) -> None:
         layers = transformer.layers
         num_layers = transformer.config.num_hidden_layers
-        first_blocks = params.get("Fn_compute_blocks", 1)
-        back_blocks = params.get("Bn_compute_blocks", 0)
-        if first_blocks + back_blocks > num_layers:
-            raise ValueError(
-                "SenseNova Cache-DiT Fn_compute_blocks and Bn_compute_blocks "
-                "must not exceed the decoder layer count"
-            )
-        else:
-            pass
-        attention_types = {
-            layer.attention_type for layer in layers[:num_layers]
-        }
+        attention_types = {layer.attention_type for layer in layers[:num_layers]}
         if len(attention_types) != 1 or None in attention_types:
             raise ValueError(
                 "SenseNova Cache-DiT requires a uniform decoder attention type"
@@ -142,9 +137,8 @@ class SenseNovaCacheDit:
             forward_pattern=cache_dit.ForwardPattern.Pattern_3,
             has_separate_cfg=has_separate_cfg,
         )
-        config = cache_dit.DBCacheConfig(num_inference_steps=steps, **params)
-        object.__setattr__(transformer, "_sensenova_cache_dit_native_layers", layers)
-        transformer._sensenova_cache_dit_attention_type: str = next(
+        object.__setattr__(transformer, "sensenova_cache_dit_native_layers", layers)
+        transformer.sensenova_cache_dit_attention_type: str = next(
             iter(attention_types)
         )
         self.transformer = transformer
@@ -199,7 +193,7 @@ class SenseNovaCacheDit:
         else:
             pass
         native_layers = self.transformer.__dict__.get(
-            "_sensenova_cache_dit_native_layers"
+            "sensenova_cache_dit_native_layers"
         )
         if native_layers is None:
             raise RuntimeError("SenseNova Cache-DiT lost its native decoder layers")
@@ -215,8 +209,8 @@ class SenseNovaCacheDit:
 
     @staticmethod
     def clear_native_layers(transformer: torch.nn.Module) -> None:
-        transformer.__dict__.pop("_sensenova_cache_dit_native_layers", None)
-        transformer.__dict__.pop("_sensenova_cache_dit_attention_type", None)
+        transformer.__dict__.pop("sensenova_cache_dit_native_layers", None)
+        transformer.__dict__.pop("sensenova_cache_dit_attention_type", None)
 
 
 def decoder_layers(
@@ -226,7 +220,7 @@ def decoder_layers(
     has_non_image_tokens: bool,
     has_image_tokens: bool,
 ) -> torch.nn.ModuleList:
-    native_layers = model.__dict__.get("_sensenova_cache_dit_native_layers")
+    native_layers = model.__dict__.get("sensenova_cache_dit_native_layers")
     if native_layers is not None and (
         update_cache or has_non_image_tokens or not has_image_tokens
     ):
@@ -236,10 +230,10 @@ def decoder_layers(
 
 
 def decoder_attention_type(model: torch.nn.Module, layer: torch.nn.Module) -> str:
-    native_layers = model.__dict__.get("_sensenova_cache_dit_native_layers")
+    native_layers = model.__dict__.get("sensenova_cache_dit_native_layers")
     if native_layers is None or any(
         layer is native_layer for native_layer in native_layers
     ):
         return layer.attention_type
     else:
-        return model._sensenova_cache_dit_attention_type
+        return model.sensenova_cache_dit_attention_type

@@ -837,7 +837,7 @@ class Qwen3Attention(nn.Module):
         hw_config.max_position_embeddings = config.max_position_embeddings_hw
         self.rotary_emb_hw = Qwen3RotaryEmbedding(config=hw_config)
 
-    def _resolve_rope_tables(
+    def resolve_rope_tables(
         self,
         indexes: torch.LongTensor,
         hidden_states: torch.Tensor,
@@ -886,7 +886,7 @@ class Qwen3Attention(nn.Module):
 
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self.resolve_rope_tables(
             indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
@@ -1060,7 +1060,7 @@ class Qwen3Attention(nn.Module):
         )  # [B,H,S,D]
 
         # RoPE
-        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self.resolve_rope_tables(
             indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
@@ -1374,7 +1374,7 @@ class Qwen3Attention(nn.Module):
             )
         value_states = value_states.view(hidden_shape).transpose(1, 2)
 
-        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self.resolve_rope_tables(
             indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
@@ -1805,9 +1805,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # normalization changes the activation dtype.
         position_embeddings = None
         if layers:
-            native_layers = self.__dict__.get("_sensenova_cache_dit_native_layers")
+            native_layers = self.__dict__.get("sensenova_cache_dit_native_layers")
             rope_layer = native_layers[0] if native_layers is not None else layers[0]
-            position_embeddings = rope_layer.self_attn._resolve_rope_tables(
+            position_embeddings = rope_layer.self_attn.resolve_rope_tables(
                 indexes, hidden_states
             )
 
