@@ -622,7 +622,7 @@ The fixed caller-frame budget still determines the number of generated frames.</
 <section id="known-limitations">
 <h2>Known limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Offline, one request at a time (<code class="docutils literal notranslate"><span class="pre">max_running_requests=1</span></code>).</p></li>
+<li><p>Offline, one request at a time by default (<code class="docutils literal notranslate"><span class="pre">max_running_requests=1</span></code>). If you raise <code class="docutils literal notranslate"><span class="pre">--lm.engine.max_running_requests</span></code>, unseeded requests with the same audio sampling share one depformer pass per frame.</p></li>
 <li><p>CUDA graphs are off; a 7B decode step plus 8 depformer steps runs close to the 80 ms frame budget rather than well inside it.</p></li>
 <li><p>The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.</p></li>
 </ul>
