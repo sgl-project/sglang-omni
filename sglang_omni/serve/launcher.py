@@ -534,6 +534,7 @@ async def run_server(
             required_speech_reference_count=(
                 pipeline_config.required_speech_reference_count
             ),
+            speaker_embedding_dim=pipeline_config.resolve_speaker_embedding_dim(),
             speech_reference_text_required=(
                 pipeline_config.speech_reference_text_required
             ),

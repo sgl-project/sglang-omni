@@ -207,6 +207,7 @@ def create_app(
     custom_voice_config: CustomVoiceConfig | None = None,
     supports_audio_translation: bool = False,
     required_speech_reference_count: int | None = None,
+    speaker_embedding_dim: int | None = None,
     speech_reference_text_required: bool = False,
     speech_reference_text_excludes_instructions: bool = False,
     additional_speech_languages: frozenset[str] = frozenset(),
@@ -237,6 +238,8 @@ def create_app(
             ``/v1/audio/translations``.
         required_speech_reference_count: Exact reference count required before
             dispatching a speech request to the backend.
+        speaker_embedding_dim: Accepted precomputed speaker embedding dimension
+            for Base cloning. None rejects requests carrying speaker_embedding.
         speech_reference_text_required: Whether each speech reference requires
             a transcript.
         speech_reference_text_excludes_instructions: Whether a reference
@@ -302,6 +305,7 @@ def create_app(
         ),
         supports_uploaded_voice_references=supports_uploaded_voice_references,
         required_speech_reference_count=required_speech_reference_count,
+        speaker_embedding_dim=speaker_embedding_dim,
         speech_reference_text_required=speech_reference_text_required,
         speech_reference_text_excludes_instructions=(
             speech_reference_text_excludes_instructions

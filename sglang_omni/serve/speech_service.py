@@ -85,6 +85,7 @@ class TTSParams(RequiredTTSParams, total=False):
     uploaded_voice_name: str
     uploaded_voice_created_at: int
     x_vector_only_mode: bool
+    speaker_embedding: list[float]
     stream_codec_output: bool
     suppress_bootstrap_silence: bool
     initial_codec_chunk_frames: int
@@ -135,6 +136,7 @@ class SpeechRequestValidator:
         supports_uploaded_voice_references: bool = True,
         custom_voice_config: CustomVoiceConfig | None = None,
         required_speech_reference_count: int | None = None,
+        speaker_embedding_dim: int | None = None,
         speech_reference_text_required: bool = False,
         speech_reference_text_excludes_instructions: bool = False,
         additional_speech_languages: frozenset[str] = frozenset(),
@@ -153,6 +155,12 @@ class SpeechRequestValidator:
             and required_speech_reference_count < 1
         ):
             raise ValueError("required_speech_reference_count must be greater than 0")
+        else:
+            pass
+        if speaker_embedding_dim is not None and (
+            isinstance(speaker_embedding_dim, bool) or speaker_embedding_dim < 1
+        ):
+            raise ValueError("speaker_embedding_dim must be a positive integer or None")
         else:
             pass
         if max_speech_input_chars is not None and (
@@ -187,6 +195,7 @@ class SpeechRequestValidator:
             else frozenset()
         )
         self.required_speech_reference_count = required_speech_reference_count
+        self.speaker_embedding_dim = speaker_embedding_dim
         self.speech_reference_text_required = speech_reference_text_required
         self.max_speech_input_chars = max_speech_input_chars
         self.speech_reference_text_excludes_instructions = (
@@ -345,6 +354,7 @@ class SpeechRequestValidator:
         else:
             pass
         self.validate_custom_voice_request(request, task_type=updates.get("task_type"))
+        self.validate_speaker_embedding(request, task_type=updates.get("task_type"))
         if request.language is not None:
             updates["language"] = self.normalize_language(request.language)
         else:
@@ -401,6 +411,54 @@ class SpeechRequestValidator:
             param="voice",
         )
 
+    def validate_speaker_embedding(
+        self,
+        request: CreateSpeechRequest,
+        *,
+        task_type: str | None,
+    ) -> None:
+        if request.speaker_embedding is None:
+            return
+        else:
+            pass
+        if self.speaker_embedding_dim is None:
+            raise bad_request(
+                "speaker_embedding is not supported by this model",
+                param="speaker_embedding",
+            )
+        else:
+            pass
+        if not request.speaker_embedding:
+            raise bad_request(
+                "speaker_embedding must be a non-empty list of numbers",
+                param="speaker_embedding",
+            )
+        else:
+            pass
+        if len(request.speaker_embedding) != self.speaker_embedding_dim:
+            raise bad_request(
+                f"speaker_embedding must contain {self.speaker_embedding_dim} "
+                f"values, got {len(request.speaker_embedding)}",
+                param="speaker_embedding",
+            )
+        else:
+            pass
+        if request.x_vector_only_mode is False:
+            raise bad_request(
+                "speaker_embedding implies x-vector-only mode; omit "
+                "x_vector_only_mode or set it to true",
+                param="x_vector_only_mode",
+            )
+        else:
+            pass
+        if task_type is not None and task_type != "Base":
+            raise bad_request(
+                "speaker_embedding is only supported for the Base task",
+                param="task_type",
+            )
+        else:
+            pass
+
     def normalize_language(self, value: str) -> str:
         normalized = self.tts_language_aliases.get(value.strip().lower())
         if normalized is None:
@@ -415,6 +473,17 @@ class SpeechRequestValidator:
         request: CreateSpeechRequest,
         prepared_references: PreparedSpeechReferences,
     ) -> None:
+        if request.speaker_embedding is not None and (
+            request.ref_audio is not None
+            or request.references
+            or prepared_references.uploaded_voice is not None
+        ):
+            raise bad_request(
+                "speaker_embedding is mutually exclusive with reference audio",
+                param="speaker_embedding",
+            )
+        else:
+            pass
         references = prepared_references.reference_descriptors
         required_count = self.required_speech_reference_count
         if required_count is not None and len(references) != required_count:
@@ -896,6 +965,20 @@ class SpeechRequestValidator:
                     pass
             else:
                 pass
+        if "speaker_embedding" in payload and payload["speaker_embedding"] is not None:
+            value = payload["speaker_embedding"]
+            if not isinstance(value, list) or any(
+                isinstance(item, bool) or not isinstance(item, (int, float))
+                for item in value
+            ):
+                raise bad_request(
+                    "speaker_embedding must be a list of numbers",
+                    param="speaker_embedding",
+                )
+            else:
+                pass
+        else:
+            pass
         for field_name in (
             "stream",
             "x_vector_only_mode",
@@ -1043,6 +1126,13 @@ def build_tts_params(
         pass
     if request.x_vector_only_mode is not None:
         tts_params["x_vector_only_mode"] = request.x_vector_only_mode
+    else:
+        pass
+    if request.speaker_embedding is not None:
+        tts_params["speaker_embedding"] = request.speaker_embedding
+        # Embedding-only requests carry no reference audio, so task_type
+        # inference would otherwise land on CustomVoice.
+        tts_params["task_type"] = "Base"
     else:
         pass
     if request.stream_codec_output is not None:

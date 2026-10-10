@@ -45,6 +45,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     build_qwen3_tts_state,
     build_sglang_qwen3_tts_request,
     derive_qwen3_tts_sampling_seeds,
+    qwen3_tts_voice_prompt_from_params,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
@@ -882,6 +883,75 @@ def test_qwen3_tts_maps_references_and_keeps_upstream_sampling_defaults() -> Non
     assert state.generation_kwargs == {"max_new_tokens": 2048}
 
 
+def test_qwen3_tts_embedding_only_request_infers_base_x_vector() -> None:
+    payload = make_payload(
+        inputs={"text": "target"},
+        tts_params={"speaker_embedding": [0.5, -0.25]},
+    )
+
+    state = build_qwen3_tts_state(payload)
+
+    assert state.task_type == "Base"
+    assert state.speaker_embedding == [0.5, -0.25]
+    assert state.ref_audio is None
+    assert state.x_vector_only_mode is True
+
+
+def test_qwen3_tts_embedding_with_ref_text_keeps_x_vector_and_transcript() -> None:
+    payload = make_payload(
+        inputs={"text": "target"},
+        tts_params={
+            "speaker_embedding": [0.5, -0.25],
+            "ref_text": "unused in x-vector mode",
+        },
+    )
+
+    state = build_qwen3_tts_state(payload)
+
+    assert state.task_type == "Base"
+    assert state.x_vector_only_mode is True
+    assert state.ref_text == "unused in x-vector mode"
+
+
+def test_qwen3_tts_custom_voice_rejects_speaker_embedding() -> None:
+    payload = make_payload(
+        inputs={"text": "target"},
+        tts_params={"speaker_embedding": [0.5, -0.25], "task_type": "CustomVoice"},
+    )
+
+    with pytest.raises(ValueError, match="CustomVoice does not accept"):
+        build_qwen3_tts_state(payload)
+
+
+def test_qwen3_tts_voice_design_rejects_speaker_embedding() -> None:
+    payload = make_payload(
+        inputs={"text": "target", "instructions": "warm voice"},
+        tts_params={"speaker_embedding": [0.5, -0.25], "task_type": "VoiceDesign"},
+    )
+
+    with pytest.raises(ValueError, match="VoiceDesign does not accept"):
+        build_qwen3_tts_state(payload)
+
+
+def test_qwen3_tts_voice_prompt_from_params_materializes_cpu_embedding() -> None:
+    state = build_qwen3_tts_state(
+        make_payload(
+            inputs={"text": "target"},
+            tts_params={"speaker_embedding": [0.5, -0.25]},
+        )
+    )
+
+    prompt, ref_text = qwen3_tts_voice_prompt_from_params(state)
+
+    embedding = prompt["ref_spk_embedding"][0]
+    assert embedding.dtype == torch.float32
+    assert embedding.device.type == "cpu"
+    assert embedding.tolist() == [0.5, -0.25]
+    assert prompt["ref_code"] == [None]
+    assert prompt["icl_mode"] == [False]
+    assert ref_text is None
+
+
 def test_qwen3_tts_preserves_explicit_default_like_sampling_values() -> None:
     payload = make_payload(
         inputs={
@@ -1115,6 +1185,121 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
     )
 
     assert prepared.state.seed is None
+
+
+def test_qwen3_tts_preprocessing_materializes_provided_speaker_embedding() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"speaker_embedding": [0.5, -0.25], "ref_text": "unused"},
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeWrapper:
+        def _normalize_audio_inputs(self, ref_audio):
+            raise AssertionError("reference audio must not load for an embedding")
+
+        def _tokenize_texts(self, texts):
+            return [[idx + 1 for idx, _ in enumerate(texts[0])]]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        root_config = SimpleNamespace(
+            tts_pad_token_id=0,
+            speaker_encoder_config=SimpleNamespace(enc_dim=2),
+        )
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        speech_tokenizer = fake_speech_tokenizer()
+        speaker_encoder_sample_rate = 24000
+
+        def extract_speaker_embedding(self, *, audio, sr):
+            raise AssertionError(
+                "speaker encoder must not run for a provided embedding"
+            )
+
+        def build_voice_clone_inputs(self, **kwargs):
+            captured["voice_clone_prompt"] = kwargs["voice_clone_prompt"]
+            return (
+                torch.ones((1, 2, 4)),
+                torch.ones((1, 2), dtype=torch.long),
+                torch.ones((1, 1, 4)),
+                None,
+            )
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    prepared = qwen3_request_builders.prepare_qwen3_tts_request(
+        payload,
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+    )
+
+    prompt = captured["voice_clone_prompt"]
+    embedding = prompt["ref_spk_embedding"][0]
+    assert embedding.tolist() == [0.5, -0.25]
+    assert prompt["ref_code"] == [None]
+    assert prompt["icl_mode"] == [False]
+    assert prepared.state.ref_audio is None
+    assert prepared.state.speaker_embedding == [0.5, -0.25]
+
+
+def test_qwen3_tts_preprocessing_rejects_dimension_mismatched_embedding() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"speaker_embedding": [0.5]},
+    )
+
+    class FakeWrapper:
+        def _tokenize_texts(self, texts):
+            return [[idx + 1 for idx, _ in enumerate(texts[0])]]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        root_config = SimpleNamespace(
+            tts_pad_token_id=0,
+            speaker_encoder_config=SimpleNamespace(enc_dim=2),
+        )
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        speech_tokenizer = fake_speech_tokenizer()
+        speaker_encoder_sample_rate = 24000
+
+        def build_voice_clone_inputs(self, **kwargs):
+            raise AssertionError("mismatched embedding must not reach prompt build")
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    with pytest.raises(ValueError, match="must contain 2 values"):
+        qwen3_request_builders.prepare_qwen3_tts_request(
+            payload,
+            model=FakeModel(),
+            wrapper=FakeWrapper(),
+        )
 
 
 def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(

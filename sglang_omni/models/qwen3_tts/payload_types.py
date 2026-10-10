@@ -29,6 +29,7 @@ class Qwen3TTSState(DeclarativeStateBase):
     instructions: str | None = None
     ref_audio: object = None
     ref_text: str | None = None
+    speaker_embedding: list[float] | None = None
     uploaded_voice_name: str | None = None
     uploaded_voice_created_at: int | None = None
     x_vector_only_mode: bool = wire(False, codec="bool")
