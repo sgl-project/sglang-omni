@@ -11,27 +11,8 @@ from einops import rearrange
 from torch import nn
 from torch.nn import functional
 
-from sglang_omni.models.personaplex.architecture import MIMI, MimiSpec
+from sglang_omni.models.personaplex.architecture import MimiSpec
 from sglang_omni.models.personaplex.components.causal_conv import StreamingModule
-
-if torch.version.cuda is not None:
-    from sglang_omni.models.personaplex.components.mimi_kernels import (
-        fused_mimi_rope_cache,
-    )
-else:
-    pass
-
-
-def rope_phases(
-    positions: torch.Tensor, dim: int, max_period: float
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute the reference's float32 rotation phases."""
-    freqs = torch.exp(
-        torch.arange(dim // 2, device=positions.device, dtype=torch.float32)
-        * (-math.log(max_period) * 2 / dim)
-    )
-    angles = positions.to(torch.float32).view(-1, 1) * freqs
-    return torch.cos(angles), torch.sin(angles)
 
 
 def apply_interleaved_rope(
@@ -44,7 +25,12 @@ def apply_interleaved_rope(
         positions: [T] absolute positions.
     """
     dim = q.shape[-1]
-    cos, sin = rope_phases(positions, dim, max_period)
+    freqs = torch.exp(
+        torch.arange(dim // 2, device=q.device, dtype=torch.float32)
+        * (-math.log(max_period) * 2 / dim)
+    )
+    angles = positions.to(torch.float32).view(-1, 1) * freqs
+    cos, sin = torch.cos(angles), torch.sin(angles)
 
     def rotate(x: torch.Tensor) -> torch.Tensor:
         pairs = x.float().view(*x.shape[:-1], dim // 2, 2)
@@ -89,54 +75,10 @@ class MimiAttention(nn.Module):
     ) -> torch.Tensor:
         length = x.shape[1]
         projected = functional.linear(x, self.in_proj_weight)
-        pos_q = offset + torch.arange(length, device=x.device)
-        if (
-            state is not None
-            and x.is_cuda
-            and torch.version.cuda is not None
-            and not torch.is_grad_enabled()
-            and projected.dtype == torch.float32
-            and projected.shape == (1, MIMI.frame_ratio, 3 * MIMI.dim)
-            and self.num_heads == MIMI.num_heads
-            and self.context == MIMI.context
-            and self.write_chunk == MIMI.frame_ratio
-            and (
-                state.keys is None
-                or (
-                    state.keys.is_contiguous()
-                    and state.values is not None
-                    and state.values.is_contiguous()
-                )
-            )
-        ):
-            if state.keys is None:
-                shape = (1, MIMI.num_heads, MIMI.context, MIMI.dim // MIMI.num_heads)
-                state.keys = projected.new_zeros(shape)
-                state.values = projected.new_zeros(shape)
-            else:
-                pass
-            cosine, sine = rope_phases(
-                pos_q, MIMI.dim // MIMI.num_heads, self.max_period
-            )
-            q, mask = fused_mimi_rope_cache(
-                projected,
-                cosine,
-                sine,
-                state.keys,
-                state.values,
-                offset,
-                state.end_offset,
-            )
-            state.end_offset += length
-            out = functional.scaled_dot_product_attention(
-                q, state.keys, state.values, attn_mask=mask
-            )
-            return self.out_proj(rearrange(out, "b h t d -> b t (h d)"))
-        else:
-            pass
         q, k, v = rearrange(
             projected, "b t (p h d) -> p b h t d", p=3, h=self.num_heads
         )
+        pos_q = offset + torch.arange(length, device=x.device)
         q, k = apply_interleaved_rope(q, k, pos_q, self.max_period)
         if state is None:
             pos_k = pos_q

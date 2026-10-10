@@ -33,13 +33,6 @@ from sglang_omni.models.personaplex.components.mimi_transformer import (
     TransformerState,
 )
 
-if torch.version.cuda is not None:
-    from sglang_omni.models.personaplex.components.mimi_kernels import (
-        compile_mimi_rope_cache,
-    )
-else:
-    pass
-
 SEANetLayerState = ConvState | ConvTransposeState | None
 SEANetState = list[SEANetLayerState | list[SEANetLayerState]]
 
@@ -407,13 +400,7 @@ def load_mimi_codec(
             pass
     codec = MimiCodec()
     codec.load_state_dict(state, strict=True)
-    codec = codec.to(device=device).eval()
-    weight = codec.downsample.conv.weight
-    if weight.is_cuda and torch.version.cuda is not None:
-        compile_mimi_rope_cache(weight.get_device())
-    else:
-        pass
-    return codec
+    return codec.to(device=device).eval()
 
 
 __all__ = [
