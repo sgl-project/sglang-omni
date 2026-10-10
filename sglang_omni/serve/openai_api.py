@@ -15,6 +15,7 @@ Provides the following endpoints:
 - GET  /v1/fs/list           — Browse filesystem directories
 - GET  /v1/fs/file           — Download a file
 - GET  /health               — Health check
+- GET  /metrics              — Prometheus metrics (when enabled)
 - WS   /v1/realtime          — OpenAI-compatible Realtime API (when enabled)
 """
 
@@ -80,6 +81,7 @@ from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
+from sglang_omni.serve.metrics import OmniPrometheusMetrics, install_metrics_middleware
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -221,6 +223,7 @@ def create_app(
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
+    enable_metrics: bool = False,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -259,6 +262,8 @@ def create_app(
             ``/v1/audio/speech/batch``.
         audio_chunking: Long-audio chunking policy for ``/v1/audio/transcriptions``,
             declared by the pipeline config. None keeps chunking off.
+        enable_metrics: If True, expose a Prometheus-compatible ``/metrics``
+            endpoint and collect low-cardinality API metrics.
 
     Returns:
         Configured FastAPI application.
@@ -315,9 +320,18 @@ def create_app(
     )
 
     resolved_key = resolve_admin_api_key(admin_api_key)
+    if enable_metrics:
+        app.state.omni_metrics = OmniPrometheusMetrics(model_name=app.state.model_name)
+        install_metrics_middleware(app)
+    else:
+        pass
 
     # Register all routes
     register_favicon(app)
+    if enable_metrics:
+        register_metrics(app)
+    else:
+        pass
     register_health(app)
     register_models(app)
     register_admin(app, resolved_key)
@@ -459,6 +473,16 @@ async def send_voice_upload_too_large(
         }
     )
     await send({"type": "http.response.body", "body": body})
+
+
+def register_metrics(app: FastAPI) -> None:
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Response:
+        """Prometheus-compatible metrics endpoint."""
+        omni_metrics: OmniPrometheusMetrics = app.state.omni_metrics
+        client: Client = app.state.client
+        omni_metrics.update_from_health(client.health())
+        return omni_metrics.render()
 
 
 def register_health(app: FastAPI) -> None:
