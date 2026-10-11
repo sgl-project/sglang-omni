@@ -25,8 +25,10 @@ DEFAULT_MAX_NEW_FRAMES = 2048
 class EasyMagpieTTSState(DeclarativeStateBase):
     sample_rate: int = wire(EASYMAGPIE_SAMPLE_RATE, codec="int")
     text: str = wire("", codec="str")
-    voice: str = wire(DEFAULT_VOICE, codec="str_or")
-    context_text: str = wire(DEFAULT_CONTEXT_TEXT, codec="str_or")
+    # Empty until preprocessing resolves them; voice then holds the context id.
+    voice: str = wire("", codec="str")
+    language: str = wire("", codec="str")
+    context_text: str = wire("", codec="str")
     temperature: float = wire(DEFAULT_TEMPERATURE, codec="float")
     top_k: int = wire(DEFAULT_TOP_K, codec="int")
     max_new_frames: int = wire(DEFAULT_MAX_NEW_FRAMES, codec="int")

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from safetensors.torch import save_file
 
 from sglang_omni.models.easymagpie_tts import codec as codec_module
 from sglang_omni.models.easymagpie_tts import stages
@@ -99,6 +100,62 @@ def test_preprocessing_rejects_unknown_voices(checkpoint) -> None:
     scheduler = stages.create_preprocessing_executor(str(checkpoint))
     with pytest.raises(ValueError, match="available voices: \\['alt', 'eng'\\]"):
         scheduler.fn(make_payload("hi", tts_params={"voice": "nobody"}))
+
+
+def test_preprocessing_uses_the_registry_voice_context(
+    tmp_path, monkeypatch, tiny_raw_config
+) -> None:
+    (tmp_path / "config.json").write_text(json.dumps(tiny_raw_config))
+    voices = tmp_path / SPEAKER_SUBDIR
+    voices.mkdir()
+    save_file(
+        {"Aria": torch.ones(2, 8), "context_fr": torch.ones(3, 8)},
+        voices / "contexts.safetensors",
+    )
+    (voices / "contexts.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "default_speaker_id": "Aria",
+                "tensor_bundle": "contexts.safetensors",
+                "contexts": {
+                    "Aria": {
+                        "tensor_key": "Aria",
+                        "context_text": "en",
+                        "prompt_len": 4,
+                    },
+                    "context_fr": {
+                        "tensor_key": "context_fr",
+                        "context_text": "fr",
+                        "prompt_len": 5,
+                    },
+                },
+                "langs_supported": {"en": ["Aria"], "fr": ["Aria"]},
+                "voice_contexts": {"Aria": {"en": "Aria", "fr": "context_fr"}},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        stages,
+        "AutoTokenizer",
+        SimpleNamespace(from_pretrained=lambda *args, **kwargs: FakeTokenizer()),
+    )
+    scheduler = stages.create_preprocessing_executor(str(tmp_path))
+
+    french = EasyMagpieTTSState.from_dict(
+        scheduler.fn(make_payload("ab", tts_params={"language": "French"})).data
+    )
+    assert (french.voice, french.context_text, french.speaker_frames) == (
+        "context_fr",
+        "fr",
+        3,
+    )
+    assert french.context_token_ids == [ord(char) % 60 for char in "fr"]
+
+    explicit = EasyMagpieTTSState.from_dict(
+        scheduler.fn(make_payload("ab", tts_params={"context_text": "own"})).data
+    )
+    assert (explicit.voice, explicit.context_text) == ("Aria", "own")
 
 
 def test_preprocessing_rejects_speech_before_phoneme_delay(

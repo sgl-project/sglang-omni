@@ -13,11 +13,9 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.easymagpie_tts.payload_types import (
-    DEFAULT_CONTEXT_TEXT,
     DEFAULT_MAX_NEW_FRAMES,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_K,
-    DEFAULT_VOICE,
     MAX_TEXT_TOKENS,
     MAX_TOP_K,
     EasyMagpieTTSState,
@@ -87,8 +85,9 @@ def build_easymagpie_state(payload: StagePayload) -> EasyMagpieTTSState:
 
     return EasyMagpieTTSState(
         text=text,
-        voice=str(tts_params.get("voice") or params.get("voice") or DEFAULT_VOICE),
-        context_text=str(tts_params.get("context_text") or DEFAULT_CONTEXT_TEXT),
+        voice=str(tts_params.get("voice") or params.get("voice") or ""),
+        language=str(tts_params.get("language") or params.get("language") or ""),
+        context_text=str(tts_params.get("context_text") or ""),
         temperature=temperature,
         top_k=top_k,
         max_new_frames=max_new_frames,

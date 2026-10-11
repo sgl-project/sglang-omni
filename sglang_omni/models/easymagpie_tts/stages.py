@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage factories for the EasyMagpie pipeline.
 
-    preprocessing -> tts_engine -> vocoder
+preprocessing -> tts_engine -> vocoder
 """
 
 from __future__ import annotations
@@ -12,8 +12,9 @@ from typing import Any
 
 from transformers import AutoTokenizer
 
+from sglang_omni.models.easymagpie_tts.payload_types import DEFAULT_CONTEXT_TEXT
 from sglang_omni.models.easymagpie_tts.request_builders import build_easymagpie_state
-from sglang_omni.models.easymagpie_tts.speakers import load_speaker_embeddings
+from sglang_omni.models.easymagpie_tts.speakers import load_voice_catalog
 from sglang_omni.models.easymagpie_tts.streaming_vocoder import (
     DEFAULT_STARTUP_CHUNK_FRAMES,
     DEFAULT_STEADY_CHUNK_FRAMES,
@@ -53,20 +54,18 @@ def create_preprocessing_executor(
         )
     else:
         pass
-    # The engine holds the voice rows on the GPU; requests carry their length.
-    voice_frames = {
-        name: int(embedding.shape[0])
-        for name, embedding in load_speaker_embeddings(
-            checkpoint, int(config["embedding_dim"])
-        ).items()
+    catalog = load_voice_catalog(checkpoint, int(config["embedding_dim"]))
+    # The engine holds the context rows on the GPU; requests carry their length.
+    context_frames = {
+        name: int(embedding.shape[0]) for name, embedding in catalog.rows.items()
     }
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         state = build_easymagpie_state(payload)
-        if state.voice not in voice_frames:
-            raise ValueError(
-                f"Unknown EasyMagpie voice {state.voice!r}; "
-                f"available voices: {sorted(voice_frames)}"
+        state.voice = catalog.resolve(state.voice, state.language)
+        if not state.context_text:
+            state.context_text = catalog.context_texts.get(
+                state.voice, DEFAULT_CONTEXT_TEXT
             )
         else:
             pass
@@ -86,7 +85,7 @@ def create_preprocessing_executor(
         state.context_token_ids = list(
             tokenizer.encode(state.context_text, add_special_tokens=False)
         )
-        state.speaker_frames = voice_frames[state.voice]
+        state.speaker_frames = context_frames[state.voice]
         return store_state(payload, state)
 
     # Tokenization is blocking CPU work; asyncio's default executor would cap
