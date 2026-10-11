@@ -188,6 +188,43 @@ final class OmniRealtimeSessionUpdateTests: XCTestCase {
         )
     }
 
+    func testNemotronLiveSessionsPassTheLatencyAndLanguage() throws {
+        let session = try session(OmniRealtimeTranscriptionSession.sessionUpdate(
+            language: "zh-CN",
+            chunkMilliseconds: 560
+        ))
+
+        XCTAssertEqual(session["language"] as? String, "zh-CN")
+        XCTAssertEqual(session["chunk_ms"] as? Int, 560)
+        XCTAssertNil(session["prompt"])
+    }
+
+    /// Voxt maps a live language onto the prompt languages in the checkpoint's
+    /// config.json, as it did with the loaded Swift model's dictionary.
+    func testNemotronPromptLanguagesComeFromTheCheckpointConfig() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"{"default_language":"auto","prompt":{"prompt_dictionary":{"auto":101,"en-US":0,"zh-CN":4,"ja-JA":10,"ja-JP":10}}}"#.utf8)
+            .write(to: directory.appendingPathComponent("config.json"))
+
+        let prompt = try OmniASRRuntime.nemotronPromptLanguages(modelDirectory: directory)
+        XCTAssertEqual(prompt.defaultLanguage, "auto")
+        XCTAssertEqual(Set(prompt.languages), ["auto", "en-US", "zh-CN", "ja-JA", "ja-JP"])
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.nativeNemotronLanguage(
+                requested: "zh", availableLanguages: prompt.languages, defaultLanguage: prompt.defaultLanguage
+            ),
+            "zh-CN"
+        )
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.nativeNemotronLanguage(
+                requested: "ja", availableLanguages: prompt.languages, defaultLanguage: prompt.defaultLanguage
+            ),
+            "ja-JA"
+        )
+    }
+
     func testMossLiveSessionsPassTheTaskPrompt() throws {
         let session = try session(OmniRealtimeTranscriptionSession.sessionUpdate(language: nil, prompt: "Transcribe."))
 

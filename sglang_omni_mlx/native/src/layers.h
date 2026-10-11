@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Checkpoint weights and the layers built on them: linear (quantized when the
-// checkpoint is), norms, embeddings and activations.
+// checkpoint is), norms, embeddings and activations, and the relative shift
+// and LSTM step that several models share.
 #pragma once
 
 #include <filesystem>
@@ -54,5 +55,22 @@ private:
 // Activations in x's dtype.
 mlx::core::array Gelu(const mlx::core::array &x);
 mlx::core::array Silu(const mlx::core::array &x);
+
+// Transformer-XL's relative shift of position scores [batch, heads, queries,
+// positions]: a left zero column, then rows reread one step along, so each
+// row's columns line up with its keys' relative positions. Callers keep the
+// first key-count columns.
+mlx::core::array RelativeShift(const mlx::core::array &scores);
+
+// One LSTM step in MLXNN's formulation. gates [1, 4 * hidden] are x * Wx^T +
+// bias in input, forget, candidate, output order; with no state the step
+// starts from zeros, adding no recurrent term and no carried cell.
+struct LstmCell {
+  mlx::core::array hidden;
+  mlx::core::array cell;
+};
+LstmCell LstmStep(const mlx::core::array &gates,
+                  const std::optional<LstmCell> &state,
+                  const mlx::core::array &recurrent_weight);
 
 } // namespace qwen3_asr

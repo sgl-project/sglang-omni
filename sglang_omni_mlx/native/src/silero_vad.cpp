@@ -6,6 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "layers.h"
 #include "nlohmann/json.hpp"
 
 namespace silero_vad {
@@ -125,37 +126,24 @@ float SileroVAD::Feed(const float *chunk, StreamState &state) const {
   // Note (Jiaxin Deng): MLXNN's LSTM formulation, to match Swift (one timestep
   // per 512-sample chunk).
   x = mx::addmm(Weight("lstm.bias"), x, mx::transpose(Weight("lstm.Wx")));
-  std::optional<mx::array> hidden = state.hidden;
-  std::optional<mx::array> cell = state.cell;
+  std::optional<qwen3_asr::LstmCell> lstm =
+      state.hidden.has_value()
+          ? std::optional<qwen3_asr::LstmCell>({*state.hidden, *state.cell})
+          : std::nullopt;
   std::vector<mx::array> hidden_steps;
   for (int step = 0; step < x.shape(1); ++step) {
-    mx::array gates =
+    const mx::array gates =
         mx::reshape(mx::slice(x, {0, step, 0}, {1, step + 1, 4 * kLstmHidden}),
                     {1, 4 * kLstmHidden});
-    if (hidden.has_value()) {
-      gates = mx::addmm(gates, *hidden, mx::transpose(Weight("lstm.Wh")));
-    } else {
-    }
-    const std::vector<mx::array> pieces = mx::split(gates, 4, -1);
-    const mx::array input_gate = mx::sigmoid(pieces[0]);
-    const mx::array forget_gate = mx::sigmoid(pieces[1]);
-    const mx::array candidate = mx::tanh(pieces[2]);
-    const mx::array output_gate = mx::sigmoid(pieces[3]);
-    if (cell.has_value()) {
-      cell = mx::add(mx::multiply(forget_gate, *cell),
-                     mx::multiply(input_gate, candidate));
-    } else {
-      cell = mx::multiply(input_gate, candidate);
-    }
-    hidden = mx::multiply(output_gate, mx::tanh(*cell));
-    hidden_steps.push_back(*hidden);
+    lstm = qwen3_asr::LstmStep(gates, lstm, Weight("lstm.Wh"));
+    hidden_steps.push_back(lstm->hidden);
   }
   mx::array out = Relu(mx::stack(hidden_steps, -2));
   out = mx::sigmoid(Conv1d(out, "final_conv", 1, 0));
   const mx::array probability = mx::mean(mx::squeeze(out, -1), 1, true);
-  mx::eval({probability, *hidden, *cell});
-  state.hidden = hidden;
-  state.cell = cell;
+  mx::eval({probability, lstm->hidden, lstm->cell});
+  state.hidden = lstm->hidden;
+  state.cell = lstm->cell;
   state.context.assign(chunk + kChunkSamples - kContextSamples,
                        chunk + kChunkSamples);
   return probability.item<float>();
