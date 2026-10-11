@@ -10,6 +10,7 @@ kept wherever the module tree allows so loading stays a rename, not a rewrite.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from sglang_omni.models.personaplex.components.causal_conv import (
     StreamingModule,
 )
 from sglang_omni.models.personaplex.components.mimi_transformer import (
+    AttentionState,
     MimiTransformer,
     TransformerState,
 )
@@ -342,6 +344,207 @@ class MimiCodec(nn.Module):
         return self.decoder.step(latent, state.decoder)
 
 
+def allocate_decoder_state(modules: nn.ModuleList, slot_count: int) -> SEANetState:
+    """Allocate one zero-filled streaming state row per slot and decoder module."""
+    decoder_state: SEANetState = []
+    for module in modules:
+        if isinstance(module, CausalConv1d):
+            previous = module.conv.weight.new_zeros(
+                (slot_count, module.conv.in_channels, module.padding_total)
+            )
+            decoder_state.append(ConvState(previous=previous, padded=True))
+        elif isinstance(module, CausalConvTranspose1d):
+            partial = module.convtr.weight.new_zeros(
+                (slot_count, module.convtr.out_channels, module.padding_total)
+            )
+            decoder_state.append(ConvTransposeState(partial=partial))
+        elif isinstance(module, SEANetResnetBlock):
+            decoder_state.append(allocate_decoder_state(module.block, slot_count))
+        else:
+            decoder_state.append(None)
+    return decoder_state
+
+
+def select_decoder_state(
+    decoder_state: SEANetState,
+    slot_indices: torch.Tensor,
+    is_first_step: bool,
+) -> SEANetState:
+    """Gather decoder state rows for one arbitrary slot subset."""
+    selected_state: SEANetState = []
+    for entry in decoder_state:
+        if entry is None:
+            selected_state.append(None)
+        elif isinstance(entry, list):
+            selected_state.append(
+                select_decoder_state(entry, slot_indices, is_first_step)
+            )
+        elif isinstance(entry, ConvState):
+            assert entry.previous is not None
+            selected_state.append(
+                ConvState(
+                    previous=entry.previous.index_select(0, slot_indices), padded=True
+                )
+            )
+        else:
+            assert entry.partial is not None
+            selected_state.append(
+                ConvTransposeState(
+                    partial=(
+                        None
+                        if is_first_step
+                        else entry.partial.index_select(0, slot_indices)
+                    )
+                )
+            )
+    return selected_state
+
+
+def store_decoder_state(
+    decoder_state: SEANetState,
+    selected_state: SEANetState,
+    slot_indices: torch.Tensor,
+) -> None:
+    """Write decoder state rows rebound by a decode step back to the arena."""
+    for entry, selected_entry in zip(decoder_state, selected_state, strict=True):
+        if entry is None:
+            pass
+        elif isinstance(entry, list):
+            assert isinstance(selected_entry, list)
+            store_decoder_state(entry, selected_entry, slot_indices)
+        elif isinstance(entry, ConvState):
+            assert isinstance(selected_entry, ConvState)
+            assert entry.previous is not None and selected_entry.previous is not None
+            entry.previous.index_copy_(0, slot_indices, selected_entry.previous)
+        else:
+            assert isinstance(selected_entry, ConvTransposeState)
+            assert entry.partial is not None and selected_entry.partial is not None
+            entry.partial.index_copy_(0, slot_indices, selected_entry.partial)
+
+
+def decoder_state_buffers(
+    decoder_state: SEANetState,
+) -> Iterator[torch.Tensor]:
+    for entry in decoder_state:
+        if entry is None:
+            pass
+        elif isinstance(entry, list):
+            yield from decoder_state_buffers(entry)
+        elif isinstance(entry, ConvState):
+            assert entry.previous is not None
+            yield entry.previous
+        else:
+            assert entry.partial is not None
+            yield entry.partial
+
+
+class MimiDecodeStateArena:
+    """Preallocated streaming decode state indexed by dense request slots."""
+
+    def __init__(self, codec: MimiCodec, slot_count: int) -> None:
+        spec = codec.spec
+        new_zeros = codec.upsample.convtr.weight.new_zeros
+        self.codec = codec
+        self.slot_count = slot_count
+        self.upsample_overlap = new_zeros(
+            (slot_count, spec.dim, codec.upsample.padding_total)
+        )
+        head_dimension = spec.dim // spec.num_heads
+        self.attention_keys = [
+            new_zeros((slot_count, spec.num_heads, spec.context, head_dimension))
+            for _ in range(spec.num_layers)
+        ]
+        self.attention_values = [
+            new_zeros((slot_count, spec.num_heads, spec.context, head_dimension))
+            for _ in range(spec.num_layers)
+        ]
+        self.decoder_state = allocate_decoder_state(codec.decoder.model, slot_count)
+        self.decoded_frame_counts = [0] * slot_count
+
+    def decoded_frame_count(self, slot_index: int) -> int:
+        return self.decoded_frame_counts[slot_index]
+
+    def decode_step(
+        self,
+        batched_codes: torch.Tensor,
+        *,
+        slot_indices: list[int],
+    ) -> torch.Tensor:
+        """Decode equal-width chunks from arbitrary slots and history offsets."""
+        assert batched_codes.shape[0] == len(slot_indices)
+        assert len(slot_indices) == len(set(slot_indices))
+        assert all(0 <= slot_index < self.slot_count for slot_index in slot_indices)
+        decoded_frame_counts = [
+            self.decoded_frame_counts[slot_index] for slot_index in slot_indices
+        ]
+        first_step_rows = [frame_count == 0 for frame_count in decoded_frame_counts]
+        assert all(first_step_rows) or not any(first_step_rows)
+        is_first_step = first_step_rows[0]
+        selected_slot_indices = torch.tensor(
+            slot_indices, dtype=torch.long, device=self.codec.device
+        )
+        latent_frame_counts = torch.tensor(
+            decoded_frame_counts, dtype=torch.long, device=self.codec.device
+        ) * int(self.codec.spec.frame_ratio)
+        decode_state = MimiDecodeState(
+            upsample=ConvTransposeState(
+                partial=(
+                    None
+                    if is_first_step
+                    else self.upsample_overlap.index_select(0, selected_slot_indices)
+                )
+            ),
+            transformer=TransformerState(
+                offset=latent_frame_counts,
+                layers=[
+                    AttentionState(
+                        keys=keys.index_select(0, selected_slot_indices),
+                        values=values.index_select(0, selected_slot_indices),
+                        end_offset=latent_frame_counts.clone(),
+                    )
+                    for keys, values in zip(
+                        self.attention_keys,
+                        self.attention_values,
+                        strict=True,
+                    )
+                ],
+            ),
+            decoder=select_decoder_state(
+                self.decoder_state, selected_slot_indices, is_first_step
+            ),
+        )
+        waveform_batch = self.codec.decode_step(batched_codes, decode_state)
+        assert decode_state.upsample.partial is not None
+        self.upsample_overlap.index_copy_(
+            0, selected_slot_indices, decode_state.upsample.partial
+        )
+        for keys, values, attention_state in zip(
+            self.attention_keys,
+            self.attention_values,
+            decode_state.transformer.layers,
+            strict=True,
+        ):
+            assert attention_state.keys is not None
+            assert attention_state.values is not None
+            keys.index_copy_(0, selected_slot_indices, attention_state.keys)
+            values.index_copy_(0, selected_slot_indices, attention_state.values)
+        store_decoder_state(
+            self.decoder_state, decode_state.decoder, selected_slot_indices
+        )
+        chunk_frame_count = batched_codes.shape[-1]
+        for slot_index in slot_indices:
+            self.decoded_frame_counts[slot_index] += chunk_frame_count
+        return waveform_batch
+
+    def reset_slot(self, slot_index: int) -> None:
+        # Attention rows need not be cleared because a fresh offset masks every
+        # position the new owner has not written itself.
+        self.upsample_overlap[slot_index].zero_()
+        for state_buffer in decoder_state_buffers(self.decoder_state):
+            state_buffer[slot_index].zero_()
+        self.decoded_frame_counts[slot_index] = 0
+
+
 RENAMES = (
     (re.compile(r"\.conv\.conv\."), ".conv."),
     (re.compile(r"\.convtr\.convtr\."), ".convtr."),
@@ -405,6 +608,7 @@ def load_mimi_codec(
 
 __all__ = [
     "MimiCodec",
+    "MimiDecodeStateArena",
     "MimiDecodeState",
     "MimiEncodeState",
     "load_mimi_codec",

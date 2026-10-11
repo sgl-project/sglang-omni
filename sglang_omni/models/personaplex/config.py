@@ -21,6 +21,17 @@ LM_STAGE = "lm"
 CODE2WAV_STAGE = "code2wav"
 
 
+class PersonaPlexCode2WavFactoryArgs(FactoryArgs):
+    max_batch_size: int = Field(default=8, ge=1)
+    stream_slots: int = Field(default=16, ge=1)
+
+
+class PersonaPlexCode2WavStageConfig(StageConfig):
+    factory: PersonaPlexCode2WavFactoryArgs = Field(
+        default_factory=PersonaPlexCode2WavFactoryArgs
+    )
+
+
 def personaplex_stages_factory() -> list[StageConfig]:
     return [
         StageConfig(
@@ -52,10 +63,11 @@ def personaplex_stages_factory() -> list[StageConfig]:
             factory_path=f"{MODEL_STAGES_PREFIX}.create_decode_executor",
             terminal=True,
         ),
-        StageConfig(
+        PersonaPlexCode2WavStageConfig(
             name=CODE2WAV_STAGE,
             process="lm",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_code2wav_executor",
+            factory=PersonaPlexCode2WavFactoryArgs(),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
@@ -66,8 +78,13 @@ def personaplex_stages_factory() -> list[StageConfig]:
 class PersonaPlexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = PERSONAPLEX_ARCH
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        LM_STAGE: EngineStageConfig
+        LM_STAGE: EngineStageConfig,
+        CODE2WAV_STAGE: PersonaPlexCode2WavStageConfig,
     }
+
+    @classmethod
+    def code2wav_stage(cls) -> str:
+        return CODE2WAV_STAGE
 
     model_path: str
     placement: PlacementConfig = Field(
