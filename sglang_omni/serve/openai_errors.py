@@ -22,6 +22,7 @@ _BAD_REQUEST_MARKERS = (
     "Invalid media data while decoding video path=",
     "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
     "chat content part",
+    "more media placeholders than the request has media inputs",
     "max_new_tokens must be",
     "Fun-ASR Apple currently requires temperature=0",
     "exceeds the maximum allowed length",

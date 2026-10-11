@@ -255,6 +255,22 @@ def validate_prompt_seq_len(
         pass
 
 
+def placeholder_counts(
+    processor: object, prompt_text: str, images: list, videos: list, audios: list
+) -> str:
+    """Each media placeholder string the prompt holds, next to its media count."""
+    counts = []
+    for kind, items in (("audio", audios), ("image", images), ("video", videos)):
+        token = getattr(processor, f"{kind}_token", None)
+        if isinstance(token, str) and token:
+            counts.append(
+                f"{prompt_text.count(token)} {token} for {len(items or [])} {kind} inputs"
+            )
+        else:
+            pass
+    return ", ".join(counts)
+
+
 def is_pretokenized_prompt(inputs: object) -> TypeGuard[list[int]]:
     """True when a rollout request carries pre-tokenized prompt ids.
 
@@ -867,15 +883,33 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
-        hf_inputs: BatchFeature = self.processor(
-            text=prompt_text,
-            images=images or None,
-            videos=videos or None,
-            audio=audios or None,
-            add_special_tokens=False,
-            return_tensors="pt",
-            **processor_kwargs,
-        )
+        try:
+            hf_inputs: BatchFeature = self.processor(
+                text=prompt_text,
+                images=images or None,
+                videos=videos or None,
+                audio=audios or None,
+                add_special_tokens=False,
+                return_tensors="pt",
+                **processor_kwargs,
+            )
+        except StopIteration as exc:
+            # note (Richard Wang): the processor gives every placeholder in the
+            # prompt the next media input, so placeholder text the user typed
+            # runs past them. Without media, tokenize it as plain SGLang does.
+            if images or videos or audios:
+                counts = placeholder_counts(
+                    self.processor, prompt_text, images, videos, audios
+                )
+                raise ValueError(
+                    "The prompt has more media placeholders than the request has "
+                    f"media inputs ({counts}). Remove the placeholder text or send "
+                    "a media input for each one."
+                ) from exc
+            else:
+                hf_inputs = self.processor.tokenizer(
+                    prompt_text, add_special_tokens=False, return_tensors="pt"
+                )
 
         input_ids = hf_inputs["input_ids"][0]
         attention_mask = hf_inputs.get("attention_mask")

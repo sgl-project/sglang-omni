@@ -731,6 +731,61 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
         assert tokenized_prompts == []
 
 
+@pytest.mark.parametrize("with_audio", [False, True])
+def test_qwen_preprocessor_serves_placeholder_text_without_media(
+    with_audio: bool,
+) -> None:
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+
+    prompt_text = "the tokenizer uses <|audio_pad|> for audio"
+    tokenized_prompts: list[str] = []
+
+    class FakeTokenizer:
+        def __call__(self, text, **_kwargs):
+            tokenized_prompts.append(text)
+            return {"input_ids": torch.tensor([[1, 2]])}
+
+    class FakeProcessor:
+        tokenizer = FakeTokenizer()
+        audio_token = "<|audio_pad|>"
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            return prompt_text
+
+        def __call__(self, **_kwargs):
+            # The HF processor gives each placeholder the next media input.
+            raise StopIteration
+
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = 64
+    pre.max_token_chars = 4
+    pre.normalizer = NFC()
+    for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
+        setattr(pre, "default_video_" + name, None)
+    pre.processor = FakeProcessor()
+    inputs: dict[str, object] = {"messages": [{"role": "user", "content": "hi"}]}
+    if with_audio:
+        inputs["audios"] = [np.zeros(1600, dtype=np.float32)]
+    else:
+        pass
+    payload = StagePayload(
+        request_id="placeholder-text",
+        request=OmniRequest(inputs=inputs, params={"max_new_tokens": 8}),
+        data={},
+    )
+
+    if with_audio:
+        with pytest.raises(ValueError) as exc_info:
+            asyncio.run(pre.call_impl(payload))
+        assert is_bad_request_error(exc_info.value)
+        assert "1 <|audio_pad|> for 1 audio inputs" in str(exc_info.value)
+    else:
+        asyncio.run(pre.call_impl(payload))
+        assert tokenized_prompts == [prompt_text]
+
+
 def test_qwen_talker_to_code2wav_projection_keeps_only_request_latch() -> None:
     payload = StagePayload(
         request_id="req-1",
