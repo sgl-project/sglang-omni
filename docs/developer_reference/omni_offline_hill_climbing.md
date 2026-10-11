@@ -1,255 +1,581 @@
 # MiniCPM-o offline hill climbing runbook
 
-This page is for hill climbing MiniCPM-o 4.5 offline serving in SGLang-Omni: changing the runtime so a fixed evaluation gets faster while every other workload stays at least as good. Full duplex serving is covered separately.
+This page is for hill climbing MiniCPM-o 4.5 offline serving in SGLang-Omni. The goal is to change the runtime so the measured metrics get better, with no regression anywhere else. Full duplex serving is covered in [Full-Duplex-Bench v1.5 runbook](full_duplex_bench.md).
 
-Unlike TTS hill climbing, this task must protect many workloads. The scripts, the baseline and the scoring are fixed for the whole task.
+Run every command as written, in order. Each check prints a fixed word such as `READY`. If the word does not print, stop and report the output to the maintainers.
 
-## Scope
+## What is Measured
 
-- **Code.** New code stays inside `sglang_omni/models/minicpm_o`. Other models do not change. A change to a shared hot path (for example `OmniScheduler` in `sglang_omni/scheduling/omni_scheduler.py`) is tested hard in CI.
-- **Protected stages.** Stages 1 to 10 of Omni model CI with `minicpmo` (`.github/workflows/test-qwen3-omni-ci.yaml`). Stage 11 runs only for Qwen3-Omni. The target workload must improve clearly. Every other workload must not get worse.
+**Code scope.** New code stays inside `sglang_omni/models/minicpm_o`. Other models do not change. A change to a shared hot path (for example `OmniScheduler` in `sglang_omni/scheduling/omni_scheduler.py`) is tested hard in CI.
 
-## Main workloads
-
-Two workloads matter most. Both run on one GPU at concurrency 16.
+**Main workloads.** Both run on one GPU at concurrency 16.
 
 | Workload | Input and output | Samples |
 |---|---|---|
 | Video-AMME Talker | Video plus a spoken question in, text plus speech out | The first 10 questions of `Video_AMME_ci`, as in CI |
 | seed-tts voice clone | Text in, cloned speech out | The 1088 sample EN full set |
 
-Ten requests do not fill 16 slots, so Video-AMME Talker throughput is mostly the completion time of that one batch. The 50 question set is a possible extension. Confirm it with the maintainers first, and do not switch sets in the middle of a task. The other 8 stages are guarded by the CI pytest files as they are.
+Ten requests do not fill 16 slots, so Video-AMME Talker throughput is mostly the completion time of that one batch. Each candidate names one workload as its target. The target must get faster, and the other must not get slower.
 
-## Baseline and pinned inputs
+**CI stages.** Stages 1 to 10 of Omni model CI with `minicpmo` (`.github/workflows/test-qwen3-omni-ci.yaml`) must not regress. Stage 11 runs only for Qwen3-Omni.
 
-The baseline is main `921ea2c8`. It does not move with main. It includes [#2667](https://github.com/sgl-project/sglang-omni/pull/2667), which changed a shared hot path. MiniCPM-o GPU CI has not run since that merge, so the baseline itself may fail some stages. [Other CI stages](#other-ci-stages) says how to handle that.
+**Baseline.** Main `921ea2c83acbfd7e9247ff38d63d8963b7572b7d` (`921ea2c8`). It does not move with main. MiniCPM-o GPU CI has not run since [#2667](https://github.com/sgl-project/sglang-omni/pull/2667) merged, so the baseline itself may fail some CI stages.
 
-Model and dataset revisions are in the command comments. Check them before running. Record the ones not listed (the step 4 datasets, and the SIM and UTMOS weights) after the first download. These revisions and the dependencies stay fixed for the whole task.
+## Layout and variables
 
-## Commands
+One container holds a GPU pair. Steps 4 to 6 measure on the first GPU, pinned to its CPU group. Step 7 runs the CI stages on both GPUs. Never run the two at the same time. Downloads and results live in `$HILL_DIR` on the host.
 
-Run the Environment, Server helpers and Steps 1 to 3 blocks in order in one shell inside the single GPU container. Later blocks use the functions and variables of earlier ones. They are examples: fill in the gaps their comments name before a real run.
+The container holds three checkouts of one git repository. `/base` is the baseline, and the client and all scoring run from it. `/ref` is the last accepted version, the branch `accepted`. `/cand` is the candidate. These are all the variables:
 
-### Environment
+| Variable | Set in | Meaning |
+|---|---|---|
+| `HILL_DIR` | Step 1 | `/data/omni-hill` on the host |
+| `GPU_A`, `GPU_B` | Step 1 | The host GPU pair. Steps 4 to 6 use `GPU_A` |
+| `PASS_CPUS`, `CI_CPUS` | Step 1 | CPU groups of `GPU_A` and of both GPUs |
+| `CAND_SHA` | Step 3, the shell block | The commit of `/cand` |
+| `CHECKOUT`, `OUT`, `CI_OUT` | A line from Step 6 or 7 | The checkout, and the pass or round directory |
+
+## Step 1: Start the container
+
+On the host:
 
 ```bash
-# Environment setup example. For more detail, read docs/cookbook/minicpm_o.md and tests/test_model/conftest.py
-# CI image hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df, start the container with --init and --ipc host
-# CPU group i: on the NUMA node of GPU i, skip cores 0 and 1, then take 14 physical cores in order plus their SMT siblings, 28 CPUs in total
-# Groups do not overlap. Write the split to cpusets.txt and keep it for the whole task. One container per GPU: --gpus device=i --cpuset-cpus <group i>
-# Three checkouts: /base is the baseline, /ref is the last accepted version, /cand is the candidate. The client, Qwen3-ASR, SIM and UTMOS always come from /base
-git clone https://github.com/sgl-project/sglang-omni.git /base && git -C /base checkout 921ea2c83acbfd7e9247ff38d63d8963b7572b7d
-git -C /base worktree add --detach /ref 921ea2c83acbfd7e9247ff38d63d8963b7572b7d
-git -C /base worktree add --detach /cand 921ea2c83acbfd7e9247ff38d63d8963b7572b7d
-# First run the baseline with all three on 921ea2c8. After that, /ref checks out the last accepted version and /cand the candidate
-for t in /base /ref /cand; do
-  ( cd $t && uv venv --system-site-packages .venv -p /usr/bin/python3.12 &&   # follows .github/scripts/prepare_omni_venv.sh
-    echo 'import site; site.addsitedir("/opt/sglang/lib/python3.12/site-packages")' > .venv/lib/python3.12/site-packages/sglang-image.pth &&
-    . .venv/bin/activate && python .github/scripts/omni_missing_dependencies.py --extra minicpm-o pyproject.toml | xargs -r -d '\n' -n 1 python -m pip install &&
-    python .github/scripts/omni_missing_dependencies.py --overrides pyproject.toml | xargs -r -d '\n' python -m pip install --no-deps &&
-    uv pip install --no-deps -e . )
-done
-diff <(/base/.venv/bin/python -m pip freeze --exclude-editable) <(/cand/.venv/bin/python -m pip freeze --exclude-editable)   # should be empty
-cd /base && . .venv/bin/activate
+export HILL_DIR=/data/omni-hill
+export GPU_A=0 GPU_B=1
+mkdir -p "$HILL_DIR/hf" "$HILL_DIR/metric-cache" "$HILL_DIR/results"
+```
 
-hf download openbmb/MiniCPM-o-4_5                              # 503e754207c94da6bb26850b4469f367c9ea3582
-hf download Qwen/Qwen3-ASR-1.7B                                # 7278e1e70fe206f11671096ffdd38061171dd6e5, the ASR model for WER
-hf download zhaochenyang20/Video_AMME_ci --repo-type dataset   # 7a37507f1b53416b9cb6641378e5a098ea535ab8
-hf download zhaochenyang20/Video_MME_ci --repo-type dataset    # 833bd815c628ff277911bea3b1563545b21d5e27
-python -m benchmarks.dataset.prepare --dataset seedtts          # 27f4c1adee83b5b29b7c4b375f6b976324bda308
-for d in seedtts-50 mmmu-ci-50 mmsu-ci-2000; do python -m benchmarks.dataset.prepare --dataset $d; done   # for step 4
+Make the CPU groups. Each GPU gets 14 cores on its NUMA node with their SMT siblings, skipping cores 0 and 1. It must print `CPUS_OK`.
+
+```bash
+python3 - "$GPU_A" "$GPU_B" > "$HILL_DIR/cpus.env" <<'PY'
+import subprocess, sys
+from collections import defaultdict
+run = lambda cmd: subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+siblings, core_node, free, groups = defaultdict(list), {}, defaultdict(list), {}
+for line in run(["lscpu", "-p=CPU,CORE,NODE"]).splitlines():
+    if not line.startswith("#"):
+        cpu, core, node = line.split(",")
+        siblings[int(core)].append(int(cpu))
+        core_node[int(core)] = int(node or 0)
+for core in sorted(core_node):
+    if core not in (0, 1):
+        free[core_node[core]].append(core)
+for line in run(["nvidia-smi", "--query-gpu=index,pci.bus_id", "--format=csv,noheader"]).splitlines():
+    index, bus = (x.strip() for x in line.split(","))
+    node = max(int(open(f"/sys/bus/pci/devices/{bus[-12:].lower()}/numa_node").read()), 0)
+    if len(free[node]) >= 14:
+        group, free[node] = free[node][:14], free[node][14:]
+        groups[index] = sorted(c for core in group for c in siblings[core])
+a, b = groups[sys.argv[1]], groups[sys.argv[2]]
+print("PASS_CPUS=" + ",".join(map(str, a)))
+print("CI_CPUS=" + ",".join(map(str, sorted(a + b))))
+PY
+cat "$HILL_DIR/cpus.env" && . "$HILL_DIR/cpus.env" && test -n "$PASS_CPUS" && echo CPUS_OK
+```
+
+A `KeyError` means a GPU of the pair gets no group. Then set `GPU_A=2 GPU_B=3` (then `4 5`, then `6 7`) and run the step again. If `6 7` also fails, stop and report the output of `lscpu -p=CPU,CORE,NODE` and `nvidia-smi topo -m`. Start the container with the CI image and options:
+
+```bash
+docker run -d --init --ipc host --cap-add=SYS_PTRACE \
+    --gpus "\"device=$GPU_A,$GPU_B\"" --cpuset-cpus "$CI_CPUS" --env-file "$HILL_DIR/cpus.env" \
+    -v "$HILL_DIR/hf:/root/.cache/huggingface" \
+    -v "$HILL_DIR/metric-cache:/root/.cache/sglang-omni" \
+    -v "$HILL_DIR/results:/results" \
+    --name omni-hill \
+    hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df \
+    sleep infinity
+```
+
+Open a shell with this command, every time you need one. After a host reboot, run `docker start omni-hill` first.
+
+```bash
+docker exec -it omni-hill bash
+```
+
+All later commands run in this shell.
+
+## Step 2: Set up the checkouts
+
+```bash
+git clone https://github.com/sgl-project/sglang-omni.git /base
+git -C /base checkout --detach 921ea2c83acbfd7e9247ff38d63d8963b7572b7d
+git -C /base branch accepted 921ea2c83acbfd7e9247ff38d63d8963b7572b7d
+git -C /base worktree add --detach /ref accepted
+git -C /base worktree add --detach /cand accepted
+git -C /cand config user.name hill
+git -C /cand config user.email hill@localhost
+```
+
+Create one venv per checkout with the CI script `.github/scripts/prepare_omni_venv.sh`. Each checkout gets the venv `omni`, as in CI. Each command ends with `Fresh environment ready`.
+
+```bash
+cd /base && OMNI_CI_HOME=/root/venv-base bash .github/scripts/prepare_omni_venv.sh omni
+cd /ref && OMNI_CI_HOME=/root/venv-ref bash .github/scripts/prepare_omni_venv.sh omni
+cd /cand && OMNI_CI_HOME=/root/venv-cand bash .github/scripts/prepare_omni_venv.sh omni
+```
+
+## Step 3: Download models and data
+
+```bash
+cd /base && . omni/bin/activate
+python -c "from huggingface_hub import snapshot_download as d; d('openbmb/MiniCPM-o-4_5')"
+python -c "from huggingface_hub import snapshot_download as d; d('Qwen/Qwen3-ASR-1.7B')"
+python -c "from huggingface_hub import snapshot_download as d; d('zhaochenyang20/Video_AMME_ci', repo_type='dataset')"
+python -c "from huggingface_hub import snapshot_download as d; d('zhaochenyang20/Video_MME_ci', repo_type='dataset')"
+python -m benchmarks.dataset.prepare --dataset seedtts
+python -m benchmarks.dataset.prepare --dataset seedtts-50
+python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
+python -m benchmarks.dataset.prepare --dataset mmsu-ci-2000
 python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
-python -m benchmarks.metrics.utmos --warm-cache   # UTMOS weights, fetched before going offline
-# If any refs/main differs from the commits above, stop and report it
-export HF_HUB_OFFLINE=1 SGLANG_OMNI_STRICT_PORT=1 SGLANG_OMNI_STARTUP_TIMEOUT=1800   # a cold start with compile takes longer than the default 600 seconds
-# Do not set SGLANG_OMNI_TORCH_COMPILE_DEFAULT. On one GPU these two workloads keep compile on, which is the default
+python -m benchmarks.metrics.utmos --warm-cache
 ```
 
-### Server helpers
+`Video_MME_ci` holds the videos that Video-AMME points to, so Step 4 needs it too. `seedtts-50`, `mmmu-ci-50` and `mmsu-ci-2000` are for Step 7. Check the pinned revisions. Every line must print its `OK_` word. Runs load these repositories offline through `refs/main`, except seed-tts, which `benchmarks/dataset/seedtts.py` loads at a pinned revision.
 
 ```bash
-# Example server start and stop. Before a real run, add a port check, cleanup on errors and a timeout on the GPU memory wait
-up() {  # up <log name> <checkout> <serve args>: start a server and wait for /health
-  setsid "$2/.venv/bin/sgl-omni" serve "${@:3}" --port 8000 > "$OUT/$1.log" 2>&1 &
-  PID=$!
-  timeout 1800 bash -c 'until curl -sf localhost:8000/health > /dev/null; do sleep 5; done' || exit 1
-}
-down() {  # kill the whole process group and wait until GPU memory drops below 1 GiB
-  kill -- "-$PID"
-  wait "$PID" || true
-  until [ $(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -lt 1024 ]; do sleep 5; done
-}
-M="--model-path openbmb/MiniCPM-o-4_5 --model-name minicpmo --thinker.engine.mem_fraction_static 0.55 --talker.engine.mem_fraction_static 0.15"
-S="--meta zhaochenyang20/seed-tts-eval-arrow --model minicpmo"
+test "$(cat ~/.cache/huggingface/hub/models--openbmb--MiniCPM-o-4_5/refs/main)" = 503e754207c94da6bb26850b4469f367c9ea3582 && echo OK_MINICPMO
+test "$(cat ~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/refs/main)" = 7278e1e70fe206f11671096ffdd38061171dd6e5 && echo OK_ASR
+test "$(cat ~/.cache/huggingface/hub/datasets--zhaochenyang20--Video_AMME_ci/refs/main)" = 7a37507f1b53416b9cb6641378e5a098ea535ab8 && echo OK_VIDEOAMME
+test "$(cat ~/.cache/huggingface/hub/datasets--zhaochenyang20--Video_MME_ci/refs/main)" = 833bd815c628ff277911bea3b1563545b21d5e27 && echo OK_VIDEOMME
 ```
 
-### Steps 1 to 3: main workloads
+**The shell block.** Run it at the start of every new shell for Steps 4 to 6.
 
 ```bash
-# At the start of the task, run once with VERSIONS=base. After that, run each candidate with VERSIONS="ref cand", alternating the two versions
-# Each RUN starts a fresh server for each workload. RUN 0 is not scored (it warms the compile cache). RUNs 1 to 3 are scored
-VERSIONS=${VERSIONS:-base}
-for RUN in 0 1 2 3; do
-  ORDER=$VERSIONS
-  if [ "$VERSIONS" = "ref cand" ] && [ "$RUN" = 2 ]; then
-    ORDER="cand ref"
-  else
-    :
-  fi
-  for V in $ORDER; do
-    OUT=results/$(git -C /$V rev-parse --short HEAD)/run$RUN; mkdir -p $OUT/videoamme $OUT/seedtts
+taskset -pc "$PASS_CPUS" $$
+cd /base && . /base/omni/bin/activate
+export CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 SGLANG_OMNI_STRICT_PORT=1 SGLANG_OMNI_STARTUP_TIMEOUT=1800
+export CAND_SHA="$(git -C /cand rev-parse HEAD)"
+echo "${SGLANG_OMNI_TORCH_COMPILE_DEFAULT-unset} ${PYTORCH_ALLOC_CONF-unset}"
+```
 
-    # 1. Video-AMME Talker. Server and request parameters match CI stage 10, on one GPU
-    up videoamme /$V $M --thinker.factory.max_seq_len 32768
-    python - --model minicpmo --port 8000 --repo-id zhaochenyang20/Video_AMME_ci --max-samples 10 \
-        --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 --max-tokens 256 --temperature 0 \
-        --timeout-s 500 --max-concurrency 16 --enable-audio --output-dir $OUT/videoamme <<'PY'
+It must print `unset unset`: torch compile stays on (the default) and `PYTORCH_ALLOC_CONF` stays unset. A cold start with compile needs more than the default 600 second startup timeout. Stay in `/base`, because `benchmarks` is imported from the working directory.
+
+## Step 4: Run one measurement pass
+
+One pass measures one checkout once on both workloads, with fresh servers.
+
+### 4.1 Choose the pass
+
+Run the shell block. Run the first line from Step 6 whose `OUT` directory does not exist yet. The next command must print `PASS_READY`. The checkout must be clean, `OUT` must be new and port 8000 must be free.
+
+```bash
+test -z "$(git -C "$CHECKOUT" status --porcelain)" && test ! -e "$OUT" && ! curl -s -o /dev/null localhost:8000/health && mkdir -p "$OUT/videoamme" "$OUT/seedtts" && git -C "$CHECKOUT" rev-parse HEAD > "$OUT/commit.txt" && echo PASS_READY
+```
+
+### 4.2 Video-AMME Talker
+
+Parameters match CI stage 10. Start the server. It must print `READY`. `/tmp/omni_server.pid` holds the server's process group, so the stop command stops all of it.
+
+```bash
+setsid bash -c 'echo $$ > "$0"; exec "$@"' /tmp/omni_server.pid \
+    "$CHECKOUT/omni/bin/sgl-omni" serve \
+    --model-path openbmb/MiniCPM-o-4_5 --model-name minicpmo \
+    --thinker.engine.mem_fraction_static 0.55 --talker.engine.mem_fraction_static 0.15 \
+    --thinker.factory.max_seq_len 32768 \
+    --port 8000 > "$OUT/videoamme.log" 2>&1 &
+timeout 1800 bash -c 'until curl -sf localhost:8000/health > /dev/null; do sleep 5; done' && echo READY || echo NOT_READY
+```
+
+Run the client. As in CI, WER comes later, from the ASR server.
+
+```bash
+python - --model minicpmo --port 8000 --repo-id zhaochenyang20/Video_AMME_ci --max-samples 10 \
+    --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 --max-tokens 256 --temperature 0 \
+    --timeout-s 500 --max-concurrency 16 --enable-audio --output-dir "$OUT/videoamme" <<'PY'
 import argparse, asyncio
 from benchmarks.eval import benchmark_omni_videoamme as m
 parser = argparse.ArgumentParser()
 m.add_video_eval_args(parser, repo_help="")
 cfg = m.video_eval_config_from_args(parser.parse_args())
-m.wait_for_service(f"http://{cfg.host}:{cfg.port}")
-res = asyncio.run(m.run_videoamme_eval(cfg, compute_wer=False))
-m.print_videomme_accuracy_summary(res["summary"], cfg.model, title="Video-AMME Accuracy")
-m.print_speed_summary(res["speed"], cfg.model, cfg.max_concurrency, title="Video-AMME Speed")
+asyncio.run(m.run_videoamme_eval(cfg, compute_wer=False))
 PY
-    down
+```
 
-    # 2. seed-tts voice clone. Server parameters match CI stage 2
-    up seedtts /$V $M --thinker.factory.max_seq_len 8192
-    python -m benchmarks.eval.benchmark_omni_seedtts --generate-only $S --port 8000 \
-        --voice-clone --reference-audio-field audio.ref_audio --max-concurrency 16 --output-dir $OUT/seedtts
-    down
+Stop the server. It must print `GPU_FREE` (memory on the first GPU below 1 GiB).
 
-    # 3. Scoring. Qwen3-ASR starts from /base (CI also stops MiniCPM-o before it starts ASR)
-    up asr /base --model-path Qwen/Qwen3-ASR-1.7B --model-name Qwen/Qwen3-ASR-1.7B
-    python -m benchmarks.eval.benchmark_omni_seedtts --transcribe-only $S --port 8000 \
-        --asr-concurrency 4 --output-dir $OUT/seedtts
-    python - $OUT/videoamme <<'PY'   # the same function CI stage 10 calls
+```bash
+kill -- -"$(cat /tmp/omni_server.pid)"
+timeout 600 bash -c 'until [ "$(nvidia-smi -i 0 --query-gpu=memory.used --format=csv,noheader,nounits)" -lt 1024 ]; do sleep 5; done' && echo GPU_FREE || echo GPU_BUSY
+```
+
+### 4.3 seed-tts voice clone
+
+Server parameters match CI stage 2. Start the server. It must print `READY`.
+
+```bash
+setsid bash -c 'echo $$ > "$0"; exec "$@"' /tmp/omni_server.pid \
+    "$CHECKOUT/omni/bin/sgl-omni" serve \
+    --model-path openbmb/MiniCPM-o-4_5 --model-name minicpmo \
+    --thinker.engine.mem_fraction_static 0.55 --talker.engine.mem_fraction_static 0.15 \
+    --thinker.factory.max_seq_len 8192 \
+    --port 8000 > "$OUT/seedtts.log" 2>&1 &
+timeout 1800 bash -c 'until curl -sf localhost:8000/health > /dev/null; do sleep 5; done' && echo READY || echo NOT_READY
+```
+
+Run the client:
+
+```bash
+python -m benchmarks.eval.benchmark_omni_seedtts --generate-only \
+    --meta zhaochenyang20/seed-tts-eval-arrow --model minicpmo --port 8000 \
+    --voice-clone --reference-audio-field audio.ref_audio --max-concurrency 16 \
+    --output-dir "$OUT/seedtts"
+```
+
+Stop the server. It must print `GPU_FREE`.
+
+```bash
+kill -- -"$(cat /tmp/omni_server.pid)"
+timeout 600 bash -c 'until [ "$(nvidia-smi -i 0 --query-gpu=memory.used --format=csv,noheader,nounits)" -lt 1024 ]; do sleep 5; done' && echo GPU_FREE || echo GPU_BUSY
+```
+
+### 4.4 Score
+
+Start Qwen3-ASR, always from `/base`. It must print `READY`.
+
+```bash
+setsid bash -c 'echo $$ > "$0"; exec "$@"' /tmp/omni_server.pid \
+    /base/omni/bin/sgl-omni serve \
+    --model-path Qwen/Qwen3-ASR-1.7B --model-name Qwen/Qwen3-ASR-1.7B \
+    --port 8000 > "$OUT/asr.log" 2>&1 &
+timeout 1800 bash -c 'until curl -sf localhost:8000/health > /dev/null; do sleep 5; done' && echo READY || echo NOT_READY
+```
+
+seed-tts WER:
+
+```bash
+python -m benchmarks.eval.benchmark_omni_seedtts --transcribe-only \
+    --meta zhaochenyang20/seed-tts-eval-arrow --model minicpmo --port 8000 \
+    --asr-concurrency 4 --output-dir "$OUT/seedtts"
+```
+
+Video-AMME Talker WER, with the function CI stage 10 calls:
+
+```bash
+python - "$OUT/videoamme" <<'PY'
 import json, sys
-from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.asr import compute_text_audio_consistency_from_records
 d = sys.argv[1]
 records = json.load(open(f"{d}/videoamme_results.json"))["per_sample"]
 wer = compute_text_audio_consistency_from_records(records, "en", "cuda:0", asr_router_port=8000, asr_concurrency=4)
-print_wer_summary(wer["summary"], "minicpmo")
 json.dump(wer["summary"], open(f"{d}/wer_summary.json", "w"), indent=2)
 PY
-    down
-    python -m benchmarks.eval.benchmark_omni_seedtts --similarity-only $S --output-dir $OUT/seedtts
-    python -m benchmarks.eval.benchmark_omni_seedtts --utmos-only $S --output-dir $OUT/seedtts
-  done
-done
 ```
 
-### Step 4: other CI stages
-
-Step 4 runs in its own two GPU container. Run the Environment block there first.
+Stop the ASR server. It must print `GPU_FREE`.
 
 ```bash
-# 4. The other stages use the CI pytest files as they are. Before a PR, run them three times each in /base and /cand, with compile off as in CI
-# One container per two GPUs: GPU 0,1, 2,3, 4,5 and 6,7. Set TASK_CI_CPUSET to the union of the cpusets of those two GPUs (the loop passes it on as OMNI_CI_CPUSET)
-# Do not run this at the same time as the single GPU runs above
-for CI_RUN in 1 2 3; do
-  CI_ORDER="base cand"
-  if [ "$CI_RUN" = 2 ]; then
-    CI_ORDER="cand base"
-  else
-    :
-  fi
-  for V in $CI_ORDER; do
-    ( cd "/$V" && . .venv/bin/activate
-      export OMNI_CI_MODEL=minicpmo SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0 CUDA_VISIBLE_DEVICES=0,1
-      export OMNI_CI_CPUSET="${TASK_CI_CPUSET:?set TASK_CI_CPUSET to the cpuset of the two GPUs first}"
-      export OMNI_CI_HOME="$HOME/omni_ci"
-      SGLANG_OMNI_ROUTER_BIN=$(bash .github/scripts/prepare_rust_router.sh build) || exit 1
-      export SGLANG_OMNI_ROUTER_BIN
-      for T in thinker_length tts_ci mmmu_ci mmmu_talker_ci mmsu_ci mmsu_talker_ci \
-               videomme_ci videomme_talker_ci videoamme_ci videoamme_talker_tp2_ci; do
-        CI_RESULTS="results/$(git rev-parse --short HEAD)/ci_run$CI_RUN"
-        mkdir -p "$CI_RESULTS"
-        python -m pytest "tests/test_model/test_qwen3_omni_$T.py" -v -s -x > "$CI_RESULTS/$T.log" 2>&1
-        TEST_EXIT_CODE=$?
-        printf '%s\n' "$TEST_EXIT_CODE" > "$CI_RESULTS/$T.exitcode"
-      done
-    ) || exit 1
-  done
-done
+kill -- -"$(cat /tmp/omni_server.pid)"
+timeout 600 bash -c 'until [ "$(nvidia-smi -i 0 --query-gpu=memory.used --format=csv,noheader,nounits)" -lt 1024 ]; do sleep 5; done' && echo GPU_FREE || echo GPU_BUSY
 ```
 
-## Reading the results
+SIM and UTMOS run without a server:
 
-Read every metric from JSON. Steps 1 to 3 write under `/base/results/<commit>/run<N>/`:
+```bash
+python -m benchmarks.eval.benchmark_omni_seedtts --similarity-only \
+    --meta zhaochenyang20/seed-tts-eval-arrow --model minicpmo --output-dir "$OUT/seedtts"
+python -m benchmarks.eval.benchmark_omni_seedtts --utmos-only \
+    --meta zhaochenyang20/seed-tts-eval-arrow --model minicpmo --output-dir "$OUT/seedtts"
+```
 
-| Workload | Files |
+## Step 5: Read the results
+
+Every metric is a JSON field. Paths are under `$OUT`.
+
+| File | Fields |
 |---|---|
-| Video-AMME Talker | `summary` and `speed` in `videoamme/videoamme_results.json`, and `videoamme/wer_summary.json` |
-| seed-tts | `seedtts/speed_results.json`, `seedtts/wer_results.json`, `seedtts/similarity_results.json` and `seedtts/utmos_results.json` |
+| `videoamme/videoamme_results.json` | Accuracy `summary.accuracy` (0 to 1), failed requests `summary.failed`, prompt tokens `per_sample[].prompt_tokens` by `sample_id`, and the speed fields below under `speed.` |
+| `seedtts/speed_results.json` | Failed requests `summary.failed_requests`, prompt tokens `per_request[].prompt_tokens` by `id`, output tokens `per_request[].completion_tokens`, and the speed fields below under `summary.` |
+| Speed fields | Throughput `throughput_qps` (req/s), latency `latency_mean_s` and `latency_p95_s`, `rtf_mean`, Audio duration mean `audio_duration_mean_s`, audio throughput `audio_throughput_s_per_s` |
+| `videoamme/wer_summary.json` | The WER fields below, at top level |
+| `seedtts/wer_results.json` | The WER fields below, under `summary.` |
+| WER fields | WER `wer_corpus` (a fraction, 0.005 is 0.5 points), >50% WER samples `n_above_50_pct_wer`, WER corpus (excl >50%) `wer_below_50_corpus` (for comparison with CI only), unscored samples `skipped` |
+| `seedtts/similarity_results.json` | SIM `summary.speaker_similarity_mean` (cosine × 100), `summary.skipped` |
+| `seedtts/utmos_results.json` | UTMOS `summary.utmos_mean` (1 to 5), `summary.skipped` |
 
-Step 4 writes `<test>.log` and `<test>.exitcode` for each stage under `/<checkout>/results/<commit>/ci_run<N>/`.
+Higher is better for Accuracy, throughput, SIM and UTMOS. Lower is better for latency, RTF and WER. Failed and skipped counts must be 0.
 
-There are no numbers yet for one GPU at concurrency 16. These results come from other setups and are for reference only:
+This prints every field above, checks the speech files and writes `$OUT/metrics.json`. The last line must be `PASS_VALID`.
 
-- **Video-AMME Talker.** [#2580](https://github.com/sgl-project/sglang-omni/pull/2580) (main `5ed8a8d`), one H200, concurrency 8, 50 questions: Accuracy 0.68, 0.33 req/s. CI stage 10 uses two H100s, DP 2, compile off, the first 10 questions and concurrency 16. In [#2552](https://github.com/sgl-project/sglang-omni/pull/2552) it ran 7 times: 0.643 to 0.668 qps and Accuracy 0.7 every time. WER was 0.004032 in 6 runs and 0.008065 in one, a difference of one word.
-- **seed-tts.** [#2532](https://github.com/sgl-project/sglang-omni/pull/2532), one H200, the CI server parameters, concurrency 16, 1088 voice clone samples: 14.22 req/s, WER corpus (excl >50%) 1.47%, SIM 49.78. That run used MPS, which stays off here.
+```bash
+python - "$OUT" <<'PY'
+import glob, json, sys
+import numpy as np
+import soundfile as sf
+d = sys.argv[1]
+J = lambda p: json.load(open(f"{d}/{p}"))
+v, vw, s = J("videoamme/videoamme_results.json"), J("videoamme/wer_summary.json"), J("seedtts/speed_results.json")
+w, sim, u = (J(f"seedtts/{n}_results.json")["summary"] for n in ("wer", "similarity", "utmos"))
+m = {"videoamme.accuracy": v["summary"]["accuracy"], "videoamme.failed": v["summary"]["failed"],
+     "seedtts.failed": s["summary"]["failed_requests"], "seedtts.sim": sim["speaker_similarity_mean"],
+     "seedtts.sim_skipped": sim["skipped"], "seedtts.utmos": u["utmos_mean"], "seedtts.utmos_skipped": u["skipped"],
+     "seedtts.completion_tokens_sum": sum(r["completion_tokens"] or 0 for r in s["per_request"])}
+for k in ["throughput_qps", "latency_mean_s", "latency_p95_s", "rtf_mean", "audio_duration_mean_s", "audio_throughput_s_per_s"]:
+    m[f"videoamme.{k}"], m[f"seedtts.{k}"] = v["speed"][k], s["summary"][k]
+for k in ["wer_corpus", "wer_below_50_corpus", "n_above_50_pct_wer", "skipped"]:
+    m[f"videoamme.wer.{k}"], m[f"seedtts.wer.{k}"] = vw[k], w[k]
+audio = [sf.read(p) for p in sorted(glob.glob(f"{d}/*/audio/*.wav"))]
+rates = sorted({int(r) for _, r in audio})
+m["audio.files"] = len(audio)
+m["audio.empty_or_nan"] = sum(int(a.size == 0 or bool(np.isnan(a).any())) for a, _ in audio)
+for k, val in m.items():
+    print(k, val)
+print("audio.rates", rates)
+valid = len(audio) > 0 and all(m[k] == 0 for k in m if k.endswith(("failed", "skipped", "empty_or_nan")))
+tokens = {f"v/{r['sample_id']}": r["prompt_tokens"] for r in v["per_sample"]}
+tokens.update({f"s/{r['id']}": r["prompt_tokens"] for r in s["per_request"]})
+json.dump({"metrics": m, "rates": rates, "valid": valid, "prompt_tokens": tokens}, open(f"{d}/metrics.json", "w"))
+print("PASS_VALID" if valid else "PASS_INVALID")
+PY
+```
 
-## Where to start
+**Invalid pass.** A pass is invalid when Step 4 printed `NOT_READY` or `GPU_BUSY`, or this script does not print `PASS_VALID`. Stop any server and move the pass aside:
 
-The profiling skill is `.claude/skills/model-profiling`. Read [#2580](https://github.com/sgl-project/sglang-omni/pull/2580) first. It is the Video-AMME profile: at concurrency 8, CPU preprocessing is serial at about 3.0 s per request, and the GPU is busy only 17.1% to 27.6% of the time. Then read [#2273](https://github.com/sgl-project/sglang-omni/pull/2273) and [#2399](https://github.com/sgl-project/sglang-omni/pull/2399) (TTS and code2wav), and [#2284](https://github.com/sgl-project/sglang-omni/pull/2284), the optimization tracker, which lists the areas already claimed.
+```bash
+kill -- -"$(cat /tmp/omni_server.pid)"
+mv "$OUT" "$OUT-invalid"
+```
 
-Related open sglang-omni PRs are #2316, #2480, #2487 and #2589 (preprocessing), #2529, #2528, #2330 and #2353 (talker), and #2356 (HiFT). Build on existing work. Copying a change from an existing PR does not count.
+Run the pass again right away with the same line. If it is invalid again, stop and report both directories to the maintainers.
 
-## Modes
+## Step 6: Repeat and compare
 
-**Mode 2** (optimization without an outside reference) is open now. The target workload gets better, and the other workloads and stages do not regress, as defined in [Acceptance](#acceptance).
+A pass is Step 4 then Step 5. Run 0 warms the compile cache and is not scored. A metric's value is its plain mean over runs 1, 2 and 3.
 
-**Mode 1** (measured against vllm-omni) is not open yet. vllm-omni supports MiniCPM-o 4.5, but its request format differs. Video and audio go in `video_url` and `audio_url` inside `messages`, and the speech is in `choices[1]`. How the video is packed also has a large effect on accuracy. vllm-omni changed only the packing, and MiniCPM-o 4.5 on Daily-Omni went from 66.75% to 78.45% (vllm-omni [#5293](https://github.com/vllm-project/vllm-omni/pull/5293), [#5606](https://github.com/vllm-project/vllm-omni/pull/5606) and [#5625](https://github.com/vllm-project/vllm-omni/pull/5625)). So Video-AMME Talker is Mode 2 only.
+### Baseline, once at the start of the task
 
-seed-tts is the most likely first Mode 1 workload. vllm-omni's perf CI (`tests/dfx/perf/tests/test_minicpmo_4_5.json`) uses it, but at concurrency 1, 4 and 8 with 32, 64 and 128 requests, so its numbers are not a direct target. Mode 1 for seed-tts opens once a fixed vllm-omni client exists and has numbers from the same GPU and the same CPU group.
+Run four passes, with these lines in this order:
+
+```bash
+export CHECKOUT=/base OUT=/results/baseline/run0
+export CHECKOUT=/base OUT=/results/baseline/run1
+export CHECKOUT=/base OUT=/results/baseline/run2
+export CHECKOUT=/base OUT=/results/baseline/run3
+```
+
+### Each candidate
+
+Start from the last accepted version:
+
+```bash
+git -C /cand checkout --detach accepted
+git -C /ref checkout --detach accepted
+```
+
+Make the change in `/cand`. Commit it with the target in the message. The target cannot change later.
+
+```bash
+git -C /cand add -A
+```
+
+For a Video-AMME Talker target:
+
+```bash
+git -C /cand commit -m "target: videoamme"
+```
+
+For a seed-tts target:
+
+```bash
+git -C /cand commit -m "target: seedtts"
+```
+
+It must print `CAND_CLEAN`.
+
+```bash
+test -z "$(git -C /cand status --porcelain)" && echo CAND_CLEAN
+```
+
+Run the shell block again to read the new `CAND_SHA`. Then run eight passes in this order:
+
+```bash
+export CHECKOUT=/ref  OUT=/results/cand-$CAND_SHA/ref/run0
+export CHECKOUT=/cand OUT=/results/cand-$CAND_SHA/cand/run0
+export CHECKOUT=/ref  OUT=/results/cand-$CAND_SHA/ref/run1
+export CHECKOUT=/cand OUT=/results/cand-$CAND_SHA/cand/run1
+export CHECKOUT=/cand OUT=/results/cand-$CAND_SHA/cand/run2
+export CHECKOUT=/ref  OUT=/results/cand-$CAND_SHA/ref/run2
+export CHECKOUT=/ref  OUT=/results/cand-$CAND_SHA/ref/run3
+export CHECKOUT=/cand OUT=/results/cand-$CAND_SHA/cand/run3
+```
+
+### Compare
+
+This prints the base, ref and cand means, one line per [Acceptance](#acceptance) rule (`PASS`, `FAIL` or `REVIEW`), and a verdict. A missing file means `REJECT`.
+
+```bash
+python - /results/baseline "/results/cand-$CAND_SHA" <<'PY'
+import json, subprocess, sys
+target = subprocess.check_output(["git", "-C", "/cand", "log", "-1", "--format=%s"], text=True).strip().removeprefix("target: ")
+other = {"videoamme": "seedtts", "seedtts": "videoamme"}[target]
+load = lambda g: [json.load(open(f"{g}/run{n}/metrics.json")) for n in (1, 2, 3)]
+runs = {"base": load(sys.argv[1]), "ref": load(f"{sys.argv[2]}/ref"), "cand": load(f"{sys.argv[2]}/cand")}
+B, R, C = ((lambda k, g=g: sum(r["metrics"][k] for r in runs[g]) / 3) for g in ("base", "ref", "cand"))
+print("target", target, "| metric base ref cand")
+for k in runs["base"][0]["metrics"]:
+    print(k, round(B(k), 6), round(R(k), 6), round(C(k), 6))
+status = []
+def rule(name, ok, review=False):
+    status.append("PASS" if ok else ("REVIEW" if review else "FAIL"))
+    print(status[-1], name)
+first = runs["base"][0]
+for g, rs in runs.items():
+    for i, r in enumerate(rs, 1):
+        rule(f"{g} run{i} is valid", r["valid"])
+for i, r in enumerate(runs["cand"], 1):
+    rule(f"cand run{i} prompt tokens and sample rates equal baseline",
+         r["prompt_tokens"] == first["prompt_tokens"] and r["rates"] == first["rates"])
+rule("videoamme.accuracy >= baseline", C("videoamme.accuracy") >= B("videoamme.accuracy"))
+for wl in ("videoamme", "seedtts"):
+    k = f"{wl}.wer.wer_corpus"
+    rule(f"{k} <= max(baseline * 1.25, baseline + 0.005)", C(k) <= max(B(k) * 1.25, B(k) + 0.005))
+    rule(f"{k} not above baseline", C(k) <= B(k), review=True)
+    k = f"{wl}.wer.n_above_50_pct_wer"
+    rule(f"{k} <= baseline", C(k) <= B(k))
+    for k in (f"{wl}.latency_mean_s", f"{wl}.latency_p95_s", f"{wl}.rtf_mean"):
+        rule(f"{k} <= 1.03 * ref and baseline", C(k) <= 1.03 * R(k) and C(k) <= 1.03 * B(k))
+    k = f"{wl}.audio_duration_mean_s"
+    rule(f"{k} within 5% of baseline", abs(C(k) / B(k) - 1) <= 0.05, review=True)
+for k in ("seedtts.sim", "seedtts.utmos"):
+    rule(f"{k} >= 0.97 * baseline", C(k) >= 0.97 * B(k))
+    rule(f"{k} not below baseline", C(k) >= B(k), review=True)
+t, o = f"{target}.throughput_qps", f"{other}.throughput_qps"
+rule(f"{t} >= 1.02 * ref", C(t) >= 1.02 * R(t))
+rule(f"{o} >= 0.97 * ref and baseline", C(o) >= 0.97 * R(o) and C(o) >= 0.97 * B(o))
+print("ACCEPT" if all(s == "PASS" for s in status) else ("REJECT" if "FAIL" in status else "REVIEW"))
+PY
+```
+
+`ACCEPT`: go on to Step 7. `REVIEW`: send the full output to the maintainers and wait for their decision before Step 7. `REJECT`: start the next candidate.
+
+## Step 7: Run the CI stages
+
+This runs the 10 CI stage files as they are, three times in `/base` and in `/cand`, on both GPUs with compile off as in CI. It is required before acceptance and before a PR. Open a new shell, without the shell block, and run:
+
+```bash
+export CAND_SHA="$(git -C /cand rev-parse HEAD)"
+```
+
+Run six rounds. Each round is its line below, then the prepare block, then the test block.
+
+```bash
+export CHECKOUT=/base CI_OUT=/results/cand-$CAND_SHA/ci/base/run1
+export CHECKOUT=/cand CI_OUT=/results/cand-$CAND_SHA/ci/cand/run1
+export CHECKOUT=/cand CI_OUT=/results/cand-$CAND_SHA/ci/cand/run2
+export CHECKOUT=/base CI_OUT=/results/cand-$CAND_SHA/ci/base/run2
+export CHECKOUT=/base CI_OUT=/results/cand-$CAND_SHA/ci/base/run3
+export CHECKOUT=/cand CI_OUT=/results/cand-$CAND_SHA/ci/cand/run3
+```
+
+The prepare block matches the CI workflow and the `omni-setup` action, except that Hugging Face stays offline. It must print `CI_READY`.
+
+```bash
+cd "$CHECKOUT" && . omni/bin/activate
+export OMNI_CI_MODEL=minicpmo SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0 CUDA_VISIBLE_DEVICES=0,1
+export HF_HUB_OFFLINE=1
+export OMNI_CI_CPUSET="$CI_CPUS" OMNI_CI_HOME="$HOME/omni_ci" PYTHONPATH="$PWD"
+export PYTORCH_ALLOC_CONF=expandable_segments:True NCCL_NVLS_ENABLE=0
+export TORCHINDUCTOR_CACHE_DIR="$OMNI_CI_HOME/.torchinductor"
+export FLASHINFER_WORKSPACE_BASE=/root FLASHINFER_JIT_DEBUG=0
+export SGLANG_OMNI_ROUTER_BIN="$(bash .github/scripts/prepare_rust_router.sh build)"
+test -x "$SGLANG_OMNI_ROUTER_BIN" && test ! -e "$CI_OUT" && mkdir -p "$CI_OUT" && git rev-parse HEAD > "$CI_OUT/commit.txt" && echo CI_READY
+```
+
+The test block:
+
+```bash
+python -m pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x > "$CI_OUT/thinker_length.log" 2>&1; echo $? > "$CI_OUT/thinker_length.rc"
+python -m pytest tests/test_model/test_qwen3_omni_tts_ci.py -v -s -x > "$CI_OUT/tts_ci.log" 2>&1; echo $? > "$CI_OUT/tts_ci.rc"
+python -m pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x > "$CI_OUT/mmmu_ci.log" 2>&1; echo $? > "$CI_OUT/mmmu_ci.rc"
+python -m pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x > "$CI_OUT/mmmu_talker_ci.log" 2>&1; echo $? > "$CI_OUT/mmmu_talker_ci.rc"
+python -m pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x > "$CI_OUT/mmsu_ci.log" 2>&1; echo $? > "$CI_OUT/mmsu_ci.rc"
+python -m pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x > "$CI_OUT/mmsu_talker_ci.log" 2>&1; echo $? > "$CI_OUT/mmsu_talker_ci.rc"
+python -m pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x > "$CI_OUT/videomme_ci.log" 2>&1; echo $? > "$CI_OUT/videomme_ci.rc"
+python -m pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x > "$CI_OUT/videomme_talker_ci.log" 2>&1; echo $? > "$CI_OUT/videomme_talker_ci.rc"
+python -m pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x > "$CI_OUT/videoamme_ci.log" 2>&1; echo $? > "$CI_OUT/videoamme_ci.rc"
+python -m pytest tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py -v -s -x > "$CI_OUT/videoamme_talker_tp2_ci.log" 2>&1; echo $? > "$CI_OUT/videoamme_talker_tp2_ci.rc"
+```
+
+All stages except `thinker_length` and `tts_ci` print an `Accuracy:` or `Overall accuracy:` line. After the six rounds, this prints per stage the exit codes and mean Accuracy of each side, and a verdict. `PASS` means cand matched base. `FAIL` means cand failed more rounds or has lower Accuracy. `BASE_FAILS` and `UNVERIFIED` mean base itself failed or crashed.
+
+```bash
+python - "/results/cand-$CAND_SHA/ci" <<'PY'
+import re, sys
+root = sys.argv[1]
+stages = ["thinker_length", "tts_ci", "mmmu_ci", "mmmu_talker_ci", "mmsu_ci", "mmsu_talker_ci",
+          "videomme_ci", "videomme_talker_ci", "videoamme_ci", "videoamme_talker_tp2_ci"]
+def side(name, stage):
+    codes, accs = [], []
+    for n in (1, 2, 3):
+        d = f"{root}/{name}/run{n}"
+        codes.append(int(open(f"{d}/{stage}.rc").read()))
+        accs += [float(a) for a in re.findall(r"^\s*(?:Overall accuracy|Accuracy):\s+([0-9.]+)", open(f"{d}/{stage}.log").read(), re.M)]
+    return codes, (sum(accs) / len(accs) if accs else None)
+for stage in stages:
+    bc, ba = side("base", stage)
+    cc, ca = side("cand", stage)
+    if any(c not in (0, 1) for c in bc):
+        verdict = "UNVERIFIED"
+    elif all(c == 0 for c in bc):
+        verdict = "PASS" if all(c == 0 for c in cc) and (ba is None or (ca is not None and ca >= ba)) else "FAIL"
+    else:
+        verdict = "BASE_FAILS" if sum(c != 0 for c in cc) <= sum(c != 0 for c in bc) else "FAIL"
+    print(stage, "base", bc, "cand", cc, "acc_base", ba, "acc_cand", ca, verdict)
+PY
+```
+
+## Step 8: Record the result
+
+A candidate is accepted when Step 6 printed `ACCEPT` (or the maintainers approved a `REVIEW`), and every Step 7 stage printed `PASS`, or printed `BASE_FAILS` or `UNVERIFIED` and the maintainers reviewed it. Record it and list every accepted commit:
+
+```bash
+git -C /base branch -f accepted "$(git -C /cand rev-parse HEAD)"
+git -C /base log --oneline 921ea2c83acbfd7e9247ff38d63d8963b7572b7d..accepted
+```
+
+At the end of the task, run `docker rm -f omni-hill` on the host. The results stay in `$HILL_DIR/results`.
 
 ## Acceptance
 
-Small samples are for quick trials only. A version is accepted only after the full evaluation. At the start of the task, run the baseline once and take the mean of RUN 1 to 3. Every later comparison with the baseline uses this mean.
+Small samples are for quick trials only. A version is accepted only after Steps 4 to 7, measured fresh next to the last accepted version. Never reuse earlier numbers. The Step 6 and Step 7 scripts apply every rule below. CI numbers do not apply, because CI turns compile off and uses two GPUs.
 
-Measure each candidate again alongside the last accepted version, alternating the two in the same allocation. Never reuse numbers stored from an earlier run. Before measuring, name the target workload in the commit message. It cannot change after the measurement.
+**Correctness, against the baseline.**
 
-### Correctness, against the baseline
-
-- Every run has 0 failed requests. WER, SIM and UTMOS cover every sample, with 0 skipped.
-- No audio output is empty or has NaN values. Each one has the right sample rate and was written during this run.
-- A missing JSON field counts as a failure.
-- Video-AMME Talker mean Accuracy is not below the baseline. There is no tolerance.
-- Prompt tokens match the baseline for each sample ID.
-- Scoring uses the full corpus WER (`wer_corpus`), with no samples dropped. WER corpus (excl >50%) (`wer_below_50_corpus`) is only for comparison with CI and for debugging.
-- The number of >50% WER samples (`n_above_50_pct_wer`) is not above the baseline.
-- WER is at most max(baseline × 1.25, baseline + 0.005). 0.005 is 0.5 percentage points.
+- 0 failed requests and 0 skipped samples in every run. A missing JSON field is a failure.
+- No speech output is empty or has NaN values, and the sample rate equals the baseline.
+- Video-AMME Talker Accuracy is not below the baseline, with no tolerance.
+- Prompt tokens equal the baseline for every sample.
+- WER (`wer_corpus`) is at most max(baseline × 1.25, baseline + 0.005). The >50% WER sample count is not above the baseline.
 - SIM and UTMOS are at least baseline × 0.97.
-- A change of more than 5% in Audio duration mean needs a look. Also report audio throughput (`audio_throughput_s_per_s`) to check whether a req/s gain comes from shorter speech.
+- WER, SIM or UTMOS worse than the baseline but within tolerance, or an Audio duration mean change over 5%, goes to the maintainers. Audio throughput shows whether a req/s gain comes from shorter speech.
 
-### Performance, against the last accepted version
+**Performance, against the last accepted version.**
 
-- The mean Throughput (req/s) of the target workload is at least 1.02 × the last accepted version.
-- The Throughput of the other workload is at least 0.97 × the last accepted version and 0.97 × the baseline.
-- For both workloads, latency mean, latency p95 and RTF mean are at most 1.03 × each of those two versions.
+- Target workload Throughput is at least 1.02 × the last accepted version.
+- The other workload's Throughput is at least 0.97 × the last accepted version and 0.97 × the baseline.
+- For both workloads, latency mean, latency p95 and RTF mean are at most 1.03 × each of those two versions. Checking both stops small regressions from adding up.
 
-The 0.97 and 1.03 bounds are the same as in the TTS hill climbing task. Checking against both versions stops many small regressions from adding up to a large one.
+**CI stages.** The Step 7 verdicts apply. Step 7 runs without the CI retry wrapper (`.github/scripts/run_flaky_pytest.sh`), so a stage that fails only sometimes on the baseline counts as failing. For a `BASE_FAILS` or `UNVERIFIED` stage, record why, on which samples and with which values, from the logs under `/results/cand-$CAND_SHA/ci/`. Send this record to the maintainers and wait for their answer before Step 8. Once they review it, the stage no longer blocks.
 
-### Other CI stages
+The 1.02 factor and the tolerances are provisional. They will be tuned after baseline and A/A runs on the target machine.
 
-Before a PR, run the 10 stages of step 4 three times each on the baseline and the candidate. Step 4 runs pytest without the CI retry wrapper (`.github/scripts/run_flaky_pytest.sh`), so it is stricter than CI. A stage that fails only sometimes on the baseline counts as failing on the baseline.
+## Prior work
 
-- A stage that passes all three times on the baseline must pass all three times on the candidate, with mean Accuracy not below the baseline.
-- For a stage that already fails on the baseline, record why, on which samples and with which metric values. After the maintainers review that record, the stage no longer blocks. The candidate still must not be worse: no more failures and no fewer samples.
-- Mark a stage without a valid baseline as unverified.
+There are no numbers yet for one GPU at concurrency 16. These come from other setups.
 
-The 1.02 factor and the tolerances above are provisional. They will be tuned after baseline and A/A runs on the target machine. The A/A in #2580 used concurrency 8 and 50 questions and does not apply. Until then, report a candidate whose quality drops but stays within tolerance to the maintainers. It is not accepted automatically.
+- **Video-AMME Talker.** [#2580](https://github.com/sgl-project/sglang-omni/pull/2580) (main `5ed8a8d`), one H200, concurrency 8, 50 questions: Accuracy 0.68, 0.33 req/s. In [#2552](https://github.com/sgl-project/sglang-omni/pull/2552), CI stage 10 (two H100s, DP 2, compile off) ran 7 times: 0.643 to 0.668 req/s and Accuracy 0.7 every time. WER was 0.004032 in 6 runs and 0.008065 in one, a difference of one word.
+- **seed-tts.** [#2532](https://github.com/sgl-project/sglang-omni/pull/2532), one H200, the CI server parameters, concurrency 16, 1088 voice clone samples: 14.22 req/s, WER corpus (excl >50%) 1.47%, SIM 49.78. That run used MPS, which stays off here.
+
+Read #2580 first, the Video-AMME profile. At concurrency 8, CPU preprocessing is serial at about 3.0 s per request, and the GPU is busy only 17.1% to 27.6% of the time. Then read [#2273](https://github.com/sgl-project/sglang-omni/pull/2273) and [#2399](https://github.com/sgl-project/sglang-omni/pull/2399) (TTS and code2wav), and the optimization tracker [#2284](https://github.com/sgl-project/sglang-omni/pull/2284), which lists the areas already claimed. Related open PRs are #2316, #2480, #2487 and #2589 (preprocessing), #2529, #2528, #2330 and #2353 (talker), and #2356 (HiFT). Build on existing work. Copying a change from an existing PR does not count.
 
 ## Rules for PRs
 
-- **Default on.** An optimization is on by default. If one method beats another with no tradeoff, make it the default and remove the old path where possible. Optional code paths behind flags make the repository grow until nobody can read it. Default on also means the evaluation commands stay the same.
-- **Fixed evaluation.** A PR does not change the evaluation commands, the evaluation and metric code under `benchmarks/`, or the CI under `.github/` and `tests/test_model/`. Adding or changing the matching unit tests under `tests/unit_test/` is fine.
-- **Local benchmark fixes.** If a command does not run, you may patch the benchmark locally so it runs. The patch changes only how it runs, never what it measures: inputs, request parameters, samples and scoring stay the same. Save the diff and rerun the baseline three times with it. After that, ref and cand both use the patched benchmark with no further changes. Keep the patch out of the PR.
+- **Default on.** An optimization is on by default. If one method beats another with no tradeoff, make it the default and remove the old path where possible. Optional paths behind flags make the code unreadable, and would change the evaluation commands.
+- **Fixed evaluation.** A PR does not change the evaluation commands, the evaluation and metric code under `benchmarks/`, or the CI under `.github/` and `tests/test_model/`. Adding or changing matching unit tests under `tests/unit_test/` is fine.
+- **Local benchmark fixes.** If a command does not run, you may patch the benchmark locally. The patch changes how it runs, never what it measures. Save the diff, rerun the baseline with it, use it for ref and cand from then on, and keep it out of the PR.
+- **Numerics.** A change that alters numerics or has a tradeoff (for example a kernel swap, or a batch composition that loses questions) goes in its own PR with a per sample accuracy comparison. The maintainers decide at review. Step 6 alone never accepts it.
+- **CI label.** MiniCPM-o CI runs only with the `run-minicpmo` label. Ask for it in the PR description. The maintainers reproduce every PR.
 
 ## What does not count
 
@@ -262,12 +588,7 @@ The 1.02 factor and the tolerances above are provisional. They will be tuned aft
 | Caches and special cases for the evaluation | Reusing final outputs across requests, cache keys from file path, sample ID or prompt text, caches kept across restarts, reading files before they are requested, special branches for Video-AMME or seed-tts |
 | More resources | A second GPU, MPS, changing CPU affinity, more threads than the given CPUs. #2399 moved code2wav to a second GPU on H20 and gained 35% audio throughput at concurrency 64. That is not a runtime optimization |
 
-A change that alters numerics or has a tradeoff (for example a kernel swap or a new batch composition that loses questions) can go in its own PR, with an accuracy comparison for each sample. The maintainers decide at review. The automatic loop does not accept it.
-
 ## Notes
 
-- **The first start is slow.** Torch compile is on by default. In #2580 on one H200 (28 CPUs), a server with an empty cache took about 10.5 minutes to become healthy, and about 5.4 to 5.8 minutes after that.
-- **Every run starts a fresh server.** A second pass on the same server is faster because of the encoder cache and the radix prefix cache.
-- **CI numbers are not the standard.** CI turns compile off and uses two GPUs, so its numbers and thresholds do not apply to one GPU with compile on.
-- **Any reproducible optimization is welcome.** Open a PR against sglang-omni. The maintainers review and reproduce every PR. MiniCPM-o CI runs only when the PR has the `run-minicpmo` label, so ask for it in the PR description and a maintainer adds it.
-- **Hardware and focus.** The maintainers mostly use H100 and H200. Most gains so far come from the SGLang-Omni runtime. Kernel work is rarely involved.
+- **The first start is slow.** In #2580 on one H200 (28 CPUs), a server with an empty compile cache took about 10.5 minutes to become healthy, and about 5.4 to 5.8 minutes after that. One pass starts three servers.
+- **seed-tts output length varies.** The client samples at temperature 0.7 without a seed, as CI does. One long output can move throughput at concurrency 16 a lot. Compare `seedtts.completion_tokens_sum` in the Step 6 output to see a gain from shorter outputs.
