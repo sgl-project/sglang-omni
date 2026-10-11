@@ -535,9 +535,12 @@ def nemotron_server() -> Iterator[ModelServer]:
 
 
 def realtime_events(
-    server: ModelServer, pcm: bytes, session: dict[str, object]
+    server: ModelServer,
+    pcm: bytes,
+    session: dict[str, object],
+    append_bytes: int = 3200,
 ) -> list[dict[str, object]]:
-    """Every event of one realtime session fed pcm in 100 ms appends."""
+    """Every event of one realtime session fed pcm in appends of append_bytes."""
     with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
         socket.send(
             json.dumps(
@@ -548,12 +551,14 @@ def realtime_events(
             )
         )
         assert json.loads(socket.recv())["type"] == "transcription_session.updated"
-        for start in range(0, len(pcm), 3200):
+        for start in range(0, len(pcm), append_bytes):
             socket.send(
                 json.dumps(
                     {
                         "type": "input_audio_buffer.append",
-                        "audio": base64.b64encode(pcm[start : start + 3200]).decode(),
+                        "audio": base64.b64encode(
+                            pcm[start : start + append_bytes]
+                        ).decode(),
                     }
                 )
             )
@@ -587,12 +592,16 @@ def test_nemotron_final_request_streams_text_and_segments(
     )
 
 
+@pytest.mark.parametrize("append_bytes", [3200, None])
 def test_nemotron_realtime_at_the_native_chunk_equals_the_final_pass(
-    nemotron_server: ModelServer,
+    nemotron_server: ModelServer, append_bytes: int | None
 ) -> None:
     status, body = nemotron_server.post_form({}, clip("0344_en_long"))
     assert status == 200
-    events = realtime_events(nemotron_server, pcm16("0344_en_long"), {})
+    pcm = pcm16("0344_en_long")
+    # Note (Jiaxin Deng): None sends the whole clip in one append, which the
+    # stream still decodes one chunk of audio at a time.
+    events = realtime_events(nemotron_server, pcm, {}, append_bytes or len(pcm))
     # Note (Dayuxiaoshui): the stream only encodes mel frames later audio can no
     # longer change, so however the audio is split, the native chunk decodes
     # exactly what one pass over all of it does.

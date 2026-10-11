@@ -108,19 +108,7 @@ NemotronTranscriber::Transcribe(const std::vector<float> &samples,
                                 const NemotronOptions &options,
                                 const std::atomic<bool> &cancel) const {
   NemotronStream stream(*this, options);
-  const size_t chunk_samples =
-      static_cast<size_t>(options.chunk_frames.value_or(
-          model_.config().right_context_frames + 1)) *
-      model_.config().subsampling_factor * front_end_.hop_length;
-  for (size_t start = 0; start < samples.size(); start += chunk_samples) {
-    const auto first = samples.begin() + static_cast<std::ptrdiff_t>(start);
-    stream.Append(
-        std::vector<float>(first,
-                           first + static_cast<std::ptrdiff_t>(std::min(
-                                       chunk_samples, samples.size() - start))),
-        cancel);
-  }
-  stream.Finish({}, cancel);
+  stream.Finish(samples, cancel);
   return stream.Result();
 }
 
@@ -140,20 +128,30 @@ NemotronStream::NemotronStream(const NemotronTranscriber &transcriber,
 
 void NemotronStream::Append(const std::vector<float> &samples,
                             const std::atomic<bool> &cancel) {
-  samples_.insert(samples_.end(), samples.begin(), samples.end());
   const int half_window = transcriber_.front_end().fft_size / 2;
   const int hop = transcriber_.front_end().hop_length;
-  const int sample_count = sample_offset_ + static_cast<int>(samples_.size());
-  // Note (Dayuxiaoshui): mel frame m reads samples up to m * hop + n_fft / 2,
-  // so frames below this limit no longer change as audio arrives.
-  const int frozen_frames =
-      sample_count < half_window ? 0 : (sample_count - half_window) / hop + 1;
-  Decode(frozen_frames, false, cancel);
+  // Note (Jiaxin Deng): one chunk of audio at a time, so however much one call
+  // brings, the mel and its FFT frames cover about a chunk, not all of it.
+  const size_t chunk_samples =
+      static_cast<size_t>(chunk_frames_) *
+      transcriber_.model().config().subsampling_factor * hop;
+  for (size_t start = 0; start < samples.size(); start += chunk_samples) {
+    const auto first = samples.begin() + static_cast<std::ptrdiff_t>(start);
+    samples_.insert(samples_.end(), first,
+                    first + static_cast<std::ptrdiff_t>(std::min(
+                                chunk_samples, samples.size() - start)));
+    const int sample_count = sample_offset_ + static_cast<int>(samples_.size());
+    // Note (Dayuxiaoshui): mel frame m reads samples up to m * hop + n_fft / 2,
+    // so frames below this limit no longer change as audio arrives.
+    const int frozen_frames =
+        sample_count < half_window ? 0 : (sample_count - half_window) / hop + 1;
+    Decode(frozen_frames, false, cancel);
+  }
 }
 
 void NemotronStream::Finish(const std::vector<float> &samples,
                             const std::atomic<bool> &cancel) {
-  samples_.insert(samples_.end(), samples.begin(), samples.end());
+  Append(samples, cancel);
   Decode(-1, true, cancel);
 }
 
