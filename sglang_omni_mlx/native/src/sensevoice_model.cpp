@@ -31,6 +31,8 @@ constexpr int kEventQueryId = 1;
 constexpr int kEmotionQueryId = 2;
 constexpr int kWithItnId = 14;
 constexpr int kWithoutItnId = 15;
+// The query rows the Swift port's embedding table holds.
+constexpr int kEmbeddingRows = 16;
 
 std::string ReadFile(const std::filesystem::path &path) {
   std::ifstream stream(path, std::ios::binary);
@@ -180,6 +182,29 @@ SenseVoiceModel::SenseVoiceModel(const nlohmann::json &config,
   }
   const int window_length =
       config_.sample_rate * config_.frame_length_ms / 1000;
+  // Note (Jiaxin Deng): shapes the graph needs, checked at load rather than
+  // on the first request (a zero hop would divide by zero in Fbank).
+  const int fsmn_left_padding =
+      (config_.kernel_size - 1) / 2 + config_.sanm_shift;
+  if (window_length < 2 ||
+      config_.sample_rate * config_.frame_shift_ms / 1000 < 1 ||
+      config_.mel_count < 1 || config_.input_size % 2 != 0 ||
+      config_.kernel_size < 1 || config_.sanm_shift < 0 ||
+      fsmn_left_padding > config_.kernel_size - 1 ||
+      config_.tp_block_count < 0 || config_.vocabulary_size < 1) {
+    throw std::runtime_error("SenseVoice config has unsupported shapes");
+  } else {
+  }
+  const mx::array &embedding_weight = checkpoint_.Weight("embed.weight");
+  const mx::array &ctc_weight = checkpoint_.Weight("ctc.ctc_lo.weight");
+  if (embedding_weight.ndim() != 2 ||
+      embedding_weight.shape(0) < kEmbeddingRows || ctc_weight.ndim() != 2 ||
+      ctc_weight.shape(0) != config_.vocabulary_size) {
+    throw std::runtime_error(
+        "SenseVoice checkpoint's embedding or CTC head does not match its "
+        "config");
+  } else {
+  }
   const int fft_size = NextPowerOfTwo(window_length);
   window_ = HammingWindow(window_length);
   std::vector<float> filters = HtkMelFilters(config_.sample_rate, fft_size,
@@ -323,7 +348,8 @@ mx::array SenseVoiceModel::EncoderLayer(const mx::array &x,
           attention + ".linear_out"),
       memory);
   // Note (Dayuxiaoshui): the first layer widens its input, so it has no
-  // residual around attention.
+  // residual around attention; as in the Swift port, only a width change
+  // drops it.
   const mx::array hidden =
       residual ? mx::add(x, attention_output) : attention_output;
   const mx::array feed_forward = checkpoint_.Linear(
@@ -369,7 +395,8 @@ mx::array SenseVoiceModel::LogProbabilities(const mx::array &features,
       mx::concatenate({mx::sin(scaled_time), mx::cos(scaled_time)}, 1);
   x = mx::add(x, mx::astype(mx::expand_dims(encoding, 0), x.dtype()));
 
-  x = EncoderLayer(x, "encoder.encoders0.0", false);
+  x = EncoderLayer(x, "encoder.encoders0.0",
+                   config_.input_size == config_.model_width);
   for (int layer = 0; layer < config_.block_count - 1; ++layer) {
     x = EncoderLayer(x, "encoder.encoders." + std::to_string(layer), true);
   }
