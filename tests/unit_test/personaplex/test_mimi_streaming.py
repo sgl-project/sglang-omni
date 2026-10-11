@@ -11,7 +11,11 @@ from sglang_omni.models.personaplex.components.causal_conv import (
     CausalConv1d,
     CausalConvTranspose1d,
 )
-from sglang_omni.models.personaplex.components.mimi import MimiCodec, rename_mimi_key
+from sglang_omni.models.personaplex.components.mimi import (
+    MimiCodec,
+    MimiDecodeState,
+    rename_mimi_key,
+)
 from sglang_omni.models.personaplex.components.mimi_transformer import (
     MimiAttention,
     MimiTransformer,
@@ -71,6 +75,24 @@ def test_codec_encode_and_decode_step_match_whole(random_codec):
         [codec.decode_step(codes[..., f : f + 1], state) for f in range(frames)], -1
     )
     torch.testing.assert_close(chunked, whole, atol=1e-5, rtol=1e-5)
+
+
+def test_a_reset_decode_state_decodes_like_a_fresh_one(random_codec):
+    codec = random_codec
+    generator = torch.Generator().manual_seed(4)
+    earlier, codes = torch.randint(0, 2048, (2, 1, 8, 3), generator=generator)
+
+    def stream(codes_BKF: torch.Tensor, state: MimiDecodeState) -> torch.Tensor:
+        return torch.cat(
+            [codec.decode_step(codes_BKF[..., f : f + 1], state) for f in range(3)],
+            -1,
+        )
+
+    fresh = stream(codes, codec.init_decode_state(batch_size=1))
+    state = codec.init_decode_state(batch_size=1)
+    stream(earlier, state)
+    state.reset()
+    assert torch.equal(stream(codes, state), fresh)
 
 
 def test_checkpoint_names_map_onto_the_module_tree():
