@@ -2,10 +2,13 @@
 """Chunked Mimi must land on the samples a whole-sequence pass produces."""
 
 from dataclasses import replace
+from unittest.mock import patch
 
 import pytest
 import torch
+from torch import nn
 
+import sglang_omni.models.personaplex.components.mimi_transformer as mimi_transformer_module
 from sglang_omni.models.personaplex.architecture import MIMI
 from sglang_omni.models.personaplex.components.causal_conv import (
     CausalConv1d,
@@ -16,6 +19,11 @@ from sglang_omni.models.personaplex.components.mimi_transformer import (
     AttentionState,
     MimiAttention,
     MimiTransformer,
+)
+
+CUDA_ONLY = pytest.mark.skipif(
+    not (torch.cuda.is_available() and torch.version.cuda is not None),
+    reason="NVIDIA CUDA is unavailable",
 )
 
 
@@ -160,3 +168,100 @@ def test_whole_sequence_matches_the_streaming_replay(length):
             -1,
         )
     torch.testing.assert_close(whole, chunked, atol=1e-6, rtol=1e-5)
+
+
+@pytest.fixture
+def cuda_attention() -> MimiAttention:
+    torch.manual_seed(42)
+    attention = MimiAttention(
+        MIMI.dim,
+        MIMI.num_heads,
+        MIMI.context,
+        MIMI.rope_max_period,
+        write_chunk=MIMI.frame_ratio,
+    )
+    attention.cuda().eval()
+    for parameter in attention.parameters():
+        nn.init.normal_(parameter, std=0.05)
+    return attention
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize(
+    "shape,dtype,cache_stride,initial_end_offset",
+    [
+        *(
+            ((1, 2), torch.float32, 1, offset)
+            for offset in (0, 248, 249, 250, 498, 500, 2048)
+        ),
+        ((2, 2), torch.float32, 1, 0),
+        ((1, 1), torch.float32, 1, 0),
+        ((1, 2), torch.float64, 1, 0),
+        ((1, 2), torch.float32, 2, 0),
+    ],
+)
+@torch.no_grad()
+def test_cuda_attention_matches_eager_ring(
+    cuda_attention: MimiAttention,
+    shape: tuple[int, int],
+    dtype: torch.dtype,
+    cache_stride: int,
+    initial_end_offset: int,
+) -> None:
+    attention = cuda_attention.to(dtype=dtype)
+    hidden_states = torch.empty(*shape, MIMI.dim, device="cuda", dtype=dtype)
+    candidate, reference = AttentionState(), AttentionState()
+    candidate.end_offset = reference.end_offset = initial_end_offset
+    if initial_end_offset or cache_stride > 1:
+        channels_per_head = MIMI.dim // MIMI.num_heads
+        cache_channels = channels_per_head * cache_stride
+        cache_shape = (2, 2, shape[0], MIMI.num_heads, MIMI.context, cache_channels)
+        caches = hidden_states.new_empty(cache_shape).normal_()
+        caches[1].copy_(caches[0])
+        candidate.keys, candidate.values = caches[0, ..., :channels_per_head].unbind()
+        reference.keys, reference.values = caches[1, ..., :channels_per_head].unbind()
+    else:
+        pass
+    is_fused = shape == (1, 2) and dtype == torch.float32 and cache_stride == 1
+    forbidden_function = (
+        "apply_interleaved_rope" if is_fused else "fused_mimi_rope_cache"
+    )
+    bits_dtype = torch.int32 if dtype == torch.float32 else torch.int64
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for _ in range(6):
+            hidden_states.normal_()
+            offset = candidate.end_offset
+            with patch.object(
+                mimi_transformer_module,
+                forbidden_function,
+                side_effect=AssertionError,
+            ):
+                actual = attention(hidden_states, offset=offset, state=candidate)
+            with patch.object(torch.version, "cuda", None):
+                expected = attention(hidden_states, offset=offset, state=reference)
+            for actual, expected in zip(
+                (actual, candidate.keys, candidate.values),
+                (expected, reference.keys, reference.values),
+            ):
+                assert torch.equal(actual.view(bits_dtype), expected.view(bits_dtype))
+            assert candidate.end_offset == reference.end_offset == offset + shape[1]
+    torch.cuda.current_stream().wait_stream(stream)
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize("is_streaming", [False, True])
+def test_attention_gradients(cuda_attention: MimiAttention, is_streaming: bool) -> None:
+    hidden_states = torch.randn(
+        1, MIMI.frame_ratio, MIMI.dim, device="cuda", requires_grad=True
+    )
+    state = AttentionState() if is_streaming else None
+    with patch.object(
+        mimi_transformer_module, "fused_mimi_rope_cache", side_effect=AssertionError
+    ):
+        cuda_attention(hidden_states, state=state).square().mean().backward()
+    for tensor in (hidden_states, *cuda_attention.parameters()):
+        assert tensor.grad is not None and torch.isfinite(tensor.grad).all()
