@@ -58,9 +58,10 @@ and PyArrow 20 for the pinned datasets package. Version resolution alone does
 not establish runtime compatibility; validate imports and real generation too.
 
 The worker environment uses PyTorch/torchaudio 2.8.0, Transformers 4.50.0,
-torchtune 0.4.0, torchao 0.9.0, and moshi 0.2.13. Omitting `model_python` retains
-an in-process path for dependency-compatible custom installations; installing
-the author requirements into the normal project environment is not supported.
+torchtune 0.4.0, torchao 0.9.0, and moshi 0.2.13. Omitting `model_python` starts a child process with the current interpreter and
+therefore requires a dependency-compatible custom environment. Model execution
+always stays in the child process. Installing the author requirements into the
+normal project environment is not supported.
 
 ## Configure and launch
 

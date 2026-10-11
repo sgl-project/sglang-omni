@@ -13,10 +13,13 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Generator
 
 import numpy as np
+from numpy.typing import NDArray
 
 from sglang_omni.models.voxtream2.wire import PROTOCOL_VERSION, read_frame, write_frame
+from sglang_omni.proto import StagePayload
 
 
 class RemoteVoXtreamBackend:
@@ -30,14 +33,14 @@ class RemoteVoXtreamBackend:
     def __init__(
         self,
         *,
-        python_executable,
-        model_config,
-        source_paths=(),
-        startup_timeout=180.0,
-        response_timeout=120.0,
-        cancel_timeout=10.0,
-        worker_command=None,
-    ):
+        python_executable: str,
+        model_config: dict[str, str | bool],
+        source_paths: tuple[str, ...] | list[str] = (),
+        startup_timeout: float = 180.0,
+        response_timeout: float = 120.0,
+        cancel_timeout: float = 10.0,
+        worker_command: list[str] | None = None,
+    ) -> None:
         if any(
             not math.isfinite(t) or t <= 0
             for t in (startup_timeout, response_timeout, cancel_timeout)
@@ -76,7 +79,7 @@ class RemoteVoXtreamBackend:
             str(python),
             "-u",
             "-m",
-            "sglang_omni.models.voxtream2.worker",
+            "sglang_omni.models.voxtream2.worker_main",
         ]
         self.process = subprocess.Popen(
             command,
@@ -109,7 +112,7 @@ class RemoteVoXtreamBackend:
             raise
         atexit.register(self.close)
 
-    def queue_response(self, value):
+    def queue_response(self, value: dict[str, object] | Exception) -> None:
         while not self.closed.is_set():
             try:
                 self.responses.put(value, timeout=0.05)
@@ -117,14 +120,14 @@ class RemoteVoXtreamBackend:
             except queue.Full:
                 pass
 
-    def read_loop(self):
+    def read_loop(self) -> None:
         try:
             while not self.closed.is_set():
                 self.queue_response(read_frame(self.process.stdout))
         except Exception as exc:
             self.queue_response(exc)
 
-    def send_frame(self, value):
+    def send_frame(self, value: dict[str, object]) -> None:
         if self.closed.is_set() or not self.healthy:
             raise RuntimeError("VoXtream2 model worker is unavailable")
         else:
@@ -132,7 +135,7 @@ class RemoteVoXtreamBackend:
         with self.write_lock:
             write_frame(self.process.stdin, value)
 
-    def receive_frame(self, timeout):
+    def receive_frame(self, timeout: float) -> dict[str, object]:
         try:
             value = self.responses.get(timeout=max(timeout, 0.001))
         except queue.Empty as exc:
@@ -143,7 +146,7 @@ class RemoteVoXtreamBackend:
             pass
         return value
 
-    def cancel(self, request_id):
+    def cancel(self, request_id: str) -> None:
         with self.state_lock:
             active = self.active_request
             if active is None or active[0] != request_id:
@@ -157,7 +160,7 @@ class RemoteVoXtreamBackend:
             # The consuming thread reports transport failure for this request.
             pass
 
-    def cancel_active(self):
+    def cancel_active(self) -> None:
         with self.state_lock:
             active = self.active_request
         if active is not None:
@@ -165,7 +168,9 @@ class RemoteVoXtreamBackend:
         else:
             pass
 
-    def iter_audio(self, payload):
+    def iter_audio(
+        self, payload: StagePayload
+    ) -> Generator[NDArray[np.float32], None, None]:
         if not self.healthy or self.closed.is_set():
             raise RuntimeError(
                 "VoXtream2 model worker is unavailable; restart the stage"
@@ -281,7 +286,7 @@ class RemoteVoXtreamBackend:
             else:
                 pass
 
-    def close(self):
+    def close(self) -> None:
         """Stop only the owned child and release its pipes and reader thread."""
         with self.close_lock:
             if self.closed.is_set():

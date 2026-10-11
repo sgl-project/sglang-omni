@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """VoXtream2 Stage factory; model imports are deferred to worker startup."""
 
-from sglang_omni.models.voxtream2.backend import VoXtreamBackend
-from sglang_omni.models.voxtream2.loader import load_generator
+import sys
+
 from sglang_omni.models.voxtream2.remote import RemoteVoXtreamBackend
 from sglang_omni.models.voxtream2.scheduler import VoXtreamScheduler
 
@@ -36,17 +36,14 @@ def create_executor(
         dtype=dtype,
         use_cuda_graph=use_cuda_graph,
     )
-    if model_python is not None:
-        backend = RemoteVoXtreamBackend(
-            python_executable=model_python,
-            model_config={**model_config, "reference_audio": reference_audio},
-            source_paths=model_source_paths or (),
-            startup_timeout=worker_startup_timeout,
-            response_timeout=worker_response_timeout,
-            cancel_timeout=worker_cancel_timeout,
-        )
-    else:
-        backend = VoXtreamBackend(load_generator(**model_config), reference_audio)
+    backend = RemoteVoXtreamBackend(
+        python_executable=sys.executable if model_python is None else model_python,
+        model_config={**model_config, "reference_audio": reference_audio},
+        source_paths=model_source_paths or (),
+        startup_timeout=worker_startup_timeout,
+        response_timeout=worker_response_timeout,
+        cancel_timeout=worker_cancel_timeout,
+    )
     return VoXtreamScheduler(
         backend,
         max_pending=max_pending,

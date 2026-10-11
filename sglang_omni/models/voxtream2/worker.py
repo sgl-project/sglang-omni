@@ -1,31 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
-"""VoXtream2 child entrypoint, run by the configured model Python executable."""
+"""VoXtream2 worker protocol and serial generation loop."""
 
 from __future__ import annotations
 
 import base64
-import importlib.metadata
 import queue
 import sys
 import threading
 import traceback
+from typing import BinaryIO
 
 import numpy as np
 
-from sglang_omni.models.voxtream2.backend import VoXtreamBackend
-from sglang_omni.models.voxtream2.loader import load_generator
-from sglang_omni.models.voxtream2.wire import PROTOCOL_VERSION, read_frame, write_frame
+from sglang_omni.models.voxtream2.scheduler import AudioBackend
+from sglang_omni.models.voxtream2.wire import read_frame, write_frame
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-def serve(backend, source, target):
+def serve(backend: AudioBackend, source: BinaryIO, target: BinaryIO) -> None:
     """Receive cancellation independently of GPU generation and output writes."""
     pending = queue.Queue(maxsize=1)
     stopped = threading.Event()
     lock = threading.Lock()
     active = {}
 
-    def receive():
+    def receive() -> None:
         try:
             while not stopped.is_set():
                 item = read_frame(source)
@@ -108,47 +107,3 @@ def serve(backend, source, target):
             with lock:
                 active.pop(token, None)
         write_frame(target, {"type": "done", "id": token, "error": error})
-
-
-def main():
-    source, target = sys.stdin.buffer, sys.stdout.buffer
-    # Author progress prints belong to logs, not the framed protocol.
-    sys.stdout = sys.stderr
-    try:
-        init = read_frame(source)
-        if init.get("type") != "init":
-            raise RuntimeError("Expected VoXtream2 worker initialization")
-        else:
-            pass
-        config = dict(init["config"])
-        reference = config.pop("reference_audio")
-        backend = VoXtreamBackend(load_generator(**config), reference)
-        versions = {
-            name: importlib.metadata.version(name)
-            for name in ("torch", "torchaudio", "transformers", "torchao", "voxtream")
-        }
-        write_frame(
-            target,
-            {
-                "type": "ready",
-                "version": PROTOCOL_VERSION,
-                "sample_rate": backend.sample_rate,
-                "max_samples": backend.max_samples,
-                "runtime": {"python": sys.executable, "versions": versions},
-            },
-        )
-        serve(backend, source, target)
-    except Exception as exc:
-        traceback.print_exc(file=sys.stderr)
-        try:
-            write_frame(target, {"type": "fatal", "error": str(exc)})
-        except (BrokenPipeError, OSError):
-            pass
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-else:
-    pass

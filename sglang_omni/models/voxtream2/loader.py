@@ -2,61 +2,28 @@
 # Copyright (c) 2025 Nikita Torgashov
 # Construction and graph-safe cache operations adapted from herimor/voxtream
 # commit 8ec2d62159dae4716ae7058827244a962d40603c. See LICENSE-MIT.voxtream.
-"""Explicit checkpoint/device loading for the author VoXtream2 implementation.
-
-No hub-download replacement, global dtype override, or global KVCache method
-replacement is used. Optional dependencies are imported only while loading.
-"""
+"""Model construction; import only in the configured model process."""
 
 from __future__ import annotations
 
 import json
 import logging
 from dataclasses import fields
-from pathlib import Path
-from types import MethodType
 
 import torch
+from moshi.models import loaders
+from moshi.utils.compile import CUDAGraphed
+from redimnet.model import ReDimNetWrap
+from safetensors.torch import load_file
+from voxtream.config import SpeechGeneratorConfig
+from voxtream.generator import SpeechGenerator
+from voxtream.model import Model, ModelConfig
+from voxtream.utils.generator.context import GenerationContext
+from voxtream.utils.generator.helpers import autocast_ctx, configure_cpu_threads
+from voxtream.utils.text.phonemizer import ESpeak
 
-
-def bind_graph_safe_caches(model):
-    """Adapt only this model's KV caches; other torchtune users stay untouched."""
-    from torchtune.modules.kv_cache import KVCache
-
-    for cache in model.modules():
-        if not isinstance(cache, KVCache) or getattr(cache, "omni_graph_safe", False):
-            continue
-        else:
-            pass
-        original_update, original_reset = cache.update, cache.reset
-
-        def update(self, keys, values, _original=original_update):
-            if not self.k_cache.is_cuda or not torch.cuda.is_current_stream_capturing():
-                return _original(keys, values)
-            else:
-                pass
-            batch, _, length, _ = keys.shape
-            if batch > self.k_cache.shape[0]:
-                raise ValueError("KV cache batch capacity exceeded")
-            else:
-                pass
-            self.k_cache[:, :, self.cache_pos[:length]] = keys
-            self.v_cache[:, :, self.cache_pos[:length]] = values
-            self.cache_pos += length
-            return self.k_cache, self.v_cache
-
-        def reset(self, _original=original_reset):
-            if not self.k_cache.is_cuda or not torch.cuda.is_current_stream_capturing():
-                return _original()
-            else:
-                pass
-            self.k_cache.zero_()
-            self.v_cache.zero_()
-            self.cache_pos.copy_(self.cache_pos - self.cache_pos[0])
-
-        cache.update = MethodType(update, cache)
-        cache.reset = MethodType(reset, cache)
-        cache.omni_graph_safe = True
+from sglang_omni.models.voxtream2.assets import resolve_assets
+from sglang_omni.models.voxtream2.cache import bind_graph_safe_caches
 
 
 def load_generator(
@@ -69,26 +36,22 @@ def load_generator(
     device: str,
     dtype: str = "float16",
     use_cuda_graph: bool = True,
-):
-    """Load local weights using the author's model and generation loop.
-
-    Generator/rate JSON files are explicit operator configuration. The author
-    source dependency must be installed separately; importing this module is
-    safe when that optional dependency is unavailable.
-    """
-    if dtype not in {"float16", "bfloat16", "float32"}:
-        raise ValueError("dtype must be float16, bfloat16 or float32")
-    else:
-        pass
-    target = torch.device(device)
-    if target.type not in {"cpu", "cuda"}:
-        raise ValueError("VoXtream2 supports CPU or CUDA devices")
-    else:
-        pass
-    if target.type == "cpu" and (dtype != "float32" or use_cuda_graph):
-        raise ValueError("CPU loading requires float32 and use_cuda_graph=False")
-    else:
-        pass
+) -> SpeechGenerator:
+    """Construct a generator inside the configured model process."""
+    assets = resolve_assets(
+        model_path=model_path,
+        mimi_checkpoint=mimi_checkpoint,
+        speaker_checkpoint=speaker_checkpoint,
+        generator_config_path=generator_config_path,
+        speaking_rate_config_path=speaking_rate_config_path,
+        device=device,
+        dtype=dtype,
+        use_cuda_graph=use_cuda_graph,
+    )
+    target = assets.device
+    paths = assets.paths
+    config_data = assets.generator_config
+    rate_config = assets.speaking_rate_config
     if target.type == "cuda":
         torch.cuda.set_device(target)
         if dtype == "bfloat16" and not torch.cuda.is_bf16_supported():
@@ -97,33 +60,6 @@ def load_generator(
             pass
     else:
         pass
-
-    config_data = json.loads(Path(generator_config_path).read_text())
-    rate_config = json.loads(Path(speaking_rate_config_path).read_text())
-    directory = Path(model_path)
-    paths = {
-        "model config": directory / config_data["model_config_name"],
-        "phoneme dictionary": directory / config_data["phoneme_dict_name"],
-        "model weights": directory / config_data["model_name"],
-        "Mimi weights": Path(mimi_checkpoint),
-        "speaker weights": Path(speaker_checkpoint),
-    }
-    for name, path in paths.items():
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing {name}: {path}")
-        else:
-            pass
-
-    from moshi.models import loaders
-    from moshi.utils.compile import CUDAGraphed
-    from redimnet.model import ReDimNetWrap
-    from safetensors.torch import load_file
-    from voxtream.config import SpeechGeneratorConfig
-    from voxtream.generator import SpeechGenerator
-    from voxtream.model import Model, ModelConfig
-    from voxtream.utils.generator.context import GenerationContext
-    from voxtream.utils.generator.helpers import autocast_ctx, configure_cpu_threads
-    from voxtream.utils.text.phonemizer import ESpeak
 
     config = SpeechGeneratorConfig(**config_data)
     # This first deployment has an operator-owned reference. Disable optional
@@ -140,7 +76,7 @@ def load_generator(
     model = model.eval().to(target, dtype=tensor_dtype)
     model.setup_caches(max_batch_size=batch_size, dtype=tensor_dtype)
 
-    def mimi():
+    def mimi() -> torch.nn.Module:
         return (
             loaders.get_mimi(
                 filename=str(paths["Mimi weights"]),

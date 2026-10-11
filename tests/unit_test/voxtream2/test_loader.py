@@ -2,7 +2,8 @@
 """Local-asset validation, instance-only cache adaptation, and config wiring."""
 
 import json
-from types import SimpleNamespace
+import subprocess
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -11,8 +12,8 @@ import yaml
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.voxtream2 import stages
+from sglang_omni.models.voxtream2.assets import resolve_assets
 from sglang_omni.models.voxtream2.config import VoXtream2PipelineConfig
-from sglang_omni.models.voxtream2.loader import bind_graph_safe_caches, load_generator
 
 
 def config_values(tmp_path):
@@ -69,7 +70,7 @@ def loader_values(tmp_path):
 
 def test_missing_asset_fails_before_importing_or_allocating_model(tmp_path):
     with pytest.raises(FileNotFoundError, match="model config"):
-        load_generator(**loader_values(tmp_path))
+        resolve_assets(**loader_values(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -85,13 +86,13 @@ def test_loader_rejects_unsupported_device_configuration(tmp_path, changes):
     values = loader_values(tmp_path)
     values.update(changes)
     with pytest.raises(ValueError):
-        load_generator(**values)
+        resolve_assets(**values)
 
 
 def test_cache_adaptation_is_instance_local_and_idempotent():
     # Optional model dependency: pure framework test installations can skip.
-    pytest.importorskip("torchtune")
-    from torchtune.modules.kv_cache import KVCache
+    cache_module = pytest.importorskip("sglang_omni.models.voxtream2.cache")
+    KVCache = cache_module.KVCache
 
     original_update, original_reset = KVCache.update, KVCache.reset
 
@@ -102,9 +103,9 @@ def test_cache_adaptation_is_instance_local_and_idempotent():
 
     model = torch.nn.ModuleList([make_cache(), make_cache()])
     unrelated = make_cache()
-    bind_graph_safe_caches(model)
+    cache_module.bind_graph_safe_caches(model)
     bound_update = model[0].update
-    bind_graph_safe_caches(model)
+    cache_module.bind_graph_safe_caches(model)
     assert model[0].update is bound_update
     assert KVCache.update is original_update and KVCache.reset is original_reset
     assert unrelated.update.__func__ is original_update
@@ -118,20 +119,18 @@ def test_cache_adaptation_is_instance_local_and_idempotent():
 
 
 def test_stage_factory_passes_device_and_local_paths(tmp_path, monkeypatch):
-
     values = config_values(tmp_path)
-    (tmp_path / "reference.wav").touch()
-    generator = SimpleNamespace(
-        config=SimpleNamespace(mimi_sr=24000, max_audio_length_ms=20000)
-    )
-    loader = Mock(return_value=generator)
-    monkeypatch.setattr(stages, "load_generator", loader)
+    backend = Mock(sample_rate=24000, max_samples=480000)
+    factory = Mock(return_value=backend)
+    monkeypatch.setattr(stages, "RemoteVoXtreamBackend", factory)
     scheduler = stages.create_executor(
         **values, gpu_id=1, max_pending=2, output_buffer_chunks=3
     )
-    assert loader.call_args.kwargs["device"] == "cuda:1"
-    assert loader.call_args.kwargs["model_path"] == str(tmp_path)
-    assert scheduler.backend.generator is generator
+    options = factory.call_args.kwargs
+    assert options["python_executable"] == sys.executable
+    assert options["model_config"]["device"] == "cuda:1"
+    assert options["model_config"]["model_path"] == str(tmp_path)
+    assert scheduler.backend is backend
     assert scheduler.inbox.maxsize == 2 and scheduler.outbox.capacity == 3
 
 
@@ -142,9 +141,7 @@ def test_stage_factory_selects_isolated_worker_without_loading_model(
     values = config_values(tmp_path)
     backend = Mock(sample_rate=24000, max_samples=480000)
     factory = Mock(return_value=backend)
-    loader = Mock(side_effect=AssertionError("Parent must not load model"))
     monkeypatch.setattr(stages, "RemoteVoXtreamBackend", factory)
-    monkeypatch.setattr(stages, "load_generator", loader)
     scheduler = stages.create_executor(
         **values,
         gpu_id=1,
@@ -153,7 +150,6 @@ def test_stage_factory_selects_isolated_worker_without_loading_model(
         worker_cancel_timeout=7,
     )
     assert scheduler.backend is backend
-    loader.assert_not_called()
     options = factory.call_args.kwargs
     assert options["python_executable"] == "/model/bin/python"
     assert options["source_paths"] == ["/redimnet"]
@@ -168,3 +164,26 @@ def test_worker_timeout_config_is_finite_and_positive(tmp_path, value):
         VoXtream2PipelineConfig(
             **config_values(tmp_path), worker_response_timeout=value
         )
+
+
+def test_stage_import_does_not_import_model_backend() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import sglang_omni.models.voxtream2.stages; "
+            "assert 'sglang_omni.models.voxtream2.backend' not in sys.modules; "
+            "assert 'sglang_omni.models.voxtream2.loader' not in sys.modules",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("invalid_config", [[], None, {"model_config_name": 12}])
+def test_asset_config_rejects_malformed_objects(tmp_path, invalid_config):
+    values = loader_values(tmp_path)
+    (tmp_path / "generator.json").write_text(json.dumps(invalid_config))
+    with pytest.raises(ValueError):
+        resolve_assets(**values)
