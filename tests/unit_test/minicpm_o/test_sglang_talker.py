@@ -103,7 +103,9 @@ def test_talker_stage_defaults_breakable_prefill_graphs_on_nvidia(
     monkeypatch.setattr(
         stages,
         "resolved_view",
-        lambda server_args: SimpleNamespace(mem_fraction_static=0.5),
+        lambda server_args: SimpleNamespace(
+            mem_fraction_static=0.5, max_running_requests=32, max_total_tokens=None
+        ),
     )
     monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **_: None)
     monkeypatch.setattr(stages, "avail_gpu_mem", lambda gpu_id: 0)
