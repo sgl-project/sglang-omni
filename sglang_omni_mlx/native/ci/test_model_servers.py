@@ -605,6 +605,36 @@ def test_sensevoice_cuts_long_audio_into_overlapping_chunks(
     )
 
 
+def test_sensevoice_chunks_overlap_by_voxts_sample_count(
+    sensevoice_server: ModelServer,
+) -> None:
+    # Note (Jiaxin Deng): 4 s chunks split this clip's speech runs, and each
+    # chunk of a run starts 5600 samples (0.35 s, truncated in double as Voxt
+    # does) before the previous one ends.
+    vad_directory = str(Path(DATA_ROOT) / "models" / VAD_REPO.replace("/", "_"))
+    status, body = sensevoice_server.post_form(
+        {
+            "language": "en",
+            "vad_model_directory": vad_directory,
+            **SENSEVOICE_VAD_FIELDS,
+            "vad_max_chunk_seconds": "4.0",
+        },
+        clip("0344_en_long"),
+    )
+    assert status == 200
+    bounds = [
+        (round(segment["start"] * 16000), round(segment["end"] * 16000))
+        for segment in json.loads(body)["segments"]
+    ]
+    overlaps = [
+        previous_end - start
+        for (_, previous_end), (start, _) in zip(bounds, bounds[1:])
+        if start < previous_end
+    ]
+    assert overlaps
+    assert set(overlaps) == {5600}
+
+
 # Note (Jiaxin Deng): the last case differs in seconds but not in whole
 # samples, where chunking would never advance.
 @pytest.mark.parametrize(
