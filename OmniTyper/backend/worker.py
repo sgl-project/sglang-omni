@@ -34,7 +34,7 @@ if BACKEND_DIRECTORY not in sys.path:
     sys.path.insert(0, BACKEND_DIRECTORY)
 
 import text_api
-from server import DEFAULT_MODEL, NativeASRServer
+from server import DEFAULT_MODEL, NativeASRServer, normalize_hf_endpoint
 
 import sglang_omni
 
@@ -55,6 +55,7 @@ FIELDS = {
     "op",
     "audio_path",
     "asr_model",
+    "hf_endpoint",
     "text_model",
     "text_api_url",
     "text_api_key",
@@ -84,6 +85,7 @@ def validate_request(value: object) -> dict[str, Any]:
         "op": 16,
         "audio_path": 4096,
         "asr_model": 256,
+        "hf_endpoint": 2048,
         "text_model": 256,
         "text_api_url": 2048,
         "text_api_key": 4096,
@@ -108,6 +110,7 @@ def validate_request(value: object) -> dict[str, Any]:
         raise ValueError("op must be prepare, transcribe, process, or models.")
     defaults = {
         "asr_model": DEFAULT_MODEL,
+        "hf_endpoint": "",
         "text_model": "",
         "text_api_url": DEFAULT_TEXT_API,
         "text_api_key": "",
@@ -140,6 +143,9 @@ def validate_request(value: object) -> dict[str, Any]:
     for field in ("language", "target_language"):
         if request[field]:
             request[field] = resolve_language(request[field])
+    request["hf_endpoint"] = normalize_hf_endpoint(
+        request["hf_endpoint"], strict=request["op"] == "prepare"
+    )
     if request["mode"] == "translate" and not request["target_language"]:
         raise ValueError("Translation requires target_language.")
     if request["mode"] == "edit" and not request["selected_text"].strip():
@@ -243,7 +249,7 @@ class Worker:
             )[:200]
             return {"id": request["id"], "ok": True, "models": models}
         if request["op"] == "prepare":
-            self.asr.start(progress)
+            self.asr.start(progress, request["hf_endpoint"])
             return {
                 "id": request["id"],
                 "ok": True,
@@ -256,7 +262,7 @@ class Worker:
             if is_silent(samples):
                 raw = ""
             else:
-                self.asr.start(progress)
+                self.asr.start(progress, request["hf_endpoint"])
                 progress("Transcribing locally…")
                 raw = self.asr.transcribe(
                     samples,

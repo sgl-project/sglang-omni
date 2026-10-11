@@ -266,6 +266,9 @@
 "settings.languageNote" = "Recognition coverage follows Qwen3-ASR. Translation quality depends on your text API model.";
 "settings.localModel" = "Local speech model";
 "settings.modelNote" = "SGLang-Omni performs speech recognition on Apple Silicon. Text processing is configured separately below.";
+"settings.hfEndpoint" = "Hugging Face endpoint (optional)";
+"settings.hfEndpointLabel" = "Hugging Face endpoint";
+"settings.hfEndpointNote" = "Leave this blank for the default service. Use a mirror such as https://hf-mirror.com when the default service is not reachable.";
 "settings.prepareASR" = "Download & prepare ASR";
 "settings.unloadASR" = "Unload ASR";
 "settings.runtime" = "Runtime location";

@@ -266,6 +266,9 @@
 "settings.languageNote" = "识别语种范围取决于 Qwen3-ASR，翻译质量取决于你的文本 API 模型。";
 "settings.localModel" = "本地语音模型";
 "settings.modelNote" = "SGLang-Omni 在 Apple Silicon 上完成语音识别。文字处理在下方单独配置。";
+"settings.hfEndpoint" = "Hugging Face 地址（可选）";
+"settings.hfEndpointLabel" = "Hugging Face 地址";
+"settings.hfEndpointNote" = "留空使用默认服务。如果默认地址无法访问，可以填写镜像地址，例如 https://hf-mirror.com。";
 "settings.prepareASR" = "下载并准备语音模型";
 "settings.unloadASR" = "卸载语音模型";
 "settings.runtime" = "运行环境位置";

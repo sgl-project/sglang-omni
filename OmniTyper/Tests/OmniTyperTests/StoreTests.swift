@@ -13,6 +13,7 @@ struct StoreTests {
         let restored = try JSONDecoder().decode(Preferences.self, from: JSONSerialization.data(withJSONObject: old))
         #expect(restored.textSettings.baseURL == "http://127.0.0.1:11434/v1")
         #expect(restored.textSettings.model.isEmpty)
+        #expect(restored.hfEndpointText.isEmpty)
         var settings = TextAPISettings(model: "my-ollama-model", optionsJSON: "{\"temperature\":0.3}")
         let payload = try settings.payload(apiKey: "secret")
         #expect(payload["text_model"] as? String == "my-ollama-model")
@@ -28,11 +29,13 @@ struct StoreTests {
         defer { model.shutdown() }
         model.textAPIKey = "session-secret"
         store.preferences.textSettings.model = "my-ollama-model"
+        store.preferences.hfEndpointText = "https://hf-mirror.com"
         #expect(model.textAPIKey == "session-secret")
         #expect(!String(decoding: try Data(contentsOf: root.appendingPathComponent("library.json")), as: UTF8.self).contains("session-secret"))
         store.preferences.textSettings.baseURL = "https://example.com/v1"
         #expect(model.textAPIKey.isEmpty)
         #expect(AppStore(directory: root).preferences.textSettings.model == "my-ollama-model")
+        #expect(AppStore(directory: root).preferences.hfEndpointText == "https://hf-mirror.com")
     }
 
     /// A failed insertion happens in another app, so its notice lands in a window

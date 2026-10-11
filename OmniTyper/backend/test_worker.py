@@ -49,6 +49,7 @@ class WorkerTests(unittest.TestCase):
             request(text_api_options={"model": "override"}),
             request(text_api_options={"temperature": float("nan")}),
             request(text_api_options={"padding": "x" * 8193}),
+            request(hf_endpoint=123),
             request(mode="translate"),
             request(mode="edit"),
             request(unknown=True),
@@ -66,6 +67,25 @@ class WorkerTests(unittest.TestCase):
         )
         self.assertEqual(normalized["language"], "Chinese")
         self.assertEqual(normalized["target_language"], "English")
+
+        self.assertEqual(
+            worker.validate_request(
+                request(op="prepare", hf_endpoint="https://hf-mirror.com/")
+            )["hf_endpoint"],
+            "https://hf-mirror.com",
+        )
+        with self.assertRaisesRegex(ValueError, "hf_endpoint"):
+            worker.validate_request(request(op="prepare", hf_endpoint="ftp://mirror"))
+        self.assertEqual(
+            worker.validate_request(
+                request(
+                    op="transcribe",
+                    audio_path="/tmp/test.wav",
+                    hf_endpoint="ftp://mirror",
+                )
+            )["hf_endpoint"],
+            "",
+        )
 
     def test_dictionary_is_literal_longest_first_and_non_cascading(self):
         entries = [
@@ -442,6 +462,77 @@ class WorkerTests(unittest.TestCase):
         self.assertIn(b"OmniTyper", received["body"])
         self.assertIn(b"RIFF", received["body"])
 
+    def test_model_snapshot_uses_complete_cache_before_custom_endpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name in [
+                "config.json",
+                "tokenizer_config.json",
+                "vocab.json",
+                "merges.txt",
+                "model.safetensors",
+                "model.safetensors.index.json",
+                "preprocessor_config.json",
+            ]:
+                Path(directory, name).touch()
+            calls = []
+
+            class LocalEntryNotFoundError(Exception):
+                pass
+
+            hub = types.ModuleType("huggingface_hub")
+            errors = types.ModuleType("huggingface_hub.errors")
+
+            def snapshot_download(model, **options):
+                calls.append((model, options))
+                return directory
+
+            hub.snapshot_download = snapshot_download
+            errors.LocalEntryNotFoundError = LocalEntryNotFoundError
+            with patch.dict(
+                sys.modules,
+                {"huggingface_hub": hub, "huggingface_hub.errors": errors},
+            ):
+                result = server.model_snapshot(
+                    server.DEFAULT_MODEL,
+                    server.MODEL_REVISION,
+                    "https://hf-mirror.com",
+                )
+            self.assertEqual(result, directory)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0][1]["local_files_only"])
+            self.assertNotIn("endpoint", calls[0][1])
+
+    def test_model_snapshot_uses_custom_endpoint_after_cache_miss(self):
+        calls = []
+
+        class LocalEntryNotFoundError(Exception):
+            pass
+
+        hub = types.ModuleType("huggingface_hub")
+        errors = types.ModuleType("huggingface_hub.errors")
+
+        def snapshot_download(model, **options):
+            calls.append((model, options))
+            if options.get("local_files_only"):
+                raise LocalEntryNotFoundError()
+            raise RuntimeError("mirror unavailable")
+
+        hub.snapshot_download = snapshot_download
+        errors.LocalEntryNotFoundError = LocalEntryNotFoundError
+        with (
+            patch.dict(
+                sys.modules,
+                {"huggingface_hub": hub, "huggingface_hub.errors": errors},
+            ),
+            self.assertRaisesRegex(RuntimeError, "https://hf-mirror.com"),
+        ):
+            server.model_snapshot(
+                server.DEFAULT_MODEL,
+                server.MODEL_REVISION,
+                "https://hf-mirror.com",
+            )
+        self.assertEqual(calls[1][1]["endpoint"], "https://hf-mirror.com")
+
     def test_native_server_cleanup_kills_owned_process_group(self):
         instance = server.NativeASRServer()
         instance.process = Mock(pid=123456)
@@ -464,14 +555,24 @@ class WorkerTests(unittest.TestCase):
         process.poll.return_value = None
         with (
             patch.object(server.subprocess, "Popen", return_value=process) as launch,
-            patch.object(server, "model_snapshot", return_value="/cached/pinned-model"),
+            patch.object(
+                server, "model_snapshot", return_value="/cached/pinned-model"
+            ) as snapshot,
         ):
-            instance.start(Mock())
+            instance.start(Mock(), "https://hf-mirror.com")
         args = launch.call_args.args[0]
         self.assertIn("--enable-realtime", args)
         self.assertEqual(args[args.index("--host") + 1], "127.0.0.1")
         self.assertEqual(args[args.index("--model-path") + 1], "/cached/pinned-model")
+        snapshot.assert_called_once_with(
+            server.DEFAULT_MODEL,
+            server.MODEL_REVISION,
+            "https://hf-mirror.com",
+        )
         self.assertEqual(launch.call_args.kwargs["env"]["SGLANG_USE_MLX"], "1")
+        self.assertEqual(
+            launch.call_args.kwargs["env"]["HF_ENDPOINT"], "https://hf-mirror.com"
+        )
         self.assertEqual(launch.call_args.kwargs["env"]["SGLANG_OMNI_STRICT_PORT"], "1")
         self.assertTrue(launch.call_args.kwargs["env"]["SGLANG_OMNI_ADMIN_KEY"])
         self.assertTrue(launch.call_args.kwargs["start_new_session"])
