@@ -52,17 +52,18 @@ print(message.audio.transcript or message.content)
 
 ```bash
 python -m sglang_omni.cli serve \
-  --config examples/full_duplex/minicpmo.yaml \
   --model-path openbmb/MiniCPM-o-4_5 \
+  --variant session \
   --enable-realtime --port 8000
 ```
 
-We provide two demonstrative config files.
+`--variant session` selects the full-duplex pipeline. The defaults below match the MiniCPM-o demo. Change any of them with a flag of the same name, for example `--max_sessions 4` or `--sampling.temperature 0.5`. To print the whole configuration:
 
-| Config | Use it for |
-|---|---|
-| `examples/full_duplex/minicpmo.yaml` | Normal serving. Sampling matches the MiniCPM-o demo |
-| `examples/full_duplex/minicpmo-parity.yaml` | Repeatable output for regression and parity recordings. Differs in greedy sampling, `top_k: 100`, and running the thinker and talker without CUDA graphs |
+```bash
+sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
+```
+
+For repeatable output in regression and parity recordings, add `--sampling.greedy true --sampling.top_k 100 --thinker.engine.disable_cuda_graph true --talker.engine.disable_cuda_graph true`.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -73,8 +74,8 @@ We provide two demonstrative config files.
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
 | `speech.n_timesteps` | 10 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
-| `sampling` | see the config | Default sampling when a session does not set its own |
-| `vision` | see the config | Camera-frame limits per unit (1 s of audio) |
+| `sampling` | printed by `config resolve` | Default sampling when a session does not set its own |
+| `vision` | printed by `config resolve` | Camera-frame limits per unit (1 s of audio) |
 
 While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
 
@@ -124,7 +125,7 @@ Session settings go in the `sglang` field of `session.update`, before the first 
 | Setting | Field | Notes |
 |---|---|---|
 | Voice | `reference_audio` | `{"media_type": "audio/wav", "data": "<base64>"}`, a PCM16 WAV of at most 30 s and 1 MiB; `tts_reference_audio` changes only the output voice |
-| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the defaults in `examples/full_duplex/minicpmo.yaml` |
+| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the server's defaults |
 | Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
 
 Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.

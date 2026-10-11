@@ -1,0 +1,2386 @@
+{
+ "model": "mlx-community/parakeet-tdt-0.6b-v3",
+ "tool": "parakeet_transcribe",
+ "request": {
+  "chunk_duration": 1200
+ },
+ "language_by_clip_language": {
+  "en": null,
+  "zh": null,
+  "mixed": null,
+  "none": null
+ },
+ "baseline": {
+  "source": "Original Voxt: Swift on MLX Audio (OmniPhase1BenchmarkTests testFinalBenchmark, Apple M5 Pro); Parakeet v3 has no Chinese, so cer_zh and mer_mixed only record its output",
+  "wer_en": 0.23791,
+  "cer_zh": 0.9995,
+  "mer_mixed": 0.89374
+ },
+ "tolerance": {
+  "metric_pp": 1.5,
+  "min_identical": 0.8
+ },
+ "devices": {
+  "Apple M5 Pro": {
+   "metrics": {
+    "wer_en": 0.23599,
+    "cer_zh": 0.99938,
+    "mer_mixed": 0.89374
+   },
+   "clips": {
+    "0000_en_short": {
+     "text": "Socrates begins the Timaeus with a summary of the Republic.",
+     "language": null,
+     "generated_token_count": 22,
+     "finish_reason": "stop"
+    },
+    "0001_en_short": {
+     "text": "I am afraid there are no signs here, said he.",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0002_en_short": {
+     "text": "Mr Yago is an American, Philip.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0003_en_short": {
+     "text": "It has cost me twice sixty dollars an annoyance.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0004_en_short": {
+     "text": "At another time Harold asked",
+     "language": null,
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0005_en_short": {
+     "text": "I thank him and take my leave.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0006_en_short": {
+     "text": "Surely you are not thinking of going off there.",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0007_en_short": {
+     "text": "What would become of your gun were I to kidnap you?",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0008_en_short": {
+     "text": "They seem to be We are lost, but I am not sure.",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0009_en_short": {
+     "text": "I'll pay all the costs besides.",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0010_en_short": {
+     "text": "But this was what the tree could not bear to hear.",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0011_en_short": {
+     "text": "Have you been in Paris much these late years?",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0012_en_short": {
+     "text": "For a long time neither Hilda nor Bartley spoke.",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0013_en_short": {
+     "text": "Up in the sick room Zora lay on the little white bed,",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0014_en_short": {
+     "text": "Is thy father willing thee should go away to a school of the world's people?",
+     "language": null,
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0015_en_short": {
+     "text": "Consumption becomes a larger element in the standard of living in the city than in the country.",
+     "language": null,
+     "generated_token_count": 30,
+     "finish_reason": "stop"
+    },
+    "0016_en_short": {
+     "text": "Once, in action, he was leading a detachment of infantry through an entrenchment,",
+     "language": null,
+     "generated_token_count": 29,
+     "finish_reason": "stop"
+    },
+    "0017_en_short": {
+     "text": "The housekeeper led the way, and Beth followed,",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0018_en_short": {
+     "text": "Again he searched his own thoughts, nor ineffectually as before.",
+     "language": null,
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0019_en_short": {
+     "text": "Madame Quincent, besides, can answer your inquiries,",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0020_en_short": {
+     "text": "The word of our God shall stand for ever.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0021_en_short": {
+     "text": "She was tired of other things.",
+     "language": null,
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0022_en_short": {
+     "text": "You know him? I think so.",
+     "language": null,
+     "generated_token_count": 8,
+     "finish_reason": "stop"
+    },
+    "0023_en_short": {
+     "text": "I almost think I can remember feeling a little different,",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0024_en_short": {
+     "text": "my overwrought nerves yielded at last",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0025_en_short": {
+     "text": "He only shook his head.",
+     "language": null,
+     "generated_token_count": 8,
+     "finish_reason": "stop"
+    },
+    "0026_en_short": {
+     "text": "I'll do anything you wish me to, Bartley, she said tremulously.",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0027_en_short": {
+     "text": "In the morning the servant and the housemaid came in.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0028_en_short": {
+     "text": "He was still suffering from this sudden disturbance of the quiet routine of his life.",
+     "language": null,
+     "generated_token_count": 27,
+     "finish_reason": "stop"
+    },
+    "0029_en_short": {
+     "text": "He took her roughly in his arms. Do you know what I mean?",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0030_en_short": {
+     "text": "In the stern I carved the tail up almost as high as the head, and",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0031_en_short": {
+     "text": "He is supposed to sign all the checks of the concern,",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0032_en_short": {
+     "text": "I won't tremble to morrow, thought the fir tree.",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0033_en_short": {
+     "text": "And thee won't go? Why should I?",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0034_en_short": {
+     "text": "As our boat flashed down the rollers into the water, I made this song and sang it.",
+     "language": null,
+     "generated_token_count": 28,
+     "finish_reason": "stop"
+    },
+    "0035_en_short": {
+     "text": "Yes, Rachel, I do love you.",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0036_en_short": {
+     "text": "The others resented postponement, but it was just his scruples that charmed me.",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0037_en_short": {
+     "text": "Hedge a fence.",
+     "language": null,
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0038_en_short": {
+     "text": "and then they became vexed and would have snatched your purse from us.",
+     "language": null,
+     "generated_token_count": 22,
+     "finish_reason": "stop"
+    },
+    "0039_en_short": {
+     "text": "I doubt whether Branwell was maintaining himself at this time.",
+     "language": null,
+     "generated_token_count": 21,
+     "finish_reason": "stop"
+    },
+    "0040_en_short": {
+     "text": "So I set guards over everyone in that house and",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0041_en_short": {
+     "text": "No, my little son, she said.",
+     "language": null,
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0042_en_short": {
+     "text": "They think you're proud because you've been away to school or something.",
+     "language": null,
+     "generated_token_count": 22,
+     "finish_reason": "stop"
+    },
+    "0043_en_short": {
+     "text": "When did you come, Bartley? And how did it happen? You haven't spoken a word.",
+     "language": null,
+     "generated_token_count": 29,
+     "finish_reason": "stop"
+    },
+    "0044_en_short": {
+     "text": "I pray for you, but that's not the same as if you prayed yourself.",
+     "language": null,
+     "generated_token_count": 24,
+     "finish_reason": "stop"
+    },
+    "0045_en_short": {
+     "text": "From the blackness behind the light they heard a voice Warranton's",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0046_en_short": {
+     "text": "And these shall follow your thralls in the same way, and",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0047_en_short": {
+     "text": "Once fairly a wing, however, he wheeled and made back hurriedly for his perch.",
+     "language": null,
+     "generated_token_count": 31,
+     "finish_reason": "stop"
+    },
+    "0048_en_short": {
+     "text": "Who is Humpy Dumpy? asked the mice.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0049_en_short": {
+     "text": "Pearl saw, and gazed intently, but never sought to make acquaintance.",
+     "language": null,
+     "generated_token_count": 28,
+     "finish_reason": "stop"
+    },
+    "0050_en_short": {
+     "text": "Don't I, though? I'm so sorry to hear it. How did her son turn out?",
+     "language": null,
+     "generated_token_count": 28,
+     "finish_reason": "stop"
+    },
+    "0051_en_short": {
+     "text": "Then he tossed it down and seized the next.",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0052_en_short": {
+     "text": "if a fellow's been a little bit wild, he is Beelzebub at once.",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0053_en_short": {
+     "text": "A more dreary and more disunited family party I never sat at the table with.",
+     "language": null,
+     "generated_token_count": 24,
+     "finish_reason": "stop"
+    },
+    "0054_en_short": {
+     "text": "I had a notion it was you mate as save me from the knife.",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0055_en_short": {
+     "text": "so I did push this fellow.",
+     "language": null,
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0056_en_short": {
+     "text": "She even seemed mildly amused at the attention she attracted,",
+     "language": null,
+     "generated_token_count": 21,
+     "finish_reason": "stop"
+    },
+    "0057_en_short": {
+     "text": "It seems the King will not consent to it.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0058_en_short": {
+     "text": "Sir Kennington Oval is a very fine player, said my wife.",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0059_en_short": {
+     "text": "That time it pointed us into your father's ships,",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0060_en_short": {
+     "text": "I have my own reasons, mister Marshall,",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0061_en_short": {
+     "text": "Lamb wouldn't care a great deal about many of them, I fancy.",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0062_en_short": {
+     "text": "Miss Lake declined the carriage to night.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0063_en_short": {
+     "text": "Vast importance and influence of this mental furnishing",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0064_en_mid": {
+     "text": "Hester could only account for the child's character, and even then most vaguely Been during that momentous period while Pearl was imbibing her soul from the spiritual world and her bodily frame from its material of earth.",
+     "language": null,
+     "generated_token_count": 70,
+     "finish_reason": "stop"
+    },
+    "0065_en_mid": {
+     "text": "We have spoken of Pearl's rich and luxuriant beauty, a beauty that shone with and after years would be nearly akin to black.",
+     "language": null,
+     "generated_token_count": 47,
+     "finish_reason": "stop"
+    },
+    "0066_en_mid": {
+     "text": "In a few days an officer came with a requisition from Governor Shannon, and took the prisoner by land a Westport, and afterwards from there to Kansas City and Leavenworth.",
+     "language": null,
+     "generated_token_count": 60,
+     "finish_reason": "stop"
+    },
+    "0067_en_mid": {
+     "text": "misses Harmon thought he sang too much, and told her husband privately that if he was a canary bird, she should want to keep a table cover over his head most of the time, but he was immensely popular with the rest of his audience.",
+     "language": null,
+     "generated_token_count": 73,
+     "finish_reason": "stop"
+    },
+    "0068_en_mid": {
+     "text": "Thus, if I recognize a thing, the occasion of its previous existence, in virtue of which I recognize it, forms part of Recognition will be one of the marks by which my experience is singled out from the rest of the world.",
+     "language": null,
+     "generated_token_count": 74,
+     "finish_reason": "stop"
+    },
+    "0069_en_mid": {
+     "text": "The wind being adverse, the Dobrina did not make very rapid progress. But as the weather, in spite of a few clouds, remained calm, to hold a steady course.",
+     "language": null,
+     "generated_token_count": 58,
+     "finish_reason": "stop"
+    },
+    "0070_en_mid": {
+     "text": "The uncouth faces passed him two by two, stained yellow, or red, or and commiseration rose to his own face.",
+     "language": null,
+     "generated_token_count": 37,
+     "finish_reason": "stop"
+    },
+    "0071_en_mid": {
+     "text": "It was the white rabbit returning, splendidly dressed with a pair of white kid gloves and Well, I'm not sure if you're not sure. came trotting along in a great hurry, muttering to himself as he came. Oh the Duchess the Duchess",
+     "language": null,
+     "generated_token_count": 86,
+     "finish_reason": "stop"
+    },
+    "0072_en_mid": {
+     "text": "Here she would stay, comforted and soothed among the lovely plants and rich exotics, Polly's first rapturous entrance had taken her into his good graces for all time.",
+     "language": null,
+     "generated_token_count": 55,
+     "finish_reason": "stop"
+    },
+    "0073_en_mid": {
+     "text": "Chelford had a note from mister Wilder this morning. Another note his coming delayed, and something of his having to see some person who is abroad, continued Dorcas, after a little pause.",
+     "language": null,
+     "generated_token_count": 57,
+     "finish_reason": "stop"
+    },
+    "0074_en_mid": {
+     "text": "Shall I never miss home talk, and blessing, and the common kiss range when I look up, to drop on a new range of walls and floors, another home than this.",
+     "language": null,
+     "generated_token_count": 55,
+     "finish_reason": "stop"
+    },
+    "0075_en_mid": {
+     "text": "A narrow channel formed a passage through the ridge of rocks that protected it from the open sea, and which, even in the roughest weather, would ensure the calmness of its waters.",
+     "language": null,
+     "generated_token_count": 58,
+     "finish_reason": "stop"
+    },
+    "0076_en_mid": {
+     "text": "For God's sake, my lady mother, give me a wife who would be an agreeable companion. both bear evenly and with mutual good will the yoke imposed on us by heaven. Yeah, yeah.",
+     "language": null,
+     "generated_token_count": 63,
+     "finish_reason": "stop"
+    },
+    "0077_en_mid": {
+     "text": "The description she gave of the coming reception to the Women's Political League Hopkins failed to notice who the occupants of the other vehicle were, and",
+     "language": null,
+     "generated_token_count": 52,
+     "finish_reason": "stop"
+    },
+    "0078_en_mid": {
+     "text": "The Free State men clung to their prairie towns and prairie ravines with all the obstinacy and courage of true defenders of their homes and",
+     "language": null,
+     "generated_token_count": 46,
+     "finish_reason": "stop"
+    },
+    "0079_en_mid": {
+     "text": "I hope thee told the elders that father and I are responsible for the piano and that, much as thee loves music, thee is never in the room when it is played.",
+     "language": null,
+     "generated_token_count": 54,
+     "finish_reason": "stop"
+    },
+    "0080_en_mid": {
+     "text": "Without saying it positively, she made me understand that being herself she was well aware that she was speaking to an insect.",
+     "language": null,
+     "generated_token_count": 41,
+     "finish_reason": "stop"
+    },
+    "0081_en_mid": {
+     "text": "In one place, at the head of the room, was a raised platform for the royal family. and six smaller but richly upholstered chairs for the snow nosed princesses.",
+     "language": null,
+     "generated_token_count": 54,
+     "finish_reason": "stop"
+    },
+    "0082_en_mid": {
+     "text": "Little by little, however, the latter became hemmed and bound in the meshes of of territorial officials evolved from the Bogus Laws.",
+     "language": null,
+     "generated_token_count": 45,
+     "finish_reason": "stop"
+    },
+    "0083_en_mid": {
+     "text": "At the head of the Pinkies were Gipga Sizzle and Button Bright, who had the parrot on his shoulder, and they were supported by Captain Coralie and Captain Tin Tintent, and Rosalie the witch.",
+     "language": null,
+     "generated_token_count": 68,
+     "finish_reason": "stop"
+    },
+    "0084_en_mid": {
+     "text": "He was a splendid figure of a boy, tall and straight as a young pine tree, with a handsome head and stormy grey eyes deeply set under a serious brow.",
+     "language": null,
+     "generated_token_count": 56,
+     "finish_reason": "stop"
+    },
+    "0085_en_mid": {
+     "text": "The dependent who was first delegated for these duties was the wife, or the chief wife, When the number of persons by whom these duties are customarily performed gradually narrows, The wife remains the last.",
+     "language": null,
+     "generated_token_count": 65,
+     "finish_reason": "stop"
+    },
+    "0086_en_mid": {
+     "text": "Do not suppose, however, that misses Poiser was elderly or shrewish in her She was a good looking woman. Not more than eight and thirty, of fair complexion and sandy hair, well shapen, light footed.",
+     "language": null,
+     "generated_token_count": 71,
+     "finish_reason": "stop"
+    },
+    "0087_en_mid": {
+     "text": "All the territorial dignitaries were present. Governor Shannon presided, John Calhoun, the Surveyor General, made the principal speech a denunciation of the abolitionist support in the dignified the occasion with approving remarks,",
+     "language": null,
+     "generated_token_count": 79,
+     "finish_reason": "stop"
+    },
+    "0088_en_mid": {
+     "text": "Sylvia was the adoration of France, and her talent was the real support of all the comedies which the greatest authors wrote for her, especially of the plays of Marivaux. never have gone to prosterity.",
+     "language": null,
+     "generated_token_count": 64,
+     "finish_reason": "stop"
+    },
+    "0089_en_mid": {
+     "text": "Now for one little half hour she had been a woman talking to a boy. Talking just talking. There were no persons in the conversation, just things. One thing. Cotton.",
+     "language": null,
+     "generated_token_count": 58,
+     "finish_reason": "stop"
+    },
+    "0090_en_mid": {
+     "text": "Edison was intolerant of sham and shoddy, and nothing would satisfy Microscope, test tube, and galvanometer.",
+     "language": null,
+     "generated_token_count": 40,
+     "finish_reason": "stop"
+    },
+    "0091_en_mid": {
+     "text": "Nothing will be more precious to you, I think, in the practical study of art, than the conviction, which will force itself on you more and more every hour of the way all things are bound together, little and great, in spirit and in matter.",
+     "language": null,
+     "generated_token_count": 74,
+     "finish_reason": "stop"
+    },
+    "0092_en_mid": {
+     "text": "Then, turning towards me, he says that I look like a foreigner, and when I say that I am an Italian, he begins to speak to me of the court, the city, of the theatres, and at last he offers to accompany me everywhere.",
+     "language": null,
+     "generated_token_count": 75,
+     "finish_reason": "stop"
+    },
+    "0093_en_mid": {
+     "text": "She tried this morning an air or two upon the piano, saying a simple song in a sweet but slightly metallic voice, and read Philip's letter.",
+     "language": null,
+     "generated_token_count": 52,
+     "finish_reason": "stop"
+    },
+    "0094_en_mid": {
+     "text": "God, as a direct consequence of the sin which man thus punished, had given her a lovely child, whose place was on that same dishonored bosom to connect her parent forever with the race and descent of mortals, and to be finally a blessed soul in heaven.",
+     "language": null,
+     "generated_token_count": 85,
+     "finish_reason": "stop"
+    },
+    "0095_en_mid": {
+     "text": "I am a very unpleasant pupil, always asking questions And even supposing that I could meet with the teacher I require, I am afraid I am not rich enough to pay him.",
+     "language": null,
+     "generated_token_count": 56,
+     "finish_reason": "stop"
+    },
+    "0096_en_mid": {
+     "text": "At that epoch of pristine simplicity, however, matters of even slighter with the deliberations of legislators and acts of state.",
+     "language": null,
+     "generated_token_count": 45,
+     "finish_reason": "stop"
+    },
+    "0097_en_mid": {
+     "text": "Yes, I need repose. Many things have agitated me to day, both in mind and body. When you return tomorrow I shall no longer be the same man.",
+     "language": null,
+     "generated_token_count": 49,
+     "finish_reason": "stop"
+    },
+    "0098_en_mid": {
+     "text": "Owing to his insistence on low pressure, direct current for use in spoken of as an opponent of the alternating current.",
+     "language": null,
+     "generated_token_count": 43,
+     "finish_reason": "stop"
+    },
+    "0099_en_mid": {
+     "text": "The child had a native grace which does not invariably coexist with faultless always impressed the beholder as if it were the very garb that precisely became it best.",
+     "language": null,
+     "generated_token_count": 53,
+     "finish_reason": "stop"
+    },
+    "0100_en_mid": {
+     "text": "There was watercress soup and sole, and a delightful omelette stuffed with mushrooms and truffles. oaks and a dry yellow Rhone wine, of which Bartley had always been very fond,",
+     "language": null,
+     "generated_token_count": 63,
+     "finish_reason": "stop"
+    },
+    "0101_en_mid": {
+     "text": "Delia came to the parlour, and with an air of great mystery, beckoned the children aside, and said to them, in a whisper, Leave Andella and Rosalie here, and don't say a word to them.",
+     "language": null,
+     "generated_token_count": 66,
+     "finish_reason": "stop"
+    },
+    "0102_en_mid": {
+     "text": "Before any could stop him, he butted his majesty so furiously that the king sword where he lay moaning and groaning.",
+     "language": null,
+     "generated_token_count": 38,
+     "finish_reason": "stop"
+    },
+    "0103_en_mid": {
+     "text": "Associated with this simple form of apparatus were various ingenious details and refinements to secure regularity of operation. and immunity from such tampering as would permit theft of current or damage.",
+     "language": null,
+     "generated_token_count": 63,
+     "finish_reason": "stop"
+    },
+    "0104_en_mid": {
+     "text": "Meanwhile, he had called upon me to make a report of the three-wire system, known in England as the Hopkinson. Both Dr. John Hopkinson and Mr Edison being independent inventors at practically the same time.",
+     "language": null,
+     "generated_token_count": 76,
+     "finish_reason": "stop"
+    },
+    "0105_en_mid": {
+     "text": "We shut our eyes, the flowers bloom on. We murmur, but the corn ears fill. We choose the shadow but the sun that cast it shines behind us still.",
+     "language": null,
+     "generated_token_count": 52,
+     "finish_reason": "stop"
+    },
+    "0106_en_mid": {
+     "text": "The fact that it was churning day was another reason why it was inconvenient to misses Poyser should scold Molly, the housemaid, with unusual severity.",
+     "language": null,
+     "generated_token_count": 55,
+     "finish_reason": "stop"
+    },
+    "0107_en_mid": {
+     "text": "But poor Rachel Lake had more than that stoical hypocrisy which enables the tortured spirits of her sex to lift a pale face through the flames and smile.",
+     "language": null,
+     "generated_token_count": 50,
+     "finish_reason": "stop"
+    },
+    "0108_en_mid": {
+     "text": "This at once compels you to understand that the work is to be imaginative and decorative, that it represents beautiful things, in the clearest way. In fact, you are producing jeweller's work rather than pictures.",
+     "language": null,
+     "generated_token_count": 64,
+     "finish_reason": "stop"
+    },
+    "0109_en_mid": {
+     "text": "Well, you know, Rady, women like wicked fellows. It is contrast, I suppose, but they do. And I'm sure from what Bracton has said to me, I know him intimately, that Dorcas likes him, and I can't conceive why they are not married.",
+     "language": null,
+     "generated_token_count": 84,
+     "finish_reason": "stop"
+    },
+    "0110_en_mid": {
+     "text": "Bishops, virgins, and even spotless infants were subjected to the disgrace related to the communion of the Donatists.",
+     "language": null,
+     "generated_token_count": 41,
+     "finish_reason": "stop"
+    },
+    "0111_en_mid": {
+     "text": "Oh, to shoot my soul's full meaning into future years, that they should lend it utterance, and salute love that endures.",
+     "language": null,
+     "generated_token_count": 40,
+     "finish_reason": "stop"
+    },
+    "0112_en_mid": {
+     "text": "She was gone out into the village on some errand when, as she was descending the steep stairs It was dark and no one saw her mischance, till after a time her groans attracted the attention of a passer by the first time.",
+     "language": null,
+     "generated_token_count": 67,
+     "finish_reason": "stop"
+    },
+    "0113_en_mid": {
+     "text": "He could write in one style, but not in another. In the Greek language had not as yet been fashioned by any poet or philosopher to describe physical phenomena.",
+     "language": null,
+     "generated_token_count": 60,
+     "finish_reason": "stop"
+    },
+    "0114_en_mid": {
+     "text": "But this last supposition is almost always unnecessary, for if Mary has been habitually managed on this principle, she will not make any trouble.",
+     "language": null,
+     "generated_token_count": 43,
+     "finish_reason": "stop"
+    },
+    "0115_en_mid": {
+     "text": "He was in the midst of that when your return caused him to make a very hurried retreat. VeryVery hurried, since he had not time to replace the papers which would tell you that he was",
+     "language": null,
+     "generated_token_count": 56,
+     "finish_reason": "stop"
+    },
+    "0116_en_mid": {
+     "text": "Control yourselves, my dears, replied the Boolaroo. The worst punishment I know how to inflict on any one this prisoner is about to suffer.",
+     "language": null,
+     "generated_token_count": 49,
+     "finish_reason": "stop"
+    },
+    "0117_en_mid": {
+     "text": "They began with the one in the family sitting room. Colonel Wheeler, Ralph Thurston, Mr and Mrs. Bill Harmon with Naddie and Ruffus, Mr.",
+     "language": null,
+     "generated_token_count": 54,
+     "finish_reason": "stop"
+    },
+    "0118_en_mid": {
+     "text": "He has no traditions to bind him or guide him, and his impulse is to break away from the occupation his father has followed, and make a new way for himself.",
+     "language": null,
+     "generated_token_count": 51,
+     "finish_reason": "stop"
+    },
+    "0119_en_mid": {
+     "text": "Thou gentle maid of silent valleys and of modest brooks, for thou shalt be clothed in light, and fed with morning manna, till summer's heat melts thee beside the fountains and the springs, To flourish in eternal veils. They, why should thou complain?",
+     "language": null,
+     "generated_token_count": 89,
+     "finish_reason": "stop"
+    },
+    "0120_en_mid": {
+     "text": "The painter who says my grinder. The notary who says my skip the gutter the hairdresser who says my mealy? Bub talks slang.",
+     "language": null,
+     "generated_token_count": 43,
+     "finish_reason": "stop"
+    },
+    "0121_en_mid": {
+     "text": "Before this travesty on the administration of law could be brought before the court of the rebuke it deserved, men were imprisoned under sentence of many years duration.",
+     "language": null,
+     "generated_token_count": 53,
+     "finish_reason": "stop"
+    },
+    "0122_en_mid": {
+     "text": "Time enough had he too for his reflections, for days and nights passed on, and nobody came up. And when at last somebody did come, it was only to put some great trunks in a corner out of the room. Yeah.",
+     "language": null,
+     "generated_token_count": 68,
+     "finish_reason": "stop"
+    },
+    "0123_en_mid": {
+     "text": "The pain produced by an act of hasty and angry violence, to which a father subjects his son, may soon pass away, but the memory of it does not pass away with the pain.",
+     "language": null,
+     "generated_token_count": 57,
+     "finish_reason": "stop"
+    },
+    "0124_en_mid": {
+     "text": "It is by no means always reliable. Almost everybody has, at some time, all that is happening now happened before at some time.",
+     "language": null,
+     "generated_token_count": 44,
+     "finish_reason": "stop"
+    },
+    "0125_en_mid": {
+     "text": "He made a bow so deep that his back came near breaking, when he saw it was nobody but Anders.",
+     "language": null,
+     "generated_token_count": 33,
+     "finish_reason": "stop"
+    },
+    "0126_en_mid": {
+     "text": "when she came to her senses, and blushing to find herself in Rodolfo's arms, would have disengaged herself. No, Signora, he said, terms of him who holds you in his soul.",
+     "language": null,
+     "generated_token_count": 62,
+     "finish_reason": "stop"
+    },
+    "0127_en_mid": {
+     "text": "but, as before, the leaping waves of the rapids were too much for his pursuer, while doom hung low above his head, yet hesitated to strike.",
+     "language": null,
+     "generated_token_count": 54,
+     "finish_reason": "stop"
+    },
+    "0128_zh_numbers": {
+     "text": "Durr Bottle say DR Pan Gong.",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0129_zh_numbers": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0130_zh_numbers": {
+     "text": "This is some of the weight here. Tabe le rula bingwe shite yi chaminglu.",
+     "language": null,
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0131_zh_numbers": {
+     "text": "That's how you see an joyo rush.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0132_zh_numbers": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0133_zh_numbers": {
+     "text": "Tabish Kawan Dompu Hakar, Boom, Talekunja to that.",
+     "language": null,
+     "generated_token_count": 24,
+     "finish_reason": "stop"
+    },
+    "0134_zh_numbers": {
+     "text": "Give Twink where you 9 bandages eBay. to later fancymes on the things we did",
+     "language": null,
+     "generated_token_count": 30,
+     "finish_reason": "stop"
+    },
+    "0135_zh_numbers": {
+     "text": "Delentemente Ibaba Bad Junior fashion it's",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0136_zh_numbers": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0137_zh_numbers": {
+     "text": "So I do it on like Jannel, high death the should be true you like.",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0138_zh_numbers": {
+     "text": "Шайянгang Suhuan Yin Chen Zooyo that Yilang the Jagalos Shenmaiamber so be fiend.",
+     "language": null,
+     "generated_token_count": 38,
+     "finish_reason": "stop"
+    },
+    "0139_zh_numbers": {
+     "text": "Remember, Quang Fanny Hoping, Fatchang Chihuahua. Aunty then say that you ain't to think she could. Don't he send some wire and John?",
+     "language": null,
+     "generated_token_count": 50,
+     "finish_reason": "stop"
+    },
+    "0140_zh_numbers": {
+     "text": "Shen Chi Selling Shua Shanghai and Dor Shadi and Jenzi lead the fireman in Fala Yi Chang Ho zet",
+     "language": null,
+     "generated_token_count": 39,
+     "finish_reason": "stop"
+    },
+    "0141_zh_numbers": {
+     "text": "Det kører ting tid og jeg er tilgånglig.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0142_zh_numbers": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0143_zh_numbers": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0144_zh_numbers": {
+     "text": "PNG Chengduan, Paul Shan Sivang Yiu Chin Jung.",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0145_zh_numbers": {
+     "text": "Doji do Xiao Gua Fanly the Pooh and Dinks that Chi John Zoom mean the Bianchi Chanelus Yeah.",
+     "language": null,
+     "generated_token_count": 38,
+     "finish_reason": "stop"
+    },
+    "0146_zh_numbers": {
+     "text": "Ya Maxinho can translate by the change.",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0147_zh_numbers": {
+     "text": "The e yo babany. May or seven, henon can't doubt not see a tong to go. What's the problem?",
+     "language": null,
+     "generated_token_count": 35,
+     "finish_reason": "stop"
+    },
+    "0148_zh_numbers": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0149_zh_numbers": {
+     "text": "Kind of shirt.",
+     "language": null,
+     "generated_token_count": 6,
+     "finish_reason": "stop"
+    },
+    "0150_zh_numbers": {
+     "text": "Scot Turp, Sling Zalu, Gon Yao Chich, Dintifa Chang, Syntax.",
+     "language": null,
+     "generated_token_count": 29,
+     "finish_reason": "stop"
+    },
+    "0151_zh_numbers": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0152_zh_short": {
+     "text": "Korean zielbourneah.",
+     "language": null,
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0153_zh_short": {
+     "text": "Yeah, mean shaman the teacher boys, the teacher whoy sip.",
+     "language": null,
+     "generated_token_count": 24,
+     "finish_reason": "stop"
+    },
+    "0154_zh_short": {
+     "text": "Прошу пишут.",
+     "language": null,
+     "generated_token_count": 6,
+     "finish_reason": "stop"
+    },
+    "0155_zh_short": {
+     "text": "Ya arte founding Sheng Shin Xiao yo ya",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0156_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0157_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0158_zh_short": {
+     "text": "To defection that goes her change too different holy soject Yeah.",
+     "language": null,
+     "generated_token_count": 24,
+     "finish_reason": "stop"
+    },
+    "0159_zh_short": {
+     "text": "Teoring do L and Bay Shogun.",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0160_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0161_zh_short": {
+     "text": "Just so who should I teach how can you without the day you don't push him up.",
+     "language": null,
+     "generated_token_count": 28,
+     "finish_reason": "stop"
+    },
+    "0162_zh_short": {
+     "text": "Tangle Jiang Yiu Khui so that the early function knong. Yeah, I think that's a good thing.",
+     "language": null,
+     "generated_token_count": 37,
+     "finish_reason": "stop"
+    },
+    "0163_zh_short": {
+     "text": "Baku Lucy and Sjonction Lake the Túbuis.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0164_zh_short": {
+     "text": "Tinha juzgado shikar, so lanci show up bigger and shouldn't should manjul it.",
+     "language": null,
+     "generated_token_count": 33,
+     "finish_reason": "stop"
+    },
+    "0165_zh_short": {
+     "text": "Ings hanklein joga for.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0166_zh_short": {
+     "text": "Such a chew beam so hoping with the eager chung of fang fat",
+     "language": null,
+     "generated_token_count": 21,
+     "finish_reason": "stop"
+    },
+    "0167_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0168_zh_short": {
+     "text": "Waying Xi Jong Yo Gon Hong Shenghua Gon Tong.",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0169_zh_short": {
+     "text": "So just sila justice.",
+     "language": null,
+     "generated_token_count": 8,
+     "finish_reason": "stop"
+    },
+    "0170_zh_short": {
+     "text": "Handle with a pink fake long in with fake",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0171_zh_short": {
+     "text": "Yeah.",
+     "language": null,
+     "generated_token_count": 3,
+     "finish_reason": "stop"
+    },
+    "0172_zh_short": {
+     "text": "Long jan, so is it cash?",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0173_zh_short": {
+     "text": "Humila da ha hot.",
+     "language": null,
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0174_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0175_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0176_zh_short": {
+     "text": "Then Shu Bao Dao Xian ship Young Bayan to Mu Kung Chang lead",
+     "language": null,
+     "generated_token_count": 27,
+     "finish_reason": "stop"
+    },
+    "0177_zh_short": {
+     "text": "Yeah, you shouldn't yenjul shad.",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0178_zh_short": {
+     "text": "Taman Zhao Shen Young Pinhood, Hai Shen Bao Yang Yung Hang.",
+     "language": null,
+     "generated_token_count": 28,
+     "finish_reason": "stop"
+    },
+    "0179_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0180_zh_short": {
+     "text": "Ya le shin lies and do canon jalla judy.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0181_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0182_zh_short": {
+     "text": "Lost the beaching deadship",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0183_zh_short": {
+     "text": "Ballyhnen se chula minha juro e junzinha tchau amet.",
+     "language": null,
+     "generated_token_count": 22,
+     "finish_reason": "stop"
+    },
+    "0184_zh_short": {
+     "text": "Tama had not to go in there.",
+     "language": null,
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0185_zh_short": {
+     "text": "Go with DJ E.",
+     "language": null,
+     "generated_token_count": 6,
+     "finish_reason": "stop"
+    },
+    "0186_zh_mid": {
+     "text": "Паджи шу, дойду, че лайшу. Well, I'm not sure if you're not going to be able to do that. Tiens, sur le",
+     "language": null,
+     "generated_token_count": 43,
+     "finish_reason": "stop"
+    },
+    "0187_zh_mid": {
+     "text": "Charlie She didn't watch the micro. So",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0188_zh_mid": {
+     "text": "Long Tung Hai Tan, quite suit.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0189_zh_mid": {
+     "text": "May go to her may go out with the So, I think that's a good thing.",
+     "language": null,
+     "generated_token_count": 22,
+     "finish_reason": "stop"
+    },
+    "0190_zh_mid": {
+     "text": "Chun Tangdom Tchangai",
+     "language": null,
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0191_zh_mid": {
+     "text": "T Fa herso the Kong to Hyden Cool isn't Pasuasi Jan.",
+     "language": null,
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0192_zh_mid": {
+     "text": "Leads you can find out.",
+     "language": null,
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0193_zh_mid": {
+     "text": "You're gonna be touched to it, but yeah, you don't Tamar with a teacher, Kaeang Yashir.",
+     "language": null,
+     "generated_token_count": 36,
+     "finish_reason": "stop"
+    },
+    "0194_zh_mid": {
+     "text": "Fukalan się dał dokładnie Hopi Shukalat Ying Bang, Ying Bang Dang Church.",
+     "language": null,
+     "generated_token_count": 32,
+     "finish_reason": "stop"
+    },
+    "0195_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0196_zh_mid": {
+     "text": "Sing Singh Shi ruhang the few.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0197_zh_mid": {
+     "text": "There are journeys. I think it's a good thing. Chang hoping to Tama says that Liluface and Sh you has a",
+     "language": null,
+     "generated_token_count": 39,
+     "finish_reason": "stop"
+    },
+    "0198_zh_mid": {
+     "text": "Tell I'm who you tour is. Erdogan Tong Ho Fabiola Chung Min",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0199_zh_mid": {
+     "text": "Динделя похинси., pinko.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0200_zh_mid": {
+     "text": "Well now you're currently audio. Thank you.",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0201_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0202_zh_mid": {
+     "text": "Really talk about it.",
+     "language": null,
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0203_zh_mid": {
+     "text": "inside the champion tobio password.",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0204_zh_mid": {
+     "text": "Say John. If you're not going to be able to do it, you can't do it.",
+     "language": null,
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0205_zh_mid": {
+     "text": "Dinah fair none the s to cotona know s Alice Wush only Shi the laptop.",
+     "language": null,
+     "generated_token_count": 29,
+     "finish_reason": "stop"
+    },
+    "0206_zh_mid": {
+     "text": "Цвань за колминжихоу. Well, it's a good thing.",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0207_zh_mid": {
+     "text": "More looking at Jung Kai shit on the away dalu bayata.",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0208_zh_mid": {
+     "text": "Кидайся, ну упав.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0209_zh_mid": {
+     "text": "Italy is a top of the Calco Control and Urtaan Sue.",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0210_zh_mid": {
+     "text": "Yin's chanby eventually Joe Chang the cinto hall",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0211_zh_mid": {
+     "text": "Hunai Jinksjuta negyedrono which I thought I would normal.",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0212_zh_mid": {
+     "text": "Well, it's a very good thing.",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0213_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0214_zh_mid": {
+     "text": "Thank you.",
+     "language": null,
+     "generated_token_count": 4,
+     "finish_reason": "stop"
+    },
+    "0215_zh_mid": {
+     "text": "Тапу Чондао.",
+     "language": null,
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0216_zh_mid": {
+     "text": "So what Manshan Buch Tada Shu Bao Court had great dashing you late, Chi Ta how long shouldn't you shouldn't?",
+     "language": null,
+     "generated_token_count": 42,
+     "finish_reason": "stop"
+    },
+    "0217_zh_mid": {
+     "text": "Wait, what you thought you're we're doing? Well, we have to do it. Mm-hmm.",
+     "language": null,
+     "generated_token_count": 32,
+     "finish_reason": "stop"
+    },
+    "0218_zh_mid": {
+     "text": "Arlingly. And so sweet way.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0219_zh_mid": {
+     "text": "Our delay shen show me a gorly hold on the chance.",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0220_zh_mid": {
+     "text": "What?",
+     "language": null,
+     "generated_token_count": 3,
+     "finish_reason": "stop"
+    },
+    "0221_zh_mid": {
+     "text": "Tada Chancellor Pumalać.",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0222_zh_mid": {
+     "text": "Girling land ogen systeo Sh shaj, and then we're going to be able to do this.",
+     "language": null,
+     "generated_token_count": 28,
+     "finish_reason": "stop"
+    },
+    "0223_zh_mid": {
+     "text": "Sudikhautás will hut your hotel on the tungjalt.",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0224_zh_mid": {
+     "text": "Oh minute of...",
+     "language": null,
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0225_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0226_zh_mid": {
+     "text": "Pa um oi. So, I think that's a good thing.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0227_zh_mid": {
+     "text": "Comme initial Yangor Fang, It's one push in the toe.",
+     "language": null,
+     "generated_token_count": 22,
+     "finish_reason": "stop"
+    },
+    "0228_zh_mid": {
+     "text": "Moutia Hamil Fabu Hyti. How it's all easy.",
+     "language": null,
+     "generated_token_count": 22,
+     "finish_reason": "stop"
+    },
+    "0229_zh_mid": {
+     "text": "Sing young the two bumming boards.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0230_zh_mid": {
+     "text": "Joe Shai Tanyo. Я пайлира гурду.",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0231_zh_mid": {
+     "text": "Jru, Zira Drew Taichan eating the shoe, then the",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0232_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0233_zh_mid": {
+     "text": "Одрожи Пендисенды дела. Mm.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0234_zh_mid": {
+     "text": "Charlie Funnyato.",
+     "language": null,
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0235_zh_mid": {
+     "text": "Go Chang Siang the Chongdo Jan Sherry Far want to tell him to.",
+     "language": null,
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0236_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0237_zh_mid": {
+     "text": "Sivya Daga you ban the Dante",
+     "language": null,
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0238_zh_mid": {
+     "text": "Yeah.",
+     "language": null,
+     "generated_token_count": 3,
+     "finish_reason": "stop"
+    },
+    "0239_zh_mid": {
+     "text": "Reban Yandanot Biosh, Hoddin Rand.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0240_zh_mid": {
+     "text": "Wieso?",
+     "language": null,
+     "generated_token_count": 4,
+     "finish_reason": "stop"
+    },
+    "0241_zh_mid": {
+     "text": "Remanjinang hai so. А дайте хочешь за я.",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0242_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0243_zh_mid": {
+     "text": "To jest a songito con. Yin suppokan Mm-hmm.",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0244_zh_mid": {
+     "text": "Oliver sucks. Oliver sucks. What?",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0245_zh_mid": {
+     "text": "Yo la mom",
+     "language": null,
+     "generated_token_count": 4,
+     "finish_reason": "stop"
+    },
+    "0246_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0247_zh_mid": {
+     "text": "What hai was a jalather so do you maybe chit",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0248_zh_mid": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0249_zh_mid": {
+     "text": "Sao Huang Chang I Bing D Long Delta FBI B.",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0250_zh_short": {
+     "text": "Uh now waja yeah, uh cigarette.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0251_zh_short": {
+     "text": "How chamber tongues my younger sense ha.",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0252_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0253_zh_short": {
+     "text": "So he does nothing like you see",
+     "language": null,
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0254_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0255_zh_short": {
+     "text": "Just a way to be in sh.",
+     "language": null,
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0256_zh_short": {
+     "text": "Can one tier that you should sit to fan?",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0257_zh_short": {
+     "text": "Und ja kannst du",
+     "language": null,
+     "generated_token_count": 5,
+     "finish_reason": "stop"
+    },
+    "0258_zh_short": {
+     "text": "You know what I think it?",
+     "language": null,
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0259_zh_short": {
+     "text": "No way oiga",
+     "language": null,
+     "generated_token_count": 4,
+     "finish_reason": "stop"
+    },
+    "0260_zh_short": {
+     "text": "Nie ma trzeba sobie piętas się to psyjazm a uh",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0261_zh_short": {
+     "text": "Tang line social face hand so and the ching konsia.",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0262_zh_short": {
+     "text": "Then I sure would on tool sh push on the side.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0263_zh_short": {
+     "text": "Where you share such a shirl, I tampanze.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0264_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0265_zh_short": {
+     "text": "So you had to send the hoy to see.",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0266_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0267_zh_short": {
+     "text": "No, nie pieniądze, że la się odwam.",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0268_zh_short": {
+     "text": "Mm, no się do pierwsze ondą kredzi do tą si.",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0269_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0270_zh_short": {
+     "text": "To see yeah she got",
+     "language": null,
+     "generated_token_count": 6,
+     "finish_reason": "stop"
+    },
+    "0271_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0272_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0273_zh_short": {
+     "text": "The water high yeah be j",
+     "language": null,
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0274_zh_short": {
+     "text": "Messo show idiomocchi.",
+     "language": null,
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0275_zh_short": {
+     "text": "Nej, sinne for mir and so you can find me house might have.",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0276_zh_short": {
+     "text": "Langonda is yeah, Lau Tanjitsio Langda.",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0277_zh_short": {
+     "text": "No, just a just a",
+     "language": null,
+     "generated_token_count": 6,
+     "finish_reason": "stop"
+    },
+    "0278_zh_short": {
+     "text": "Bankhood may have the Bankoshaw the Nagur.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0279_zh_short": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0280_mixed": {
+     "text": "На днешно будет джим данного видео.",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0281_mixed": {
+     "text": "self driving Vang Miya. Still don't just Vang Miya.",
+     "language": null,
+     "generated_token_count": 21,
+     "finish_reason": "stop"
+    },
+    "0282_mixed": {
+     "text": "Dance uh lugu and uh sealic technology. Driving zig functions perfect.",
+     "language": null,
+     "generated_token_count": 27,
+     "finish_reason": "stop"
+    },
+    "0283_mixed": {
+     "text": "That whole trump they let you go with comments, the whole you won't let you go with your jump page.",
+     "language": null,
+     "generated_token_count": 32,
+     "finish_reason": "stop"
+    },
+    "0284_mixed": {
+     "text": "In way mistakes uh even human make mistakes.",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0285_mixed": {
+     "text": "Tincha a it might make sense.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0286_mixed": {
+     "text": "The long hole double shoes that's the reason I know the McGra the famous play uh McGray.",
+     "language": null,
+     "generated_token_count": 33,
+     "finish_reason": "stop"
+    },
+    "0287_mixed": {
+     "text": "So found me in high so I see normal.",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0288_mixed": {
+     "text": "So it will work slowly and slowly and then you you you should um",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0289_mixed": {
+     "text": "Yeah we shall research function.",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0290_mixed": {
+     "text": "So that's gonna major make one season. Oh well teach I applied up graduate school, so well on computer science, well won electrical engineering.",
+     "language": null,
+     "generated_token_count": 49,
+     "finish_reason": "stop"
+    },
+    "0291_mixed": {
+     "text": "So you're Yowling Homa for I suppose.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0292_mixed": {
+     "text": "No, we're trying to send the ISM Information Systems Management.",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0293_mixed": {
+     "text": "Or just an enough group time in phone, but",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0294_mixed": {
+     "text": "Cool in the personalities. Oh. I wanna go.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0295_mixed": {
+     "text": "Okay, so he will come from Fujian.",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0296_mixed": {
+     "text": "If we shin side real type to uh just uh dialogue system shang.",
+     "language": null,
+     "generated_token_count": 22,
+     "finish_reason": "stop"
+    },
+    "0297_mixed": {
+     "text": "Juni Sunshin Nation University msia applied to s",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0298_mixed": {
+     "text": "The Indonesia is basketball or soccer.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0299_mixed": {
+     "text": "Nikai Yao Ishian the J female Friends.",
+     "language": null,
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0300_mixed": {
+     "text": "activities. So he danced the hojo hen",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0301_mixed": {
+     "text": "So anyway, you should hunting China Summonsell, I hold John to take around to talk.",
+     "language": null,
+     "generated_token_count": 32,
+     "finish_reason": "stop"
+    },
+    "0302_mixed": {
+     "text": "Well, this is any of that with a AI robot.",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0303_mixed": {
+     "text": "I should have software to function up.",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0304_mixed": {
+     "text": "Time to swipe the joint.",
+     "language": null,
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0305_mixed": {
+     "text": "So the UI file sender. No the scenario usually.",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0306_mixed": {
+     "text": "Shall show be jiao cow j su nigga dean now.",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0307_mixed": {
+     "text": "We will not hold on for nuit aan het langs tok.",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0308_mixed": {
+     "text": "Now just three pointers ego phase on efficient the ego function sheet of",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0309_mixed": {
+     "text": "None you know some more favorite food.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0310_mixed": {
+     "text": "So we'll see an ocean win spie.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0311_mixed": {
+     "text": "Jenjun canig uh uh So I need home the moment to collect interest of data.",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0312_mixed": {
+     "text": "This will keep this swim properly.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0313_mixed": {
+     "text": "And and then um and then it's for For dinner, it for lunch, it for pr it breakfast. And then study and go to bed. So",
+     "language": null,
+     "generated_token_count": 39,
+     "finish_reason": "stop"
+    },
+    "0314_mixed": {
+     "text": "Mm, that's a running out of job puka na na żemczenie opinię.",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0315_mixed": {
+     "text": "You when you put Kanang Yao ni the female friends chi so many play basketball.",
+     "language": null,
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0316_mixed": {
+     "text": "Ta sząciw, choć każdyt should do within the show, I can join the ILs.",
+     "language": null,
+     "generated_token_count": 30,
+     "finish_reason": "stop"
+    },
+    "0317_mixed": {
+     "text": "Yeah, yes in y function. Now,",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0318_mixed": {
+     "text": "So with uh with the parents, uh mama, she chemistry Laush, and what the Babash history lauche.",
+     "language": null,
+     "generated_token_count": 33,
+     "finish_reason": "stop"
+    },
+    "0319_mixed": {
+     "text": "Uh how migrated happens to be a slide the nasal.",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0320_mixed": {
+     "text": "Yeah. You might need your shell.",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0321_mixed": {
+     "text": "What's a juice fun or neg a software function?",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0322_mixed": {
+     "text": "Well high supernatural trust AI.",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0323_mixed": {
+     "text": "The law mayo cheese.",
+     "language": null,
+     "generated_token_count": 8,
+     "finish_reason": "stop"
+    },
+    "0324_mixed": {
+     "text": "Or do the Hong Kong Jung Bij in between just the western I or eastern the the Nazi.",
+     "language": null,
+     "generated_token_count": 31,
+     "finish_reason": "stop"
+    },
+    "0325_mixed": {
+     "text": "But for iPhone it will be more uh",
+     "language": null,
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0326_mixed": {
+     "text": "Just na badminton your girl. Basketball doch hard, we are s",
+     "language": null,
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0327_mixed": {
+     "text": "Or may I mention just any drawback just or took out sooner what take a take a single function, time work, tan work properly.",
+     "language": null,
+     "generated_token_count": 40,
+     "finish_reason": "stop"
+    },
+    "0328_mixed": {
+     "text": "Tons wanna hold your pie portrait pie good on the highway.",
+     "language": null,
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0329_mixed": {
+     "text": "Does it handle like a per jack under?",
+     "language": null,
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0330_mixed": {
+     "text": "So it's uh you are cleaning up.",
+     "language": null,
+     "generated_token_count": 13,
+     "finish_reason": "stop"
+    },
+    "0331_mixed": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0332_mixed": {
+     "text": "So in hand man she won ye man, she go on pong life is it.",
+     "language": null,
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0333_mixed": {
+     "text": "Tados United was the touch on our shoulders.",
+     "language": null,
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0334_mixed": {
+     "text": "It went to be careful so you get anything to help him.",
+     "language": null,
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0335_mixed": {
+     "text": "And yo is Ting Buddha Yun Young.",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0336_mixed": {
+     "text": "So you machine I kinda talk about our research topics.",
+     "language": null,
+     "generated_token_count": 21,
+     "finish_reason": "stop"
+    },
+    "0337_mixed": {
+     "text": "Nothing just linkage, not just T Sign Pantal responsibility. Mm.",
+     "language": null,
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0338_mixed": {
+     "text": "Dus uh niet leidersoon je voorre forgetting.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0339_mixed": {
+     "text": "This is how the long judges or geni ga article.",
+     "language": null,
+     "generated_token_count": 16,
+     "finish_reason": "stop"
+    },
+    "0340_mixed": {
+     "text": "Dear gonna fuza. Well, that's just the zone is no simulated uh scenario.",
+     "language": null,
+     "generated_token_count": 27,
+     "finish_reason": "stop"
+    },
+    "0341_mixed": {
+     "text": "Oh and this is any Mongong Pining Portrait.",
+     "language": null,
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0342_mixed": {
+     "text": "A IK just uh Handa Handatan losan guys on the somehow be we saw some easier translation uh how easier justж",
+     "language": null,
+     "generated_token_count": 38,
+     "finish_reason": "stop"
+    },
+    "0343_mixed": {
+     "text": "your mobile payments. Now the data is a such pimping power is a monument.",
+     "language": null,
+     "generated_token_count": 28,
+     "finish_reason": "stop"
+    },
+    "0344_en_long": {
+     "text": "In every way they sought to undermine the authority of Saint Paul. They said to the Galatians, You have no right to think highly of Paul. He was the last to turn to Christ. Paul came later and is beneath us, Paul boldly defends his apostolic authority in ministry. As the ambassador of a government is honored for his office, and not for his private person, so Paul takes pride in his ministry, not to his own praise but to the praise of God. Paul and Apostle. Either he calls ministers through the agency of men, or he calls them directly as he called the prophets. false apostles were called or sent neither by men nor by man.",
+     "language": null,
+     "generated_token_count": 208,
+     "finish_reason": "stop"
+    },
+    "0345_en_long": {
+     "text": "I remained there alone for many hours, but I must acknowledge that before I left the chambers, I had gradually brought myself to look at the matter in another light. Had Eva Cressweller not been good looking? Had Jack been still at college? Had Sir Kennington Oval remained in England. in arranging for the final departure of my old friend. On arriving at home at my own residence, I found that our salon was filled with a brilliant I made him a gracious bow, and I think I showed him by my mode of address that I did not bear any grudge as to my individual self I have come to your shores, Mr President, with the purpose of seeing how things are progressing in this distant quarter of the world. We have our little struggles here as elsewhere. We are quite satisfied now, Captain Battleaxe, said my wife.",
+     "language": null,
+     "generated_token_count": 273,
+     "finish_reason": "stop"
+    },
+    "0346_en_long": {
+     "text": "also a popular contrivance, whereby love making may be suspended, but not stopped during the picnic season. The tiresome product of a tireless tongue Angor, pain painful to hear HaE FEVEVER A heart trouble caused by falling in love Heaven good place to be raised to. Heredity the cause of all our faults HORSE SENSE A DEGURE OF WISDOM THAT KIPS ONeps one from betting on the races. Hose. Man's excuse for wetting the walk. Hotel A place where a guest often gives up House Cleaning A domestic upheaval",
+     "language": null,
+     "generated_token_count": 195,
+     "finish_reason": "stop"
+    },
+    "0347_en_long": {
+     "text": "Concord returned to its place amidst the tents. The English forwarded to the French baskets of flowers, of which they had made a plentiful The French, in return, invited the English to a supper, which was to be given From the respect paid her on all sides she seemed like a queen, and from the adoration with which she was treated by two or three Queen Mother gave the French the most affectionate reception. France was her native country. She taught her daughter, then, by her own affection for it, that love for a country the partition of the tent, and remained thus, his face, buried in his hands,",
+     "language": null,
+     "generated_token_count": 201,
+     "finish_reason": "stop"
+    },
+    "0348_en_long": {
+     "text": "Saturday, august fifteenth. The sea unbroken all round. Horizon seems extremely distant. danger and sufferings were needed to strike a spark of human feeling out of him. But now that I am well, his nature has resumed its sway. seeing him continually with his glass to his eye. Anxious One might be, with less reason than now. I am not complaining that the raid is slow, but that the sea is so wide. We are losing time, and the fact is, I have not come all this way to take a little sail upon a pond on a raft. He called this sea a pond, and our long voyage to the biggest. Therefore, don't talk to me about views and prospects. I take this as my answer, and I leave the professor to bite his lips with impatience.",
+     "language": null,
+     "generated_token_count": 249,
+     "finish_reason": "stop"
+    },
+    "0349_en_long": {
+     "text": "The grateful applause of the clergy has consecrated the memory of a prince who indulged their passions and promoted their interest. The Edict of Milan, the great charter of toleration, had But this inestimable privilege was soon violated with the knowledge of truth, the emperor imbibed the maxims of persecution, and the sects which descended from the Catholic Church were afflicted and oppressed by the triumph of Christianity. Constantine easily believed from the danger of an everlasting condemnation. Some of the penal regulations were copied from the Edicts of Diocletian, and this method of conversion was applauded by the same bishops who had felt the hand of oppression and pleaded for the rights of humanity.",
+     "language": null,
+     "generated_token_count": 233,
+     "finish_reason": "stop"
+    },
+    "0350_en_long": {
+     "text": "Eleven o'clock had struck. They were the only persons on the road, and they sauntered leisurely along, to avoid paying the price of fatigue for the recreation provided for the Toledans in the valley or on the banks of their river. Secure, as he thought, in the careful administration of justice in that city, The good Hidalgo was far from thinking that any disaster could befall his family. ' Rodolfo and his companions, with their faces muffled in their cloaks, stared rudely and insolently at the mother, the daughter, and the servant maid. In a moment he communicated his thoughts to her. rich, who are open handed always find parasites ready to encourage their bad propensity. To communicate it, approve it, resolve on ravishing Leocadia. in the work of a moment.",
+     "language": null,
+     "generated_token_count": 256,
+     "finish_reason": "stop"
+    },
+    "0351_en_long": {
+     "text": "Length of service fourteen years, three months, and five days. He seemed born to please without being conscious of the power he possessed. must be confessed that Servadac, being naturally idle, was very much given to spinning tops, on the sandy shore, and sometimes he would enjoy a ride along the summit of the cliff, altogether being in no hurry at all to bring his task to an end. Then Zuf's most ambitious desire was to induce the captain to go with him. And the other thing was that the first time we have to do that, and the other thing is that the first time we have to do it, and I'm not sure if you're not sure. He could scarcely hear the name of Montmartre without a conscious thrill of aversion.",
+     "language": null,
+     "generated_token_count": 242,
+     "finish_reason": "stop"
+    },
+    "0352_en_long": {
+     "text": "This was what did the mischief so far as the running away was concerned. From the manner in which he expressed himself with regard to Robert Hall, and I was a little bit more than a little bit Edward, a boy of seventeen, called forth much sympathy. He too was claimed by Holland. John Wesley Combash Jacob Taylor, and Thomas Edward Skinner. A few years back one of their slaves, a coachman, was kept in the Paul, until he became almost frozen to death, in fact he did die in the infirmary from the effects of the frost about one week afterwards. In this case, was simply told that she slipped and fell down the stairs as she was coming down, but",
+     "language": null,
+     "generated_token_count": 219,
+     "finish_reason": "stop"
+    },
+    "0353_en_long": {
+     "text": "Natty Horman tried the kitchen pump secretly several times during the evening, for the water had to run uphill all the way from the well to the kitchen sink. There was no need of extra heat, and there were great ceremonies to be observed in lighting the fire. Kathleen waved the torch to and fro as she recited some beautiful lines written for some such purpose as that which called them together to night. Burn fire, burn, flicker, flicker, flame. Next came Olive's turn to help in the ceremonies. Ralph Thurston had found a line of Latin for them in his beloved For you the hearth fire shines. Olive had painted the motto on a long, narrow panel of canvas, and giving it to Mr Popum, stood by the fireside while he deftly fitted it into the place prepared for it.",
+     "language": null,
+     "generated_token_count": 266,
+     "finish_reason": "stop"
+    },
+    "0354_en_long": {
+     "text": "Notwithstanding the high resolution of Hawkeye, he fully comprehended all the difficulties In his return to the camp, his acute and practised intellects were intent While he had implicit faith in the ability of Balam's ass to speak, he was somewhat skeptical on the subject of a bear's singing, and yet he had been assured of the latter Ingenious Hawkeye, who recalled the hasty manner in which the other had abandoned his post at the bed. The bear shook his shaggy sides, and then a well known voice replied,",
+     "language": null,
+     "generated_token_count": 176,
+     "finish_reason": "stop"
+    },
+    "0355_en_long": {
+     "text": "the army found the people in poverty, and left them in comparative wealth. But a word further concerning the expedition in general. Moreover, had the people been inclined to rebellion, what greater opportunity could they have wished? Already a north and a south were talked of. Why not set up also a west? They knew no north, no south, no east, no west. They stood positively by the Constitution, unless indeed they were summoned by the authority to which they had already once loyally responded, to furnish men in arms for the country's need. What the Latter-day Saints call celestial marriage is characteristic of the church, and is in very general practice. But of celestial marriage, plurality of wives was an incident, never an essential.",
+     "language": null,
+     "generated_token_count": 253,
+     "finish_reason": "stop"
+    },
+    "0356_en_long": {
+     "text": "So they were quite willing to obey the orders of their girl queen, and in a short time the blast Trot and Captain Bill that the blue bands had assembled before the palace. Then they all marched out a little way into the fields and found that the army of Pinkies had already formed and was advancing steadily toward them. They raised another great shout, for he was the favourite of the soldiers and very popular. Thursday, I, Gipsio, have been the lawful booleroo of the Blue Country. But now that you are conquered by Queen Trot, I suppose I am conquered too, and you have no booleroo at all. When he finished, she said cheerfully Don't worry, Sizzle, dear it'll all come right pretty soon. Now Now then, let's enter the city and enjoy the great feast that's being cooked. Kingdoms is hard work.",
+     "language": null,
+     "generated_token_count": 279,
+     "finish_reason": "stop"
+    },
+    "0357_en_long": {
+     "text": "Mainhall liked Alexander because he was an engineer. He had preconceived ideas about everything, and his idea about Americans was that they should be engineers or mechanics. It's tremendously well put on, too. It's been on only two weeks and I've been half a dozen times already. looked with perplexity up into the top of the hansom and rubbed his pink cheek with his gloved finger. Do you know I sometimes think of taking to criticism seriously myself. her best in the second act. He's been wanting to marry Hilda these three years and more. Ingorgoyne, one of her family, told me in confidence that there was a romance somewhere back in the beginning. happiness that made Alexander smile, even while a kind of rapid excitement was tingling through him. He's another who's awfully keen about her. Let me introduce you Sir Harry Town, mister Bartley Alexander, the American engineer.",
+     "language": null,
+     "generated_token_count": 299,
+     "finish_reason": "stop"
+    },
+    "0358_en_long": {
+     "text": "Those pretty wrongs that liberty commits. When I am some time absent from thy heart. Thy beauty, and thy years full well befits for still temptation follows where thou art. No matter then, although my foot did stand, upon the For nimble thought can jump both sea and land, I must attend Time's leisure with my moan. Receiving not by elements so slow, but heavy tears badges of either's woe.",
+     "language": null,
+     "generated_token_count": 140,
+     "finish_reason": "stop"
+    },
+    "0359_en_long": {
+     "text": "The analysis of knowledge will occupy us until the end of the thirteenth lecture and is the most difficult part of our whole enterprise. What is called perception differs from sensation. signs of their usual correlates, all of which are subjectively indistinguishable. This principle is liable to exceptions, everyone would agree that it has a broad measure of truth. And it might seem more correct to say that ideas approximately represent impressions. And what sort of evidence is logically possible? There is no logical impossibility in the hypothesis that the world sprang into being It then was with a population that remembered a wholly unreal past.",
+     "language": null,
+     "generated_token_count": 204,
+     "finish_reason": "stop"
+    },
+    "0360_zh_long": {
+     "text": "Yeah, hi to Zebhou to Lilu, 6 ans, 100 000. See what I'd deal with a danger to So one paid the But I'll Chong Tanya Yang Arch those people five downspeeding both surgery and the patient with having to sit down",
+     "language": null,
+     "generated_token_count": 82,
+     "finish_reason": "stop"
+    },
+    "0361_zh_long": {
+     "text": "So simple around you for being the title. Well, I think that's a good thing. Sujet mentioned, like big tea to the next one. Feel А что делешь и не да? But Time to go. Hold I away. You are having Sing Chen for control.",
+     "language": null,
+     "generated_token_count": 80,
+     "finish_reason": "stop"
+    },
+    "0362_zh_long": {
+     "text": "Tu Yuan Yulanger is in Chenya. Ins you could so just Even Sonic Logan Kong. If you have a lot of people who are not going to be able to do this, you can't get a little bit more than a lot of chit. Time the rose thing will push down this on the I think it's a good thing.",
+     "language": null,
+     "generated_token_count": 91,
+     "finish_reason": "stop"
+    },
+    "0363_zh_long": {
+     "text": "I would ying siang function you put on wood je tiens donc. Pulita weight the co who So, you can see that the first thing is that the first one is a good thing. Yo Sam Mo Ying Shan H Len Shen, Pi Go Shen H Dij high tribe won her with the highest. Yeah, maybe. So, I think that's a good thing. Tower gone.",
+     "language": null,
+     "generated_token_count": 107,
+     "finish_reason": "stop"
+    },
+    "0364_zh_long": {
+     "text": "Yeah, you think King John Akash? Near Kissin troop you as she has chunk for the day. Chula Zo sendably said, I think I'll have to lean shang currenting. Ya's women so who are the jungle. T who can't without yet ting without why the thing's young",
+     "language": null,
+     "generated_token_count": 95,
+     "finish_reason": "stop"
+    },
+    "0365_zh_long": {
+     "text": "More do other so too, she sinjinao down did the yen slow mania you don't like. Maker and to show where they even to make girl and to the chat onendu et Táchan Jules időgody.",
+     "language": null,
+     "generated_token_count": 64,
+     "finish_reason": "stop"
+    },
+    "0366_zh_long": {
+     "text": "Kunali ni ng liang, chi di ng liang, tung go yu ya at the housilency. To fighting, she's a changu shenancy. We have to do this. То типи. Sandwich de Arschoven. Some chances and badge went to the two Ou maipia que no genial. Tato os tuto e tisu. It's a very good idea.",
+     "language": null,
+     "generated_token_count": 109,
+     "finish_reason": "stop"
+    },
+    "0367_zh_long": {
+     "text": "Taiju find ya, you will be fighting. You can change the e fo y Bangu T B Gun T B N found Y Mayo you know her y but that's you do the end he won't truly. Trust I didn't. Should you go for a little bit of a little bit of a little Танкуайдю и ми уху. Chao Tong Leon Jong Canfens. If you can see the same thing, you can see the same thing.",
+     "language": null,
+     "generated_token_count": 127,
+     "finish_reason": "stop"
+    },
+    "0368_zh_long": {
+     "text": "Drunk out low face through the barco. Te az is a ci asnié, de tátor semmi a csúlt hát. Look at that. Gdzie usubał do tłumienia? Hang on, shoot out. Dadurch Bayo Langtok. Mm-hmm.",
+     "language": null,
+     "generated_token_count": 78,
+     "finish_reason": "stop"
+    },
+    "0369_zh_long": {
+     "text": "Joe, ich habe vor Katz. Kaifu Jing Chang, Boko Yoting, Ijio. Woman Yi may go out with Shuning, Yu Chi, the oxygen, burrow that woman to the naval t shin, Yo e the Bianco, Kanang, Kang Liu, Lee, you know you ain't hurt, you know, what ali",
+     "language": null,
+     "generated_token_count": 98,
+     "finish_reason": "stop"
+    },
+    "0370_zh_long": {
+     "text": "I should do the angel beyond me. Ting bien yo. What means like letting you civilius you comminder civis. You command ji civitas, y we changed. Tony, your lesson can change it. Need to be fake, a shenanigan champion goes into ide idiot shouldn't dingtian her shops.",
+     "language": null,
+     "generated_token_count": 98,
+     "finish_reason": "stop"
+    },
+    "0371_zh_long": {
+     "text": "Chifu Tabezung Daya Maus the Jamus Pedit Ping Shunizung. Guy Dong She also Matt Jumpet put the education shark U right here one chunk coach. Mm-hmm.",
+     "language": null,
+     "generated_token_count": 60,
+     "finish_reason": "stop"
+    },
+    "0372_zh_long": {
+     "text": "Ik hai da boot hangwangwan Fati Ma Shundi Tashhua mean the shum mu Young Troldy should be young. Shush. This is our thousand that Yeah, but it's a very good thing.",
+     "language": null,
+     "generated_token_count": 64,
+     "finish_reason": "stop"
+    },
+    "0373_zh_long": {
+     "text": "Chong. We high school. She's on me sound the hersing hot on shit, Tongua Babuton since I Yeah.",
+     "language": null,
+     "generated_token_count": 40,
+     "finish_reason": "stop"
+    },
+    "0374_zh_long": {
+     "text": "Little Baikal Lynage or Banito. So, we have to use the same thing. Tanċilha bambienba, il pu Чари тиху. Divango Yo Singhi Lan Sheng Dan Shu that Shu Yin. Xu Ching yo eat out century or chingu the Chen Yan Xiong Sing. You're dad's daughter. I think it's a very important thing to do. Block.",
+     "language": null,
+     "generated_token_count": 121,
+     "finish_reason": "stop"
+    },
+    "0375_zh_long": {
+     "text": "Czosniaciu to i tisuće. Yeah, the ink shall I am back from Jose and that John thought Jones Den laphol can be in bed. Xi and Sheung Young can sing. When the trying to get late. Or Yeah, no sure.",
+     "language": null,
+     "generated_token_count": 73,
+     "finish_reason": "stop"
+    },
+    "0376_silence": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0377_silence": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0378_silence": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0379_silence": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0380_noise": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0381_noise": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0382_noise": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0383_noise": {
+     "text": "",
+     "language": null,
+     "generated_token_count": 0,
+     "finish_reason": "stop"
+    },
+    "0384_snr10_zh": {
+     "text": "Had a zosie większy był. You know, counter than the punk of the CD. Субтитры сделал DimaTorzok",
+     "language": null,
+     "generated_token_count": 40,
+     "finish_reason": "stop"
+    },
+    "0385_snr10_en": {
+     "text": "Before this travesty on the administration of law could be brought before the court of last resort, and there met with the reversal and rebuke it deserved, men were imprisoned under sentence of many years duration.",
+     "language": null,
+     "generated_token_count": 65,
+     "finish_reason": "stop"
+    },
+    "0386_snr10_zh": {
+     "text": "Que deixa eu um pau.",
+     "language": null,
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0387_snr10_zh": {
+     "text": "Olive was stuck. Olive was stuck. So nothing now. and then go to the pant back so higher still for your change",
+     "language": null,
+     "generated_token_count": 39,
+     "finish_reason": "stop"
+    },
+    "0388_snr10_en": {
+     "text": "Little by little, however, the latter became hemmed and bound in the meshes of territorial officials evolved from the bogus walls.",
+     "language": null,
+     "generated_token_count": 45,
+     "finish_reason": "stop"
+    },
+    "0389_snr10_en": {
+     "text": "Yes, I need repose. Many things have agitated me today, both in mind Yeah.",
+     "language": null,
+     "generated_token_count": 27,
+     "finish_reason": "stop"
+    },
+    "0390_snr10_zh": {
+     "text": "Top from Doll.",
+     "language": null,
+     "generated_token_count": 6,
+     "finish_reason": "stop"
+    },
+    "0391_snr10_zh": {
+     "text": "Cut I'm calling you toys. Hello everyone, Tongwaho, Fabial Rashon Green.",
+     "language": null,
+     "generated_token_count": 34,
+     "finish_reason": "stop"
+    }
+   }
+  }
+ }
+}
