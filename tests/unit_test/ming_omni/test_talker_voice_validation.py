@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from sglang_omni.models.ming_omni.components.streaming_talker import (
     MingStreamingTalkerScheduler,
@@ -935,3 +938,52 @@ def test_generate_emits_final_true_when_duration_cap_hits(monkeypatch):
     assert len(yields) == 3
     flags = [bool(flag) for _, flag in yields]
     assert flags == [False, False, True]
+
+
+def test_generate_captures_the_decode_graph_under_the_attention_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    talker = object.__new__(MingOmniTalker)
+    stub_for_generate(talker, num_steps_before_stop=1)
+    pool_entry = talker.model_graph_pool.get()
+    talker.model_graph_pool.put((*pool_entry[:4], None))
+    events: list[str] = []
+
+    @contextmanager
+    def graph_capture_attention() -> Iterator[None]:
+        events.append("attention_pinned")
+        yield
+        events.append("attention_released")
+
+    class FakeGraph:
+        def replay(self) -> None:
+            pass
+
+    class FakeGraphBackend:
+        @contextmanager
+        def capture(self, *, thread_local_errors: bool) -> Iterator[FakeGraph]:
+            events.append(f"capture:{thread_local_errors}")
+            yield FakeGraph()
+
+    def get_device_graph_backend(device: torch.device) -> FakeGraphBackend:
+        return FakeGraphBackend()
+
+    monkeypatch.setattr(
+        "sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker.current_platform",
+        SimpleNamespace(
+            get_device_graph_backend=get_device_graph_backend,
+            graph_capture_attention=graph_capture_attention,
+        ),
+    )
+
+    list(
+        MingOmniTalker.generate(
+            talker,
+            input_ids=torch.zeros(1, 2, dtype=torch.long),
+            inputs_embeds=torch.zeros(1, 2, 1),
+            min_new_token=0,
+            max_decode_steps=20,
+        )
+    )
+
+    assert events == ["attention_pinned", "capture:True", "attention_released"]

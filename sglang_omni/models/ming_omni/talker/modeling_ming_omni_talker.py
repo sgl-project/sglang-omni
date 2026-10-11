@@ -247,7 +247,10 @@ class CFMGraphExecutor:
                     runtime.synchronize()
             else:
                 pass
-            with graph_backend.capture(thread_local_errors=True) as graph:
+            with (
+                current_platform.graph_capture_attention(),
+                graph_backend.capture(thread_local_errors=True) as graph,
+            ):
                 self.graph = graph
                 (
                     self.gen_lat_placeholder,
@@ -743,9 +746,12 @@ class MingOmniTalker(nn.Module):
                         inputs_embeds_placeholder.copy_(inputs_embeds)
                         cache_position_placeholder.copy_(cache_position)
 
-                        with graph_backend.capture(
-                            thread_local_errors=True
-                        ) as model_graph:
+                        with (
+                            current_platform.graph_capture_attention(),
+                            graph_backend.capture(
+                                thread_local_errors=True
+                            ) as model_graph,
+                        ):
                             outputs_placeholder = self.model(
                                 position_ids=None,
                                 cache_position=cache_position_placeholder,

@@ -11,9 +11,14 @@ from sglang_omni.models.ming_omni.talker.audio_vae.configuration_audio_vae impor
 )
 
 
-@pytest.mark.parametrize("is_npu", [False, True])
-def test_audio_vae_attention_backend_and_window(monkeypatch, is_npu):
+@pytest.mark.parametrize(
+    ("is_npu", "is_xpu"), [(False, False), (True, False), (False, True)]
+)
+def test_audio_vae_attention_backend_and_window(
+    monkeypatch: pytest.MonkeyPatch, is_npu: bool, is_xpu: bool
+) -> None:
     monkeypatch.setattr(modeling_audio_vae.current_platform, "is_npu", lambda: is_npu)
+    monkeypatch.setattr(modeling_audio_vae.current_platform, "is_xpu", lambda: is_xpu)
     backbone = {
         "_attn_implementation": "eager",
         "vocab_size": 1,
@@ -49,7 +54,7 @@ def test_audio_vae_attention_backend_and_window(monkeypatch, is_npu):
         model.decoder.decoder,
     ):
         assert component.config._attn_implementation == (
-            "sdpa" if is_npu else "eager"
+            "sdpa" if is_npu or is_xpu else "eager"
         )  # noqa: leading-underscore  # production name
         assert component.config.sliding_window == 4
     assert (config.enc_kwargs, config.dec_kwargs) == original
