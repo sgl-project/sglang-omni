@@ -173,4 +173,35 @@ mx::array Checkpoint::TiedProjection(const mx::array &x,
   }
 }
 
+mx::array RelativeShift(const mx::array &scores) {
+  const int batch = scores.shape(0);
+  const int heads = scores.shape(1);
+  const int query_length = scores.shape(2);
+  const int position_length = scores.shape(3);
+  mx::array padded = mx::pad(scores, {{0, 0}, {0, 0}, {0, 0}, {1, 0}});
+  padded =
+      mx::reshape(padded, {batch, heads, position_length + 1, query_length});
+  padded = mx::slice(padded, {0, 0, 1, 0},
+                     {batch, heads, position_length + 1, query_length});
+  return mx::reshape(padded, {batch, heads, query_length, position_length});
+}
+
+LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,
+                  const mx::array &recurrent_weight) {
+  const mx::array all_gates =
+      state.has_value()
+          ? mx::addmm(gates, state->hidden, mx::transpose(recurrent_weight))
+          : gates;
+  const std::vector<mx::array> pieces = mx::split(all_gates, 4, -1);
+  const mx::array input_gate = mx::sigmoid(pieces[0]);
+  const mx::array forget_gate = mx::sigmoid(pieces[1]);
+  const mx::array candidate = mx::tanh(pieces[2]);
+  const mx::array output_gate = mx::sigmoid(pieces[3]);
+  const mx::array cell = state.has_value()
+                             ? mx::add(mx::multiply(forget_gate, state->cell),
+                                       mx::multiply(input_gate, candidate))
+                             : mx::multiply(input_gate, candidate);
+  return {mx::multiply(output_gate, mx::tanh(cell)), cell};
+}
+
 } // namespace qwen3_asr

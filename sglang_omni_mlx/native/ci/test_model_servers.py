@@ -52,6 +52,18 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
+SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
+# Voxt's SenseVoice settings for long audio: speech runs cut into overlapping chunks.
+SENSEVOICE_VAD_FIELDS = {
+    "vad_threshold": "0.5",
+    "vad_min_speech_ms": "220",
+    "vad_min_silence_ms": "420",
+    "vad_speech_pad_ms": "180",
+    "vad_max_chunk_seconds": "24.0",
+    "vad_chunk_overlap_seconds": "0.35",
+}
 
 
 class ModelServer(Server):
@@ -271,7 +283,13 @@ def test_whisper_shutdown_reports_stopped() -> None:
 
 @pytest.mark.parametrize(
     ("binary", "other_kind"),
-    [("whisper_server", "qwen3_asr"), ("cohere_transcribe_server", "whisper")],
+    [
+        ("whisper_server", "qwen3_asr"),
+        ("cohere_transcribe_server", "whisper"),
+        ("nemotron_asr_server", "qwen3_asr"),
+        ("parakeet_server", "cohere_transcribe"),
+        ("sensevoice_server", "cohere_transcribe"),
+    ],
 )
 def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
     completed = subprocess.run(
@@ -520,3 +538,394 @@ def test_moss_server_serves_only_moss() -> None:
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
+
+
+@pytest.fixture(scope="module")
+def nemotron_server() -> Iterator[ModelServer]:
+    running = ModelServer("nemotron_asr_server", "nemotron_asr", NEMOTRON_REPO)
+    yield running
+    running.stop()
+
+
+@pytest.fixture(scope="module")
+def parakeet_server() -> Iterator[ModelServer]:
+    running = ModelServer("parakeet_server", "parakeet", PARAKEET_REPO)
+    yield running
+    running.stop()
+
+
+def realtime_events(
+    server: ModelServer,
+    pcm: bytes,
+    session: dict[str, object],
+    append_bytes: int = 3200,
+) -> list[dict[str, object]]:
+    """Every event of one realtime session fed pcm in appends of append_bytes."""
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": None, **session},
+                }
+            )
+        )
+        assert json.loads(socket.recv())["type"] == "transcription_session.updated"
+        for start in range(0, len(pcm), append_bytes):
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(
+                            pcm[start : start + append_bytes]
+                        ).decode(),
+                    }
+                )
+            )
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        socket.send(json.dumps({"type": "transcription.done"}))
+        events = []
+        while not events or events[-1]["type"] != "transcription.completed":
+            events.append(json.loads(socket.recv()))
+    return events
+
+
+def test_nemotron_final_request_streams_text_and_segments(
+    nemotron_server: ModelServer,
+) -> None:
+    assert nemotron_server.ready["model_name"].startswith("voxt-nemotron_asr-")
+    status, body = nemotron_server.post_form(
+        {"stream": "true", "include_generation_metadata": "true", "language": "en-US"},
+        clip("0006_en_short"),
+    )
+    assert status == 200
+    events = sse_events(body)
+    assert events[-1] == "[DONE]"
+    done = events[0]
+    assert done["type"] == "transcript.text.done"
+    assert done["text"].lower().startswith("surely you are not thinking")
+    assert done["generation_metadata"]["language"] == "en-US"
+    assert done["generation_metadata"]["finish_reason"] == "stop"
+    assert all(
+        segment["start"] <= segment["end"] and segment["speaker"] == ""
+        for segment in done["segments"]
+    )
+
+
+@pytest.mark.parametrize("append_bytes", [3200, None])
+def test_nemotron_realtime_at_the_native_chunk_equals_the_final_pass(
+    nemotron_server: ModelServer, append_bytes: int | None
+) -> None:
+    status, body = nemotron_server.post_form({}, clip("0344_en_long"))
+    assert status == 200
+    pcm = pcm16("0344_en_long")
+    # Note (Jiaxin Deng): None sends the whole clip in one append, which the
+    # stream still decodes one chunk of audio at a time.
+    events = realtime_events(nemotron_server, pcm, {}, append_bytes or len(pcm))
+    # Note (Dayuxiaoshui): the stream only encodes mel frames later audio can no
+    # longer change, so however the audio is split, the native chunk decodes
+    # exactly what one pass over all of it does.
+    assert events[-1]["text"] == json.loads(body)["text"]
+    finals = [
+        event
+        for event in events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    assert [event["text"] for event in finals] == [events[-1]["text"]]
+
+
+def test_nemotron_realtime_previews_at_the_live_latency(
+    nemotron_server: ModelServer,
+) -> None:
+    events = realtime_events(
+        nemotron_server, pcm16("0006_en_short"), {"chunk_ms": 560, "language": "en-US"}
+    )
+    previews = [
+        event["text"]
+        for event in events
+        if event["type"] == "transcription.segment" and not event["is_final"]
+    ]
+    assert previews
+    assert events[-1]["text"].lower().startswith("surely you are not thinking")
+    indexes = [event["event_index"] for event in events]
+    assert indexes == sorted(indexes)
+
+
+def test_nemotron_realtime_rejects_settings_after_audio(
+    nemotron_server: ModelServer,
+) -> None:
+    with connect(f"ws://127.0.0.1:{nemotron_server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps({"type": "session.update", "session": {"turn_detection": None}})
+        )
+        assert json.loads(socket.recv())["type"] == "transcription_session.updated"
+        socket.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(pcm16("0006_en_short")[:3200]).decode(),
+                }
+            )
+        )
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": None, "chunk_ms": 80},
+                }
+            )
+        )
+        event = json.loads(socket.recv())
+        while event["type"] == "transcription.segment":
+            event = json.loads(socket.recv())
+        assert event["error"]["code"] == "session_started"
+
+
+@pytest.mark.parametrize("chunk_ms", [0, -80, "560", True])
+def test_nemotron_realtime_rejects_a_bad_latency(
+    nemotron_server: ModelServer, chunk_ms: object
+) -> None:
+    with connect(f"ws://127.0.0.1:{nemotron_server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": None, "chunk_ms": chunk_ms},
+                }
+            )
+        )
+        assert json.loads(socket.recv())["error"]["code"] == "invalid_chunk"
+
+
+def append_event(pcm: bytes) -> str:
+    return json.dumps(
+        {"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm).decode()}
+    )
+
+
+def test_nemotron_realtime_rejects_audio_after_commit(
+    nemotron_server: ModelServer,
+) -> None:
+    pcm = pcm16("0006_en_short")
+    with connect(f"ws://127.0.0.1:{nemotron_server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps({"type": "session.update", "session": {"turn_detection": None}})
+        )
+        assert json.loads(socket.recv())["type"] == "transcription_session.updated"
+        socket.send(append_event(pcm))
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        socket.send(append_event(pcm[:3200]))
+        event = json.loads(socket.recv())
+        while event["type"] == "transcription.segment" and not event["is_final"]:
+            event = json.loads(socket.recv())
+        assert event["text"].lower().startswith("surely you are not thinking")
+        assert json.loads(socket.recv())["error"]["code"] == "session_finished"
+
+
+def test_nemotron_realtime_disconnect_stops_its_decode(
+    nemotron_server: ModelServer,
+) -> None:
+    clip_pcm = pcm16("0344_en_long")
+    pcm = (clip_pcm * (600 * 32000 // len(clip_pcm) + 1))[: 600 * 32000]
+    with connect(f"ws://127.0.0.1:{nemotron_server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": None, "chunk_ms": 80},
+                }
+            )
+        )
+        assert json.loads(socket.recv())["type"] == "transcription_session.updated"
+        for start in range(0, len(pcm), 320000):
+            socket.send(append_event(pcm[start : start + 320000]))
+        time.sleep(2.0)
+        assert json.loads(nemotron_server.request("GET", "/health")[1])[
+            "request_states"
+        ] == {"running": 1}
+        closed_at = time.monotonic()
+    # Note (Dayuxiaoshui): the stream checks the cancel flag before each chunk,
+    # so the decode of ten minutes of audio stops within a chunk of the close.
+    while (
+        json.loads(nemotron_server.request("GET", "/health")[1])["request_states"] != {}
+    ):
+        assert (
+            time.monotonic() - closed_at < 1.5
+        ), "the decode kept running after its client left"
+        time.sleep(0.05)
+
+
+def test_parakeet_final_request_returns_text_and_sentences(
+    parakeet_server: ModelServer,
+) -> None:
+    assert parakeet_server.ready["model_name"].startswith("voxt-parakeet-")
+    status, body = parakeet_server.post_form(
+        {"chunk_duration": "1200"}, clip("0006_en_short")
+    )
+    assert status == 200
+    result = json.loads(body)
+    assert result["text"] == "Surely you are not thinking of going off there."
+    [segment] = result["segments"]
+    assert segment["text"].strip() == result["text"]
+    assert 0 <= segment["start"] < segment["end"] <= 3.1
+
+
+def test_parakeet_merges_overlapping_chunks_into_sentences(
+    parakeet_server: ModelServer,
+) -> None:
+    # Note (Dayuxiaoshui): a whole-recording request decodes 5 s chunks that
+    # overlap by 1 s, as Voxt's Swift path does.
+    status, body = parakeet_server.post_form(
+        {
+            "chunk_duration": "1200",
+            "stream": "true",
+            "include_generation_metadata": "true",
+        },
+        clip("0344_en_long"),
+    )
+    assert status == 200
+    done = sse_events(body)[0]
+    assert done["text"].startswith(
+        "In every way they sought to undermine the authority"
+    )
+    assert done["generation_metadata"]["finish_reason"] == "stop"
+    status, body = parakeet_server.post_form({}, clip("0344_en_long"))
+    assert status == 200
+    segments = json.loads(body)["segments"]
+    assert len(segments) > 1
+    assert [segment["start"] for segment in segments] == sorted(
+        segment["start"] for segment in segments
+    )
+
+
+@pytest.mark.parametrize("chunk_duration", ["nan", "1", "-5", "600"])
+def test_parakeet_rejects_a_bad_chunk_duration(
+    parakeet_server: ModelServer, chunk_duration: str
+) -> None:
+    status, body = parakeet_server.post_form(
+        {"chunk_duration": chunk_duration}, clip("0006_en_short")
+    )
+    assert status == 400
+    assert "chunk_duration" in json.loads(body)["detail"]
+
+
+@pytest.fixture(scope="module")
+def sensevoice_server() -> Iterator[ModelServer]:
+    running = ModelServer("sensevoice_server", "sensevoice", SENSEVOICE_REPO)
+    yield running
+    running.stop()
+
+
+def test_sensevoice_final_request_returns_text_and_its_metadata(
+    sensevoice_server: ModelServer,
+) -> None:
+    assert sensevoice_server.ready["model_name"].startswith("voxt-sensevoice-")
+    status, body = sensevoice_server.post_form(
+        {"language": "zh", "use_itn": "false"}, clip("0152_zh_short")
+    )
+    assert status == 200
+    result = json.loads(body)
+    assert result["text"] == "互联网结合了大众传播和人际传播的要素"
+    [segment] = result["segments"]
+    assert segment["start"] == 0
+    assert segment["text"] == result["text"]
+    assert segment["language"] == "zh"
+    assert segment["event"] == "Speech"
+    assert segment["emotion"]
+
+
+def test_sensevoice_itn_writes_punctuation(sensevoice_server: ModelServer) -> None:
+    status, body = sensevoice_server.post_form(
+        {"language": "en", "use_itn": "true"}, clip("0006_en_short")
+    )
+    assert status == 200
+    assert json.loads(body)["text"] == "Surely you are not thinking of going off there."
+
+
+def test_sensevoice_detects_the_language_without_a_hint(
+    sensevoice_server: ModelServer,
+) -> None:
+    # Note (Dayuxiaoshui): an unsupported hint detects the language, as Voxt
+    # sends a hint only for a single main language SenseVoice supports.
+    status, body = sensevoice_server.post_form(
+        {"language": "fr", "stream": "true", "include_generation_metadata": "true"},
+        clip("0152_zh_short"),
+    )
+    assert status == 200
+    assert sse_events(body)[0]["generation_metadata"]["language"] == "zh"
+
+
+def test_sensevoice_cuts_long_audio_into_overlapping_chunks(
+    sensevoice_server: ModelServer,
+) -> None:
+    vad_directory = str(Path(DATA_ROOT) / "models" / VAD_REPO.replace("/", "_"))
+    status, body = sensevoice_server.post_form(
+        {
+            "language": "en",
+            "vad_model_directory": vad_directory,
+            **SENSEVOICE_VAD_FIELDS,
+        },
+        clip("0344_en_long"),
+    )
+    assert status == 200
+    result = json.loads(body)
+    assert result["text"].startswith("in every way they sought to undermine")
+    segments = result["segments"]
+    assert len(segments) > 1
+    assert all(segment["end"] - segment["start"] <= 24 for segment in segments)
+    assert [segment["start"] for segment in segments] == sorted(
+        segment["start"] for segment in segments
+    )
+
+
+def test_sensevoice_chunks_overlap_by_voxts_sample_count(
+    sensevoice_server: ModelServer,
+) -> None:
+    # Note (Jiaxin Deng): 4 s chunks split this clip's speech runs, and each
+    # chunk of a run starts 5600 samples (0.35 s, truncated in double as Voxt
+    # does) before the previous one ends.
+    vad_directory = str(Path(DATA_ROOT) / "models" / VAD_REPO.replace("/", "_"))
+    status, body = sensevoice_server.post_form(
+        {
+            "language": "en",
+            "vad_model_directory": vad_directory,
+            **SENSEVOICE_VAD_FIELDS,
+            "vad_max_chunk_seconds": "4.0",
+        },
+        clip("0344_en_long"),
+    )
+    assert status == 200
+    bounds = [
+        (round(segment["start"] * 16000), round(segment["end"] * 16000))
+        for segment in json.loads(body)["segments"]
+    ]
+    overlaps = [
+        previous_end - start
+        for (_, previous_end), (start, _) in zip(bounds, bounds[1:])
+        if start < previous_end
+    ]
+    assert overlaps
+    assert set(overlaps) == {5600}
+
+
+# Note (Jiaxin Deng): the last case differs in seconds but not in whole
+# samples, where chunking would never advance.
+@pytest.mark.parametrize(
+    ("max_chunk", "overlap"),
+    [("24.0", None), ("24.0", "24.0"), ("0.0001", "0.00009")],
+)
+def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
+    sensevoice_server: ModelServer, max_chunk: str, overlap: str | None
+) -> None:
+    fields = {
+        "vad_model_directory": "x",
+        **SENSEVOICE_VAD_FIELDS,
+        "vad_max_chunk_seconds": max_chunk,
+    }
+    if overlap is None:
+        fields.pop("vad_chunk_overlap_seconds")
+    else:
+        fields["vad_chunk_overlap_seconds"] = overlap
+    status, body = sensevoice_server.post_form(fields, clip("0006_en_short"))
+    assert status == 400
+    assert "overlap" in json.loads(body)["detail"]
