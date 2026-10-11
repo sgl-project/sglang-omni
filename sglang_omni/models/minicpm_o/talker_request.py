@@ -143,6 +143,12 @@ def build_sglang_talker_request(
         min_new_tokens = min(
             int(params.get("talker_min_new_tokens", 50)), max_new_tokens
         )
+        if min_new_tokens < 0:
+            raise ValueError(
+                f"talker_min_new_tokens must be at least 0, got {min_new_tokens}"
+            )
+        else:
+            pass
     shim = CodecTokenizer(eos_token_id=int(codec_eos_id))
     sampling_params.normalize(shim)
     sampling_params.verify(codec_vocab_size)
