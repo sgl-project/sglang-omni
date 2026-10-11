@@ -124,7 +124,11 @@ def test_stage_factory_passes_device_and_local_paths(tmp_path, monkeypatch):
     factory = Mock(return_value=backend)
     monkeypatch.setattr(stages, "RemoteVoXtreamBackend", factory)
     scheduler = stages.create_executor(
-        **values, gpu_id=1, max_pending=2, output_buffer_chunks=3
+        model_path=values["model_path"],
+        gpu_id=1,
+        **VoXtream2PipelineConfig(
+            **values, max_pending=2, output_buffer_chunks=3
+        ).stage_factory_kwargs("tts_engine"),
     )
     options = factory.call_args.kwargs
     assert options["python_executable"] == sys.executable
@@ -143,11 +147,14 @@ def test_stage_factory_selects_isolated_worker_without_loading_model(
     factory = Mock(return_value=backend)
     monkeypatch.setattr(stages, "RemoteVoXtreamBackend", factory)
     scheduler = stages.create_executor(
-        **values,
+        model_path=values["model_path"],
         gpu_id=1,
-        model_python="/model/bin/python",
-        model_source_paths=["/redimnet"],
-        worker_cancel_timeout=7,
+        **VoXtream2PipelineConfig(
+            **values,
+            model_python="/model/bin/python",
+            model_source_paths=["/redimnet"],
+            worker_cancel_timeout=7,
+        ).stage_factory_kwargs("tts_engine"),
     )
     assert scheduler.backend is backend
     options = factory.call_args.kwargs

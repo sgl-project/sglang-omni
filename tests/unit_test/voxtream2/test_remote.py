@@ -2,8 +2,10 @@
 """Real subprocess tests without a model checkpoint or CUDA device."""
 
 import io
+import json
 import sys
 import time
+import wave
 
 import numpy as np
 import pytest
@@ -12,6 +14,7 @@ from sglang_omni.models.voxtream2 import remote
 from sglang_omni.models.voxtream2.remote import RemoteVoXtreamBackend
 from sglang_omni.models.voxtream2.wire import MAX_FRAME_BYTES, read_frame, write_frame
 from sglang_omni.proto import OmniRequest, StagePayload
+from tests.test_model.test_voxtream2 import generate_and_record
 
 FAKE_WORKER = r"""
 import os, sys, time
@@ -86,6 +89,9 @@ def worker(tmp_path, monkeypatch):
             model_config=config,
             worker_command=[sys.executable, "-u", str(script)],
             startup_timeout=kwargs.pop("startup_timeout", 15),
+            response_timeout=kwargs.pop("response_timeout", 10),
+            cancel_timeout=kwargs.pop("cancel_timeout", 5),
+            source_paths=kwargs.pop("source_paths", ()),
             **kwargs,
         )
         backends.append(backend)
@@ -107,6 +113,22 @@ def test_worker_audio_order_reuse_and_cleanup(worker):
             np.testing.assert_array_equal(chunk, np.full(1920, index))
     assert log.read_text().splitlines() == ["normal", "normal"]
     assert backend.active_request is None
+
+
+def test_acceptance_measurements_and_audio_artifacts(worker, tmp_path):
+    backend, log = worker()
+    audio = generate_and_record(backend, tmp_path, "measured", "normal", 101)
+    measurement = json.loads((tmp_path / "measured.json").read_text())
+    assert measurement["samples"] == 5760
+    assert measurement["chunks"] == 3
+    assert measurement["audio_seconds"] == 0.24
+    assert 0 < measurement["first_audio_seconds"] <= measurement["elapsed_seconds"]
+    assert measurement["real_time_factor"] == measurement["elapsed_seconds"] / 0.24
+    np.testing.assert_array_equal(np.load(tmp_path / "measured.npy"), audio)
+    with wave.open(str(tmp_path / "measured.wav"), "rb") as recording:
+        assert recording.getnframes() == 5760
+        assert recording.getframerate() == 24000
+    assert log.read_text().splitlines() == ["normal"]
 
 
 def test_close_drains_backpressure_and_acknowledges_cleanup(worker):

@@ -52,7 +52,12 @@ def run_scheduler():
     running = []
 
     def run(backend=None, **kwargs):
-        scheduler = VoXtreamScheduler(backend or Backend(), **kwargs)
+        scheduler = VoXtreamScheduler(
+            backend or Backend(),
+            max_pending=kwargs.pop("max_pending", 32),
+            output_buffer_chunks=kwargs.pop("output_buffer_chunks", 64),
+            **kwargs,
+        )
         worker = threading.Thread(target=scheduler.start)
         worker.start()
         running.append((scheduler, worker))
@@ -97,7 +102,7 @@ def test_audio_order_and_terminal_payload(run_scheduler, stream):
 
 
 def test_abort_before_admission_and_queued_request(run_scheduler):
-    scheduler = VoXtreamScheduler(Backend())
+    scheduler = VoXtreamScheduler(Backend(), max_pending=32, output_buffer_chunks=64)
     scheduler.abort("early")
     scheduler.enqueue(message("early"))
     scheduler.enqueue(message("queued"))
@@ -221,7 +226,7 @@ def test_empty_generation_is_error(run_scheduler):
 
 
 def test_admission_limits_and_duplicate_ids():
-    scheduler = VoXtreamScheduler(Backend(), max_pending=1)
+    scheduler = VoXtreamScheduler(Backend(), max_pending=1, output_buffer_chunks=64)
     scheduler.enqueue(message())
     with pytest.raises(ValueError, match="already"):
         scheduler.enqueue(message())
@@ -241,7 +246,7 @@ def test_admission_limits_and_duplicate_ids():
 
 @pytest.mark.parametrize("kind", ["stream_chunk", "stream_done"])
 def test_incremental_input_not_silently_accepted(kind):
-    scheduler = VoXtreamScheduler(Backend())
+    scheduler = VoXtreamScheduler(Backend(), max_pending=32, output_buffer_chunks=64)
     with pytest.raises(ValueError, match="complete text"):
         scheduler.enqueue(IncomingMessage("a", kind))
 
@@ -424,7 +429,7 @@ def test_bad_request_survives_scheduler_error_serialization(
 
 def test_overload_survives_error_serialization():
 
-    scheduler = VoXtreamScheduler(Backend(), max_pending=1)
+    scheduler = VoXtreamScheduler(Backend(), max_pending=1, output_buffer_chunks=64)
     scheduler.enqueue(message())
     scheduler.enqueue(message("rejected"))
     rejected = scheduler.outbox.get_nowait()

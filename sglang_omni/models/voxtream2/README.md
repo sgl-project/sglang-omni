@@ -114,6 +114,54 @@ concurrent model execution. Ordinary invalid requests do not kill the worker.
 
 ## Validation scope
 
+Run the real-worker acceptance test from the project environment with a configured
+Linux CUDA deployment. It launches the actual model interpreter and loads the
+configured checkpoints; it does not substitute a test backend:
+
+```bash
+export VOXTREAM2_TEST_CONFIG=/path/to/voxtream2.yaml
+export VOXTREAM2_TEST_OUTPUT=/path/to/voxtream2-results
+python -m pytest tests/test_model/test_voxtream2.py -k real_worker -v
+```
+
+This runs eager and CUDA Graph configurations sequentially. Each configuration
+gets a separate output directory containing the deployment configuration, worker
+package versions, float32 NumPy audio, listening WAVs, per-request measurements,
+and a final pass/fail result. One warmup request is recorded separately. The
+measurement cases use two texts, two seeds, and two repetitions. First-audio
+latency and RTF include local worker transport; they are not isolated kernel
+timings. These short cases test integration and repeatability, not general speech
+quality or a statistically established speedup. Review longer and more varied
+texts before making a performance claim. Artifact configuration contains local
+asset paths; review it before publishing.
+
+After launching the HTTP server with the deployment YAML, run:
+
+```bash
+export VOXTREAM2_TEST_URL=http://127.0.0.1:8000
+export VOXTREAM2_TEST_MODEL=voxtream2
+python -m pytest tests/test_model/test_voxtream2.py -k real_http -v
+```
+
+The HTTP check exercises WAV, streamed PCM, invalid request responses in both
+modes, early disconnect, and a subsequent successful request. Stop the HTTP
+server before running the worker test on the same GPU to avoid duplicate model
+allocations. Tests skip when their configuration environment variable is absent;
+a skipped test provides no acceptance evidence. Once configured, missing assets,
+startup errors, and failed generation fail the test.
+
+Use the saved artifacts to fill the PR evidence table:
+
+| Contract / measurement | Evidence |
+|---|---|
+| Seeded generation repeatability | Pairwise waveform comparison in each execution mode |
+| Cancellation and invalid-request recovery | Subsequent real worker generation |
+| HTTP streaming and non-streaming | Saved PCM/WAV and asserted HTTP status |
+| HTTP disconnect recovery | Subsequent successful WAV request |
+| First-audio latency and RTF | Per-request JSON, with warmup excluded from comparisons |
+| Speech quality | Listening review and a separate ASR/WER evaluation; not inferred from nonempty audio |
+| Peak GPU memory | Separate measurement required; not collected by this test |
+
 Historical tests of the September 18 implementation covered streamed PCM, non-streaming WAV, seeded parity,
 disconnect recovery, a six-client burst with capacity four, and service health
 after overload. Both streaming and non-streaming HTTP requests were checked

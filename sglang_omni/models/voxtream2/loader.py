@@ -34,8 +34,8 @@ def load_generator(
     generator_config_path: str,
     speaking_rate_config_path: str,
     device: str,
-    dtype: str = "float16",
-    use_cuda_graph: bool = True,
+    dtype: str,
+    use_cuda_graph: bool,
 ) -> SpeechGenerator:
     """Construct a generator inside the configured model process."""
     assets = resolve_assets(

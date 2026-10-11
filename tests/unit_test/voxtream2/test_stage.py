@@ -39,7 +39,7 @@ def test_stage_submit_to_coordinator_completion(streaming):
                 complete.set()
 
         control = Control()
-        scheduler = VoXtreamScheduler(Backend(), output_buffer_chunks=1)
+        scheduler = VoXtreamScheduler(Backend(), max_pending=32, output_buffer_chunks=1)
         stage = make_stage(
             name="voxtream2",
             scheduler=scheduler,

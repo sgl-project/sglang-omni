@@ -7,9 +7,10 @@ import logging
 import queue
 import threading
 from collections import OrderedDict
-from typing import Iterator, Protocol
+from typing import Generator, Protocol
 
 import numpy as np
+from numpy.typing import NDArray
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import StagePayload
@@ -57,7 +58,9 @@ class AudioBackend(Protocol):
     sample_rate: int
     max_samples: int
 
-    def iter_audio(self, payload: StagePayload) -> Iterator[np.ndarray]: ...
+    def iter_audio(
+        self, payload: StagePayload
+    ) -> Generator[NDArray[np.float32], None, None]: ...
 
 
 class VoXtreamScheduler:
@@ -75,8 +78,8 @@ class VoXtreamScheduler:
         self,
         backend: AudioBackend,
         *,
-        max_pending: int = 32,
-        output_buffer_chunks: int = 64,
+        max_pending: int,
+        output_buffer_chunks: int,
     ) -> None:
         if max_pending < 1 or output_buffer_chunks < 1:
             raise ValueError("Queue limits must be positive")

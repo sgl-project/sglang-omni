@@ -35,10 +35,10 @@ class RemoteVoXtreamBackend:
         *,
         python_executable: str,
         model_config: dict[str, str | bool],
-        source_paths: tuple[str, ...] | list[str] = (),
-        startup_timeout: float = 180.0,
-        response_timeout: float = 120.0,
-        cancel_timeout: float = 10.0,
+        source_paths: tuple[str, ...] | list[str],
+        startup_timeout: float,
+        response_timeout: float,
+        cancel_timeout: float,
         worker_command: list[str] | None = None,
     ) -> None:
         if any(
