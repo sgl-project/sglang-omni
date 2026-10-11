@@ -6,6 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "layers.h"
 #include "nlohmann/json.hpp"
 #include "swift_port.h"
 
@@ -276,14 +277,7 @@ mx::array CohereModel::EncoderSelfAttention(const mx::array &x,
   // Note (khazic): relative shift: row i of [length, 2 * length - 1] scores
   // moves left by length - 1 - i, so column j is relative position j - i.
   const int length = position_scores.shape(2);
-  const int position_count = position_scores.shape(3);
-  position_scores = mx::pad(position_scores, {{0, 0}, {0, 0}, {0, 0}, {1, 0}});
-  position_scores = mx::reshape(
-      position_scores, {batch, head_count, position_count + 1, length});
-  position_scores = mx::slice(position_scores, {0, 0, 1, 0},
-                              {batch, head_count, position_count + 1, length});
-  position_scores =
-      mx::reshape(position_scores, {batch, head_count, length, position_count});
+  position_scores = qwen3_asr::RelativeShift(position_scores);
   position_scores =
       mx::slice(position_scores, {0, 0, 0, 0},
                 {batch, head_count, length, content_scores.shape(3)});

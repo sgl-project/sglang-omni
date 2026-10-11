@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Depformer weight slicing and teacher forcing, on a scaled-down spec."""
 
+import pytest
 import torch
 
 from sglang_omni.models.personaplex.architecture import AUDIO_CARD, DepformerSpec
@@ -95,7 +96,7 @@ def test_sixteen_step_checkpoint_loads_its_first_eight_steps():
 def test_forced_codes_are_kept_and_condition_later_steps():
     model = Depformer(SPEC)
     model.load_reference_weights(reference_weights(8))
-    greedy = lambda logits: sample_token(logits, AudioSampling(0.0, 0))
+    greedy = lambda logits: sample_token(logits, AudioSampling(0.0, 0), [None, None])
     text = torch.tensor([3, 3])
     hidden = torch.randn(2, SPEC.input_dim)
     free = torch.full((2, 8), -1, dtype=torch.long)
@@ -108,17 +109,123 @@ def test_forced_codes_are_kept_and_condition_later_steps():
     assert codes[1, 0].item() == unforced[1, 0].item()
 
 
+@pytest.mark.parametrize("batch_size", [1, 4, 8])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("teacher_forced", [True, False])
+@torch.inference_mode()
+def test_fused_projections_match_separate_linears(
+    batch_size: int, dtype: torch.dtype, teacher_forced: bool
+) -> None:
+    weights = {
+        name: (
+            tensor / tensor.shape[-1] ** 0.5
+            if tensor.ndim == 2 and "emb" not in name
+            else tensor
+        )
+        for name, tensor in reference_weights(16).items()
+    }
+    model = Depformer(SPEC).to(dtype=dtype)
+    model.load_reference_weights(weights)
+    projections = [
+        torch.nn.Linear(SPEC.input_dim, SPEC.dim, bias=False, dtype=dtype)
+        for _ in range(SPEC.steps)
+    ]
+    for step, projection in enumerate(projections):
+        projection.weight.copy_(weights[f"depformer_in.{step}.weight"])
+    text_tokens = torch.arange(batch_size) + 3
+    hidden_states = torch.randn(
+        batch_size,
+        SPEC.input_dim,
+        dtype=dtype,
+        generator=torch.Generator().manual_seed(7),
+    )
+    forced_codes = torch.arange(batch_size * SPEC.steps).view(batch_size, SPEC.steps)
+    forced_codes = (
+        forced_codes
+        if teacher_forced
+        else torch.where(forced_codes % 3 == 0, -1, forced_codes)
+    )
+
+    actual_logits: list[torch.Tensor] = []
+
+    def record_logits(logits: torch.Tensor) -> torch.Tensor:
+        actual_logits.append(logits)
+        return logits.argmax(dim=-1)
+
+    actual_codes = model.generate(
+        text_tokens, hidden_states, forced_codes, record_logits
+    )
+    caches = [
+        hidden_states.new_empty(
+            2, batch_size, SPEC.num_heads, SPEC.steps, SPEC.head_dim
+        )
+        for _ in model.layers
+    ]
+    previous_tokens = text_tokens
+    expected_logits: list[torch.Tensor] = []
+    expected_codes: list[torch.Tensor] = []
+    for step, projection in enumerate(projections):
+        token_embeddings = (
+            model.depformer_text_emb(previous_tokens)
+            if step == 0
+            else model.depformer_emb[step - 1](previous_tokens)
+        )
+        depth_hidden_states = projection(hidden_states) + token_embeddings
+        for layer, cache in zip(model.layers, caches, strict=True):
+            depth_hidden_states = layer.step(depth_hidden_states, step, cache)
+        logits = model.linears[step](depth_hidden_states).float()
+        expected_logits.append(logits)
+        previous_tokens = torch.where(
+            forced_codes[:, step] >= 0,
+            forced_codes[:, step],
+            logits.argmax(dim=-1),
+        )
+        expected_codes.append(previous_tokens)
+
+    torch.testing.assert_close(
+        torch.stack(actual_logits, dim=1),
+        torch.stack(expected_logits, dim=1),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    torch.testing.assert_close(
+        actual_codes, torch.stack(expected_codes, dim=1), rtol=0, atol=0
+    )
+
+
 def test_greedy_sampling_is_argmax_and_top_k_stays_inside_k():
     logits = torch.randn(4, 50)
     assert (
-        sample_token(logits, AudioSampling(0.0, 25)).tolist()
+        sample_token(logits, AudioSampling(0.0, 25), [None] * 4).tolist()
         == logits.argmax(-1).tolist()
     )
     generator = torch.Generator().manual_seed(7)
-    picks = sample_token(logits, AudioSampling(0.8, 3), generator)
+    picks = sample_token(logits, AudioSampling(0.8, 3), [generator] * 4)
     top3 = torch.topk(logits, 3).indices
     assert all(pick in top3[row].tolist() for row, pick in enumerate(picks.tolist()))
     again = sample_token(
-        logits, AudioSampling(0.8, 3), torch.Generator().manual_seed(7)
+        logits, AudioSampling(0.8, 3), [torch.Generator().manual_seed(7)] * 4
     )
     assert again.tolist() == picks.tolist()
+
+
+def test_each_row_draws_from_its_own_generator():
+    logits = torch.randn(4, 50)
+    sampling = AudioSampling(1.0, 20)
+
+    def alone(row: int, seed: int) -> list[int]:
+        generator = torch.Generator().manual_seed(seed)
+        return [
+            int(sample_token(logits[row : row + 1], sampling, [generator]))
+            for _ in range(20)
+        ]
+
+    generators = [
+        torch.Generator().manual_seed(7),
+        None,
+        None,
+        torch.Generator().manual_seed(8),
+    ]
+    batched = [sample_token(logits, sampling, generators) for _ in range(20)]
+    assert [int(picks[0]) for picks in batched] == alone(0, 7)
+    assert [int(picks[3]) for picks in batched] == alone(3, 8)

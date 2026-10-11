@@ -408,7 +408,6 @@ def conv_pos_embed_prefix(
     embedding and the two next contexts."""
     # Note (Jiaxin Deng): the whole-sequence call zero-pads conv2's input,
     # not conv1's output, so the second conv needs its own cached tail.
-    conv_pos_embed = estimator.dit.input_embed.conv_pos_embed
     hidden_size = hidden_states.shape[2]
     first_input = torch.cat(
         (
@@ -416,14 +415,14 @@ def conv_pos_embed_prefix(
             hidden_states[0],
         )
     )[attention.extended_index]
-    first_output = conv_pos_embed.conv1(first_input.T.unsqueeze(0))[0].T
+    first_output = estimator.positional_conv(first_input, 0)
     second_input = torch.cat(
         (
             second_context.reshape(-1, hidden_size).to(first_output.dtype),
             first_output[attention.conv_output_index],
         )
     )[attention.extended_index]
-    second_output = conv_pos_embed.conv2(second_input.T.unsqueeze(0))[0].T
+    second_output = estimator.positional_conv(second_input, 1)
     return (
         second_output[attention.conv_output_index].unsqueeze(0),
         first_input[attention.tail_index],

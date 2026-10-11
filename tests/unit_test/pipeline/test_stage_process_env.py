@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from sglang_omni.pipeline.stage_workers import (
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.utils.gpu_memory import get_gpu_startup_lock_path
+from tests.unit_test.fixtures import affinity_probe
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
@@ -105,6 +107,31 @@ def test_spawn_env_cpu_plan_preserves_configured_omp(
 
     assert "OMP_NUM_THREADS" not in os.environ
     assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "sched_setaffinity") or len(os.sched_getaffinity(0)) < 2,
+    reason="needs control over the CPU mask of two or more CPUs",
+)
+def test_spawned_process_threads_start_on_the_planned_cpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher_cpus = os.sched_getaffinity(0)
+    spec = worker_spec(StageLaunchConfig(stage_name="preprocess"))
+    spec.cpu_affinity = frozenset({min(launcher_cpus)})
+    monkeypatch.setattr(
+        stage_workers, "stage_process_main", affinity_probe.report_thread_cpus
+    )
+    monkeypatch.setenv(affinity_probe.SPAWNED_ENV, "1")
+    group = stage_workers.StageGroup("probe", [spec])
+
+    group.spawn(multiprocessing.get_context("spawn"))
+    import_thread_cpus, thread_cpus = group.startup_error_channels[0].get(timeout=120)
+    group.processes[0].join(timeout=30)
+
+    assert os.sched_getaffinity(0) == launcher_cpus
+    assert import_thread_cpus == sorted(spec.cpu_affinity)
+    assert all(cpus == sorted(spec.cpu_affinity) for cpus in thread_cpus)
 
 
 def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:

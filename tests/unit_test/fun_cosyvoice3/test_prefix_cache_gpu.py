@@ -9,6 +9,7 @@ import copy
 import pytest
 import torch
 
+from sglang_omni.models.fun_cosyvoice3.causal_conv import FusedConvPositionEmbedding
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
     gather_rows,
@@ -37,7 +38,7 @@ cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
 
 CHUNK = 50
 CHANNELS = 80
-HEADS, HEAD_DIM, LAYERS = 4, 32, 3
+HEADS, HEAD_DIM, LAYERS = 4, 64, 3
 COMPILED_OVER_EAGER_ERROR = 1.1
 
 
@@ -76,6 +77,9 @@ def make_estimator() -> PackedDiT:
             module.to(torch.bfloat16)
         else:
             pass
+    dit.input_embed.conv_pos_embed = FusedConvPositionEmbedding(
+        dit.input_embed.conv_pos_embed
+    )
     estimator = PackedDiT(dit, device="cuda")
     if not estimator.is_ragged:
         pytest.skip("requires FA3")

@@ -19,6 +19,8 @@ from sglang.kernels.ops.attention.flash_attention import (
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 from sglang.srt.utils.custom_op import register_custom_op
 
+from sglang_omni.models.fun_cosyvoice3.causal_conv import FusedConvPositionEmbedding
+
 logger = logging.getLogger(__name__)
 
 # Note (Jiaxin Deng): each positional conv has kernel 31, so it reads the 30
@@ -458,19 +460,28 @@ class PackedDiT:
     def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
         # note (ratish): the padded call zero pads conv2's input, not conv1's output,
         # so conv2's gaps are gathered again.
-        module = self.dit.input_embed.conv_pos_embed
         first_input = torch.cat((h.new_zeros(1, h.shape[2]), h[0]))[
             rows.conv_input_index
         ]
-        first_output = module.conv1(first_input.T.unsqueeze(0))[0].T
+        first_output = self.positional_conv(first_input, 0)
         second_input = torch.cat(
             (
                 first_output.new_zeros(1, first_output.shape[1]),
                 first_output[rows.conv_output_index],
             )
         )[rows.conv_input_index]
-        second_output = module.conv2(second_input.T.unsqueeze(0))[0].T
+        second_output = self.positional_conv(second_input, 1)
         return second_output[rows.conv_output_index].unsqueeze(0)
+
+    def positional_conv(self, x: torch.Tensor, conv_index: int) -> torch.Tensor:
+        """Positional conv conv_index and its Mish over x: (frames, channels), each
+        output frame reading the CONV_CONTEXT_FRAMES frames before it."""
+        conv_pos_embed = self.dit.input_embed.conv_pos_embed
+        if isinstance(conv_pos_embed, FusedConvPositionEmbedding):
+            return conv_pos_embed.conv(x.unsqueeze(0), conv_index)[0]
+        else:
+            conv = (conv_pos_embed.conv1, conv_pos_embed.conv2)[conv_index]
+            return conv(x.T.unsqueeze(0))[0].T
 
     def rope_angles(self, frame_count: int) -> torch.Tensor:
         """RoPE angles of positions [0, frame_count), (1, frame_count, rotary
