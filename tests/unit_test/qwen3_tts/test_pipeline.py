@@ -37,6 +37,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     split_frames_by_width,
 )
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+from sglang_omni.models.qwen3_tts.prompt_frontend import Qwen3TTSPromptFrontend
 from sglang_omni.models.qwen3_tts.request_builders import (
     Qwen3TTSPreparedRequest,
     Qwen3TTSSGLangRequestData,
@@ -9070,19 +9071,16 @@ def test_qwen3_tts_shared_gpu_layout_demands_no_preprocessing_fraction() -> None
     assert placement.gpus[0].missing_fraction_stage_names == ("tts_engine", "vocoder")
 
 
-def test_qwen3_tts_prompt_frontend_builds_a_custom_voice_prompt() -> None:
-    """The frontend must satisfy the prompt builders it inherits, not just load weights."""
-    from sglang_omni.models.qwen3_tts import prompt_frontend
-
+def make_prompt_frontend() -> Qwen3TTSPromptFrontend:
     talker = SimpleNamespace(
-        vocab_size=6,
-        hidden_size=4,
-        text_vocab_size=9,
-        text_hidden_size=3,
+        vocab_size=12,
+        hidden_size=8,
+        text_vocab_size=12,
+        text_hidden_size=6,
         num_code_groups=3,
-        code_predictor_config=SimpleNamespace(vocab_size=5),
-        spk_id={"vivian": 3},
-        codec_language_id={"en": 1},
+        code_predictor_config=SimpleNamespace(vocab_size=7),
+        spk_id={"Vivian": 9},
+        codec_language_id={"english": 6, "chinese": 7},
         codec_pad_id=0,
         codec_bos_id=1,
         codec_nothink_id=2,
@@ -9097,29 +9095,103 @@ def test_qwen3_tts_prompt_frontend_builds_a_custom_voice_prompt() -> None:
         tts_eos_token_id=1,
         tts_pad_token_id=2,
     )
-    frontend = prompt_frontend.Qwen3TTSPromptFrontend(
-        root, device="cpu", dtype=torch.float32
-    )
-    input_id = torch.arange(12, dtype=torch.long).unsqueeze(0) % 9
+    return Qwen3TTSPromptFrontend(root, device="cpu", dtype=torch.float32)
+
+
+def embed_text_rows(frontend: Qwen3TTSPromptFrontend, ids: list[int]) -> torch.Tensor:
+    return frontend.text_projection(frontend.get_text_embeddings()(torch.tensor([ids])))
+
+
+def embed_codec_rows(frontend: Qwen3TTSPromptFrontend, ids: list[int]) -> torch.Tensor:
+    return frontend.get_input_embeddings()(torch.tensor([ids]))
+
+
+def test_qwen3_tts_custom_voice_prompts_match_fresh_embeddings() -> None:
+    frontend = make_prompt_frontend()
     prompt_constants = frontend.build_prompt_constants()
-    embeds, attention_mask, trailing, ref_code = frontend.build_custom_voice_inputs(
-        input_id=input_id,
-        voice="vivian",
-        language="en",
-        non_streaming_mode=False,
-        prompt_constants=prompt_constants,
-        instruct_id=None,
+    input_ids = [3, 4, 5, 6, 7, 8, 9, 10, 11, 3, 4]
+    for non_streaming_mode, text_ids, codec_ids, trailing_ids in (
+        (False, [6], [1], [7, 8, 1]),
+        (True, [6, 7, 8, 1, 2], [0, 0, 0, 0, 1], [2]),
+    ):
+        embeds, _, trailing, _ = frontend.build_custom_voice_inputs(
+            input_id=torch.tensor([input_ids]),
+            voice="VIVIAN",
+            language="english",
+            non_streaming_mode=non_streaming_mode,
+            prompt_constants=prompt_constants,
+        )
+        expected = torch.cat(
+            [
+                embed_text_rows(frontend, input_ids[:3]),
+                embed_text_rows(frontend, [2, 2, 2, 2, 2, 0, *text_ids])
+                + embed_codec_rows(frontend, [3, 4, 6, 5, 9, 0, *codec_ids]),
+            ],
+            dim=1,
+        )
+        torch.testing.assert_close(embeds, expected)
+        torch.testing.assert_close(trailing, embed_text_rows(frontend, trailing_ids))
+    assert torch.equal(
+        prompt_constants.feedback_pad_embed, embed_text_rows(frontend, [2])[0, 0]
     )
-    assert set(prompt_constants.codec_prefill_embeds) == {None, 1}
-    assert prompt_constants.codec_prefill_embeds[None].shape == (1, 3, 4)
-    assert prompt_constants.codec_prefill_embeds[1].shape == (1, 4, 4)
-    assert set(prompt_constants.custom_voice_speaker_embeds) == {"vivian"}
-    assert prompt_constants.feedback_pad_embed.shape == (4,)
-    assert ref_code is None
-    assert embeds.shape[0] == 1 and embeds.shape[-1] == talker.hidden_size
-    assert attention_mask.shape == (1, embeds.shape[1])
-    assert trailing.shape[-1] == talker.hidden_size
-    assert torch.isfinite(embeds).all()
+
+
+def test_qwen3_tts_icl_prompts_match_fresh_embeddings() -> None:
+    frontend = make_prompt_frontend()
+    prompt_constants = frontend.build_prompt_constants()
+    code_tables = [
+        frontend.get_input_embeddings(),
+        *frontend.code_predictor.model.codec_embedding,
+    ]
+    input_ids = [3, 4, 5, 6, 7, 8, 9, 10, 11, 3, 4]
+    ref_ids = [3, 4, 5, 10, 11, 9, 10]
+    speaker_embed = torch.randn(8)
+    for non_streaming_mode, frames, text_ids, codec_pads, trailing_ids in (
+        (False, 3, [10, 11, 6, 7], 0, [8, 1]),
+        (False, 7, [10, 11, 6, 7, 8, 1, 2, 2], 0, [2]),
+        (True, 3, [10, 11, 6, 7, 8, 1, 2, 2, 2, 2], 6, [2]),
+    ):
+        ref_code = torch.randint(0, 7, (frames, 3))
+        embeds, _, trailing, _ = frontend.build_voice_clone_inputs(
+            input_id=torch.tensor([input_ids]),
+            ref_id=torch.tensor([ref_ids]),
+            voice_clone_prompt={
+                "ref_spk_embedding": [speaker_embed],
+                "ref_code": [ref_code],
+                "icl_mode": [True],
+            },
+            language="auto",
+            non_streaming_mode=non_streaming_mode,
+            prompt_constants=prompt_constants,
+        )
+        frame_rows = sum(
+            table(ref_code[:, group]) for group, table in enumerate(code_tables)
+        )
+        expected = torch.cat(
+            [
+                embed_text_rows(frontend, input_ids[:3]),
+                embed_text_rows(frontend, [2, 2, 2, 2, 0])
+                + torch.cat(
+                    [
+                        embed_codec_rows(frontend, [2, 4, 5]),
+                        speaker_embed.view(1, 1, -1),
+                        embed_codec_rows(frontend, [0]),
+                    ],
+                    dim=1,
+                ),
+                embed_text_rows(frontend, text_ids)
+                + torch.cat(
+                    [
+                        embed_codec_rows(frontend, [0] * codec_pads + [1]),
+                        frame_rows.unsqueeze(0),
+                    ],
+                    dim=1,
+                ),
+            ],
+            dim=1,
+        )
+        torch.testing.assert_close(embeds, expected)
+        torch.testing.assert_close(trailing, embed_text_rows(frontend, trailing_ids))
 
 
 def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
