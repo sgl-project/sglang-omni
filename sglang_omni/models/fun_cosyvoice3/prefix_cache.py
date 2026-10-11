@@ -20,6 +20,7 @@ import torch._dynamo as dynamo
 import torch.nn.functional as F
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
+    CONV_CONTEXT_FRAMES,
     FA3_PAGE_SIZE,
     PACKED_INDUCTOR_OPTIONS,
     PackedDiT,
@@ -30,9 +31,6 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
 )
 
 BLOCK_FRAMES = 64
-# Note (Jiaxin Deng): each positional conv has kernel 31, so it reads the 30
-# frames before its input frame.
-CONV_CONTEXT_FRAMES = 30
 # note(ratish): FA3's pick for these segments with a tight page table; pinned, since a
 # graph's wider table would change the pick and the result.
 PREFIX_FA3_SPLITS = 1
@@ -410,7 +408,6 @@ def conv_pos_embed_prefix(
     embedding and the two next contexts."""
     # Note (Jiaxin Deng): the whole-sequence call zero-pads conv2's input,
     # not conv1's output, so the second conv needs its own cached tail.
-    conv_pos_embed = estimator.dit.input_embed.conv_pos_embed
     hidden_size = hidden_states.shape[2]
     first_input = torch.cat(
         (
@@ -418,14 +415,14 @@ def conv_pos_embed_prefix(
             hidden_states[0],
         )
     )[attention.extended_index]
-    first_output = conv_pos_embed.conv1(first_input.T.unsqueeze(0))[0].T
+    first_output = estimator.positional_conv(first_input, 0)
     second_input = torch.cat(
         (
             second_context.reshape(-1, hidden_size).to(first_output.dtype),
             first_output[attention.conv_output_index],
         )
     )[attention.extended_index]
-    second_output = conv_pos_embed.conv2(second_input.T.unsqueeze(0))[0].T
+    second_output = estimator.positional_conv(second_input, 1)
     return (
         second_output[attention.conv_output_index].unsqueeze(0),
         first_input[attention.tail_index],

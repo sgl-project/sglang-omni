@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+from collections import defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -37,6 +38,15 @@ FLOW_CACHE_TAIL_FRAMES = 100
 SILENCE_TOKEN_ID = 4218
 MEL_CACHE_FRAMES = 8
 SAMPLES_PER_MEL_FRAME = 480
+# note (Junnan Li): cuDNN builds a convolution plan per input shape, so HiFT batches are padded to a few repeating sizes.
+HIFT_BATCH_GRANULE = 8
+
+
+def hift_batch_rows(rows: int) -> int:
+    if rows <= HIFT_BATCH_GRANULE:
+        return 1 << (rows - 1).bit_length()
+    else:
+        return -(-rows // HIFT_BATCH_GRANULE) * HIFT_BATCH_GRANULE
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -50,6 +60,16 @@ class SpeakerPrompt:
 
 
 StreamCaches = tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]
+HiftBatchKey = tuple[int, bool, int, int, int]
+
+
+@dataclass(kw_only=True, frozen=True)
+class StreamChunk:
+    token_ids: list[int]
+    prompt: SpeakerPrompt
+    caches: StreamCaches
+    is_last_chunk: bool
+
 
 FLOW_TYPES = {
     "!new:cosyvoice2.flow.flow.CausalMaskedDiffWithXvec": CausalMaskedDiffWithXvec,
@@ -270,99 +290,188 @@ class Token2Wav(torch.nn.Module):
         return flow_cache, hift_cache
 
     @torch.inference_mode()
-    def stream(
+    def capture_chunk_graphs(
         self,
-        generated_speech_tokens: list[int],
         prompt: SpeakerPrompt,
         caches: StreamCaches,
-        is_last_chunk: bool = False,
-    ) -> tuple[bytes, StreamCaches]:
-        """Decode one token chunk; the caller owns the caches and receives new ones."""
-        speaker_embedding = prompt.speaker_embedding
-        prompt_mels = prompt.prompt_mel
-        flow_cache, hift_cache = caches
-        tokens = torch.tensor(
-            [generated_speech_tokens], dtype=torch.int32, device=self.device
-        )
+        *,
+        stream_counts: tuple[int, ...],
+        frame_counts: tuple[int, ...],
+    ) -> None:
+        """Capture the flow's chunk loop for streams that continue this voice, or any voice with a prompt no longer.
+
+        A stream's history never exceeds the prompt plus FLOW_CACHE_TAIL_FRAMES; non-CUDA devices decode eagerly.
+        """
+        flow_cache, _ = caches
+        if self.device.type == "cuda":
+            with torch.amp.autocast(
+                "cuda", dtype=self.dtype, enabled=self.dtype != torch.float32
+            ):
+                self.flow.decoder.capture_chunk_graphs(
+                    stream_counts=stream_counts,
+                    frame_counts=frame_counts,
+                    history_capacity=prompt.prompt_mel.shape[1]
+                    + FLOW_CACHE_TAIL_FRAMES,
+                    convolution_cache=flow_cache["estimator_convolution_cache"],
+                    attention_cache=flow_cache["estimator_attention_cache"],
+                )
+        else:
+            pass
+
+    @torch.inference_mode()
+    def warm_up_vocoder(self, max_rows: int, max_chunk_frames: int) -> None:
+        for rows in sorted({hift_batch_rows(rows) for rows in range(1, max_rows + 1)}):
+            for frames in range(
+                self.flow.up_rate,
+                self.mel_cache_len + max_chunk_frames + 1,
+                self.flow.up_rate,
+            ):
+                self.hift(
+                    torch.zeros(
+                        rows, self.flow.output_size, frames, device=self.device
+                    ),
+                    torch.zeros(rows, 1, 0, device=self.device),
+                )
+
+    @torch.inference_mode()
+    def stream_batch(
+        self, chunks: list[StreamChunk]
+    ) -> list[tuple[bytes, StreamCaches]]:
+        """Decode one token chunk of each of several streams; each caller owns its caches and receives new ones."""
         with torch.amp.autocast(
             "cuda", dtype=self.dtype, enabled=self.dtype != torch.float32
         ):
-            predicted_mel, flow_cache = self.flow.inference_chunk(
-                token_ids=tokens,
-                speaker_embeddings=speaker_embedding,
-                cache=flow_cache,
-                is_last_chunk=is_last_chunk,
+            decoded = self.flow.inference_chunks(
+                token_ids=[
+                    torch.tensor(
+                        [chunk.token_ids], dtype=torch.int32, device=self.device
+                    )
+                    for chunk in chunks
+                ],
+                speaker_embeddings=torch.cat(
+                    [chunk.prompt.speaker_embedding for chunk in chunks]
+                ),
+                caches=[chunk.caches[0] for chunk in chunks],
+                is_last_chunk=[chunk.is_last_chunk for chunk in chunks],
                 n_timesteps=self.n_timesteps,
             )
-        prompt_mel_frames = prompt_mels.shape[1]
-        if (
-            flow_cache["estimator_attention_cache"].shape[4]
-            > prompt_mel_frames + FLOW_CACHE_TAIL_FRAMES
+        groups: dict[HiftBatchKey, list[int]] = defaultdict(list)
+        for index, (chunk, (predicted_mel, flow_cache)) in enumerate(
+            zip(chunks, decoded, strict=True)
         ):
-            flow_cache["estimator_attention_cache"] = torch.cat(
-                [
-                    flow_cache["estimator_attention_cache"][
-                        :, :, :, :, :prompt_mel_frames
+            prompt_mel_frames = chunk.prompt.prompt_mel.shape[1]
+            if (
+                flow_cache["estimator_attention_cache"].shape[4]
+                > prompt_mel_frames + FLOW_CACHE_TAIL_FRAMES
+            ):
+                flow_cache["estimator_attention_cache"] = torch.cat(
+                    [
+                        flow_cache["estimator_attention_cache"][
+                            :, :, :, :, :prompt_mel_frames
+                        ],
+                        flow_cache["estimator_attention_cache"][
+                            :, :, :, :, -FLOW_CACHE_TAIL_FRAMES:
+                        ],
                     ],
-                    flow_cache["estimator_attention_cache"][
-                        :, :, :, :, -FLOW_CACHE_TAIL_FRAMES:
-                    ],
-                ],
-                dim=4,
-            )
-        else:
-            pass
-        if (
-            flow_cache["conformer_attention_cache"].shape[3]
-            > prompt_mel_frames + FLOW_CACHE_TAIL_FRAMES
-        ):
-            flow_cache["conformer_attention_cache"] = torch.cat(
-                [
-                    flow_cache["conformer_attention_cache"][
-                        :, :, :, :prompt_mel_frames, :
-                    ],
-                    flow_cache["conformer_attention_cache"][
-                        :, :, :, -FLOW_CACHE_TAIL_FRAMES:, :
-                    ],
-                ],
-                dim=3,
-            )
-        else:
-            pass
-        hift_cache_speech = hift_cache["speech"]
-        mel = torch.concat([hift_cache["mel"], predicted_mel], dim=2)
-        speech, source = self.hift(mel.float(), hift_cache["source"])
-        if hift_cache_speech.shape[-1] > 0:
-            overlap = min(
-                self.source_cache_len, speech.shape[-1], hift_cache_speech.shape[-1]
-            )
-            speech = speech.clone()
-            speech[..., :overlap] = (
-                speech[..., :overlap] * self.speech_window[:overlap]
-                + hift_cache_speech[..., -overlap:]
-                * self.speech_window[
-                    self.source_cache_len : self.source_cache_len + overlap
-                ]
-            )
-        else:
-            pass
-        is_first_chunk = hift_cache_speech.shape[-1] == 0
-        hift_cache = dict(
-            mel=mel[..., -self.mel_cache_len :].clone(),
-            source=source[:, :, -self.source_cache_len :].clone(),
-            speech=speech[:, -self.source_cache_len :].clone(),
-        )
-        if not is_last_chunk:
-            if is_first_chunk:
-                silence_padding = torch.zeros(
-                    1, self.source_cache_len, device=speech.device
-                )
-                speech = torch.cat(
-                    [silence_padding, speech[:, : -self.source_cache_len]], dim=1
+                    dim=4,
                 )
             else:
-                speech = speech[:, : -self.source_cache_len]
-        else:
-            pass
-        waveform = np.clip(speech.cpu().numpy(), -1.0, 1.0)
-        return (waveform * 32767.0).astype("<i2").tobytes(), (flow_cache, hift_cache)
+                pass
+            if (
+                flow_cache["conformer_attention_cache"].shape[3]
+                > prompt_mel_frames + FLOW_CACHE_TAIL_FRAMES
+            ):
+                flow_cache["conformer_attention_cache"] = torch.cat(
+                    [
+                        flow_cache["conformer_attention_cache"][
+                            :, :, :, :prompt_mel_frames, :
+                        ],
+                        flow_cache["conformer_attention_cache"][
+                            :, :, :, -FLOW_CACHE_TAIL_FRAMES:, :
+                        ],
+                    ],
+                    dim=3,
+                )
+            else:
+                pass
+            hift_cache = chunk.caches[1]
+            groups[
+                (
+                    predicted_mel.shape[2],
+                    chunk.is_last_chunk,
+                    hift_cache["mel"].shape[2],
+                    hift_cache["source"].shape[2],
+                    hift_cache["speech"].shape[1],
+                )
+            ].append(index)
+        results: dict[int, tuple[bytes, StreamCaches]] = {}
+        for indices in groups.values():
+            is_last_chunk = chunks[indices[0]].is_last_chunk
+            hift_cache = {
+                name: torch.cat([chunks[index].caches[1][name] for index in indices])
+                for name in ("mel", "source", "speech")
+            }
+            predicted_mel = torch.cat([decoded[index][0] for index in indices])
+            hift_cache_speech = hift_cache["speech"]
+            mel = torch.concat([hift_cache["mel"], predicted_mel], dim=2)
+            padding_rows = hift_batch_rows(len(indices)) - len(indices)
+            if padding_rows:
+                # note (Junnan Li): Padding rows repeat the last row; HiFT treats rows independently and their output is dropped.
+                speech, source = self.hift(
+                    torch.cat((mel, mel[-1:].expand(padding_rows, -1, -1))).float(),
+                    torch.cat(
+                        (
+                            hift_cache["source"],
+                            hift_cache["source"][-1:].expand(padding_rows, -1, -1),
+                        )
+                    ),
+                )
+                speech, source = speech[: len(indices)], source[: len(indices)]
+            else:
+                speech, source = self.hift(mel.float(), hift_cache["source"])
+            if hift_cache_speech.shape[-1] > 0:
+                overlap = min(
+                    self.source_cache_len, speech.shape[-1], hift_cache_speech.shape[-1]
+                )
+                speech = speech.clone()
+                speech[..., :overlap] = (
+                    speech[..., :overlap] * self.speech_window[:overlap]
+                    + hift_cache_speech[..., -overlap:]
+                    * self.speech_window[
+                        self.source_cache_len : self.source_cache_len + overlap
+                    ]
+                )
+            else:
+                pass
+            is_first_chunk = hift_cache_speech.shape[-1] == 0
+            next_hift_cache = dict(
+                mel=mel[..., -self.mel_cache_len :],
+                source=source[:, :, -self.source_cache_len :],
+                speech=speech[:, -self.source_cache_len :],
+            )
+            if not is_last_chunk:
+                if is_first_chunk:
+                    silence_padding = torch.zeros(
+                        len(indices), self.source_cache_len, device=speech.device
+                    )
+                    speech = torch.cat(
+                        [silence_padding, speech[:, : -self.source_cache_len]], dim=1
+                    )
+                else:
+                    speech = speech[:, : -self.source_cache_len]
+            else:
+                pass
+            waveform = np.clip(speech.cpu().numpy(), -1.0, 1.0)
+            pcm = (waveform * 32767.0).astype("<i2")
+            for position, index in enumerate(indices):
+                results[index] = (
+                    pcm[position].tobytes(),
+                    (
+                        decoded[index][1],
+                        {
+                            name: value[position : position + 1].clone()
+                            for name, value in next_hift_cache.items()
+                        },
+                    ),
+                )
+        return [results[index] for index in range(len(chunks))]

@@ -41,6 +41,7 @@ SESSION_STRING_LENGTH_LIMIT_CHARACTERS = 0
 
 class SessionKV(Protocol):
     kv_allocated_len: int
+    holds_kv: bool
 
 
 class SessionSlot(Protocol):
@@ -380,6 +381,8 @@ class ARSessionBridge:
             raise ValueError("embedding span precedes the native sequence")
         else:
             pass
+        # note (Junnan Li): Placeholder ids under embedding spans do not identify their rows, so such a unit stays out of the radix tree.
+        session_request.skip_radix_cache_insert = bool(unit.embedding_spans)
         session = self.sessions[unit.session_identity.id]
         request_data.session_embedding_spans = [
             *session.embedding_spans,
@@ -510,6 +513,32 @@ class ARSessionBridge:
             else:
                 capacity_message = None
         return capacity_message
+
+    def count_row_reusing_requests(
+        self, waiting_queue: list[Req], free_request_rows: int
+    ) -> int:
+        """Count queued units that reuse their slot's row, up to the first request no free row is left for."""
+        slots = self.bridge_scheduler.tree_cache.slots
+        fresh_request_count = 0
+        row_reusing_request_count = 0
+        for queued_request in waiting_queue:
+            session = queued_request.session
+            if session is not None and session.streaming:
+                slot = slots.get(session.session_id)
+            else:
+                slot = None
+            # note (Junnan Li): An aborted unit does not take its slot's row.
+            if (
+                slot is not None
+                and slot.kv.holds_kv
+                and queued_request.to_finish is None
+            ):
+                row_reusing_request_count += 1
+            elif fresh_request_count < free_request_rows:
+                fresh_request_count += 1
+            else:
+                break
+        return row_reusing_request_count
 
     def stream_messages(
         self,

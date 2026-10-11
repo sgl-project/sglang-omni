@@ -87,7 +87,7 @@ The fixed caller-frame budget still determines the number of generated frames.
 
 ## Known limitations
 
-- Offline, one request at a time (`max_running_requests=1`).
+- Offline, one request at a time by default (`max_running_requests=1`). If you raise `--lm.engine.max_running_requests`, the requests in a batch share one depformer pass per frame, and each seeded request still draws from its own generator. A seeded reply repeats exactly only with one request in flight, because batched kernels can round differently.
 - CUDA graphs are off; a 7B decode step plus 8 depformer steps runs close to the 80 ms frame budget rather than well inside it.
 - The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
 
@@ -99,9 +99,26 @@ The fixed caller-frame budget still determines the number of generated frames.
 pytest tests/unit_test/personaplex/ -q
 ```
 
-Reference comparisons and reproducibility checks are evaluation scripts under
-`benchmarks/eval/`, separate from the unit suite. See the
-[PersonaPlex evaluation guide](../../benchmarks/eval/personaplex.md) for checkpoint,
-reference-environment and output setup. The greedy comparison checks a matching
-prefix, not full-output equality; the component comparison includes a diagnostic
-for the reference depformer ring behavior.
+### Reference parity
+
+Two opt-in tests compare against an [NVIDIA/personaplex](https://github.com/NVIDIA/personaplex) checkout. Its `moshi` package pins `torch < 2.5`, so it needs its own environment, separate from the serving one:
+
+```bash
+git clone https://github.com/NVIDIA/personaplex.git /path/to/personaplex
+uv venv /path/to/personaplex/.venv -p 3.12
+uv pip install --python /path/to/personaplex/.venv/bin/python /path/to/personaplex/moshi/
+```
+
+Then run the tests from the serving environment. They need CUDA, skip unless both variables are set, and run one file per command:
+
+```bash
+export PERSONAPLEX_REFERENCE_SOURCE=/path/to/personaplex
+export PERSONAPLEX_REFERENCE_PYTHON=/path/to/personaplex/.venv/bin/python
+python -m pytest tests/test_model/test_personaplex_parity.py -v -s
+python -m pytest tests/test_model/test_personaplex_components.py -v -s
+```
+
+- `test_personaplex_parity.py`: greedy replies to the reference's two test recordings must have the input's length, match it for at least the first 100 frames, and agree in text over that prefix; greedy and seeded replies must also repeat. **This is not full-output parity.**
+- `test_personaplex_components.py`: Mimi, the input embeddings and the depformer logits on the public `kyutai/moshiko-pytorch-bf16` base. The last depformer step matches only with the reference's ring behavior emulated, which diagnoses a known difference rather than proving a match.
+
+`PERSONAPLEX_PARITY_CHECKPOINT` and `PERSONAPLEX_MOSHI_CHECKPOINT` override the checkpoints, `PERSONAPLEX_STAGE_ARGS` forwards pipeline flags such as `'--lm.engine.mem_fraction_static 0.5'`, and `PERSONAPLEX_REFERENCE_REPO` sets the reference CLI's config lookup. Reference outputs are regenerated on every run under pytest's temporary directory.

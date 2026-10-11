@@ -694,6 +694,20 @@ def test_mps_performance_applies_slack_to_calibrated_references(
     assert any("throughput_qps" in check for check in verdict["failed_checks"])
 
 
+def test_similarity_floor_applies_slack_and_fails_closed_when_uncalibrated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_ci import tts_mps_ci_config
+
+    monkeypatch.setitem(tts_mps_ci_config.MPS_SIMILARITY_MEAN_MIN, "higgs", 66.0)
+    monkeypatch.setitem(tts_mps_ci_config.MPS_SIMILARITY_MEAN_MIN, "moss", None)
+
+    floor = tts_mps_ci_config.similarity_floor("higgs")
+    assert floor == pytest.approx(66.0 * tts_mps_ci_config.MPS_SIMILARITY_SLACK)
+    assert 60.0 < floor < 66.0
+    assert tts_mps_ci_config.similarity_floor("moss") is None
+
+
 def test_gpu_client_delta_flags_only_clients_created_by_the_mps_stage() -> None:
     runtime = load(RUNTIME_SCRIPT, "tts_mps_runtime_gpu")
     baseline = [

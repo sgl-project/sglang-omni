@@ -75,8 +75,9 @@ class Depformer(nn.Module):
     def __init__(self, spec: DepformerSpec = DEPFORMER) -> None:
         super().__init__()
         self.spec = spec
-        self.depformer_in = nn.ModuleList(
-            nn.Linear(spec.input_dim, spec.dim, bias=False) for _ in range(spec.steps)
+        # Note (edwardzh): Shared temporal input lets projections run before sampling.
+        self.depformer_in_weight = nn.Parameter(
+            torch.empty(spec.steps, spec.dim, spec.input_dim)
         )
         self.depformer_text_emb = nn.Embedding(TEXT_CARD + 1, spec.dim)
         # Note (wilsonzheng0327): The last codebook is never an input.
@@ -118,6 +119,9 @@ class Depformer(nn.Module):
             )
             for _ in self.layers
         ]
+        step_inputs_BSD = functional.linear(
+            transformer_out_BD, self.depformer_in_weight.flatten(0, 1)
+        ).unflatten(-1, (spec.steps, spec.dim))
         previous = text_token_B
         codes = []
         for step in range(spec.steps):
@@ -126,7 +130,7 @@ class Depformer(nn.Module):
                 if step == 0
                 else self.depformer_emb[step - 1](previous)
             )
-            x = self.depformer_in[step](transformer_out_BD) + token_emb
+            x = step_inputs_BSD[:, step] + token_emb
             for layer, cache in zip(self.layers, caches, strict=True):
                 x = layer.step(x, step, cache)
             sampled = sample(self.linears[step](x).float())
@@ -142,11 +146,12 @@ class Depformer(nn.Module):
         with more steps than we run (16 vs 8) simply has its tail ignored.
         """
         spec = self.spec
-        state: dict[str, torch.Tensor] = {}
+        state: dict[str, torch.Tensor] = {
+            "depformer_in_weight": torch.stack(
+                [weights[f"depformer_in.{step}.weight"] for step in range(spec.steps)]
+            )
+        }
         for step in range(spec.steps):
-            state[f"depformer_in.{step}.weight"] = weights[
-                f"depformer_in.{step}.weight"
-            ]
             state[f"linears.{step}.weight"] = weights[f"linears.{step}.weight"]
         for step in range(spec.steps - 1):
             state[f"depformer_emb.{step}.weight"] = weights[

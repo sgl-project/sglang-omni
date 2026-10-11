@@ -31,6 +31,40 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
         XCTAssertEqual(settings?.runtimeExecutable, URL(fileURLWithPath: "/opt/qwen3_asr_server"))
     }
 
+    func testEachKindRunsItsOwnServerBesideTheQwenRuntime() {
+        let qwenRuntime = URL(fileURLWithPath: "/opt/voxt/bin/qwen3_asr_server")
+
+        XCTAssertEqual(OmniASRBackend.runtimeExecutable(for: .qwen3ASR, qwenRuntime: qwenRuntime), qwenRuntime)
+        XCTAssertEqual(OmniASRBackend.runtimeExecutable(for: .sileroVAD, qwenRuntime: qwenRuntime), qwenRuntime)
+        XCTAssertEqual(OmniASRBackend.runtimeExecutable(for: .sortformer, qwenRuntime: qwenRuntime), qwenRuntime)
+        XCTAssertEqual(
+            OmniASRBackend.runtimeExecutable(for: .whisper, qwenRuntime: qwenRuntime).path,
+            "/opt/voxt/bin/whisper_server"
+        )
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/whisper-large-v3-turbo"], .whisper)
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/whisper-large-v3-mlx"], .whisper)
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/whisper-small-mlx"], .whisper)
+        XCTAssertEqual(
+            OmniASRBackend.runtimeExecutable(for: .cohereTranscribe, qwenRuntime: qwenRuntime).path,
+            "/opt/voxt/bin/cohere_transcribe_server"
+        )
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo["beshkenadze/cohere-transcribe-03-2026-mlx-fp16"], .cohereTranscribe)
+        XCTAssertEqual(
+            OmniASRBackend.runtimeExecutable(for: .mossTranscribeDiarize, qwenRuntime: qwenRuntime).path,
+            "/opt/voxt/bin/moss_transcribe_diarize_server"
+        )
+    }
+
+    /// Every Qwen3-ASR checkpoint the native runtime is checked against runs on it;
+    /// other sizes and quantizations keep the Swift backend.
+    func testQwen3ASRCheckpointsWithGoldenOutputsRunOnTheNativeRuntime() {
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo.filter { $0.value == .qwen3ASR }, [
+            "mlx-community/Qwen3-ASR-0.6B-4bit": .qwen3ASR,
+            "mlx-community/Qwen3-ASR-1.7B-6bit": .qwen3ASR,
+            "mlx-community/Qwen3-ASR-1.7B-8bit": .qwen3ASR,
+        ])
+    }
+
     /// The runtime binary is started directly in supervised mode, not through Python.
     func testLaunchRunsTheRuntimeInSupervisedMode() async throws {
         let scratch = FileManager.default.temporaryDirectory

@@ -22,6 +22,7 @@ from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stag
 from sglang_omni.proto import DataReadyMessage, SubmitMessage
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
     FakeRelay,
@@ -261,6 +262,35 @@ def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
             await asyncio.wait_for(stage_obj.run(), timeout=2.0)
 
         assert scheduler.stopped is True
+
+    asyncio.run(run())
+
+
+class BlockingWarmUpHooks(SessionHooks):
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.warm_up_thread_names: list[str] = []
+
+    def warm_up_serving_thread(self) -> None:
+        self.warm_up_thread_names.append(threading.current_thread().name)
+        self.entered.set()
+        self.release.wait()
+
+
+def test_stage_starts_only_after_its_session_hooks_warm_the_scheduler_thread() -> None:
+    async def run() -> None:
+        hooks = BlockingWarmUpHooks()
+        scheduler = SessionScheduler(hooks)
+        stage_obj = make_stage(name="speech", scheduler=scheduler)
+        start_task = asyncio.create_task(stage_obj.start())
+        assert await asyncio.to_thread(hooks.entered.wait, 1.0)
+        assert not start_task.done()
+
+        hooks.release.set()
+        await asyncio.wait_for(start_task, timeout=1.0)
+        assert hooks.warm_up_thread_names == ["scheduler-speech"]
+        await stage_obj.stop()
 
     asyncio.run(run())
 

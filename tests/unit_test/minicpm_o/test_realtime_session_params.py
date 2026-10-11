@@ -96,7 +96,16 @@ def test_stage_reference_precedence_is_per_session(
         state_open,
     )
     perception = PerceptionHooks(
-        Mock(), Mock(), Mock(), reference_audio=b"default", image_encoder=Mock()
+        Mock(),
+        Mock(),
+        Mock(),
+        reference_audio=b"default",
+        image_encoder=Mock(),
+        mel_filter_bank=Mock(),
+        reference_cache_capacity=1,
+    )
+    perception.reference_embeds = Mock(
+        side_effect=lambda reference_audio: reference_audio
     )
     runtime = Mock()
     speech = SpeechHooks(runtime, b"default")
@@ -110,7 +119,7 @@ def test_stage_reference_precedence_is_per_session(
         )
         perception.open(SessionIdentity(session_id), request)
         speech.open(SessionIdentity(session_id), request)
-    assert [call.kwargs["reference_audio"] for call in state_open.call_args_list] == [
+    assert [call.kwargs["reference_embeds"] for call in state_open.call_args_list] == [
         b"input",
         b"input",
         b"default",

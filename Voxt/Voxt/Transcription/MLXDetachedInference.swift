@@ -183,30 +183,73 @@ extension MLXTranscriber {
         )
     }
 
-    /// Qwen3-ASR decodes on the local Omni server with the chunking, budget and
+    /// A model on the local Omni server decodes with the chunking, budget and
     /// stop rules its MLXAudio model used.
     nonisolated static func runOmniInferenceDetached(
         runtime: OmniASRRuntime,
         audioSamples: [Float],
         inferenceConfiguration: ResolvedInferenceConfiguration,
-        targetSampleRate: Int
+        targetSampleRate: Int,
+        speechSegments: OmniSpeechSegments?
     ) async throws -> MLXDetachedInferenceResult {
         try Task.checkCancellation()
         let parameters = inferenceConfiguration.generationParameters
-        let result = try await runtime.transcribeQwenFinal(
-            samples: audioSamples,
-            sampleRate: targetSampleRate,
-            language: inferenceConfiguration.languageHint,
-            context: inferenceConfiguration.qwenContextBias,
-            maxTokens: parameters.maxTokens,
-            chunkDurationSeconds: parameters.chunkDuration,
-            minChunkDurationSeconds: parameters.minChunkDuration
-        )
-        // Qwen3-ASR chunk segments have chunk timing, which Voxt discards.
-        return MLXDetachedInferenceResult(rawText: result.text, senseVoiceMetadata: nil, structuredSegments: [])
+        let text: String
+        switch runtime.kind {
+        case .qwen3ASR:
+            text = try await runtime.transcribeQwenFinal(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint,
+                context: inferenceConfiguration.qwenContextBias,
+                maxTokens: parameters.maxTokens,
+                chunkDurationSeconds: parameters.chunkDuration,
+                minChunkDurationSeconds: parameters.minChunkDuration
+            ).text
+        case .whisper:
+            text = try await runtime.transcribe(OmniASRRuntime.whisperFinalRequest(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint,
+                maxNewTokens: parameters.maxTokens,
+                temperature: parameters.temperature
+            )).text
+        case .cohereTranscribe:
+            text = try await runtime.transcribe(OmniASRRuntime.cohereFinalRequest(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint,
+                usePunctuation: parameters.usePunctuation,
+                maxNewTokens: parameters.maxTokens,
+                temperature: parameters.temperature,
+                chunkDuration: parameters.chunkDuration,
+                minChunkDuration: parameters.minChunkDuration,
+                speechSegments: speechSegments
+            )).text
+        case .mossTranscribeDiarize:
+            let result = try await runtime.transcribeMossFinal(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                prompt: inferenceConfiguration.mossPrompt,
+                maxTokens: parameters.maxTokens
+            )
+            return MLXDetachedInferenceResult(
+                rawText: MossASRTranscriptRendering.renderedText(
+                    result.text,
+                    outputMode: inferenceConfiguration.mossOutputMode
+                ),
+                senseVoiceMetadata: nil,
+                structuredSegments: mossStructuredSegments(from: result.segments.map(\.transcriptSegment))
+            )
+        case .sileroVAD, .sortformer:
+            // Note (khazic): a Silero VAD or Sortformer server is never a loaded ASR model.
+            preconditionFailure("a Silero VAD or Sortformer server transcribes nothing")
+        }
+        // Note (khazic): chunk and window segments have chunk timing, which Voxt discards.
+        return MLXDetachedInferenceResult(rawText: text, senseVoiceMetadata: nil, structuredSegments: [])
     }
 
-    private nonisolated static func longFormSpeechSegmentConfig(
+    nonisolated static func longFormSpeechSegmentConfig(
         chunkMaximumDurationSeconds: Double,
         vadThreshold: Float,
         vadMinSpeechDurationMs: Int,

@@ -19,8 +19,9 @@ import torch
 import torchaudio
 import xxhash
 from numpy.typing import NDArray
+from sglang.utils import LazyImport
 
-from sglang_omni.platforms import current_platform
+current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
 
 _DEFAULT_REQUEST_TIMEOUT = 5
 logger = logging.getLogger(__name__)
