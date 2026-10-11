@@ -54,7 +54,11 @@ from sglang.srt.session.session_controller import SessionController
 from sglang.srt.utils import DynamicGradMode, broadcast_pyobj
 from typing_extensions import TypedDict
 
-from sglang_omni.admission import ContextExhaustedError, QueueFullError
+from sglang_omni.admission import (
+    AdminDroppedRequestError,
+    ContextExhaustedError,
+    QueueFullError,
+)
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
 from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerPendingStep
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -2752,10 +2756,8 @@ class OmniScheduler(Generic[RequestDataT]):
             self.last_pause_mode = mode
             self.resolve_pending_async()
             num_paused = 0
-            aborted_request_ids: list[str] = []
             if mode == "abort":
-                aborted_request_ids = self.abort_all_requests()
-                num_paused = len(aborted_request_ids)
+                num_paused = len(self.abort_all_requests())
             elif mode == "retract":
                 num_paused = self.retract_running_requests()
             else:
@@ -2766,7 +2768,6 @@ class OmniScheduler(Generic[RequestDataT]):
             "data": {
                 "mode": mode,
                 "num_paused_requests": num_paused,
-                "aborted_request_ids": aborted_request_ids,
                 "engine_paused": self._engine_paused,  # noqa: leading-underscore
             },
         }
@@ -2981,6 +2982,10 @@ class OmniScheduler(Generic[RequestDataT]):
         request_ids = self.active_request_ids()
         for request_id in request_ids:
             self.abort(request_id, defer_running_cleanup=False)
+            # note (Richard Wang): nobody else knows this stage dropped the
+            # request, so end it through its own output path, which reaches the
+            # coordinator however the admin call itself turns out.
+            self.emit_request_error(request_id, AdminDroppedRequestError())
         seen: set[int] = set()
         for batch in (self.running_batch, self.cur_batch, self.last_batch):
             if batch is None or id(batch) in seen:

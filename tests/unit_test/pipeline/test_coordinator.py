@@ -7,7 +7,7 @@ import gc
 
 import pytest
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config import PipelineConfig, ProcessConfig
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.coordinator import Coordinator
@@ -406,16 +406,16 @@ def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "stages", "dropped", "ended"),
+    ("mode", "stages", "admin_fails", "ended"),
     [
-        ("abort", None, [], True),
-        ("abort", ["decode"], ["req-1"], True),
-        ("abort", ["decode"], [], False),
-        ("in_place", None, [], False),
+        ("abort", None, False, True),
+        ("abort", None, True, True),
+        ("abort", ["decode"], False, False),
+        ("in_place", None, False, False),
     ],
 )
 def test_abort_mode_pause_ends_in_flight_streams(
-    mode: str, stages: list[str] | None, dropped: list[str], ended: bool
+    mode: str, stages: list[str] | None, admin_fails: bool, ended: bool
 ) -> None:
     async def run() -> None:
         coordinator = Coordinator(
@@ -429,12 +429,16 @@ def test_abort_mode_pause_ends_in_flight_streams(
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
         async def paused(*_args, **_kwargs):
+            if admin_fails:
+                raise TimeoutError("pause_generation timed out")
+            else:
+                pass
             return {
                 "op_id": "op",
                 "action": "pause_generation",
                 "success": True,
                 "message": "",
-                "results": [{"data": {"aborted_request_ids": dropped}}],
+                "results": [{"data": {"mode": mode}}],
             }
 
         coordinator.admin = paused
@@ -445,7 +449,11 @@ def test_abort_mode_pause_ends_in_flight_streams(
                 break
             await asyncio.sleep(0)
 
-        await coordinator.pause_generation({"mode": mode}, stages=stages)
+        if admin_fails:
+            with pytest.raises(TimeoutError):
+                await coordinator.pause_generation({"mode": mode}, stages=stages)
+        else:
+            await coordinator.pause_generation({"mode": mode}, stages=stages)
         await asyncio.sleep(0)
 
         assert next_message.done() is ended
@@ -454,6 +462,37 @@ def test_abort_mode_pause_ends_in_flight_streams(
         )
         next_message.cancel()
         await asyncio.gather(next_message, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_request_a_stage_dropped_in_an_admin_action_ends_as_an_abort() -> None:
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        stream = coordinator.stream("req-1", OmniRequest(inputs="hello"))
+        next_message = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if "req-1" in coordinator.stream_queues:
+                break
+            await asyncio.sleep(0)
+
+        dropped = CompleteMessage(
+            "req-1", "decode", False, error=AdminDroppedRequestError.MESSAGE
+        )
+        await coordinator.handle_completion(dropped)
+        await coordinator.handle_completion(dropped)
+
+        with pytest.raises(Exception, match="aborted"):
+            await next_message
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
 
     asyncio.run(run())
 

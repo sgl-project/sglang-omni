@@ -27,6 +27,20 @@ class QueueFullError(RuntimeError):
         return RuntimeError(message or "Unknown error")
 
 
+class AdminDroppedRequestError(RuntimeError):
+    """A stage dropped the request in an admin action, such as an abort mode
+    pause or a weight update that aborts every request."""
+
+    MESSAGE = "The request was dropped by an admin action."
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+    @classmethod
+    def matches(cls, exc: BaseException | str | None) -> bool:
+        return isinstance(exc, cls) or (exc is not None and str(exc) == cls.MESSAGE)
+
+
 class ContextExhaustedError(ValueError):
     """A session unit that no longer fits the thinker context."""
 

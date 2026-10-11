@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import AsyncIterator, TypedDict
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config.topology import LogicalProcessPlan
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.pipeline.replicas import (
@@ -286,35 +286,23 @@ class Coordinator(CoordinatorSessions):
         stages: Sequence[str] | None = None,
         timeout_s: float = 60.0,
     ) -> AdminResponse:
-        in_flight = list(self.requests)
-        response = await self.admin(
-            "pause_generation",
-            payload,
-            stages=stages,
-            timeout_s=timeout_s,
-        )
-        # note (Richard Wang): in abort mode each paused stage drops the requests
-        # it holds without telling anyone, so end the ones they report here too,
-        # or their clients wait for output that never comes. A pause of every
-        # stage also ends every other request in flight, as SGLang does.
+        # note (Richard Wang): a pause of every stage in abort mode ends every
+        # request in flight, as SGLang does, even when a stage fails or the call
+        # times out. Requests a stage drops end through their own output path.
         mode = str((payload or {}).get("mode") or "abort")
-        if response["success"] and mode == "abort":
-            dropped = {
-                request_id
-                for result in response["results"]
-                for request_id in result["data"].get("aborted_request_ids") or ()
-            }
-            if stages is None:
-                dropped.update(in_flight)
-            else:
-                pass
+        in_flight = list(self.requests) if mode == "abort" and stages is None else []
+        try:
+            return await self.admin(
+                "pause_generation",
+                payload,
+                stages=stages,
+                timeout_s=timeout_s,
+            )
+        finally:
             await asyncio.gather(
-                *(self.abort(request_id) for request_id in sorted(dropped)),
+                *(self.abort(request_id) for request_id in in_flight),
                 return_exceptions=True,
             )
-        else:
-            pass
-        return response
 
     async def continue_generation(
         self,
@@ -811,6 +799,14 @@ class Coordinator(CoordinatorSessions):
         from_stage = self.replica_topology.logical_name(msg.from_stage)
         if from_stage != msg.from_stage:
             msg = replace(msg, from_stage=from_stage)
+        else:
+            pass
+
+        if not msg.success and AdminDroppedRequestError.matches(msg.error):
+            # A stage dropped this request in an admin action, so it ends as an
+            # abort, the same as a client or pause abort.
+            await self.abort(request_id)
+            return
         else:
             pass
 
