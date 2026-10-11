@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
 from PIL import Image
+from transformers import AutoProcessor, ProcessorMixin
 
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
+from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.proto import OmniRequest, StagePayload
 
@@ -256,3 +260,129 @@ def test_minicpm_visual_cache_key_tracks_decoded_content(monkeypatch, changed) -
     assert after != before
     # Identical content at another address shares the entry.
     assert cache_key("other") == after
+
+
+@pytest.fixture(scope="module")
+def checkpoint_processor() -> ProcessorMixin:
+    checkpoint = Path(os.environ.get("MINICPMO_CHECKPOINT", "MiniCPM-o-4_5"))
+    if not (checkpoint / "processing_minicpmo.py").exists():
+        pytest.skip("Set MINICPMO_CHECKPOINT to a MiniCPM-o processor checkpoint")
+    return AutoProcessor.from_pretrained(str(checkpoint), trust_remote_code=True)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("as_video", [False, True])
+@pytest.mark.parametrize("do_pad", [False, True])
+def test_real_processor_visual_packing(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_processor: ProcessorMixin,
+    as_video: bool,
+    do_pad: bool,
+) -> None:
+    reference_processor = checkpoint_processor
+    pixels = np.random.default_rng(17).integers(0, 256, (672, 1120, 3), dtype=np.uint8)
+    image = Image.fromarray(pixels)
+    frames = (
+        preprocessor_mod.video_to_images(
+            torch.from_numpy(
+                np.stack([pixels, np.flip(pixels, axis=1).copy()])
+            ).permute(0, 3, 1, 2)
+        )
+        if as_video
+        else [image]
+    )
+    options = (
+        {"max_slice_nums": 1, "use_image_id": False}
+        if as_video
+        else {"max_slice_nums": 4}
+    )
+    prompt = "Describe " + " ".join(["<image>./</image>"] * len(frames))
+    expected = reference_processor(
+        prompt,
+        images=[frames],
+        audios=None,
+        do_pad=do_pad,
+        return_tensors="pt",
+        **options,
+    )
+    preprocessor = object.__new__(MiniCPMOPreprocessor)
+    preprocessor._processor = None  # noqa: leading-underscore  # production contract
+    preprocessor.model_dir = "checkpoint-fixture"
+    preprocessor.device = torch.device("cuda", torch.cuda.device_count() - 1)
+    monkeypatch.setattr(
+        preprocessor_mod.AutoProcessor,
+        "from_pretrained",
+        lambda *args, **kwargs: reference_processor,
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            reference_processor, "process_image", reference_processor.process_image
+        )
+        actual = preprocessor.processor(
+            prompt,
+            images=[frames],
+            audios=None,
+            do_pad=do_pad,
+            return_tensors="pt",
+            **options,
+        )
+        assert isinstance(reference_processor.process_image, CUDAImageProcessor)
+    assert len(actual["pixel_values"][0]) == len(actual["image_bound"][0])
+    assert len(actual["pixel_values"][0]) == (len(frames) if as_video else 5)
+    torch.testing.assert_close(
+        actual["input_ids"], expected["input_ids"], rtol=0, atol=0
+    )
+    torch.testing.assert_close(
+        actual["image_bound"][0], expected["image_bound"][0], rtol=0, atol=0
+    )
+    torch.testing.assert_close(
+        actual["tgt_sizes"][0], expected["tgt_sizes"][0], rtol=0, atol=0
+    )
+    for actual_slice, expected_slice in zip(
+        actual["pixel_values"][0], expected["pixel_values"][0]
+    ):
+        assert actual_slice.device == preprocessor.device
+        torch.testing.assert_close(actual_slice.cpu(), expected_slice, rtol=0, atol=0)
+        torch.testing.assert_close(
+            actual_slice.cpu().bfloat16(), expected_slice.bfloat16(), rtol=0, atol=0
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("size", [(713, 439), (23, 41), (448, 448), (1500, 20)])
+def test_cuda_image_packing_matches_reference(
+    checkpoint_processor: ProcessorMixin, size: tuple[int, int]
+) -> None:
+    geometry = checkpoint_processor.image_processor
+    image = Image.fromarray(
+        np.random.default_rng(5).integers(0, 256, (size[1], size[0], 3), dtype=np.uint8)
+    )
+    processor = CUDAImageProcessor(geometry, torch.device("cuda:0"))
+    expected = geometry([[image]], return_tensors="pt")
+    for _ in range(2):
+        actual = processor([[image]], max_slice_nums=None)
+        assert actual["image_sizes"] == [[size]]
+        assert expected["image_sizes"][0][0].tolist() == list(size)
+        assert len(actual["pixel_values"][0]) == len(expected["pixel_values"][0])
+        for actual_slice, expected_slice in zip(
+            actual["pixel_values"][0], expected["pixel_values"][0]
+        ):
+            torch.testing.assert_close(
+                actual_slice.cpu(), expected_slice, rtol=0, atol=0
+            )
+
+
+def test_cpu_processor_preserves_reference(
+    monkeypatch: pytest.MonkeyPatch, checkpoint_processor: ProcessorMixin
+) -> None:
+    preprocessor = object.__new__(MiniCPMOPreprocessor)
+    preprocessor._processor = None  # noqa: leading-underscore  # production contract
+    preprocessor.model_dir = "checkpoint-fixture"
+    preprocessor.device = torch.device("cpu")
+    monkeypatch.setattr(
+        preprocessor_mod.AutoProcessor,
+        "from_pretrained",
+        lambda *args, **kwargs: checkpoint_processor,
+    )
+    reference_process_image = checkpoint_processor.process_image
+    assert preprocessor.processor.process_image == reference_process_image

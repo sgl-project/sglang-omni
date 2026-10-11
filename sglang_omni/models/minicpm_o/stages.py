@@ -51,8 +51,14 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     speech_enabled: bool = False,
+    device: str | None = None,
+    gpu_id: int | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
+    preprocessor = MiniCPMOPreprocessor(
+        model_path,
+        speech_enabled=speech_enabled,
+        device=resolve_concrete_device(device, gpu_id),
+    )
 
     return SimpleScheduler[StagePayload, StagePayload](preprocessor)
 

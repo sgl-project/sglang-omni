@@ -22,9 +22,10 @@ THINKER_STAGE = "thinker"
 CODE2WAV_DECODE_STREAM_PRIORITY = -1
 
 
-def preprocessing_stage(*, process: str) -> StageConfig:
+def preprocessing_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="preprocessing",
+        gpu=gpu,
         process=process,
         factory_path=f"{PKG}.stages.create_preprocessing_executor",
         next=["image_encoder", "audio_encoder", "thinker"],
@@ -149,7 +150,7 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
 
 def text_stages() -> list[StageConfig]:
     return [
-        preprocessing_stage(process="pipeline"),
+        preprocessing_stage(gpu=0, process="pipeline"),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
         thinker_stage(gpu=0, process="pipeline"),
         image_encoder_stage(process="pipeline", gpu=0),
@@ -160,7 +161,7 @@ def text_stages() -> list[StageConfig]:
 
 def speech_stages() -> list[StageConfig]:
     return [
-        preprocessing_stage(process="pipeline"),
+        preprocessing_stage(gpu=0, process="pipeline"),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
         thinker_stage(gpu=0, process="pipeline", speech_enabled=True),
         image_encoder_stage(process="pipeline", gpu=0),
