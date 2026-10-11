@@ -259,11 +259,18 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
                 max_mel_frames=self.feature_extractor.nb_max_frames,
             )
             runner.capture_working_set(self.feature_extractor.feature_size)
-            model.encoder_cuda_graph_runner = runner
-            logger.info(
-                "ARK-ASR encoder CUDA graphs enabled (working-set precapture, max_batch=%d)",
-                self.encoder_max_batch_size,
-            )
+            if runner.captured_buckets:
+                model.encoder_cuda_graph_runner = runner
+                logger.info(
+                    f"ARK-ASR encoder graphs enabled for "
+                    f"{len(runner.captured_buckets)} buckets "
+                    f"(max_batch={self.encoder_max_batch_size})"
+                )
+            else:
+                logger.warning(
+                    "ARK-ASR encoder graphs were requested but none were captured; "
+                    "the encoder runs eager"
+                )
         else:
             pass
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
