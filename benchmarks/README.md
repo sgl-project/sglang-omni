@@ -204,7 +204,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_stt_benchmark.py` | ASR concurrency scaling on the Pipecat STT benchmark set (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_longform.py` | ASR concurrency scaling on LongLibriHeavy 30/60 s and Meanwhile (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
-| `eval/benchmark_asr_realtime.py` | Realtime ASR streaming latency, protocol invariants, and WER on SeedTTS EN | Qwen3-ASR | `/v1/realtime?intent=transcription` |
+| `eval/benchmark_asr_realtime.py` | Realtime ASR streaming latency, protocol invariants, and WER on SeedTTS EN | Qwen3-ASR, Nemotron 3.5 ASR | `/v1/realtime` |
 | `eval/benchmark_duplex.py` | Native full-duplex VoiceChat continuous protocol case | Nemotron VoiceChat | `/v1/realtime` (native) |
 | `eval/benchmark_duplex_v15.py` | Full-Duplex-Bench v1.5 paired overlap sessions, event timing and judged behavior | Nemotron VoiceChat | `/v1/realtime` (native) |
 | `eval/benchmark_duplex_v10.py` | Full-Duplex-Bench v1.0 pause, turn-taking, interruption and backchannel takeover/latency | Nemotron VoiceChat | `/v1/realtime` (native) |
@@ -371,17 +371,32 @@ only records timestamps; every metric definition lives in
 
 `--mode vad` (default) lets server VAD close turns and pads each clip with
 `--trailing-silence-ms` of silence so the last turn closes on VAD; `--mode
-manual` disables VAD and commits explicitly. `--http-baseline` transcribes the
+manual` disables VAD and commits explicitly. Both use the default
+`--protocol transcription`. `--protocol native` drives Nemotron's native
+streaming session with sequenced PCM appends and `sglang.input_audio.end`;
+`--mode` does not apply and trailing VAD silence is not added. For native
+sessions, first-partial latency uses the output event's media time, final
+latency runs from input end to completed text, and
+`done_to_completed_s` runs from input end to `sglang.input_audio.drained`.
+Missing media timestamps leave first-partial latency unavailable. Native
+sessions close after draining; failed or incomplete sessions are excluded from
+WER. Nemotron's native deployment selects the language automatically;
+`--lang` selects the dataset split and WER normalization.
+`--http-baseline` transcribes the
 same clips over `/v1/audio/transcriptions`; the WER delta is computed only on
 samples that succeeded on both paths (`common_evaluated`) and is `null` when
 that set is empty.
 `--concurrencies` runs one result per level; there is no cross-level report.
-The `decode_interval_ms` in effect is read from `session.created` and recorded
-in the result `config`.
+The effective transcription `decode_interval_ms` or native `native_unit_ms` is
+read from session negotiation and recorded in the result `config`.
 
 ```bash
 python -m benchmarks.eval.benchmark_asr_realtime \
   --port 8000 --max-samples 50 --concurrencies 1,4,8 --http-baseline
+
+python -m benchmarks.eval.benchmark_asr_realtime \
+  --port 8000 --protocol native --max-samples 50 --concurrencies 1,4,8 \
+  --model-path nvidia/nemotron-3.5-asr-streaming-0.6b --http-baseline
 ```
 
 The CLI also saves input PCM and session observations under `OUTPUT.traces`
@@ -412,12 +427,14 @@ sibling PCM file; the input hash supports separate input verification. Compare
 with a changed grader. Traces contain audio/transcripts and should be handled as
 benchmark data.
 
-The oracle checks required integer event indexes, commit-before-final ordering,
+For the transcription protocol, the oracle checks required integer event indexes, commit-before-final ordering,
 unique session completion, and no transcription segments after completion.
 Session control events after completion remain legal. The client stops receiving
 at its first completion, so post-completion violations are detected only when
 present in the recorded or injected trace. These checks validate the ASR profile,
 not native duplex interruption or physical audio playback.
+Native ASR checks packet acknowledgements, completed text/response and final
+drain. Its raw events remain in the trace for offline replay.
 
 ## Native duplex (VoiceChat) protocol benchmark
 
@@ -429,7 +446,7 @@ A passing case does not establish product or model readiness.
 The native profile is not the transcription profile: PCM16 mono 16 kHz input,
 PCM16 22050 Hz output, 80 ms / 2560-byte native units, `tail_policy=pad`, a
 240 s session limit, and one admitted connection at a time. `benchmark_asr_realtime.py`
-and its oracle do not grade native events, and `benchmarks/duplex/oracle.py`
+grades native text-only ASR sessions, not duplex audio output, and `benchmarks/duplex/oracle.py`
 does not grade transcription events. The recorded manifest pins the profile as
 `nemotron-voicechat-pr2188`, the audio profile from
 [VoiceChat duplex PR #2188](https://github.com/sgl-project/sglang-omni/pull/2188).
