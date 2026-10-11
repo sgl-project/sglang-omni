@@ -77,5 +77,14 @@
       "tokenizer_config.json": "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5",
       "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
     }
+  },
+  "mlx-community/SenseVoiceSmall": {
+    "revision": "8ddd966bd96243cff196422f81f0c5d955814792",
+    "files": {
+      "am.mvn": "29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5",
+      "chn_jpn_yue_eng_ko_spectok.bpe.model": "aa87f86064c3730d799ddf7af3c04659151102cba548bce325cf06ba4da4e6a8",
+      "config.json": "32b996111892031dfe4b73751864d93c769391aa213427ea65daf2ecdef7caa5",
+      "model.safetensors": "7abe356045684ae374ea60e6b8dbc967222d7d1e35cc222be870c94630b1c38a"
+    }
   }
 }

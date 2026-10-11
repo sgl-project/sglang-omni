@@ -14,6 +14,7 @@
 
 #include "cohere_model.h"
 #include "speech_segments.h"
+#include "swift_port.h"
 #include "transcriber.h"
 
 namespace cohere_transcribe {
@@ -60,10 +61,9 @@ private:
                               const std::atomic<bool> &cancel) const;
 
   CohereModel model_;
-  // SentencePiece pieces by id.
-  std::vector<std::string> pieces_;
+  swift_port::SentencePieceVocabulary vocabulary_;
   std::map<std::string, int> special_token_ids_;
-  // Ids decoding drops: added tokens, and control and unused pieces.
+  // Added tokens, which decoding drops beside control and unused pieces.
   std::set<int> special_ids_;
   int end_of_text_id_ = 0;
 };

@@ -52,6 +52,16 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
+# Voxt's SenseVoice settings for long audio: speech runs cut into overlapping chunks.
+SENSEVOICE_VAD_FIELDS = {
+    "vad_threshold": "0.5",
+    "vad_min_speech_ms": "220",
+    "vad_min_silence_ms": "420",
+    "vad_speech_pad_ms": "180",
+    "vad_max_chunk_seconds": "24.0",
+    "vad_chunk_overlap_seconds": "0.35",
+}
 
 
 class ModelServer(Server):
@@ -271,7 +281,11 @@ def test_whisper_shutdown_reports_stopped() -> None:
 
 @pytest.mark.parametrize(
     ("binary", "other_kind"),
-    [("whisper_server", "qwen3_asr"), ("cohere_transcribe_server", "whisper")],
+    [
+        ("whisper_server", "qwen3_asr"),
+        ("cohere_transcribe_server", "whisper"),
+        ("sensevoice_server", "cohere_transcribe"),
+    ],
 )
 def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
     completed = subprocess.run(
@@ -520,3 +534,125 @@ def test_moss_server_serves_only_moss() -> None:
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
+
+
+@pytest.fixture(scope="module")
+def sensevoice_server() -> Iterator[ModelServer]:
+    running = ModelServer("sensevoice_server", "sensevoice", SENSEVOICE_REPO)
+    yield running
+    running.stop()
+
+
+def test_sensevoice_final_request_returns_text_and_its_metadata(
+    sensevoice_server: ModelServer,
+) -> None:
+    assert sensevoice_server.ready["model_name"].startswith("voxt-sensevoice-")
+    status, body = sensevoice_server.post_form(
+        {"language": "zh", "use_itn": "false"}, clip("0152_zh_short")
+    )
+    assert status == 200
+    result = json.loads(body)
+    assert result["text"] == "互联网结合了大众传播和人际传播的要素"
+    [segment] = result["segments"]
+    assert segment["start"] == 0
+    assert segment["text"] == result["text"]
+    assert segment["language"] == "zh"
+    assert segment["event"] == "Speech"
+    assert segment["emotion"]
+
+
+def test_sensevoice_itn_writes_punctuation(sensevoice_server: ModelServer) -> None:
+    status, body = sensevoice_server.post_form(
+        {"language": "en", "use_itn": "true"}, clip("0006_en_short")
+    )
+    assert status == 200
+    assert json.loads(body)["text"] == "Surely you are not thinking of going off there."
+
+
+def test_sensevoice_detects_the_language_without_a_hint(
+    sensevoice_server: ModelServer,
+) -> None:
+    # Note (Dayuxiaoshui): an unsupported hint detects the language, as Voxt
+    # sends a hint only for a single main language SenseVoice supports.
+    status, body = sensevoice_server.post_form(
+        {"language": "fr", "stream": "true", "include_generation_metadata": "true"},
+        clip("0152_zh_short"),
+    )
+    assert status == 200
+    assert sse_events(body)[0]["generation_metadata"]["language"] == "zh"
+
+
+def test_sensevoice_cuts_long_audio_into_overlapping_chunks(
+    sensevoice_server: ModelServer,
+) -> None:
+    vad_directory = str(Path(DATA_ROOT) / "models" / VAD_REPO.replace("/", "_"))
+    status, body = sensevoice_server.post_form(
+        {
+            "language": "en",
+            "vad_model_directory": vad_directory,
+            **SENSEVOICE_VAD_FIELDS,
+        },
+        clip("0344_en_long"),
+    )
+    assert status == 200
+    result = json.loads(body)
+    assert result["text"].startswith("in every way they sought to undermine")
+    segments = result["segments"]
+    assert len(segments) > 1
+    assert all(segment["end"] - segment["start"] <= 24 for segment in segments)
+    assert [segment["start"] for segment in segments] == sorted(
+        segment["start"] for segment in segments
+    )
+
+
+def test_sensevoice_chunks_overlap_by_voxts_sample_count(
+    sensevoice_server: ModelServer,
+) -> None:
+    # Note (Jiaxin Deng): 4 s chunks split this clip's speech runs, and each
+    # chunk of a run starts 5600 samples (0.35 s, truncated in double as Voxt
+    # does) before the previous one ends.
+    vad_directory = str(Path(DATA_ROOT) / "models" / VAD_REPO.replace("/", "_"))
+    status, body = sensevoice_server.post_form(
+        {
+            "language": "en",
+            "vad_model_directory": vad_directory,
+            **SENSEVOICE_VAD_FIELDS,
+            "vad_max_chunk_seconds": "4.0",
+        },
+        clip("0344_en_long"),
+    )
+    assert status == 200
+    bounds = [
+        (round(segment["start"] * 16000), round(segment["end"] * 16000))
+        for segment in json.loads(body)["segments"]
+    ]
+    overlaps = [
+        previous_end - start
+        for (_, previous_end), (start, _) in zip(bounds, bounds[1:])
+        if start < previous_end
+    ]
+    assert overlaps
+    assert set(overlaps) == {5600}
+
+
+# Note (Jiaxin Deng): the last case differs in seconds but not in whole
+# samples, where chunking would never advance.
+@pytest.mark.parametrize(
+    ("max_chunk", "overlap"),
+    [("24.0", None), ("24.0", "24.0"), ("0.0001", "0.00009")],
+)
+def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
+    sensevoice_server: ModelServer, max_chunk: str, overlap: str | None
+) -> None:
+    fields = {
+        "vad_model_directory": "x",
+        **SENSEVOICE_VAD_FIELDS,
+        "vad_max_chunk_seconds": max_chunk,
+    }
+    if overlap is None:
+        fields.pop("vad_chunk_overlap_seconds")
+    else:
+        fields["vad_chunk_overlap_seconds"] = overlap
+    status, body = sensevoice_server.post_form(fields, clip("0006_en_short"))
+    assert status == 400
+    assert "overlap" in json.loads(body)["detail"]

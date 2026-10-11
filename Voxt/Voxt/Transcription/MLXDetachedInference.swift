@@ -241,6 +241,19 @@ extension MLXTranscriber {
                 senseVoiceMetadata: nil,
                 structuredSegments: mossStructuredSegments(from: result.segments.map(\.transcriptSegment))
             )
+        case .senseVoice:
+            let result = try await runtime.transcribe(OmniASRRuntime.senseVoiceFinalRequest(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint,
+                useITN: inferenceConfiguration.senseVoiceUseITN,
+                speechSegments: speechSegments
+            ))
+            return try senseVoiceOmniResult(
+                result,
+                durationSeconds: Double(audioSamples.count) / Double(targetSampleRate),
+                usedVADSegmentation: speechSegments != nil
+            )
         case .sileroVAD, .sortformer:
             // Note (khazic): a Silero VAD or Sortformer server is never a loaded ASR model.
             preconditionFailure("a Silero VAD or Sortformer server transcribes nothing")
@@ -393,6 +406,64 @@ extension MLXTranscriber {
             languageProvenance: .detected
         )
         return SenseVoiceInferenceResult(output: output, metadata: metadata)
+    }
+
+    /// Note (Dayuxiaoshui): the server's text, and the metadata runSenseVoiceInferenceDetached
+    /// builds, from the server's segments: one per pass, with that pass's chunk bounds.
+    private nonisolated static func senseVoiceOmniResult(
+        _ result: OmniTranscriptionResult,
+        durationSeconds: Double,
+        usedVADSegmentation: Bool
+    ) throws -> MLXDetachedInferenceResult {
+        if usedVADSegmentation, result.segments.isEmpty {
+            let structuredError = MLXStructuredTranscriptionError.senseVoiceLongFormNoSpeechSegments(
+                durationSeconds
+            )
+            VoxtLog.asrError(structuredError.diagnosticDescription)
+            throw structuredError
+        }
+        let passMetadata = result.segments.map { segment in
+            SenseVoiceTranscriptMetadata.fromOutput(
+                STTOutput(
+                    text: segment.text,
+                    segments: [
+                        STTTranscriptSegment(
+                            text: segment.text,
+                            language: segment.language,
+                            emotion: segment.emotion,
+                            event: segment.event
+                        ),
+                    ],
+                    language: segment.language,
+                    languageProvenance: .detected
+                ),
+                startSeconds: usedVADSegmentation ? segment.startSeconds : 0,
+                endSeconds: usedVADSegmentation ? segment.endSeconds : durationSeconds,
+                usedVADSegmentation: usedVADSegmentation
+            )
+        }
+        let metadata: SenseVoiceTranscriptMetadata?
+        if usedVADSegmentation {
+            var metadataSegments: [SenseVoiceSegmentMetadata] = []
+            for pass in passMetadata {
+                guard let pass else { continue }
+                metadataSegments = SenseVoiceTranscriptMetadata.mergeSequentialSegments(
+                    base: metadataSegments,
+                    next: pass.segments
+                )
+            }
+            metadata = SenseVoiceTranscriptMetadata.aggregated(
+                segments: metadataSegments,
+                usedVADSegmentation: true
+            )
+        } else {
+            metadata = passMetadata.first ?? nil
+        }
+        return MLXDetachedInferenceResult(
+            rawText: result.text,
+            senseVoiceMetadata: metadata,
+            structuredSegments: []
+        )
     }
 
     private nonisolated static func resolvedSenseVoiceSegmentRangesDetached(

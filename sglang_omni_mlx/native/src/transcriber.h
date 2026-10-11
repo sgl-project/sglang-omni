@@ -39,6 +39,11 @@ struct SpeakerSegment {
   // Empty when the output carried no speaker segments.
   std::string speaker;
   std::string text;
+  // Note (Dayuxiaoshui): SenseVoice's language, emotion and audio event of
+  // the segment's audio; none for other models.
+  std::optional<std::string> language;
+  std::optional<std::string> emotion;
+  std::optional<std::string> event;
 };
 
 struct TranscriptionResult {
@@ -55,7 +60,8 @@ public:
   TranscriptionCancelled() : std::runtime_error("transcription cancelled") {}
 };
 
-// Segments as the HTTP and realtime APIs send them: start, end, speaker, text.
+// Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
+// and language, emotion and event when set.
 nlohmann::ordered_json
 SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
 

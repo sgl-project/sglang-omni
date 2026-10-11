@@ -85,6 +85,49 @@ final class OmniTranscriptionRequestTests: XCTestCase {
         XCTAssertEqual(fieldValue("vad_max_chunk_seconds", in: body), "24.0")
     }
 
+    func testSenseVoiceFinalRequestsCarryTheHintITNAndOverlappingChunks() {
+        let request = OmniASRRuntime.senseVoiceFinalRequest(
+            samples: [0, 0.1],
+            sampleRate: 16000,
+            language: "zh",
+            useITN: true,
+            speechSegments: OmniSpeechSegments(
+                vadModelDirectory: URL(fileURLWithPath: "/models/silero"),
+                threshold: 0.5,
+                minSpeechMilliseconds: 220,
+                minSilenceMilliseconds: 420,
+                speechPadMilliseconds: 180,
+                mergeGapSeconds: nil,
+                maxChunkSeconds: 24,
+                chunkOverlapSeconds: 0.35
+            )
+        )
+        let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
+
+        XCTAssertEqual(fieldValue("language", in: body), "zh")
+        XCTAssertEqual(fieldValue("use_itn", in: body), "true")
+        XCTAssertEqual(fieldValue("vad_model_directory", in: body), "/models/silero")
+        XCTAssertEqual(fieldValue("vad_max_chunk_seconds", in: body), "24.0")
+        XCTAssertEqual(fieldValue("vad_chunk_overlap_seconds", in: body), "0.35")
+        XCTAssertNil(fieldValue("vad_merge_gap_seconds", in: body))
+        XCTAssertNil(fieldValue("max_new_tokens", in: body))
+    }
+
+    func testSegmentsKeepSenseVoicesLanguageEmotionAndEvent() {
+        let segments = OmniSpeakerSegment.parse([
+            ["start": 0.5, "end": 3.0, "speaker": "", "text": "你好",
+             "language": "zh", "emotion": "neutral", "event": "Speech"],
+            ["start": 3.0, "end": 4.0, "speaker": "S01", "text": "hi"],
+        ])
+
+        XCTAssertEqual(segments.count, 2)
+        XCTAssertEqual(segments[0].language, "zh")
+        XCTAssertEqual(segments[0].emotion, "neutral")
+        XCTAssertEqual(segments[0].event, "Speech")
+        XCTAssertNil(segments[1].language)
+        XCTAssertEqual(segments[1].speakerID, "S01")
+    }
+
     func testRequestsWithoutALayoutLeaveTheServerDefault() {
         let request = OmniTranscriptionRequest(
             samples: [0],

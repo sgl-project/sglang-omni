@@ -197,13 +197,19 @@ std::vector<SpeakerSegment> ParseSegments(const std::string &text,
       continue;
     } else {
     }
-    segments.push_back({start + offset_seconds, end_seconds + offset_seconds,
-                        (*match)[2].str(), segment_text});
+    SpeakerSegment segment;
+    segment.start_seconds = start + offset_seconds;
+    segment.end_seconds = end_seconds + offset_seconds;
+    segment.speaker = (*match)[2].str();
+    segment.text = segment_text;
+    segments.push_back(std::move(segment));
   }
   if (segments.empty()) {
-    segments.push_back({offset_seconds,
-                        offset_seconds + std::max(duration_seconds, 0.0), "",
-                        text});
+    SpeakerSegment segment;
+    segment.start_seconds = offset_seconds;
+    segment.end_seconds = offset_seconds + std::max(duration_seconds, 0.0);
+    segment.text = text;
+    segments.push_back(std::move(segment));
   } else {
   }
   return segments;

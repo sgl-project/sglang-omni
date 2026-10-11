@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "swift_port.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <string_view>
 
 namespace swift_port {
 
@@ -11,6 +18,99 @@ namespace {
 namespace mx = mlx::core;
 
 constexpr int kSampleRate = 16000;
+// SentencePiece piece types that decoding skips.
+constexpr int kControlPiece = 3;
+constexpr int kUnusedPiece = 5;
+constexpr const char *kWordMarker = "\xE2\x96\x81"; // U+2581
+
+// A protobuf message read field by field.
+class ProtobufReader {
+public:
+  explicit ProtobufReader(std::string_view bytes) : bytes_(bytes) {}
+
+  bool AtEnd() const { return offset_ >= bytes_.size(); }
+  uint64_t Varint() {
+    uint64_t value = 0;
+    for (int shift = 0; offset_ < bytes_.size() && shift < 64; shift += 7) {
+      const uint8_t byte = static_cast<uint8_t>(bytes_[offset_++]);
+      value |= static_cast<uint64_t>(byte & 0x7F) << shift;
+      if ((byte & 0x80) == 0) {
+        return value;
+      } else {
+      }
+    }
+    throw std::runtime_error("SentencePiece model has a malformed varint");
+  }
+  std::string_view Bytes(size_t size) {
+    if (offset_ + size > bytes_.size()) {
+      throw std::runtime_error("SentencePiece model has a truncated field");
+    } else {
+    }
+    const std::string_view field = bytes_.substr(offset_, size);
+    offset_ += size;
+    return field;
+  }
+  void Skip(uint64_t wire_type) {
+    if (wire_type == 0) {
+      Varint();
+    } else if (wire_type == 1) {
+      Bytes(8);
+    } else if (wire_type == 2) {
+      Bytes(Varint());
+    } else if (wire_type == 5) {
+      Bytes(4);
+    } else {
+      throw std::runtime_error(
+          "SentencePiece model has an unsupported wire type");
+    }
+  }
+
+private:
+  std::string_view bytes_;
+  size_t offset_ = 0;
+};
+
+// Note (khazic): strict UTF-8, as the Swift port's String(bytes:encoding:)
+// accepts it.
+bool IsValidUtf8(const std::string &bytes) {
+  size_t i = 0;
+  const auto byte = [&](size_t k) { return static_cast<uint8_t>(bytes[k]); };
+  while (i < bytes.size()) {
+    const uint8_t lead = byte(i);
+    size_t need = 0;
+    uint8_t low = 0x80;
+    uint8_t high = 0xBF;
+    if (lead < 0x80) {
+      need = 0;
+    } else if (lead >= 0xC2 && lead <= 0xDF) {
+      need = 1;
+    } else if (lead >= 0xE0 && lead <= 0xEF) {
+      need = 2;
+      low = lead == 0xE0 ? 0xA0 : 0x80;
+      high = lead == 0xED ? 0x9F : 0xBF;
+    } else if (lead >= 0xF0 && lead <= 0xF4) {
+      need = 3;
+      low = lead == 0xF0 ? 0x90 : 0x80;
+      high = lead == 0xF4 ? 0x8F : 0xBF;
+    } else {
+      return false;
+    }
+    if (i + need >= bytes.size() && need > 0) {
+      return false;
+    } else {
+    }
+    for (size_t k = 1; k <= need; ++k) {
+      const uint8_t continuation = byte(i + k);
+      if (continuation < (k == 1 ? low : 0x80) ||
+          continuation > (k == 1 ? high : 0xBF)) {
+        return false;
+      } else {
+      }
+    }
+    i += need + 1;
+  }
+  return true;
+}
 
 std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(inputs[0], mx::sigmoid(inputs[0]))};
@@ -169,6 +269,96 @@ std::string TrimWhitespace(const std::string &text, bool newlines) {
     offset += length;
   }
   return text.substr(begin, kept_end - begin);
+}
+
+SentencePieceVocabulary::SentencePieceVocabulary(
+    const std::filesystem::path &model_file) {
+  std::ifstream stream(model_file, std::ios::binary);
+  if (!stream) {
+    throw std::runtime_error("cannot read " + model_file.string());
+  } else {
+  }
+  std::ostringstream contents;
+  contents << stream.rdbuf();
+  const std::string model_proto = contents.str();
+  ProtobufReader model_reader(model_proto);
+  while (!model_reader.AtEnd()) {
+    const uint64_t key = model_reader.Varint();
+    if ((key >> 3) == 1 && (key & 7) == 2) {
+      ProtobufReader piece_reader(model_reader.Bytes(model_reader.Varint()));
+      std::optional<std::string> piece;
+      int type = 1;
+      while (!piece_reader.AtEnd()) {
+        const uint64_t field = piece_reader.Varint();
+        if ((field >> 3) == 1 && (field & 7) == 2) {
+          piece = std::string(piece_reader.Bytes(piece_reader.Varint()));
+        } else if ((field >> 3) == 3 && (field & 7) == 0) {
+          type = static_cast<int>(piece_reader.Varint());
+        } else {
+          piece_reader.Skip(field & 7);
+        }
+      }
+      // Note (khazic): a piece without text is dropped, and later ids shift
+      // down.
+      if (piece.has_value()) {
+        skipped_.push_back(type == kControlPiece || type == kUnusedPiece);
+        pieces_.push_back(*piece);
+      } else {
+      }
+    } else {
+      model_reader.Skip(key & 7);
+    }
+  }
+}
+
+std::string
+SentencePieceVocabulary::Decode(const std::vector<int> &ids,
+                                const std::set<int> &dropped) const {
+  std::string text;
+  std::string pending_bytes;
+  // Note (khazic): byte pieces gather into a run, kept only when it is valid
+  // UTF-8.
+  const auto flush = [&]() {
+    if (!pending_bytes.empty() && IsValidUtf8(pending_bytes)) {
+      text += pending_bytes;
+    } else {
+    }
+    pending_bytes.clear();
+  };
+  for (const int id : ids) {
+    if (id < 0 || id >= static_cast<int>(pieces_.size()) || skipped_[id] ||
+        dropped.count(id) > 0) {
+      continue;
+    } else {
+    }
+    const std::string &piece = pieces_[id];
+    if (piece.size() == 6 && piece.compare(0, 3, "<0x") == 0 &&
+        piece.back() == '>') {
+      const std::string hex = piece.substr(3, 2);
+      if (std::all_of(hex.begin(), hex.end(),
+                      [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+        pending_bytes.push_back(static_cast<char>(std::stoi(hex, nullptr, 16)));
+      } else {
+      }
+      continue;
+    } else {
+    }
+    flush();
+    text += piece;
+  }
+  flush();
+  // Note (khazic): the word boundary marker U+2581 becomes a space.
+  const std::string marker = kWordMarker;
+  std::string spaced;
+  size_t start = 0;
+  for (size_t found = text.find(marker); found != std::string::npos;
+       found = text.find(marker, start)) {
+    spaced.append(text, start, found - start);
+    spaced += ' ';
+    start = found + marker.size();
+  }
+  spaced.append(text, start, std::string::npos);
+  return spaced;
 }
 
 } // namespace swift_port

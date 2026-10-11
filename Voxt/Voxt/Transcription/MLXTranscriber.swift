@@ -1774,16 +1774,24 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         }
     }
 
-    /// Cohere's voice-activity cuts for long audio on the Omni server, decided as
-    /// resolvedLongFormVADModelIfNeeded decides them for the Swift model; the
+    /// Cohere's and SenseVoice's voice-activity cuts for long audio on the Omni server,
+    /// decided as resolvedLongFormVADModelIfNeeded decides them for the Swift model; the
     /// server loads the provisioned Silero VAD itself.
     private func omniSpeechSegmentsIfNeeded(
         runtime: OmniASRRuntime,
         audioSamples: [Float],
         inferenceConfiguration: ResolvedInferenceConfiguration
     ) async throws -> OmniSpeechSegments? {
-        guard runtime.kind == .cohereTranscribe,
-              inferenceConfiguration.cohereLongFormStrategy == .voiceActivity,
+        let usesVoiceActivity: Bool
+        switch runtime.kind {
+        case .cohereTranscribe:
+            usesVoiceActivity = inferenceConfiguration.cohereLongFormStrategy == .voiceActivity
+        case .senseVoice:
+            usesVoiceActivity = true
+        default:
+            usesVoiceActivity = false
+        }
+        guard usesVoiceActivity,
               MLXTranscriptionPlanning.shouldUseSenseVoiceVAD(
                   sampleCount: audioSamples.count,
                   sampleRate: targetSampleRate,
@@ -1809,8 +1817,11 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             minSpeechMilliseconds: config.minSpeechMs,
             minSilenceMilliseconds: config.minSilenceMs,
             speechPadMilliseconds: config.speechPadMs,
-            mergeGapSeconds: config.mergeGapS,
-            maxChunkSeconds: config.maxChunkS
+            // Note (Dayuxiaoshui): SenseVoice splits each speech run into overlapping chunks
+            // instead of merging runs across short gaps.
+            mergeGapSeconds: runtime.kind == .senseVoice ? nil : config.mergeGapS,
+            maxChunkSeconds: config.maxChunkS,
+            chunkOverlapSeconds: runtime.kind == .senseVoice ? Float(senseVoiceChunkOverlapSeconds) : nil
         )
     }
 

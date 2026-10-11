@@ -531,6 +531,28 @@ extension OmniASRRuntime {
         )
     }
 
+    /// Note (Dayuxiaoshui): SenseVoice Final as MLXAudio decoded it: one pass, or for long
+    /// audio the speech segments' chunks; the server normalizes the hint as Voxt does.
+    nonisolated static func senseVoiceFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?,
+        useITN: Bool,
+        speechSegments: OmniSpeechSegments?
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: nil,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            speechSegments: speechSegments,
+            useITN: useITN
+        )
+    }
+
     func transcribeQwenFinal(
         samples: [Float],
         sampleRate: Int,

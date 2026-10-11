@@ -160,3 +160,17 @@ set_target_properties(moss_transcribe_diarize_server moss_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATION bin)
+
+# Note (Dayuxiaoshui): SenseVoice Small: sensevoice_server, with qwen3_asr_server's API
+# without realtime, and its parity tool; Silero VAD cuts long audio at speech.
+add_library(sensevoice_asr STATIC src/sensevoice_model.cpp src/sensevoice_transcriber.cpp)
+target_link_libraries(sensevoice_asr PUBLIC qwen3_asr swift_port silero_vad)
+target_compile_options(sensevoice_asr PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(sensevoice_server src/sensevoice_server.cpp)
+target_link_libraries(sensevoice_server PRIVATE sensevoice_asr asr_service)
+add_executable(sensevoice_transcribe tools/sensevoice_transcribe.cpp)
+target_link_libraries(sensevoice_transcribe PRIVATE sensevoice_asr)
+set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)

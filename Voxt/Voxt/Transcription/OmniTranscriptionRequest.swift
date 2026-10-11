@@ -8,6 +8,7 @@ nonisolated enum OmniASRModelKind: String, Sendable, CaseIterable {
     case sortformer = "sortformer"
     case mossTranscribeDiarize = "moss_transcribe_diarize"
     case cohereTranscribe = "cohere_transcribe"
+    case senseVoice = "sensevoice"
 }
 
 /// Long audio cut at speech by the server's Silero VAD, with Voxt's settings.
@@ -17,8 +18,11 @@ nonisolated struct OmniSpeechSegments: Sendable, Equatable {
     var minSpeechMilliseconds: Int
     var minSilenceMilliseconds: Int
     var speechPadMilliseconds: Int
-    var mergeGapSeconds: Float
+    /// Cohere Transcribe joins speech runs across shorter gaps.
+    var mergeGapSeconds: Float?
     var maxChunkSeconds: Float
+    /// Note (Dayuxiaoshui): SenseVoice's chunks of one speech run overlap by this much.
+    var chunkOverlapSeconds: Float? = nil
 }
 
 nonisolated struct OmniTranscriptionRequest: Sendable, Equatable {
@@ -40,6 +44,8 @@ nonisolated struct OmniTranscriptionRequest: Sendable, Equatable {
     var chunkDuration: Float? = nil
     var minChunkDuration: Float? = nil
     var speechSegments: OmniSpeechSegments? = nil
+    /// SenseVoice: inverse text normalization.
+    var useITN: Bool? = nil
 }
 
 nonisolated struct OmniGenerationMetadata: Sendable, Equatable {
@@ -55,6 +61,10 @@ nonisolated struct OmniSpeakerSegment: Sendable, Equatable {
     /// Empty when the model output carried no speaker segments.
     let speakerID: String
     let text: String
+    /// Note (Dayuxiaoshui): SenseVoice's language, emotion and audio event of the segment's audio.
+    var language: String? = nil
+    var emotion: String? = nil
+    var event: String? = nil
 
     /// The server's segment objects; malformed entries are dropped.
     static func parse(_ value: Any?) -> [OmniSpeakerSegment] {
@@ -64,7 +74,15 @@ nonisolated struct OmniSpeakerSegment: Sendable, Equatable {
                   let speakerID = segment["speaker"] as? String,
                   let text = segment["text"] as? String
             else { return nil }
-            return OmniSpeakerSegment(startSeconds: start, endSeconds: end, speakerID: speakerID, text: text)
+            return OmniSpeakerSegment(
+                startSeconds: start,
+                endSeconds: end,
+                speakerID: speakerID,
+                text: text,
+                language: segment["language"] as? String,
+                emotion: segment["emotion"] as? String,
+                event: segment["event"] as? String
+            )
         }
     }
 }
@@ -188,8 +206,16 @@ nonisolated enum OmniMultipartBody {
             fields.append(("vad_min_speech_ms", String(segments.minSpeechMilliseconds)))
             fields.append(("vad_min_silence_ms", String(segments.minSilenceMilliseconds)))
             fields.append(("vad_speech_pad_ms", String(segments.speechPadMilliseconds)))
-            fields.append(("vad_merge_gap_seconds", String(segments.mergeGapSeconds)))
+            if let mergeGapSeconds = segments.mergeGapSeconds {
+                fields.append(("vad_merge_gap_seconds", String(mergeGapSeconds)))
+            }
             fields.append(("vad_max_chunk_seconds", String(segments.maxChunkSeconds)))
+            if let chunkOverlapSeconds = segments.chunkOverlapSeconds {
+                fields.append(("vad_chunk_overlap_seconds", String(chunkOverlapSeconds)))
+            }
+        }
+        if let useITN = request.useITN {
+            fields.append(("use_itn", useITN ? "true" : "false"))
         }
         var body = Data()
         for (name, value) in fields {
