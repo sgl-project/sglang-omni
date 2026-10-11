@@ -31,6 +31,10 @@ struct PreferencesView: View {
                         ForEach(microphones) { Text($0.name).tag($0.id) }
                     }
                     Toggle(L("settings.sounds"), isOn: $store.preferences.sounds)
+                    Toggle(L("settings.compactPopup"), isOn: Binding(
+                        get: { store.preferences.compactPopup == true }, set: { store.preferences.compactPopup = $0 }
+                    ))
+                    Text(L("settings.compactPopupNote")).font(.caption).foregroundStyle(.secondary)
                     Toggle(L("settings.autoPaste"), isOn: $store.preferences.autoPaste)
                     Text(L("settings.autoPasteNote")).font(.caption).foregroundStyle(.secondary)
                 }
