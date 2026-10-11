@@ -1,13 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Depformer weight slicing and teacher forcing, on a scaled-down spec."""
+"""Depformer weight slicing, teacher forcing, fused inference and eager fallbacks."""
+
+from dataclasses import replace
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
+from torch import nn
 
-from sglang_omni.models.personaplex.architecture import AUDIO_CARD, DepformerSpec
-from sglang_omni.models.personaplex.components.depformer import Depformer
+import sglang_omni.models.personaplex.components.depformer as depformer_module
+from sglang_omni.models.personaplex.architecture import (
+    AUDIO_CARD,
+    DEPFORMER,
+    DepformerSpec,
+)
+from sglang_omni.models.personaplex.components.depformer import (
+    Depformer,
+    DepformerLayer,
+    rms_norm_f32,
+    silu_gate,
+)
 from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
 
+CUDA_ONLY = pytest.mark.skipif(
+    not (torch.cuda.is_available() and torch.version.cuda is not None),
+    reason="NVIDIA CUDA is unavailable",
+)
 SPEC = DepformerSpec(
     dim=32, num_heads=4, num_layers=2, ffn_hidden=24, steps=8, input_dim=16
 )
@@ -229,3 +247,179 @@ def test_each_row_draws_from_its_own_generator():
     batched = [sample_token(logits, sampling, generators) for _ in range(20)]
     assert [int(picks[0]) for picks in batched] == alone(0, 7)
     assert [int(picks[3]) for picks in batched] == alone(3, 8)
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("batch_size", [1, 2, 3, 4, 7, 8, 15, 16, 32])
+@torch.inference_mode()
+def test_fused_pointwise_preserves_rounding_stream_and_graph(
+    dtype: torch.dtype, batch_size: int
+) -> None:
+    torch.manual_seed(42)
+    execution_stream = torch.cuda.Stream()
+    execution_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(execution_stream):
+        initial_hidden_states = torch.randn(
+            batch_size, DEPFORMER.dim, device="cuda", dtype=dtype
+        )
+        alpha = torch.linspace(-2, 2, DEPFORMER.dim, device="cuda", dtype=torch.float32)
+        gate_up = torch.randn(
+            batch_size, 2 * DEPFORMER.ffn_hidden, device="cuda", dtype=dtype
+        )
+        activated_states = depformer_module.fused_silu_gate(gate_up)
+        torch.testing.assert_close(activated_states, silu_gate(gate_up), rtol=0, atol=0)
+        if dtype != torch.float32:
+            assert not torch.equal(
+                silu_gate(gate_up), silu_gate(gate_up.float()).to(dtype)
+            )
+        else:
+            pass
+        for hidden_scale in (0, 1e-6, 1, 100):
+            hidden_states = initial_hidden_states * hidden_scale
+            normalized_states = depformer_module.fused_rms_norm_f32(
+                hidden_states, alpha, DEPFORMER.rms_norm_eps
+            )
+            torch.testing.assert_close(
+                normalized_states,
+                rms_norm_f32(hidden_states, alpha, DEPFORMER.rms_norm_eps),
+                rtol=0,
+                atol=0,
+                msg=f"RMSNorm scale={hidden_scale}",
+            )
+        execution_stream.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=execution_stream):
+            replayed_norm = depformer_module.fused_rms_norm_f32(
+                hidden_states, alpha, DEPFORMER.rms_norm_eps
+            )
+            replayed_gate = depformer_module.fused_silu_gate(gate_up)
+        hidden_states.mul_(0.5).add_(0.25)
+        alpha.neg_()
+        gate_up.neg_()
+        graph.replay()
+    execution_stream.synchronize()
+    expected_norm = rms_norm_f32(hidden_states, alpha, DEPFORMER.rms_norm_eps)
+    torch.testing.assert_close(replayed_norm, expected_norm, rtol=0, atol=0)
+    torch.testing.assert_close(replayed_gate, silu_gate(gate_up), rtol=0, atol=0)
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("batch_size", [1, 2, 3, 8])
+def test_cuda_depformer_matches_eager_logits_and_codes(
+    dtype: torch.dtype, batch_size: int
+) -> None:
+    torch.manual_seed(42)
+    model_spec = replace(DEPFORMER, num_layers=1, input_dim=SPEC.input_dim)
+    model = Depformer(model_spec).to(device="cuda", dtype=dtype)
+    model.eval().requires_grad_(False)
+    for parameter in model.parameters():
+        nn.init.normal_(parameter, std=0.05)
+    text_tokens = torch.arange(batch_size, device="cuda") + 3
+    hidden_states = torch.randn(
+        batch_size, model_spec.input_dim, device="cuda", dtype=dtype
+    )
+    forced_codes = torch.full(
+        (batch_size, model_spec.steps), -1, device="cuda", dtype=torch.long
+    )
+    captured_logits: list[torch.Tensor] = []
+
+    def sample(logits: torch.Tensor) -> torch.Tensor:
+        captured_logits.append(logits)
+        return logits.argmax(-1)
+
+    model.warmup_pointwise()
+    with (
+        torch.no_grad(),
+        patch.multiple(
+            depformer_module,
+            rms_norm_f32=Mock(side_effect=AssertionError),
+            silu_gate=Mock(side_effect=AssertionError),
+        ),
+    ):
+        fused_codes = model.generate(text_tokens, hidden_states, forced_codes, sample)
+        fused_logits = torch.stack(captured_logits)
+    captured_logits.clear()
+    with torch.enable_grad():
+        eager_codes = model.generate(text_tokens, hidden_states, forced_codes, sample)
+    torch.testing.assert_close(fused_codes, eager_codes, rtol=0, atol=0)
+    torch.testing.assert_close(
+        fused_logits,
+        torch.stack(captured_logits),
+        rtol=2 * torch.finfo(dtype).eps,
+        atol=1e-6,
+    )
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize(
+    "layer_spec,batch_size,strides",
+    [
+        (replace(DEPFORMER, dim=SPEC.dim), 1, (1, 1, 1)),
+        (replace(DEPFORMER, ffn_hidden=SPEC.ffn_hidden), 1, (1, 1, 1)),
+        (DEPFORMER, 0, (1, 1, 1)),
+        (DEPFORMER, 2, (2, 1, 1)),
+        (DEPFORMER, 2, (1, 2, 1)),
+        (DEPFORMER, 2, (1, 1, 2)),
+    ],
+)
+def test_cuda_layer_keeps_eager_outputs_for_unsupported_inputs(
+    layer_spec: DepformerSpec, batch_size: int, strides: tuple[int, int, int]
+) -> None:
+    layer = DepformerLayer(replace(layer_spec, steps=1)).cuda().requires_grad_(False)
+    for parameter in layer.parameters():
+        nn.init.normal_(parameter, std=0.05)
+    for alpha, stride in (
+        (layer.norm1_alpha, strides[1]),
+        (layer.norm2_alpha, strides[2]),
+    ):
+        alpha.set_(alpha.repeat_interleave(stride)[::stride])
+    hidden_states = torch.randn(batch_size, layer_spec.dim * strides[0], device="cuda")
+    hidden_states = hidden_states[:, :: strides[0]]
+    cache = hidden_states.new_empty(
+        2, batch_size, layer_spec.num_heads, 1, layer_spec.head_dim
+    )
+    with torch.enable_grad():
+        expected = layer.step(hidden_states, 0, cache)
+    with (
+        torch.inference_mode(),
+        patch.multiple(
+            depformer_module,
+            fused_rms_norm_f32=Mock(side_effect=AssertionError),
+            fused_silu_gate=Mock(side_effect=AssertionError),
+        ),
+    ):
+        actual = layer.step(hidden_states, 0, cache)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=[pytest.mark.accelerator, CUDA_ONLY])]
+)
+def test_layer_keeps_eager_gradients(device: str) -> None:
+    layer_spec = replace(DEPFORMER, steps=1) if device == "cuda" else SPEC
+    layer = DepformerLayer(layer_spec).to(device)
+    for parameter in layer.parameters():
+        nn.init.normal_(parameter, std=0.05)
+    hidden_states = torch.randn(1, layer_spec.dim, device=device, requires_grad=True)
+    cache = hidden_states.new_empty(
+        2, 1, layer_spec.num_heads, layer_spec.steps, layer_spec.head_dim
+    )
+    with patch.multiple(
+        depformer_module,
+        fused_rms_norm_f32=Mock(side_effect=AssertionError),
+        fused_silu_gate=Mock(side_effect=AssertionError),
+        create=True,
+    ):
+        layer.step(hidden_states, 0, cache).sum().backward()
+    for gradient in (
+        hidden_states.grad,
+        layer.norm1_alpha.grad,
+        layer.gate_in_weight.grad,
+    ):
+        assert gradient is not None
+        assert torch.isfinite(gradient).all()

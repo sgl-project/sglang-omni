@@ -85,6 +85,24 @@ request values. Stage sampling also takes precedence for `seed`.
 The fixed caller-frame budget still determines the number of generated frames.
 
 
+## Depformer pointwise fusion
+
+CUDA inference uses one CuTe DSL kernel per weighted RMSNorm and one per SiLU/gate
+operation for contiguous tensors at the production dimensions (hidden size 1024
+and FFN hidden size 2816), in FP32, BF16 or FP16. Requests in a batch share a
+Depformer pass. RMSNorm processes each batch row independently, and SiLU/gate
+launches blocks across all rows. Dynamic batch dimensions reuse one SiLU/gate
+kernel and four RMSNorm reduction configurations compiled during startup.
+RMSNorm retains FP32 accumulation, epsilon inside the square root,
+the multiplication order `x * (alpha * rsqrt(variance))`, and the final input
+dtype cast. At the production hidden size, its reduction follows the pinned
+PyTorch FP32 mean's accumulation order. SiLU rounds to the projection dtype
+before multiplying by the up projection, including for BF16 and FP16.
+CPU, other devices, gradient-enabled calls, empty batches, other dimensions,
+and non-contiguous tensors retain the eager operations. The LM stage warms the
+kernels during startup. Cached TVM FFI launches accept PyTorch
+tensors directly and use the current PyTorch CUDA stream.
+
 ## Known limitations
 
 - Offline, one request at a time by default (`max_running_requests=1`). If you raise `--lm.engine.max_running_requests`, the requests in a batch share one depformer pass per frame, and each seeded request still draws from its own generator. A seeded reply repeats exactly only with one request in flight, because batched kernels can round differently.

@@ -23,6 +23,15 @@ from sglang_omni.models.personaplex.architecture import (
     DepformerSpec,
 )
 
+if torch.version.cuda is not None:
+    from sglang_omni.models.personaplex.components.depformer_kernels import (
+        CUTE_DTYPES,
+        fused_rms_norm_f32,
+        fused_silu_gate,
+    )
+else:
+    pass
+
 
 def rms_norm_f32(x: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
     """x * alpha / sqrt(eps + mean(x²)) computed in float32, as the checkpoint
@@ -30,6 +39,12 @@ def rms_norm_f32(x: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tens
     x_f32 = x.float()
     variance = eps + x_f32.pow(2).mean(dim=-1, keepdim=True)
     return (x_f32 * (alpha.float() * torch.rsqrt(variance))).to(x.dtype)
+
+
+def silu_gate(gate_up: torch.Tensor) -> torch.Tensor:
+    """Round SiLU to the projection dtype before multiplying by the up projection."""
+    gate, up = gate_up.chunk(2, dim=-1)
+    return functional.silu(gate) * up
 
 
 class DepformerLayer(nn.Module):
@@ -49,7 +64,26 @@ class DepformerLayer(nn.Module):
     ) -> torch.Tensor:
         """One step; cache_2BHSD holds this frame's keys and values, slot per step."""
         spec = self.spec
-        h = rms_norm_f32(x_BD, self.norm1_alpha, spec.rms_norm_eps)
+        can_fuse_pointwise = (
+            x_BD.is_cuda
+            and torch.version.cuda is not None
+            and not torch.is_grad_enabled()
+            and x_BD.dtype in CUTE_DTYPES
+            and x_BD.ndim == 2
+            and x_BD.shape[0] > 0
+            and x_BD.shape[1] == DEPFORMER.dim
+            and spec.ffn_hidden == DEPFORMER.ffn_hidden
+            and x_BD.is_contiguous()
+            and self.norm1_alpha.is_contiguous()
+            and self.norm2_alpha.is_contiguous()
+            and self.norm1_alpha.dtype in CUTE_DTYPES
+            and self.norm2_alpha.dtype in CUTE_DTYPES
+        )
+        normalize_hidden_states = (
+            fused_rms_norm_f32 if can_fuse_pointwise else rms_norm_f32
+        )
+        activate_gate = fused_silu_gate if can_fuse_pointwise else silu_gate
+        h = normalize_hidden_states(x_BD, self.norm1_alpha, spec.rms_norm_eps)
         qkv = functional.linear(h, self.in_proj_weight[step])
         q, k, v = rearrange(qkv, "b (p h d) -> p b h d", p=3, h=spec.num_heads)
         cache_2BHSD[0, :, :, step] = k
@@ -63,11 +97,10 @@ class DepformerLayer(nn.Module):
             rearrange(attn, "b h 1 d -> b (h d)"), self.out_proj_weight[step]
         )
 
-        h = rms_norm_f32(x_BD, self.norm2_alpha, spec.rms_norm_eps)
-        gate = functional.linear(h, self.gate_in_weight[step])
-        gate, up = gate.chunk(2, dim=-1)
+        h = normalize_hidden_states(x_BD, self.norm2_alpha, spec.rms_norm_eps)
+        gate_up = functional.linear(h, self.gate_in_weight[step])
         return x_BD + functional.linear(
-            functional.silu(gate) * up, self.gate_out_weight[step]
+            activate_gate(gate_up), self.gate_out_weight[step]
         )
 
 
@@ -90,6 +123,25 @@ class Depformer(nn.Module):
         self.linears = nn.ModuleList(
             nn.Linear(spec.dim, AUDIO_CARD, bias=False) for _ in range(spec.steps)
         )
+
+    @torch.inference_mode()
+    def warmup_pointwise(self) -> None:
+        """Compile the inference kernels for all batch sizes before accepting requests."""
+        alpha = self.layers[0].norm1_alpha
+        if (
+            alpha.is_cuda
+            and torch.version.cuda is not None
+            and alpha.dtype in CUTE_DTYPES
+            and alpha.is_contiguous()
+            and self.spec.dim == DEPFORMER.dim
+            and self.spec.ffn_hidden == DEPFORMER.ffn_hidden
+        ):
+            for batch_size in (1, 4, 8, 16):
+                hidden_states = alpha.new_zeros(batch_size, self.spec.dim)
+                fused_rms_norm_f32(hidden_states, alpha, self.spec.rms_norm_eps)
+            fused_silu_gate(alpha.new_zeros(1, 2 * self.spec.ffn_hidden))
+        else:
+            pass
 
     def generate(
         self,
@@ -190,4 +242,4 @@ class Depformer(nn.Module):
         self.load_state_dict(state, strict=True)
 
 
-__all__ = ["Depformer", "DepformerLayer", "rms_norm_f32"]
+__all__ = ["Depformer", "DepformerLayer", "rms_norm_f32", "silu_gate"]
