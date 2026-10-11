@@ -47,7 +47,7 @@ REP_PENALTY_WINDOW = 16
 class TalkerSlotState:
     """GPU-resident per-slot state for async decode.
 
-    Token i of a request sits at windows[slot, i % REP_PENALTY_WINDOW]; slot `spare`
+    Token i of a request sits at windows[slot, i % REP_PENALTY_WINDOW]; the spare slot
     takes the padded rows of a sample graph.
     """
 
@@ -451,9 +451,13 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
     def samples_in_graph(
         self, batch_size: int, sampling_info: SamplingBatchInfo
     ) -> bool:
+        # note (0xtoward): the graph replays SGLang's sorted top-k/top-p draw; greedy and
+        # unfiltered batches take another draw there, so they sample eagerly.
         return (
             self.sample_graphs is not None
             and self.sample_graphs.fits(batch_size)
+            and not sampling_info.is_all_greedy
+            and (sampling_info.need_top_k_sampling or sampling_info.need_top_p_sampling)
             and not (
                 sampling_info.need_min_p_sampling
                 or sampling_info.grammars
