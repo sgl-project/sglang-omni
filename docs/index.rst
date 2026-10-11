@@ -164,4 +164,5 @@ Supported Models
    developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/full_duplex_bench.md
    developer_reference/rl_admin_control.md
+   developer_reference/mlx.md
    developer_reference/bump_version.md
