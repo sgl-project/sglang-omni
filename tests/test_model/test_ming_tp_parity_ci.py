@@ -32,7 +32,7 @@ class MingServerProcess:
     log_handle: BinaryIO
 
 
-def _post_json(port: int, payload: dict[str, Any], timeout: float = 180.0) -> Any:
+def post_json(port: int, payload: dict[str, Any], timeout: float = 180.0) -> Any:
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -44,7 +44,7 @@ def _post_json(port: int, payload: dict[str, Any], timeout: float = 180.0) -> An
         return json.loads(response.read().decode("utf-8"))
 
 
-def _wait_health(
+def wait_health(
     port: int,
     server: MingServerProcess,
     timeout: float = 900.0,
@@ -80,7 +80,7 @@ def _wait_health(
     )
 
 
-def _start_server(
+def start_server(
     port: int,
     tp_size: int,
     cuda_visible_devices: str,
@@ -133,7 +133,7 @@ def _start_server(
     return MingServerProcess(process=process, log_handle=log_handle)
 
 
-def _stop_server(server: MingServerProcess) -> None:
+def stop_server(server: MingServerProcess) -> None:
     process = server.process
     try:
         if process.poll() is None:
@@ -153,7 +153,7 @@ def _stop_server(server: MingServerProcess) -> None:
         server.log_handle.close()
 
 
-def _extract_text(body: dict[str, Any]) -> str:
+def extract_text(body: dict[str, Any]) -> str:
     choices = body.get("choices")
     assert choices
     message = choices[0].get("message")
@@ -164,7 +164,7 @@ def _extract_text(body: dict[str, Any]) -> str:
     return content.strip()
 
 
-def _chat_payload(prompt: str) -> dict[str, Any]:
+def chat_payload(prompt: str) -> dict[str, Any]:
     return {
         "model": MODEL_NAME,
         "messages": [{"role": "user", "content": prompt}],
@@ -175,10 +175,8 @@ def _chat_payload(prompt: str) -> dict[str, Any]:
     }
 
 
-def _collect_outputs(port: int, prompts: list[str]) -> list[str]:
-    return [
-        _extract_text(_post_json(port, _chat_payload(prompt))) for prompt in prompts
-    ]
+def collect_outputs(port: int, prompts: list[str]) -> list[str]:
+    return [extract_text(post_json(port, chat_payload(prompt))) for prompt in prompts]
 
 
 @pytest.mark.benchmark
@@ -197,7 +195,7 @@ def test_ming_tp1_and_tp4_deterministic_text_match(tmp_path: Path) -> None:
         "What is 17+25? Answer with exactly one number.",
     ]
 
-    tp1_process = _start_server(
+    tp1_process = start_server(
         port=18101,
         tp_size=1,
         cuda_visible_devices=cuda_devices,
@@ -205,12 +203,12 @@ def test_ming_tp1_and_tp4_deterministic_text_match(tmp_path: Path) -> None:
         tmp_path=tmp_path,
     )
     try:
-        _wait_health(18101, tp1_process)
-        tp1_outputs = _collect_outputs(18101, prompts)
+        wait_health(18101, tp1_process)
+        tp1_outputs = collect_outputs(18101, prompts)
     finally:
-        _stop_server(tp1_process)
+        stop_server(tp1_process)
 
-    tpn_process = _start_server(
+    tpn_process = start_server(
         port=18104,
         tp_size=tp_size,
         cuda_visible_devices=cuda_devices,
@@ -218,9 +216,9 @@ def test_ming_tp1_and_tp4_deterministic_text_match(tmp_path: Path) -> None:
         tmp_path=tmp_path,
     )
     try:
-        _wait_health(18104, tpn_process)
-        tpn_outputs = _collect_outputs(18104, prompts)
+        wait_health(18104, tpn_process)
+        tpn_outputs = collect_outputs(18104, prompts)
     finally:
-        _stop_server(tpn_process)
+        stop_server(tpn_process)
 
     assert tpn_outputs == tp1_outputs

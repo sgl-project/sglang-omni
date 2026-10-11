@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Mapping
 from contextlib import aclosing
-from dataclasses import replace
-from typing import Any, AsyncIterator, Callable
+from dataclasses import dataclass, replace
+from typing import AsyncIterator, Callable, TypedDict
 
 import numpy as np
 
@@ -19,6 +20,7 @@ from sglang_omni.client.audio import (
     to_numpy,
 )
 from sglang_omni.client.types import (
+    UNKNOWN_FINISH_REASON,
     AbortLevel,
     AbortResult,
     ClientError,
@@ -30,8 +32,78 @@ from sglang_omni.client.types import (
     SpeechResult,
     UsageInfo,
 )
-from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
+from sglang_omni.proto.admin import AdminResponse
+from sglang_omni.proto.request import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
+from sglang_omni.proto.session import (
+    OutputChunk,
+    SessionIdentity,
+    SessionLimits,
+    TimedChunk,
+)
+
+
+class EncodeAudioOptions(TypedDict, total=False):
+    response_format: str
+    sample_rate: int
+    speed: float
+    allow_format_fallback: bool
+
+
+def stop_string_start(text: str, stop: list[str]) -> int | None:
+    """Where the matched stop string starts: the first, in request order, in text."""
+    for stop_string in stop:
+        index = text.find(stop_string)
+        if index != -1:
+            return index
+        else:
+            pass
+    return None
+
+
+@dataclass(kw_only=True)
+class StreamedStopTrimmer:
+    """Hold back streamed text that may begin a stop string, and drop the match."""
+
+    stop: list[str]
+    held_text: str = ""
+    is_stopped: bool = False
+
+    def push(self, text: str) -> str:
+        if self.is_stopped:
+            return ""
+        else:
+            pass
+        self.held_text += text
+        stop_start = stop_string_start(self.held_text, self.stop)
+        if stop_start is not None:
+            self.is_stopped = True
+            released_text = self.held_text[:stop_start]
+            self.held_text = ""
+            return released_text
+        else:
+            pass
+        held_length = max(
+            (
+                prefix_length
+                for stop_string in self.stop
+                for prefix_length in range(
+                    1, min(len(self.held_text), len(stop_string) - 1) + 1
+                )
+                if self.held_text.endswith(stop_string[:prefix_length])
+            ),
+            default=0,
+        )
+        released_length = len(self.held_text) - held_length
+        released_text = self.held_text[:released_length]
+        self.held_text = self.held_text[released_length:]
+        return released_text
+
+    def finish(self) -> str:
+        released_text = "" if self.is_stopped else self.held_text
+        self.held_text = ""
+        return released_text
 
 
 class Client:
@@ -40,12 +112,38 @@ class Client:
     def __init__(
         self,
         coordinator: Coordinator,
-        result_builder: Callable[[str, Any], GenerateChunk] | None = None,
+        result_builder: Callable[[str, object], GenerateChunk] | None = None,
         stream_builder: Callable[[str, StreamMessage], GenerateChunk] | None = None,
     ) -> None:
-        self._coordinator = coordinator
-        self._result_builder = result_builder or self._default_result_builder
-        self._stream_builder = stream_builder or self._default_stream_builder
+        self.coordinator = coordinator
+        self.result_builder = result_builder or self.default_result_builder
+        self.stream_builder = stream_builder or self.default_stream_builder
+
+    async def open_session(
+        self,
+        request: OmniRequest,
+        *,
+        stages: list[str],
+        limits: SessionLimits | None = None,
+        session_id: str | None = None,
+    ) -> SessionIdentity:
+        """Open an explicitly configured stateful pipeline route."""
+        return await self.coordinator.open_session(
+            request, stages=stages, limits=limits, session_id=session_id
+        )
+
+    async def append_session(
+        self, session_identity: SessionIdentity, chunk: TimedChunk
+    ) -> int:
+        return await self.coordinator.append_session(session_identity, chunk)
+
+    def session_outputs(
+        self, session_identity: SessionIdentity
+    ) -> AsyncIterator[OutputChunk]:
+        return self.coordinator.session_outputs(session_identity)
+
+    async def close_session(self, session_identity: SessionIdentity) -> None:
+        await self.coordinator.close_session(session_identity)
 
     # ------------------------------------------------------------------
     # Low-level generate (backward compatible)
@@ -57,19 +155,21 @@ class Client:
         request_id: str | None = None,
     ) -> AsyncIterator[GenerateChunk]:
         req_id = request_id or str(uuid.uuid4())
-        omni_request = self._build_omni_request(request)
+        omni_request = self.build_omni_request(request)
         if request.stream:
-            coordinator_stream = self._coordinator.stream(req_id, omni_request)
+            coordinator_stream = self.coordinator.stream(req_id, omni_request)
             async with aclosing(coordinator_stream):
                 async for msg in coordinator_stream:
                     if isinstance(msg, StreamMessage):
-                        yield self._stream_builder(req_id, msg)
+                        yield self.stream_builder(req_id, msg)
                     else:
-                        yield self._result_builder(req_id, msg.result)
+                        yield self.result_builder(req_id, msg.result)
             return
+        else:
+            pass
 
-        result = await self._coordinator.submit(req_id, omni_request)
-        yield self._result_builder(req_id, result)
+        result = await self.coordinator.submit(req_id, omni_request)
+        yield self.result_builder(req_id, result)
 
     # ------------------------------------------------------------------
     # High-level: non-streaming completion
@@ -91,13 +191,13 @@ class Client:
             ClientError: If the pipeline produces no response at all.
         """
         text_parts: list[str] = []
-        audio_chunks: list[Any] = []
+        audio_chunks: list[object] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
-        logprobs_parts: list[Any] = []
+        logprobs_parts: list[list[float | int]] = []
         saw_output_token_logprobs = False
-        omni_rollout: dict[str, Any] | None = None
+        omni_rollout: dict[str, object] | None = None
         weight_version: str | None = None
         language: str | None = None
 
@@ -105,26 +205,49 @@ class Client:
             last_chunk = chunk
             if chunk.text:
                 text_parts.append(chunk.text)
+            else:
+                pass
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            else:
+                pass
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
+            else:
+                pass
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
+            else:
+                pass
             if chunk.output_token_logprobs is not None:
                 saw_output_token_logprobs = True
                 logprobs_parts.extend(chunk.output_token_logprobs)
+            else:
+                pass
             if chunk.omni_rollout is not None:
                 omni_rollout = chunk.omni_rollout
+            else:
+                pass
             if chunk.weight_version is not None:
                 weight_version = chunk.weight_version
+            else:
+                pass
             if chunk.language is not None:
                 language = chunk.language
+            else:
+                pass
 
         if last_chunk is None:
             raise ClientError("No response from pipeline")
+        else:
+            pass
 
         full_text = "".join(text_parts)
+        stop_start = stop_string_start(full_text, request.sampling.stop)
+        if stop_start is not None:
+            full_text = full_text[:stop_start]
+        else:
+            pass
 
         audio: CompletionAudio | None = None
         if audio_chunks:
@@ -144,6 +267,8 @@ class Client:
                 data=audio_b64,
                 transcript=full_text if full_text else None,
             )
+        else:
+            pass
 
         return CompletionResult(
             request_id=request_id,
@@ -176,6 +301,11 @@ class Client:
         need to touch numpy / raw bytes.
         """
         streamed_text = ""
+        stop_trimmer = (
+            StreamedStopTrimmer(stop=request.sampling.stop)
+            if request.sampling.stop
+            else None
+        )
         generate_stream = self.generate(request, request_id=request_id)
         async with aclosing(generate_stream):
             async for chunk in generate_stream:
@@ -186,6 +316,8 @@ class Client:
                         sample_rate=chunk.sample_rate or DEFAULT_SAMPLE_RATE,
                         output_format=audio_format,
                     )
+                else:
+                    pass
 
                 text = chunk.text
                 if chunk.modality == "text" and text:
@@ -193,6 +325,26 @@ class Client:
                         streamed_text += text
                     elif streamed_text and text.startswith(streamed_text):
                         text = text[len(streamed_text) :] or None
+                    else:
+                        pass
+                else:
+                    pass
+                if stop_trimmer is not None and chunk.modality == "text" and text:
+                    text = stop_trimmer.push(text) or None
+                else:
+                    pass
+                # A stop string that never completed releases its held text when the text ends.
+                held_text = (
+                    stop_trimmer.finish()
+                    if stop_trimmer is not None
+                    and chunk.modality == "text"
+                    and chunk.finish_reason is not None
+                    else ""
+                )
+                if held_text:
+                    text = (text or "") + held_text
+                else:
+                    pass
 
                 yield CompletionStreamChunk(
                     request_id=request_id,
@@ -203,6 +355,13 @@ class Client:
                     usage=chunk.usage,
                     stage_name=chunk.stage_name,
                 )
+            held_text = stop_trimmer.finish() if stop_trimmer is not None else ""
+            if held_text:
+                yield CompletionStreamChunk(
+                    request_id=request_id, text=held_text, modality="text"
+                )
+            else:
+                pass
 
     # ------------------------------------------------------------------
     # High-level: text-to-speech
@@ -222,7 +381,7 @@ class Client:
         Raises:
             ClientError: If the pipeline produces no audio output.
         """
-        audio_chunks: list[Any] = []
+        audio_chunks: list[object] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         extra_params = dict(request.extra_params)
@@ -232,12 +391,18 @@ class Client:
         async for chunk in self.generate(request, request_id=request_id):
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            else:
+                pass
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
+            else:
+                pass
             last_chunk = chunk
 
         if not audio_chunks:
             raise ClientError("No audio output generated from the pipeline.")
+        else:
+            pass
 
         if len(audio_chunks) == 1:
             audio_data = audio_chunks[0]
@@ -246,13 +411,15 @@ class Client:
             axis = -1 if arrays[0].ndim > 1 else 0
             audio_data = np.concatenate(arrays, axis=axis)
 
-        encode_kwargs: dict[str, Any] = {
+        encode_kwargs: EncodeAudioOptions = {
             "response_format": response_format,
             "speed": speed,
             "allow_format_fallback": allow_format_fallback,
         }
         if sample_rate is not None:
             encode_kwargs["sample_rate"] = sample_rate
+        else:
+            pass
 
         audio_bytes, mime_type = await asyncio.to_thread(
             encode_audio, audio_data, **encode_kwargs
@@ -265,6 +432,8 @@ class Client:
             if mt == mime_type:
                 actual_format = ext
                 break
+            else:
+                pass
 
         return SpeechResult(
             audio_bytes=audio_bytes,
@@ -272,7 +441,11 @@ class Client:
             format=actual_format,
             sample_rate=sample_rate,
             usage=last_chunk.usage if last_chunk else None,
-            finish_reason=last_chunk.finish_reason if last_chunk else None,
+            finish_reason=(
+                (last_chunk.reported_finish_reason or UNKNOWN_FINISH_REASON)
+                if last_chunk
+                else UNKNOWN_FINISH_REASON
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -284,27 +457,29 @@ class Client:
         request_id: str,
         level: AbortLevel = AbortLevel.SOFT,
     ) -> AbortResult:
-        success = await self._coordinator.abort(request_id)
+        success = await self.coordinator.abort(request_id)
         return AbortResult(success=success, level_applied=level)
 
     async def get_status(self, request_id: str) -> RequestState | None:
-        info = self._coordinator.get_request_info(request_id)
+        info = self.coordinator.get_request_info(request_id)
         if info is None:
             return None
+        else:
+            pass
         return info.state
 
-    def health(self) -> dict[str, Any]:
-        return self._coordinator.health()
+    def health(self) -> CoordinatorHealth:
+        return self.coordinator.health()
 
     async def admin(
         self,
         action: str,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.admin(
+    ) -> AdminResponse:
+        return await self.coordinator.admin(
             action,
             payload,
             stages=stages,
@@ -316,20 +491,20 @@ class Client:
         *,
         stages: list[str] | None = None,
         timeout_s: float = 30.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.model_info(
+    ) -> AdminResponse:
+        return await self.coordinator.model_info(
             stages=stages,
             timeout_s=timeout_s,
         )
 
     async def pause_generation(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.pause_generation(
+    ) -> AdminResponse:
+        return await self.coordinator.pause_generation(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -337,12 +512,12 @@ class Client:
 
     async def continue_generation(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.continue_generation(
+    ) -> AdminResponse:
+        return await self.coordinator.continue_generation(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -350,12 +525,12 @@ class Client:
 
     async def update_weights_from_disk(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: list[str] | None = None,
         timeout_s: float = 120.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.update_weights_from_disk(
+    ) -> AdminResponse:
+        return await self.coordinator.update_weights_from_disk(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -363,12 +538,12 @@ class Client:
 
     async def init_weights_update_group(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.init_weights_update_group(
+    ) -> AdminResponse:
+        return await self.coordinator.init_weights_update_group(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -376,12 +551,12 @@ class Client:
 
     async def destroy_weights_update_group(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.destroy_weights_update_group(
+    ) -> AdminResponse:
+        return await self.coordinator.destroy_weights_update_group(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -389,12 +564,12 @@ class Client:
 
     async def update_weights_from_distributed(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         *,
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.update_weights_from_distributed(
+    ) -> AdminResponse:
+        return await self.coordinator.update_weights_from_distributed(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -402,12 +577,12 @@ class Client:
 
     async def weights_checker(
         self,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, object] | None = None,
         *,
         stages: list[str] | None = None,
         timeout_s: float = 120.0,
-    ) -> dict[str, Any]:
-        return await self._coordinator.weights_checker(
+    ) -> AdminResponse:
+        return await self.coordinator.weights_checker(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -418,61 +593,99 @@ class Client:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+    def set_audio_data(chunk: GenerateChunk, data: Mapping[str, object]) -> None:
         audio_data = data.get("audio_data") or data.get("audio")
         if audio_data is None and data.get("audio_waveform") is not None:
             raw = data.get("audio_waveform")
             if isinstance(raw, memoryview):
                 raw = raw.tobytes()
+            else:
+                pass
             dtype = np.dtype(data.get("audio_waveform_dtype", "float32"))
             arr = np.frombuffer(raw, dtype=dtype)
             shape = data.get("audio_waveform_shape")
             if shape:
                 arr = arr.reshape(shape)
+            else:
+                pass
             audio_data = arr.copy()
+        else:
+            pass
         if audio_data is not None:
             chunk.audio_data = audio_data
             chunk.modality = "audio"
+        else:
+            pass
         sample_rate = data.get("sample_rate")
         if sample_rate is not None:
             chunk.sample_rate = sample_rate
+        else:
+            pass
 
     @staticmethod
-    def _build_usage_info(data: dict[str, Any]) -> UsageInfo | None:
+    def build_usage_info(data: Mapping[str, object]) -> UsageInfo | None:
         usage = dict(data.get("usage") or {})
         if "prompt_tokens" not in usage and data.get("prompt_tokens") is not None:
             usage["prompt_tokens"] = data.get("prompt_tokens")
+        else:
+            pass
         if (
             "completion_tokens" not in usage
             and data.get("completion_tokens") is not None
         ):
             usage["completion_tokens"] = data.get("completion_tokens")
+        else:
+            pass
         if "total_tokens" not in usage:
             prompt_tokens = usage.get("prompt_tokens")
             completion_tokens = usage.get("completion_tokens")
             if prompt_tokens is not None or completion_tokens is not None:
                 usage["total_tokens"] = (prompt_tokens or 0) + (completion_tokens or 0)
+            else:
+                pass
+        else:
+            pass
         if "engine_time_s" not in usage and data.get("engine_time_s") is not None:
             usage["engine_time_s"] = data.get("engine_time_s")
+        else:
+            pass
         return UsageInfo.from_dict(usage)
 
     @staticmethod
-    def _build_omni_request(request: GenerateRequest) -> OmniRequest:
-        inputs = _extract_inputs(request)
-        params = _build_params(request)
+    def build_omni_request(request: GenerateRequest) -> OmniRequest:
+        inputs = extract_inputs(request)
+        params = build_params(request)
         metadata = dict(request.metadata)
+        if (
+            request.stage_sampling
+            and EXPLICIT_STAGE_SAMPLING_PARAMS_KEY not in metadata
+        ):
+            metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY] = {
+                stage: list(sampling)
+                for stage, sampling in params["stage_sampling"].items()
+            }
+        else:
+            pass
         if request.model:
             metadata.setdefault("model", request.model)
+        else:
+            pass
         if request.output_modalities:
             metadata["output_modalities"] = request.output_modalities
+        else:
+            pass
         return OmniRequest(inputs=inputs, params=params, metadata=metadata)
 
     @staticmethod
-    def _default_result_builder(request_id: str, result: Any) -> GenerateChunk:
-        chunk = GenerateChunk(request_id=request_id, finish_reason="stop")
+    def default_result_builder(request_id: str, result: object) -> GenerateChunk:
+        chunk = GenerateChunk(
+            request_id=request_id, finish_reason="stop", model_finish_reason=""
+        )
         if isinstance(result, GenerateChunk):
             result.request_id = request_id
             return result
+        else:
+            pass
         if isinstance(result, dict):
             # Multi-terminal merged result, e.g. decode + code2wav/talker/
             # talker_stream.
@@ -482,133 +695,220 @@ class Client:
                     if audio_stage in result:
                         audio_result = result[audio_stage] or {}
                         break
+                    else:
+                        pass
+            else:
+                pass
             if audio_result is not None:
                 decode_result = result["decode"] or {}
                 text = decode_result.get("text")
                 if isinstance(text, str):
                     chunk.text = text
+                else:
+                    pass
                 finish_reason = decode_result.get("finish_reason")
                 if finish_reason is not None:
                     chunk.finish_reason = finish_reason
+                    chunk.model_finish_reason = decode_result.get(
+                        "model_finish_reason", finish_reason
+                    )
+                else:
+                    pass
                 output_token_logprobs = decode_result.get("output_token_logprobs")
                 if output_token_logprobs is not None:
                     chunk.output_token_logprobs = output_token_logprobs
+                else:
+                    pass
                 omni_rollout = decode_result.get("omni_rollout")
                 if omni_rollout is not None:
                     chunk.omni_rollout = omni_rollout
+                else:
+                    pass
                 weight_version = decode_result.get("weight_version")
                 if weight_version is not None:
                     chunk.weight_version = weight_version
-                Client._set_audio_data(chunk, audio_result)
-                chunk.usage = Client._build_usage_info(
+                else:
+                    pass
+                Client.set_audio_data(chunk, audio_result)
+                chunk.usage = Client.build_usage_info(
                     decode_result
-                ) or Client._build_usage_info(audio_result)
+                ) or Client.build_usage_info(audio_result)
                 return chunk
+            else:
+                pass
             text = result.get("text")
             if isinstance(text, str):
                 chunk.text = text
+            else:
+                pass
             token_ids = result.get("token_ids")
             if token_ids is not None:
                 if not isinstance(token_ids, (list, tuple)):
                     token_ids = token_ids.tolist()
+                else:
+                    pass
                 chunk.token_ids = list(token_ids)
+            else:
+                pass
             logprobs = result.get("logprobs")
             if logprobs is not None:
                 chunk.logprobs = logprobs
+            else:
+                pass
             output_token_logprobs = result.get("output_token_logprobs")
             if output_token_logprobs is not None:
                 chunk.output_token_logprobs = output_token_logprobs
+            else:
+                pass
             omni_rollout = result.get("omni_rollout")
             if omni_rollout is not None:
                 chunk.omni_rollout = omni_rollout
+            else:
+                pass
             weight_version = result.get("weight_version")
             if weight_version is not None:
                 chunk.weight_version = weight_version
+            else:
+                pass
             finish_reason = result.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
+                chunk.model_finish_reason = result.get(
+                    "model_finish_reason", finish_reason
+                )
+            else:
+                pass
             chunk.stage_id = result.get("stage_id")
             chunk.stage_name = result.get("stage_name")
             modality = result.get("modality")
             if modality is not None:
                 chunk.modality = modality
+            else:
+                pass
             language = result.get("language")
             if isinstance(language, str):
                 chunk.language = language
-            Client._set_audio_data(chunk, result)
-            chunk.usage = Client._build_usage_info(result)
+            else:
+                pass
+            Client.set_audio_data(chunk, result)
+            chunk.usage = Client.build_usage_info(result)
             return chunk
+        else:
+            pass
         if isinstance(result, str):
             chunk.text = result
             return chunk
+        else:
+            pass
         chunk.text = str(result)
         return chunk
 
     @staticmethod
-    def _default_stream_builder(request_id: str, msg: StreamMessage) -> GenerateChunk:
+    def default_stream_builder(request_id: str, msg: StreamMessage) -> GenerateChunk:
         chunk = GenerateChunk(request_id=request_id)
         chunk.stage_name = msg.stage_name or msg.from_stage
         chunk.stage_id = msg.stage_id
         if msg.modality:
             chunk.modality = msg.modality
+        else:
+            pass
 
         data = msg.chunk
         if isinstance(data, GenerateChunk):
             data.request_id = request_id
             if data.stage_name is None:
                 data.stage_name = chunk.stage_name
+            else:
+                pass
             if data.stage_id is None:
                 data.stage_id = chunk.stage_id
+            else:
+                pass
             if not data.modality and chunk.modality:
                 data.modality = chunk.modality
+            else:
+                pass
             return data
+        else:
+            pass
         if isinstance(data, dict):
             text = data.get("text")
             if isinstance(text, str):
                 chunk.text = text
+            else:
+                pass
             token_ids = data.get("token_ids")
             if token_ids is not None:
                 if not isinstance(token_ids, (list, tuple)):
                     token_ids = token_ids.tolist()
+                else:
+                    pass
                 chunk.token_ids = list(token_ids)
+            else:
+                pass
             logprobs = data.get("logprobs")
             if logprobs is not None:
                 chunk.logprobs = logprobs
+            else:
+                pass
             output_token_logprobs = data.get("output_token_logprobs")
             if output_token_logprobs is not None:
                 chunk.output_token_logprobs = output_token_logprobs
+            else:
+                pass
             omni_rollout = data.get("omni_rollout")
             if omni_rollout is not None:
                 chunk.omni_rollout = omni_rollout
+            else:
+                pass
             weight_version = data.get("weight_version")
             if weight_version is not None:
                 chunk.weight_version = weight_version
+            else:
+                pass
             finish_reason = data.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
-            chunk.usage = Client._build_usage_info(data)
+                chunk.model_finish_reason = data.get(
+                    "model_finish_reason", finish_reason
+                )
+            else:
+                pass
+            chunk.usage = Client.build_usage_info(data)
             stage_name = data.get("stage_name")
             if stage_name is not None:
                 chunk.stage_name = stage_name
+            else:
+                pass
             stage_id = data.get("stage_id")
             if stage_id is not None:
                 chunk.stage_id = stage_id
+            else:
+                pass
             modality = data.get("modality")
             if modality is not None:
                 chunk.modality = modality
-            Client._set_audio_data(chunk, data)
+            else:
+                pass
+            Client.set_audio_data(chunk, data)
             return chunk
+        else:
+            pass
         if isinstance(data, str):
             chunk.text = data
             return chunk
+        else:
+            pass
         if isinstance(data, int):
             chunk.token_ids = [data]
             return chunk
+        else:
+            pass
         chunk.text = str(data)
         return chunk
 
 
-def _extract_inputs(request: GenerateRequest) -> Any:
+def extract_inputs(request: GenerateRequest) -> object:
     choices = [
         request.prompt is not None,
         request.prompt_token_ids is not None,
@@ -619,20 +919,30 @@ def _extract_inputs(request: GenerateRequest) -> Any:
             "GenerateRequest requires exactly one input: "
             "prompt, prompt_token_ids, or messages."
         )
+    else:
+        pass
     if request.multimodal_train_inputs is not None:
         if request.prompt_token_ids is None:
             raise ValueError(
                 "multimodal_train_inputs requires prompt_token_ids "
                 "(the processor-expanded input_ids)"
             )
+        else:
+            pass
         return {
             "input_ids": list(request.prompt_token_ids),
             "multimodal_train_inputs": request.multimodal_train_inputs,
         }
+    else:
+        pass
     if request.prompt is not None:
         return request.prompt
+    else:
+        pass
     if request.prompt_token_ids is not None:
         return list(request.prompt_token_ids)
+    else:
+        pass
 
     # Build messages list
     messages = [msg.to_dict() for msg in request.messages or []]
@@ -641,36 +951,49 @@ def _extract_inputs(request: GenerateRequest) -> Any:
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
-
-    # If we have any media, return a dict with messages and media
-    # Otherwise, return just the messages list (for backward compatibility)
-    if audios or images or videos:
-        result = {"messages": messages}
-        if images:
-            result["images"] = images
-        if audios:
-            result["audios"] = audios
-        if videos:
-            result["videos"] = videos
+    video_options = {
+        key: request.metadata[key]
         for key in (
             "video_fps",
             "video_max_frames",
             "video_min_pixels",
             "video_max_pixels",
             "video_total_pixels",
-        ):
-            value = request.metadata.get(key)
-            if value is not None:
-                result[key] = value
+            "use_audio_in_video",
+        )
+        if request.metadata.get(key) is not None
+    }
+
+    # If we have any media or media options, return a dict with messages and them
+    # Otherwise, return just the messages list (for backward compatibility)
+    if audios or images or videos or video_options:
+        result: dict[str, object] = {"messages": messages}
+        if images:
+            result["images"] = images
+        else:
+            pass
+        if audios:
+            result["audios"] = audios
+        else:
+            pass
+        if videos:
+            result["videos"] = videos
+        else:
+            pass
+        result.update(video_options)
         return result
+    else:
+        pass
     return messages
 
 
-def _build_params(request: GenerateRequest) -> dict[str, Any]:
+def build_params(request: GenerateRequest) -> dict[str, object]:
     params = request.sampling.to_dict()
     max_new_tokens = request.sampling.max_new_tokens
     if request.max_tokens is not None:
         max_new_tokens = request.max_tokens
+    else:
+        pass
     if max_new_tokens is None:
         params.pop("max_new_tokens", None)
     else:
@@ -680,8 +1003,14 @@ def _build_params(request: GenerateRequest) -> dict[str, Any]:
         params["stage_sampling"] = {
             key: value.to_dict() for key, value in request.stage_sampling.items()
         }
+    else:
+        pass
     if request.stage_params:
         params["stage_params"] = request.stage_params
+    else:
+        pass
     if request.extra_params:
         params.update(request.extra_params)
+    else:
+        pass
     return params

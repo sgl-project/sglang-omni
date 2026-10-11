@@ -22,13 +22,13 @@ from sglang_omni.pipeline.replicas import (
 )
 
 
-def _stage(name: str, **kwargs) -> StageConfig:
+def build_stage_config(name: str, **kwargs) -> StageConfig:
     defaults = dict(factory_path="pkg.mod.create", terminal=True, process=name)
     defaults.update(kwargs)
     return StageConfig(name=name, **defaults)
 
 
-def _config(stages: list[StageConfig], **kwargs) -> PipelineConfig:
+def build_pipeline_config(stages: list[StageConfig], **kwargs) -> PipelineConfig:
     kwargs.setdefault("model_path", "m")
     kwargs.setdefault(
         "placement", PlacementConfig(require_memory_fraction_for_colocation=False)
@@ -36,7 +36,7 @@ def _config(stages: list[StageConfig], **kwargs) -> PipelineConfig:
     return PipelineConfig(stages=stages, **kwargs)
 
 
-def _expand(config: PipelineConfig):
+def expand(config: PipelineConfig):
     plan, stages = compile_logical_processes(config)
     expanded, topology = expand_replica_stages(stages, plan)
     return plan, expanded, topology
@@ -59,8 +59,8 @@ class TestReplicaDevices:
     def test_gpu_process_replica_requires_devices(self):
         with pytest.raises(ValueError, match="requires replica_devices"):
             compile_logical_processes(
-                _config(
-                    [_stage("s", process="p", gpu=1)],
+                build_pipeline_config(
+                    [build_stage_config("s", process="p", gpu=1)],
                     processes={"p": ProcessConfig(num_replicas=2)},
                 )
             )
@@ -68,8 +68,8 @@ class TestReplicaDevices:
     def test_cpu_process_must_not_declare_devices(self):
         with pytest.raises(ValueError, match="must not declare replica_devices"):
             compile_logical_processes(
-                _config(
-                    [_stage("s", process="p")],
+                build_pipeline_config(
+                    [build_stage_config("s", process="p")],
                     processes={
                         "p": ProcessConfig(num_replicas=2, replica_devices="0,1")
                     },
@@ -77,9 +77,9 @@ class TestReplicaDevices:
             )
 
     def test_cpu_process_replicates_without_devices(self):
-        _, expanded, topology = _expand(
-            _config(
-                [_stage("s", process="p")],
+        _, expanded, topology = expand(
+            build_pipeline_config(
+                [build_stage_config("s", process="p")],
                 processes={"p": ProcessConfig(num_replicas=2)},
             )
         )
@@ -89,8 +89,12 @@ class TestReplicaDevices:
     def test_device_count_must_match_replicas_times_tp(self):
         with pytest.raises(ValueError, match="expected 4"):
             compile_logical_processes(
-                _config(
-                    [_stage("thinker", tp_size=2, gpu=[0, 1], process=None)],
+                build_pipeline_config(
+                    [
+                        build_stage_config(
+                            "thinker", tp_size=2, gpu=[0, 1], process=None
+                        )
+                    ],
                     processes={
                         "thinker": ProcessConfig(
                             num_replicas=2, replica_devices="0,1,2"
@@ -100,9 +104,9 @@ class TestReplicaDevices:
             )
 
     def test_replicas_may_share_one_device(self):
-        _, expanded, _ = _expand(
-            _config(
-                [_stage("s", process="p", gpu=0)],
+        _, expanded, _ = expand(
+            build_pipeline_config(
+                [build_stage_config("s", process="p", gpu=0)],
                 processes={"p": ProcessConfig(num_replicas=2, replica_devices=[0, 0])},
             )
         )
@@ -111,8 +115,12 @@ class TestReplicaDevices:
     def test_tp_replica_group_requires_unique_devices(self):
         with pytest.raises(ValueError, match="unique GPU ids"):
             compile_logical_processes(
-                _config(
-                    [_stage("thinker", tp_size=2, gpu=[0, 1], process=None)],
+                build_pipeline_config(
+                    [
+                        build_stage_config(
+                            "thinker", tp_size=2, gpu=[0, 1], process=None
+                        )
+                    ],
                     processes={
                         "thinker": ProcessConfig(
                             num_replicas=2, replica_devices=[0, 0, 2, 3]
@@ -124,22 +132,26 @@ class TestReplicaDevices:
 
 class TestProcessExpansion:
     def test_no_replicas_is_identity(self):
-        config = _config([_stage("a"), _stage("b")])
-        _, expanded, topology = _expand(config)
+        config = build_pipeline_config(
+            [build_stage_config("a"), build_stage_config("b")]
+        )
+        _, expanded, topology = expand(config)
 
         assert [stage.name for stage in expanded] == ["a", "b"]
         assert not topology
         assert topology.to_dict() == {}
 
     def test_whole_process_is_copied_with_one_index(self):
-        config = _config(
+        config = build_pipeline_config(
             [
-                _stage("decode", terminal=False, next="postprocess", process="tail"),
-                _stage("postprocess", process="tail"),
+                build_stage_config(
+                    "decode", terminal=False, next="postprocess", process="tail"
+                ),
+                build_stage_config("postprocess", process="tail"),
             ],
             processes={"tail": ProcessConfig(num_replicas=2)},
         )
-        _, expanded, topology = _expand(config)
+        _, expanded, topology = expand(config)
 
         by_name = {stage.name: stage for stage in expanded}
         assert set(by_name) == {
@@ -158,9 +170,9 @@ class TestProcessExpansion:
         }
 
     def test_expansion_keeps_logical_wiring_and_assigns_devices(self):
-        config = _config(
+        config = build_pipeline_config(
             [
-                _stage(
+                build_stage_config(
                     "talker_ar",
                     terminal=False,
                     next="code2wav",
@@ -168,13 +180,13 @@ class TestProcessExpansion:
                     gpu=1,
                     process="talker_ar",
                 ),
-                _stage("code2wav", process="code2wav"),
+                build_stage_config("code2wav", process="code2wav"),
             ],
             processes={
                 "talker_ar": ProcessConfig(num_replicas=2, replica_devices="1,2")
             },
         )
-        _, expanded, topology = _expand(config)
+        _, expanded, topology = expand(config)
 
         names = [stage.name for stage in expanded]
         assert names == ["talker_ar@r0", "talker_ar@r1", "code2wav"]
@@ -184,14 +196,16 @@ class TestProcessExpansion:
         assert topology.to_dict() == {"talker_ar": ["talker_ar@r0", "talker_ar@r1"]}
 
     def test_cpu_stage_in_mixed_process_stays_on_host(self):
-        config = _config(
+        config = build_pipeline_config(
             [
-                _stage("normalize", terminal=False, next="encode", process="front"),
-                _stage("encode", process="front", gpu=0),
+                build_stage_config(
+                    "normalize", terminal=False, next="encode", process="front"
+                ),
+                build_stage_config("encode", process="front", gpu=0),
             ],
             processes={"front": ProcessConfig(num_replicas=2, replica_devices=[4, 5])},
         )
-        _, expanded, _ = _expand(config)
+        _, expanded, _ = expand(config)
 
         by_name = {stage.name: stage for stage in expanded}
         assert by_name["normalize@r0"].gpu is None
@@ -200,13 +214,13 @@ class TestProcessExpansion:
         assert by_name["encode@r1"].gpu == 5
 
     def test_tp_process_expands_by_whole_rank_group(self):
-        config = _config(
-            [_stage("thinker", tp_size=2, gpu=[0, 1], process=None)],
+        config = build_pipeline_config(
+            [build_stage_config("thinker", tp_size=2, gpu=[0, 1], process=None)],
             processes={
                 "thinker": ProcessConfig(num_replicas=2, replica_devices=[0, 1, 2, 3])
             },
         )
-        _, expanded, topology = _expand(config)
+        _, expanded, topology = expand(config)
 
         assert [stage.name for stage in expanded] == ["thinker@r0", "thinker@r1"]
         assert [stage.gpu for stage in expanded] == [[0, 1], [2, 3]]
@@ -214,15 +228,15 @@ class TestProcessExpansion:
         assert topology.to_dict() == {"thinker": ["thinker@r0", "thinker@r1"]}
 
     def test_config_order_is_preserved_inside_a_replica(self):
-        config = _config(
+        config = build_pipeline_config(
             [
-                _stage("a", terminal=False, next="b", process="p"),
-                _stage("b", terminal=False, next="c", process="p"),
-                _stage("c", process="p"),
+                build_stage_config("a", terminal=False, next="b", process="p"),
+                build_stage_config("b", terminal=False, next="c", process="p"),
+                build_stage_config("c", process="p"),
             ],
             processes={"p": ProcessConfig(num_replicas=2)},
         )
-        _, expanded, _ = _expand(config)
+        _, expanded, _ = expand(config)
 
         assert [stage.name for stage in expanded] == [
             "a@r0",
@@ -245,18 +259,18 @@ class TestProcessExpansion:
 
 class TestValidateDeviceAssignment:
     def test_valid_ids_pass(self):
-        _, expanded, _ = _expand(
-            _config(
-                [_stage("s", gpu=1, process="p")],
+        _, expanded, _ = expand(
+            build_pipeline_config(
+                [build_stage_config("s", gpu=1, process="p")],
                 processes={"p": ProcessConfig(num_replicas=2, replica_devices="1,2")},
             )
         )
         validate_device_assignment(expanded, device_count=4)
 
     def test_out_of_range_id_raises(self):
-        _, expanded, _ = _expand(
-            _config(
-                [_stage("s", gpu=3, process="p")],
+        _, expanded, _ = expand(
+            build_pipeline_config(
+                [build_stage_config("s", gpu=3, process="p")],
                 processes={"p": ProcessConfig(num_replicas=2, replica_devices="3,4")},
             )
         )
@@ -264,66 +278,68 @@ class TestValidateDeviceAssignment:
             validate_device_assignment(expanded, device_count=4)
 
     def test_cpu_stages_are_skipped(self):
-        validate_device_assignment([_stage("s")], device_count=0)
+        validate_device_assignment([build_stage_config("s")], device_count=0)
 
     def test_unknown_device_count_skips_range_check(self):
-        validate_device_assignment([_stage("s", gpu=7)], device_count=None)
+        validate_device_assignment([build_stage_config("s", gpu=7)], device_count=None)
 
 
 class TestReplicaTopology:
-    def _topo(self) -> ReplicaTopology:
-        config = _config(
+    def topo(self) -> ReplicaTopology:
+        config = build_pipeline_config(
             [
-                _stage("talker_ar", gpu=1, process="talker_ar"),
-                _stage("code2wav", gpu=1, process="code2wav"),
-                _stage("thinker", process="thinker"),
+                build_stage_config("talker_ar", gpu=1, process="talker_ar"),
+                build_stage_config("code2wav", gpu=1, process="code2wav"),
+                build_stage_config("thinker", process="thinker"),
             ],
             processes={
                 "talker_ar": ProcessConfig(num_replicas=2, replica_devices="1,2"),
                 "code2wav": ProcessConfig(num_replicas=2, replica_devices="1,2"),
             },
         )
-        _, _, topology = _expand(config)
+        _, _, topology = expand(config)
         return topology
 
     def test_resolve_and_logical_name(self):
-        topo = self._topo()
+        topo = self.topo()
         assert topo.resolve("talker_ar", 1) == "talker_ar@r1"
         assert topo.logical_name("talker_ar@r1") == "talker_ar"
         assert topo.logical_name("thinker") == "thinker"
 
     def test_resolve_out_of_range(self):
         with pytest.raises(ValueError, match="has 2 replicas"):
-            self._topo().resolve("talker_ar", 5)
+            self.topo().resolve("talker_ar", 5)
 
     def test_resolve_unreplicated(self):
-        topo = self._topo()
+        topo = self.topo()
         assert topo.resolve("thinker", 0) == "thinker"
         with pytest.raises(ValueError, match="not replicated"):
             topo.resolve("thinker", 1)
 
     def test_instances(self):
-        topo = self._topo()
+        topo = self.topo()
         assert topo.instances("code2wav") == ("code2wav@r0", "code2wav@r1")
         assert topo.instances("thinker") == ("thinker",)
 
     def test_unregistered_suffix_name_is_not_normalized(self):
-        assert self._topo().logical_name("other@r0") == "other@r0"
+        assert self.topo().logical_name("other@r0") == "other@r0"
 
     def test_dict_round_trip(self):
-        topo = self._topo()
+        topo = self.topo()
         restored = ReplicaTopology.from_dict(topo.to_dict())
         assert restored == topo
         assert not ReplicaTopology.from_dict(None)
 
 
 class TestBinding:
-    def _plan(self, **processes):
-        config = _config(
+    def plan(self, **processes):
+        config = build_pipeline_config(
             [
-                _stage("decode", terminal=False, next="postprocess", process="tail"),
-                _stage("postprocess", process="tail"),
-                _stage("thinker", process="thinker"),
+                build_stage_config(
+                    "decode", terminal=False, next="postprocess", process="tail"
+                ),
+                build_stage_config("postprocess", process="tail"),
+                build_stage_config("thinker", process="thinker"),
             ],
             processes=processes,
         )
@@ -337,7 +353,7 @@ class TestBinding:
         assert policy.bind("thinker", 3, "reqx") == 0
 
     def test_one_choice_projects_onto_every_member_stage(self):
-        plan = self._plan(tail=ProcessConfig(num_replicas=2))
+        plan = self.plan(tail=ProcessConfig(num_replicas=2))
         policy = RoundRobinBindingPolicy()
 
         first = assign_replica_bindings(plan, policy, "req0")
@@ -347,7 +363,7 @@ class TestBinding:
         assert second == {"decode": 1, "postprocess": 1}
 
     def test_processes_choose_independently(self):
-        plan = self._plan(
+        plan = self.plan(
             tail=ProcessConfig(num_replicas=3),
             thinker=ProcessConfig(num_replicas=2),
         )
@@ -359,16 +375,16 @@ class TestBinding:
         assert [b["thinker"] for b in bindings] == [0, 1, 0, 1, 0, 1]
 
     def test_equal_count_stream_processes_advance_in_lockstep(self):
-        config = _config(
+        config = build_pipeline_config(
             [
-                _stage(
+                build_stage_config(
                     "talker_ar",
                     terminal=False,
                     next="code2wav",
                     stream_to=["code2wav"],
                     process="talker",
                 ),
-                _stage("code2wav", process="codec"),
+                build_stage_config("code2wav", process="codec"),
             ],
             processes={
                 "talker": ProcessConfig(num_replicas=2),
@@ -386,8 +402,7 @@ class TestBinding:
 
     def test_unreplicated_plan_binds_none(self):
         assert (
-            assign_replica_bindings(self._plan(), RoundRobinBindingPolicy(), "r")
-            is None
+            assign_replica_bindings(self.plan(), RoundRobinBindingPolicy(), "r") is None
         )
 
     def test_out_of_range_policy_choice_is_rejected(self):
@@ -395,21 +410,23 @@ class TestBinding:
             def bind(self, process_name, num_replicas, request_id):
                 return num_replicas
 
-        plan = self._plan(tail=ProcessConfig(num_replicas=2))
+        plan = self.plan(tail=ProcessConfig(num_replicas=2))
         with pytest.raises(ValueError, match="selected replica 2"):
             assign_replica_bindings(plan, BadPolicy(), "req")
 
 
 class TestEntryProcessReplicas:
     def test_entry_process_can_be_replicated(self):
-        config = _config(
+        config = build_pipeline_config(
             [
-                _stage("normalize", terminal=False, next="sink", process="front"),
-                _stage("sink", process="sink"),
+                build_stage_config(
+                    "normalize", terminal=False, next="sink", process="front"
+                ),
+                build_stage_config("sink", process="sink"),
             ],
             processes={"front": ProcessConfig(num_replicas=2)},
         )
-        plan, expanded, topology = _expand(config)
+        plan, expanded, topology = expand(config)
 
         assert config.resolved_entry_stage == "normalize"
         assert topology.instances("normalize") == ("normalize@r0", "normalize@r1")
@@ -436,11 +453,11 @@ class TestColocatedReplicaRejection:
         config = Qwen3OmniSpeechColocatedPipelineConfig(**config_data)
 
         with pytest.raises(ValueError, match="does not support process replicas"):
-            _build_placement(config)
+            build_placement(config)
 
 
-def _build_placement(config: PipelineConfig):
-    _, expanded, topology = _expand(config)
+def build_placement(config: PipelineConfig):
+    _, expanded, topology = expand(config)
     return build_stage_placement_plan(
         config,
         stages_cfg=expanded,
@@ -448,7 +465,7 @@ def _build_placement(config: PipelineConfig):
     )
 
 
-def _qwen_speech_replica_config(talker_devices: list[int]) -> PipelineConfig:
+def qwen_speech_replica_config(talker_devices: list[int]) -> PipelineConfig:
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
     config_data = Qwen3OmniSpeechPipelineConfig(model_path="m").model_dump()
@@ -471,9 +488,9 @@ class TestQwenReplicaPlacementPolicy:
         from sglang_omni.config.placement import StagePlacement, StagePlacementPlan
         from sglang_omni.models.qwen3_omni.placement import Qwen3OmniPlacementPolicy
 
-        config = _config(
+        config = build_pipeline_config(
             [
-                _stage(name)
+                build_stage_config(name)
                 for name in (
                     "preprocessing",
                     "image_encoder",
@@ -496,15 +513,15 @@ class TestQwenReplicaPlacementPolicy:
         Qwen3OmniPlacementPolicy().validate(config, plan)
 
     def test_rejects_talker_replica_overlapping_thinker_tp_rank(self):
-        config = _qwen_speech_replica_config([1, 2])
+        config = qwen_speech_replica_config([1, 2])
 
         with pytest.raises(ValueError, match="talker_ar@r0"):
-            _build_placement(config)
+            build_placement(config)
 
     def test_accepts_talker_replicas_disjoint_from_thinker_tp(self):
-        config = _qwen_speech_replica_config([2, 3])
+        config = qwen_speech_replica_config([2, 3])
 
-        plan = _build_placement(config)
+        plan = build_placement(config)
 
         assert [
             (placement.stage_name, placement.gpu_ids)
@@ -522,12 +539,12 @@ class TestQwenReplicaPlacementPolicy:
 class TestRemovedStageLevelReplicaConfig:
     def test_stage_num_replicas_is_rejected(self):
         with pytest.raises(ValueError, match="num_replicas") as exc_info:
-            _stage("s", num_replicas=2)
+            build_stage_config("s", num_replicas=2)
         assert "Extra inputs are not permitted" in str(exc_info.value)
 
     def test_stage_replica_devices_is_rejected(self):
         with pytest.raises(ValueError, match="replica_devices") as exc_info:
-            _stage("s", replica_devices="0,1")
+            build_stage_config("s", replica_devices="0,1")
         assert "Extra inputs are not permitted" in str(exc_info.value)
 
     def test_fused_stages_is_rejected(self):
@@ -535,8 +552,8 @@ class TestRemovedStageLevelReplicaConfig:
             PipelineConfig(
                 model_path="m",
                 stages=[
-                    _stage("a", terminal=False, next="b", process="p"),
-                    _stage("b", process="p"),
+                    build_stage_config("a", terminal=False, next="b", process="p"),
+                    build_stage_config("b", process="p"),
                 ],
                 fused_stages=[["a", "b"]],
             )
@@ -545,7 +562,7 @@ class TestRemovedStageLevelReplicaConfig:
     def test_stage_overrides_reject_replica_keys(self):
         from sglang_omni.config.sources import patches_from_stages_mapping
 
-        config = _config([_stage("code2wav")])
+        config = build_pipeline_config([build_stage_config("code2wav")])
         with pytest.raises(Exception, match="num_replicas"):
             patches_from_stages_mapping(
                 {"code2wav": {"num_replicas": 3}},
@@ -558,20 +575,20 @@ class TestRemovedStageLevelReplicaConfig:
 class TestReservedStageNames:
     def test_reserved_instance_suffix_rejected(self):
         with pytest.raises(ValueError, match="reserved"):
-            PipelineConfig(model_path="m", stages=[_stage("foo@r0")])
+            PipelineConfig(model_path="m", stages=[build_stage_config("foo@r0")])
 
     def test_non_numeric_suffix_allowed(self):
-        PipelineConfig(model_path="m", stages=[_stage("foo@rx")])
+        PipelineConfig(model_path="m", stages=[build_stage_config("foo@rx")])
 
 
 class TestRuntimeOverridesOnReplicas:
-    def _config(self) -> PipelineConfig:
+    def build_pipeline_config(self) -> PipelineConfig:
         from sglang_omni.config import FactoryArgs
 
-        return _config(
+        return build_pipeline_config(
             [
-                _stage("src", terminal=False, next="gen", process="src"),
-                _stage(
+                build_stage_config("src", terminal=False, next="gen", process="src"),
+                build_stage_config(
                     "gen",
                     gpu=1,
                     process="gen",
@@ -584,8 +601,8 @@ class TestRuntimeOverridesOnReplicas:
     def test_replica_instances_inherit_logical_overrides(self):
         from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 
-        config = self._config()
-        _, expanded, topology = _expand(config)
+        config = self.build_pipeline_config()
+        _, expanded, topology = expand(config)
         assert topology.instances("gen") == ("gen@r0", "gen@r1")
 
         for stage_cfg in expanded:
@@ -598,7 +615,7 @@ class TestRuntimeOverridesOnReplicas:
     def test_unreplicated_stage_does_not_borrow_overrides(self):
         from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 
-        config = self._config()
+        config = self.build_pipeline_config()
         src = {s.name: s for s in config.stages}["src"]
         assert "max_seq_len" not in resolve_stage_typed_kwargs(src)
 
@@ -606,14 +623,14 @@ class TestRuntimeOverridesOnReplicas:
 class TestReceiveSideLogicalNames:
     """A replica sends its instance name; fan-in and streams expect logical ones."""
 
-    def _payload(self, request_id: str = "req"):
+    def payload(self, request_id: str = "req"):
         from sglang_omni.proto import OmniRequest, StagePayload
 
         return StagePayload(
             request_id=request_id, request=OmniRequest(inputs="x"), data={}
         )
 
-    def _stage(self, handler, **kwargs):
+    def build_stage_config(self, handler, **kwargs):
         from tests.unit_test.pipeline.helpers import make_stage
 
         return make_stage(name="aggregate", input_handler=handler, **kwargs)
@@ -627,16 +644,16 @@ class TestReceiveSideLogicalNames:
 
         def merge(inputs):
             merged.append(sorted(inputs))
-            return self._payload()
+            return self.payload()
 
-        stage = self._stage(
+        stage = self.build_stage_config(
             AggregatedInput(sources={"a", "b"}, merge=merge),
             replica_topology={"a": ["a@r0", "a@r1"]},
         )
 
         async def run() -> None:
-            await stage.receive_local_payload("req", "a@r0", self._payload())
-            await stage.receive_local_payload("req", "b", self._payload())
+            await stage.receive_local_payload("req", "a@r0", self.payload())
+            await stage.receive_local_payload("req", "b", self.payload())
 
         asyncio.run(run())
 
@@ -653,16 +670,16 @@ class TestReceiveSideLogicalNames:
             seen.append(from_stage)
             return ["a", "b"]
 
-        stage = self._stage(
+        stage = self.build_stage_config(
             AggregatedInput(
                 sources={"a", "b"},
-                merge=lambda inputs: self._payload(),
+                merge=lambda inputs: self.payload(),
                 expected_sources_fn=wait_for_fn,
             ),
             replica_topology={"a": ["a@r0", "a@r1"]},
         )
 
-        asyncio.run(stage.receive_local_payload("req", "a@r1", self._payload()))
+        asyncio.run(stage.receive_local_payload("req", "a@r1", self.payload()))
 
         assert seen == ["a"]
 
@@ -675,14 +692,14 @@ class TestReceiveSideLogicalNames:
 
         def merge(inputs):
             merged.append(sorted(inputs))
-            return self._payload()
+            return self.payload()
 
-        stage = self._stage(
+        stage = self.build_stage_config(
             AggregatedInput(sources={"other@r0"}, merge=merge),
             replica_topology={"a": ["a@r0"]},
         )
 
-        asyncio.run(stage.receive_local_payload("req", "other@r0", self._payload()))
+        asyncio.run(stage.receive_local_payload("req", "other@r0", self.payload()))
 
         assert merged == [["other@r0"]]
 
@@ -697,7 +714,7 @@ class TestReceiveSideLogicalNames:
             can_accept_stream_before_payload=True,
             replica_topology={"engine": ["engine@r0", "engine@r1"]},
         )
-        stage._stream_queue = StreamQueue()
+        stage.stream_queue = StreamQueue()
 
         async def run() -> None:
             await stage.receive_local_stream_chunk(
@@ -713,11 +730,11 @@ class TestReceiveSideLogicalNames:
 
 class TestSingleReplicaDeviceOverride:
     def test_replica_devices_override_gpu_without_replicating(self):
-        config = _config(
-            [_stage("s", process="p", gpu=1)],
+        config = build_pipeline_config(
+            [build_stage_config("s", process="p", gpu=1)],
             processes={"p": ProcessConfig(num_replicas=1, replica_devices=[7])},
         )
-        _, expanded, topology = _expand(config)
+        _, expanded, topology = expand(config)
 
         assert [(stage.name, stage.gpu, stage.process) for stage in expanded] == [
             ("s", 7, "p")
@@ -725,12 +742,12 @@ class TestSingleReplicaDeviceOverride:
         assert topology.to_dict() == {}
 
     def test_tp_process_single_replica_device_override(self):
-        config = _config(
-            [_stage("thinker", tp_size=2, gpu=[0, 1], process=None)],
+        config = build_pipeline_config(
+            [build_stage_config("thinker", tp_size=2, gpu=[0, 1], process=None)],
             processes={
                 "thinker": ProcessConfig(num_replicas=1, replica_devices=[4, 5])
             },
         )
-        _, expanded, _ = _expand(config)
+        _, expanded, _ = expand(config)
 
         assert [(stage.name, stage.gpu) for stage in expanded] == [("thinker", [4, 5])]

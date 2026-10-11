@@ -19,7 +19,9 @@ import logging
 import os
 import time
 import wave
-from typing import AsyncIterator, Protocol
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Literal, Protocol, TypedDict
+from urllib.parse import quote
 
 import aiohttp
 import numpy as np
@@ -27,8 +29,8 @@ import soundfile as sf
 import torch
 from tqdm import tqdm
 
-from benchmarks.benchmarker.data import RequestResult
-from benchmarks.benchmarker.runner import SendFn
+from benchmarks.benchmarker.data import FinishReason, RequestResult
+from benchmarks.benchmarker.runner import AfterSendFn, SendFn
 from benchmarks.benchmarker.utils import (
     WAV_HEADER_SIZE,
     get_wav_duration,
@@ -62,6 +64,8 @@ from benchmarks.tasks.asr import (
 
 logger = logging.getLogger(__name__)
 
+STREAM_OUTCOME_TIMEOUT_S = 5.0
+STREAM_OUTCOME_CONNECTIONS = 1
 TEXT_PREVIEW_LENGTH = 60
 SPEAKER_SIMILARITY_BATCH_SIZE = 8
 MOSS_TTS_TOKEN_COUNT_AUTO = "auto"
@@ -69,6 +73,7 @@ MOSS_TTS_ZH_TOKENS_PER_CHAR = 3.098411951313033
 MOSS_TTS_EN_TOKENS_PER_CHAR = 0.8673376262755219
 MOSS_TTS_MIN_AUTO_TOKEN_COUNT = 32
 UTMOS_BATCH_SIZE = 8
+ReferenceAudioField = Literal["audios", "audio.ref_audio"]
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +775,46 @@ class VoiceCloneTTS:
         return transcribe_and_compute_wer(output, wav_path, asr, lang, device)
 
 
+def preload_reference_audio(samples: list[SampleInput]) -> dict[str, str]:
+    """Encode each reference WAV as a data URI, keyed by path, before timing starts."""
+    reference_audio_by_path: dict[str, str] = {}
+    for sample in samples:
+        if sample.ref_audio in reference_audio_by_path:
+            continue
+        with open(sample.ref_audio, "rb") as reference_file:
+            encoded_audio = base64.b64encode(reference_file.read()).decode("ascii")
+        reference_audio_by_path[sample.ref_audio] = (
+            f"data:audio/wav;base64,{encoded_audio}"
+        )
+    return reference_audio_by_path
+
+
+class TalkerSamplingParams(TypedDict, total=False):
+    talker_temperature: float
+    talker_top_p: float
+    talker_top_k: int
+    talker_repetition_penalty: float
+
+
+def talker_sampling_params(
+    *,
+    talker_temperature: float | None,
+    talker_top_p: float | None,
+    talker_top_k: int | None,
+    talker_repetition_penalty: float | None,
+) -> TalkerSamplingParams:
+    talker_params: TalkerSamplingParams = {}
+    if talker_temperature is not None:
+        talker_params["talker_temperature"] = talker_temperature
+    if talker_top_p is not None:
+        talker_params["talker_top_p"] = talker_top_p
+    if talker_top_k is not None:
+        talker_params["talker_top_k"] = talker_top_k
+    if talker_repetition_penalty is not None:
+        talker_params["talker_repetition_penalty"] = talker_repetition_penalty
+    return talker_params
+
+
 class VoiceCloneOmni:
     """Voice cloning via /v1/chat/completions (Omni API format).
 
@@ -788,16 +833,20 @@ class VoiceCloneOmni:
         speaker: str = "Ethan",
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        seed: int | None = None,
         voice_clone: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
         chunk_times_out: list[float] | None = None,
         text_first_time_holder: list[float] | None = None,
+        reference_audio_field: ReferenceAudioField = "audios",
+        reference_audio_data: str | None = None,
+        talker_params: TalkerSamplingParams | None = None,
     ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
 
-        if voice_clone:
+        if voice_clone and reference_audio_field == "audios":
             if lang == "en":
                 prompt_text = (
                     f'Listen to the audio above. The speaker is reading: "{sample.ref_text}". '
@@ -832,8 +881,24 @@ class VoiceCloneOmni:
             "temperature": temperature,
             "stream": stream,
         }
+        if seed is not None:
+            payload["seed"] = seed
+        if talker_params:
+            payload.update(talker_params)
         if voice_clone:
-            payload["audios"] = [sample.ref_audio]
+            if reference_audio_field == "audios":
+                payload["audios"] = [sample.ref_audio]
+            elif reference_audio_field == "audio.ref_audio":
+                if reference_audio_data is None:
+                    raise ValueError(
+                        f"audio.ref_audio needs preloaded reference audio for "
+                        f"sample {sample.sample_id}; see preload_reference_audio"
+                    )
+                payload["audio"]["ref_audio"] = reference_audio_data
+            else:
+                raise ValueError(
+                    f"Unsupported reference audio field: {reference_audio_field}"
+                )
 
         t0 = time.perf_counter()
         async with session.post(api_url, json=payload) as response:
@@ -927,6 +992,7 @@ class VoiceCloneOmni:
         voice_clone: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
+        reference_audio_field: ReferenceAudioField = "audios",
     ) -> SampleOutput:
         output = SampleOutput(
             sample_id=sample.sample_id,
@@ -946,6 +1012,7 @@ class VoiceCloneOmni:
                 voice_clone=voice_clone,
                 stream=stream,
                 system_prompt=system_prompt,
+                reference_audio_field=reference_audio_field,
             )
             with open(wav_path, "wb") as f:
                 f.write(wav_bytes)
@@ -1044,6 +1111,22 @@ def _resolve_tts_generation_kwargs(
     return resolved
 
 
+def finish_reason_from_server(value: str | None) -> FinishReason:
+    try:
+        return FinishReason(value)
+    except ValueError:
+        # note (Yucheng Hu): absent from servers without the field; other
+        # values are engine states this metric does not classify.
+        return FinishReason.UNKNOWN
+
+
+def set_token_rate(result: RequestResult) -> None:
+    if result.completion_tokens > 0 and result.engine_time_s > 0:
+        result.tok_per_s = result.completion_tokens / result.engine_time_s
+    else:
+        pass
+
+
 def _parse_response_headers(result: RequestResult, headers: dict) -> None:
     prompt_tok = headers.get("X-Prompt-Tokens")
     comp_tok = headers.get("X-Completion-Tokens")
@@ -1054,8 +1137,61 @@ def _parse_response_headers(result: RequestResult, headers: dict) -> None:
         result.completion_tokens = int(comp_tok)
     if eng_time is not None:
         result.engine_time_s = float(eng_time)
-    if result.completion_tokens > 0 and result.engine_time_s > 0:
-        result.tok_per_s = result.completion_tokens / result.engine_time_s
+    result.finish_reason = finish_reason_from_server(headers.get("X-Finish-Reason"))
+    set_token_rate(result)
+
+
+async def fetch_stream_outcome(
+    session: aiohttp.ClientSession, api_url: str, result: RequestResult
+) -> None:
+    # note (Yucheng Hu): a raw PCM stream carries no trailing metadata, so the
+    # server keeps the terminal state for a follow-up GET, and a router needs
+    # the answering worker echoed back to reach it. A server without the route,
+    # or an evicted entry, answers 404 and leaves the result unchanged.
+    headers = (
+        {"x-sglang-omni-route-worker": result.server_worker_id}
+        if result.server_worker_id
+        else {}
+    )
+    async with session.get(
+        f"{api_url}/{quote(result.speech_outcome_id, safe='')}", headers=headers
+    ) as response:
+        if response.status == 404:
+            return
+        elif response.status != 200:
+            logger.warning(
+                f"[{result.request_id}] stream outcome lookup returned HTTP "
+                f"{response.status}"
+            )
+            return
+        else:
+            outcome = await response.json()
+    usage = outcome.get("usage") or {}
+    result.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    result.completion_tokens = int(usage.get("completion_tokens") or 0)
+    result.engine_time_s = float(usage.get("engine_time_s") or 0.0)
+    result.finish_reason = finish_reason_from_server(outcome.get("finish_reason"))
+    set_token_rate(result)
+
+
+@asynccontextmanager
+async def stream_outcome_collector(api_url: str) -> AsyncIterator[AfterSendFn]:
+    timeout = aiohttp.ClientTimeout(total=STREAM_OUTCOME_TIMEOUT_S)
+    connector = aiohttp.TCPConnector(limit=STREAM_OUTCOME_CONNECTIONS)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+
+        async def collect(result: RequestResult) -> None:
+            if result.is_success and result.speech_outcome_id:
+                try:
+                    await fetch_stream_outcome(session, api_url, result)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    logger.warning(
+                        f"[{result.request_id}] stream outcome lookup failed: {exc}"
+                    )
+            else:
+                pass
+
+        yield collect
 
 
 def _parse_pcm_response_format(
@@ -1201,6 +1337,10 @@ def _collect_chat_streaming_audio(
     event = parse_sse_event(line)
     if event is None:
         return pcm_format
+    if event.get("error") is not None:
+        raise ValueError(f"Streaming response failed: {event['error']}")
+    else:
+        pass
 
     event_usage = event.get("usage")
     if isinstance(event_usage, dict):
@@ -1301,6 +1441,12 @@ def make_tts_send_fn(
                 elif stream:
                     await _handle_raw_pcm_streaming_response(
                         response, result, start_time, save_audio_dir
+                    )
+                    result.speech_outcome_id = response.headers.get(
+                        "X-SGLang-Omni-Speech-Id", ""
+                    )
+                    result.server_worker_id = response.headers.get(
+                        "X-SGLang-Omni-Worker", ""
                     )
                 else:
                     await _handle_non_streaming_response(

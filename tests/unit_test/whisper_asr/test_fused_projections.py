@@ -9,7 +9,7 @@ from sglang_omni.models.whisper_asr import sglang_model
 from sglang_omni.models.whisper_asr.sglang_model import WhisperForConditionalGeneration
 
 
-def _make_model(monkeypatch) -> tuple[WhisperConfig, WhisperForConditionalGeneration]:
+def make_model(monkeypatch) -> tuple[WhisperConfig, WhisperForConditionalGeneration]:
     monkeypatch.setattr(sglang_model, "LogitsProcessor", lambda _config: None)
     config = WhisperConfig(
         d_model=8,
@@ -31,7 +31,7 @@ def _make_model(monkeypatch) -> tuple[WhisperConfig, WhisperForConditionalGenera
 
 
 def test_fused_projection_checkpoint_shards(monkeypatch) -> None:
-    config, model = _make_model(monkeypatch)
+    config, model = make_model(monkeypatch)
     weights = []
     expected = {}
     shard_names = tuple(
@@ -88,7 +88,7 @@ def test_fused_projection_checkpoint_shards(monkeypatch) -> None:
 
 
 def test_fused_projection_rejects_wrong_checkpoint_shape(monkeypatch) -> None:
-    config, model = _make_model(monkeypatch)
+    config, model = make_model(monkeypatch)
     broadcastable_weight = torch.ones(1, config.d_model)
 
     with pytest.raises(AssertionError, match="Attempted to load weight"):

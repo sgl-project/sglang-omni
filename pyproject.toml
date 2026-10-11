@@ -15,6 +15,7 @@ dependencies = [
     "pyzmq>=25.0.0",          # ZMQ messaging for control plane
     "msgpack>=1.0.0",         # Message serialization
     "msgspec",                # msgspec.Struct support
+    "typing-extensions>=4.13",
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
@@ -31,7 +32,7 @@ dependencies = [
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
     # note (yexiaodong): SGLang's PyPI wheel has unconditional CUDA dependencies,
     # so Apple Silicon installs this exact tag from source with the all_mps extra.
-    "sglang==0.5.19; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "sglang==0.5.21; sys_platform != 'darwin' or platform_machine != 'arm64'",
     "mlx>=0.32.0; sys_platform == 'darwin' and platform_machine == 'arm64'",  # floor enforced by SGLang's MLX runtime gate
     "mlx-lm; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "flashinfer_python[cu13]==0.6.18; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
@@ -55,6 +56,7 @@ dependencies = [
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",  # Match the pinned sglang stack
     "librosa>=0.11.0",
+    "sentencepiece>=0.2.0",   # PersonaPlex / Moshi text tokenizer
     "pandas",
     "tabulate",
     "typer>=0.9.0",
@@ -107,11 +109,18 @@ fun-cosyvoice3 = [
     "conformer==0.3.2",
     "HyperPyYAML==1.2.3",
     "pyworld==0.3.4",
+    "setuptools<80",  # Note (yexiaodong): pyworld 0.3.4 imports pkg_resources.
     "wetext==0.0.4",
     "inflect==7.3.1",
     "gdown==5.1.0",
+    "wget==3.2",
     "lightning==2.6.5",
     "matplotlib",
+]
+
+minicpm-o = [
+    "einops>=0.8.1",
+    "onnx>=1.18.0",
 ]
 
 [project.scripts]
@@ -146,6 +155,26 @@ markers = [
     "accelerator: requires accelerator hardware",
 ]
 
+[tool.ruff.lint]
+exclude = ["tests/**"]
+select = [
+    "ANN401",
+    "B006",     # Mutable argument defaults
+    "B009",     # Constant-name getattr without a default
+    "B010",     # Constant-name setattr
+    "E722",     # No bare except
+    "F403",     # No wildcard imports
+    "N801",     # Class names
+    "N815",     # Class-scope variable names
+    "N816",     # Module-scope variable names
+    "PGH004",   # No blanket noqa
+    "RUF008",   # Mutable dataclass defaults
+    "SIM115",   # Context managers for files (not sockets/CUDA streams)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"!{sglang_omni,sglang_omni_router/python}/**" = ["ANN401"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
@@ -153,6 +182,8 @@ include = [
     "sglang_omni.*",
     "sglang_omni_router.python",
     "sglang_omni_router.python.*",
+    "sglang_omni_mlx",
+    "sglang_omni_mlx.*",
 ]
 namespaces = true
 
@@ -164,4 +195,5 @@ version = {attr = "sglang_omni.__version__"}
 "sglang_omni.models.auk" = ["LICENSE"]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
+"sglang_omni.models.minicpm_o.components.token2wav" = ["THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
 "sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]

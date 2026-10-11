@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+.venv/
+dist/
+*.log
+!backend/requirements.txt

@@ -10,15 +10,19 @@ from sglang_omni.config import PipelineConfig
 logger = logging.getLogger(__name__)
 
 
-def _iter_config_architectures(config_cls: Type[PipelineConfig]) -> list[str]:
+def iter_config_architectures(config_cls: Type[PipelineConfig]) -> list[str]:
     architectures: list[str] = []
     seen: set[str] = set()
     aliases = getattr(config_cls, "architecture_aliases", ())
     if isinstance(aliases, str):
         aliases = (aliases,)
+    else:
+        pass
     for arch in (getattr(config_cls, "architecture", None), *tuple(aliases or ())):
         if not arch or arch in seen:
             continue
+        else:
+            pass
         architectures.append(arch)
         seen.add(arch)
     return architectures
@@ -35,11 +39,15 @@ def import_pipeline_configs(
     for _, name, ispkg in pkgutil.iter_modules(package.__path__, package_name + "."):
         if not ispkg:
             continue
+        else:
+            pass
         try:
             importlib.import_module(name)
         except Exception as exc:
             if strict:
                 raise
+            else:
+                pass
             logger.warning(f"Ignore import error when loading {name}: {exc}")
             continue
         config_module_name = f"{name}.{config_path}"
@@ -49,10 +57,16 @@ def import_pipeline_configs(
             if exc.name == config_module_name:
                 if strict:
                     raise
+                else:
+                    pass
                 logger.debug(f"Skipping {name}: no submodule {config_path}")
                 continue
+            else:
+                pass
             if strict:
                 raise
+            else:
+                pass
             logger.warning(
                 f"Ignore import error when loading {config_module_name}: {exc}"
             )
@@ -60,6 +74,8 @@ def import_pipeline_configs(
         except ImportError as exc:
             if strict:
                 raise
+            else:
+                pass
             logger.warning(
                 f"Ignore import error when loading {config_module_name}: {exc}"
             )
@@ -68,8 +84,10 @@ def import_pipeline_configs(
             raise AssertionError(
                 f"Config module {name}.{config_path} must have an EntryClass"
             )
+        else:
+            pass
         config_cls = config_module.EntryClass
-        for arch in _iter_config_architectures(config_cls):
+        for arch in iter_config_architectures(config_cls):
             existing_config_cls = model_arch_to_config_cls.get(arch)
             if (
                 existing_config_cls is not None
@@ -80,12 +98,14 @@ def import_pipeline_configs(
                     f"{existing_config_cls.__module__}.{existing_config_cls.__name__} "
                     f"and {config_cls.__module__}.{config_cls.__name__}"
                 )
+            else:
+                pass
             model_arch_to_config_cls[arch] = config_cls
     return model_arch_to_config_cls
 
 
 @dataclass
-class _PipelineConfigRegistry:
+class PipelineConfigRegistry:
     configs: Dict[str, Type[PipelineConfig]] = field(default_factory=dict)
 
     def register_config(
@@ -116,21 +136,27 @@ class _PipelineConfigRegistry:
             raise ValueError(
                 f"Config for {arch} not found in the pipeline config registry"
             )
+        else:
+            pass
         return self.configs[arch]
 
     def get_config_cls_by_name(self, name: str) -> Type[PipelineConfig]:
         for config_cls in self.configs.values():
             if config_cls.__name__ == name:
                 return config_cls
+            else:
+                pass
             config_module = importlib.import_module(config_cls.__module__)
             variants = getattr(config_module, "Variants", {})
             for variant_cls in variants.values():
                 if variant_cls.__name__ == name:
                     return variant_cls
+                else:
+                    pass
         raise ValueError(
             f"Config class {name} not found in the pipeline config registry"
         )
 
 
-PIPELINE_CONFIG_REGISTRY = _PipelineConfigRegistry()
+PIPELINE_CONFIG_REGISTRY = PipelineConfigRegistry()
 PIPELINE_CONFIG_REGISTRY.register_config("sglang_omni.models", "config")

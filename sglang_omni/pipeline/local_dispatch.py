@@ -3,7 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:
+    from sglang_omni.pipeline.stage import Stage
+    from sglang_omni.proto.request import StagePayload
+else:
+    pass
 
 
 class LocalStageDispatcher:
@@ -15,22 +21,24 @@ class LocalStageDispatcher:
     """
 
     def __init__(self) -> None:
-        self._stages: dict[str, Any] = {}
+        self.stages: dict[str, Stage] = {}
 
-    def register(self, stage: Any) -> None:
-        self._stages[stage.name] = stage
+    def register(self, stage: Stage) -> None:
+        self.stages[stage.name] = stage
 
-    def register_many(self, stages: Iterable[Any]) -> None:
+    def register_many(self, stages: Iterable[Stage]) -> None:
         for stage in stages:
             self.register(stage)
 
-    def _get_stage(self, from_stage: str, to_stage: str) -> Any:
-        target = self._stages.get(to_stage)
+    def get_stage(self, from_stage: str, to_stage: str) -> Stage:
+        target = self.stages.get(to_stage)
         if target is None:
             raise RuntimeError(
                 f"Local stage target {to_stage!r} is not registered "
                 f"for traffic from {from_stage!r}"
             )
+        else:
+            pass
         return target
 
     async def send_payload(
@@ -39,10 +47,10 @@ class LocalStageDispatcher:
         from_stage: str,
         to_stage: str,
         request_id: str,
-        payload: Any,
+        payload: "StagePayload",
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_payload(
             request_id, from_stage, payload, replica_bindings
         )
@@ -54,11 +62,11 @@ class LocalStageDispatcher:
         to_stage: str,
         request_id: str,
         chunk_id: int,
-        data: Any,
-        metadata: dict[str, Any] | None = None,
+        data: object,
+        metadata: dict[str, object] | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_stream_chunk(
             request_id,
             from_stage,
@@ -78,7 +86,7 @@ class LocalStageDispatcher:
         error: str | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_stream_signal(
             request_id,
             from_stage,

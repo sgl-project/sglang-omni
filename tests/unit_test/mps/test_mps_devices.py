@@ -14,17 +14,17 @@ GPU_A = "GPU-aaaaaaaa-bbbb-cccc-dddd-000000000001"
 GPU_B = "GPU-aaaaaaaa-bbbb-cccc-dddd-000000000007"
 
 
-class _CudaStatus(IntEnum):
+class CudaStatus(IntEnum):
     SUCCESS = 0
     INVALID_DEVICE = 101
 
 
-class _FakeDriver:
+class FakeDriver:
     def __init__(
         self,
         uuids: dict[int, str],
         *,
-        init_status: _CudaStatus = _CudaStatus.SUCCESS,
+        init_status: CudaStatus = CudaStatus.SUCCESS,
     ):
         self.uuids = uuids
         self.init_status = init_status
@@ -34,15 +34,15 @@ class _FakeDriver:
 
     def cuDeviceGet(self, ordinal):
         if ordinal not in self.uuids:
-            return _CudaStatus.INVALID_DEVICE, None
-        return _CudaStatus.SUCCESS, ordinal
+            return CudaStatus.INVALID_DEVICE, None
+        return CudaStatus.SUCCESS, ordinal
 
     def cuDeviceGetUuid(self, device):
         raw_uuid = uuid.UUID(self.uuids[device].removeprefix("GPU-")).bytes
-        return _CudaStatus.SUCCESS, SimpleNamespace(bytes=raw_uuid)
+        return CudaStatus.SUCCESS, SimpleNamespace(bytes=raw_uuid)
 
 
-def _fake_pynvml(failed_uuids: set[str] | None = None):
+def fake_pynvml(failed_uuids: set[str] | None = None):
     class NvmlError(Exception):
         pass
 
@@ -67,12 +67,12 @@ def _fake_pynvml(failed_uuids: set[str] | None = None):
         nvmlInit=lambda: None,
         nvmlDeviceGetHandleByUUID=by_uuid,
         nvmlDeviceGetUUID=lambda handle: handle,
-        nvmlDeviceGetCudaComputeCapability=lambda _handle: (9, 0),
-        nvmlDeviceGetMigMode=lambda _handle: (0, 0),
+        nvmlDeviceGetCudaComputeCapability=lambda handle: (9, 0),
+        nvmlDeviceGetMigMode=lambda handle: (0, 0),
     )
 
 
-def _install_cuda_driver(monkeypatch, driver) -> None:
+def install_cuda_driver(monkeypatch, driver) -> None:
     cuda = ModuleType("cuda")
     bindings = ModuleType("cuda.bindings")
     cuda.bindings = bindings
@@ -82,8 +82,8 @@ def _install_cuda_driver(monkeypatch, driver) -> None:
 
 
 def test_nvml_uses_driver_uuid_when_cuda_order_differs_from_nvml_index(monkeypatch):
-    monkeypatch.setitem(sys.modules, "pynvml", _fake_pynvml())
-    _install_cuda_driver(monkeypatch, _FakeDriver({0: GPU_B, 1: GPU_A}))
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml())
+    install_cuda_driver(monkeypatch, FakeDriver({0: GPU_B, 1: GPU_A}))
 
     devices = NvmlDeviceInfo().inspect([1, 0, 1])
 
@@ -94,10 +94,10 @@ def test_nvml_uses_driver_uuid_when_cuda_order_differs_from_nvml_index(monkeypat
 
 
 def test_cuda_resolution_failure_never_falls_back_to_nvml_index(monkeypatch):
-    monkeypatch.setitem(sys.modules, "pynvml", _fake_pynvml())
-    _install_cuda_driver(
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml())
+    install_cuda_driver(
         monkeypatch,
-        _FakeDriver({}, init_status=_CudaStatus.INVALID_DEVICE),
+        FakeDriver({}, init_status=CudaStatus.INVALID_DEVICE),
     )
 
     device = NvmlDeviceInfo().inspect([2])[2]
@@ -107,9 +107,9 @@ def test_cuda_resolution_failure_never_falls_back_to_nvml_index(monkeypatch):
 
 
 def test_nvml_failure_preserves_driver_resolved_uuid(monkeypatch):
-    pynvml = _fake_pynvml({GPU_B})
+    pynvml = fake_pynvml({GPU_B})
     monkeypatch.setitem(sys.modules, "pynvml", pynvml)
-    _install_cuda_driver(monkeypatch, _FakeDriver({0: GPU_A, 1: GPU_B}))
+    install_cuda_driver(monkeypatch, FakeDriver({0: GPU_A, 1: GPU_B}))
 
     inspected = NvmlDeviceInfo().inspect([0, 1])
 

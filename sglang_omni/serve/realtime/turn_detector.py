@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Protocol
+from typing import Mapping, Protocol
 
 from .semantic_vad import SemanticEOUModel, SemanticTurnDetector, SemanticVADConfig
 from .vad import Emit, StreamingVAD, VADConfig
@@ -19,11 +19,11 @@ class TurnDetector(Protocol):
 @dataclass(frozen=True)
 class TurnDetectorBuild:
     detector: TurnDetector
-    effective_config: dict[str, Any]
+    effective_config: dict[str, object]
 
 
 def build_turn_detector(
-    config: Mapping[str, Any],
+    config: Mapping[str, object],
     smart_turn_model: SemanticEOUModel | None,
 ) -> TurnDetectorBuild:
     raw_type = config.get("type")
@@ -32,15 +32,17 @@ def build_turn_detector(
         eagerness = str(config.get("eagerness") or "medium")
         if eagerness == "auto":
             eagerness = "medium"
+        else:
+            pass
         semantic_config = replace(
             SemanticVADConfig.from_eagerness(eagerness),
-            speech_threshold=_optional_float(
+            speech_threshold=optional_float(
                 config.get("threshold"),
                 SemanticVADConfig.speech_threshold,
                 minimum=0.0,
                 maximum=1.0,
             ),
-            prefix_padding_ms=_optional_int(
+            prefix_padding_ms=optional_int(
                 config.get("prefix_padding_ms"),
                 SemanticVADConfig.prefix_padding_ms,
                 minimum=0,
@@ -55,15 +57,17 @@ def build_turn_detector(
         effective["eagerness"] = eagerness
         effective.pop("silence_duration_ms", None)
         return TurnDetectorBuild(detector, effective)
+    else:
+        pass
 
     server_config = VADConfig(
-        threshold=_optional_float(
+        threshold=optional_float(
             config.get("threshold"), VADConfig.threshold, minimum=0.0, maximum=1.0
         ),
-        prefix_padding_ms=_optional_int(
+        prefix_padding_ms=optional_int(
             config.get("prefix_padding_ms"), VADConfig.prefix_padding_ms, minimum=0
         ),
-        silence_duration_ms=_optional_int(
+        silence_duration_ms=optional_int(
             config.get("silence_duration_ms"),
             VADConfig.silence_duration_ms,
             minimum=0,
@@ -75,8 +79,8 @@ def build_turn_detector(
     return TurnDetectorBuild(StreamingVAD(server_config), effective)
 
 
-def _optional_float(
-    value: Any,
+def optional_float(
+    value: int | float | str | None,
     default: float,
     *,
     minimum: float | None = None,
@@ -84,20 +88,34 @@ def _optional_float(
 ) -> float:
     if value is None:
         return default
+    else:
+        pass
     result = float(value)
     if not math.isfinite(result):
         raise ValueError(f"Value must be finite, got {value!r}")
+    else:
+        pass
     if minimum is not None and result < minimum:
         raise ValueError(f"Value must be >= {minimum}, got {result}")
+    else:
+        pass
     if maximum is not None and result > maximum:
         raise ValueError(f"Value must be <= {maximum}, got {result}")
+    else:
+        pass
     return result
 
 
-def _optional_int(value: Any, default: int, *, minimum: int | None = None) -> int:
+def optional_int(
+    value: int | float | str | None, default: int, *, minimum: int | None = None
+) -> int:
     if value is None:
         return default
+    else:
+        pass
     result = int(value)
     if minimum is not None and result < minimum:
         raise ValueError(f"Value must be >= {minimum}, got {result}")
+    else:
+        pass
     return result

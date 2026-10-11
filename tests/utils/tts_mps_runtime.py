@@ -296,7 +296,7 @@ class LauncherState:
     replicas: tuple[ReplicaState, ...]
 
 
-def _read_key_values(path: Path) -> dict[str, str]:
+def read_key_values(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition("=")
@@ -308,7 +308,7 @@ def _read_key_values(path: Path) -> dict[str, str]:
 
 def read_launcher_state(state_dir: str | Path) -> LauncherState:
     state = Path(state_dir)
-    manifest = _read_key_values(state / "manifest")
+    manifest = read_key_values(state / "manifest")
     required = {
         "run_id",
         "gpu_id",
@@ -368,7 +368,7 @@ def read_launcher_state(state_dir: str | Path) -> LauncherState:
     return LauncherState(state, manifest, tuple(replicas))
 
 
-def _copy_raw_state(state: Path, output_dir: Path) -> Path:
+def copy_raw_state(state: Path, output_dir: Path) -> Path:
     target = output_dir / "raw"
     target.mkdir(parents=True, exist_ok=True)
     for name in (
@@ -409,7 +409,7 @@ def reconcile_stale_launcher_states(spec: MpsLaunchSpec) -> None:
             raise RuntimeError(f"invalid stale launcher state: {state}")
         if not RUN_ID_PATTERN.fullmatch(state.name):
             raise RuntimeError(f"unsafe stale launcher run id: {state.name}")
-        _copy_raw_state(
+        copy_raw_state(
             state,
             spec.output_dir / "recovered-stale-launcher-state" / state.name,
         )
@@ -440,11 +440,11 @@ def launch_replicas(spec: MpsLaunchSpec) -> LauncherState:
             check=True,
         )
         snapshot = read_launcher_state(spec.state_dir)
-        _copy_raw_state(spec.state_dir, spec.output_dir)
+        copy_raw_state(spec.state_dir, spec.output_dir)
         return snapshot
     except BaseException:
         if spec.state_dir.exists():
-            _copy_raw_state(spec.state_dir, spec.output_dir)
+            copy_raw_state(spec.state_dir, spec.output_dir)
             subprocess.run(
                 spec.teardown_command,
                 cwd=spec.repository_root,
@@ -454,7 +454,7 @@ def launch_replicas(spec: MpsLaunchSpec) -> LauncherState:
         raise
 
 
-def _pid_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> bool:
     result = subprocess.run(
         ["ps", "-o", "stat=", "-p", str(pid)],
         capture_output=True,
@@ -465,7 +465,7 @@ def _pid_alive(pid: int) -> bool:
     return result.returncode == 0 and bool(state) and not state.startswith("Z")
 
 
-def _port_open(port: int) -> bool:
+def port_open(port: int) -> bool:
     with socket.socket() as handle:
         handle.settimeout(0.25)
         return handle.connect_ex(("127.0.0.1", port)) == 0
@@ -570,7 +570,7 @@ def teardown_replicas(
     *,
     baseline_gpu_clients: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    _copy_raw_state(snapshot.state_dir, spec.output_dir)
+    copy_raw_state(snapshot.state_dir, spec.output_dir)
     environment = os.environ.copy()
     environment.update(spec.environment)
     result = subprocess.run(
@@ -579,8 +579,8 @@ def teardown_replicas(
         env=environment,
         check=False,
     )
-    live_pids = [item.pid for item in snapshot.replicas if _pid_alive(item.pid)]
-    occupied_ports = [item.port for item in snapshot.replicas if _port_open(item.port)]
+    live_pids = [item.pid for item in snapshot.replicas if pid_alive(item.pid)]
+    occupied_ports = [item.port for item in snapshot.replicas if port_open(item.port)]
     post_gpu_clients = (
         wait_for_gpu_clients_to_settle(
             baseline_gpu_clients,
@@ -675,7 +675,7 @@ def stop_request_profiles(snapshot: LauncherState, run_id: str) -> None:
         raise RuntimeError(f"request profiler stop failed: {errors}")
 
 
-def _read_model_path_activity_once(snapshot: LauncherState) -> list[dict[str, Any]]:
+def read_model_path_activity_once(snapshot: LauncherState) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for replica in snapshot.replicas:
         directory = snapshot.state_dir / f"activity-{replica.index}"
@@ -719,7 +719,7 @@ def read_model_path_activity(
 ) -> list[dict[str, Any]]:
     deadline = time.monotonic() + timeout_s
     while True:
-        events = _read_model_path_activity_once(snapshot)
+        events = read_model_path_activity_once(snapshot)
         terminal_count = sum(
             item.get("event") == "model_path_end" and item.get("status") == "success"
             for item in events

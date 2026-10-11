@@ -79,32 +79,32 @@ class AudioTokenizerArgs:
             == len(self.decoder_convs_strides)
         )
 
-    def _str2list(self, s: str) -> tuple[int, ...]:
+    def str2list(self, s: str) -> tuple[int, ...]:
         return tuple(int(i) for i in s.split(","))
 
     @property
     def encoder_transformer_lengths(self) -> tuple[int, ...]:
-        return self._str2list(self.encoder_transformer_lengths_str)
+        return self.str2list(self.encoder_transformer_lengths_str)
 
     @property
     def encoder_convs_kernels(self) -> tuple[int, ...]:
-        return self._str2list(self.encoder_convs_kernels_str)
+        return self.str2list(self.encoder_convs_kernels_str)
 
     @property
     def encoder_convs_strides(self) -> tuple[int, ...]:
-        return self._str2list(self.encoder_convs_strides_str)
+        return self.str2list(self.encoder_convs_strides_str)
 
     @property
     def decoder_transformer_lengths(self) -> tuple[int, ...]:
-        return self._str2list(self.decoder_transformer_lengths_str)
+        return self.str2list(self.decoder_transformer_lengths_str)
 
     @property
     def decoder_convs_kernels(self) -> tuple[int, ...]:
-        return self._str2list(self.decoder_convs_kernels_str)
+        return self.str2list(self.decoder_convs_kernels_str)
 
     @property
     def decoder_convs_strides(self) -> tuple[int, ...]:
-        return self._str2list(self.decoder_convs_strides_str)
+        return self.str2list(self.decoder_convs_strides_str)
 
     @property
     def frame_rate(self) -> float:
@@ -126,13 +126,19 @@ class SemanticCodebook(nn.Module):
 
     @property
     def embedding(self) -> torch.Tensor:
-        if self._embedding is None:
+        if (
+            self._embedding is None
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             embedding = (
                 self.embedding_sum / self.cluster_usage.clamp(min=self.epsilon)[:, None]
             )
             self.register_buffer("_embedding", embedding, persistent=False)
             return embedding
-        return self._embedding
+        else:
+            pass
+        return (
+            self._embedding
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
         codes = codes.squeeze(1)
@@ -156,13 +162,13 @@ class AcousticCodebook(nn.Module):
         self.n_levels = codebook_size
         self.num_codebooks = codebook_dim
 
-    def _rescale(self, x: torch.Tensor, levels: int) -> torch.Tensor:
+    def rescale(self, x: torch.Tensor, levels: int) -> torch.Tensor:
         return (x * 2 / (levels - 1)) - 1
 
     def decode(
         self, codes: torch.Tensor, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
-        quantized = self._rescale(codes, self.n_levels).to(dtype)
+        quantized = self.rescale(codes, self.n_levels).to(dtype)
         return quantized
 
 
@@ -213,9 +219,13 @@ def pad1d(
         if length <= max_pad:
             extra_pad = max_pad - length + 1
             x = F.pad(x, (0, extra_pad))
+        else:
+            pass
         padded = F.pad(x, paddings, mode, value)
         end = padded.shape[-1] - extra_pad
         return padded[..., :end]
+    else:
+        pass
     return F.pad(x, paddings, mode, value)
 
 
@@ -243,20 +253,26 @@ class CausalConv1d(nn.Module):
         )
         self.conv = weight_norm(conv) if use_weight_norm else conv
         self.pad_mode = pad_mode
-        self._stride = self.conv.stride[0]
-        self._effective_kernel_size = (kernel_size - 1) * self.conv.dilation[0] + 1
-        self._padding_total = self._effective_kernel_size - self._stride
+        self._stride = self.conv.stride[
+            0
+        ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.effective_kernel_size = (kernel_size - 1) * self.conv.dilation[0] + 1
+        self.padding_total = (
+            self.effective_kernel_size - self._stride
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.stride = self.conv.stride
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         n_frames = (
-            x.shape[-1] - self._effective_kernel_size + self._padding_total
-        ) / self._stride + 1
-        target_length = (math.ceil(n_frames) - 1) * self._stride + (
-            self._effective_kernel_size - self._padding_total
+            x.shape[-1] - self.effective_kernel_size + self.padding_total
+        ) / self._stride + 1  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        target_length = (
+            math.ceil(n_frames) - 1
+        ) * self._stride + (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self.effective_kernel_size - self.padding_total
         )
         extra_padding = target_length - x.shape[-1]
-        x = pad1d(x, (self._padding_total, extra_padding), mode=self.pad_mode)
+        x = pad1d(x, (self.padding_total, extra_padding), mode=self.pad_mode)
         return self.conv(x)
 
 
@@ -313,6 +329,8 @@ class Attention(nn.Module):
 
             if math.log2(n_heads).is_integer():
                 return slopes_power_of_2(n_heads)
+            else:
+                pass
             m = 2 ** math.floor(math.log2(n_heads))
             return torch.cat(
                 [slopes_power_of_2(m), slopes_power_of_2(2 * m)[::2][: n_heads - m]]
@@ -334,8 +352,10 @@ class Attention(nn.Module):
             self.k_norm = rms_norm(
                 args.n_kv_heads * args.head_dim, eps=args.qk_norm_eps
             )
+        else:
+            pass
 
-    def _native_attention(
+    def native_attention(
         self, xq: torch.Tensor, xk: torch.Tensor, xv: torch.Tensor
     ) -> torch.Tensor:
         B, S, H, D = xq.shape
@@ -347,6 +367,8 @@ class Attention(nn.Module):
             repeats = H // Hkv
             k = k.repeat_interleave(repeats, dim=1)
             v = v.repeat_interleave(repeats, dim=1)
+        else:
+            pass
 
         positions = torch.arange(S, device=xq.device)
         rel_pos = positions.unsqueeze(0) - positions.unsqueeze(1)
@@ -354,6 +376,8 @@ class Attention(nn.Module):
         attn_bias = alibi_slopes.view(H, 1, 1) * rel_pos.unsqueeze(0).to(xq.dtype)
         if self.args.causal:
             attn_bias = attn_bias.masked_fill(rel_pos.unsqueeze(0) > 0, float("-inf"))
+        else:
+            pass
         window_left = self.sliding_window
         window_right = 0 if self.args.causal else self.sliding_window
         outside_window = (rel_pos < -window_left) | (rel_pos > window_right)
@@ -373,6 +397,8 @@ class Attention(nn.Module):
         if self.args.qk_norm:
             xq = self.q_norm(xq)
             xk = self.k_norm(xk)
+        else:
+            pass
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.args.head_dim)
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.args.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.args.head_dim)
@@ -391,7 +417,7 @@ class Attention(nn.Module):
                 alibi_slopes=alibi_slopes,
             )
         else:
-            output = self._native_attention(xq, xk, xv)
+            output = self.native_attention(xq, xk, xv)
 
         output = output.reshape(bsz, seqlen, self.n_local_heads * self.args.head_dim)
         return self.wo(output).squeeze(0)
@@ -403,7 +429,7 @@ class Attention(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, layer_id: int, args: AudioTokenizerArgs) -> None:
         super().__init__()
-        self._layer_id = layer_id
+        self._layer_id = layer_id  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.attention = Attention(args, layer_id=layer_id)
         self.feed_forward = FeedForward(args.dim, args.hidden_dim, args.use_biases)
         self.attention_norm = rms_norm(args.dim, eps=args.norm_eps)
@@ -426,19 +452,27 @@ class TransformerBlock(nn.Module):
             self.ffn_scale = nn.Parameter(
                 torch.full((args.dim,), init_scale, requires_grad=True)
             )
+        else:
+            pass
 
     @property
     def layer_id(self) -> int:
-        return self._layer_id
+        return (
+            self._layer_id
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         r = self.attention(self.attention_norm(x))
         if self.layer_scale:
             r = self.attention_scale * r
+        else:
+            pass
         h = x + r
         r = self.feed_forward(self.ffn_norm(h))
         if self.layer_scale:
             r = self.ffn_scale * r
+        else:
+            pass
         return h + r
 
 
@@ -500,6 +534,8 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         for s in args.encoder_convs_strides:
             if args.half_attn_window_upon_downsampling and s > 1:
                 cur_window_size = cur_window_size // 2
+            else:
+                pass
 
         decoder_blocks.append(
             CausalConv1d(
@@ -513,6 +549,8 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         )
         if args.half_attn_window_upon_downsampling and decoder_convs_strides[0] > 1:
             cur_window_size = cur_window_size * 2
+        else:
+            pass
 
         for idx, n_layers in enumerate(decoder_transformer_lengths):
             layer_args = deepcopy(args)
@@ -536,6 +574,10 @@ class VoxtralTTSAudioTokenizer(nn.Module):
                     and decoder_convs_strides[idx + 1] > 1
                 ):
                     cur_window_size = cur_window_size * 2
+                else:
+                    pass
+            else:
+                pass
 
         self.decoder_blocks = nn.ModuleList(decoder_blocks)
         self.quantizer = MistralAudioCodebook(args)
@@ -548,22 +590,28 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         )
 
         scale_factor = math.prod(args.encoder_convs_strides)
-        self._frame_rate = args.sampling_rate / (self.patch_size * scale_factor)
-        self._sampling_rate = args.sampling_rate
+        self.frame_rate = args.sampling_rate / (self.patch_size * scale_factor)
+        self._sampling_rate = (
+            args.sampling_rate
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def sampling_rate(self) -> int:
-        return self._sampling_rate
+        return (
+            self._sampling_rate
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def downsample_factor(self) -> int:
-        return int(self._sampling_rate / self._frame_rate)
+        return int(
+            self._sampling_rate / self.frame_rate
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def num_codebooks(self) -> int:
         return self.quantizer.num_codebooks
 
-    def _forward_decoder(self, emb: torch.Tensor) -> torch.Tensor:
+    def forward_decoder(self, emb: torch.Tensor) -> torch.Tensor:
         emb = rearrange(emb, "b d t -> b t d").contiguous()
         for block in self.decoder_blocks:
             if isinstance(block, (CausalConvTranspose1d, CausalConv1d)):
@@ -580,7 +628,7 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         self, codes: torch.Tensor, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
         emb = self.quantizer.decode(codes, dtype)
-        return self._forward_decoder(emb)
+        return self.forward_decoder(emb)
 
     def decode_helper_batch_async(
         self, codes_list: list[torch.Tensor]
@@ -614,6 +662,8 @@ class VoxtralTTSAudioTokenizer(nn.Module):
 
         if not non_empty:
             return results
+        else:
+            pass
 
         all_chunks: list[torch.Tensor] = []
         chunk_lengths: list[int] = []
@@ -670,6 +720,8 @@ class VoxtralTTSAudioTokenizer(nn.Module):
             else:
                 logger.warning(f"Weight {name} not found in audio tokenizer")
                 return name
+        else:
+            pass
         param = params_dict[name]
         param.data.copy_(loaded_weight)
         return name

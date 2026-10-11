@@ -1,0 +1,180 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Qwen3-ASR audio front end: log-mel and audio token counts."""
+
+from __future__ import annotations
+
+import ctypes
+import ctypes.util
+import enum
+
+import mlx.core as mx
+import numpy as np
+
+from sglang_omni_mlx.wav import SAMPLE_RATE
+
+HOP_LENGTH = 160
+FFT_SIZE = 400
+MEL_BIN_COUNT = 128
+# Qwen3-ASR encodes mel frames in chunks of 100 frames, 13 audio tokens each.
+CHUNK_FRAME_COUNT = 100
+CHUNK_TOKEN_COUNT = 13
+LOG_MEL_FLOOR = 1e-10
+LOG_MEL_DYNAMIC_RANGE = 8.0
+
+
+LIBM = ctypes.CDLL(ctypes.util.find_library("m"))
+LIBM.cosf.restype = ctypes.c_float
+LIBM.cosf.argtypes = [ctypes.c_float]
+
+
+class AudioLayout(enum.Enum):
+    """How the audio part of the prompt is built.
+
+    REFERENCE follows the checkpoint's processor. VOXT_SWIFT reproduces Voxt's
+    Swift port: one more mel frame, and a token count computed with true
+    division, so a partial final chunk is credited with extra tokens.
+    """
+
+    REFERENCE = "reference"
+    VOXT_SWIFT = "voxt_swift"
+
+
+def slaney_mel_filter_bank() -> np.ndarray:
+    """Slaney-scale, Slaney-normalized triangular filters, [frequency_bins, mel_bins].
+
+    Built in float32 in the same order as Voxt's Swift front end (MLXAudioCore
+    melFilters), so both produce the same filter values.
+    """
+    float32 = np.float32
+    frequency_bin_count = FFT_SIZE // 2 + 1
+    linear_step_hz = float32(200.0) / float32(3.0)
+    min_log_hz = float32(1000.0)
+    min_log_mel = min_log_hz / linear_step_hz
+    log_step = float32(np.log(float32(6.4))) / float32(27.0)
+
+    def hertz_to_mel(frequency_hz: np.float32) -> np.float32:
+        if frequency_hz < min_log_hz:
+            return frequency_hz / linear_step_hz
+        else:
+            return min_log_mel + float32(np.log(frequency_hz / min_log_hz)) / log_step
+
+    def mel_to_hertz(mel: np.float32) -> np.float32:
+        if mel < min_log_mel:
+            return linear_step_hz * mel
+        else:
+            return min_log_hz * float32(np.exp(log_step * (mel - min_log_mel)))
+
+    bin_frequencies_hz = [
+        float32(i) * float32(SAMPLE_RATE) / float32(FFT_SIZE)
+        for i in range(frequency_bin_count)
+    ]
+    mel_max = hertz_to_mel(float32(SAMPLE_RATE) / float32(2.0))
+    edges_hz = [
+        mel_to_hertz(float32(i) * mel_max / float32(MEL_BIN_COUNT + 1))
+        for i in range(MEL_BIN_COUNT + 2)
+    ]
+    filters = np.zeros((frequency_bin_count, MEL_BIN_COUNT), dtype=np.float32)
+    for mel_bin in range(MEL_BIN_COUNT):
+        low, center, high = (
+            edges_hz[mel_bin],
+            edges_hz[mel_bin + 1],
+            edges_hz[mel_bin + 2],
+        )
+        normalization = float32(2.0) / (high - low)
+        for frequency_bin, frequency_hz in enumerate(bin_frequencies_hz):
+            if low <= frequency_hz < center:
+                weight = (frequency_hz - low) / (center - low)
+            elif center <= frequency_hz <= high:
+                weight = (high - frequency_hz) / (high - center)
+            else:
+                weight = float32(0.0)
+            filters[frequency_bin, mel_bin] = weight * normalization
+    return filters
+
+
+def periodic_hann_window() -> np.ndarray:
+    """Periodic Hann window in float32 with the C library's cosf and Swift's pi.
+
+    Voxt's Swift front end and the native runtime both call cosf; numpy's
+    vectorized float32 cos differs from it in the last bit for some inputs.
+    Swift's Float.pi is pi rounded toward zero, one step below float32(pi).
+    """
+    denominator = np.float32(FFT_SIZE)
+    pi = np.nextafter(np.float32(np.pi), np.float32(0.0))
+    return np.array(
+        [
+            np.float32(0.5)
+            * (
+                np.float32(1.0)
+                - np.float32(
+                    LIBM.cosf(np.float32(2.0) * pi * np.float32(n) / denominator)
+                )
+            )
+            for n in range(FFT_SIZE)
+        ],
+        dtype=np.float32,
+    )
+
+
+MEL_FILTERS = mx.array(slaney_mel_filter_bank())
+PERIODIC_HANN_WINDOW = mx.array(periodic_hann_window())
+
+
+def log_mel(samples: np.ndarray, layout: AudioLayout) -> mx.array:
+    """Whisper-style log-mel in float32 on MLX, [mel_bins, frames].
+
+    The same operations as Voxt's Swift front end. The reference drops the final
+    centered STFT frame; the Swift layout keeps it.
+    """
+    if len(samples) < FFT_SIZE:
+        # Reflect padding needs more samples than half a window; a tail this
+        # short (a realtime cut or a stop right after one) is zero-filled to
+        # one window.
+        samples = np.pad(samples, (0, FFT_SIZE - len(samples)))
+    else:
+        pass
+    audio = mx.array(samples.astype(np.float32))
+    padding = FFT_SIZE // 2
+    padded = mx.concatenate(
+        [audio[1 : padding + 1][::-1], audio, audio[-padding - 1 : -1][::-1]]
+    )
+    frame_count = 1 + (padded.shape[0] - FFT_SIZE) // HOP_LENGTH
+    frames = mx.as_strided(padded, (frame_count, FFT_SIZE), (HOP_LENGTH, 1))
+    power = mx.square(mx.abs(mx.fft.rfft(frames * PERIODIC_HANN_WINDOW, axis=1)))
+    if layout is AudioLayout.REFERENCE:
+        power = power[:-1]
+    else:
+        pass
+    log_spectrum = mx.log10(mx.maximum(mx.matmul(power, MEL_FILTERS), LOG_MEL_FLOOR))
+    log_spectrum = mx.maximum(log_spectrum, log_spectrum.max() - LOG_MEL_DYNAMIC_RANGE)
+    return ((log_spectrum + 4.0) / 4.0).T
+
+
+def reference_token_count(frame_count: int) -> int:
+    """Encoder output tokens for frame_count mel frames."""
+    remainder_frames = frame_count % CHUNK_FRAME_COUNT
+    after_first_conv = (remainder_frames - 1) // 2 + 1
+    remainder_tokens = ((after_first_conv - 1) // 2 + 1 - 1) // 2 + 1
+    return remainder_tokens + (frame_count // CHUNK_FRAME_COUNT) * CHUNK_TOKEN_COUNT
+
+
+def swift_token_count(frame_count: int) -> int:
+    """Voxt's Swift formula: chunks counted with float32 true division, then truncated."""
+    remainder_frames = frame_count % CHUNK_FRAME_COUNT
+    after_first_conv = (remainder_frames - 1) // 2 + 1
+    remainder_tokens = ((after_first_conv - 1) // 2 + 1 - 1) // 2 + 1
+    chunks = np.float32(frame_count) / np.float32(CHUNK_FRAME_COUNT)
+    return int(
+        np.trunc(np.float32(remainder_tokens) + chunks * np.float32(CHUNK_TOKEN_COUNT))
+    )
+
+
+def token_count(frame_count: int, layout: AudioLayout) -> int:
+    if layout is AudioLayout.REFERENCE:
+        return reference_token_count(frame_count)
+    else:
+        return swift_token_count(frame_count)
+
+
+def peak_is_silent(samples: np.ndarray, peak_threshold: float) -> bool:
+    return samples.size == 0 or float(np.max(np.abs(samples))) < peak_threshold

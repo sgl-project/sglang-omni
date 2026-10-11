@@ -16,15 +16,20 @@ import threading
 import uuid
 from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from queue import Queue
 from threading import Lock
-from typing import Any, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torchaudio
 from transformers import Qwen2Config, Qwen2Model, StaticCache
 
+from sglang_omni.models.weight_loader import (
+    default_weight_loader,
+    load_weights_by_prefix,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.audio_features import cached_fbank
 
@@ -36,10 +41,17 @@ from .front.toolkit import tokenize_mixed_text_iterator
 from .talker_module.aggregator import Aggregator
 from .talker_module.cfm import CFM, get_epss_timesteps
 from .talker_module.dit import DiT
+from .talker_module.execution import TalkerExecutionConfig
+from .talker_module.packed_qkv import (
+    PACKED_QKV_SHARD_IDS,
+    PackedQKVLinear,
+    load_packed_qkv_shard,
+)
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_DONE = object()
+AR_CACHE_MAX_TOKENS = 512
 
 # ---------- Optional: onnxruntime for speaker embedding ----------
 try:
@@ -50,8 +62,13 @@ except ImportError:
     onnxruntime = None  # type: ignore[assignment]
     _HAS_ONNX = False
 
+if TYPE_CHECKING:
+    from talker_tn.talker_tn import TalkerTN
+else:
+    pass
 
-class _IdentityNormalizer:
+
+class IdentityNormalizer:
     """Fallback when TalkerTN (pynini) is not available."""
 
     def normalize(self, text: str) -> str:
@@ -64,6 +81,8 @@ class SpkembExtractor:
     def __init__(self, campplus_model: str, target_sr: int = 16000):
         if not _HAS_ONNX:
             raise ImportError("onnxruntime is required for SpkembExtractor")
+        else:
+            pass
         option = onnxruntime.SessionOptions()
         option.graph_optimization_level = (
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -74,7 +93,7 @@ class SpkembExtractor:
         )
         self.target_sr = target_sr
 
-    def _extract_spk_embedding(self, speech):
+    def extract_spk_embedding(self, speech):
         feat = cached_fbank(speech, num_mel_bins=80, sample_frequency=16000)
         feat = feat - feat.mean(dim=0, keepdim=True)
         embedding = (
@@ -93,7 +112,7 @@ class SpkembExtractor:
         return torch.tensor([embedding])
 
     def __call__(self, waveform, **kwargs) -> Optional[torch.Tensor]:
-        return self._extract_spk_embedding(waveform)
+        return self.extract_spk_embedding(waveform)
 
 
 class CFMGraphExecutor:
@@ -125,6 +144,8 @@ class CFMGraphExecutor:
     ):
         if abort_event is not None and abort_event.is_set():
             raise asyncio.CancelledError()
+        else:
+            pass
         bat_size, his_patch_size, z_dim = his_lat.shape
         randn_tensor = torch.randn(
             (bat_size, self.config.patch_size, z_dim),
@@ -143,9 +164,18 @@ class CFMGraphExecutor:
         if not self.initialized:
             if abort_event is not None and abort_event.is_set():
                 raise asyncio.CancelledError()
-            self._initialize_graph(
-                input_tensor, his_lat, randn_tensor, sde_rnd, abort_event
+            else:
+                pass
+            self.initialize_graph(
+                input_tensor,
+                his_lat,
+                randn_tensor,
+                t,
+                (cfg_strength, sigma, temperature),
+                sde_rnd,
             )
+        else:
+            pass
 
         self.last_hidden_state_placeholder.copy_(input_tensor)
         self.his_lat_placeholder.copy_(his_lat)
@@ -158,11 +188,15 @@ class CFMGraphExecutor:
 
         if abort_event is not None and abort_event.is_set():
             raise asyncio.CancelledError()
+        else:
+            pass
         # Python abort checks inside CFM.sample run during capture; replay is
         # bounded by explicit checks before and after the device graph replay.
         self.graph.replay()
         if abort_event is not None and abort_event.is_set():
             raise asyncio.CancelledError()
+        else:
+            pass
 
         gen_lat = torch.empty_like(self.gen_lat_placeholder)
         gen_lat.copy_(self.gen_lat_placeholder)
@@ -173,48 +207,53 @@ class CFMGraphExecutor:
 
         return gen_lat, inputs_embeds, stop_out
 
-    def _initialize_graph(
-        self, input_tensor, his_lat, randn_tensor, sde_rnd, abort_event=None
-    ):
-        self.last_hidden_state_placeholder = torch.empty_like(input_tensor)
-        self.his_lat_placeholder = torch.empty_like(his_lat)
-        self.randn_like_placeholder = torch.empty_like(randn_tensor)
-        self.t_placeholder = get_epss_timesteps(
-            self.config.steps,
-            device=input_tensor.device,
-            dtype=input_tensor.dtype,
+    def initialize_graph(
+        self,
+        input_tensor: torch.Tensor,
+        his_lat: torch.Tensor,
+        randn_tensor: torch.Tensor,
+        timesteps: torch.Tensor,
+        sde_args: tuple[float, float, float],
+        sde_rnd: torch.Tensor,
+    ) -> None:
+        self.last_hidden_state_placeholder = input_tensor.clone()
+        self.his_lat_placeholder = his_lat.clone()
+        self.randn_like_placeholder = randn_tensor.clone()
+        self.t_placeholder = timesteps.clone()
+        self.sde_args_placeholder = torch.tensor(
+            sde_args, device=input_tensor.device, dtype=input_tensor.dtype
         )
-        self.sde_args_placeholder = torch.empty(
-            3, device=input_tensor.device, dtype=input_tensor.dtype
-        )
-        self.sde_rnd_placeholder = torch.empty_like(sde_rnd)
+        self.sde_rnd_placeholder = sde_rnd.clone()
 
         # (wenyao) Aborting CFM.sample during graph capture corrupts the
         # partial graph. Pass abort_event=None during capture; the caller
-        # (execute) checks abort before _initialize_graph and on every replay.
+        # (execute) checks abort before initialize_graph and on every replay.
         graph_backend = current_platform.get_device_graph_backend(input_tensor.device)
         if graph_backend is None:
             raise RuntimeError(
                 f"device graphs are unavailable for {input_tensor.device}"
             )
+        else:
+            pass
         try:
+            if current_platform.is_cuda():
+                runtime = TalkerDeviceRuntime(input_tensor.device)
+                runtime.synchronize()
+                with runtime.create_stream_context(runtime.create_stream()):
+                    # note (yzxiao): The full eager tail initializes JIT kernels
+                    # before capture, using the same static inputs and precision.
+                    for _ in range(2):
+                        self.compute_tail()
+                    runtime.synchronize()
+            else:
+                pass
             with graph_backend.capture(thread_local_errors=True) as graph:
                 self.graph = graph
-                self.gen_lat_placeholder = self.cfm.sample(
-                    self.last_hidden_state_placeholder,
-                    self.his_lat_placeholder,
-                    self.randn_like_placeholder,
-                    self.t_placeholder,
-                    self.sde_args_placeholder,
-                    self.sde_rnd_placeholder,
-                    abort_event=None,
-                )
-                self.inputs_embeds_placeholder = self.aggregator(
-                    self.gen_lat_placeholder
-                )
-                self.stop_out_placeholder = self.stop_head(
-                    self.last_hidden_state_placeholder[:, -1, :]
-                ).softmax(dim=-1)
+                (
+                    self.gen_lat_placeholder,
+                    self.inputs_embeds_placeholder,
+                    self.stop_out_placeholder,
+                ) = self.compute_tail()
         except BaseException:
             self.graph = None
             self.gen_lat_placeholder = None
@@ -223,6 +262,22 @@ class CFMGraphExecutor:
             raise
 
         self.initialized = True
+
+    def compute_tail(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        gen_lat = self.cfm.sample(
+            self.last_hidden_state_placeholder,
+            self.his_lat_placeholder,
+            self.randn_like_placeholder,
+            self.t_placeholder,
+            self.sde_args_placeholder,
+            self.sde_rnd_placeholder,
+            abort_event=None,
+        )
+        inputs_embeds = self.aggregator(gen_lat)
+        stop_out = self.stop_head(self.last_hidden_state_placeholder[:, -1, :]).softmax(
+            dim=-1
+        )
+        return gen_lat, inputs_embeds, stop_out
 
 
 class CFMGraphExecutorPool:
@@ -234,9 +289,9 @@ class CFMGraphExecutorPool:
         self.pool_size = pool_size
         self.pool: Queue = Queue(maxsize=pool_size)
         self.lock = Lock()
-        self._initialize_pool()
+        self.initialize_pool()
 
-    def _initialize_pool(self):
+    def initialize_pool(self):
         for _ in range(self.pool_size):
             self.pool.put(
                 CFMGraphExecutor(self.config, self.cfm, self.aggregator, self.stop_head)
@@ -248,6 +303,8 @@ class CFMGraphExecutorPool:
     def release(self, executor):
         if isinstance(executor, CFMGraphExecutor):
             self.pool.put(executor)
+        else:
+            pass
 
     def execute(
         self,
@@ -278,23 +335,39 @@ class MingOmniTalker(nn.Module):
     - spk_head: nn.Linear(192, 896)
     """
 
-    def __init__(self, config: MingOmniTalkerConfig):
+    def __init__(
+        self,
+        config: MingOmniTalkerConfig,
+        *,
+        dit_execution_config: TalkerExecutionConfig | None = None,
+        aggregator_execution_config: TalkerExecutionConfig | None = None,
+    ):
         super().__init__()
         self.config = config
 
         # Qwen2 LLM backbone
         self.model_config = Qwen2Config(**config.llm_config)
         self.model = Qwen2Model(self.model_config)
-        self.model.config._attn_implementation = "sdpa"
+        self.model.config._attn_implementation = "sdpa"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         self.latent_dim = config.latent_dim
         self.cfm = CFM(
-            DiT(llm_cond_dim=self.model.config.hidden_size, **config.flowmodel),
+            DiT(
+                llm_cond_dim=self.model.config.hidden_size,
+                execution_config=dit_execution_config,
+                **config.flowmodel,
+            ),
             steps=config.steps,
         )
         self.aggregator = Aggregator(
             llm_input_dim=self.model.config.hidden_size,
+            execution_config=aggregator_execution_config,
             **config.aggregator,
+        )
+        self.reference_patch_capacity = (
+            aggregator_execution_config.rope_max_batch_size
+            if aggregator_execution_config is not None
+            else None
         )
 
         self.stop_head = nn.Linear(self.model.config.hidden_size, 2, bias=True)
@@ -307,16 +380,16 @@ class MingOmniTalker(nn.Module):
 
         # --- External dependencies (set via setters) ---
         self.tokenizer = None
-        self.normalizer: Any = _IdentityNormalizer()
+        self.normalizer: IdentityNormalizer | TalkerTN = IdentityNormalizer()
         self.spkemb_extractor = None
         self.voice_json_dict: dict = {}
 
         # --- Internal state ---
         self.lock = threading.Lock()
-        self.tts_speech_token_dict: dict = {}
-        self.llm_end_dict: dict = {}
+        self.tts_speech_token_dict: dict[str, list[tuple[torch.Tensor, bool]]] = {}
+        self.llm_end_dict: dict[str, bool] = {}
         self.vae_cache: dict = {}
-        self.sil_holder_cache: dict = {}
+        self.sil_holder_cache: dict[str, dict[str, list[torch.Tensor]] | None] = {}
 
         self.initialized = None
         self.initial_lock = threading.Lock()
@@ -336,6 +409,65 @@ class MingOmniTalker(nn.Module):
         for _ in range(self.max_conc):
             self.model_graph_pool.put((None, None, None, None, None))
 
+    @classmethod
+    def from_pretrained(
+        cls, model_path: str, *, device: str | torch.device
+    ) -> MingOmniTalker:
+        device = torch.device(device)
+        # 1. Load config from checkpoint
+        config = MingOmniTalkerConfig.from_pretrained_dir(model_path)
+        if device.type == "npu":
+            config.use_torch_attention()
+        else:
+            pass
+
+        dit_execution_config = None
+        aggregator_execution_config = None
+        use_cuda_kernels = device.type == "cuda" and current_platform.is_cuda()
+        if use_cuda_kernels:
+            from sglang_omni.vendor.sglang.layers import RMSNorm
+
+            rope_kernel = current_platform.get_joint_rope_inplace_kernel()
+            if rope_kernel is None:
+                raise RuntimeError(
+                    "Ming-Omni CUDA talker requires a joint in-place RoPE "
+                    f"kernel, but {type(current_platform).__name__} does not "
+                    "provide one."
+                )
+            else:
+                pass
+            norm_layer = partial(RMSNorm, cast_x_before_out_mul=True)
+            qkv_layer = PackedQKVLinear
+            # note (yzxiao): CFG doubles DiT batch; reference aggregation is
+            # capped by the 512-token AR cache's upper bound.
+            dit_execution_config = TalkerExecutionConfig(
+                rope_kernel=rope_kernel,
+                rope_seq_len=1 + config.history_patch_size + config.patch_size,
+                rope_max_batch_size=2,
+                norm_layer=norm_layer,
+                qkv_layer=qkv_layer,
+            )
+            aggregator_execution_config = TalkerExecutionConfig(
+                rope_kernel=rope_kernel,
+                rope_seq_len=1 + config.patch_size,
+                rope_max_batch_size=AR_CACHE_MAX_TOKENS,
+                norm_layer=norm_layer,
+                qkv_layer=qkv_layer,
+            )
+        else:
+            pass
+        # 2. Create model (no weights yet)
+        model = cls(
+            config,
+            dit_execution_config=dit_execution_config,
+            aggregator_execution_config=aggregator_execution_config,
+        )
+        # 3. Stream weights, then move to device with bf16
+        weights = load_weights_by_prefix(model_path, prefix="")
+        model.load_weights(weights.items())
+        model.to(device=device, dtype=torch.bfloat16).eval()
+        return model
+
     # ---- External dependency setters ----
 
     def set_tokenizer(self, tokenizer) -> None:
@@ -353,38 +485,56 @@ class MingOmniTalker(nn.Module):
     # ---- Weight loading ----
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
-        """Stream weights into model parameters.
-
-        Weight mapping (checkpoint -> model):
-        - model.* -> self.model.* (Qwen2 backbone, direct match)
-        - cfm.model.* -> self.cfm.model.* (DiT, direct match)
-        - aggregator.* -> self.aggregator.* (Aggregator, direct match)
-        - stop_head.* -> self.stop_head.* (direct match)
-        - spk_head.* -> self.spk_head.* (direct match)
-
-        No weight name remapping needed — checkpoint names match nn.Module names.
-        """
         params_dict = dict(self.named_parameters())
-        loaded = set()
+        loaded: dict[str, set[str]] = {}
+        full_packed: set[str] = set()
+        required_shards = set(PACKED_QKV_SHARD_IDS)
         for name, loaded_weight in weights:
+            packed_shard = load_packed_qkv_shard(name, loaded_weight, params_dict)
+            if packed_shard is not None:
+                target_name, shard_id = packed_shard
+                if target_name in full_packed:
+                    raise ValueError(f"Mixed full and split QKV weights: {target_name}")
+                else:
+                    pass
+                loaded.setdefault(target_name, set()).add(shard_id)
+                continue
+            else:
+                pass
+
             if name not in params_dict:
                 logger.warning("Unexpected weight: %s", name)
                 continue
-            param = params_dict[name]
-            if param.numel() == 1 and loaded_weight.numel() == 1:
-                param.data.fill_(loaded_weight.item())
             else:
-                assert (
-                    param.size() == loaded_weight.size()
-                ), f"Shape mismatch for {name}: param={param.size()}, weight={loaded_weight.size()}"
-                param.data.copy_(loaded_weight)
-            loaded.add(name)
+                pass
+            if ".to_qkv." in name:
+                if name in loaded:
+                    raise ValueError(f"Mixed full and split QKV weights: {name}")
+                else:
+                    pass
+                full_packed.add(name)
+                loaded[name] = required_shards.copy()
+            else:
+                loaded[name] = set()
+            default_weight_loader(params_dict[name], loaded_weight)
 
-        missing = set(params_dict.keys()) - loaded
+        packed_params = {name for name in params_dict if ".to_qkv." in name}
+        missing_shards = {
+            name: sorted(required_shards - loaded.get(name, set()))
+            for name in packed_params
+            if loaded.get(name, set()) != required_shards
+        }
+        if missing_shards:
+            raise ValueError(f"Missing packed QKV shards: {missing_shards}")
+        else:
+            pass
+        missing = params_dict.keys() - loaded.keys()
         if missing:
             logger.warning(
                 "Missing weights (%d): %s", len(missing), sorted(missing)[:20]
             )
+        else:
+            pass
 
     # ---- Forward (not used directly) ----
 
@@ -406,6 +556,8 @@ class MingOmniTalker(nn.Module):
         """
         if tokenizer is not None:
             self.tokenizer = tokenizer
+        else:
+            pass
 
         with self.initial_lock:
             if not self.initialized:
@@ -445,6 +597,8 @@ class MingOmniTalker(nn.Module):
                             self.sil_holder_cache.pop(this_uuid, None)
 
                 self.initialized = True
+            else:
+                pass
 
     # ---- Generation ----
 
@@ -456,11 +610,13 @@ class MingOmniTalker(nn.Module):
     def dtype(self):
         return next(self.parameters()).dtype
 
-    def _get_device_runtime(self) -> TalkerDeviceRuntime:
+    def get_device_runtime(self) -> TalkerDeviceRuntime:
         device_runtime = getattr(self, "device_runtime", None)
         if device_runtime is None:
             device_runtime = TalkerDeviceRuntime(self.device)
             self.device_runtime = device_runtime
+        else:
+            pass
         return device_runtime
 
     @torch.no_grad()
@@ -494,8 +650,8 @@ class MingOmniTalker(nn.Module):
                 his_lat[:] = prompt_wav_lat[:, -start_index:, :]
             else:
                 his_lat[:, start_index:, :] = prompt_wav_lat
-
-        max_cache_len = 512
+        else:
+            pass
 
         (
             past_key_values,
@@ -510,7 +666,7 @@ class MingOmniTalker(nn.Module):
                 past_key_values = StaticCache(
                     config=self.model.config,
                     max_batch_size=1,
-                    max_cache_len=max_cache_len,
+                    max_cache_len=AR_CACHE_MAX_TOKENS,
                     device=self.model.device,
                     dtype=target_dtype,
                 )
@@ -532,7 +688,9 @@ class MingOmniTalker(nn.Module):
                 (attention_mask == 0), 1
             )
 
-            cache_max_decode_steps = (max_cache_len - prefill_len) // self.patch_size
+            cache_max_decode_steps = (
+                AR_CACHE_MAX_TOKENS - prefill_len
+            ) // self.patch_size
             if max_decode_steps is None:
                 effective_max_decode_steps = cache_max_decode_steps
             else:
@@ -543,6 +701,8 @@ class MingOmniTalker(nn.Module):
             while step < 1000 and step < effective_max_decode_steps:
                 if abort_event is not None and abort_event.is_set():
                     raise asyncio.CancelledError()
+                else:
+                    pass
                 if step == 0:
                     prefill_cache_position = torch.arange(
                         0, prefill_len, device=inputs_embeds.device
@@ -559,6 +719,8 @@ class MingOmniTalker(nn.Module):
                     past_seen_tokens = past_key_values.get_seq_length()
                     if isinstance(past_seen_tokens, torch.Tensor):
                         past_seen_tokens = int(past_seen_tokens.item())
+                    else:
+                        pass
                     cache_position = torch.arange(
                         past_seen_tokens,
                         past_seen_tokens + inputs_embeds.shape[1],
@@ -573,6 +735,8 @@ class MingOmniTalker(nn.Module):
                             raise RuntimeError(
                                 f"device graphs are unavailable for {inputs_embeds.device}"
                             )
+                        else:
+                            pass
                         inputs_embeds_placeholder = torch.empty_like(inputs_embeds)
                         cache_position_placeholder = torch.empty_like(cache_position)
 
@@ -595,6 +759,8 @@ class MingOmniTalker(nn.Module):
                         inputs_embeds_placeholder.copy_(inputs_embeds)
                         if cache_position_placeholder is not None:
                             cache_position_placeholder.copy_(cache_position)
+                        else:
+                            pass
                         model_graph.replay()
 
                     outputs = outputs_placeholder
@@ -622,6 +788,8 @@ class MingOmniTalker(nn.Module):
 
                 if abort_event is not None and abort_event.is_set():
                     raise asyncio.CancelledError()
+                else:
+                    pass
 
                 is_stop = step > min_new_token and bool(stop_out.cpu()[0, 1] > 0.5)
                 last_chunk = (
@@ -632,6 +800,8 @@ class MingOmniTalker(nn.Module):
                 yield gen_lat, last_chunk
                 if last_chunk:
                     break
+                else:
+                    pass
                 step += 1
         finally:
             self.model_graph_pool.put(
@@ -673,12 +843,16 @@ class MingOmniTalker(nn.Module):
                     + tokenizer.encode("<|vision_pad|>")
                     + tokenizer.encode("<|vision_end|>\n")
                 )
+        else:
+            pass
 
         instruction_prompt: list = []
         if instruction is not None:
             instruction_prompt = tokenizer.encode(instruction) + tokenizer.encode(
                 "<|im_end|>"
             )
+        else:
+            pass
 
         prompt_text_token: list = []
         prompt_latent_token: list = []
@@ -687,6 +861,8 @@ class MingOmniTalker(nn.Module):
             prompt_latent_token = tokenizer.encode(
                 "<audioPatch>"
             ) * prompt_wav_emb.size(1)
+        else:
+            pass
 
         prompt2 = tokenizer.encode(" Text input:\n")
         if (
@@ -697,6 +873,8 @@ class MingOmniTalker(nn.Module):
             and "Duration: " in text
         ):
             prompt2 = []
+        else:
+            pass
 
         input_part = (
             tokenizer.encode(
@@ -732,6 +910,8 @@ class MingOmniTalker(nn.Module):
             assert len(spk_indices) > 0
             for i, se in enumerate(spk_emb):
                 inputs_embeds[0, spk_indices[i] + 1] = se.to(dtype=torch.bfloat16)
+        else:
+            pass
 
         if prompt_wav_emb is not None and prompt_text is not None:
             audio_token_id = tokenizer.encode("<audio>")
@@ -743,6 +923,8 @@ class MingOmniTalker(nn.Module):
                 audio_indices[0] + 1 : audio_indices[0] + 1 + prompt_wav_emb.size(1),
                 :,
             ] = prompt_wav_emb[0].to(dtype=torch.bfloat16)
+        else:
+            pass
 
         device_type = self.device.type
         with torch.autocast(
@@ -781,13 +963,19 @@ class MingOmniTalker(nn.Module):
         if speech.numel() == 0:
             assert not last_chunk
             return speech, sil_cache
+        else:
+            pass
 
         frame_step, frame_size = int(sample_rate * 0.1), int(sample_rate * 0.1)
         if sil_cache is None:
             sil_cache = {"holder": [], "buffer": []}
+        else:
+            pass
         if sil_cache["buffer"]:
             speech = torch.cat([*sil_cache["buffer"], speech], dim=-1)
             sil_cache["buffer"] = []
+        else:
+            pass
         if last_chunk:
             tail_len = speech.shape[-1] % frame_size
             # Score the real tail samples before an all-silence branch can
@@ -796,23 +984,33 @@ class MingOmniTalker(nn.Module):
                 speech = torch.cat([*sil_cache["holder"], speech], dim=-1)
                 sil_cache["holder"] = []
                 return speech, sil_cache
+            else:
+                pass
+        else:
+            pass
         if speech.shape[-1] < frame_size:
             sil_cache["buffer"].append(speech)
             if last_chunk:
                 speech = torch.cat(sil_cache["holder"] + sil_cache["buffer"], dim=-1)
                 return speech[..., : int(last_sil * sample_rate)], sil_cache
+            else:
+                pass
             return (
                 torch.zeros(
                     (*speech.shape[:-1], 0), device=speech.device, dtype=speech.dtype
                 ),
                 sil_cache,
             )
+        else:
+            pass
 
         num_frame = (speech.shape[-1] - frame_size) // frame_step + 1
         cur_len = (num_frame - 1) * frame_step + frame_size
         if speech.shape[-1] > cur_len:
             sil_cache["buffer"].append(speech[..., cur_len:])
             speech = speech[..., :cur_len]
+        else:
+            pass
         spe_frames = speech.unfold(-1, frame_size, frame_step)
         scores = spe_frames.abs().mean(dim=-1)
         scores = scores.mean(dim=list(range(scores.dim() - 1)))
@@ -820,24 +1018,34 @@ class MingOmniTalker(nn.Module):
         while idx >= 0:
             if scores[idx] > sil_th:
                 break
+            else:
+                pass
             idx -= 1
         if idx < 0:
             sil_cache["holder"].append(speech)
             if last_chunk:
                 speech = torch.cat(sil_cache["holder"] + sil_cache["buffer"], dim=-1)
                 return speech[..., : int(last_sil * sample_rate)], sil_cache
+            else:
+                pass
             return (
                 torch.zeros(
                     (*speech.shape[:-1], 0), device=speech.device, dtype=speech.dtype
                 ),
                 sil_cache,
             )
+        else:
+            pass
         if last_chunk and sil_cache["buffer"]:
             speech = torch.cat([speech, *sil_cache["buffer"]], dim=-1)
             sil_cache["buffer"] = []
+        else:
+            pass
         non_sil_len = idx * frame_step + frame_size
         if last_chunk:
             non_sil_len += int(last_sil * sample_rate)
+        else:
+            pass
         current_speech = speech
         current_output = current_speech[..., :non_sil_len]
         current_tail = current_speech[..., non_sil_len:]
@@ -845,6 +1053,8 @@ class MingOmniTalker(nn.Module):
         sil_cache["holder"] = []
         if current_tail.shape[-1] > 0:
             sil_cache["holder"].append(current_tail)
+        else:
+            pass
         return speech, sil_cache
 
     def llm_job(
@@ -865,7 +1075,7 @@ class MingOmniTalker(nn.Module):
         max_decode_steps: int | None = None,
     ):
         try:
-            device_runtime = self._get_device_runtime()
+            device_runtime = self.get_device_runtime()
             with device_runtime.create_stream_context(device_runtime.create_stream()):
                 for audio_token in self.omni_audio_generation_func(
                     prompt=prompt,
@@ -883,6 +1093,8 @@ class MingOmniTalker(nn.Module):
                 ):
                     if abort_event is not None and abort_event.is_set():
                         raise asyncio.CancelledError()
+                    else:
+                        pass
                     device_runtime.synchronize()
                     if token_queue is not None:
                         token_queue.put(audio_token)
@@ -892,8 +1104,12 @@ class MingOmniTalker(nn.Module):
             with self.lock:
                 if this_uuid in self.llm_end_dict:
                     self.llm_end_dict[this_uuid] = True
+                else:
+                    pass
             if token_queue is not None:
                 token_queue.put(_TOKEN_DONE)
+            else:
+                pass
 
     def tts_job(
         self,
@@ -912,13 +1128,15 @@ class MingOmniTalker(nn.Module):
         abort_event: threading.Event | None = None,
         max_decode_steps: int | None = None,
     ):
-        device_runtime = self._get_device_runtime()
+        device_runtime = self.get_device_runtime()
         with device_runtime.create_stream_context(device_runtime.create_stream()):
             this_uuid = str(uuid.uuid1())
             token_queue = queue.Queue() if stream else None
             effective_abort_event = abort_event
             if stream and effective_abort_event is None:
                 effective_abort_event = threading.Event()
+            else:
+                pass
             completed = False
             future = None
             with self.lock:
@@ -961,10 +1179,16 @@ class MingOmniTalker(nn.Module):
                             and effective_abort_event.is_set()
                         ):
                             raise asyncio.CancelledError()
+                        else:
+                            pass
                         if future.done():
                             exc = future.exception()
                             if exc:
                                 raise exc
+                            else:
+                                pass
+                        else:
+                            pass
                         try:
                             queue_item = token_queue.get(timeout=0.025)
                         except queue.Empty:
@@ -973,6 +1197,8 @@ class MingOmniTalker(nn.Module):
                             future.result()
                             completed = True
                             break
+                        else:
+                            pass
                         last_chunk = queue_item[-1]
                         this_tts_speech_token = [queue_item[0]]
                         this_tts_speech, self.vae_cache[this_uuid] = self.token2wav(
@@ -993,6 +1219,8 @@ class MingOmniTalker(nn.Module):
                         )
                         if this_tts_speech.numel() > 0:
                             yield {"tts_speech": this_tts_speech.cpu()}
+                        else:
+                            pass
                 else:
                     future.result()
                     this_tts_speech_token = self.tts_speech_token_dict[this_uuid]
@@ -1021,6 +1249,8 @@ class MingOmniTalker(nn.Module):
                 if stream and not completed:
                     if effective_abort_event is not None:
                         effective_abort_event.set()
+                    else:
+                        pass
                     if future is not None:
                         cancelled = future.cancel()
                         if not cancelled:
@@ -1028,6 +1258,12 @@ class MingOmniTalker(nn.Module):
                                 future.result()
                             except (asyncio.CancelledError, FutureCancelledError):
                                 pass
+                        else:
+                            pass
+                    else:
+                        pass
+                else:
+                    pass
                 with self.lock:
                     self.tts_speech_token_dict.pop(this_uuid, None)
                     self.llm_end_dict.pop(this_uuid, None)
@@ -1037,6 +1273,8 @@ class MingOmniTalker(nn.Module):
     def register_prompt_wav(self, prompt_wav_path, audio_detokenizer):
         if isinstance(prompt_wav_path, str):
             prompt_wav_path = [prompt_wav_path]
+        else:
+            pass
 
         speech_parts = []
         spk_emb_list = []
@@ -1047,6 +1285,8 @@ class MingOmniTalker(nn.Module):
                 speech_tmp = torchaudio.transforms.Resample(
                     sample_rate, audio_detokenizer.config.sample_rate
                 )(speech_tmp)
+            else:
+                pass
             speech_parts.append(speech_tmp)
 
             if self.spkemb_extractor is not None:
@@ -1054,9 +1294,13 @@ class MingOmniTalker(nn.Module):
                     speech_tmp1 = torchaudio.transforms.Resample(
                         orig_freq=sample_rate, new_freq=16000
                     )(speech_tmp1)
+                else:
+                    pass
                 se = self.spkemb_extractor(speech_tmp1)
                 se = self.spk_head(se.to(device=self.device, dtype=self.dtype))
                 spk_emb_list.append(se)
+            else:
+                pass
 
         speech = torch.cat(speech_parts, dim=-1)
 
@@ -1072,11 +1316,24 @@ class MingOmniTalker(nn.Module):
             )
             pad_speech[:, -speech.shape[1] :] = speech
             speech = pad_speech
+        else:
+            pass
         prompt_wav_lat, _ = audio_detokenizer.encode_latent(
             speech.to(dtype=torch.bfloat16, device=self.device),
             torch.tensor([speech.size(1)], dtype=torch.long, device=self.device),
         )
         assert prompt_wav_lat.shape[1] % self.patch_size == 0
+        reference_patch_count = prompt_wav_lat.shape[1] // self.patch_size
+        if (
+            self.reference_patch_capacity is not None
+            and reference_patch_count > self.reference_patch_capacity
+        ):
+            raise ValueError(
+                f"Reference audio has {reference_patch_count} patches; "
+                f"the acoustic kernel supports at most {self.reference_patch_capacity}."
+            )
+        else:
+            pass
         prompt_wav_lat = prompt_wav_lat.reshape(
             -1, self.patch_size, prompt_wav_lat.shape[-1]
         )
@@ -1107,6 +1364,8 @@ class MingOmniTalker(nn.Module):
         """
         if audio_detokenizer is None:
             return requested_max_steps
+        else:
+            pass
         try:
             sample_rate = float(audio_detokenizer.config.sample_rate)
             vae_patch_size = float(getattr(audio_detokenizer.encoder, "patch_size", 1))
@@ -1118,6 +1377,8 @@ class MingOmniTalker(nn.Module):
         ) / sample_rate
         if seconds_per_step <= 0:
             return requested_max_steps
+        else:
+            pass
         max_duration_s = max(2.0, float(text_len) * (5818.0 / 16000.0))
         max_steps_by_duration = max(1, int(max_duration_s / seconds_per_step))
         return min(requested_max_steps, max_steps_by_duration)
@@ -1132,6 +1393,8 @@ class MingOmniTalker(nn.Module):
         if prompt_wav_path is None:
             if not use_zero_spk_emb:
                 return None, None, None
+            else:
+                pass
             return (
                 None,
                 None,
@@ -1142,17 +1405,21 @@ class MingOmniTalker(nn.Module):
                     dtype=self.dtype,
                 ),
             )
+        else:
+            pass
         if isinstance(prompt_wav_path, list):
             key = "|".join(prompt_wav_path)
         else:
             key = prompt_wav_path
         if key not in self.registered_prompt:
             self.register_prompt_wav(prompt_wav_path, audio_detokenizer)
+        else:
+            pass
         msg = self.registered_prompt[key]
         spk_emb = msg["spk_emb"] if use_spk_emb else None
         return msg["prompt_wav_lat"], msg["prompt_wav_emb"], spk_emb
 
-    def _run_tts_segments(
+    def run_tts_segments(
         self,
         text,
         prompt,
@@ -1177,6 +1444,8 @@ class MingOmniTalker(nn.Module):
         for i, ele in enumerate(tts_text_list):
             if len(ele) == 0:
                 continue
+            else:
+                pass
 
             should_process = False
             if ele[-1] in "\uff01\uff1f\u3002\uff0c!?" and (
@@ -1204,22 +1473,28 @@ class MingOmniTalker(nn.Module):
                         if bool(re.search(r"[\u4e00-\u9fff]", streaming_text[-1][-1])):
                             ele = "\uff0c"
                             streaming_text.append(ele)
+                        else:
+                            pass
                     else:
                         if len(ele) > 1 and bool(re.search(r"[a-zA-Z]", ele[-2])):
                             ele = ele[:-1] + "."
                         else:
                             ele = ele[:-1]
                         streaming_text.append(ele)
+                else:
+                    pass
                 if len(streaming_text) >= 12 or (
                     count > 0 and len(streaming_text) >= 8
                 ):
                     should_process = True
+                else:
+                    pass
             else:
                 streaming_text.append(ele)
                 continue
 
             if should_process:
-                yield from self._process_segment(
+                yield from self.process_segment(
                     "".join(streaming_text),
                     prompt,
                     instruction,
@@ -1238,11 +1513,13 @@ class MingOmniTalker(nn.Module):
                 )
                 count += 1
                 streaming_text = []
+            else:
+                pass
 
         if streaming_text and re.search(
             r"[a-zA-Z\u4e00-\u9fff1-9]", "".join(streaming_text)
         ):
-            yield from self._process_segment(
+            yield from self.process_segment(
                 "".join(streaming_text),
                 prompt,
                 instruction,
@@ -1259,8 +1536,10 @@ class MingOmniTalker(nn.Module):
                 wds_lg_en,
                 abort_event,
             )
+        else:
+            pass
 
-    def _process_segment(
+    def process_segment(
         self,
         streaming_text,
         prompt,
@@ -1282,6 +1561,8 @@ class MingOmniTalker(nn.Module):
         text_list = sub_output_dict["fragments"]
         if not text_list:
             return
+        else:
+            pass
 
         for text_ori in text_list:
             length = len(text_ori)
@@ -1314,6 +1595,8 @@ class MingOmniTalker(nn.Module):
             text = self.normalizer.normalize(text)
             if text and text[0] == "\uff0c":
                 text = text[1:]
+            else:
+                pass
 
             use_stream = stream
             total_samples = 0
@@ -1350,6 +1633,8 @@ class MingOmniTalker(nn.Module):
                     and total_samples / audio_detokenizer.config.sample_rate > 2
                 ):
                     break
+                else:
+                    pass
 
                 this_dura = float(
                     tts_speech.shape[-1] / audio_detokenizer.config.sample_rate
@@ -1428,7 +1713,7 @@ class MingOmniTalker(nn.Module):
                 "loaded voice presets) or prompt_wav_path. Both are None."
             )
 
-        device_runtime = self._get_device_runtime()
+        device_runtime = self.get_device_runtime()
         with device_runtime.create_stream_context(device_runtime.create_stream()):
             self.initial_graph()
 
@@ -1439,7 +1724,7 @@ class MingOmniTalker(nn.Module):
                 use_zero_spk_emb=False,
             )
 
-            yield from self._run_tts_segments(
+            yield from self.run_tts_segments(
                 text,
                 prompt,
                 instruction,
@@ -1473,7 +1758,7 @@ class MingOmniTalker(nn.Module):
         **kwargs,
     ):
         abort_event = kwargs.get("abort_event")
-        device_runtime = self._get_device_runtime()
+        device_runtime = self.get_device_runtime()
         with device_runtime.create_stream_context(device_runtime.create_stream()):
             self.initial_graph()
 
@@ -1515,7 +1800,7 @@ class MingOmniTalker(nn.Module):
                 ):
                     yield this_tts_speech_dict["tts_speech"], None, None, None
             else:
-                yield from self._run_tts_segments(
+                yield from self.run_tts_segments(
                     text,
                     prompt,
                     instruction,

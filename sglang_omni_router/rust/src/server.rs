@@ -403,9 +403,12 @@ fn route_table(
             }
             let path = route.path();
             app = match route {
-                HttpMediaRoute::Speech => {
-                    app.route(path, any(http_media::speech).with_state(Arc::clone(&media)))
-                }
+                HttpMediaRoute::Speech => app
+                    .route(path, any(http_media::speech).with_state(Arc::clone(&media)))
+                    .route(
+                        "/v1/audio/speech/{request_id}",
+                        any(http_media::speech_outcome).with_state(Arc::clone(&media)),
+                    ),
                 HttpMediaRoute::SpeechBatch => {
                     app.route(path, any(http_media::batch).with_state(Arc::clone(&media)))
                 }

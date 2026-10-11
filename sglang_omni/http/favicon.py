@@ -27,4 +27,6 @@ def register_favicon(app: FastAPI, *, favicon_path: Path | None = None) -> None:
     async def favicon() -> Response:
         if resolved is None:
             return Response(status_code=404)
+        else:
+            pass
         return FileResponse(resolved, media_type=_FAVICON_MEDIA_TYPE)

@@ -15,9 +15,9 @@ from sglang_omni.platforms.apple import AppleOmniPlatform
 def test_generic_sglang_platform_resolves_to_apple_when_mps_is_available(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(platforms, "_is_apple_silicon_mps_available", lambda: True)
+    monkeypatch.setattr(platforms, "is_apple_silicon_mps_available", lambda: True)
 
-    resolved = platforms._as_omni_platform(SRTPlatform())
+    resolved = platforms.as_omni_platform(SRTPlatform())
 
     assert isinstance(resolved, AppleOmniPlatform)
     assert resolved.is_mps()
@@ -33,6 +33,10 @@ def test_apple_device_binding_is_single_device() -> None:
         apple.get_device(1)
     with pytest.raises(ValueError, match="Expected an MPS device"):
         apple.set_device(torch.device("cpu"))
+
+
+def test_apple_platform_does_not_claim_float64_support() -> None:
+    assert AppleOmniPlatform.is_float64_supported() is False
 
 
 def test_apple_device_total_memory_uses_torch_without_mlx(monkeypatch) -> None:

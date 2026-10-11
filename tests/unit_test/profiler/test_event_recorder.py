@@ -5,23 +5,28 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from sglang_omni.profiler.event_recorder import (
     RequestEvent,
+    RequestEventBuffer,
     RequestEventRecorder,
-    _json_default,
+    RequestEventSnapshot,
     emit,
     get_recorder,
+    json_default,
     reset_active_stage,
     set_active_stage,
 )
 
 
 @pytest.fixture(autouse=True)
-def _reset_recorder():
+def reset_recorder():
     """Make sure the process-global recorder is closed before every test."""
     rec = get_recorder()
     if rec.is_active():
@@ -33,7 +38,7 @@ def _reset_recorder():
         rec.stop()
 
 
-def _read_events(path: str) -> list[dict]:
+def read_events(path: str) -> list[dict]:
     with open(path, "r", encoding="utf-8") as fp:
         return [json.loads(line) for line in fp if line.strip()]
 
@@ -85,7 +90,7 @@ def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
     finally:
         rec.stop()
 
-    events = _read_events(path)
+    events = read_events(path)
     assert len(events) == 2
     assert events[0]["event_name"] == "encoder_start"
     assert events[0]["run_id"] == "r0"
@@ -102,7 +107,7 @@ def test_default_stage_falls_back_to_active(tmp_path: Path) -> None:
         path = rec.active_path()
         rec.stop()
     assert path is not None
-    events = _read_events(path)
+    events = read_events(path)
     assert events[0]["stage"] == "thinker"
 
 
@@ -139,7 +144,7 @@ def test_concurrent_emits_are_safe(tmp_path: Path) -> None:
         t.join()
     rec.stop()
 
-    events = _read_events(path)
+    events = read_events(path)
     assert len(events) == n_threads * n_per_thread
     # Every line must be valid JSON with required fields
     for ev in events:
@@ -153,8 +158,124 @@ def test_module_level_emit_uses_singleton(tmp_path: Path) -> None:
     path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="coord")
     emit(request_id="r1", stage=None, event_name="request_admission")
     rec.stop()
-    events = _read_events(path)
+    events = read_events(path)
     assert any(e["event_name"] == "request_admission" for e in events)
+
+
+def test_buffer_flush_preserves_thread_ownership_and_capture_snapshot(
+    tmp_path: Path,
+) -> None:
+    recorder = get_recorder()
+    path = recorder.start(run_id="buffered", event_dir=str(tmp_path), stage="thinker")
+    buffer = RequestEventBuffer()
+    captured = threading.Event()
+    release = threading.Event()
+
+    def worker() -> tuple[int, int]:
+        metadata: dict[str, int | float | str] = {"frames": 3}
+        before_capture_ns = time.time_ns()
+        buffer.capture(
+            "decode_committed",
+            (
+                RequestEventSnapshot(request_id=request_id, metadata=metadata)
+                for request_id in ("worker-a", "worker-b")
+            ),
+            {"samples": 12},
+        )
+        after_capture_ns = time.time_ns()
+        metadata["frames"] = 7
+        captured.set()
+        assert release.wait(timeout=5)
+        buffer.flush(stage="vocoder")
+        buffer.flush(stage="vocoder")
+        return before_capture_ns, after_capture_ns
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="decode") as executor:
+        completion = executor.submit(worker)
+        try:
+            assert captured.wait(timeout=5)
+            buffer.capture(
+                "decode_enqueued",
+                (RequestEventSnapshot(request_id="ingest", metadata={"frames": 1}),),
+                {},
+            )
+            buffer.flush(stage="vocoder")
+            assert [event["request_id"] for event in read_events(path)] == ["ingest"]
+        finally:
+            release.set()
+        before_capture_ns, after_capture_ns = completion.result(timeout=5)
+
+    recorder.stop()
+    events = read_events(path)
+    assert [event["request_id"] for event in events] == [
+        "ingest",
+        "worker-a",
+        "worker-b",
+    ]
+    assert before_capture_ns <= events[1]["timestamp_ns"] <= after_capture_ns
+    assert events[1]["timestamp_ns"] == events[2]["timestamp_ns"]
+    assert events[1]["timestamp_ns"] <= events[0]["timestamp_ns"]
+    assert events[1]["metadata"]["monotonic_s"] == events[2]["metadata"]["monotonic_s"]
+    assert [event["metadata"]["frames"] for event in events] == [1, 3, 3]
+    assert [event["metadata"]["samples"] for event in events[1:]] == [12, 12]
+    assert events[0]["metadata"]["worker"] == threading.current_thread().name
+    assert all(event["metadata"]["worker"].startswith("decode") for event in events[1:])
+    assert {event["stage"] for event in events} == {"vocoder"}
+    assert {event["run_id"] for event in events} == {"buffered"}
+
+
+def test_buffer_checks_activity_before_consuming_snapshots(tmp_path: Path) -> None:
+    recorder = get_recorder()
+    buffer = RequestEventBuffer()
+    visited: list[str] = []
+
+    def snapshots(request_id: str) -> Iterator[RequestEventSnapshot]:
+        visited.append(request_id)
+        yield RequestEventSnapshot(request_id=request_id, metadata={"frames": 1})
+
+    buffer.capture("decode_enqueued", snapshots("inactive-capture"), {})
+    buffer.flush(stage="vocoder")
+    assert visited == []
+
+    path = recorder.start(run_id="buffered", event_dir=str(tmp_path), stage="thinker")
+    buffer.capture("decode_enqueued", snapshots("active"), {})
+    assert visited == ["active"]
+    assert read_events(path) == []
+    buffer.flush(stage="vocoder")
+    recorder.stop()
+
+    buffer.capture("decode_enqueued", snapshots("stopped"), {})
+    assert visited == ["active"]
+    events = read_events(path)
+    assert [event["request_id"] for event in events] == ["active"]
+
+
+def test_buffer_flush_after_stop_does_not_leak_into_next_run(tmp_path: Path) -> None:
+    recorder = get_recorder()
+    buffer = RequestEventBuffer()
+    first_path = recorder.start("first", str(tmp_path / "first"), "vocoder")
+    buffer.capture(
+        "decode_enqueued",
+        (RequestEventSnapshot(request_id="old", metadata={"frames": 1}),),
+        {},
+    )
+    recorder.stop()
+    buffer.flush(stage="vocoder")
+
+    second_path = recorder.start("second", str(tmp_path / "second"), "vocoder")
+    buffer.capture(
+        "decode_enqueued",
+        (RequestEventSnapshot(request_id="new", metadata={"frames": 2}),),
+        {},
+    )
+    buffer.flush(stage="vocoder")
+    recorder.stop()
+
+    assert read_events(first_path) == []
+    events = read_events(second_path)
+    assert [event["request_id"] for event in events] == ["new"]
+    assert events[0]["run_id"] == "second"
+    assert events[0]["metadata"]["frames"] == 2
 
 
 def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:
@@ -178,7 +299,7 @@ def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:
     rec.emit(request_id="r1", stage="thinker", event_name="stage_dispatch")
     rec.stop()
 
-    events = _read_events(p1)
+    events = read_events(p1)
     stages = {e["stage"] for e in events}
     assert stages == {"preprocessing", "image_encoder", "thinker"}
 
@@ -207,15 +328,15 @@ def test_emit_stage_none_uses_thread_local_active_stage(tmp_path: Path) -> None:
     emit(request_id="r1", stage=None, event_name="from_main")
 
     # Worker threads: each binds its own active stage, then emits.
-    def _worker(stage_name: str) -> None:
+    def worker(stage_name: str) -> None:
         set_active_stage(stage_name)
         try:
             emit(request_id="r1", stage=None, event_name=f"from_{stage_name}")
         finally:
             reset_active_stage(None)
 
-    t_thinker = threading.Thread(target=_worker, args=("thinker",))
-    t_decode = threading.Thread(target=_worker, args=("decode",))
+    t_thinker = threading.Thread(target=worker, args=("thinker",))
+    t_decode = threading.Thread(target=worker, args=("decode",))
     t_thinker.start()
     t_decode.start()
     t_thinker.join()
@@ -223,11 +344,11 @@ def test_emit_stage_none_uses_thread_local_active_stage(tmp_path: Path) -> None:
 
     rec.stop()
 
-    events = _read_events(p)
+    events = read_events(p)
     by_event = {e["event_name"]: e["stage"] for e in events}
     assert (
         by_event["from_main"] == "preprocessing"
-    ), "main thread had no active stage; should fall back to recorder._stage"
+    ), "main thread had no active stage; should fall back to recorder.stage"
     assert (
         by_event["from_thinker"] == "thinker"
     ), "worker thread's set_active_stage('thinker') was ignored"
@@ -254,21 +375,21 @@ def test_emit_stage_none_uses_contextvar_in_asyncio_executor(
 
     seen: dict[str, str | None] = {}
 
-    def _compute() -> None:
+    def compute() -> None:
         # Simulate what SimpleScheduler's worker does after stage binding.
         emit(request_id="r1", stage=None, event_name="from_executor")
 
-    async def _run() -> None:
+    async def run() -> None:
         set_active_stage("encoder")
         try:
-            await asyncio.to_thread(_compute)
+            await asyncio.to_thread(compute)
         finally:
             reset_active_stage(None)
 
-    asyncio.run(_run())
+    asyncio.run(run())
     rec.stop()
 
-    events = _read_events(p)
+    events = read_events(p)
     by_event = {e["event_name"]: e["stage"] for e in events}
     seen.update(by_event)
     assert (
@@ -304,7 +425,7 @@ def test_json_default_summarizes_tensor_without_materializing() -> None:
         def item(self):  # pragma: no cover
             raise AssertionError("item() called on multi-dim tensor")
 
-    out = _json_default(FakeTensor())
+    out = json_default(FakeTensor())
     assert isinstance(out, dict)
     assert out["__tensor_summary__"] is True
     assert out["type"] == "FakeTensor"
@@ -323,7 +444,7 @@ def test_json_default_unwraps_zero_d_tensor_as_scalar() -> None:
         def item(self):
             return 3.14
 
-    assert _json_default(FakeScalar()) == 3.14
+    assert json_default(FakeScalar()) == 3.14
 
 
 def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
@@ -349,7 +470,7 @@ def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
     )
     rec.stop()
 
-    events = _read_events(p)
+    events = read_events(p)
     assert len(events) == 1
     summary = events[0]["metadata"]["hidden_states"]
     assert summary["__tensor_summary__"] is True
@@ -376,16 +497,23 @@ def test_reset_active_stage_without_token_clears_both_thread_local_and_contextva
 
     set_active_stage("leaks")
     # Sanity: both backends are bound.
-    assert event_recorder._active_stage_cv.get() == "leaks"
-    assert getattr(event_recorder._thread_active_stage, "stage", None) == "leaks"
+    assert (
+        event_recorder._active_stage_cv.get() == "leaks"
+    )  # noqa: leading-underscore  # production name
+    assert (
+        getattr(event_recorder._thread_active_stage, "stage", None) == "leaks"
+    )  # noqa: leading-underscore  # production name
 
     reset_active_stage(None)
 
     # Both must now be empty.
     assert (
-        event_recorder._active_stage_cv.get() is None
+        event_recorder._active_stage_cv.get()
+        is None  # noqa: leading-underscore  # production name
     ), "contextvar still bound after reset_active_stage(None)"
-    assert getattr(event_recorder._thread_active_stage, "stage", None) is None
+    assert (
+        getattr(event_recorder._thread_active_stage, "stage", None) is None
+    )  # noqa: leading-underscore  # production name
     # And the public accessor agrees.
     from sglang_omni.profiler.event_recorder import get_active_stage
 

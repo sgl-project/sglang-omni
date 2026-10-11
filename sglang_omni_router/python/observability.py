@@ -76,7 +76,7 @@ class StaleCounterGenerationError(Exception):
 
 
 @dataclass
-class _WorkerLedger:
+class WorkerLedger:
     baseline: dict[str, int]
     high_water: dict[str, int]
     class_baseline: dict[str, dict[str, int]]
@@ -95,7 +95,7 @@ class _WorkerLedger:
 
 
 @dataclass
-class _LedgerEntry:
+class LedgerEntry:
     generation: int
     counter_seq: int
     reported_at: float
@@ -103,12 +103,12 @@ class _LedgerEntry:
     # carries both the new object and the draining old one during a
     # replacement, so a flat stable-id key would make each row retire the
     # other; nesting keeps the per-worker lookup O(1) for the /health render.
-    per_worker: dict[str, dict[str, _WorkerLedger]] = field(default_factory=dict)
+    per_worker: dict[str, dict[str, WorkerLedger]] = field(default_factory=dict)
 
 
 class DataPlaneCounterLedger:
     def __init__(self, liveness_secs: float = 3.0) -> None:
-        self._entries: dict[int, _LedgerEntry] = {}
+        self._entries: dict[int, LedgerEntry] = {}
         self._retired: dict[str, dict[str, int]] = {}
         self._retired_by_class: dict[str, dict[str, dict[str, int]]] = {}
         # Note (Jiaxin Deng): first contact is per CP process, not per
@@ -132,7 +132,7 @@ class DataPlaneCounterLedger:
             ):
                 return False
             if report.generation > entry.generation:
-                self._retire(entry)
+                self.retire(entry)
                 entry = None
 
         carried = (
@@ -146,14 +146,14 @@ class DataPlaneCounterLedger:
         )
         first_contact = report.dp_index not in self._seen_dps
         self._seen_dps.add(report.dp_index)
-        per_worker: dict[str, dict[str, _WorkerLedger]] = {}
+        per_worker: dict[str, dict[str, WorkerLedger]] = {}
         for item in report.workers:
             ledger = carried.pop((item.worker_id, item.incarnation), None)
             if ledger is None:
                 # Note (Jiaxin Deng): a segment the CP has not seen before
                 # starts at zero on the DP, so it counts in full; only the very
                 # first report from a data plane is a since-CP-start baseline.
-                ledger = _WorkerLedger(
+                ledger = WorkerLedger(
                     baseline={
                         key: getattr(item, key) if first_contact else 0
                         for key in _COUNTER_KEYS
@@ -188,16 +188,16 @@ class DataPlaneCounterLedger:
                 # Note (Jiaxin Deng): the payload is unvalidated on this axis;
                 # fold a repeated key instead of overwriting it, or its counts
                 # vanish with no error.
-                self._retire_worker(item.worker_id, duplicate)
+                self.retire_worker(item.worker_id, duplicate)
             segments[item.incarnation] = ledger
 
         # Note (Jiaxin Deng): a report is a full snapshot for that DP, so a
         # segment missing from it has drained for good: fold it into the stable
         # worker's retired total and drop it, or the map grows per incarnation.
         for (worker_id, _), ledger in carried.items():
-            self._retire_worker(worker_id, ledger)
+            self.retire_worker(worker_id, ledger)
 
-        self._entries[report.dp_index] = _LedgerEntry(
+        self._entries[report.dp_index] = LedgerEntry(
             generation=report.generation,
             counter_seq=report.counter_seq,
             reported_at=now if now is not None else time.monotonic(),
@@ -205,12 +205,12 @@ class DataPlaneCounterLedger:
         )
         return True
 
-    def _retire(self, entry: _LedgerEntry) -> None:
+    def retire(self, entry: LedgerEntry) -> None:
         for worker_id, segments in entry.per_worker.items():
             for ledger in segments.values():
-                self._retire_worker(worker_id, ledger)
+                self.retire_worker(worker_id, ledger)
 
-    def _retire_worker(self, worker_id: str, ledger: _WorkerLedger) -> None:
+    def retire_worker(self, worker_id: str, ledger: WorkerLedger) -> None:
         slot = self._retired.setdefault(worker_id, {key: 0 for key in _COUNTER_KEYS})
         for key in _COUNTER_KEYS:
             slot[key] += ledger.contribution(key)
@@ -219,7 +219,7 @@ class DataPlaneCounterLedger:
             {key: {} for key in _CLASS_COUNTER_KEYS},
         )
         for key in _CLASS_COUNTER_KEYS:
-            _add_counter_maps(class_slot[key], ledger.class_contributions(key))
+            add_counter_maps(class_slot[key], ledger.class_contributions(key))
 
     def totals(self, worker_id: str) -> dict[str, int]:
         totals = dict(self._retired.get(worker_id, {key: 0 for key in _COUNTER_KEYS}))
@@ -240,7 +240,7 @@ class DataPlaneCounterLedger:
         for entry in self._entries.values():
             for ledger in entry.per_worker.get(worker_id, {}).values():
                 for key in _CLASS_COUNTER_KEYS:
-                    _add_counter_maps(totals[key], ledger.class_contributions(key))
+                    add_counter_maps(totals[key], ledger.class_contributions(key))
         return totals
 
     def active_gauge(self, worker_id: str, *, now: float | None = None) -> int:
@@ -270,6 +270,6 @@ class DataPlaneCounterLedger:
         }
 
 
-def _add_counter_maps(target: dict[str, int], source: dict[str, int]) -> None:
+def add_counter_maps(target: dict[str, int], source: dict[str, int]) -> None:
     for service_class, value in source.items():
         target[service_class] = target.get(service_class, 0) + value

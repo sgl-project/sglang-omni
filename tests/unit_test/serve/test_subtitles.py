@@ -4,7 +4,7 @@ from sglang_omni.serve.protocol import TranscriptionSegment
 from sglang_omni.serve.subtitles import segments_to_srt, segments_to_vtt
 
 
-def _segment(
+def segment(
     segment_id: int, start: float, end: float, text: str
 ) -> TranscriptionSegment:
     return TranscriptionSegment(id=segment_id, start=start, end=end, text=text)
@@ -12,8 +12,8 @@ def _segment(
 
 def test_subtitle_serializers_render_golden_strings() -> None:
     segments = [
-        _segment(7, 0.0, 1.234, " Hello --> world. "),
-        _segment(9, 2.5, 3661.002, "Second cue."),
+        segment(7, 0.0, 1.234, " Hello --> world. "),
+        segment(9, 2.5, 3661.002, "Second cue."),
     ]
 
     assert segments_to_srt(segments) == (

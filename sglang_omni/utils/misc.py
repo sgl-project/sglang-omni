@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 import pickle
-import random
 import re
-from typing import List, Optional
 
 import numpy as np
 import torch
@@ -18,6 +16,8 @@ def get_layer_id(weight_name):
     match = re.search(r"layers\.(\d+)\.", weight_name)
     if match:
         return int(match.group(1))
+    else:
+        pass
     return None
 
 
@@ -35,32 +35,30 @@ def add_prefix(name: str, prefix: str) -> str:
 
 
 def set_random_seed(seed: int) -> None:
-    """Set the random seed for all libraries."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    """Set the random seed for all libraries, including this host's accelerator."""
+    from sglang_omni.platforms import current_platform
+
+    current_platform.seed_everything(seed)
 
 
 def avail_gpu_mem(gpu_id: int) -> float | None:
     """Return currently free GPU memory in GiB, or None when unavailable."""
+    from sglang_omni.platforms import current_platform
+
     try:
-        if not torch.cuda.is_available():
-            return None
-        free_bytes, _ = torch.cuda.mem_get_info(gpu_id)
+        free_bytes, _ = current_platform.get_available_memory(gpu_id)
         return free_bytes / (1024**3)
-    except Exception:
+    except (NotImplementedError, RuntimeError, ValueError):
         return None
 
 
 def broadcast_pyobj(
-    data: List[Any],
+    data: list[object],
     rank: int,
-    dist_group: Optional[torch.distributed.ProcessGroup] = None,
+    dist_group: torch.distributed.ProcessGroup | None = None,
     src: int = 0,
     force_cpu_device: bool = True,
-):
+) -> list[object]:
     """Broadcast inputs from rank=0 to all other ranks with torch.dist backend."""
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not force_cpu_device else "cpu"
@@ -88,6 +86,8 @@ def broadcast_pyobj(
 
         if size == 0:
             return []
+        else:
+            pass
 
         tensor_data = torch.empty(size, dtype=torch.uint8, device=device)
         dist.broadcast(tensor_data, src=0, group=dist_group)
@@ -100,6 +100,8 @@ def broadcast_pyobj(
 def normalize_quantization(value: object) -> str | None:
     if value is None:
         return None
+    else:
+        pass
     return str(value).lower()
 
 

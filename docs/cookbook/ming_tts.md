@@ -226,29 +226,29 @@ Streaming:
 
 | Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | First Audio Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.92% | 0.2023 | 0.955 | 0.4036 | 8.354 | 39.471 |
-| text-only | ZH | 2020 | 0 | 0.67% | 0.2002 | 1.001 | 0.4040 | 7.985 | 39.991 |
-| reference | EN | 1088 | 0 | 1.13% | 0.2369 | 1.053 | 0.5297 | 7.576 | 34.168 |
-| reference | ZH | 2020 | 0 | 0.65% | 0.1997 | 1.146 | 0.4823 | 6.968 | 40.089 |
+| text-only | EN | 1088 | 0 | 0.95% | 0.1620 | 0.764 | 0.3380 | 10.456 | 49.428 |
+| text-only | ZH | 2020 | 0 | 0.64% | 0.1577 | 0.789 | 0.3283 | 10.124 | 50.770 |
+| reference | EN | 1088 | 0 | 1.25% | 0.1942 | 0.863 | 0.4501 | 9.247 | 41.769 |
+| reference | ZH | 2020 | 0 | 0.66% | 0.1659 | 0.953 | 0.4081 | 8.381 | 48.285 |
 
 Non-streaming:
 
 | Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.90% | 0.1824 | 0.859 | 9.284 | 44.000 |
-| text-only | ZH | 2020 | 0 | 0.71% | 0.1737 | 0.864 | 9.244 | 46.169 |
-| reference | EN | 1088 | 0 | 1.21% | 0.2045 | 0.907 | 8.802 | 39.709 |
-| reference | ZH | 2020 | 0 | 0.64% | 0.1657 | 0.948 | 8.425 | 48.396 |
+| text-only | EN | 1088 | 0 | 0.95% | 0.1413 | 0.667 | 11.965 | 56.721 |
+| text-only | ZH | 2020 | 0 | 0.64% | 0.1335 | 0.668 | 11.959 | 60.040 |
+| reference | EN | 1088 | 0 | 1.26% | 0.1573 | 0.696 | 11.469 | 51.688 |
+| reference | ZH | 2020 | 0 | 0.67% | 0.1254 | 0.718 | 11.127 | 63.931 |
 
-All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.40-0.53 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.21%, and the worst corpus CER was 0.71%.
+All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.33-0.45 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.26%, and the worst corpus CER was 0.67%.
 
 Streaming playback continuity:
 
 | Slice | Lang | Scored | N/A | Underrun P95 (s) | Underrun P99 (s) | C50 | C100 | C200 |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1087 | 1 | 0.0000 | 0.0000 | 99.91% | 99.91% | 100.00% |
+| text-only | EN | 1088 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 | text-only | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
-| reference | EN | 1072 | 16 | 0.0000 | 0.0000 | 99.81% | 99.91% | 100.00% |
+| reference | EN | 1072 | 16 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 | reference | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 
 `N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score. Every scored slice has zero P95 and P99 measured playback underrun.

@@ -90,20 +90,20 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import statistics
 import time
 
 import requests
 
-from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
-from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.eval.asr_profiling import (
-    UtilizationSampler,
+from benchmarks.benchmarker.fingerprint import (
     collect_environment_fingerprint,
     collect_server_identity,
-    run_profiled_pass,
 )
+from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.eval.asr_profiling import UtilizationSampler, run_profiled_pass
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
@@ -111,6 +111,7 @@ from benchmarks.tasks.asr import (
     build_asr_eval_results,
     run_asr_transcription,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
 
@@ -773,6 +774,11 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     concurrencies = args.concurrencies
     max_samples = args.max_samples if args.max_samples > 0 else None

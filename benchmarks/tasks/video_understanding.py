@@ -15,6 +15,7 @@ from typing import Any, TypedDict
 
 import aiohttp
 
+from benchmarks.benchmarker.conditions import sampling_seed_field
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
 from benchmarks.benchmarker.utils import get_wav_duration
@@ -116,6 +117,7 @@ def make_video_send_fn(
     enable_audio_input: bool = False,
     audio_output_dir: str | None = None,
     fixed_prompt: str | None = None,
+    seed: int | None = None,
 ) -> SendFn:
     modalities = ["text", "audio"] if audio_output_dir else ["text"]
 
@@ -137,6 +139,7 @@ def make_video_send_fn(
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
+            **sampling_seed_field(seed),
         }
         if enable_audio_input:
             assert isinstance(sample, VideoAMMESample)
