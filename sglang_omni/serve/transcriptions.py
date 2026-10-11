@@ -293,6 +293,7 @@ async def transcribe_planned_upload(
             segment_timestamps=segment_timestamps,
         )
         result = await speech_to_text.complete_speech_to_text_request(
+            request,
             client,
             gen_req,
             request_id=request_id,

@@ -60,8 +60,7 @@ and quitting stops it.
   - On stdin, `{"command":"shutdown"}` makes it reply `stopped` and exit.
   - End of stdin, which happens when Voxt quits or crashes, also stops it, and so does a termination signal.
   - It is a single process, so stopping it leaves nothing behind.
-- The server API is the same as the reference Python server
-  (`sglang_omni_mlx.qwen3_asr.server`):
+- The Qwen3-ASR server API:
   - `/health` with `request_states`;
   - `/v1/models`;
   - `/v1/audio/transcriptions` (JSON or SSE);

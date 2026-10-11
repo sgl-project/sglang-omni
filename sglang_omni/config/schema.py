@@ -591,6 +591,10 @@ class PipelineConfig(BaseModel):
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None
     is_realtime_only: ClassVar[bool] = False
+    # Import path of the function that builds, from this config, the chat or
+    # transcription request the server sends itself before it reports ready;
+    # None skips the warmup.
+    server_warmup_request_factory: ClassVar[str | None] = None
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float | None] = None
     min_tail_s: ClassVar[float] = 0.5
