@@ -19,10 +19,15 @@ from benchmarks.duplex.fdb_v15.common import (
     NCCL_PORT_END,
     load_settings,
 )
+from benchmarks.duplex.fdb_v15.generate import generate
+from benchmarks.duplex.fdb_v15.selection import SampleSelection
 from benchmarks.duplex.fdb_v15.servers import model_server_command
 from sglang_omni.cli import app
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
-from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
+from sglang_omni.models.minicpm_o.native_config import (
+    DEFAULT_MAX_SESSIONS,
+    MiniCPMODuplexPipelineConfig,
+)
 from sglang_omni.utils.port_claim import claim_tcp_port, release_tcp_port
 
 CLAIM_BASE_PORT = 25100
@@ -103,6 +108,21 @@ def test_gpu_without_visible_devices_still_offsets_ports(
     settings = load_settings("isolation")
     assert settings.gpu == "1"
     assert settings.server_port == DEFAULT_SERVER_PORT + JOB_PORT_STRIDE
+
+
+def test_generate_refuses_more_shards_than_the_server_admits(
+    clean_job_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("FDB_WORK", str(tmp_path / "fdb"))
+    settings = load_settings("isolation")
+    num_shards = DEFAULT_MAX_SESSIONS + 1
+    with pytest.raises(
+        SystemExit,
+        match=f"--num-shards {num_shards} exceeds the model server's max_sessions "
+        f"{DEFAULT_MAX_SESSIONS}",
+    ):
+        generate(settings, 1, SampleSelection(per_subset=1), num_shards=num_shards)
+    assert not (tmp_path / "fdb").exists()
 
 
 def test_judge_ports_stay_above_the_nccl_claim_range() -> None:

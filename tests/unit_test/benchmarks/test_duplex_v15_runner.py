@@ -6,6 +6,7 @@ import asyncio
 import base64
 import itertools
 import json
+from http import HTTPStatus
 from pathlib import Path
 
 import numpy as np
@@ -14,9 +15,10 @@ import soundfile
 import websockets
 from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
+from websockets.http11 import Request, Response
 
 from benchmarks.duplex import v15_runner
-from benchmarks.duplex.client import PACKET_MS
+from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
 from benchmarks.duplex.v15_runner import run_samples
@@ -592,6 +594,142 @@ def test_run_samples_rejects_timeouts_past_the_session_deadline(
                 server=SERVER,
                 dataset_revision="fixture",
                 timeout_s=230.5,
+            )
+        )
+    assert not (tmp_path / "never").exists()
+
+
+# note (wenyao): the real server counts a closing session until its teardown ends.
+SESSION_TEARDOWN_HOLD_S = 1.5
+
+
+class CappedPeerServer:
+    """Fake native peers behind a session cap, counting what is open at once."""
+
+    def __init__(self, capacity: int | None = None, hold_s: float = 0.0) -> None:
+        self.capacity = capacity
+        self.hold_s = hold_s
+        self.open_count = 0
+        self.peak_open = 0
+        self.denials = 0
+
+    def process_request(
+        self, connection: ServerConnection, request: Request
+    ) -> Response | None:
+        if self.capacity is not None and self.open_count >= self.capacity:
+            self.denials += 1
+            return connection.respond(
+                HTTPStatus.SERVICE_UNAVAILABLE, "connection capacity exhausted\n"
+            )
+        else:
+            self.open_count += 1
+            self.peak_open = max(self.peak_open, self.open_count)
+            return None
+
+    async def handler(self, websocket: ServerConnection) -> None:
+        try:
+            await DuplexPeer().handler(websocket)
+        finally:
+            await asyncio.sleep(self.hold_s)
+            self.open_count -= 1
+
+    async def record(self, dataset: Path, output: Path, **kwargs) -> dict:
+        async with websockets.serve(
+            self.handler, "127.0.0.1", 0, process_request=self.process_request
+        ) as server:
+            port = server.sockets[0].getsockname()[1]
+            return await run_samples(
+                dataset,
+                url=f"ws://127.0.0.1:{port}/v1/realtime",
+                output=output,
+                server=SERVER,
+                dataset_revision="fixture",
+                timeout_s=5.0,
+                **kwargs,
+            )
+
+
+def test_run_samples_keeps_at_most_concurrency_sessions_open(tmp_path: Path) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    peer_server = CappedPeerServer()
+
+    result = asyncio.run(peer_server.record(dataset, output, concurrency=2))
+
+    assert peer_server.peak_open == 2 and peer_server.denials == 0
+    assert result["summary"]["variants"]["pass"] == 8
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["config"]["concurrency"] == 2
+    sessions = [
+        variant["session"]
+        for sample in result["samples"]
+        for variant in sample["variants"].values()
+    ]
+    assert {session["open_sessions_at_start"] for session in sessions} == {0, 1}
+    assert all(session["finished_s"] > session["started_s"] for session in sessions)
+    load = result["load"]
+    assert load["concurrency"] == 2
+    assert load["initial_delay_s"]["count"] == 8
+    assert load["initial_delay_s"]["p50"] <= load["initial_delay_s"]["p90"]
+    assert load["initial_delay_s"]["p90"] <= load["initial_delay_s"]["max"]
+    assert load["input_pacing_violations"] == 0
+    assert load["max_input_pacing_deviation_s"] <= PACKET_MS / 1000
+    assert load["admission_denied_variants"] == 0
+    assert load["variants_passed"] == 8
+    assert load["recording_wall_s"] == max(
+        session["finished_s"] for session in sessions
+    )
+    assert load["recording_wall_s"] < 4.5
+    assert json.loads((output / "run.json").read_text()) == result
+
+
+def test_run_samples_accounts_sessions_the_server_refuses_past_its_cap(
+    tmp_path: Path,
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    peer_server = CappedPeerServer(capacity=1, hold_s=SESSION_TEARDOWN_HOLD_S)
+
+    result = asyncio.run(
+        peer_server.record(
+            dataset,
+            output,
+            sample_ids=["user_interruption/1", "user_backchannel/1"],
+            concurrency=2,
+        )
+    )
+
+    assert result["status"] == "complete"
+    assert peer_server.peak_open == 1 and peer_server.denials >= 4
+    variants = [
+        variant
+        for sample in result["samples"]
+        for variant in sample["variants"].values()
+    ]
+    denied = [variant for variant in variants if variant["status"] == "fail"]
+    assert denied and all(
+        any("admission denied" in violation for violation in variant["violations"])
+        and variant["output"]["admission_denials"] == ADMISSION_RETRIES
+        for variant in denied
+    )
+    assert all(
+        variant["status"] == "pass" for variant in variants if variant not in denied
+    )
+    assert result["load"]["admission_denied_variants"] == len(denied)
+    assert result["load"]["variants_passed"] == len(variants) - len(denied)
+
+
+def test_run_samples_rejects_a_concurrency_below_one(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="concurrency must be at least 1"):
+        asyncio.run(
+            run_samples(
+                tmp_path,
+                url="ws://127.0.0.1:1/v1/realtime",
+                output=tmp_path / "never",
+                server=SERVER,
+                dataset_revision="fixture",
+                timeout_s=5.0,
+                concurrency=0,
             )
         )
     assert not (tmp_path / "never").exists()

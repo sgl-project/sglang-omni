@@ -41,6 +41,7 @@ def record(args: argparse.Namespace) -> int:
             variants=VARIANTS,
             kind=RUN_KIND,
             profile=args.profile,
+            concurrency=args.concurrency,
         )
     )
     manifest, _, _ = load_run(args.output)
@@ -94,6 +95,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     record_parser.add_argument(
         "--timeout", type=float, default=120.0, help="Per-session deadline in seconds"
+    )
+    record_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Sessions kept open at once; must not exceed the server's max_sessions, "
+        "past it the server answers HTTP 503 and those sessions fail",
     )
     selection = record_parser.add_mutually_exclusive_group()
     selection.add_argument(

@@ -398,10 +398,11 @@ def test_record_transcribe_and_score_every_task(
             ["record", "--dataset-root", str(dataset), "--url", url]
             + ["--output", str(run), "--server-revision", SERVER_REVISION]
             + ["--model", "nvidia/NVIDIA-NemotronLabs-VoiceChat-11B"]
-            + ["--dataset-revision", "fixture", "--timeout", "5"]
+            + ["--dataset-revision", "fixture", "--timeout", "5", "--concurrency", "2"]
         )
     assert code == 1, summary
     assert summary["selected_variants"] == 5
+    assert summary["load"]["concurrency"] == 2
     assert summary["variant_status"] == {"invalid": 1, "pass": 4}
     manifest = json.loads((run / "manifest.json").read_text())
     assert manifest["kind"] == "full-duplex-bench-v1.0"
