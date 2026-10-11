@@ -578,7 +578,7 @@ class Qwen3TTSPromptBuilderMixin:
             codec_prefill_embeds[language_id] = codec_embedding(
                 torch.tensor([codec_prefill], device=self.device, dtype=torch.long)
             )
-        speaker_ids = getattr(self.config, "spk_id", None) or {}
+        speaker_ids = self.config.spk_id or {}
         feedback_buffer = self.model.feedback_buffer
         return Qwen3TTSPromptConstants(
             tts_bos_embed=tts_bos_embed,
