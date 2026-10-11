@@ -69,7 +69,9 @@ class DepformerLayer(nn.Module):
             and torch.version.cuda is not None
             and not torch.is_grad_enabled()
             and x_BD.dtype in CUTE_DTYPES
-            and x_BD.shape == (1, DEPFORMER.dim)
+            and x_BD.ndim == 2
+            and x_BD.shape[0] > 0
+            and x_BD.shape[1] == DEPFORMER.dim
             and spec.ffn_hidden == DEPFORMER.ffn_hidden
             and x_BD.is_contiguous()
             and self.norm1_alpha.is_contiguous()
@@ -124,7 +126,7 @@ class Depformer(nn.Module):
 
     @torch.inference_mode()
     def warmup_pointwise(self) -> None:
-        """Compile the singleton inference kernels before accepting requests."""
+        """Compile the inference kernels for all batch sizes before accepting requests."""
         alpha = self.layers[0].norm1_alpha
         if (
             alpha.is_cuda
@@ -134,8 +136,9 @@ class Depformer(nn.Module):
             and self.spec.dim == DEPFORMER.dim
             and self.spec.ffn_hidden == DEPFORMER.ffn_hidden
         ):
-            hidden_states = alpha.new_zeros(1, self.spec.dim)
-            fused_rms_norm_f32(hidden_states, alpha, self.spec.rms_norm_eps)
+            for batch_size in (1, 4, 8, 16):
+                hidden_states = alpha.new_zeros(batch_size, self.spec.dim)
+                fused_rms_norm_f32(hidden_states, alpha, self.spec.rms_norm_eps)
             fused_silu_gate(alpha.new_zeros(1, 2 * self.spec.ffn_hidden))
         else:
             pass

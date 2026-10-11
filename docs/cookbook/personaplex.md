@@ -88,16 +88,19 @@ The fixed caller-frame budget still determines the number of generated frames.
 ## Depformer pointwise fusion
 
 CUDA inference uses one CuTe DSL kernel per weighted RMSNorm and one per SiLU/gate
-operation for contiguous, singleton tensors at the production dimensions
-(hidden size 1024 and FFN hidden size 2816), in FP32, BF16 or FP16.
+operation for contiguous tensors at the production dimensions (hidden size 1024
+and FFN hidden size 2816), in FP32, BF16 or FP16. Requests in a batch share a
+Depformer pass. RMSNorm processes each batch row independently, and SiLU/gate
+launches blocks across all rows. Dynamic batch dimensions reuse one SiLU/gate
+kernel and four RMSNorm reduction configurations compiled during startup.
 RMSNorm retains FP32 accumulation, epsilon inside the square root,
 the multiplication order `x * (alpha * rsqrt(variance))`, and the final input
 dtype cast. At the production hidden size, its reduction follows the pinned
 PyTorch FP32 mean's accumulation order. SiLU rounds to the projection dtype
 before multiplying by the up projection, including for BF16 and FP16.
-CPU, other devices, gradient-enabled calls, other batch sizes or dimensions,
+CPU, other devices, gradient-enabled calls, empty batches, other dimensions,
 and non-contiguous tensors retain the eager operations. The LM stage warms the
-singleton kernels during startup. Cached TVM FFI launches accept PyTorch
+kernels during startup. Cached TVM FFI launches accept PyTorch
 tensors directly and use the current PyTorch CUDA stream.
 
 ## Known limitations

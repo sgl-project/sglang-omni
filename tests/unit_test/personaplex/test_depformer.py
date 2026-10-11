@@ -252,19 +252,22 @@ def test_each_row_draws_from_its_own_generator():
 @pytest.mark.accelerator
 @CUDA_ONLY
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("batch_size", [1, 2, 3, 4, 7, 8, 15, 16, 32])
 @torch.inference_mode()
 def test_fused_pointwise_preserves_rounding_stream_and_graph(
-    dtype: torch.dtype,
+    dtype: torch.dtype, batch_size: int
 ) -> None:
     torch.manual_seed(42)
     execution_stream = torch.cuda.Stream()
     execution_stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(execution_stream):
         initial_hidden_states = torch.randn(
-            1, DEPFORMER.dim, device="cuda", dtype=dtype
+            batch_size, DEPFORMER.dim, device="cuda", dtype=dtype
         )
         alpha = torch.linspace(-2, 2, DEPFORMER.dim, device="cuda", dtype=torch.float32)
-        gate_up = torch.randn(1, 2 * DEPFORMER.ffn_hidden, device="cuda", dtype=dtype)
+        gate_up = torch.randn(
+            batch_size, 2 * DEPFORMER.ffn_hidden, device="cuda", dtype=dtype
+        )
         activated_states = depformer_module.fused_silu_gate(gate_up)
         torch.testing.assert_close(activated_states, silu_gate(gate_up), rtol=0, atol=0)
         if dtype != torch.float32:
@@ -304,18 +307,23 @@ def test_fused_pointwise_preserves_rounding_stream_and_graph(
 
 @pytest.mark.accelerator
 @CUDA_ONLY
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_cuda_depformer_matches_eager_logits_and_codes(dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("batch_size", [1, 2, 3, 8])
+def test_cuda_depformer_matches_eager_logits_and_codes(
+    dtype: torch.dtype, batch_size: int
+) -> None:
     torch.manual_seed(42)
     model_spec = replace(DEPFORMER, num_layers=1, input_dim=SPEC.input_dim)
     model = Depformer(model_spec).to(device="cuda", dtype=dtype)
     model.eval().requires_grad_(False)
     for parameter in model.parameters():
         nn.init.normal_(parameter, std=0.05)
-    text_tokens = torch.tensor([3], device="cuda")
-    hidden_states = torch.randn(1, model_spec.input_dim, device="cuda", dtype=dtype)
+    text_tokens = torch.arange(batch_size, device="cuda") + 3
+    hidden_states = torch.randn(
+        batch_size, model_spec.input_dim, device="cuda", dtype=dtype
+    )
     forced_codes = torch.full(
-        (1, model_spec.steps), -1, device="cuda", dtype=torch.long
+        (batch_size, model_spec.steps), -1, device="cuda", dtype=torch.long
     )
     captured_logits: list[torch.Tensor] = []
 
@@ -353,10 +361,10 @@ def test_cuda_depformer_matches_eager_logits_and_codes(dtype: torch.dtype) -> No
     [
         (replace(DEPFORMER, dim=SPEC.dim), 1, (1, 1, 1)),
         (replace(DEPFORMER, ffn_hidden=SPEC.ffn_hidden), 1, (1, 1, 1)),
-        (DEPFORMER, 2, (1, 1, 1)),
-        (DEPFORMER, 1, (2, 1, 1)),
-        (DEPFORMER, 1, (1, 2, 1)),
-        (DEPFORMER, 1, (1, 1, 2)),
+        (DEPFORMER, 0, (1, 1, 1)),
+        (DEPFORMER, 2, (2, 1, 1)),
+        (DEPFORMER, 2, (1, 2, 1)),
+        (DEPFORMER, 2, (1, 1, 2)),
     ],
 )
 def test_cuda_layer_keeps_eager_outputs_for_unsupported_inputs(
