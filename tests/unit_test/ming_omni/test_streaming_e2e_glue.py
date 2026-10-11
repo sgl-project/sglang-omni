@@ -156,6 +156,24 @@ def test_thinker_stream_builder_buffers_incomplete_utf8():
     assert msgs2[0].target == "segmenter"
 
 
+def test_thinker_stream_builder_streams_text_after_a_literal_replacement_character():
+    tokenizer = FakeTokenizer()
+    tokenizer.vocab[9] = " �"
+    builder = make_thinker_stream_output_builder(
+        tokenizer=tokenizer,
+        eos_token_id=None,
+    )
+    req_data = make_req_data(make_req())
+
+    deltas = [
+        bytes(message.data.tolist()).decode("utf-8")
+        for token_id in (5, 9, 6, 8)
+        for message in builder("req-6", req_data, make_req_output(token_id))
+    ]
+
+    assert "".join(deltas) == "Hello � world Tail"
+
+
 def test_client_result_builder_merges_decode_with_talker_stream():
     audio_bytes = (0).to_bytes(4, "little") * 8  # 8 float32 zero samples
     merged = {

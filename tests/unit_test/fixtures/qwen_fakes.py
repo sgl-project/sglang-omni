@@ -9,7 +9,11 @@ from typing import Any
 import torch
 from torch import nn
 
+from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
+    Code2WavScheduler,
+)
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -171,3 +175,12 @@ class FakeCode2WavModel:
         samples = int(codes.shape[-1]) * self.total_upsample - self.output_deficit
         base = codes.to(dtype=torch.float32).flatten(1).sum(dim=1).view(-1, 1, 1)
         return torch.arange(samples, dtype=torch.float32).view(1, 1, samples) + base
+
+
+def deliver_code2wav_chunk(
+    scheduler: Code2WavScheduler, request_id: str, item: StreamItem
+) -> None:
+    """One chunk in the serving loop's order: ingested, then every ready window decoded."""
+    scheduler.handle_stream_chunk(request_id, item)
+    while scheduler.has_ready_work():
+        scheduler.run_ready_step()

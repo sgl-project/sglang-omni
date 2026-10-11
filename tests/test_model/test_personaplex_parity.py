@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Greedy prefix comparison and repeatability checks; see personaplex.md.
+"""Opt-in greedy prefix and repeatability checks against NVIDIA/personaplex.
+
+Needs a separate reference environment; set it up as "Reference parity" in
+docs/cookbook/personaplex.md describes. Skips unless PERSONAPLEX_REFERENCE_SOURCE
+and PERSONAPLEX_REFERENCE_PYTHON are set.
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import base64
 import json
-import logging
 import os
 import shlex
 import subprocess
@@ -16,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pytest
 import soundfile
 import torch
 
@@ -37,21 +40,15 @@ from sglang_omni.models.personaplex.prompts import (
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.proto.request import EXPLICIT_GENERATION_PARAMS_KEY
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.utils.logging import configure_dependency_loggers
+
+pytestmark = pytest.mark.accelerator
 
 DEFAULT_CHECKPOINT = "nvidia/personaplex-7b-v1"
 # The reference README's seed; irrelevant under --greedy, kept so the command matches.
 REFERENCE_SEED = 42424242
 # The reference maps BOS and EOS through the tokenizer, so they arrive as <s> and </s>.
 REFERENCE_TEXT_MARKERS = frozenset({"EPAD", "BOS", "EOS", "PAD", "<s>", "</s>"})
-DEFAULT_ATOL = 1e-4  # a few int16 steps, for rounding between the two codec paths
-
-
-def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise RuntimeError(message)
-    else:
-        pass
+ATOL = 1e-4  # a few int16 steps, for rounding between the two codec paths
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -78,6 +75,15 @@ CASES = {
         min_identical_frames=100,
     ),
 }
+
+
+@dataclass(frozen=True, kw_only=True)
+class ParityInputs:
+    assets: Path
+    checkpoint: Path
+    reference_python: str
+    reference_repo: str
+    stage_args: list[str]
 
 
 @dataclass(kw_only=True)
@@ -153,23 +159,53 @@ def text_prompt_for(case: ParityCase, assets: Path) -> str | None:
     )
 
 
-def reference_outputs(
-    assets_dir: Path, checkpoint: Path, *, python: str, root: Path, repo: str
+@pytest.fixture(scope="module")
+def parity_inputs() -> ParityInputs:
+    source = os.environ.get("PERSONAPLEX_REFERENCE_SOURCE")
+    python = os.environ.get("PERSONAPLEX_REFERENCE_PYTHON")
+    if not source or not python:
+        pytest.skip(
+            "Set PERSONAPLEX_REFERENCE_SOURCE and PERSONAPLEX_REFERENCE_PYTHON "
+            "for reference parity"
+        )
+    else:
+        pass
+    if not torch.cuda.is_available():
+        pytest.skip("PersonaPlex reference parity requires CUDA")
+    else:
+        pass
+    checkpoint = os.environ.get("PERSONAPLEX_PARITY_CHECKPOINT", DEFAULT_CHECKPOINT)
+    return ParityInputs(
+        assets=Path(source).expanduser().resolve() / "assets" / "test",
+        checkpoint=Path(resolve_checkpoint(checkpoint)),
+        reference_python=python,
+        reference_repo=os.environ.get("PERSONAPLEX_REFERENCE_REPO", DEFAULT_CHECKPOINT),
+        stage_args=shlex.split(os.environ.get("PERSONAPLEX_STAGE_ARGS", "")),
+    )
+
+
+@pytest.fixture(scope="module")
+def references(
+    parity_inputs: ParityInputs, tmp_path_factory: pytest.TempPathFactory
 ) -> dict[str, tuple[np.ndarray, list[str]]]:
-    """Generate reference outputs before allocating the port on the GPU."""
-    source = assets_dir.parents[1]
+    """Reference outputs, generated before the port takes the GPU."""
+    assets = parity_inputs.assets
+    checkpoint = parity_inputs.checkpoint
+    source = assets.parents[1]
+    root = tmp_path_factory.mktemp("personaplex_reference")
+    print(f"\nreference outputs and logs: {root}")
     (mimi_weight,) = checkpoint.glob(MIMI_WEIGHTS_GLOB)
     outputs = {}
     for name, case in CASES.items():
         output = root / name
         voice = resolve_voice_path(checkpoint, case.voice).resolve()
-        prompt = text_prompt_for(case, assets_dir) or DEFAULT_TEXT_PROMPT
+        prompt = text_prompt_for(case, assets) or DEFAULT_TEXT_PROMPT
         command = [
-            python,
+            parity_inputs.reference_python,
             "-m",
             "moshi.offline",
             "--hf-repo",
-            repo,
+            parity_inputs.reference_repo,
             "--moshi-weight",
             str(checkpoint / MOSHI_WEIGHTS_NAME),
             "--mimi-weight",
@@ -183,7 +219,7 @@ def reference_outputs(
             "--text-prompt",
             prompt,
             "--input-wav",
-            str(assets_dir / case.input_wav),
+            str(assets / case.input_wav),
             "--greedy",
             "--seed",
             str(REFERENCE_SEED),
@@ -209,124 +245,15 @@ def reference_outputs(
     return outputs
 
 
-def compare_greedy(
-    name: str,
-    reply: Reply,
-    reference: tuple[np.ndarray, list[str]],
-    assets_dir: Path,
-    *,
-    atol: float,
-) -> None:
-    case = CASES[name]
-    ref_audio, ref_pieces = reference
-
-    expected_samples = read_wav(assets_dir / case.input_wav).size
-    check(
-        reply.audio.size == ref_audio.size == expected_samples,
-        f"{name}: expected {expected_samples} samples, got "
-        f"port={reply.audio.size}, reference={ref_audio.size}",
-    )
-    expected_frames = (expected_samples + SAMPLES_PER_FRAME - 1) // SAMPLES_PER_FRAME
-    check(
-        len(ref_pieces) == expected_frames,
-        f"{name}: reference wrote {len(ref_pieces)} text frames, expected {expected_frames}",
-    )
-    parity = compare_frames(reply.audio, ref_audio, atol)
-    ref_text_prefix = reference_text(ref_pieces, parity.identical_frames)
-    port_text = normalize_text(reply.text)
-
-    diverged = parity.identical_frames < parity.total_frames
-    print(
-        f"\n[{name}] audio identical for the first {parity.identical_frames} of "
-        f"{parity.total_frames} frames ({len(ref_pieces)} reference text frames), "
-        + (
-            f"first divergence at frame {parity.identical_frames}"
-            if diverged
-            else "no divergence"
-        )
-        + f", max diff before divergence {parity.max_diff_before_divergence:.2e}"
-    )
-    print(f"[{name}] reference text up to divergence: {ref_text_prefix!r}")
-    print(f"[{name}] reference text, full: {reference_text(ref_pieces)!r}")
-    print(f"[{name}] port text: {port_text!r}")
-
-    check(
-        parity.identical_frames >= case.min_identical_frames,
-        f"{name}: only {parity.identical_frames} leading frames identical, "
-        f"expected at least {case.min_identical_frames}",
-    )
-    check(
-        (
-            port_text.startswith(ref_text_prefix)
-            if diverged
-            else port_text == ref_text_prefix
-        ),
-        f"{name}: text differs before the audio divergence at frame "
-        f"{parity.identical_frames}",
-    )
-
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="PersonaPlex greedy comparison.")
-    p.add_argument(
-        "--reference-source",
-        required=True,
-        help="clean NVIDIA/personaplex checkout; its assets/test recordings are used",
-    )
-    p.add_argument(
-        "--reference-python",
-        required=True,
-        help="interpreter of the reference environment (its torch pin differs)",
-    )
-    p.add_argument(
-        "--checkpoint",
-        default=DEFAULT_CHECKPOINT,
-        help="PersonaPlex checkpoint: local directory or resolvable model id",
-    )
-    p.add_argument(
-        "--output-dir",
-        required=True,
-        help="directory that receives the reference outputs and logs",
-    )
-    p.add_argument(
-        "--reference-repo",
-        default=DEFAULT_CHECKPOINT,
-        help="repo the reference CLI uses for its config lookup only",
-    )
-    p.add_argument("--atol", type=float, default=DEFAULT_ATOL)
-    p.add_argument(
-        "--stage-args",
-        default="",
-        help="pipeline overrides, e.g. '--lm.engine.mem_fraction_static 0.5'",
-    )
-    return p.parse_args()
-
-
-async def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
-    configure_dependency_loggers()
-    args = parse_args()
-    assets = Path(args.reference_source).expanduser().resolve() / "assets" / "test"
-    checkpoint = Path(resolve_checkpoint(args.checkpoint))
-    if not torch.cuda.is_available():
-        raise RuntimeError("PersonaPlex parity requires CUDA")
-    else:
-        pass
-    references = reference_outputs(
-        assets,
-        checkpoint,
-        python=args.reference_python,
-        root=Path(args.output_dir).expanduser().resolve(),
-        repo=args.reference_repo,
-    )
-    config = PersonaPlexPipelineConfig(model_path=str(checkpoint))
-    overrides = shlex.split(args.stage_args)
-    if overrides:
+async def generate_replies(parity_inputs: ParityInputs) -> dict[str, Reply]:
+    """Every reply the tests compare, from one pipeline started once."""
+    assets = parity_inputs.assets
+    config = PersonaPlexPipelineConfig(model_path=str(parity_inputs.checkpoint))
+    if parity_inputs.stage_args:
         manager = ConfigManager(config)
-        config = manager.merge_config(manager.parse_extra_args(overrides))
+        config = manager.merge_config(
+            manager.parse_extra_args(parity_inputs.stage_args)
+        )
     else:
         pass
     runner = MultiProcessPipelineRunner(config)
@@ -373,7 +300,7 @@ async def main() -> None:
             result = await client.completion(
                 request, request_id=f"parity-{request_number}", audio_format="pcm"
             )
-            check(result.audio is not None, "PersonaPlex returned no audio")
+            assert result.audio is not None, "PersonaPlex returned no audio"
             blob = result.audio.data
             pcm = base64.b64decode(blob) if isinstance(blob, str) else blob
             return Reply(
@@ -381,36 +308,92 @@ async def main() -> None:
                 audio=np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0,
             )
 
-        replies = {}
-        for name in CASES:
-            replies[name] = await generate_reply(name, greedy=True)
-            compare_greedy(
-                name, replies[name], references[name], assets, atol=args.atol
-            )
-        repeated = await generate_reply("assistant", greedy=True)
-        check(
-            repeated.text == replies["assistant"].text
-            and np.array_equal(repeated.audio, replies["assistant"].audio),
-            "greedy replies differ between two runs",
+        replies = {name: await generate_reply(name, greedy=True) for name in CASES}
+        replies["assistant_repeat"] = await generate_reply("assistant", greedy=True)
+        replies["seed_1234"] = await generate_reply("service", greedy=False, seed=1234)
+        replies["seed_1234_repeat"] = await generate_reply(
+            "service", greedy=False, seed=1234
         )
-        seeded = await generate_reply("service", greedy=False, seed=1234)
-        repeated = await generate_reply("service", greedy=False, seed=1234)
-        other = await generate_reply("service", greedy=False, seed=1235)
-        check(
-            repeated.text == seeded.text
-            and np.array_equal(repeated.audio, seeded.audio),
-            "same-seed replies differ",
-        )
-        check(
-            not np.array_equal(other.audio, seeded.audio),
-            "different seeds produced identical audio",
-        )
-        print(
-            "Greedy prefix checks and request reproducibility checks passed; this is not full-output parity."
-        )
+        replies["seed_1235"] = await generate_reply("service", greedy=False, seed=1235)
+        return replies
     finally:
         await runner.stop()
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@pytest.fixture(scope="module")
+def replies(parity_inputs: ParityInputs) -> dict[str, Reply]:
+    return asyncio.run(generate_replies(parity_inputs))
+
+
+@pytest.mark.parametrize("name", list(CASES))
+def test_greedy_prefix_matches_reference(
+    name: str,
+    parity_inputs: ParityInputs,
+    references: dict[str, tuple[np.ndarray, list[str]]],
+    replies: dict[str, Reply],
+) -> None:
+    """The leading frames and their text match the reference; not full-output parity."""
+    case = CASES[name]
+    reply = replies[name]
+    ref_audio, ref_pieces = references[name]
+
+    expected_samples = read_wav(parity_inputs.assets / case.input_wav).size
+    assert reply.audio.size == ref_audio.size == expected_samples, (
+        f"{name}: expected {expected_samples} samples, got "
+        f"port={reply.audio.size}, reference={ref_audio.size}"
+    )
+    expected_frames = (expected_samples + SAMPLES_PER_FRAME - 1) // SAMPLES_PER_FRAME
+    assert (
+        len(ref_pieces) == expected_frames
+    ), f"{name}: reference wrote {len(ref_pieces)} text frames, expected {expected_frames}"
+    parity = compare_frames(reply.audio, ref_audio, ATOL)
+    ref_text_prefix = reference_text(ref_pieces, parity.identical_frames)
+    port_text = normalize_text(reply.text)
+
+    diverged = parity.identical_frames < parity.total_frames
+    print(
+        f"\n[{name}] audio identical for the first {parity.identical_frames} of "
+        f"{parity.total_frames} frames ({len(ref_pieces)} reference text frames), "
+        + (
+            f"first divergence at frame {parity.identical_frames}"
+            if diverged
+            else "no divergence"
+        )
+        + f", max diff before divergence {parity.max_diff_before_divergence:.2e}"
+    )
+    print(f"[{name}] reference text up to divergence: {ref_text_prefix!r}")
+    print(f"[{name}] reference text, full: {reference_text(ref_pieces)!r}")
+    print(f"[{name}] port text: {port_text!r}")
+
+    assert parity.identical_frames >= case.min_identical_frames, (
+        f"{name}: only {parity.identical_frames} leading frames identical, "
+        f"expected at least {case.min_identical_frames}"
+    )
+    assert (
+        port_text.startswith(ref_text_prefix)
+        if diverged
+        else port_text == ref_text_prefix
+    ), (
+        f"{name}: text differs before the audio divergence at frame "
+        f"{parity.identical_frames}"
+    )
+
+
+def test_greedy_reply_repeats(replies: dict[str, Reply]) -> None:
+    first, repeat = replies["assistant"], replies["assistant_repeat"]
+    assert first.text == repeat.text and np.array_equal(
+        first.audio, repeat.audio
+    ), "greedy replies differ between two runs"
+
+
+def test_same_seed_repeats(replies: dict[str, Reply]) -> None:
+    seeded, repeat = replies["seed_1234"], replies["seed_1234_repeat"]
+    assert seeded.text == repeat.text and np.array_equal(
+        seeded.audio, repeat.audio
+    ), "same-seed replies differ"
+
+
+def test_different_seed_differs(replies: dict[str, Reply]) -> None:
+    assert not np.array_equal(
+        replies["seed_1235"].audio, replies["seed_1234"].audio
+    ), "different seeds produced identical audio"

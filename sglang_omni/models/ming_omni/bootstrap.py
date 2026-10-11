@@ -466,7 +466,7 @@ def make_thinker_stream_output_builder(
 
         decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
         # Buffer until the trailing multi-byte char completes.
-        if "\ufffd" in decoded:
+        if decoded.endswith("\ufffd"):
             return []
         else:
             pass

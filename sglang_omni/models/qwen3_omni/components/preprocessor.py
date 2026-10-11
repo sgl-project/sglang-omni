@@ -10,7 +10,7 @@ import logging
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal, TypedDict, TypeGuard
+from typing import TypedDict, TypeGuard
 
 import numpy as np
 import numpy.typing as npt
@@ -39,15 +39,21 @@ from sglang_omni.preprocessing import (
     ensure_chat_template,
     ensure_image_list_async,
     ensure_video_list_async,
-    normalize_messages,
 )
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     ResourceHTTPConnection,
     await_media_cleanup,
 )
+from sglang_omni.preprocessing.text import (
+    MediaPlaceholderPart,
+    TextContentPart,
+    split_content_parts,
+)
+from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
+from sglang_omni.utils.audio import AudioDecodeError
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +68,6 @@ class VideoProcessorKwargs(TypedDict, total=False):
     seconds_per_chunk: float
     position_id_per_seconds: float
     device: str
-
-
-class MediaPlaceholderPart(TypedDict):
-    type: Literal["image", "video", "audio"]
-
-
-class TextContentPart(TypedDict):
-    type: Literal["text"]
-    text: object
 
 
 class ProcessorKwargs(TypedDict, total=False):
@@ -146,6 +143,18 @@ def merge_extracted_video_audio(
     return [*extracted_audios, *explicit], True
 
 
+def with_content_media(content_urls: list[str], top_level: object) -> object:
+    """Content-part media first, then the top-level field's: their placeholder order."""
+    if not content_urls:
+        return top_level
+    elif isinstance(top_level, list):
+        return [*content_urls, *top_level]
+    elif top_level is not None:
+        return [*content_urls, top_level]
+    else:
+        return list(content_urls)
+
+
 # Special-token attributes the HF Qwen3OmniMoeProcessor reads off the tokenizer.
 _QWEN3_OMNI_SPECIAL_TOKEN_KEYS = (
     "image_token",
@@ -204,6 +213,42 @@ DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 QWEN3_OMNI_CHAT_TEMPLATE_FALLBACK_MODEL = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # U+1F82 decomposes into four code points, the most that NFC recomposes into one.
 MAX_NFC_COMPOSITION_LENGTH = 4
+
+LANGUAGE_CODE_TO_NAME: dict[str, str] = {
+    "ar": "Arabic",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+    "nl": "Dutch",
+    "en": "English",
+    "fr": "French",
+    "de": "German",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ms": "Malay",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "es": "Spanish",
+    "tr": "Turkish",
+    "ur": "Urdu",
+    "vi": "Vietnamese",
+}
+LANGUAGE_NAME_BY_CASEFOLD: dict[str, str] = {
+    name.casefold(): name for name in LANGUAGE_CODE_TO_NAME.values()
+}
+
+
+def resolve_language(language: str) -> str:
+    """Normalize Qwen3-Omni language hints while retaining unknown values."""
+    value = language.strip()
+    normalized = value.casefold()
+    if normalized == "cn" or normalized.startswith(("zh-", "zh_")):
+        return "Chinese"
+    else:
+        return LANGUAGE_CODE_TO_NAME.get(normalized) or LANGUAGE_NAME_BY_CASEFOLD.get(
+            normalized, value
+        )
 
 
 def validate_prompt_seq_len(
@@ -425,14 +470,16 @@ class Qwen3OmniPreprocessor:
             # Only inject placeholders into the last user message
             if i == len(messages) - 1 and role == "user":
                 content_parts: list[MediaPlaceholderPart | TextContentPart] = []
-                # Placeholders come BEFORE text (Qwen3-Omni format)
                 for _ in range(num_images):
                     content_parts.append({"type": "image"})
                 for _ in range(num_videos):
                     content_parts.append({"type": "video"})
                 for _ in range(num_audios):
                     content_parts.append({"type": "audio"})
-                content_parts.append({"type": "text", "text": content})
+                if isinstance(content, list):
+                    content_parts = [*content, *content_parts]
+                else:
+                    content_parts.append({"type": "text", "text": content})
                 result.append({"role": role, "content": content_parts})
             else:
                 result.append(msg)
@@ -609,6 +656,10 @@ class Qwen3OmniPreprocessor:
             return self.preprocess_train_inputs(payload, inputs)
         else:
             pass
+        if isinstance(inputs, list):
+            inputs = {"messages": inputs}
+        else:
+            pass
         if isinstance(inputs, dict):
             multimodal_train_inputs = inputs.get("multimodal_train_inputs")
             if multimodal_train_inputs is not None:
@@ -619,7 +670,7 @@ class Qwen3OmniPreprocessor:
                 )
             else:
                 pass
-            messages = inputs.get("messages", [])
+            messages, content_media = split_content_parts(inputs.get("messages", []))
             raw_images = inputs.get("images")
             raw_videos = inputs.get("videos")
             if raw_videos is None:
@@ -632,6 +683,40 @@ class Qwen3OmniPreprocessor:
             else:
                 pass
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
+            audio_bytes = inputs.get("audio_bytes")
+            if audio_bytes is not None:
+                try:
+                    prepared_audio = await asyncio.to_thread(
+                        prepare_audio,
+                        payload,
+                        source_name="Qwen3-Omni",
+                        target_sample_rate=audio_target_sr,
+                    )
+                except AudioDecodeError as exc:
+                    raise ValueError(
+                        "Qwen3-Omni could not decode the uploaded audio; "
+                        "provide a valid audio file."
+                    ) from exc
+                transcription_prompt = (
+                    "Please transcribe the speech in the audio verbatim. "
+                    "Output only the transcription in its original language, "
+                    "without explanations."
+                )
+                language = str(payload.request.params.get("language") or "").strip()
+                if language:
+                    language = resolve_language(language)
+                    transcription_prompt += f"\nThe spoken language is {language}."
+                else:
+                    pass
+                context = str(payload.request.params.get("prompt") or "").strip()
+                if context:
+                    transcription_prompt += f"\nTranscription context: {context}"
+                else:
+                    pass
+                messages = [{"role": "user", "content": transcription_prompt}]
+                raw_audios = [prepared_audio.waveform]
+            else:
+                pass
             video_fps = inputs.get("video_fps", self.default_video_fps)
             video_max_frames = inputs.get(
                 "video_max_frames",
@@ -686,10 +771,14 @@ class Qwen3OmniPreprocessor:
             else:
                 pass
 
+            request_images = with_content_media(content_media.images, raw_images)
+            request_videos = with_content_media(content_media.videos, raw_videos)
+            request_audios = with_content_media(content_media.audios, raw_audios)
+
             # Use async versions for concurrent loading
             # If we need audio from video, extract it during video loading to avoid duplicate downloads
             extract_audio_from_video_flag = bool(
-                use_audio_in_video and raw_videos is not None
+                use_audio_in_video and request_videos is not None
             )
 
             # Worker requests run on separate event loops. Keep pooled HTTP
@@ -697,9 +786,9 @@ class Qwen3OmniPreprocessor:
             connection = ResourceHTTPConnection()
             connector = MultiModalResourceConnector(connection=connection)
             loaders = [
-                ensure_image_list_async(raw_images, media_connector=connector),
+                ensure_image_list_async(request_images, media_connector=connector),
                 ensure_video_list_async(
-                    raw_videos,
+                    request_videos,
                     fps=resolved_video_fps,
                     max_frames=resolved_video_max_frames,
                     min_pixels=resolved_video_min_pixels,
@@ -710,7 +799,9 @@ class Qwen3OmniPreprocessor:
                     resource_connector=connector,
                 ),
                 ensure_audio_list_async(
-                    raw_audios, target_sr=audio_target_sr, resource_connector=connector
+                    request_audios,
+                    target_sr=audio_target_sr,
+                    resource_connector=connector,
                 ),
             ]
             tasks = [asyncio.create_task(loader) for loader in loaders]
@@ -742,30 +833,35 @@ class Qwen3OmniPreprocessor:
                 else None
             )
         else:
-            messages = inputs
-            images = []
-            videos = []
-            audios = []
-            audio_target_sr = 16000
-            video_fps = self.default_video_fps
-            video_max_frames = self.default_video_max_frames
-            video_min_pixels = self.default_video_min_pixels
-            video_max_pixels = self.default_video_max_pixels
-            video_total_pixels = self.default_video_total_pixels
-            sampled_video_fps = None
-            use_audio_in_video = None
-            effective_use_audio_in_video = None
-            video_seconds_per_chunk = None
-            video_position_id_per_seconds = None
-            audio_from_video = False
-            num_explicit_audios = 0
-            resolved_video_fps = None
-            resolved_video_max_frames = None
-            resolved_video_min_pixels = None
-            resolved_video_max_pixels = None
-            resolved_video_total_pixels = None
-            resolved_video_seconds_per_chunk = None
-            resolved_video_position_id_per_seconds = None
+            raise ValueError("Preprocessing expects a list of chat messages")
+
+        # Insert placeholders:
+        # - Explicit audio files get independent audio placeholders
+        # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
+        messages_mm = self.build_multimodal_messages(
+            messages,
+            num_images=len(images) - len(content_media.images),
+            num_audios=num_explicit_audios,
+            num_videos=len(videos) - len(content_media.videos),
+        )
+        if audio_from_video and (content_media.audios or content_media.videos):
+            # note (ratish): the processor reads one audio per audio placeholder and per video
+            # placeholder in text order; only content parts can put an audio before a video.
+            video_audios = iter(audios[: len(videos)])
+            placeholder_audios = iter(audios[len(videos) :])
+            audios = [
+                (
+                    next(video_audios)
+                    if part["type"] == "video"
+                    else next(placeholder_audios)
+                )
+                for message in messages_mm
+                if isinstance(message["content"], list)
+                for part in message["content"]
+                if part["type"] in ("audio", "video")
+            ]
+        else:
+            pass
 
         # Note (wenyao): URLs can change content and sampled hashes can miss edits,
         # so audio cache keys include every decoded sample, including video tracks.
@@ -774,17 +870,6 @@ class Qwen3OmniPreprocessor:
         image_cache_key = compute_image_cache_key(images)
         video_cache_key = compute_video_cache_key(videos)
 
-        messages_norm = normalize_messages(messages)
-        # Insert placeholders:
-        # - Explicit audio files get independent audio placeholders
-        # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
-        num_audios_for_placeholder = num_explicit_audios
-        messages_mm = self.build_multimodal_messages(
-            messages_norm,
-            num_images=len(images),
-            num_audios=num_audios_for_placeholder,
-            num_videos=len(videos),
-        )
         prompt_text = self.processor.apply_chat_template(
             messages_mm,
             add_generation_prompt=True,

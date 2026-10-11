@@ -36,7 +36,7 @@ def export_runs(
     trace_format: str | None = None,
 ) -> dict[str, JsonValue]:
     """Export every selected variant, retaining missing and invalid outcomes."""
-    capture_format = resolve_trace_format(engine, trace_format)
+    capture_format = resolve_trace_format(trace_format)
     output = output.resolve()
     for run in runs:
         if output.is_relative_to(run.resolve()):
@@ -116,7 +116,7 @@ def export_runs(
                 eligible=not reasons,
                 reasons=reasons,
                 flags=[k for k, v in record.get("boundary", {}).items() if v is True],
-                protocol_diagnostics=diagnostics(run, state, capture_format),
+                protocol_diagnostics=diagnostics(run, state),
             )
             if reasons:
                 record.pop("output", None)

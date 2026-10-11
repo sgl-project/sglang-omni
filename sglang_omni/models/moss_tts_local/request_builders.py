@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -20,8 +21,8 @@ from sglang_omni.models.moss_tts.hf_loading import (
     MossRequestProcessor,
     MossUserMessage,
 )
+from sglang_omni.models.moss_tts.reference_encoder import MossReferenceEncoder
 from sglang_omni.models.moss_tts.request_builders import (
-    _DATA_URI_RE,
     MOSS_TTS_DEFAULT_MAX_NEW_TOKENS,
     build_row_cache_key_ids,
     derive_moss_tts_sampling_seed,
@@ -42,12 +43,7 @@ from sglang_omni.scheduling.types import ARRequestData
 if TYPE_CHECKING:
 
     from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
-    from sglang_omni.models.moss_tts_local.stages import (
-        BatchedReferenceEncoder,
-        MossLocalReferenceEncoder,
-    )
 
-    ReferenceEncoder = BatchedReferenceEncoder | MossLocalReferenceEncoder
 else:
     pass
 
@@ -109,27 +105,49 @@ class MossTTSLocalPreparedRequest:
 @dataclass
 class PreprocessingContext:
     processor: MossRequestProcessor[MossLocalReferences]
-    reference_encoder: ReferenceEncoder | None = None
+    reference_encoder: MossReferenceEncoder | None = None
 
 
 _QUEUE: PreparedRequestQueue[PreprocessingContext, MossTTSLocalPreparedRequest] = (
     PreparedRequestQueue()
 )
+CONTEXT_LIFECYCLE_LOCK = threading.Lock()
 MOSS_STREAM_TRANSPORT_BATCH_FRAMES = 5
+
+
+def close_moss_tts_local_preprocessing_context(
+    context: PreprocessingContext | None,
+) -> None:
+    if context is not None and context.reference_encoder is not None:
+        context.reference_encoder.close()
+    else:
+        pass
 
 
 def set_moss_tts_local_preprocessing_context(
     *,
     processor: MossRequestProcessor[MossLocalReferences],
-    reference_encoder: ReferenceEncoder | None = None,
+    reference_encoder: MossReferenceEncoder | None = None,
 ) -> None:
-    _QUEUE.set_context(
-        PreprocessingContext(processor=processor, reference_encoder=reference_encoder)
-    )
+    with CONTEXT_LIFECYCLE_LOCK:
+        previous = _QUEUE.snapshot().context
+        _QUEUE.set_context(
+            PreprocessingContext(
+                processor=processor, reference_encoder=reference_encoder
+            )
+        )
+        if previous is not None and previous.reference_encoder is reference_encoder:
+            return
+        else:
+            pass
+        close_moss_tts_local_preprocessing_context(previous)
 
 
 def clear_moss_tts_local_preprocessing_context() -> None:
-    _QUEUE.clear_context()
+    with CONTEXT_LIFECYCLE_LOCK:
+        previous = _QUEUE.snapshot().context
+        _QUEUE.clear_context()
+        close_moss_tts_local_preprocessing_context(previous)
 
 
 def cleanup_prepared_moss_tts_local_request(request_id: str) -> None:
@@ -297,16 +315,12 @@ def build_generation_kwargs(
 def build_processor_message(
     processor: MossRequestProcessor[MossLocalReferences],
     state: MossTTSLocalState,
-    reference_encoder: ReferenceEncoder | None = None,
+    reference_encoder: MossReferenceEncoder | None = None,
 ) -> MossUserMessage:
     ref_audio = state.ref_audio
     reference: MossLocalReferences | None
     if reference_encoder is not None and isinstance(ref_audio, str):
-        if _DATA_URI_RE.match(ref_audio) is None:
-            reference = [reference_encoder.encode(ref_audio)]
-        else:
-            # Data-URI refs through the same LRU (bytes: keyspace).
-            reference = [reference_encoder.encode_data_uri(ref_audio)]
+        reference = [reference_encoder.encode(ref_audio)]
     else:
         reference = reference_for_processor(processor, ref_audio)
     return processor.build_user_message(
@@ -322,7 +336,7 @@ def prepare_moss_tts_local_request(
     payload: StagePayload,
     *,
     processor: MossRequestProcessor[MossLocalReferences],
-    reference_encoder: ReferenceEncoder | None = None,
+    reference_encoder: MossReferenceEncoder | None = None,
 ) -> MossTTSLocalPreparedRequest:
     state = build_moss_tts_local_state(payload)
     message = build_processor_message(processor, state, reference_encoder)

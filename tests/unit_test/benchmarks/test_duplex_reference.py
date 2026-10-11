@@ -213,7 +213,7 @@ def build_trees(tmp: Path) -> dict[str, Path]:
                 "clean_output.wav": [(1.0, 1.6)],
             },
         },
-        "vllm": {
+        "sgl-alt": {
             "user_interruption/1": {"output.wav": [], "clean_output.wav": [(1.7, 2.3)]},
             "background_speech/2": {
                 "output.wav": [(1.1, 1.9)],
@@ -228,7 +228,7 @@ def build_trees(tmp: Path) -> dict[str, Path]:
         for sid, files in inputs.items():
             for name, spans in {**files, **outs[sid]}.items():
                 write_wav(tree / sid / name, spans)
-            clean_ok = not (engine == "vllm" and sid == "background_speech/2")
+            clean_ok = not (engine == "sgl-alt" and sid == "background_speech/2")
             samples.append(
                 {
                     "sample_id": sid,
@@ -544,7 +544,7 @@ def test_phases_end_to_end_resume_and_denominators(
     assert counts["ok"] == len(model.calls) == len(eligible_files) < 14
     out = tmp_path / "out" / "engines"
     silent = json.loads(
-        (out / "vllm/samples/user_interruption/1/output.json").read_text()
+        (out / "sgl-alt/samples/user_interruption/1/output.json").read_text()
     )
     assert silent == {
         "text": "",
@@ -558,7 +558,7 @@ def test_phases_end_to_end_resume_and_denominators(
             {"text": "w1", "timestamp": [2.0, 2.5]},
         ],
     }
-    assert not (out / "vllm/samples/background_speech/2/clean_output.json").exists()
+    assert not (out / "sgl-alt/samples/background_speech/2/clean_output.json").exists()
 
     args, engines, paths, hashes = cli(
         "asr", tmp_path, trees, "--nemo", str(nemo), "--device", "cpu"
@@ -576,10 +576,10 @@ def test_phases_end_to_end_resume_and_denominators(
         "latency_stop_list": [[1.0, 2.2]],
         "latency_resp_list": [],
     }
-    vllm1 = json.loads(
-        (out / "vllm/samples/user_interruption/1/latency_intervals.json").read_text()
+    alt1 = json.loads(
+        (out / "sgl-alt/samples/user_interruption/1/latency_intervals.json").read_text()
     )
-    assert vllm1 == {"latency_stop_list": [], "latency_resp_list": []}
+    assert alt1 == {"latency_stop_list": [], "latency_resp_list": []}
     sgl2 = json.loads(
         (out / "sgl/samples/background_speech/2/latency_intervals.json").read_text()
     )
@@ -655,15 +655,15 @@ def test_phases_end_to_end_resume_and_denominators(
     report = reference_report.render_report(args.out, "sgl")
     assert "manifest and selected sample IDs match" in report
     assert "C_RESPOND" in report and "1 / 1; 100.0%" in report
-    vllm_all = summary["engines"]["vllm"]["all"]
-    assert vllm_all["timing_supplementary_clean"]["status"] == {
+    alt_all = summary["engines"]["sgl-alt"]["all"]
+    assert alt_all["timing_supplementary_clean"]["status"] == {
         "ineligible": 1,
         "ok": 1,
     }
-    assert vllm_all["timing_supplementary_clean"]["ineligible_reasons"] == {
+    assert alt_all["timing_supplementary_clean"]["ineligible_reasons"] == {
         "capture_window_invalid": 1
     }
-    stop = vllm_all["timing_official_overlap"]["official_all_intervals"]["stop"]
+    stop = alt_all["timing_official_overlap"]["official_all_intervals"]["stop"]
     assert (
         stop["samples"],
         stop["zero_interval_samples"],
@@ -683,8 +683,8 @@ def test_phases_end_to_end_resume_and_denominators(
         sgl_stop["mean_s"] == pytest.approx(1.2)
         and sgl_stop["bootstrap_pooled_mean"]["unit_n"] == 2
     )
-    assert vllm_all["behavior"]["status"]["variant_ineligible"] == 1
-    assert vllm_all["asr_files"]["output.wav:ok_empty_transcript"] == 1
+    assert alt_all["behavior"]["status"]["variant_ineligible"] == 1
+    assert alt_all["asr_files"]["output.wav:ok_empty_transcript"] == 1
     sgl_all = summary["engines"]["sgl"]["all"]
     assert sgl_all["behavior"]["status"] == {"stale_request": 1, "valid": 1}
     assert sgl_all["timing_official_overlap"]["manifest_flags"] == {"eof_speech": 1}
