@@ -208,6 +208,8 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
     runner.model_lock = threading.Lock()
     runner.encoder_pool_layout = EncoderPoolLayout.from_model(runner.model)
     runner.encoder_state_pool = None
+    runner.enable_encoder_cuda_graph = False
+    runner.encoder_graph_runner = None
     runner.configure_encoder_state_pool(2)
 
     def decode_rows(

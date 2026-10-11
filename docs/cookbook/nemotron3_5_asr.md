@@ -32,6 +32,8 @@ Tune the ASR stage with `--asr.factory.*` flags:
 | `num_lookahead_tokens` | `3` | Encoder right context; the checkpoint supports `0`, `3`, `6`, and `13` |
 | `max_batch_size` | `8` | Maximum number of requests in a scheduler batch |
 | `max_batch_wait_ms` | `2.0` | Maximum wait to form a batch, in milliseconds |
+| `enable_encoder_cuda_graph` | `true` | Capture steady-state streaming encoder batches at startup on CUDA |
+| `encoder_graph_max_batch_size` | `max_batch_size` | Capture every exact batch size from 1 through this limit, bounded by pool capacity |
 | `session_max_concurrency` | `max(4, max_batch_size)` | Concurrent hooks/ordinary requests per ASR replica |
 | `max_open_sessions` | `64` | Open streams per ASR replica |
 | `max_state_bytes` | `8 GiB` | Total reserved session state budget, excluding shared model weights |
@@ -216,11 +218,37 @@ slots are cleared before another session receives them. Completed sessions keep
 their transcript and RNN-T state until close, but no longer own encoder storage.
 All pool access and slot recycling use the existing serialized model owner.
 
-The pool is the streaming encoder's sole state representation. Encoder execution
-remains eager; tensor slot IDs provide the boundary for subsequent CUDA Graph
-support. Offline transcription continues to use model generation. CPU parity and
-lifecycle tests do not establish GPU performance or real-checkpoint recognition
-accuracy.
+The pool is the streaming encoder's sole state representation on all devices.
+Disable `enable_encoder_cuda_graph` for pooled eager execution. Offline
+transcription continues to use model generation.
+
+### Streaming encoder CUDA graphs
+
+Before the model thread starts, capture every exact batch size up to
+`encoder_graph_max_batch_size` (the scheduler's `max_batch_size` by default),
+bounded by pool capacity. With default limits this captures B8 through B1,
+largest first, using one shared graph memory pool. There is no runtime capture.
+First windows and uncaptured shapes or batch sizes use the pooled eager encoder.
+Capture failures fail startup; disable graphs explicitly to run entirely eager.
+
+Each graph uses the fixed subsequent-window mel length for the configured
+lookahead. History length does not add another bucket: device-side per-slot
+frame counts construct the attention mask inside the graph. Runtime copies mel
+features, prompt IDs, and slot IDs into static inputs. Attention and convolution
+history stay in the persistent pool; their batched gathers and writes, together
+with device frame-count updates, are captured operations. No per-request history
+packing or post-replay cache scatter runs in Python. Pool operations still move
+history data on the device; this is not a zero-copy attention implementation.
+
+The model owner serializes all replays and eager pool access. Only one group in
+each batch can replay; the batch concatenation restores request order and copies
+the borrowed graph output into caller-owned storage before any subsequent replay.
+Shutdown synchronizes and releases graphs before releasing pool storage.
+Graph workspaces and static inputs/outputs
+are additional allocations, outside `max_state_bytes`.
+
+CPU parity and lifecycle tests do not establish GPU performance or
+real-checkpoint recognition accuracy; CUDA replay tests require an NVIDIA GPU.
 
 Setting stream=true on /v1/audio/transcriptions streams the response to a
 complete uploaded file. It does not select native PCM input.

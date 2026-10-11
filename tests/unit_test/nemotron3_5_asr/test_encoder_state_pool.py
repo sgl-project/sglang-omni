@@ -3,14 +3,17 @@
 
 import math
 import threading
-from collections.abc import Iterator
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 import torch
 
 from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
-from sglang_omni.models.nemotron3_5_asr.encoder import encode_pooled_streaming_batch
+from sglang_omni.models.nemotron3_5_asr.encoder import (
+    NemotronStreamingEncoderGraphRunner,
+    encode_pooled_streaming_batch,
+)
 from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import (
     EncoderPoolLayout,
     NemotronEncoderStatePool,
@@ -18,9 +21,6 @@ from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import (
 from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
-)
-from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron3_5_asr import (
-    Nemotron3_5AsrConfig,
 )
 from sglang_omni.vendor.nemotron3_5_asr.generation_nemotron3_5_asr import (
     Nemotron3_5AsrRNNTDecoderCache,
@@ -32,35 +32,6 @@ from tests.unit_test.nemotron3_5_asr.test_hf_compat import (
     ReferenceDecodeState,
     run_reference_chunk,
 )
-
-
-@pytest.fixture
-def model() -> Iterator[Nemotron3_5AsrForRNNT]:
-    config = Nemotron3_5AsrConfig(
-        vocab_size=16,
-        decoder_hidden_size=8,
-        num_decoder_layers=1,
-        blank_token_id=15,
-        num_prompts=4,
-        prompt_intermediate_size=8,
-        default_prompt_id=1,
-        encoder_config={
-            "hidden_size": 8,
-            "num_hidden_layers": 2,
-            "num_attention_heads": 2,
-            "intermediate_size": 16,
-            "subsampling_factor": 8,
-            "subsampling_conv_channels": 2,
-            "num_mel_bins": 4,
-            "subsampling_conv_kernel_size": 3,
-            "subsampling_conv_stride": 2,
-            "conv_kernel_size": 9,
-            "sliding_window": 9,
-        },
-    )
-    with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(7)
-        yield Nemotron3_5AsrForRNNT(config).eval()
 
 
 def new_state(
@@ -76,7 +47,7 @@ def new_state(
 
 @pytest.mark.parametrize("lookahead_tokens", [0, 3, 6, 13])
 @pytest.mark.parametrize(
-    "device",
+    "execution",
     [
         "cpu",
         pytest.param(
@@ -89,18 +60,43 @@ def new_state(
                 ),
             ],
         ),
+        pytest.param(
+            "cuda_graph",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not torch.cuda.is_available(),
+                    reason="requires CUDA graph capture and replay",
+                ),
+            ],
+        ),
     ],
 )
 @torch.inference_mode()
 def test_pooled_encoder_preserves_mixed_age_batches_and_slot_reuse(
-    model: Nemotron3_5AsrForRNNT, lookahead_tokens: int, device: str
+    model: Nemotron3_5AsrForRNNT,
+    lookahead_tokens: int,
+    execution: Literal["cpu", "cuda", "cuda_graph"],
 ) -> None:
+    device = "cuda" if execution == "cuda_graph" else execution
     model = model.to(device)
+    capacity_slots = 9 if execution == "cuda_graph" else 2
     pool = NemotronEncoderStatePool(
-        EncoderPoolLayout.from_model(model), capacity_slots=2
+        EncoderPoolLayout.from_model(model), capacity_slots=capacity_slots
     )
-    reference = [ReferenceDecodeState.create(model) for _ in range(2)]
-    pooled = [new_state(model, pool) for _ in range(2)]
+    graph_runner = (
+        NemotronStreamingEncoderGraphRunner(
+            model,
+            pool,
+            subsequent_mel_frames=8 * (lookahead_tokens + 1),
+            num_lookahead_tokens=lookahead_tokens,
+            max_batch_size=8,
+        )
+        if execution == "cuda_graph"
+        else None
+    )
+    reference = [ReferenceDecodeState.create(model) for _ in range(capacity_slots)]
+    pooled = [new_state(model, pool) for _ in range(capacity_slots)]
     generator = torch.Generator(device=device).manual_seed(43)
     retained_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
 
@@ -119,7 +115,9 @@ def test_pooled_encoder_preserves_mixed_age_batches_and_slot_reuse(
             )
             for row in rows
         ]
-        prompt_ids = torch.tensor(rows, device=device)
+        prompt_ids = torch.tensor(
+            [row % model.config.num_prompts for row in rows], device=device
+        )
         expected = torch.cat(
             [
                 model.get_audio_features(
@@ -139,6 +137,7 @@ def test_pooled_encoder_preserves_mixed_age_batches_and_slot_reuse(
             prompt_ids,
             encoder_slots=[pooled[row].encoder_slot for row in rows],
             num_lookahead_tokens=lookahead_tokens,
+            graph_runner=graph_runner,
         )
         torch.testing.assert_close(actual, expected)
         retained_outputs.append((actual, expected))
@@ -159,9 +158,21 @@ def test_pooled_encoder_preserves_mixed_age_batches_and_slot_reuse(
         reference[0] = ReferenceDecodeState.create(model)
         check_batch([1, 0])
         check_batch([0, 1])
+        if graph_runner is not None:
+            assert list(graph_runner.captured_batches) == list(range(8, 0, -1))
+            for batch_size in range(1, 10):
+                check_batch(list(range(batch_size)))
+            for batch_size in range(9, 0, -1):
+                check_batch(list(reversed(range(batch_size))))
+        else:
+            pass
         for actual, expected in retained_outputs:
             torch.testing.assert_close(actual, expected)
     finally:
+        if graph_runner is not None:
+            graph_runner.close()
+        else:
+            pass
         pool.close()
     assert not pool.active_slots and pool.nbytes == 0
 
@@ -196,6 +207,8 @@ def test_pooled_runner_matches_reference_and_releases_model_state(
     runner.model_lock = threading.Lock()
     runner.encoder_pool_layout = EncoderPoolLayout.from_model(model)
     runner.encoder_state_pool = None
+    runner.enable_encoder_cuda_graph = False
+    runner.encoder_graph_runner = None
 
     def decode_tokens(
         token_ids: list[torch.Tensor], *, skip_special_tokens: bool

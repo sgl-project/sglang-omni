@@ -926,7 +926,10 @@ that happened to contain an older version of the test.
   first/subsequent windows, request reordering, history rollover and slot reuse.
   CPU lifecycle tests cover EOS, token limits, cancellation, errors, shutdown and
   reservation-limited pool capacity. Cases marked `accelerator` perform real
-  CUDA eager parity; no CUDA Graph implementation is required by these tests.
+  CUDA eager and graph replay parity, including B1–B8, B9 eager fallback,
+  lookahead 0/3/6/13 and retained-output ownership. CPU-only graph tests mock
+  CUDA for startup order, shared-pool capture, slot cleanup and routing only;
+  they do not substitute for numerical CUDA replay tests.
 
 - `unit_test/nemotron_voicechat/`: NemotronLabs VoiceChat request frame-count
   contract (thinker tokens vs talker steps), streaming code2wav equivalence
