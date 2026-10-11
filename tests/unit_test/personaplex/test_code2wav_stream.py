@@ -154,6 +154,7 @@ def test_platforms_without_codec_decode_graphs_keep_no_slots(random_codec, monke
     assert slots.acquire().index is None
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not current_platform.enable_codec_decode_graph(),
     reason="the platform does not capture codec decode graphs",
