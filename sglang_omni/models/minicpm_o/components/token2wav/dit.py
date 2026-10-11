@@ -282,15 +282,25 @@ class CausalConvBlock(nn.Module):
             context = torch.cat((state.history.transpose(1, 2), hidden_states), dim=1)
         else:
             context = F.pad(hidden_states, (0, 0, history_length, 0))
-        next_state = (
-            ConvState(
+        if state is None:
+            next_state = None
+        elif state.valid_frame_counts is None:
+            next_state = ConvState(
                 history=context[:, -history_length:]
                 .transpose(1, 2)
                 .clone(memory_format=torch.contiguous_format)
             )
-            if state is not None
-            else None
-        )
+        else:
+            positions = state.valid_frame_counts[:, None] + torch.arange(
+                history_length, device=context.device
+            )
+            next_state = ConvState(
+                history=torch.gather(
+                    context, 1, positions[:, :, None].expand(-1, -1, context.shape[2])
+                )
+                .transpose(1, 2)
+                .contiguous()
+            )
         output = channels_last_conv1d(
             context, convolution, convolution.weight, hidden_states.shape[1]
         )

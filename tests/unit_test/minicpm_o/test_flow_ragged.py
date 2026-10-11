@@ -29,6 +29,7 @@ from sglang_omni.models.minicpm_o.components.tts_runtime import (
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 MEL_CHANNELS = 8
 # note (Junnan Li): The silence token that pads every stream is id 4218, so the vocabulary keeps the checkpoint's size.
@@ -128,6 +129,7 @@ def warmed_caches(
 @pytest.mark.parametrize(
     "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
 )
+@pytest.mark.parametrize("is_channels_last", [False, True])
 @pytest.mark.parametrize(
     ("lengths", "is_last_chunk", "warmup_chunks"),
     [
@@ -138,11 +140,17 @@ def warmed_caches(
 )
 def test_ragged_chunks_match_each_stream_alone(
     device: str,
+    is_channels_last: bool,
     lengths: tuple[int, ...],
     is_last_chunk: list[bool],
     warmup_chunks: list[int],
 ) -> None:
     flow = tiny_flow()
+    if is_channels_last:
+        for block in flow.decoder.estimator.blocks:
+            block.conv.use_channels_last()
+    else:
+        pass
     with torch.inference_mode():
         speakers, caches = warmed_caches(flow, warmup_chunks)
         flow.to(device)
@@ -189,6 +197,44 @@ def test_ragged_chunks_match_each_stream_alone(
                 torch.testing.assert_close(
                     batched_cache[key], cache[key], rtol=1e-4, atol=1e-4
                 )
+
+
+@pytest.mark.accelerator
+def test_a_chunk_after_a_short_one_in_chunk_graphs_matches_the_plain_flow() -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    plain = tiny_flow()
+    channels_last = tiny_flow()
+    for block in channels_last.decoder.estimator.blocks:
+        block.conv.use_channels_last()
+    with torch.inference_mode():
+        speakers, caches = warmed_caches(plain, [1])
+        speaker = speakers[0].to(device)
+        cache = {key: value.to(device) for key, value in caches[0].items()}
+        plain.to(device)
+        channels_last.to(device)
+        channels_last.decoder.capture_chunk_graphs(
+            stream_counts=(1,),
+            frame_counts=((WINDOW_TOKENS - channels_last.pre_lookahead_len) * UP_RATE,),
+            history_capacity=PROMPT_TOKENS * UP_RATE + FLOW_CACHE_TAIL_FRAMES,
+            convolution_cache=cache["estimator_convolution_cache"],
+            attention_cache=cache["estimator_attention_cache"],
+        )
+        mels = []
+        for flow in (plain, channels_last):
+            torch.manual_seed(0)
+            state = clone(cache)
+            for length, seed in ((10, 7), (WINDOW_TOKENS, 8)):
+                ((mel, state),) = flow.inference_chunks(
+                    [random_token_ids(length, seed).to(device)],
+                    speaker,
+                    [state],
+                    is_last_chunk=[False],
+                    n_timesteps=N_TIMESTEPS,
+                )
+            mels.append(mel)
+
+    torch.testing.assert_close(mels[1], mels[0], rtol=1e-4, atol=1e-4)
 
 
 class MelEnvelopeVocoder(torch.nn.Module):
