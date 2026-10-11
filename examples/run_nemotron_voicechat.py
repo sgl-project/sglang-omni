@@ -12,6 +12,8 @@ rather than speaking, and the talker renders the speaking ones into audio.
         --out reply.wav
 
 The four GPU stages share one card, so pick a free one with CUDA_VISIBLE_DEVICES.
+Stage settings take the same dotted flags as serve, for example
+--talker.engine.mem_fraction_static 0.25 or --thinker.gpu 1.
 """
 
 from __future__ import annotations
@@ -22,6 +24,11 @@ import base64
 import time
 import wave
 from pathlib import Path
+
+from sglang_omni.client import Client, GenerateRequest, SamplingParams
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.nemotron_voicechat.config import NemotronVoiceChatPipelineConfig
+from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 
 OUTPUT_SAMPLE_RATE = 22_050
 
@@ -39,17 +46,18 @@ def parse_args() -> argparse.Namespace:
         default=900.0,
         help="seconds to wait for the stages to load",
     )
-    return parser.parse_args()
+    args, stage_overrides = parser.parse_known_args()
+    args.stage_overrides = stage_overrides
+    return args
 
 
 async def run(args: argparse.Namespace) -> int:
-    from sglang_omni.client import Client, GenerateRequest, SamplingParams
-    from sglang_omni.models.nemotron_voicechat.config import (
-        NemotronVoiceChatPipelineConfig,
+    config_manager = ConfigManager(
+        NemotronVoiceChatPipelineConfig(model_path=args.model_path)
     )
-    from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
-
-    config = NemotronVoiceChatPipelineConfig(model_path=args.model_path)
+    config = config_manager.merge_config(
+        config_manager.parse_extra_args(args.stage_overrides)
+    )
     runner = MultiProcessPipelineRunner(config)
 
     started = time.perf_counter()
