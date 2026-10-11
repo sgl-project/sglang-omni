@@ -19,6 +19,7 @@ from sglang_omni.models.minicpm_o.talker_model_runner import (
     MiniCPMOTalkerModelRunner,
     TalkerSlotState,
 )
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 VOCAB_SIZE = 64
 CODEC_EOS_ID = VOCAB_SIZE - 1
@@ -264,10 +265,6 @@ def test_a_reused_slot_penalizes_only_its_own_request_window() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="the sampling graph and SGLang's seeded draw run on CUDA",
-)
 @pytest.mark.parametrize(
     ("row_sampling", "is_graph_used"),
     [
@@ -288,6 +285,7 @@ def test_a_reused_slot_penalizes_only_its_own_request_window() -> None:
 def test_seeded_requests_draw_the_tokens_of_sglangs_eager_sampler(
     row_sampling: list[dict[str, float]], is_graph_used: bool
 ) -> None:
+    require_cuda()
     device = torch.device("cuda")
     rows = torch.tensor([5, 0, 11], device=device)
     sampling_params = []
