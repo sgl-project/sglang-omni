@@ -1,0 +1,18 @@
+# See sglang_omni/models/voxtream2/README.md for the separate model environment.
+config_cls: VoXtream2PipelineConfig
+model_path: /path/to/voxtream2-checkpoint
+reference_audio: /path/to/reference.wav
+mimi_checkpoint: /path/to/tokenizer-e351c8d8-checkpoint125.safetensors
+speaker_checkpoint: /path/to/M-vb2+vox2+cnc-ft_mix.pt
+generator_config_path: /path/to/voxtream/configs/generator.json
+speaking_rate_config_path: /path/to/voxtream/configs/speaking_rate.json
+dtype: float16
+use_cuda_graph: true
+max_pending: 32
+output_buffer_chunks: 64
+model_python: /path/to/voxtream-env/bin/python
+model_source_paths:
+  - /path/to/ReDimNet
+worker_startup_timeout: 180
+worker_response_timeout: 120
+worker_cancel_timeout: 10
