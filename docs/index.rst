@@ -103,6 +103,7 @@ Supported Models
    cookbook/voxtral_tts.md
    cookbook/fishaudio_s2_pro.md
    cookbook/qwen3_tts.md
+   cookbook/easymagpie_tts.md
    cookbook/ming_tts.md
    cookbook/moss_tts.md
    cookbook/moss_tts_local.md
