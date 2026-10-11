@@ -2,10 +2,11 @@
 """Save Moshi-base component outputs from the reference package.
 
 Runs under the reference's own interpreter (its torch pin differs from ours)
-and writes one safetensors file that personaplex_components.py compares
-the port's Mimi codec, input embeddings and depformer against.
+and writes one safetensors file that test_personaplex_components.py compares
+the port's Mimi codec, input embeddings and depformer against. Set up that
+interpreter as "Reference parity" in docs/cookbook/personaplex.md describes.
 
-    python benchmarks/eval/personaplex_reference_dump.py \\
+    python tests/test_model/personaplex_reference_dump.py \\
         --checkpoint ~/.cache/huggingface/hub/models--kyutai--moshiko-pytorch-bf16/snapshots/<rev> \\
         --clip ~/personaplex/assets/test/input_assistant.wav \\
         --out ~/.cache/personaplex-parity/moshi_base_reference.safetensors

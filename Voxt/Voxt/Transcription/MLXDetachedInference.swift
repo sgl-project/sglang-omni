@@ -241,6 +241,20 @@ extension MLXTranscriber {
                 senseVoiceMetadata: nil,
                 structuredSegments: mossStructuredSegments(from: result.segments.map(\.transcriptSegment))
             )
+        case .nemotronASR:
+            let result = try await runtime.transcribeNemotronFinal(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint
+            )
+            return MLXDetachedInferenceResult(
+                rawText: result.text,
+                senseVoiceMetadata: nil,
+                structuredSegments: reliableStructuredSegments(
+                    from: result.segments.map(\.transcriptSegment),
+                    timingGranularity: inferenceConfiguration.timingGranularity
+                )
+            )
         case .sileroVAD, .sortformer:
             // Note (khazic): a Silero VAD or Sortformer server is never a loaded ASR model.
             preconditionFailure("a Silero VAD or Sortformer server transcribes nothing")

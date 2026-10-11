@@ -104,6 +104,7 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
         endpoint: OmniServerEndpoint,
         language: String?,
         prompt: String? = nil,
+        chunkMilliseconds: Int? = nil,
         joining: OmniLiveTranscriptAssembler.Joining = .scriptAware
     ) {
         shared = OSAllocatedUnfairLock(initialState: Shared(assembler: OmniLiveTranscriptAssembler(joining: joining)))
@@ -125,7 +126,7 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
         self.outbound = outbound
         socket.resume()
 
-        let update = Self.sessionUpdate(language: language, prompt: prompt)
+        let update = Self.sessionUpdate(language: language, prompt: prompt, chunkMilliseconds: chunkMilliseconds)
         let socket = socket
         let shared = shared
         sender = Task.detached {
@@ -249,13 +250,14 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
     /// The session settings Voxt's Swift live session implies: continuous
     /// decoding with no voice-activity onset to wait for. The prompt is MOSS's
     /// task instruction.
-    static func sessionUpdate(language: String?, prompt: String? = nil) -> String {
+    static func sessionUpdate(language: String?, prompt: String? = nil, chunkMilliseconds: Int? = nil) -> String {
         var sessionConfig: [String: Any] = [
             "input_audio_format": "pcm16",
             "turn_detection": NSNull(),
         ]
         if let language { sessionConfig["language"] = language }
         if let prompt { sessionConfig["prompt"] = prompt }
+        if let chunkMilliseconds { sessionConfig["chunk_ms"] = chunkMilliseconds }
         return json(["type": "session.update", "session": sessionConfig])
     }
 

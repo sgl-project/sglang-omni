@@ -1090,6 +1090,13 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
                 qwenUsesAutomaticLanguageProtocol: language == nil,
                 mossVisibleOutputMode: nil
             )
+        case .nativeNemotronLive where runtime.kind == .nemotronASR:
+            return MLXMeetingNativeStreamingConfiguration(
+                session: try await makeOmniNemotronLiveSession(runtime: runtime),
+                liveMode: liveMode,
+                qwenUsesAutomaticLanguageProtocol: false,
+                mossVisibleOutputMode: nil
+            )
         case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
             let inferenceConfiguration = resolvedInferenceConfiguration(for: .intermediate)
             return MLXMeetingNativeStreamingConfiguration(
@@ -1187,6 +1194,13 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             }
             releaseNativeLiveSession(cancelSession: true)
             nativeQwenLiveUsesAutomaticLanguageProtocol = language == nil
+        case .nativeNemotronLive where runtime.kind == .nemotronASR:
+            session = try await makeOmniNemotronLiveSession(runtime: runtime)
+            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+                session.cancel()
+                return false
+            }
+            releaseNativeLiveSession(cancelSession: true)
         case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
             let prompt = resolvedInferenceConfiguration(for: .intermediate).mossPrompt
             session = try await OmniNativeStreamingSession.moss(runtime: runtime, prompt: prompt)
@@ -1237,6 +1251,22 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             )
         )
         installNativeLiveSession(session, revision: revision, releaseModel: releaseModel)
+    }
+
+    /// The Omni counterpart of installNativeNemotronLiveSession's session: the
+    /// same latency setting and the same language mapping.
+    private func makeOmniNemotronLiveSession(runtime: OmniASRRuntime) async throws -> OmniNativeStreamingSession {
+        let promptLanguages = try OmniASRRuntime.nemotronPromptLanguages(modelDirectory: runtime.modelDirectory)
+        let language = MLXTranscriptionPlanning.nativeNemotronLanguage(
+            requested: resolvedNativeNemotronLiveLanguage(),
+            availableLanguages: promptLanguages.languages,
+            defaultLanguage: promptLanguages.defaultLanguage
+        )
+        return try await OmniNativeStreamingSession.nemotron(
+            runtime: runtime,
+            language: language,
+            chunkMilliseconds: resolvedLocalTuningSettings().nemotronStreamLatency.rawValue
+        )
     }
 
     private func installNativeNemotronLiveSession(_ model: NemotronASRModel, revision: Int, releaseModel: @escaping @MainActor () -> Void) {

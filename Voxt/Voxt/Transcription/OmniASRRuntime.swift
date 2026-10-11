@@ -597,3 +597,36 @@ extension OmniASRRuntime {
         ))
     }
 }
+
+extension OmniASRRuntime {
+    /// Nemotron 3.5 ASR Final as MLXAudio decoded it: the whole recording through
+    /// the cache-aware stream at the native chunk, with the language hint as given.
+    func transcribeNemotronFinal(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?
+    ) async throws -> OmniTranscriptionResult {
+        try await transcribe(OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: nil,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false
+        ))
+    }
+
+    /// Note (Dayuxiaoshui): Voxt maps a live language onto the checkpoint's
+    /// prompt languages, which the Swift backend read from the loaded model;
+    /// here they come from the same config.json the server loads.
+    nonisolated static func nemotronPromptLanguages(
+        modelDirectory: URL
+    ) throws -> (languages: [String], defaultLanguage: String) {
+        let data = try Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))
+        let config = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let prompt = config?["prompt"] as? [String: Any]
+        let dictionary = prompt?["prompt_dictionary"] as? [String: Any] ?? [:]
+        return (Array(dictionary.keys), config?["default_language"] as? String ?? "auto")
+    }
+}
