@@ -49,6 +49,7 @@ from sglang_omni.scheduling.sglang_backend import (
     build_sglang_server_args,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.encoder_cache import create_encoder_output_cache
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
@@ -439,8 +440,11 @@ def lookup_cached_encoder_output(
 ) -> ImageEncoderOutput | dict[str, torch.Tensor] | None:
     if cache is None or request.cache_key is None:
         return None
-    else:
-        pass
+    # LMCache persists beyond this worker's lifetime. Hash the prepared input
+    # content rather than trusting a URL or a sampled source-file fingerprint.
+    content_key = getattr(cache, "key_for_inputs", None)
+    if content_key is not None:
+        request.cache_key = content_key(request.model_inputs)
     cached = cache.get(request.cache_key)
     if cached is None:
         trace_encoder_cache(
@@ -1033,16 +1037,22 @@ def create_image_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
+    lmcache_config_file: str | None = None,
+    lmcache_namespace: str | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
-    cache = StageOutputCache(
-        max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
+    cache = create_encoder_output_cache(
+        model_path=model_path,
+        stage=IMAGE_STAGE,
+        dtype=dtype,
+        max_entries=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
-        cache_device="cpu",
+        lmcache_config_file=lmcache_config_file,
+        lmcache_namespace=lmcache_namespace,
     )
 
     def _encode(payload: StagePayload) -> StagePayload:
@@ -1095,6 +1105,7 @@ def create_image_encoder_executor(
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,
+        shutdown_callback=getattr(cache, "close", None),
         max_batch_size=32,
         max_batch_wait_ms=encoder_batch_wait_ms(),
         request_cost_fn=create_image_encoder_request_cost_fn(model),
@@ -1108,6 +1119,8 @@ def create_audio_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
+    lmcache_config_file: str | None = None,
+    lmcache_namespace: str | None = None,
     enable_layer_cuda_graph: bool = False,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -1120,10 +1133,14 @@ def create_audio_encoder_executor(
         dtype=dtype,
         enable_layer_cuda_graph=enable_layer_cuda_graph,
     )
-    cache = StageOutputCache(
-        max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
+    cache = create_encoder_output_cache(
+        model_path=model_path,
+        stage=AUDIO_STAGE,
+        dtype=dtype,
+        max_entries=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
-        cache_device="cpu",
+        lmcache_config_file=lmcache_config_file,
+        lmcache_namespace=lmcache_namespace,
     )
 
     def _encode(payload: StagePayload) -> StagePayload:
@@ -1174,6 +1191,7 @@ def create_audio_encoder_executor(
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,
+        shutdown_callback=getattr(cache, "close", None),
         max_batch_size=32,
         max_batch_wait_ms=encoder_batch_wait_ms(),
         batch_wait_when_idle=False,
