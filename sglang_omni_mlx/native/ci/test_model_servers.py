@@ -569,6 +569,7 @@ def test_parakeet_merges_overlapping_chunks_into_sentences(
     )
     assert done["generation_metadata"]["finish_reason"] == "stop"
     status, body = parakeet_server.post_form({}, clip("0344_en_long"))
+    assert status == 200
     segments = json.loads(body)["segments"]
     assert len(segments) > 1
     assert [segment["start"] for segment in segments] == sorted(
@@ -576,9 +577,12 @@ def test_parakeet_merges_overlapping_chunks_into_sentences(
     )
 
 
-def test_parakeet_rejects_a_bad_chunk_duration(parakeet_server: ModelServer) -> None:
+@pytest.mark.parametrize("chunk_duration", ["nan", "1", "-5", "600"])
+def test_parakeet_rejects_a_bad_chunk_duration(
+    parakeet_server: ModelServer, chunk_duration: str
+) -> None:
     status, body = parakeet_server.post_form(
-        {"chunk_duration": "nan"}, clip("0006_en_short")
+        {"chunk_duration": chunk_duration}, clip("0006_en_short")
     )
     assert status == 400
     assert "chunk_duration" in json.loads(body)["detail"]

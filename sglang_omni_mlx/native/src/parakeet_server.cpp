@@ -9,7 +9,6 @@
 // Request fields beside the audio: chunk_duration (the chunk length Voxt
 // asks for, in seconds), stream and include_generation_metadata. Segments
 // are the transcript's timed sentences.
-#include <cmath>
 #include <memory>
 #include <stdexcept>
 
@@ -17,6 +16,13 @@
 #include "parakeet_transcriber.h"
 
 namespace {
+
+// Note (Jiaxin Deng): chunks overlap by 1 s, so a shorter request advances a
+// sample at a time, and the encoder's attention grows with the square of a
+// longer one; 1199 s or more asks for 5 s chunks.
+constexpr double kMinChunkDurationSeconds = 2.0;
+constexpr double kMaxChunkDurationSeconds = 300.0;
+constexpr double kWholeRecordingChunkDurationSeconds = 1199.0;
 
 class ParakeetModelService : public asr_service::ServedModel {
 public:
@@ -30,8 +36,13 @@ public:
     options.chunk_duration_seconds =
         asr_service::NumberField(form, "chunk_duration")
             .value_or(options.chunk_duration_seconds);
-    if (!std::isfinite(options.chunk_duration_seconds)) {
-      throw std::invalid_argument("chunk_duration must be finite");
+    if (options.chunk_duration_seconds < kMinChunkDurationSeconds ||
+        (options.chunk_duration_seconds > kMaxChunkDurationSeconds &&
+         options.chunk_duration_seconds <
+             kWholeRecordingChunkDurationSeconds)) {
+      throw std::invalid_argument(
+          "chunk_duration must be 2 to 300 seconds, or 1199 or more for a "
+          "whole recording");
     } else {
     }
     return [this, samples = std::move(samples),
