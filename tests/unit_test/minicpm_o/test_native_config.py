@@ -26,7 +26,10 @@ from sglang_omni.config.runtime import (
 )
 from sglang_omni.models.minicpm_o import native_stages, stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
-from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
+from sglang_omni.models.minicpm_o.config import (
+    MiniCPMOSpeechPipelineConfig,
+    preprocessing_stage,
+)
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
@@ -490,3 +493,8 @@ def test_duplex_speech_settings_reach_the_vocoder(
     )
     runtime_kwargs = native_stages.MiniCPMOVocoderRuntime.call_args.kwargs
     assert runtime_kwargs["max_open_sessions"] == config.max_sessions
+
+
+def test_preprocessing_concurrency_is_enabled_by_default() -> None:
+    stage = preprocessing_stage(process="pipeline")
+    assert stage.factory.max_concurrency == 4
