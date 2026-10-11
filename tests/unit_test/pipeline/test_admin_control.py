@@ -74,6 +74,7 @@ def test_omni_scheduler_admin_enqueues_to_scheduler_thread() -> None:
 
     scheduler = object.__new__(OmniScheduler)
     scheduler.running = True
+    scheduler.tp_size = 1
     scheduler.admin_queue = queue.Queue()
     scheduler.scheduler_thread_id = None
 
@@ -369,6 +370,25 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     ]
 
 
+def test_omni_scheduler_abort_pause_reports_the_dropped_requests() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    aborted: list[str] = []
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.admin_lock = threading.Lock()
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
+    scheduler.resolve_pending_async = lambda: None
+    scheduler.active_request_ids = lambda: ["req-1", "req-2"]
+    scheduler.abort = lambda request_id, **_kwargs: aborted.append(request_id)
+    scheduler.running_batch = scheduler.cur_batch = scheduler.last_batch = None
+
+    result = OmniScheduler.admin_pause_generation(scheduler, {"mode": "abort"})
+
+    assert aborted == ["req-1", "req-2"]
+    assert result["data"]["num_paused_requests"] == 2
+    assert result["data"]["aborted_request_ids"] == ["req-1", "req-2"]
+
+
 def test_omni_scheduler_distributed_update_rejects_active_requests_by_default() -> None:
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
@@ -427,10 +447,10 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
         nonlocal empty_cache_calls
         empty_cache_calls += 1
 
-    def abort_all_requests() -> int:
+    def abort_all_requests() -> list[str]:
         nonlocal abort_calls
         abort_calls += 1
-        return 1
+        return ["req-1"]
 
     scheduler = object.__new__(OmniScheduler)
     scheduler.model_worker = SimpleNamespace(

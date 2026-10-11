@@ -951,10 +951,22 @@ def extract_inputs(request: GenerateRequest) -> object:
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
+    video_options = {
+        key: request.metadata[key]
+        for key in (
+            "video_fps",
+            "video_max_frames",
+            "video_min_pixels",
+            "video_max_pixels",
+            "video_total_pixels",
+            "use_audio_in_video",
+        )
+        if request.metadata.get(key) is not None
+    }
 
-    # If we have any media, return a dict with messages and media
+    # If we have any media or media options, return a dict with messages and them
     # Otherwise, return just the messages list (for backward compatibility)
-    if audios or images or videos:
+    if audios or images or videos or video_options:
         result: dict[str, object] = {"messages": messages}
         if images:
             result["images"] = images
@@ -968,19 +980,7 @@ def extract_inputs(request: GenerateRequest) -> object:
             result["videos"] = videos
         else:
             pass
-        for key in (
-            "video_fps",
-            "video_max_frames",
-            "video_min_pixels",
-            "video_max_pixels",
-            "video_total_pixels",
-            "use_audio_in_video",
-        ):
-            value = request.metadata.get(key)
-            if value is not None:
-                result[key] = value
-            else:
-                pass
+        result.update(video_options)
         return result
     else:
         pass

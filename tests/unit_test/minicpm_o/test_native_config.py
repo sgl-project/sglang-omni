@@ -11,11 +11,14 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from click.testing import Result
 from pydantic import JsonValue, ValidationError
 from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+from typer.testing import CliRunner
 
 from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+from sglang_omni.cli import app
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
@@ -23,6 +26,7 @@ from sglang_omni.config.runtime import (
 )
 from sglang_omni.models.minicpm_o import native_stages, stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
+from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
@@ -330,18 +334,29 @@ def test_thinker_kv_pool_holds_the_derived_tokens_within_its_card_share(
 
 
 @pytest.mark.parametrize(
-    ("config_name", "disable_cuda_graph"),
-    [("minicpmo.yaml", False), ("minicpmo-parity.yaml", True)],
+    ("cli_flags", "disable_cuda_graph"),
+    [
+        ([], False),
+        (
+            [
+                "--thinker.engine.disable_cuda_graph",
+                "true",
+                "--talker.engine.disable_cuda_graph",
+                "true",
+            ],
+            True,
+        ),
+    ],
 )
-def test_shipped_duplex_configs_select_decode_graphs_without_compile(
-    config_name: str, disable_cuda_graph: bool, monkeypatch: pytest.MonkeyPatch
+def test_duplex_settings_select_decode_graphs_without_compile(
+    cli_flags: list[str], disable_cuda_graph: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mapping = dict(
         CONFIG_MAPPING._extra_content
     )  # noqa: leading-underscore  # upstream name
     monkeypatch.setattr(CONFIG_MAPPING, "_extra_content", mapping)
-    examples = Path(__file__).parents[3] / "examples" / "full_duplex"
-    config = ConfigManager.from_file(str(examples / config_name)).config
+    manager = ConfigManager(MiniCPMODuplexPipelineConfig(model_path="unused"))
+    config = manager.merge_config(manager.parse_extra_args(cli_flags))
     talker_server_args: dict[str, JsonValue] = {}
 
     def capture_server_args(model_path: str, **server_args: JsonValue) -> None:
@@ -415,6 +430,39 @@ def test_duplex_deployment_grants_images_by_slice_count() -> None:
     assert capabilities.input_modalities == ("audio", "image")
     assert capabilities.image_frames_per_unit == (4, 3, 2, 2, 1, 1, 1, 1, 1)
     assert capabilities.default_max_slice_nums == 1
+
+
+def invoke_variant_session(
+    monkeypatch: pytest.MonkeyPatch, serve_arguments: list[str]
+) -> tuple[Result, Mock]:
+    monkeypatch.setattr(
+        "sglang_omni.config.manager.resolve_config_cls_for_model_path",
+        lambda model_path: MiniCPMOSpeechPipelineConfig,
+    )
+    launch_server = Mock()
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", launch_server)
+    result = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb"}).invoke(
+        app,
+        ["serve", "--model-path", "unused", "--variant", "session", *serve_arguments],
+    )
+    return result, launch_server
+
+
+def test_variant_session_serves_duplex(monkeypatch: pytest.MonkeyPatch) -> None:
+    result, launch_server = invoke_variant_session(monkeypatch, ["--enable-realtime"])
+
+    assert result.exit_code == 0, result.output
+    assert type(launch_server.call_args.args[0]) is MiniCPMODuplexPipelineConfig
+
+
+def test_variant_session_requires_enable_realtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, launch_server = invoke_variant_session(monkeypatch, [])
+
+    assert result.exit_code == 2
+    assert "--enable-realtime" in result.output
+    launch_server.assert_not_called()
 
 
 def test_duplex_speech_settings_reach_the_vocoder(

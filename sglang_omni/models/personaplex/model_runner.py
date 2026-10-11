@@ -11,6 +11,8 @@ one position later, a finished output frame streamed to the codec.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from itertools import groupby
 from typing import Protocol
 
 import torch
@@ -28,7 +30,7 @@ from sglang_omni.models.personaplex.architecture import (
     NUM_STREAMS,
     USER_STREAM_OFFSET,
 )
-from sglang_omni.models.personaplex.sampling import sample_token
+from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -36,6 +38,15 @@ from sglang_omni.scheduling.types import SchedulerRequest
 
 class AudioTokenSampler(Protocol):
     def __call__(self, logits: torch.Tensor) -> torch.Tensor: ...
+
+
+@dataclass(frozen=True, kw_only=True)
+class SamplingRun:
+    """Adjacent batch rows that share one sample_token call."""
+
+    row_slice: slice
+    sampling: AudioSampling
+    generators: list[torch.Generator | None]
 
 
 class PersonaPlexModelRunner(ModelRunner):
@@ -104,38 +115,76 @@ class PersonaPlexModelRunner(ModelRunner):
         rows[known] = model.embed_rows(tokens[known]).to(dtype)
         return rows
 
-    def audio_sampler(self, data: SGLangARRequestData) -> AudioTokenSampler:
+    def audio_generator(self, data: SGLangARRequestData) -> torch.Generator | None:
         inputs = data.talker_model_inputs
-        sampling = inputs["sampling"]
+        audio_seed = inputs["sampling"].audio_seed
         generator = inputs.get("audio_generator")
-        if generator is None and sampling.audio_seed is not None:
+        if generator is None and audio_seed is not None:
             generator = torch.Generator(device=self.model_device)
-            generator.manual_seed(sampling.audio_seed)
+            generator.manual_seed(audio_seed)
             inputs["audio_generator"] = generator
         else:
             pass
-        return lambda logits: sample_token(logits, sampling.audio, generator)
+        return generator
 
-    def spell_frame(
+    def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
+        """Sample row i with requests[i]'s audio settings and generator."""
+        runs: list[SamplingRun] = []
+        start_row = 0
+        # Note (edwardzh): Only adjacent requests share a sampling call, so rows are
+        # sliced in place and no index tensor reaches the device.
+        for sampling, run_requests in groupby(
+            requests,
+            key=lambda request: request.data.talker_model_inputs["sampling"].audio,
+        ):
+            generators = [
+                self.audio_generator(request.data) for request in run_requests
+            ]
+            end_row = start_row + len(generators)
+            runs.append(
+                SamplingRun(
+                    row_slice=slice(start_row, end_row),
+                    sampling=sampling,
+                    generators=generators,
+                )
+            )
+            start_row = end_row
+
+        def sample(logits: torch.Tensor) -> torch.Tensor:
+            picks = [
+                sample_token(logits[run.row_slice], run.sampling, run.generators)
+                for run in runs
+            ]
+            return picks[0] if len(picks) == 1 else torch.cat(picks)
+
+        return sample
+
+    def spell_frames(
         self,
-        index: int,
-        request: SchedulerRequest,
-        text_token: torch.Tensor,
-        forced: torch.Tensor,
+        requests: list[SchedulerRequest],
+        text_token_B: torch.Tensor,
+        forced_BK: torch.Tensor,
     ) -> None:
-        """Run the depformer for the position just predicted and record it."""
-        data = request.data
-        inputs = data.talker_model_inputs
-        device_rows = self.rows_on_device(data)
-        hidden = self.model.hidden_out[index : index + 1]
-        codes = self.model.depformer.generate(
-            text_token.view(1), hidden, forced.view(1, -1), self.audio_sampler(data)
-        )[0]
-        frame = output_frame(device_rows["agent_row"], codes)
-        device_rows["agent_row"] = codes
-        inputs["agent_rows"].append(codes)
-        inputs["frames"].append(frame)
-        inputs["pending_frames"].append(frame)
+        """Run the depformer for the positions just predicted and record them.
+
+        Row i of text_token_B, forced_BK and hidden_out belongs to requests[i].
+        """
+        batch_size = len(requests)
+        codes_BK = self.model.depformer.generate(
+            text_token_B[:batch_size],
+            self.model.hidden_out[:batch_size],
+            forced_BK,
+            self.audio_sampler(requests),
+        )
+        for request, codes in zip(requests, codes_BK, strict=True):
+            data = request.data
+            inputs = data.talker_model_inputs
+            device_rows = self.rows_on_device(data)
+            frame = output_frame(device_rows["agent_row"], codes)
+            device_rows["agent_row"] = codes
+            inputs["agent_rows"].append(codes)
+            inputs["frames"].append(frame)
+            inputs["pending_frames"].append(frame)
 
     def free_codes(self) -> torch.Tensor:
         return torch.full(
@@ -206,11 +255,13 @@ class PersonaPlexModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        sampled = result.next_token_ids
-        for index, request in enumerate(requests):
-            inputs = request.data.talker_model_inputs
-            forced = inputs.pop("prefill_forced")
-            self.spell_frame(index, request, sampled[index], forced)
+        forced_BK = torch.stack(
+            [
+                request.data.talker_model_inputs.pop("prefill_forced")
+                for request in requests
+            ]
+        )
+        self.spell_frames(requests, result.next_token_ids, forced_BK)
 
     def before_decode(
         self,
@@ -244,7 +295,5 @@ class PersonaPlexModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        sampled = result.next_token_ids
-        free = self.free_codes()
-        for index, request in enumerate(requests):
-            self.spell_frame(index, request, sampled[index], free)
+        free_BK = self.free_codes().expand(len(requests), -1)
+        self.spell_frames(requests, result.next_token_ids, free_BK)

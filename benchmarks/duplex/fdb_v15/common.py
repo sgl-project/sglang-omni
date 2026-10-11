@@ -49,7 +49,6 @@ class Settings:
     scoring_venv: Path
     model_revision: str
     model_path: Path
-    server_config: Path
     server_port: int
     judge: JudgeName
     judge_model_path: Path
@@ -242,9 +241,6 @@ def load_settings(run_name: str) -> Settings:
         scoring_venv=env_path("SCORING_VENV", fdb_work / "scoring-venv"),
         model_revision=env_text("MODEL_REVISION", DEFAULT_MODEL_REVISION),
         model_path=env_path("MODEL_PATH", fdb_work / "models" / "MiniCPM-o-4_5"),
-        server_config=env_path(
-            "SERVER_CONFIG", REPO_ROOT / "examples" / "full_duplex" / "minicpmo.yaml"
-        ),
         server_port=server_port,
         judge=judge,
         judge_model_path=env_path(

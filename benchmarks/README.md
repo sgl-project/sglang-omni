@@ -18,8 +18,6 @@ benchmarks/
 └── results/        # (gitignored) evaluation outputs
 ```
 
-PersonaPlex reference comparisons: [evaluation setup and limits](eval/personaplex.md).
-
 ## Quick Start
 
 ```bash
@@ -574,8 +572,8 @@ The recorder also saves append-send completion receipts in
 `input-send-receipts.json` and waits until the complete input duration has
 elapsed before sending EOS, so offline analysis can verify the input window.
 
-Start a compatible MiniCPM-o server using its full-duplex example configuration,
-then record all v1.5 pairs:
+Start a MiniCPM-o server with `--variant session --enable-realtime`, then record
+all v1.5 pairs:
 
 ```bash
 python -m benchmarks.eval.benchmark_duplex_v15 record \

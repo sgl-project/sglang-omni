@@ -405,6 +405,59 @@ def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("mode", "stages", "dropped", "ended"),
+    [
+        ("abort", None, [], True),
+        ("abort", ["decode"], ["req-1"], True),
+        ("abort", ["decode"], [], False),
+        ("in_place", None, [], False),
+    ],
+)
+def test_abort_mode_pause_ends_in_flight_streams(
+    mode: str, stages: list[str] | None, dropped: list[str], ended: bool
+) -> None:
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        async def paused(*_args, **_kwargs):
+            return {
+                "op_id": "op",
+                "action": "pause_generation",
+                "success": True,
+                "message": "",
+                "results": [{"data": {"aborted_request_ids": dropped}}],
+            }
+
+        coordinator.admin = paused
+        stream = coordinator.stream("req-1", OmniRequest(inputs="hello"))
+        next_message = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if "req-1" in coordinator.stream_queues:
+                break
+            await asyncio.sleep(0)
+
+        await coordinator.pause_generation({"mode": mode}, stages=stages)
+        await asyncio.sleep(0)
+
+        assert next_message.done() is ended
+        assert [msg.request_id for msg in control_plane.aborts] == (
+            ["req-1"] if ended else []
+        )
+        next_message.cancel()
+        await asyncio.gather(next_message, return_exceptions=True)
+
+    asyncio.run(run())
+
+
 def test_stream_close_after_one_terminal_aborts_remaining_terminal_work() -> None:
     async def run() -> None:
         coordinator = Coordinator(

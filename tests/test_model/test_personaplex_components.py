@@ -1,20 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Component comparison on the public Moshi base; see personaplex.md.
+"""Opt-in component comparison against NVIDIA/personaplex on the public Moshi base.
 
 Mimi, the input embeddings and the depformer are checked against tensors that
-personaplex_reference_dump.py saved from the reference package.
+personaplex_reference_dump.py saves from the reference package. Needs a
+separate reference environment; set it up as "Reference parity" in
+docs/cookbook/personaplex.md describes. Skips unless PERSONAPLEX_REFERENCE_SOURCE
+and PERSONAPLEX_REFERENCE_PYTHON are set.
 """
 
 from __future__ import annotations
 
-import argparse
 import copy
-import logging
 import os
 import subprocess
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 from einops import rearrange
 from safetensors import safe_open
@@ -40,8 +44,10 @@ from sglang_omni.models.personaplex.components.mimi import (
 )
 from sglang_omni.models.personaplex.sglang_model import PersonaPlexForCausalLM
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.utils.logging import configure_dependency_loggers
 
+pytestmark = pytest.mark.accelerator
+
+DEFAULT_CHECKPOINT = "kyutai/moshiko-pytorch-bf16"
 DUMP_SCRIPT = Path(__file__).with_name("personaplex_reference_dump.py")
 MIMI_ATOL = 1e-5  # float32 codec through two cuDNN builds, TF32 off on both
 # The reference tensors come from its streaming path, the one it serves with; its
@@ -49,11 +55,11 @@ MIMI_ATOL = 1e-5  # float32 codec through two cuDNN builds, TF32 off on both
 LOGIT_ATOL_F32 = 1e-3  # float32 depformer; logits are O(10)
 
 
-def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise RuntimeError(message)
-    else:
-        pass
+@dataclass(frozen=True, kw_only=True)
+class ComponentInputs:
+    source: Path
+    checkpoint: Path
+    reference_python: str
 
 
 def checkpoint_tensors(
@@ -68,16 +74,64 @@ def checkpoint_tensors(
         }
 
 
-def reference(
-    checkpoint: Path, source: Path, *, python: str, dump: Path
+@pytest.fixture(scope="module")
+def component_inputs() -> Iterator[ComponentInputs]:
+    source = os.environ.get("PERSONAPLEX_REFERENCE_SOURCE")
+    python = os.environ.get("PERSONAPLEX_REFERENCE_PYTHON")
+    if not source or not python:
+        pytest.skip(
+            "Set PERSONAPLEX_REFERENCE_SOURCE and PERSONAPLEX_REFERENCE_PYTHON "
+            "for the component comparison"
+        )
+    else:
+        pass
+    if not torch.cuda.is_available():
+        pytest.skip("PersonaPlex component comparison requires CUDA")
+    else:
+        pass
+    flags = (
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+        torch.backends.cudnn.benchmark,
+        torch.backends.cudnn.deterministic,
+    )
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    checkpoint = os.environ.get("PERSONAPLEX_MOSHI_CHECKPOINT", DEFAULT_CHECKPOINT)
+    yield ComponentInputs(
+        source=Path(source).expanduser().resolve(),
+        checkpoint=Path(resolve_checkpoint(checkpoint)),
+        reference_python=python,
+    )
+    (
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+        torch.backends.cudnn.benchmark,
+        torch.backends.cudnn.deterministic,
+    ) = flags
+    # Note (wilsonzheng0327): Return the module's cached GPU memory, so a pipeline started
+    # later in the same pytest run sees the free memory a separate run would.
+    torch.cuda.empty_cache()
+
+
+@pytest.fixture(scope="module")
+def reference_tensors(
+    component_inputs: ComponentInputs, tmp_path_factory: pytest.TempPathFactory
 ) -> dict[str, torch.Tensor]:
-    """Generate fresh reference tensors before allocating port tensors."""
-    path = dump.expanduser().resolve()
+    """Fresh reference tensors, generated before the port allocates its own."""
+    source = component_inputs.source
+    path = (
+        tmp_path_factory.mktemp("personaplex_components")
+        / "moshi_base_reference.safetensors"
+    )
+    print(f"\nreference dump and log: {path.parent}")
     command = [
-        python,
+        component_inputs.reference_python,
         str(DUMP_SCRIPT.resolve()),
         "--checkpoint",
-        str(checkpoint),
+        str(component_inputs.checkpoint),
         "--clip",
         str(source / "assets" / "test" / "input_assistant.wav"),
         "--out",
@@ -91,7 +145,6 @@ def reference(
         "--device",
         "cuda",
     ]
-    path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(".log").open("w") as log:
         subprocess.run(
             command,
@@ -104,20 +157,44 @@ def reference(
     return {name: value.cuda() for name, value in load_file(str(path)).items()}
 
 
-def compare_mimi_encode(codec: MimiCodec, reference: dict[str, torch.Tensor]) -> None:
-    codes = codec.encode(reference["wav"])
-    identical = (codes == reference["codes"]).all(dim=1)
+@pytest.fixture(scope="module")
+def codec(component_inputs: ComponentInputs) -> MimiCodec:
+    return load_mimi_codec(
+        resolve_mimi_weights(component_inputs.checkpoint, MIMI_WEIGHTS_GLOB),
+        device="cuda",
+    )
+
+
+@pytest.fixture(scope="module")
+def depformer(component_inputs: ComponentInputs) -> Depformer:
+    model = Depformer(DEPFORMER)
+    model.load_reference_weights(
+        checkpoint_tensors(
+            component_inputs.checkpoint / MOSHI_WEIGHTS_NAME,
+            ("depformer", "linears."),
+        )
+    )
+    return model.cuda().eval()
+
+
+def test_mimi_encode_matches_reference(
+    reference_tensors: dict[str, torch.Tensor], codec: MimiCodec
+) -> None:
+    codes = codec.encode(reference_tensors["wav"])
+    identical = (codes == reference_tensors["codes"]).all(dim=1)
     print(
         f"\n[mimi encode] codes identical for {int(identical.sum())} of "
         f"{identical.shape[-1]} frames"
     )
-    check(
-        torch.equal(codes, reference["codes"]), "Mimi codes differ from the reference"
-    )
+    assert torch.equal(
+        codes, reference_tensors["codes"]
+    ), "Mimi codes differ from the reference"
 
 
-def compare_mimi_decode(codec: MimiCodec, reference: dict[str, torch.Tensor]) -> None:
-    codes = reference["codes"]
+def test_mimi_decode_matches_reference(
+    reference_tensors: dict[str, torch.Tensor], codec: MimiCodec
+) -> None:
+    codes = reference_tensors["codes"]
     whole = codec.decode(codes)
     state = codec.init_decode_state()
     chunked = torch.cat(
@@ -127,20 +204,22 @@ def compare_mimi_decode(codec: MimiCodec, reference: dict[str, torch.Tensor]) ->
         ],
         dim=-1,
     )
-    whole_diff = (whole - reference["decoded"]).abs().max().item()
-    chunked_diff = (chunked - reference["decoded"]).abs().max().item()
+    whole_diff = (whole - reference_tensors["decoded"]).abs().max().item()
+    chunked_diff = (chunked - reference_tensors["decoded"]).abs().max().item()
     print(
         f"\n[mimi decode] whole max diff {whole_diff:.2e}, "
         f"chunked max diff {chunked_diff:.2e}"
     )
-    check(whole_diff <= MIMI_ATOL, f"whole decode differs by {whole_diff:.2e}")
-    check(chunked_diff <= MIMI_ATOL, f"chunked decode differs by {chunked_diff:.2e}")
+    assert whole_diff <= MIMI_ATOL, f"whole decode differs by {whole_diff:.2e}"
+    assert chunked_diff <= MIMI_ATOL, f"chunked decode differs by {chunked_diff:.2e}"
 
 
-def compare_input_embeddings(
-    checkpoint: Path, reference: dict[str, torch.Tensor]
+def test_input_embeddings_match_reference(
+    reference_tensors: dict[str, torch.Tensor], component_inputs: ComponentInputs
 ) -> None:
-    tables = checkpoint_tensors(checkpoint / MOSHI_WEIGHTS_NAME, ("emb.", "text_emb."))
+    tables = checkpoint_tensors(
+        component_inputs.checkpoint / MOSHI_WEIGHTS_NAME, ("emb.", "text_emb.")
+    )
     model = SimpleNamespace(
         audio_emb=nn.ModuleList(
             nn.Embedding.from_pretrained(tables[f"emb.{k}.weight"])
@@ -149,10 +228,14 @@ def compare_input_embeddings(
         text_emb=nn.Embedding.from_pretrained(tables["text_emb.weight"]).cuda(),
     )
     with torch.inference_mode():
-        embedded = PersonaPlexForCausalLM.embed_rows(model, reference["emb_rows"])
-    diff = (embedded.float() - reference["emb_out"].float()).abs().max().item()
+        embedded = PersonaPlexForCausalLM.embed_rows(
+            model, reference_tensors["emb_rows"]
+        )
+    diff = (embedded.float() - reference_tensors["emb_out"].float()).abs().max().item()
     print(f"\n[embeddings] max diff {diff:.2e} over {embedded.shape[0]} rows")
-    check(torch.equal(embedded, reference["emb_out"]), "input embeddings differ")
+    assert torch.equal(
+        embedded, reference_tensors["emb_out"]
+    ), "input embeddings differ"
 
 
 def depformer_logits(
@@ -210,13 +293,21 @@ def ring_step(
     )
 
 
-def compare_depformer_logits(
-    model: Depformer, dtype: torch.dtype, reference: dict[str, torch.Tensor]
+@pytest.mark.parametrize(
+    "dtype", [torch.float32, torch.bfloat16], ids=["float32", "bfloat16"]
+)
+def test_depformer_logits_match_reference(
+    reference_tensors: dict[str, torch.Tensor],
+    depformer: Depformer,
+    dtype: torch.dtype,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    expected = reference[
+    """Steps 0-6 match as written; the last step only with the reference ring emulated."""
+    model = depformer if dtype == torch.float32 else copy.deepcopy(depformer).to(dtype)
+    expected = reference_tensors[
         "dep_logits_f32" if dtype == torch.float32 else "dep_logits_bf16"
     ]
-    transformer_out = reference["transformer_out"].to(dtype)
+    transformer_out = reference_tensors["transformer_out"].to(dtype)
     # Note (wilsonzheng0327): bf16 matmul and attention kernels differ between torch
     # builds by an ULP; the float32 pass is the exact one.
     atol = (
@@ -225,89 +316,21 @@ def compare_depformer_logits(
         else torch.finfo(torch.bfloat16).eps * expected.abs().max().item()
     )
 
-    plain = per_step_diff(depformer_logits(model, reference, transformer_out), expected)
-    plain_step = DepformerLayer.step
-    DepformerLayer.step = ring_step
-    try:
-        emulated = per_step_diff(
-            depformer_logits(model, reference, transformer_out), expected
-        )
-    finally:
-        DepformerLayer.step = plain_step
+    plain = per_step_diff(
+        depformer_logits(model, reference_tensors, transformer_out), expected
+    )
+    monkeypatch.setattr(DepformerLayer, "step", ring_step)
+    emulated = per_step_diff(
+        depformer_logits(model, reference_tensors, transformer_out), expected
+    )
     print(
         f"\n[depformer {dtype}] tolerance {atol:.2e}; max logit diff per step "
         f"{[f'{d:.1e}' for d in plain]}; with the reference ring emulated "
         f"{[f'{d:.1e}' for d in emulated]}"
     )
 
-    check(max(plain[:-1]) <= atol, f"depformer {dtype}: steps 0-6 exceed {atol:.2e}")
-    check(plain[-1] > atol, "step 7 should only match with the ring emulated")
-    check(
-        max(emulated) <= atol, f"depformer {dtype}: ring emulation exceeds {atol:.2e}"
-    )
-
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="PersonaPlex component comparison.")
-    p.add_argument(
-        "--reference-source",
-        required=True,
-        help="clean NVIDIA/personaplex checkout; its assets/test clip is used",
-    )
-    p.add_argument(
-        "--reference-python",
-        required=True,
-        help="interpreter of the reference environment (its torch pin differs)",
-    )
-    p.add_argument(
-        "--checkpoint",
-        default="kyutai/moshiko-pytorch-bf16",
-        help="public Moshi base checkpoint: local directory or resolvable model id",
-    )
-    p.add_argument(
-        "--dump",
-        required=True,
-        help="safetensors file the reference dump is written to",
-    )
-    return p.parse_args()
-
-
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
-    configure_dependency_loggers()
-    args = parse_args()
-    source = Path(args.reference_source).expanduser().resolve()
-    checkpoint = Path(resolve_checkpoint(args.checkpoint))
-    if not torch.cuda.is_available():
-        raise RuntimeError("PersonaPlex component comparison requires CUDA")
-    else:
-        pass
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    tensors = reference(
-        checkpoint, source, python=args.reference_python, dump=Path(args.dump)
-    )
-    codec = load_mimi_codec(
-        resolve_mimi_weights(checkpoint, MIMI_WEIGHTS_GLOB), device="cuda"
-    )
-    compare_mimi_encode(codec, tensors)
-    compare_mimi_decode(codec, tensors)
-    compare_input_embeddings(checkpoint, tensors)
-    depformer = Depformer(DEPFORMER)
-    depformer.load_reference_weights(
-        checkpoint_tensors(checkpoint / MOSHI_WEIGHTS_NAME, ("depformer", "linears."))
-    )
-    depformer = depformer.cuda().eval()
-    compare_depformer_logits(depformer, torch.float32, tensors)
-    compare_depformer_logits(
-        copy.deepcopy(depformer).to(torch.bfloat16), torch.bfloat16, tensors
-    )
-
-
-if __name__ == "__main__":
-    main()
+    assert max(plain[:-1]) <= atol, f"depformer {dtype}: steps 0-6 exceed {atol:.2e}"
+    assert plain[-1] > atol, "step 7 should only match with the ring emulated"
+    assert (
+        max(emulated) <= atol
+    ), f"depformer {dtype}: ring emulation exceeds {atol:.2e}"
