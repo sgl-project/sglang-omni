@@ -1189,7 +1189,9 @@ def make_local_stream_pair(
     return dispatcher, sender, receivers
 
 
-def frame_message(request_id: str, frame: int, target: str = "vocoder"):
+def frame_message(
+    request_id: str, frame: int, target: str = "vocoder"
+) -> OutgoingMessage:
     return OutgoingMessage(
         request_id=request_id, type="stream", data=frame, target=target
     )

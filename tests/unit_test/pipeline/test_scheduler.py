@@ -1439,21 +1439,33 @@ def test_put_messages_wakes_the_consumer_once_every_message_is_queued() -> None:
 def test_put_messages_wakes_a_blocked_consumer() -> None:
     outbox: Queue[OutgoingMessage] = Queue()
     received: list[OutgoingMessage] = []
+    waiting = threading.Event()
+    woken: list[bool] = []
+    wait = outbox.not_empty.wait
+
+    def recording_wait(timeout: float | None = None) -> bool:
+        waiting.set()
+        woken.append(wait(timeout))
+        return woken[-1]
+
+    outbox.not_empty.wait = recording_wait
 
     def consume() -> None:
-        received.append(outbox.get(timeout=2.0))
+        received.append(outbox.get(timeout=10.0))
         received.append(outbox.get_nowait())
 
     consumer = threading.Thread(target=consume)
     consumer.start()
+    assert waiting.wait(timeout=10.0)
     messages = [
         OutgoingMessage(request_id="req", type="stream", data=index)
         for index in range(2)
     ]
 
     put_messages(outbox, messages)
-    consumer.join(timeout=2.0)
+    consumer.join()
 
+    assert woken == [True]
     assert received == messages
 
 

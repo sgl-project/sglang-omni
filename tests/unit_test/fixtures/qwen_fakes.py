@@ -19,7 +19,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 
 
-class RecordingOutbox(Queue):
+class RecordingOutbox(Queue[OutgoingMessage]):
     """A real scheduler outbox whose messages a test reads back in order."""
 
     @property
