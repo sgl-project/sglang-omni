@@ -268,6 +268,9 @@
 "settings.modelNote" = "SGLang-Omni 在 Apple Silicon 上完成语音识别。文字处理在下方单独配置。";
 "settings.prepareASR" = "下载并准备语音模型";
 "settings.unloadASR" = "卸载语音模型";
+"settings.speechModel.missing" = "尚未下载。首次听写前需要先下载约 700 MB。";
+"settings.speechModel.downloaded" = "已下载。开始听写时加载，需要几秒。";
+"settings.speechModel.ready" = "已加载，可以直接听写。";
 "settings.runtime" = "运行环境位置";
 "settings.python" = "Python 可执行文件";
 "settings.runtimeNote" = "准备模型前请先用 OmniTyper/scripts/setup.sh 安装运行环境。";

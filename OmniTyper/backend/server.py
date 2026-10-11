@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import io
 import json
 import os
@@ -24,9 +25,61 @@ from numpy.typing import NDArray
 DEFAULT_MODEL = "mlx-community/Qwen3-ASR-0.6B-4bit"
 MODEL_REVISION = "313d850181767edf09f00a9c289becca70e58cd0"
 SERVED_MODEL = "Qwen/Qwen3-ASR-0.6B"
+MODEL_FILES = ["*.json", "*.safetensors", "*.txt"]
 
 
-def model_snapshot(model: str, revision: str) -> str:
+def snapshot_bytes(model: str, revision: str) -> int:
+    """Size of the files a first download fetches."""
+    from huggingface_hub import HfApi
+
+    info = HfApi().model_info(model, revision=revision, files_metadata=True, timeout=10)
+    return sum(
+        file.size or 0
+        for file in info.siblings or []
+        if any(fnmatch.fnmatch(file.rfilename, pattern) for pattern in MODEL_FILES)
+    )
+
+
+def download_reporter(progress: Callable[..., None], expected: int) -> type:
+    """Build the tqdm class that reports a snapshot's byte progress instead of drawing it.
+
+    Note (Yifei Leng): The cache folder cannot stand in for this. Xet transfers keep the bytes
+    out of the blob until the file is whole, so its size stays near zero for the entire download.
+    """
+    from tqdm import tqdm
+
+    class Reporter(tqdm):
+        finished = False
+        fraction = 0.0
+        reported = 0.0
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            # Note (Yifei Leng): huggingface_hub passes its own `name` keyword to some custom classes,
+            # and tqdm would otherwise switch itself off because the worker's stderr is not a terminal.
+            kwargs.pop("name", None)
+            kwargs.update(disable=False, file=io.StringIO())
+            super().__init__(*args, **kwargs)
+
+        def display(self, *args: object, **kwargs: object) -> None:
+            # Note (Yifei Leng): Recent releases keep one bar for network bytes and one for written
+            # bytes, and both only grow, so the furthest bar is the honest figure.
+            total = max(self.total or 0, expected)
+            if Reporter.finished or self.unit != "B" or not total:
+                return
+            fraction = min(self.n / total, 0.99)
+            now = time.monotonic()
+            if fraction <= Reporter.fraction or now - Reporter.reported < 0.25:
+                return
+            Reporter.fraction, Reporter.reported = fraction, now
+            progress(
+                f"Downloading the speech model… {int(fraction * 100)}% of {total // 1_000_000} MB",
+                fraction,
+            )
+
+    return Reporter
+
+
+def model_snapshot(model: str, revision: str, progress: Callable[..., None]) -> str:
     """Use a complete pinned local snapshot offline; download on first use."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
@@ -42,17 +95,32 @@ def model_snapshot(model: str, revision: str) -> str:
     if model == DEFAULT_MODEL:
         required.add("preprocessor_config.json")
     try:
-        cached = snapshot_download(model, revision=revision, local_files_only=True)
+        # Note (Yifei Leng): Recent huggingface_hub releases call a snapshot incomplete unless
+        # every file of the repository is cached, so name the files this app downloads.
+        cached = snapshot_download(
+            model,
+            revision=revision,
+            local_files_only=True,
+            allow_patterns=MODEL_FILES,
+        )
         if all((Path(cached) / name).is_file() for name in required):
             return cached
     except LocalEntryNotFoundError:
         # Note (Jiaxin Deng): Not cached yet, so fall through to the online download below.
         pass
-    return snapshot_download(
-        model,
-        revision=revision,
-        allow_patterns=["*.json", "*.safetensors", "*.txt"],
-    )
+    try:
+        expected = snapshot_bytes(model, revision)
+    except Exception:
+        # Note (Yifei Leng): The percentage is best effort; the download below reports real failures.
+        expected = 0
+    reporter = download_reporter(progress, expected)
+    try:
+        return snapshot_download(
+            model, revision=revision, allow_patterns=MODEL_FILES, tqdm_class=reporter
+        )
+    finally:
+        # Note (Yifei Leng): A bar collected later must not write into the protocol stream.
+        reporter.finished = True
 
 
 class NativeASRServer:
@@ -62,14 +130,14 @@ class NativeASRServer:
         # Note (Codex): Local audio must not leave loopback through inherited proxy settings.
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def start(self, progress: Callable[[str], None]) -> None:
+    def start(self, progress: Callable[..., None]) -> None:
         if self.process is not None and self.process.poll() is None:
             return
         self.close()
         progress(
             "Loading the pinned local speech model; first use downloads model files…"
         )
-        model_path = model_snapshot(DEFAULT_MODEL, MODEL_REVISION)
+        model_path = model_snapshot(DEFAULT_MODEL, MODEL_REVISION, progress)
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]
