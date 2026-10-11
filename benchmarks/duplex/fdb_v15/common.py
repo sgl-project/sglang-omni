@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pinned inputs and settings shared by every FDB v1.5 step.
+"""Pinned inputs and settings shared by every FDB v1.5 and v1.0 step.
 
 Settings come from environment variables; see the Settings table in
 docs/developer_reference/full_duplex_bench.md.
@@ -7,12 +7,16 @@ docs/developer_reference/full_duplex_bench.md.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from pydantic import JsonValue
+
+from benchmarks.duplex.client import MAX_TIMEOUT_S
 from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -41,6 +45,8 @@ DEFAULT_JUDGE_PORT = 30000
 JOB_PORT_STRIDE = 10
 JUDGE_NCCL_PORT_OFFSET = 1
 NCCL_PORT_END = NCCL_PORT_BASE + NCCL_PORT_SPAN
+# note (luojiaxuan): v1.0 artifacts of a repeat live under repeat-N/v10/.
+V10_DIR = "v10"
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,7 @@ class Settings:
     judge_port: int
     gpu: str
     session_timeout_s: str
+    v10_session_timeout_s: str
     run_name: str
 
     @property
@@ -73,6 +80,14 @@ class Settings:
     @property
     def dataset_revision_file(self) -> Path:
         return self.dataset_dir / "v1.5.revision"
+
+    @property
+    def dataset_v10(self) -> Path:
+        return self.dataset_dir / "v1.0"
+
+    @property
+    def dataset_v10_revision_file(self) -> Path:
+        return self.dataset_dir / "v1.0.revision"
 
     @property
     def parakeet_nemo(self) -> Path:
@@ -120,12 +135,14 @@ class Settings:
             "FDB_WORK": str(self.fdb_work),
             "FDB_SOURCE": str(self.fdb_source),
             "FDB_DATASET": str(self.dataset),
+            "FDB10_DATASET": str(self.dataset_v10),
             "PARAKEET_NEMO": str(self.parakeet_nemo),
             "PARAKEET_SHA256": PARAKEET_SHA256,
             "MODEL_ID": MODEL_ID,
             "MODEL_REVISION": self.model_revision,
             "REALTIME_URL": self.realtime_url,
             "SESSION_TIMEOUT_S": self.session_timeout_s,
+            "V10_SESSION_TIMEOUT_S": self.v10_session_timeout_s,
             "JUDGE_URL": self.judge_url,
             "JUDGE_CONFIG": str(self.judge_dir / "judge-config.json"),
         }
@@ -156,6 +173,24 @@ def env_text(name: str, default: str) -> str:
 
 def env_path(name: str, default: Path) -> Path:
     return Path(env_text(name, str(default))).expanduser().absolute()
+
+
+def session_timeout(name: str, default: str) -> str:
+    """A per-session deadline in seconds, within the recorder's ceiling."""
+    text = env_text(name, default)
+    try:
+        value = float(text)
+    except ValueError:
+        raise SystemExit(
+            f"ERROR: {name} must be a number of seconds, got {text!r}."
+        ) from None
+    if not 0 < value <= MAX_TIMEOUT_S:
+        raise SystemExit(
+            f"ERROR: {name}={text} is outside 0-{MAX_TIMEOUT_S:g} s, the recorder's ceiling."
+        )
+    else:
+        pass
+    return text
 
 
 def resolve_visible_gpu() -> str:
@@ -252,7 +287,8 @@ def load_settings(run_name: str) -> Settings:
         ),
         judge_port=judge_port,
         gpu=gpu,
-        session_timeout_s=env_text("SESSION_TIMEOUT_S", "90"),
+        session_timeout_s=session_timeout("SESSION_TIMEOUT_S", "90"),
+        v10_session_timeout_s=session_timeout("V10_SESSION_TIMEOUT_S", "230"),
         run_name=run_name,
     )
 
@@ -273,8 +309,32 @@ def step_command(step: str, settings: Settings, repeat: int | None = None) -> st
     )
 
 
+def require_v10_export(settings: Settings, repeat: int) -> Path | None:
+    """The v1.0 export tree of a repeat that selected v1.0 samples; None for a
+    v1.5-only repeat. A selected v1.0 whose export never landed stops the step,
+    as a missing v1.5 export does."""
+    repeat_dir = settings.repeat_dir(repeat)
+    if not (repeat_dir / V10_DIR / "sample-ids.txt").is_file():
+        return None
+    else:
+        pass
+    tree = repeat_dir / V10_DIR / "reference"
+    if not (tree / "manifest.json").is_file():
+        raise SystemExit(
+            f"ERROR: {tree / 'manifest.json'} is missing: `generate` did not finish "
+            f"the v1.0 export. Delete {repeat_dir} and run "
+            f"`{step_command('generate', settings, repeat)}` again."
+        )
+    else:
+        return tree
+
+
 def log_tail(path: Path) -> str:
     return "\n".join(path.read_text().splitlines()[-LOG_TAIL_LINES:])
+
+
+def read_json(path: Path) -> dict[str, JsonValue]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def reference_command(settings: Settings, phase: str, *arguments: str) -> list[str]:
@@ -283,6 +343,17 @@ def reference_command(settings: Settings, phase: str, *arguments: str) -> list[s
         str(settings.scoring_python),
         "-m",
         "benchmarks.eval.benchmark_duplex_reference",
+        phase,
+        *arguments,
+    ]
+
+
+def v10_command(settings: Settings, phase: str, *arguments: str) -> list[str]:
+    """A benchmark_duplex_v10 reference phase, run in the scoring venv."""
+    return [
+        str(settings.scoring_python),
+        "-m",
+        "benchmarks.eval.benchmark_duplex_v10",
         phase,
         *arguments,
     ]

@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Full-Duplex-Bench v1.5 runbook commands.
+"""Full-Duplex-Bench v1.5 and v1.0 runbook commands.
 
 Run from the repository root with the sglang-omni venv active:
     python -m benchmarks.duplex.fdb_v15 setup
-    python -m benchmarks.duplex.fdb_v15 generate --run-name smoke --per-subset 1
+    python -m benchmarks.duplex.fdb_v15 generate --run-name smoke --per-subset 1 --v10-per-subset 3
     python -m benchmarks.duplex.fdb_v15 asr --run-name smoke
     python -m benchmarks.duplex.fdb_v15 judge --run-name smoke
     python -m benchmarks.duplex.fdb_v15 aggregate --run-name smoke
+
+v1.0 takes the --per-subset count unless --v10-per-subset is given; three v1.0
+samples per subset keep the pinned evaluators from dividing by zero takeovers.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import argparse
 import shlex
 import signal
 import sys
+from functools import partial
 from pathlib import Path
 from types import FrameType
 
@@ -30,10 +34,13 @@ from benchmarks.duplex.fdb_v15.selection import (
 )
 from benchmarks.duplex.fdb_v15.servers import serve_judge, serve_model
 from benchmarks.duplex.fdb_v15.setup_assets import setup
+from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
 
 SIGTERM_EXIT_CODE = 143
 DEFAULT_RUN_NAME = "minicpmo-48"
 DEFAULT_PER_SUBSET = 12
+# note (luojiaxuan): --v10-per-subset default, resolved against the v1.5 selection.
+V10_FOLLOWS_V15 = object()
 
 
 def add_selection_arguments(parser: argparse.ArgumentParser) -> None:
@@ -70,6 +77,41 @@ def add_selection_arguments(parser: argparse.ArgumentParser) -> None:
         default=[],
         metavar="CATEGORY=N|all",
         help="Override --per-subset for one category; 0 skips it; repeatable",
+    )
+    v10_selection = parser.add_argument_group(
+        "v1.0 sample selection",
+        "Each v1.0 subset takes its first N samples in sample-ID order. "
+        "Default: the --per-subset count; explicit pair IDs default to 0 (no v1.0) "
+        "unless a v1.0 option is given.",
+    )
+    v10_exclusive = v10_selection.add_mutually_exclusive_group()
+    v10_exclusive.add_argument(
+        "--v10-per-subset",
+        type=parse_count,
+        default=V10_FOLLOWS_V15,
+        metavar="N|all",
+        help="Samples per v1.0 subset; 0 leaves v1.0 out; 'all' selects all 727",
+    )
+    v10_exclusive.add_argument(
+        "--v10-sample-id",
+        dest="v10_sample_ids",
+        action="append",
+        metavar="SUBSET/ID",
+        help="Explicit v1.0 sample; repeatable",
+    )
+    v10_exclusive.add_argument(
+        "--v10-sample-ids-file",
+        type=Path,
+        help="One SUBSET/ID per line, such as another run's v10/sample-ids.txt",
+    )
+    v10_selection.add_argument(
+        "--v10-subset-count",
+        dest="v10_subset_counts",
+        type=partial(parse_subset_count, subsets=V10_SUBSETS),
+        action="append",
+        default=[],
+        metavar="SUBSET=N|all",
+        help="Override --v10-per-subset for one v1.0 subset; 0 skips it; repeatable",
     )
 
 
@@ -130,7 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def sample_selection(
     parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> SampleSelection:
+) -> tuple[SampleSelection, SampleSelection]:
+    """The v1.5 pair selection and the v1.0 sample selection."""
     sample_ids = args.sample_ids
     if args.sample_ids_file is not None:
         sample_ids = args.sample_ids_file.read_text().split()
@@ -140,10 +183,33 @@ def sample_selection(
         parser.error("--subset-count cannot be combined with explicit sample IDs")
     else:
         pass
-    return SampleSelection(
-        per_subset=args.per_subset,
-        subset_counts=dict(args.subset_counts),
-        sample_ids=sample_ids,
+    v10_sample_ids = args.v10_sample_ids
+    if args.v10_sample_ids_file is not None:
+        v10_sample_ids = args.v10_sample_ids_file.read_text().split()
+    else:
+        pass
+    if v10_sample_ids is not None and args.v10_subset_counts:
+        parser.error(
+            "--v10-subset-count cannot be combined with explicit v1.0 sample IDs"
+        )
+    else:
+        pass
+    v10_per_subset = args.v10_per_subset
+    if v10_per_subset is V10_FOLLOWS_V15:
+        v10_per_subset = 0 if sample_ids is not None else args.per_subset
+    else:
+        pass
+    return (
+        SampleSelection(
+            per_subset=args.per_subset,
+            subset_counts=dict(args.subset_counts),
+            sample_ids=sample_ids,
+        ),
+        SampleSelection(
+            per_subset=v10_per_subset,
+            subset_counts=dict(args.v10_subset_counts),
+            sample_ids=v10_sample_ids,
+        ),
     )
 
 
@@ -170,7 +236,9 @@ def main() -> None:
     if args.command == "setup":
         setup(settings)
     elif args.command == "generate":
-        generate(settings, args.repeat, sample_selection(parser, args), args.num_shards)
+        generate(
+            settings, args.repeat, *sample_selection(parser, args), args.num_shards
+        )
     elif args.command == "asr":
         asr(settings, args.repeat, args.retry_failed)
     elif args.command == "judge":

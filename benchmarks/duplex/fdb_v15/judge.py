@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 3: LLM behavior judge (plus the semantic A/F/U judge for qwen), then the
-per-repeat report. With JUDGE=qwen the judge server runs only during this step."""
+"""Step 3: LLM behavior judge (plus the semantic A/F/U judge for qwen), the v1.0
+reference evaluation, then the per-repeat report. With JUDGE=qwen the judge
+server runs only during this step."""
 
 from __future__ import annotations
 
@@ -17,13 +18,62 @@ from benchmarks.duplex.fdb_v15.common import (
     REPO_ROOT,
     Settings,
     log,
+    read_json,
     reference_command,
+    require_v10_export,
     run_command,
     step_command,
+    v10_command,
 )
 from benchmarks.duplex.fdb_v15.servers import judge_server
+from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
 
 UNAUTHENTICATED_API_KEY = "EMPTY"
+
+
+def pending_v10_subsets(tree: Path) -> list[str]:
+    """Exported v1.0 subsets that summary.json lacks; the evaluator refuses repeats."""
+    counts = read_json(tree / "manifest.json")["counts"]
+    summary_path = tree / "summary.json"
+    evaluated = read_json(summary_path)["subsets"] if summary_path.is_file() else {}
+    return [
+        subset
+        for subset in V10_SUBSETS
+        if counts[subset]["eligible"] and subset not in evaluated
+    ]
+
+
+def evaluate_v10(
+    settings: Settings,
+    tree: Path,
+    subsets: list[str],
+    judge_arguments: list[str],
+    extra_env: dict[str, str] | None = None,
+) -> list[str]:
+    """Run the pinned evaluator on each pending subset in its own call, so one
+    failing subset does not hold back the others; returns the subsets that failed."""
+    failed = []
+    for subset in subsets:
+        log(f"== v1.0 reference evaluation of {subset} -> {tree}")
+        is_ok = run_command(
+            v10_command(
+                settings,
+                "reference-evaluate",
+                "--tree",
+                str(tree),
+                "--reference-source",
+                str(settings.fdb_source),
+                "--subset",
+                subset,
+                *judge_arguments,
+            ),
+            extra_env=extra_env,
+        )
+        if not is_ok:
+            failed.append(subset)
+        else:
+            pass
+    return failed
 
 
 def judge_with_qwen(
@@ -31,7 +81,9 @@ def judge_with_qwen(
     repeat_dir: Path,
     tree_arguments: list[str],
     retry_arguments: list[str],
-) -> bool:
+    v10_tree: Path | None,
+    v10_subsets: list[str],
+) -> tuple[bool, list[str]]:
     scores = repeat_dir / "scores"
     qwen_scores = repeat_dir / "judge-qwen"
     semantic_scores = repeat_dir / "semantic-qwen"
@@ -98,7 +150,21 @@ def judge_with_qwen(
             ],
             extra_env=api_key_env,
         )
-    return is_judge_ok and is_summary_ok and is_semantic_ok
+        failed_v10 = evaluate_v10(
+            settings,
+            v10_tree,
+            v10_subsets,
+            [
+                "--api-key-env",
+                CUSTOM_JUDGE_API_KEY_ENV,
+                "--base-url",
+                settings.judge_url,
+                "--served-model",
+                JUDGE_SERVED_MODEL,
+            ],
+            extra_env=api_key_env,
+        )
+    return is_judge_ok and is_summary_ok and is_semantic_ok, failed_v10
 
 
 def judge_with_gpt(
@@ -106,7 +172,9 @@ def judge_with_gpt(
     repeat_dir: Path,
     tree_arguments: list[str],
     retry_arguments: list[str],
-) -> bool:
+    v10_tree: Path | None,
+    v10_subsets: list[str],
+) -> tuple[bool, list[str]]:
     if not os.environ.get("OPENAI_API_KEY"):
         raise SystemExit("ERROR: export OPENAI_API_KEY before running the GPT judge.")
     else:
@@ -131,7 +199,10 @@ def judge_with_gpt(
             *retry_arguments,
         )
     )
-    return is_prepare_ok and is_judge_ok
+    failed_v10 = evaluate_v10(
+        settings, v10_tree, v10_subsets, ["--api-key-env", "OPENAI_API_KEY"]
+    )
+    return is_prepare_ok and is_judge_ok, failed_v10
 
 
 def write_report(
@@ -176,6 +247,16 @@ def judge(settings: Settings, repeat: int, retry_failed: bool) -> None:
         raise SystemExit(f"ERROR: run `{step_command('asr', settings, repeat)}` first.")
     else:
         pass
+    v10_tree = require_v10_export(settings, repeat)
+    if v10_tree is None:
+        v10_subsets = []
+    elif not (v10_tree / "asr.json").is_file():
+        raise SystemExit(
+            f"ERROR: run `{step_command('asr', settings, repeat)}` first; "
+            f"the v1.0 ASR receipt {v10_tree / 'asr.json'} is missing."
+        )
+    else:
+        v10_subsets = pending_v10_subsets(v10_tree)
     tree_arguments = [
         "--reference-source",
         str(settings.fdb_source),
@@ -184,19 +265,34 @@ def judge(settings: Settings, repeat: int, retry_failed: bool) -> None:
     ]
     retry_arguments = ["--retry-failed"] if retry_failed else []
     if settings.judge == "qwen":
-        is_judge_ok = judge_with_qwen(
-            settings, repeat_dir, tree_arguments, retry_arguments
+        is_judge_ok, failed_v10 = judge_with_qwen(
+            settings, repeat_dir, tree_arguments, retry_arguments, v10_tree, v10_subsets
         )
     else:
-        is_judge_ok = judge_with_gpt(
-            settings, repeat_dir, tree_arguments, retry_arguments
+        is_judge_ok, failed_v10 = judge_with_gpt(
+            settings, repeat_dir, tree_arguments, retry_arguments, v10_tree, v10_subsets
         )
     is_report_ok = write_report(settings, repeat_dir, tree_arguments)
+    problems = []
     if not (is_judge_ok and is_report_ok):
-        raise SystemExit(
+        problems.append(
             "WARNING: a phase reported failures. "
             f"Rerun with: {step_command('judge', settings, repeat)} --retry-failed"
         )
+    else:
+        pass
+    if failed_v10:
+        problems.append(
+            f"WARNING: the v1.0 evaluation failed for {', '.join(failed_v10)}; logs "
+            f"are in {v10_tree / 'logs'}. Rerun `{step_command('judge', settings, repeat)}` "
+            "to evaluate them again. The pinned turn-taking and interruption "
+            "evaluators divide by the number of takeovers, so a selection in which "
+            "no sample takes the turn cannot be scored."
+        )
+    else:
+        pass
+    if problems:
+        raise SystemExit("\n".join(problems))
     else:
         pass
     log(f"Step 3 done. Aggregate repeats with: {step_command('aggregate', settings)}")

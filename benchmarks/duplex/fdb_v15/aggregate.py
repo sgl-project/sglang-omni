@@ -1,15 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Aggregate per-repeat FDB v1.5 summaries into one mean and deviation table."""
+"""Aggregate per-repeat FDB v1.5 summaries, and v1.0 summaries when a run has
+them, into mean and deviation tables."""
 
 from __future__ import annotations
 
-import json
 import statistics
 from pathlib import Path
 
-from pydantic import JsonValue
-
-from benchmarks.duplex.fdb_v15.common import ENGINE_LABEL, JudgeName, Settings, log
+from benchmarks.duplex.fdb_v15.common import (
+    ENGINE_LABEL,
+    V10_DIR,
+    JudgeName,
+    Settings,
+    log,
+    read_json,
+)
+from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
 
 CATEGORIES = (
     "all",
@@ -33,11 +39,36 @@ SEMANTIC_COLUMNS = tuple(
     for axis in SEMANTIC_AXES
     for measure in ("quality", "coverage")
 )
+# note (luojiaxuan): the [Result] labels each pinned v1.0 evaluator prints, by task.
+V10_TASK_RESULTS = {
+    "pause_handling": {"takeover": "Average take turn"},
+    "smooth_turn_taking": {
+        "takeover": "Average take turn",
+        "latency_s": "Average latency",
+    },
+    "user_interruption": {
+        "takeover": "Average take turn",
+        "latency_s": "Average latency",
+        "relevance": "Average rating",
+    },
+    "backchannel": {
+        "takeover": "TOR mean",
+        "frequency": "Frequency mean",
+        "jsd": "JSD mean",
+    },
+}
+V10_COLUMNS = (
+    ("selected", "Selected", "count"),
+    ("eligible", "Eligible", "count"),
+    ("evaluated", "Evaluated", "count"),
+    ("takeover", "Takeover rate", "percent"),
+    ("latency_s", "Latency (s)", "seconds"),
+    ("relevance", "Relevance (0-5)", "rating"),
+    ("judge_retries", "Judge retries", "count"),
+    ("frequency", "Backchannel frequency", "rate"),
+    ("jsd", "Backchannel JSD", "divergence"),
+)
 RepeatMetrics = dict[str, dict[str, float | None]]
-
-
-def read_json(path: Path) -> dict[str, JsonValue]:
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def repeat_metrics(repeat_dir: Path, engine: str, judge: JudgeName) -> RepeatMetrics:
@@ -91,14 +122,52 @@ def semantic_metrics(repeat_dir: Path) -> RepeatMetrics:
     return metrics
 
 
+def v10_metrics(repeat_dir: Path) -> RepeatMetrics:
+    """One row per selected v1.0 subset from the export manifest; summary.json
+    overlays the evaluated count and metrics, so a subset whose sessions all
+    failed, or whose evaluation did, keeps its row with n/a cells."""
+    tree = repeat_dir / V10_DIR / "reference"
+    if not (tree / "manifest.json").is_file():
+        return {}
+    else:
+        pass
+    summary_path = tree / "summary.json"
+    evaluated = read_json(summary_path)["subsets"] if summary_path.is_file() else {}
+    metrics = {}
+    for subset, counts in read_json(tree / "manifest.json")["counts"].items():
+        if counts["selected"] == 0:
+            continue
+        else:
+            pass
+        row = {key: None for key, _, _ in V10_COLUMNS}
+        row["selected"] = counts["selected"]
+        row["eligible"] = counts["eligible"]
+        row["evaluated"] = 0
+        if subset in evaluated:
+            entry = evaluated[subset]
+            row["evaluated"] = entry["evaluated"]
+            for key, label in V10_TASK_RESULTS[entry["task"]].items():
+                row[key] = entry["result"][label]
+            if entry["task"] == "user_interruption":
+                row["judge_retries"] = entry["judge"]["retries"]
+            else:
+                pass
+        else:
+            pass
+        metrics[subset] = row
+    return metrics
+
+
 def render_table(
-    per_repeat: list[RepeatMetrics], columns: tuple[tuple[str, str, str], ...]
+    per_repeat: list[RepeatMetrics],
+    columns: tuple[tuple[str, str, str], ...],
+    categories: tuple[str, ...] = CATEGORIES,
 ) -> list[str]:
     lines = [
         "| Category | " + " | ".join(title for _, title, _ in columns) + " |",
         "|---|" + "---:|" * len(columns),
     ]
-    for category in CATEGORIES:
+    for category in categories:
         rows = [metrics[category] for metrics in per_repeat if category in metrics]
         if not rows:
             continue
@@ -162,6 +231,37 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
             "joint fails if any axis fails and accepts only if all three accept.",
             "",
             *render_table(per_repeat_semantic, SEMANTIC_COLUMNS),
+        ]
+    else:
+        pass
+    per_repeat_v10 = [v10_metrics(path) for path in repeat_dirs]
+    if any(per_repeat_v10):
+        relevance_judge = (
+            "the local Qwen judge, non-official" if judge == "qwen" else "GPT"
+        )
+        v10_repeats = [
+            path.name for path, metrics in zip(repeat_dirs, per_repeat_v10) if metrics
+        ]
+        coverage = (
+            ""
+            if len(v10_repeats) == len(repeat_dirs)
+            else f" v1.0 cells come from {', '.join(v10_repeats)} only; "
+            "the other repeats have no v1.0 export."
+        )
+        lines += [
+            "",
+            "## FDB v1.0 results",
+            "",
+            "Pinned reference evaluation per subset; subsets are never pooled. "
+            "Selected counts the recorded samples, Eligible the exports the "
+            "evaluator can score, Evaluated the ones it scored; n/a metrics with "
+            "Eligible above Evaluated mean the evaluation failed. Takeover rate "
+            "should be low on pause handling and backchannel, and high on turn "
+            "taking and interruption. Relevance is a 0-5 rating of the "
+            f"interruptions the model took over, by {relevance_judge}; a nonzero "
+            "Judge retries count inflates that subset's takeover rate." + coverage,
+            "",
+            *render_table(per_repeat_v10, V10_COLUMNS, V10_SUBSETS),
         ]
     else:
         pass
