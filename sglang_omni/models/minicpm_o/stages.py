@@ -27,9 +27,13 @@ from sglang_omni.models.minicpm_o.native_config import TALKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -117,6 +121,11 @@ def create_audio_encoder_executor(
     return create_encoder_executor(encoder, stage_name="audio_encoder")
 
 
+# note (0xtoward): the talker prefills unchunked, so no chunk bounds the capture;
+# forwards above this many tokens run eager.
+TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
+
+
 def create_sglang_talker_executor_from_config(
     model_path: str,
     *,
@@ -134,6 +143,14 @@ def create_sglang_talker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
     register_minicpm_o_hf_config()
+    if (
+        current_platform.is_cuda()
+        and current_platform.enable_talker_graph()
+        and not session_mode
+    ):
+        prefill_graph_backend = CudaGraphBackend.BREAKABLE
+    else:
+        prefill_graph_backend = CudaGraphBackend.DISABLED
     overrides = build_generation_batch_overrides(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
@@ -141,6 +158,10 @@ def create_sglang_talker_executor_from_config(
         # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
         enable_torch_compile=False,
         sampling_backend="pytorch",
+        cuda_graph_backend_prefill=prefill_graph_backend,
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(
+            TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
+        ),
     )
     overrides.setdefault("trust_remote_code", False)
     if session_mode:
@@ -179,6 +200,9 @@ def create_sglang_talker_executor_from_config(
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         session_mode=session_mode,
+        operator_selected_prefill_backend=operator_selected_prefill_backend(
+            server_args_overrides
+        ),
     )
     logger.info(
         f"sglang_ar_started stage=talker gpu_id={gpu_id} "
