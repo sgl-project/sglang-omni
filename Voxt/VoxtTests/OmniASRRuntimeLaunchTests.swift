@@ -53,6 +53,11 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             OmniASRBackend.runtimeExecutable(for: .mossTranscribeDiarize, qwenRuntime: qwenRuntime).path,
             "/opt/voxt/bin/moss_transcribe_diarize_server"
         )
+        XCTAssertEqual(
+            OmniASRBackend.runtimeExecutable(for: .parakeet, qwenRuntime: qwenRuntime).path,
+            "/opt/voxt/bin/parakeet_server"
+        )
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/parakeet-tdt-0.6b-v3"], .parakeet)
     }
 
     /// Every Qwen3-ASR checkpoint the native runtime is checked against runs on it;

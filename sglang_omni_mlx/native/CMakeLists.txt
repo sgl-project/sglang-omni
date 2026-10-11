@@ -160,3 +160,17 @@ set_target_properties(moss_transcribe_diarize_server moss_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATION bin)
+
+# Note (Dayuxiaoshui): Parakeet TDT: parakeet_server, with qwen3_asr_server's API without
+# realtime, and its parity tool; the front end is Sortformer's NeMo log-mel.
+add_library(parakeet_asr STATIC src/parakeet_model.cpp src/parakeet_transcriber.cpp)
+target_link_libraries(parakeet_asr PUBLIC qwen3_asr sortformer swift_port)
+target_compile_options(parakeet_asr PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(parakeet_server src/parakeet_server.cpp)
+target_link_libraries(parakeet_server PRIVATE parakeet_asr asr_service)
+add_executable(parakeet_transcribe tools/parakeet_transcribe.cpp)
+target_link_libraries(parakeet_transcribe PRIVATE parakeet_asr)
+set_target_properties(parakeet_server parakeet_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS parakeet_server parakeet_transcribe RUNTIME DESTINATION bin)

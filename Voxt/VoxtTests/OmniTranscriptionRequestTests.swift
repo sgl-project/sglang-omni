@@ -85,6 +85,15 @@ final class OmniTranscriptionRequestTests: XCTestCase {
         XCTAssertEqual(fieldValue("vad_max_chunk_seconds", in: body), "24.0")
     }
 
+    func testParakeetFinalRequestsCarryOnlyVoxtsChunkLength() {
+        let request = OmniASRRuntime.parakeetFinalRequest(samples: [0, 0.1], sampleRate: 16000, chunkDuration: 1200)
+        let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
+
+        XCTAssertEqual(fieldValue("chunk_duration", in: body), "1200.0")
+        XCTAssertNil(fieldValue("language", in: body))
+        XCTAssertNil(fieldValue("max_new_tokens", in: body))
+    }
+
     func testRequestsWithoutALayoutLeaveTheServerDefault() {
         let request = OmniTranscriptionRequest(
             samples: [0],

@@ -531,6 +531,25 @@ extension OmniASRRuntime {
         )
     }
 
+    /// Note (Dayuxiaoshui): Parakeet Final as MLXAudio's generateStream decoded it: the
+    /// server cuts the chunks from Voxt's chunk length and merges them.
+    nonisolated static func parakeetFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        chunkDuration: Float
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: nil,
+            prompt: nil,
+            maxNewTokens: nil,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            chunkDuration: chunkDuration
+        )
+    }
+
     func transcribeQwenFinal(
         samples: [Float],
         sampleRate: Int,

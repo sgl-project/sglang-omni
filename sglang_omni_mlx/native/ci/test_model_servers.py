@@ -52,6 +52,7 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 
 
 class ModelServer(Server):
@@ -271,7 +272,11 @@ def test_whisper_shutdown_reports_stopped() -> None:
 
 @pytest.mark.parametrize(
     ("binary", "other_kind"),
-    [("whisper_server", "qwen3_asr"), ("cohere_transcribe_server", "whisper")],
+    [
+        ("whisper_server", "qwen3_asr"),
+        ("cohere_transcribe_server", "whisper"),
+        ("parakeet_server", "cohere_transcribe"),
+    ],
 )
 def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
     completed = subprocess.run(
@@ -520,3 +525,64 @@ def test_moss_server_serves_only_moss() -> None:
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
+
+
+@pytest.fixture(scope="module")
+def parakeet_server() -> Iterator[ModelServer]:
+    running = ModelServer("parakeet_server", "parakeet", PARAKEET_REPO)
+    yield running
+    running.stop()
+
+
+def test_parakeet_final_request_returns_text_and_sentences(
+    parakeet_server: ModelServer,
+) -> None:
+    assert parakeet_server.ready["model_name"].startswith("voxt-parakeet-")
+    status, body = parakeet_server.post_form(
+        {"chunk_duration": "1200"}, clip("0006_en_short")
+    )
+    assert status == 200
+    result = json.loads(body)
+    assert result["text"] == "Surely you are not thinking of going off there."
+    [segment] = result["segments"]
+    assert segment["text"].strip() == result["text"]
+    assert 0 <= segment["start"] < segment["end"] <= 3.1
+
+
+def test_parakeet_merges_overlapping_chunks_into_sentences(
+    parakeet_server: ModelServer,
+) -> None:
+    # Note (Dayuxiaoshui): a whole-recording request decodes 5 s chunks that
+    # overlap by 1 s, as Voxt's Swift path does.
+    status, body = parakeet_server.post_form(
+        {
+            "chunk_duration": "1200",
+            "stream": "true",
+            "include_generation_metadata": "true",
+        },
+        clip("0344_en_long"),
+    )
+    assert status == 200
+    done = sse_events(body)[0]
+    assert done["text"].startswith(
+        "In every way they sought to undermine the authority"
+    )
+    assert done["generation_metadata"]["finish_reason"] == "stop"
+    status, body = parakeet_server.post_form({}, clip("0344_en_long"))
+    assert status == 200
+    segments = json.loads(body)["segments"]
+    assert len(segments) > 1
+    assert [segment["start"] for segment in segments] == sorted(
+        segment["start"] for segment in segments
+    )
+
+
+@pytest.mark.parametrize("chunk_duration", ["nan", "1", "-5", "600"])
+def test_parakeet_rejects_a_bad_chunk_duration(
+    parakeet_server: ModelServer, chunk_duration: str
+) -> None:
+    status, body = parakeet_server.post_form(
+        {"chunk_duration": chunk_duration}, clip("0006_en_short")
+    )
+    assert status == 400
+    assert "chunk_duration" in json.loads(body)["detail"]
