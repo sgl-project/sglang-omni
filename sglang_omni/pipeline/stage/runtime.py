@@ -2223,14 +2223,22 @@ class Stage:
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
         if msg.enable_torch and not TorchProfiler.is_active():
-            base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
-            template = f"{base_tpl}_pid{os.getpid()}"
-            prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
-            if prof_dir and not os.path.isabs(template):
-                template = os.path.join(prof_dir, template)
+            try:
+                base_tpl = msg.trace_path_template.format(
+                    run_id=run_id, stage=self.name
+                )
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                logger.warning(
+                    f"Stage {self.name} ignored invalid profiler trace path template"
+                )
             else:
-                pass
-            TorchProfiler.start(template, run_id=run_id)
+                template = f"{base_tpl}_pid{os.getpid()}"
+                prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+                if prof_dir and not os.path.isabs(template):
+                    template = os.path.join(prof_dir, template)
+                else:
+                    pass
+                TorchProfiler.start(template, run_id=run_id)
         else:
             pass
         if msg.event_dir is not None:

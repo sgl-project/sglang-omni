@@ -34,6 +34,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
+from string import Formatter
 from types import FrameType
 from typing import TypedDict
 
@@ -372,6 +373,30 @@ def mount_profiler_routes(
             else:
                 pass
             tpl = req.trace_path_template or ""
+        if req.enable_torch:
+            try:
+                fields = {
+                    field_name
+                    for _, field_name, _, _ in Formatter().parse(tpl)
+                    if field_name is not None
+                }
+                unsupported_fields = fields - {"run_id", "stage"}
+                if unsupported_fields:
+                    names = ", ".join(sorted(unsupported_fields))
+                    raise ValueError(f"unsupported placeholder(s): {names}")
+                else:
+                    pass
+                tpl.format(run_id=run_id, stage="stage")
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Invalid trace_path_template. Only {run_id} and {stage} "
+                        f"placeholders are supported: {exc}"
+                    ),
+                ) from exc
+        else:
+            pass
         if event_dir is not None:
             try:
                 _get_event_recorder().start(
