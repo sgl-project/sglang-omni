@@ -20,8 +20,9 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
         XCTAssertEqual(environment, ["PATH": "/usr/bin", "HOME": "/Users/someone"])
     }
 
-    func testLaunchSettingsNeedTheOmniBackendAndARuntimePath() {
-        XCTAssertNil(OmniASRBackend.LaunchSettings(environment: ["VOXT_OMNI_RUNTIME": "/opt/qwen3_asr_server"]))
+    func testLaunchSettingsUseExplicitRuntimePathForDevelopment() {
+#if arch(arm64)
+        XCTAssertNil(OmniASRBackend.LaunchSettings(environment: ["VOXT_ASR_BACKEND": "swift"]))
         XCTAssertNil(OmniASRBackend.LaunchSettings(environment: ["VOXT_ASR_BACKEND": "omni"]))
         XCTAssertNil(OmniASRBackend.LaunchSettings(environment: ["VOXT_ASR_BACKEND": "omni", "VOXT_OMNI_RUNTIME": ""]))
         let settings = OmniASRBackend.LaunchSettings(environment: [
@@ -29,6 +30,44 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             "VOXT_OMNI_RUNTIME": "/opt/qwen3_asr_server",
         ])
         XCTAssertEqual(settings?.runtimeExecutable, URL(fileURLWithPath: "/opt/qwen3_asr_server"))
+#else
+        XCTAssertNil(OmniASRBackend.LaunchSettings(environment: [
+            "VOXT_OMNI_RUNTIME": "/opt/qwen3_asr_server",
+        ]))
+#endif
+    }
+
+    func testLaunchSettingsFindTheBundledRuntime() throws {
+        let bundleDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voxt-omni-bundle-\(UUID().uuidString).bundle", isDirectory: true)
+        let runtimeDirectory = bundleDirectory
+            .appendingPathComponent("Contents/Resources/OmniRuntime/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bundleDirectory) }
+
+        let bundleInfo = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.voxt.test.omni</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>
+        """
+        let bundleInfoDirectory = bundleDirectory.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundleInfoDirectory, withIntermediateDirectories: true)
+        try bundleInfo.write(
+            to: bundleInfoDirectory.appendingPathComponent("Info.plist"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtimeExecutable = runtimeDirectory.appendingPathComponent("qwen3_asr_server")
+        try Data().write(to: runtimeExecutable)
+
+        let bundle = try XCTUnwrap(Bundle(url: bundleDirectory))
+        let settings = OmniASRBackend.LaunchSettings(environment: [:], bundle: bundle)
+
+#if arch(arm64)
+        XCTAssertEqual(settings?.runtimeExecutable, runtimeExecutable)
+#else
+        XCTAssertNil(settings)
+#endif
     }
 
     func testEachKindRunsItsOwnServerBesideTheQwenRuntime() {
@@ -53,6 +92,17 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             OmniASRBackend.runtimeExecutable(for: .mossTranscribeDiarize, qwenRuntime: qwenRuntime).path,
             "/opt/voxt/bin/moss_transcribe_diarize_server"
         )
+    }
+
+    func testOmniModelRoutingIdentifiesOnlyNativeRuntimeCheckpoints() {
+#if arch(arm64)
+        XCTAssertTrue(OmniASRBackend.usesOmniRuntime(for: "mlx-community/Qwen3-ASR-0.6B-4bit"))
+        XCTAssertTrue(OmniASRBackend.usesOmniRuntime(for: "mlx-community/whisper-large-v3-turbo"))
+#else
+        XCTAssertFalse(OmniASRBackend.usesOmniRuntime(for: "mlx-community/Qwen3-ASR-0.6B-4bit"))
+        XCTAssertFalse(OmniASRBackend.usesOmniRuntime(for: "mlx-community/whisper-large-v3-turbo"))
+#endif
+        XCTAssertFalse(OmniASRBackend.usesOmniRuntime(for: "mlx-community/parakeet-tdt-0.6b-v3"))
     }
 
     /// Every Qwen3-ASR checkpoint the native runtime is checked against runs on it;

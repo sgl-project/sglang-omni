@@ -230,7 +230,9 @@ enum ModelDebugCatalog {
             return ASRDebugModelOption(
                 id: "mlx:\(model.id)",
                 title: MLXModelCatalog.displayTitle(for: model.id),
-                subtitle: AppLocalization.localizedString("Local MLX Audio"),
+                subtitle: OmniASRBackend.usesOmniRuntime(for: model.id)
+                    ? AppLocalization.localizedString("SGLang Omni")
+                    : AppLocalization.localizedString("Local MLX Audio"),
                 selection: .mlx(repo: model.id)
             )
         }

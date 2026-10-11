@@ -9,6 +9,12 @@ name: Voxt Mac CI
 # VOXT_CI_ROOT persists on the runner: the pinned checkpoints and the corpus are
 # fetched once and reused while their SHA-256 match (provision.py), and the
 # runtime's CMake build directory is reused across runs.
+#
+# This workflow is intentionally disabled until the repository's Apple Silicon
+# runner, persistent CI storage, and required repository configuration are
+# ready. Enable the test workflow with VOXT_ENABLE_MAC_CI=true. The package
+# job additionally requires VOXT_ENABLE_CI_PACKAGE=true. Local development
+# should use Voxt/tools/package_local_app.sh instead.
 
 on:
   pull_request:
@@ -38,6 +44,7 @@ env:
 jobs:
   preflight:
     name: voxt-mac-ci-gate
+    if: ${{ vars.VOXT_ENABLE_MAC_CI == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -72,6 +79,7 @@ jobs:
 
   native-runtime:
     name: native runtime (golden + API)
+    if: ${{ vars.VOXT_ENABLE_MAC_CI == 'true' }}
     needs: [preflight]
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
@@ -163,8 +171,23 @@ jobs:
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py
 
+      - name: Archive tested native runtime
+        if: success()
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/voxt-native-runtime.tar.gz" -C "$RUNNER_TEMP/runtime" .
+
+      - name: Upload tested native runtime
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxt-native-runtime
+          path: ${{ runner.temp }}/voxt-native-runtime.tar.gz
+          if-no-files-found: error
+
   voxt-unit:
     name: Voxt Omni unit tests
+    if: ${{ vars.VOXT_ENABLE_MAC_CI == 'true' }}
     needs: [preflight]
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
@@ -247,3 +270,110 @@ jobs:
             -only-testing:VoxtTests/OmniFailurePathTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
             -only-testing:VoxtTests/MLXNativeLiveRuntimeTests
+
+  package:
+    name: Voxt native runtime package
+    if: ${{ vars.VOXT_ENABLE_MAC_CI == 'true' && vars.VOXT_ENABLE_CI_PACKAGE == 'true' }}
+    needs: [native-runtime, voxt-unit]
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if /usr/bin/xcrun --find xcodebuild >/dev/null 2>&1 && xcodebuild -version >/dev/null 2>&1; then
+            :
+          else
+            candidates="$( {
+              mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null || true
+              ls -d /Applications/Xcode*.app "$HOME"/Applications/Xcode*.app 2>/dev/null || true
+            } | sort -u )"
+            xcode=""
+            while IFS= read -r app; do
+              if [ -n "$app" ] && [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ]; then
+                xcode="$app"
+              else
+                :
+              fi
+            done <<< "$(printf '%s\n' "$candidates" | sort -V)"
+            if [ -z "$xcode" ]; then
+              echo "::error::No usable Xcode found for the Voxt package build"
+              exit 1
+            else
+              echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+              export DEVELOPER_DIR="$xcode/Contents/Developer"
+            fi
+          fi
+          xcodebuild -version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Download tested native runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: voxt-native-runtime
+          path: ${{ runner.temp }}/voxt-native-runtime-artifact
+
+      - name: Extract tested native runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/voxt-native-runtime"
+          tar -xzf "$RUNNER_TEMP/voxt-native-runtime-artifact/voxt-native-runtime.tar.gz" \
+            -C "$RUNNER_TEMP/voxt-native-runtime"
+
+      - name: Validate native runtime artifact
+        run: |
+          set -euo pipefail
+          runtime="${RUNNER_TEMP}/voxt-native-runtime"
+          for file in \
+            qwen3_asr_server \
+            whisper_server \
+            cohere_transcribe_server \
+            moss_transcribe_diarize_server \
+            libmlx.dylib \
+            libjaccl.dylib \
+            mlx.metallib; do
+            test -f "$runtime/bin/$file"
+          done
+          test -x "$runtime/bin/qwen3_asr_server"
+
+      - name: Build unsigned PR package
+        working-directory: Voxt
+        run: |
+          set -euo pipefail
+          tools/package_local_app.sh \
+            --native-runtime "$RUNNER_TEMP/voxt-native-runtime" \
+            --output-dir "$RUNNER_TEMP/voxt-package" \
+            --no-sign
+
+      - name: Validate package contents
+        run: |
+          set -euo pipefail
+          package_dir="$(find "$RUNNER_TEMP/voxt-package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$package_dir"
+          zip_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*-macOS.zip' -type f -print -quit)"
+          dmg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.dmg' -type f -print -quit)"
+          pkg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.pkg' -type f -print -quit)"
+          test -f "$zip_path"
+          test -f "$dmg_path"
+          test -f "$pkg_path"
+          unzip -l "$zip_path" | grep -F 'Contents/Resources/OmniRuntime/bin/qwen3_asr_server'
+          hdiutil verify "$dmg_path"
+          shasum -a 256 -c "$zip_path.sha256"
+          shasum -a 256 -c "$pkg_path.sha256"
+
+      - name: Upload PR package
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxt-native-runtime-package-${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            ${{ runner.temp }}/voxt-package/*/Voxt-*-macOS.zip
+            ${{ runner.temp }}/voxt-package/*/Voxt-*.dmg
+            ${{ runner.temp }}/voxt-package/*/Voxt-*.pkg
+            ${{ runner.temp }}/voxt-package/*/*.sha256
+          if-no-files-found: error

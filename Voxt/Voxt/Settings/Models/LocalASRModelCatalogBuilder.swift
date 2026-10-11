@@ -51,9 +51,7 @@ extension ModelCatalogBuilder {
             return ModelCatalogEntry(
                 id: "mlx:\(repo)",
                 title: mlxModelManager.displayTitle(for: repo),
-                engine: MLXWhisperMigrationSupport.isWhisperRepo(repo)
-                    ? localizedModelCatalog("Whisper (MLX)")
-                    : localizedModelCatalog("MLX Audio"),
+                engine: ModelCatalogEngineSupport.asrTitle(for: repo),
                 sizeText: mlxASRSizeText(repo: repo, isInstalled: installSnapshot.isInstalled),
                 ratingText: MLXModelManager.ratingText(for: repo),
                 filterTags: decoration.filterTags,
