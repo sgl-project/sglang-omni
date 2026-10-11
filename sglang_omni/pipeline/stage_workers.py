@@ -13,13 +13,15 @@ import sys
 import time
 from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from multiprocessing.process import BaseProcess
 from multiprocessing.queues import Queue
+from multiprocessing.sharedctypes import Synchronized
 from multiprocessing.synchronize import Event
 from typing import Literal, Sequence
 
 from sglang.srt.utils import kill_itself_when_parent_died
+from torch._dynamo.callback import callback_handler
 
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
@@ -165,6 +167,12 @@ class StageWorkerProcessSpec:
     log_level: int = logging.INFO
     cpu_threads: int | None = None
     cpu_affinity: frozenset[int] | None = None
+    # note (Richard Wang): a counter the stage process bumps whenever its
+    # startup moves forward, so the launcher times out on a stall, not on a
+    # slow but progressing start such as a cold compile.
+    startup_progress: Synchronized | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -313,6 +321,7 @@ class StageGroup:
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.ready_events: list[Event] = []
         self.startup_error_channels: list[Queue[str]] = []
+        self.startup_progress: list[Synchronized] = []
         self._process_start_attempts: set[str] = (
             set()
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -372,10 +381,15 @@ class StageGroup:
         for spec in self.process_specs:
             event = ctx.Event()
             startup_error_channel = ctx.Queue()
+            progress = ctx.Value("q", 0)
             proc_name = process_name(spec)
             proc = ctx.Process(
                 target=stage_process_main,
-                args=(spec, event, startup_error_channel),
+                args=(
+                    replace(spec, startup_progress=progress),
+                    event,
+                    startup_error_channel,
+                ),
                 name=proc_name,
                 daemon=True,
             )
@@ -398,6 +412,7 @@ class StageGroup:
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self.ready_events.append(event)
             self.startup_error_channels.append(startup_error_channel)
+            self.startup_progress.append(progress)
 
         logger.info(
             "StageGroup %s: spawned %d process(es) (pids=%s)",
@@ -411,9 +426,9 @@ class StageGroup:
         )
 
     async def wait_ready(self, timeout: float) -> None:
-        """Block until every TP rank signals ready or *timeout* expires."""
+        """Block until every TP rank signals ready, or until one goes *timeout*
+        seconds without startup progress."""
         loop = asyncio.get_running_loop()
-        deadline = time.monotonic() + timeout
 
         for i, event in enumerate(self.ready_events):
             proc = self._processes[
@@ -422,9 +437,20 @@ class StageGroup:
             spec = self.process_specs[i]
             process_label = spec.process_name
             startup_error_channel = self.startup_error_channels[i]
+            progress = (
+                self.startup_progress[i] if i < len(self.startup_progress) else None
+            )
+            seen = progress.value if progress is not None else 0
+            last_progress = time.monotonic()
 
             while not event.is_set():
-                remaining = deadline - time.monotonic()
+                count = progress.value if progress is not None else 0
+                if count != seen:
+                    seen = count
+                    last_progress = time.monotonic()
+                else:
+                    pass
+                remaining = last_progress + timeout - time.monotonic()
                 if remaining <= 0:
                     details = ""
                     try:
@@ -434,8 +460,10 @@ class StageGroup:
                     else:
                         details = f"\nStartup failure detail:\n{traceback_text}"
                     raise TimeoutError(
-                        f"Process {process_label} did not become ready "
-                        f"within {timeout:.0f}s{details}"
+                        f"Process {process_label} made no startup progress "
+                        f"for {timeout:.0f}s. A start that needs longer between "
+                        "steps can raise SGLANG_OMNI_STARTUP_TIMEOUT."
+                        f"{details}"
                     )
                 else:
                     pass
@@ -523,6 +551,7 @@ class StageGroup:
             self._processes.clear()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self.ready_events.clear()
             self.startup_error_channels.clear()
+            self.startup_progress.clear()
 
 
 def stage_process_main(
@@ -593,6 +622,17 @@ def stage_process_main(
         sys.exit(1)
 
 
+def report_startup_progress(spec: StageWorkerProcessSpec) -> None:
+    """Count one step of startup progress for the launcher's stall deadline."""
+    progress = spec.startup_progress
+    if progress is None:
+        return
+    else:
+        pass
+    with progress.get_lock():
+        progress.value += 1
+
+
 def run_process(
     spec: StageWorkerProcessSpec,
     ready_event: Event,
@@ -615,16 +655,25 @@ def run_process(
     local_dispatcher = LocalStageDispatcher()
     stages: list[Stage] = []
 
+    # note (Richard Wang): each finished torch.compile frame counts as startup
+    # progress, since a cold compile and autotune can run for many minutes.
+    def on_compile_end(_args: object) -> None:
+        report_startup_progress(spec)
+
+    callback_handler.register_end_callback(on_compile_end)
+
     async def _start_and_run() -> None:
         tasks: list[asyncio.Task[None]] = []
         try:
             for stage in stages:
                 await stage.start()
+                report_startup_progress(spec)
             log.info(
                 "Process %s ready with stages=%s",
                 spec.process_name,
                 [stage.name for stage in stages],
             )
+            callback_handler.remove_end_callback(on_compile_end)
             ready_event.set()
             tasks = [asyncio.create_task(stage.run()) for stage in stages]
             await asyncio.gather(*tasks)
@@ -650,6 +699,7 @@ def run_process(
                     local_dispatcher=local_dispatcher,
                 )
             )
+            report_startup_progress(spec)
         local_dispatcher.register_many(stages)
         asyncio.run(_start_and_run())
     except BaseException:

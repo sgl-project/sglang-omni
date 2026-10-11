@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import asyncio
 import logging
 import multiprocessing
 import os
+import queue
 import subprocess
 import sys
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -107,6 +111,40 @@ def test_spawn_env_cpu_plan_preserves_configured_omp(
 
     assert "OMP_NUM_THREADS" not in os.environ
     assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+
+@pytest.mark.parametrize("progressing", [True, False])
+def test_wait_ready_times_out_on_a_stall_not_on_a_slow_start(progressing: bool) -> None:
+    group = stage_workers.StageGroup("slow", [worker_spec()])
+    ready = threading.Event()
+    progress = multiprocessing.get_context("spawn").Value("q", 0)
+    group._processes = [  # noqa: leading-underscore  # production name
+        SimpleNamespace(is_alive=lambda: True, exitcode=None)
+    ]
+    group.ready_events = [ready]
+    group.startup_error_channels = [queue.Queue()]
+    group.startup_progress = [progress]
+
+    def start() -> None:
+        # Progress for longer than the timeout, then ready, or stall.
+        for _ in range(8):
+            time.sleep(0.1)
+            if progressing:
+                with progress.get_lock():
+                    progress.value += 1
+            else:
+                pass
+        if progressing:
+            ready.set()
+        else:
+            pass
+
+    threading.Thread(target=start, daemon=True).start()
+    if progressing:
+        asyncio.run(group.wait_ready(0.3))
+    else:
+        with pytest.raises(TimeoutError, match="SGLANG_OMNI_STARTUP_TIMEOUT"):
+            asyncio.run(group.wait_ready(0.3))
 
 
 @pytest.mark.skipif(
