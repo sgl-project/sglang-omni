@@ -162,6 +162,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     mask_leading_silence: bool = False
     ref_code: torch.Tensor | None = None
     ref_code_len: int = 0
+    ref_code_cache_key: str = ""
     prompt_input_embeds: torch.Tensor | None = None
     semantic_sampling_seed: int = field(default_factory=new_qwen3_tts_sampling_seed)
     subtalker_dosample: bool = True
@@ -1455,6 +1456,17 @@ def prepare_qwen3_tts_base_request(
             ),
         )
 
+    ref_codes = voice_clone_prompt.get("ref_code")
+    if ref_codes and ref_codes[0] is not None and voice_clone_prompt["icl_mode"][0]:
+        reference = (
+            ref_codes[0].detach().to(device="cpu", dtype=torch.long).contiguous()
+        )
+        state.ref_code_cache_key = hashlib.sha256(
+            reference.numpy().tobytes()
+        ).hexdigest()
+    else:
+        state.ref_code_cache_key = ""
+
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[
         0
     ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -1813,6 +1825,7 @@ def build_sglang_qwen3_tts_request(
         req=req,
         ref_code=prepared.ref_code,
         ref_code_len=ref_code_len,
+        ref_code_cache_key=state.ref_code_cache_key,
         prompt_input_embeds=prepared.prompt_input_embeds,
         prefill_input_embeds=prepared.prompt_input_embeds,
         semantic_sampling_seed=semantic_sampling_seed,
@@ -1999,6 +2012,7 @@ def make_qwen3_tts_scheduler_adapters(
             else:
                 pass
             metadata["ref_code_len"] = ref_code_len
+            metadata["ref_code_cache_key"] = data.ref_code_cache_key
             if INITIAL_CODEC_CHUNK_FRAMES_PARAM in params:
                 metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
                     INITIAL_CODEC_CHUNK_FRAMES_PARAM

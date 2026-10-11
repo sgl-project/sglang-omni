@@ -112,6 +112,7 @@ def async_incremental_scheduler(
     scheduler.followup_decode_stream = device_module.Stream(device=device)
     scheduler.followup_decode_streams = (scheduler.followup_decode_stream,)
     scheduler.initial_window_decode_graphs = None
+    scheduler.reference_codec_arena = None
     scheduler.worker_ctx = SimpleNamespace(graphs=None)
     return scheduler
 

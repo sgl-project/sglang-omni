@@ -8,8 +8,9 @@ import logging
 import queue
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import count
 from typing import TYPE_CHECKING, Literal, Mapping, TypeVar, overload
 
@@ -123,6 +124,7 @@ class Qwen3TTSStreamState:
     total_frames: int = 0
     pruned_frames: int = 0
     ref_frames: int = 0
+    ref_code_cache_key: str = ""
     emitted_generated_frames: int = 0
     next_decode_generated_frames: int = 0
     decoded_chunks: int = 0
@@ -186,6 +188,7 @@ class IncrementalDecodePlan:
     generated_frames: int
     emitted_generated_frames: int
     chunks: tuple[torch.Tensor, ...] = ()
+    ref_code_cache_key: str = ""
 
 
 @dataclass(eq=False)
@@ -582,6 +585,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         fused_snake_activation: bool = False,
         enable_stateful_codec_decoder: bool = False,
         codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
+        reference_codec_cache_size: int | None = None,
         incremental_codec_cuda_graph: bool = False,
         incremental_codec_compile: bool = False,
         incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
@@ -683,6 +687,10 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
         if initial_batch_wait_ms < 0 or followup_batch_wait_ms < 0:
             raise ValueError("async batch waits must be >= 0")
+        else:
+            pass
+        if reference_codec_cache_size is not None and reference_codec_cache_size < 0:
+            raise ValueError("reference_codec_cache_size must be >= 0")
         else:
             pass
         if codec_state_slots <= 0:
@@ -827,6 +835,16 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
         self.codec_arena = self.build_codec_arena(
             int(codec_state_slots), dtype=codec_state_dtype
+        )
+        self.reference_codec_cache: OrderedDict[tuple[str, int, int], int] = (
+            OrderedDict()
+        )
+        self.reference_codec_arena = (
+            self.build_codec_arena(reference_codec_cache_size, dtype=codec_state_dtype)
+            if reference_codec_cache_size
+            and self.async_decode
+            and not self.deterministic_inference
+            else None
         )
         (
             self.initial_incremental_decode_graphs,
@@ -1255,6 +1273,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             state.pending_ref_frames = ref_frames
+            state.ref_code_cache_key = str(metadata.get("ref_code_cache_key", ""))
         else:
             pass
         if INITIAL_CODEC_CHUNK_FRAMES_PARAM in metadata:
@@ -1592,6 +1611,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             generated_frames=generated_frames,
             emitted_generated_frames=state.emitted_generated_frames,
             chunks=tuple(state.code_chunks),
+            ref_code_cache_key=state.ref_code_cache_key,
         )
 
     def extract_incremental_delta(
@@ -1824,6 +1844,29 @@ class Qwen3TTSStreamingVocoderScheduler(
         Returns each row's new samples and the waveform they view, which the
         caller keeps alive until they are copied out.
         """
+        reference_frames = plans[0].reference_trim_frames
+        if (
+            reference_frames > 0
+            and stream is self.decode_stream
+            and self.reference_codec_arena is not None
+            and all(
+                plan.ref_code_cache_key
+                and plan.reference_trim_frames == reference_frames
+                for plan in plans
+            )
+        ):
+            self.restore_reference_states(gpu_input, plans, incremental)
+            gpu_input = gpu_input[:, :, reference_frames:]
+            plans = [
+                replace(
+                    plan,
+                    fresh_frames=plan.fresh_frames - reference_frames,
+                    reference_trim_frames=0,
+                )
+                for plan in plans
+            ]
+        else:
+            pass
         width = plans[0].fresh_frames
         runner = self.runner_for_stream(
             stream, self.initial_incremental_decode_graphs, "incremental_graphs"
@@ -1861,6 +1904,53 @@ class Qwen3TTSStreamingVocoderScheduler(
             ],
             waveform,
         )
+
+    def restore_reference_states(
+        self,
+        gpu_input: torch.Tensor,
+        plans: list[IncrementalDecodePlan],
+        incremental: IncrementalDecodeBatch,
+    ) -> None:
+        """Initialize first chunks from immutable reference-only codec states."""
+        cache_arena = self.reference_codec_arena
+        assert cache_arena is not None
+        arena = incremental.arena
+        runner = self.initial_window_decode_graphs
+        reference_frames = plans[0].reference_trim_frames
+        split = runner.split_frames(reference_frames) if runner is not None else None
+        # note (aladerran): only the initial worker accesses snapshots, on its decode stream.
+        for row, plan in enumerate(plans):
+            key = (plan.ref_code_cache_key, reference_frames, int(gpu_input.shape[1]))
+            cached_slot = self.reference_codec_cache.get(key)
+            if cached_slot is not None:
+                arena.copy_slot_from(plan.slot, cache_arena, cached_slot)
+                self.reference_codec_cache.move_to_end(key)
+            else:
+                reference = gpu_input[row : row + 1, :, :reference_frames]
+                if split is not None:
+                    offset = 0
+                    for width in split:
+                        replay = runner.decode_slots(
+                            reference[:, :, offset : offset + width], [plan.slot]
+                        )
+                        if replay is None:
+                            raise RuntimeError(
+                                "Qwen3-TTS reference codec graph missed a window"
+                            )
+                        else:
+                            pass
+                        offset += width
+                else:
+                    state = arena.gather([plan.slot])
+                    incremental.decoder.decode(reference, state)
+                    arena.scatter([plan.slot], state)
+                if len(self.reference_codec_cache) == cache_arena.num_slots:
+                    _, cached_slot = self.reference_codec_cache.popitem(last=False)
+                else:
+                    cached_slot = cache_arena.acquire()
+                    assert cached_slot is not None
+                cache_arena.copy_slot_from(cached_slot, arena, plan.slot)
+                self.reference_codec_cache[key] = cached_slot
 
     def decode_incremental_windows(
         self,
