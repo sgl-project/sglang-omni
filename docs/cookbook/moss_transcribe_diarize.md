@@ -146,6 +146,27 @@ SGLang selects the XPUGraph backend on XPU. The B60 validation uses
 `mem_fraction_static=0.70` to leave enough memory for all eight encoder graph
 buckets; `0.80` leaves too little graph-capture headroom on a 24 GB card.
 
+#### Apple Silicon MLX
+
+The standalone MLX server runs outside the CUDA-oriented `sglang_omni`
+pipeline and shares the decoder, checkpoint loader, serial worker, and HTTP
+surface under `sglang_omni_mlx`:
+
+```bash
+MODEL_DIR=$(hf download OpenMOSS-Team/MOSS-Transcribe-Diarize)
+python -m sglang_omni_mlx.moss_transcribe_diarize.server \
+  --model-path "$MODEL_DIR" \
+  --model-name OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --port 8000
+```
+
+This server processes one request at a time, microbatches the 30-second
+Whisper windows, and uses the shared MLX Qwen3 decoder. It accepts mono PCM16
+or float32 WAV uploads, resamples them to 16 kHz, and supports JSON or SSE
+responses. Greedy decoding is required (`temperature=0`,
+`repetition_penalty=1`). The standalone server returns transcript text;
+`verbose_json` segment parsing remains part of the pipeline server below.
+
 ### Sending Requests
 
 Use `response_format=verbose_json` when you need parsed speaker segments. `json` returns the raw transcript text only.
