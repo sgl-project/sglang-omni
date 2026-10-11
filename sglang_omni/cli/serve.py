@@ -17,6 +17,7 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
@@ -299,6 +300,42 @@ def apply_tensor_parallel_engine_overrides(
     return config_cls(**data)
 
 
+def parse_stage_offload_components(value: str | None) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    else:
+        pass
+    components = frozenset(
+        part.strip().lower() for part in value.split(",") if part.strip()
+    )
+    if not components:
+        raise typer.BadParameter("--stage-offload-components must not be empty")
+    else:
+        pass
+    return components
+
+
+def apply_stage_offload_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_offload_components: str | None,
+) -> PipelineConfig:
+    components = parse_stage_offload_components(stage_offload_components)
+    if not components:
+        return pipeline_config
+    else:
+        pass
+
+    if not isinstance(pipeline_config, MiniMaxMusic3PipelineConfig):
+        raise typer.BadParameter(
+            "--stage-offload-components is not supported by this pipeline"
+        )
+    else:
+        pass
+
+    return pipeline_config.with_serial_offload(components)
+
+
 def serve(
     ctx: typer.Context,
     model_path: Annotated[
@@ -385,6 +422,17 @@ def serve(
                 "A dotted per-stage flag (--<stage>.engine.mem_fraction_static) "
                 "overrides this for that stage. If omitted, SGLang chooses "
                 "the value automatically."
+            ),
+        ),
+    ] = None,
+    stage_offload_components: Annotated[
+        str | None,
+        typer.Option(
+            "--stage-offload-components",
+            "--stage_offload_components",
+            help=(
+                "Comma-separated components to run request-serially, each "
+                "offloading itself from the GPU before the next one runs."
             ),
         ),
     ] = None,
@@ -499,6 +547,10 @@ def serve(
         validate_colocate_config(merged_config)
     else:
         pass
+    merged_config = apply_stage_offload_cli_overrides(
+        merged_config,
+        stage_offload_components=stage_offload_components,
+    )
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 
     if should_print_merged_config(colocate=colocate, log_level=log_level):
