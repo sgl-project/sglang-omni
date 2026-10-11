@@ -29,6 +29,7 @@ from benchmarks.duplex.fdb_v15.selection import (
 )
 from benchmarks.duplex.fdb_v15.servers import model_server
 from benchmarks.duplex.run_artifacts import accounting, load_run
+from sglang_omni.models.minicpm_o.native_config import DEFAULT_MAX_SESSIONS
 
 PROGRESS_INTERVAL_S = 60
 
@@ -166,6 +167,16 @@ def generate(
         raise SystemExit(
             f"ERROR: {repeat_dir / 'recording'} exists. "
             f"Use a new --repeat, or delete {repeat_dir} to redo it."
+        )
+    else:
+        pass
+    # note (wenyao): model_server_command passes no --max_sessions, so the server
+    # admits the code default.
+    if num_shards > DEFAULT_MAX_SESSIONS:
+        raise SystemExit(
+            f"ERROR: --num-shards {num_shards} exceeds the model server's "
+            f"max_sessions {DEFAULT_MAX_SESSIONS}; it rejects extra connections "
+            "with HTTP 503."
         )
     else:
         pass

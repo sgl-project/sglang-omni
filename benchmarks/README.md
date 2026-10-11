@@ -587,6 +587,11 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --output results/minicpmo-v15 --timeout 90
 ```
 
+`--concurrency N` keeps N sessions open in one recorder; it must not exceed the
+server's `max_sessions` (2 by default), latencies
+recorded under load are not comparable to N=1, and `run.json` gains a `load`
+block (p50/p90/max initial delay, pacing violations, 503 denials).
+
 Pin the server and model revisions separately. Sending 80 ms transport packets
 does not change MiniCPM-o's one-second native processing unit. The v1.5 scoring
 commands below retain their documented measurement scope; adding a model
@@ -643,6 +648,11 @@ python -m benchmarks.eval.benchmark_duplex_v10 score \
     --transcripts results/fdb10-asr \
     [--backchannel-reference icc_gt_distribution.json]
 ```
+
+`record --concurrency N` keeps N sessions open in one recorder; it must not
+exceed the server's `max_sessions` (2 by default),
+latencies recorded under load are not comparable to N=1, and `run.json` gains a
+`load` block (p50/p90/max initial delay, pacing violations, 503 denials).
 
 `score` (`fdb-v10-synthetic-v4`) reports per-task takeover rate and latency
 from the ASR word timestamps. A takeover is output lasting at least 1 s or

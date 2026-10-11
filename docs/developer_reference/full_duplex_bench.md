@@ -180,7 +180,7 @@ Per-run choices (`--run-name`, `--repeat`, pair selection, `--num-shards`) are c
 
 - **`--repeat` only labels the directory.** It does not repeat the run. `generate --repeat 1` and `generate --repeat 2` write `repeat-1/` and `repeat-2/` and leave each other alone. `generate --repeat N` also refuses to overwrite an existing `repeat-N/recording`. To redo that one invocation, delete `$FDB_WORK/runs/RUN_NAME/repeat-N` and rerun all three steps for the same N. `asr` and `judge` resume finished work when rerun.
 - **Keep the settings fixed across the repeats of one run.** Never mix repeats with different pair selections, `--num-shards` or judge; use a new `--run-name` instead.
-- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so latencies are measured under load and are not comparable to one shard. The model server keeps `max_sessions` at 2, so use at most 2; extra connections are rejected with HTTP 503.
+- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so latencies are measured under load and are not comparable to one shard. The model server keeps `max_sessions` at 2, so `generate` refuses a larger value up front; the server would reject the extra connections with HTTP 503.
 - **The first 48 pairs are not a random sample.** `--per-subset 12` takes the first 12 samples of each category. This gives fast, comparable numbers between runs, but they are not full-dataset estimates.
 - **Non-passing sessions are never dropped.** They count as ineligible in the denominators, and empty interval sets show as `n/a`, not zero.
 - **Concurrent jobs use one GPU each.** Ports, the judge config directory and compile caches are derived from `CUDA_VISIBLE_DEVICES`. The procedure is [Concurrent runs](#concurrent-runs).
@@ -314,7 +314,7 @@ Export is deterministic: re-exporting a recording reproduces every eligible WAV 
 | `ERROR: .../recording exists` | That repeat was already generated; use the next `--repeat` or delete the directory |
 | `ERROR: .../sample-ids.txt selects different pairs` | An earlier repeat of this run used another selection; pass the same selection options, or use a new `--run-name` |
 | A shard log reports `fail` or `error` sessions | They stay in the denominator. Read `repeat-N/logs/record-shard-*.log`. If most sessions fail, fix the server and redo the repeat |
-| HTTP 503 in record logs | `--num-shards` is larger than 2, the model server's `max_sessions` |
+| `ERROR: --num-shards N exceeds the model server's max_sessions` | `generate` refuses this up front; lower `--num-shards`. HTTP 503 in record logs means another client holds the server's sessions |
 | `--device cuda needs exactly one visible GPU` | `CUDA_VISIBLE_DEVICES` (or `GPU`, when the former is unset) must be a single index |
 | `ERROR: set CUDA_VISIBLE_DEVICES to exactly one GPU index` | A concurrent job must see one card. `export CUDA_VISIBLE_DEVICES=0` in one terminal and `=1` in the other |
 | `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the same index as `CUDA_VISIBLE_DEVICES` |
