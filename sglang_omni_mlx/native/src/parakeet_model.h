@@ -7,7 +7,6 @@
 
 #include <filesystem>
 #include <functional>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,8 +27,8 @@ struct ParakeetConfig {
   std::vector<std::string> vocabulary;
   // Frames a TDT duration choice advances, by duration class.
   std::vector<int> durations;
-  // Symbols emitted on one frame before moving on; none is no limit.
-  std::optional<int> max_symbols_per_frame;
+  // Symbols emitted on one frame before moving on.
+  int max_symbols_per_frame = 0;
 };
 
 // One TDT decoder step: the predicted token and duration class, and the
@@ -46,6 +45,9 @@ public:
   // Reads config.json and model.safetensors, cast to bfloat16 as the Swift
   // port loads them.
   explicit ParakeetModel(const std::filesystem::path &model_directory);
+  // Note (Jiaxin Deng): the compiled decoder step captures this.
+  ParakeetModel(const ParakeetModel &) = delete;
+  ParakeetModel &operator=(const ParakeetModel &) = delete;
 
   // Normalized log-mel frames [1, frames, features] in float32.
   mlx::core::array Features(const std::vector<float> &samples) const;

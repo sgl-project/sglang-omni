@@ -274,9 +274,7 @@ ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
     frame += jump;
     if (jump != 0) {
       new_symbols = 0;
-    } else if (++new_symbols,
-               config.max_symbols_per_frame.has_value() &&
-                   new_symbols >= *config.max_symbols_per_frame) {
+    } else if (++new_symbols >= config.max_symbols_per_frame) {
       frame += 1;
       new_symbols = 0;
     } else {

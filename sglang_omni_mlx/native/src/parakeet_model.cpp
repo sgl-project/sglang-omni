@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "parakeet_model.h"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <regex>
@@ -71,12 +72,11 @@ ParakeetModel::ParakeetModel(const nlohmann::json &config,
   config_.vocabulary =
       config.at("joint").at("vocabulary").get<std::vector<std::string>>();
   config_.durations = decoding.at("durations").get<std::vector<int>>();
-  if (decoding.contains("greedy") &&
-      !decoding.at("greedy").value("max_symbols", nlohmann::json()).is_null()) {
-    config_.max_symbols_per_frame =
-        decoding.at("greedy").at("max_symbols").get<int>();
-  } else {
-  }
+  const nlohmann::json max_symbols =
+      decoding.value("greedy", nlohmann::json::object())
+          .value("max_symbols", nlohmann::json());
+  config_.max_symbols_per_frame =
+      max_symbols.is_number_integer() ? max_symbols.get<int>() : 0;
   // Note (Dayuxiaoshui): the Swift port takes Int(seconds * rate) in float.
   const int sample_rate = preprocessor.at("sample_rate").get<int>();
   front_end_.feature_size = config_.feature_count;
@@ -117,6 +117,24 @@ ParakeetModel::ParakeetModel(const nlohmann::json &config,
     throw std::runtime_error(
         "only the per-feature, dw-striding, rel_pos Parakeet TDT checkpoint "
         "is supported");
+  } else {
+  }
+  // Note (Jiaxin Deng): a blank with duration 0 leaves the decoder state
+  // unchanged, so greedy TDT decoding ends only with a symbol limit.
+  if (config_.max_symbols_per_frame < 1) {
+    throw std::runtime_error(
+        "decoding.greedy.max_symbols must be a positive integer");
+  } else if (std::any_of(config_.durations.begin(), config_.durations.end(),
+                         [](int duration) { return duration < 0; })) {
+    throw std::runtime_error("decoding.durations must be nonnegative");
+  } else if (checkpoint_.Weight("joint.joint_net.2.bias").shape(0) !=
+             blank_id() + 1 + static_cast<int>(config_.durations.size())) {
+    throw std::runtime_error("the joint's outputs must be the vocabulary, "
+                             "the blank and one per decoding.durations entry");
+  } else if (checkpoint_.Weight("decoder.prediction.embed.weight").shape(0) <=
+             blank_id()) {
+    throw std::runtime_error(
+        "the prediction embedding must have a row for the blank");
   } else {
   }
 }
