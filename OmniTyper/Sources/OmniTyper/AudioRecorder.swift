@@ -181,8 +181,13 @@ final class AudioRecorder: ObservableObject {
             sink.consume(buffer)
         }
         do {
-            engine.prepare()
-            try engine.start()
+            // Note (Yifei Leng): Core Audio needs about 100 ms to start. On the main actor that froze the popup
+            // in the very frames it appears, so only the bookkeeping stays here.
+            try await Task.detached(priority: .userInitiated) {
+                engine.prepare()
+                try engine.start()
+            }.value
+            guard generation == currentGeneration else { throw CancellationError() }
         } catch {
             input.removeTap(onBus: 0)
             engine.stop()
@@ -211,14 +216,23 @@ final class AudioRecorder: ObservableObject {
         }
     }
 
-    func stop() throws -> URL {
+    func stop() async throws -> URL {
         guard let url = outputURL else {
             throw Failure("sys.noRecording")
         }
         let sink = self.sink
+        let engine = self.engine
+        // Note (Yifei Leng): Stopping Core Audio and closing the file take about 60 ms, so they leave the
+        // main actor too. Clearing the engine first keeps releaseAudio() from stopping it here.
+        self.engine = nil
         releaseAudio()
-        do { try sink?.close() }
-        catch {
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                engine?.inputNode.removeTap(onBus: 0)
+                engine?.stop()
+                try sink?.close()
+            }.value
+        } catch {
             try? FileManager.default.removeItem(at: url)
             throw error
         }

@@ -48,6 +48,11 @@ struct WorkerClientTests {
     }
 
     @Test @MainActor
+    func stoppingWithoutARecordingFailsInsteadOfWaitingOnCoreAudio() async {
+        await #expect(throws: Failure.self) { _ = try await AudioRecorder().stop() }
+    }
+
+    @Test @MainActor
     func testFramingLifecycleAndCancellation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
