@@ -174,7 +174,10 @@ class AuKStepCudaGraphRunner:
         for shape in self.declared:
             self.capturing = shape
             try:
-                run_trajectory(shape)
+                # XPU's default SDPA cannot be captured, and the warmup inside
+                # must settle the attention the capture records.
+                with current_platform.graph_capture_attention():
+                    run_trajectory(shape)
             except Exception as exc:
                 # note(Dayuxiaoshui): the trajectory, not just the capture
                 # inside it, can fail, and a declared shape too wide for the
@@ -296,6 +299,9 @@ class AuKStepCudaGraphRunner:
         x: torch.Tensor,
         time: torch.Tensor,
     ) -> CapturedStep | None:
+        # The capture empties the allocator cache before it records, so the
+        # headroom it has includes the blocks the warmup trajectories cached.
+        self.module.empty_cache()
         free, _ = self.module.mem_get_info(self.device)
         if free < self.min_free_bytes:
             logger.warning(
