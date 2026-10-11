@@ -11,9 +11,12 @@ from sglang_omni.models.personaplex.components.causal_conv import (
     CausalConv1d,
     CausalConvTranspose1d,
 )
-from sglang_omni.models.personaplex.components.mimi import MimiCodec, rename_mimi_key
+from sglang_omni.models.personaplex.components.mimi import (
+    MimiCodec,
+    MimiDecodeState,
+    rename_mimi_key,
+)
 from sglang_omni.models.personaplex.components.mimi_transformer import (
-    AttentionState,
     MimiAttention,
     MimiTransformer,
 )
@@ -32,7 +35,7 @@ def test_causal_conv_chunks_match_whole():
         )
         x = torch.randn(2, 3, 48)
         whole = conv(x)
-        state = conv.init_state()
+        state = conv.init_state(batch_size=2)
         chunks = [conv.step(x[..., i : i + 8], state) for i in range(0, 48, 8)]
         torch.testing.assert_close(torch.cat(chunks, -1), whole, atol=1e-6, rtol=1e-5)
 
@@ -43,7 +46,7 @@ def test_causal_conv_transpose_chunks_match_whole():
         convtr = CausalConvTranspose1d(6, 6, kernel, stride=stride, groups=groups)
         x = torch.randn(1, 6, 10)
         whole = convtr(x)
-        state = convtr.init_state()
+        state = convtr.init_state(batch_size=1)
         chunks = [convtr.step(x[..., i : i + 1], state) for i in range(10)]
         torch.testing.assert_close(torch.cat(chunks, -1), whole, atol=1e-6, rtol=1e-5)
 
@@ -54,7 +57,7 @@ def test_codec_encode_and_decode_step_match_whole(random_codec):
     x = torch.randn(1, 1, codec.samples_per_frame * frames)
     codes = codec.encode(x)
     assert codes.shape == (1, 8, frames)
-    state = codec.init_encode_state()
+    state = codec.init_encode_state(batch_size=1)
     step = codec.samples_per_frame
     chunked = torch.cat(
         [
@@ -67,11 +70,29 @@ def test_codec_encode_and_decode_step_match_whole(random_codec):
 
     whole = codec.decode(codes)
     assert whole.shape == (1, 1, codec.samples_per_frame * frames)
-    state = codec.init_decode_state()
+    state = codec.init_decode_state(batch_size=1)
     chunked = torch.cat(
         [codec.decode_step(codes[..., f : f + 1], state) for f in range(frames)], -1
     )
     torch.testing.assert_close(chunked, whole, atol=1e-5, rtol=1e-5)
+
+
+def test_a_reset_decode_state_decodes_like_a_fresh_one(random_codec):
+    codec = random_codec
+    generator = torch.Generator().manual_seed(4)
+    earlier, codes = torch.randint(0, 2048, (2, 1, 8, 3), generator=generator)
+
+    def stream(codes_BKF: torch.Tensor, state: MimiDecodeState) -> torch.Tensor:
+        return torch.cat(
+            [codec.decode_step(codes_BKF[..., f : f + 1], state) for f in range(3)],
+            -1,
+        )
+
+    fresh = stream(codes, codec.init_decode_state(batch_size=1))
+    state = codec.init_decode_state(batch_size=1)
+    stream(earlier, state)
+    state.reset()
+    assert torch.equal(stream(codes, state), fresh)
 
 
 def test_checkpoint_names_map_onto_the_module_tree():
@@ -122,7 +143,7 @@ def influenced_steps(chunk: int) -> list[int]:
     changed[:, 0] += 1.0
 
     def run(inp):
-        state = AttentionState()
+        state = attention.init_state(batch_size=1)
         with torch.no_grad():
             parts = [
                 attention(inp[:, t : t + chunk], offset=t, state=state)
@@ -149,7 +170,7 @@ def test_the_ring_drops_its_oldest_step_as_the_reference_does():
 def test_whole_sequence_matches_the_streaming_replay(length):
     transformer = small_transformer()
     x = torch.randn(1, SMALL.dim, length)
-    state = transformer.init_state()
+    state = transformer.init_state(batch_size=1)
     with torch.no_grad():
         whole = transformer(x)
         chunked = torch.cat(

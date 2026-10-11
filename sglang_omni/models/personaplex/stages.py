@@ -20,6 +20,7 @@ from sglang_omni.models.personaplex.components.mimi import (
 )
 from sglang_omni.models.personaplex.config import PREPROCESSING_STAGE
 from sglang_omni.models.personaplex.engine_builder import PersonaPlexEngineBuilder
+from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -212,8 +213,16 @@ def create_decode_executor(
 
 
 def create_code2wav_executor(
-    model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
+    model_path: str,
+    *,
+    num_decode_slots: int,
+    max_graph_frames: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
 ) -> PersonaPlexCode2WavScheduler:
+    """Whole-reply decode, plus streaming decode on num_decode_slots resident
+    states with device graphs for chunks of up to max_graph_frames frames."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
 
     @torch.inference_mode()
@@ -235,7 +244,10 @@ def create_code2wav_executor(
         )
         return payload
 
-    return PersonaPlexCode2WavScheduler(codec, compute_fn=decode)
+    decode_slots = MimiDecodeSlots(
+        codec, num_slots=num_decode_slots, max_graph_frames=max_graph_frames
+    )
+    return PersonaPlexCode2WavScheduler(decode_slots, compute_fn=decode)
 
 
 __all__ = [

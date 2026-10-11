@@ -121,7 +121,7 @@ class OmniPlatform(DeviceMixin):
         return True
 
     def enable_codec_decode_graph(self) -> bool:
-        """Check if current platform captures decode graphs for the Higgs TTS codec"""
+        """Check if current platform captures codec decode graphs (Higgs TTS, Mimi)"""
         return False
 
     def enable_talker_graph(self) -> bool:

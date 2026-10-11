@@ -13,7 +13,7 @@ from typing import Protocol
 import torch
 
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE
-from sglang_omni.models.personaplex.components.mimi import MimiCodec, MimiDecodeState
+from sglang_omni.models.personaplex.mimi_decode_graph import DecodeSlot, MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
@@ -41,16 +41,18 @@ class AudioPayloadDecoder(Protocol):
 
 
 class StreamState:
-    def __init__(self, codec: MimiCodec) -> None:
-        self.decode_state: MimiDecodeState = codec.init_decode_state()
+    def __init__(self, decode_slot: DecodeSlot) -> None:
+        self.decode_slot = decode_slot
         self.audio_parts: list[torch.Tensor] = []
         self.emitted = 0
 
 
 class PersonaPlexCode2WavScheduler(StreamingSimpleScheduler):
-    def __init__(self, codec: MimiCodec, *, compute_fn: AudioPayloadDecoder) -> None:
+    def __init__(
+        self, decode_slots: MimiDecodeSlots, *, compute_fn: AudioPayloadDecoder
+    ) -> None:
         super().__init__(compute_fn)
-        self.codec = codec
+        self.decode_slots = decode_slots
         self.stream_states: dict[str, StreamState] = {}
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
@@ -60,22 +62,35 @@ class PersonaPlexCode2WavScheduler(StreamingSimpleScheduler):
         codes = PersonaPlexState.from_dict(payload.data).codes
         return codes is not None and codes.shape[0] > 0
 
+    def stream_state(self, request_id: str) -> StreamState:
+        state = self.stream_states.get(request_id)
+        if state is None:
+            state = StreamState(self.decode_slots.acquire())
+            self.stream_states[request_id] = state
+        else:
+            pass
+        return state
+
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        self.stream_states.setdefault(request_id, StreamState(self.codec))
+        self.stream_state(request_id)
 
     def clear_stream_state(self, request_id: str) -> None:
-        self.stream_states.pop(request_id, None)
+        state = self.stream_states.pop(request_id, None)
+        if state is not None:
+            self.decode_slots.release(state.decode_slot)
+        else:
+            pass
 
     @torch.inference_mode()
     def on_stream_chunk(
         self, request_id: str, item: IncomingMessage
     ) -> list[OutgoingMessage]:
-        state = self.stream_states.setdefault(request_id, StreamState(self.codec))
+        state = self.stream_state(request_id)
         codes_FK = torch.as_tensor(
-            item.data, dtype=torch.long, device=self.codec.device
+            item.data, dtype=torch.long, device=self.decode_slots.codec.device
         )
-        waveform = self.codec.decode_step(codes_FK.T[None], state.decode_state)[0, 0]
-        waveform = waveform.float().cpu()
+        waveform = self.decode_slots.decode_step(codes_FK.T[None], state.decode_slot)
+        waveform = waveform[0, 0].float().cpu()
         # Note (wilsonzheng0327): The terminal payload only arrives after the LM finishes,
         # so the caller length travels with each chunk.
         num_samples = int((item.metadata or {}).get("num_samples") or 0)
