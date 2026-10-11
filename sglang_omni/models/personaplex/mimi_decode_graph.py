@@ -4,7 +4,8 @@
 A graph reads and writes its decode state at fixed addresses, so each slot keeps
 one stream's state for the life of the stage, with graphs of its own, and is
 zeroed when the next stream takes it. Other chunk widths, and streams that find
-every slot taken, decode eagerly.
+every slot taken, decode eagerly; without graphs there are no slots, and every
+stream decodes eagerly on a state of its own.
 """
 
 from __future__ import annotations
@@ -49,20 +50,26 @@ class MimiDecodeSlots:
         self, codec: MimiCodec, *, num_slots: int, max_graph_frames: int
     ) -> None:
         self.codec = codec
-        self.decode_states = [
-            codec.init_decode_state(batch_size=1) for _ in range(num_slots)
-        ]
-        self.free_slots = list(reversed(range(num_slots)))
+        self.decode_states: list[MimiDecodeState] = []
+        self.free_slots: list[int] = []
         self.graphs: dict[tuple[int, int], CapturedDecode] = {}
         self.has_warned_full = False
         device = codec.device
-        graph_backend = current_platform.get_device_graph_backend(device)
+        graph_backend = (
+            current_platform.get_device_graph_backend(device)
+            if current_platform.enable_codec_decode_graph()
+            else None
+        )
         if graph_backend is None or max_graph_frames == 0 or num_slots == 0:
             logger.info(f"PersonaPlex Mimi streaming decode runs eager on {device}")
             return
         else:
             pass
 
+        self.decode_states = [
+            codec.init_decode_state(batch_size=1) for _ in range(num_slots)
+        ]
+        self.free_slots = list(reversed(range(num_slots)))
         device_module = torch.get_device_module(device)
         capture_stream = device_module.Stream(device=device)
         graph_pool = graph_backend.graph_pool_handle()
@@ -107,15 +114,13 @@ class MimiDecodeSlots:
 
     @torch.inference_mode()
     def acquire(self) -> DecodeSlot:
-        """A fresh state for a new stream; outside the pool once every slot is taken."""
+        """A fresh state for a new stream; outside the pool when no slot is free."""
         if self.free_slots:
             slot_index = self.free_slots.pop()
             decode_state = self.decode_states[slot_index]
             decode_state.reset()
             return DecodeSlot(index=slot_index, decode_state=decode_state)
-        else:
-            pass
-        if not self.has_warned_full:
+        elif self.decode_states and not self.has_warned_full:
             logger.warning(
                 f"All {len(self.decode_states)} PersonaPlex Mimi decode slots are "
                 "taken, so further streams decode eagerly; raise "

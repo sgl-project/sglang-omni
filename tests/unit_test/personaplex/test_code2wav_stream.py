@@ -7,11 +7,13 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.models.personaplex import mimi_decode_graph
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.code2wav_stream import PersonaPlexCode2WavScheduler
 from sglang_omni.models.personaplex.components.mimi import MimiCodec
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 
@@ -23,11 +25,9 @@ def decode_waveform(payload: dict) -> torch.Tensor:
     )
 
 
-def new_scheduler(
-    codec: MimiCodec, *, num_slots: int = 2
-) -> PersonaPlexCode2WavScheduler:
+def new_scheduler(codec: MimiCodec) -> PersonaPlexCode2WavScheduler:
     return PersonaPlexCode2WavScheduler(
-        MimiDecodeSlots(codec, num_slots=num_slots, max_graph_frames=4),
+        MimiDecodeSlots(codec, num_slots=2, max_graph_frames=1),
         compute_fn=lambda payload: payload,
     )
 
@@ -41,10 +41,9 @@ def start_stream(scheduler, request_id: str) -> StagePayload:
     return payload
 
 
-@pytest.mark.parametrize("num_slots", [0, 1, 2], ids=["eager", "one-slot", "pooled"])
-def test_interleaved_requests_stream_their_own_waveforms(random_codec, num_slots):
+def test_interleaved_requests_stream_their_own_waveforms(random_codec):
     codec = random_codec
-    scheduler = new_scheduler(codec, num_slots=num_slots)
+    scheduler = new_scheduler(codec)
     codes = {
         "a": torch.randint(0, 2048, (4, 8), generator=torch.Generator().manual_seed(1)),
         "b": torch.randint(0, 2048, (4, 8), generator=torch.Generator().manual_seed(2)),
@@ -141,31 +140,24 @@ def test_reply_length_matches_the_caller_in_chunks_and_final_payload(
     torch.testing.assert_close(reply, whole[:expected_samples], atol=1e-5, rtol=1e-5)
 
 
-def test_a_reused_slot_starts_the_next_stream_fresh(random_codec):
-    codec = random_codec
-    scheduler = new_scheduler(codec, num_slots=1)
-    for request_id, seed in (("a", 4), ("b", 5)):
-        codes = torch.randint(
-            0, 2048, (3, 8), generator=torch.Generator().manual_seed(seed)
-        )
-        start_stream(scheduler, request_id)
-        assert scheduler.stream_states[request_id].decode_slot.index == 0
-        streamed = [
-            decode_waveform(
-                scheduler.on_stream_chunk(
-                    request_id,
-                    SimpleNamespace(data=codes[frame : frame + 1], metadata=None),
-                )[0].data
-            )
-            for frame in range(3)
-        ]
-        torch.testing.assert_close(
-            torch.cat(streamed), codec.decode(codes.T[None])[0, 0], atol=1e-5, rtol=1e-5
-        )
-        scheduler.clear_stream_state(request_id)
+def test_platforms_without_codec_decode_graphs_keep_no_slots(random_codec, monkeypatch):
+    monkeypatch.setattr(
+        mimi_decode_graph,
+        "current_platform",
+        SimpleNamespace(
+            enable_codec_decode_graph=lambda: False,
+            get_device_graph_backend=lambda device: SimpleNamespace(),
+        ),
+    )
+    slots = MimiDecodeSlots(random_codec, num_slots=8, max_graph_frames=1)
+    assert slots.graphs == {} and slots.decode_states == []
+    assert slots.acquire().index is None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(
+    not current_platform.enable_codec_decode_graph(),
+    reason="the platform does not capture codec decode graphs",
+)
 def test_graph_replay_matches_eager_decode_across_slot_reuse(random_codec):
     codec = random_codec.cuda()
     slots = MimiDecodeSlots(codec, num_slots=2, max_graph_frames=2)
