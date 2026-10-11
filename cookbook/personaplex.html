@@ -510,7 +510,10 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known limitations</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tests">Tests</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tests">Tests</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-parity">Reference parity</a></li>
+</ul>
+</li>
 </ul>
             </nav>
         </div>
@@ -633,12 +636,27 @@ The fixed caller-frame budget still determines the number of generated frames.</
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pytest<span class="w"> </span>tests/unit_test/personaplex/<span class="w"> </span>-q
 </pre></div>
 </div>
-<p>Reference comparisons and reproducibility checks are evaluation scripts under
-<code class="docutils literal notranslate"><span class="pre">benchmarks/eval/</span></code>, separate from the unit suite. See the
-<span class="xref myst">PersonaPlex evaluation guide</span> for checkpoint,
-reference-environment and output setup. The greedy comparison checks a matching
-prefix, not full-output equality; the component comparison includes a diagnostic
-for the reference depformer ring behavior.</p>
+<section id="reference-parity">
+<h3>Reference parity<a class="headerlink" href="#reference-parity" title="Link to this heading">#</a></h3>
+<p>Two opt-in tests compare against an <a class="reference external" href="https://github.com/NVIDIA/personaplex">NVIDIA/personaplex</a> checkout. Its <code class="docutils literal notranslate"><span class="pre">moshi</span></code> package pins <code class="docutils literal notranslate"><span class="pre">torch</span> <span class="pre">&lt;</span> <span class="pre">2.5</span></code>, so it needs its own environment, separate from the serving one:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/NVIDIA/personaplex.git<span class="w"> </span>/path/to/personaplex
+uv<span class="w"> </span>venv<span class="w"> </span>/path/to/personaplex/.venv<span class="w"> </span>-p<span class="w"> </span><span class="m">3</span>.12
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span>/path/to/personaplex/.venv/bin/python<span class="w"> </span>/path/to/personaplex/moshi/
+</pre></div>
+</div>
+<p>Then run the tests from the serving environment. They need CUDA, skip unless both variables are set, and run one file per command:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">PERSONAPLEX_REFERENCE_SOURCE</span><span class="o">=</span>/path/to/personaplex
+<span class="nb">export</span><span class="w"> </span><span class="nv">PERSONAPLEX_REFERENCE_PYTHON</span><span class="o">=</span>/path/to/personaplex/.venv/bin/python
+python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/test_model/test_personaplex_parity.py<span class="w"> </span>-v<span class="w"> </span>-s
+python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/test_model/test_personaplex_components.py<span class="w"> </span>-v<span class="w"> </span>-s
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">test_personaplex_parity.py</span></code>: greedy replies to the reference’s two test recordings must have the input’s length, match it for at least the first 100 frames, and agree in text over that prefix; greedy and seeded replies must also repeat. <strong>This is not full-output parity.</strong></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">test_personaplex_components.py</span></code>: Mimi, the input embeddings and the depformer logits on the public <code class="docutils literal notranslate"><span class="pre">kyutai/moshiko-pytorch-bf16</span></code> base. The last depformer step matches only with the reference’s ring behavior emulated, which diagnoses a known difference rather than proving a match.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">PERSONAPLEX_PARITY_CHECKPOINT</span></code> and <code class="docutils literal notranslate"><span class="pre">PERSONAPLEX_MOSHI_CHECKPOINT</span></code> override the checkpoints, <code class="docutils literal notranslate"><span class="pre">PERSONAPLEX_STAGE_ARGS</span></code> forwards pipeline flags such as <code class="docutils literal notranslate"><span class="pre">'--lm.engine.mem_fraction_static</span> <span class="pre">0.5'</span></code>, and <code class="docutils literal notranslate"><span class="pre">PERSONAPLEX_REFERENCE_REPO</span></code> sets the reference CLI’s config lookup. Reference outputs are regenerated on every run under pytest’s temporary directory.</p>
+</section>
 </section>
 </section>
 
@@ -697,7 +715,10 @@ for the reference depformer ring behavior.</p>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known limitations</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tests">Tests</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tests">Tests</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-parity">Reference parity</a></li>
+</ul>
+</li>
 </ul>
   </nav></div>
 
