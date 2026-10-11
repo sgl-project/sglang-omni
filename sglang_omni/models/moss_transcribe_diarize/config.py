@@ -67,7 +67,7 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
             ),
             engine=EngineArgs(
                 max_running_requests=16,
-                enable_torch_compile=True,
+                enable_torch_compile=False,
                 torch_compile_max_bs=4,
             ),
             gpu=0,
