@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sensevoice_model.h"
@@ -30,9 +31,17 @@ struct SenseVoiceOptions {
   // overlap by chunk_overlap_seconds; no speech is no segments.
   const silero_vad::SileroVAD *voice_activity_detector = nullptr;
   silero_vad::TimestampOptions speech;
-  float max_chunk_seconds = 0.0f;
-  float chunk_overlap_seconds = 0.0f;
+  // Note (Jiaxin Deng): double, as Voxt computes the chunk lengths; a float
+  // overlap of 0.35 s truncates to one sample short of Voxt's 5600.
+  double max_chunk_seconds = 0.0;
+  double chunk_overlap_seconds = 0.0;
 };
+
+// The chunk length and overlap in samples, truncated as Voxt truncates them;
+// std::invalid_argument unless a chunk holds a sample and the overlap is
+// shorter, so that chunking always advances.
+std::pair<size_t, size_t> ChunkSampleCounts(double max_chunk_seconds,
+                                            double chunk_overlap_seconds);
 
 class SenseVoiceTranscriber {
 public:

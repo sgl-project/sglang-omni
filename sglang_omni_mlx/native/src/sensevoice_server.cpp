@@ -32,6 +32,13 @@ Value Required(const std::optional<Value> &value, const std::string &name) {
   return *value;
 }
 
+// Note (Jiaxin Deng): a finite number of seconds read as a double, as Voxt
+// holds the chunk lengths it sends.
+double Seconds(const asr_service::FormFields &form, const std::string &name) {
+  Required(asr_service::NumberField(form, name), name);
+  return std::stod(*asr_service::TextField(form, name));
+}
+
 class SenseVoiceModelService : public asr_service::ServedModel {
 public:
   explicit SenseVoiceModelService(const std::filesystem::path &model_directory)
@@ -59,25 +66,20 @@ public:
                    "vad_min_silence_ms"),
           Required(asr_service::IntegerField(form, "vad_speech_pad_ms"),
                    "vad_speech_pad_ms")};
-      options.max_chunk_seconds =
-          Required(asr_service::NumberField(form, "vad_max_chunk_seconds"),
-                   "vad_max_chunk_seconds");
+      options.max_chunk_seconds = Seconds(form, "vad_max_chunk_seconds");
       options.chunk_overlap_seconds =
-          Required(asr_service::NumberField(form, "vad_chunk_overlap_seconds"),
-                   "vad_chunk_overlap_seconds");
-      // Note (Dayuxiaoshui): an overlap as long as a chunk would never move
-      // past the chunk's start.
+          Seconds(form, "vad_chunk_overlap_seconds");
       if (options.speech.threshold < 0 || options.speech.threshold > 1 ||
           options.speech.min_speech_ms < 0 ||
           options.speech.min_silence_ms < 0 ||
-          options.speech.speech_pad_ms < 0 || options.max_chunk_seconds <= 0 ||
-          options.chunk_overlap_seconds < 0 ||
-          options.chunk_overlap_seconds >= options.max_chunk_seconds) {
-        throw std::invalid_argument(
-            "VAD settings must be nonnegative, with an overlap shorter than "
-            "a chunk");
+          options.speech.speech_pad_ms < 0) {
+        throw std::invalid_argument("VAD settings must be nonnegative");
       } else {
       }
+      // Note (Dayuxiaoshui): an overlap as long as a chunk would never move
+      // past the chunk's start; compared in samples, as chunking counts it.
+      sensevoice::ChunkSampleCounts(options.max_chunk_seconds,
+                                    options.chunk_overlap_seconds);
     } else {
     }
     return [this, samples = std::move(samples), options,

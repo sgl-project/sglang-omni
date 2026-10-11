@@ -8,6 +8,8 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "audio.h"
+
 namespace sensevoice {
 
 namespace mx = mlx::core;
@@ -216,6 +218,26 @@ std::vector<std::pair<size_t, size_t>> SplitRange(size_t start, size_t end,
 
 } // namespace
 
+std::pair<size_t, size_t> ChunkSampleCounts(double max_chunk_seconds,
+                                            double chunk_overlap_seconds) {
+  const double sample_rate = qwen3_asr::kSampleRate;
+  if (!(max_chunk_seconds * sample_rate >= 1.0) ||
+      !(chunk_overlap_seconds >= 0.0)) {
+    throw std::invalid_argument(
+        "a chunk must hold a sample and its overlap must be nonnegative");
+  } else {
+  }
+  const size_t max_samples =
+      static_cast<size_t>(max_chunk_seconds * sample_rate);
+  const size_t overlap_samples =
+      static_cast<size_t>(chunk_overlap_seconds * sample_rate);
+  if (overlap_samples >= max_samples) {
+    throw std::invalid_argument("the overlap must be shorter than a chunk");
+  } else {
+  }
+  return {max_samples, overlap_samples};
+}
+
 SenseVoiceTranscriber::SenseVoiceTranscriber(
     const std::filesystem::path &model_directory)
     : model_(model_directory), vocabulary_(SentencePieceFile(model_directory)) {
@@ -302,11 +324,8 @@ SenseVoiceTranscriber::Transcribe(const std::vector<float> &samples,
       silero_vad::ProbabilitiesToTimestamps(
           options.voice_activity_detector->PredictProbabilities(samples),
           static_cast<long>(samples.size()), options.speech);
-  // Note (Dayuxiaoshui): Voxt truncates the chunk lengths in samples.
-  const size_t max_samples = static_cast<size_t>(
-      static_cast<double>(options.max_chunk_seconds) * sample_rate);
-  const size_t overlap_samples = static_cast<size_t>(
-      static_cast<double>(options.chunk_overlap_seconds) * sample_rate);
+  const auto [max_samples, overlap_samples] = ChunkSampleCounts(
+      options.max_chunk_seconds, options.chunk_overlap_seconds);
   std::map<std::string, int> language_counts;
   std::vector<std::string> language_order;
   for (const silero_vad::Timestamp &stamp : speech) {

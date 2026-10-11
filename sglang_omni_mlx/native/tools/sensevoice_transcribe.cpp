@@ -12,6 +12,7 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -57,10 +58,10 @@ int main(int argc, char **argv) {
       options.speech.speech_pad_ms = std::stoi(value());
     } else if (argument == "--vad-max-chunk-seconds") {
       vad_flags.insert(argument);
-      options.max_chunk_seconds = std::stof(value());
+      options.max_chunk_seconds = std::stod(value());
     } else if (argument == "--vad-chunk-overlap-seconds") {
       vad_flags.insert(argument);
-      options.chunk_overlap_seconds = std::stof(value());
+      options.chunk_overlap_seconds = std::stod(value());
     } else if (argument.rfind("--", 0) == 0) {
       std::cerr << argv[0] << ": unknown option " << argument << "\n";
       return 2;
@@ -68,13 +69,17 @@ int main(int argc, char **argv) {
       files.push_back(argument);
     }
   }
-  if (!vad_model_directory.empty() &&
-      (vad_flags.size() != 6 ||
-       options.chunk_overlap_seconds >= options.max_chunk_seconds)) {
-    std::cerr << argv[0]
-              << ": all six --vad-* settings are required, with an overlap "
-                 "shorter than a chunk\n";
+  if (!vad_model_directory.empty() && vad_flags.size() != 6) {
+    std::cerr << argv[0] << ": all six --vad-* settings are required\n";
     return 2;
+  } else if (!vad_model_directory.empty()) {
+    try {
+      sensevoice::ChunkSampleCounts(options.max_chunk_seconds,
+                                    options.chunk_overlap_seconds);
+    } catch (const std::invalid_argument &error) {
+      std::cerr << argv[0] << ": " << error.what() << "\n";
+      return 2;
+    }
   } else {
   }
   const auto load_started = std::chrono::steady_clock::now();

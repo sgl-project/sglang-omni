@@ -605,11 +605,20 @@ def test_sensevoice_cuts_long_audio_into_overlapping_chunks(
     )
 
 
-@pytest.mark.parametrize("overlap", [None, "24.0"])
+# Note (Jiaxin Deng): the last case differs in seconds but not in whole
+# samples, where chunking would never advance.
+@pytest.mark.parametrize(
+    ("max_chunk", "overlap"),
+    [("24.0", None), ("24.0", "24.0"), ("0.0001", "0.00009")],
+)
 def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
-    sensevoice_server: ModelServer, overlap: str | None
+    sensevoice_server: ModelServer, max_chunk: str, overlap: str | None
 ) -> None:
-    fields = {"vad_model_directory": "x", **SENSEVOICE_VAD_FIELDS}
+    fields = {
+        "vad_model_directory": "x",
+        **SENSEVOICE_VAD_FIELDS,
+        "vad_max_chunk_seconds": max_chunk,
+    }
     if overlap is None:
         fields.pop("vad_chunk_overlap_seconds")
     else:
