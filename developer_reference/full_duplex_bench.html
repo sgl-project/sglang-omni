@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.7" />
-    <meta name="docbuild:last-update" content="Oct 10, 2026"/>
+    <meta name="docbuild:last-update" content="Oct 11, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -926,35 +926,31 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v1
 <td><p><code class="docutils literal notranslate"><span class="pre">qwen</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">qwen</span></code> or <code class="docutils literal notranslate"><span class="pre">gpt</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SERVER_CONFIG</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo.yaml</span></code></p></td>
-<td><p>Server config. Sampling is on, so repeats measure generation variance</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code></p></td>
 <td><p>unset</p></td>
 <td><p>One GPU index. When set, this chooses the card. Concurrent jobs export different indexes; see <a class="reference internal" href="#concurrent-runs"><span class="std std-ref">Concurrent runs</span></a></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GPU</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">GPU</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
 <td><p>Used only when <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> is unset. Must be a single numeric index</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SERVER_PORT</span></code> / <code class="docutils literal notranslate"><span class="pre">JUDGE_PORT</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SERVER_PORT</span></code> / <code class="docutils literal notranslate"><span class="pre">JUDGE_PORT</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8097</span> <span class="pre">+</span> <span class="pre">10×GPU</span></code> / <code class="docutils literal notranslate"><span class="pre">30000</span> <span class="pre">+</span> <span class="pre">10×GPU</span></code></p></td>
 <td><p>Local ports. Unset values are derived from the GPU index, so two jobs do not share a port. The judge NCCL port is the judge port + 1. Do not pick a port in 29500–29899; that range is reserved for model-server NCCL</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MODEL_PATH</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MODEL_PATH</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">$FDB_WORK/models/MiniCPM-o-4_5</span></code></p></td>
 <td><p>Checkpoint directory of the model under test</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MODEL_REVISION</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MODEL_REVISION</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">503e754…</span></code></p></td>
 <td><p>Recorded in the run manifest; must match <code class="docutils literal notranslate"><span class="pre">MODEL_PATH</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SESSION_TIMEOUT_S</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SESSION_TIMEOUT_S</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">90</span></code></p></td>
 <td><p>Per-session client deadline; the longest v1.5 input is about 18 s</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SCORING_VENV</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SCORING_VENV</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">$FDB_WORK/scoring-venv</span></code></p></td>
 <td><p>Venv that runs ASR, timing and the judge clients</p></td>
 </tr>
@@ -966,9 +962,8 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb_v1
 <h2>Notes<a class="headerlink" href="#notes" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--repeat</span></code> only labels the directory.</strong> It does not repeat the run. <code class="docutils literal notranslate"><span class="pre">generate</span> <span class="pre">--repeat</span> <span class="pre">1</span></code> and <code class="docutils literal notranslate"><span class="pre">generate</span> <span class="pre">--repeat</span> <span class="pre">2</span></code> write <code class="docutils literal notranslate"><span class="pre">repeat-1/</span></code> and <code class="docutils literal notranslate"><span class="pre">repeat-2/</span></code> and leave each other alone. <code class="docutils literal notranslate"><span class="pre">generate</span> <span class="pre">--repeat</span> <span class="pre">N</span></code> also refuses to overwrite an existing <code class="docutils literal notranslate"><span class="pre">repeat-N/recording</span></code>. To redo that one invocation, delete <code class="docutils literal notranslate"><span class="pre">$FDB_WORK/runs/RUN_NAME/repeat-N</span></code> and rerun all three steps for the same N. <code class="docutils literal notranslate"><span class="pre">asr</span></code> and <code class="docutils literal notranslate"><span class="pre">judge</span></code> resume finished work when rerun.</p></li>
-<li><p><strong>Keep the settings fixed across the repeats of one run.</strong> Never mix repeats with different pair selections, <code class="docutils literal notranslate"><span class="pre">--num-shards</span></code>, <code class="docutils literal notranslate"><span class="pre">SERVER_CONFIG</span></code> or judge; use a new <code class="docutils literal notranslate"><span class="pre">--run-name</span></code> instead.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> changes what you measure.</strong> With <code class="docutils literal notranslate"><span class="pre">--num-shards</span> <span class="pre">2</span></code>, two sessions share the GPU, so latencies are measured under load and are not comparable to one shard. It must not exceed <code class="docutils literal notranslate"><span class="pre">max_sessions</span></code> in <code class="docutils literal notranslate"><span class="pre">SERVER_CONFIG</span></code> (2 by default); extra connections are rejected with HTTP 503.</p></li>
-<li><p><strong>Repeats need sampling.</strong> <code class="docutils literal notranslate"><span class="pre">minicpmo-parity.yaml</span></code> decodes greedily, so its repeats are nearly identical. Use it for regression checks against a fixed recording, not for variance.</p></li>
+<li><p><strong>Keep the settings fixed across the repeats of one run.</strong> Never mix repeats with different pair selections, <code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> or judge; use a new <code class="docutils literal notranslate"><span class="pre">--run-name</span></code> instead.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> changes what you measure.</strong> With <code class="docutils literal notranslate"><span class="pre">--num-shards</span> <span class="pre">2</span></code>, two sessions share the GPU, so latencies are measured under load and are not comparable to one shard. The model server keeps <code class="docutils literal notranslate"><span class="pre">max_sessions</span></code> at 2, so use at most 2; extra connections are rejected with HTTP 503.</p></li>
 <li><p><strong>The first 48 pairs are not a random sample.</strong> <code class="docutils literal notranslate"><span class="pre">--per-subset</span> <span class="pre">12</span></code> takes the first 12 samples of each category. This gives fast, comparable numbers between runs, but they are not full-dataset estimates.</p></li>
 <li><p><strong>Non-passing sessions are never dropped.</strong> They count as ineligible in the denominators, and empty interval sets show as <code class="docutils literal notranslate"><span class="pre">n/a</span></code>, not zero.</p></li>
 <li><p><strong>Concurrent jobs use one GPU each.</strong> Ports, the judge config directory and compile caches are derived from <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code>. The procedure is <a class="reference internal" href="#concurrent-runs"><span class="std std-ref">Concurrent runs</span></a>.</p></li>
@@ -1109,7 +1104,7 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmar
 <td><p>They stay in the denominator. Read <code class="docutils literal notranslate"><span class="pre">repeat-N/logs/record-shard-*.log</span></code>. If most sessions fail, fix the server and redo the repeat</p></td>
 </tr>
 <tr class="row-odd"><td><p>HTTP 503 in record logs</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> is larger than <code class="docutils literal notranslate"><span class="pre">max_sessions</span></code> in <code class="docutils literal notranslate"><span class="pre">SERVER_CONFIG</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> is larger than 2, the model server’s <code class="docutils literal notranslate"><span class="pre">max_sessions</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--device</span> <span class="pre">cuda</span> <span class="pre">needs</span> <span class="pre">exactly</span> <span class="pre">one</span> <span class="pre">visible</span> <span class="pre">GPU</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> (or <code class="docutils literal notranslate"><span class="pre">GPU</span></code>, when the former is unset) must be a single index</p></td>
@@ -1280,7 +1275,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Oct 10, 2026.
+  Last updated on Oct 11, 2026.
   <br/>
 </p>
   </div>

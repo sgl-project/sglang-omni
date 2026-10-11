@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.7" />
-    <meta name="docbuild:last-update" content="Oct 10, 2026"/>
+    <meta name="docbuild:last-update" content="Oct 11, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -582,28 +582,16 @@
 <section id="native-full-duplex-ability">
 <h2>Native Full-Duplex Ability<a class="headerlink" href="#native-full-duplex-ability" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/full_duplex/minicpmo.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>openbmb/MiniCPM-o-4_5<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--variant<span class="w"> </span>session<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--enable-realtime<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>We provide two demonstrative config files.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Config</p></th>
-<th class="head"><p>Use it for</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo.yaml</span></code></p></td>
-<td><p>Normal serving. Sampling matches the MiniCPM-o demo</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo-parity.yaml</span></code></p></td>
-<td><p>Repeatable output for regression and parity recordings. Differs in greedy sampling, <code class="docutils literal notranslate"><span class="pre">top_k:</span> <span class="pre">100</span></code>, and running the thinker and talker without CUDA graphs</p></td>
-</tr>
-</tbody>
-</table>
+<p><code class="docutils literal notranslate"><span class="pre">--variant</span> <span class="pre">session</span></code> selects the full-duplex pipeline. The defaults below match the MiniCPM-o demo. Change any of them with a flag of the same name, for example <code class="docutils literal notranslate"><span class="pre">--max_sessions</span> <span class="pre">4</span></code> or <code class="docutils literal notranslate"><span class="pre">--sampling.temperature</span> <span class="pre">0.5</span></code>. To print the whole configuration:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>config<span class="w"> </span>resolve<span class="w"> </span>--model-path<span class="w"> </span>openbmb/MiniCPM-o-4_5<span class="w"> </span>--variant<span class="w"> </span>session
+</pre></div>
 </div>
+<p>For repeatable output in regression and parity recordings, add <code class="docutils literal notranslate"><span class="pre">--sampling.greedy</span> <span class="pre">true</span> <span class="pre">--sampling.top_k</span> <span class="pre">100</span> <span class="pre">--thinker.engine.disable_cuda_graph</span> <span class="pre">true</span> <span class="pre">--talker.engine.disable_cuda_graph</span> <span class="pre">true</span></code>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Setting</p></th>
@@ -641,11 +629,11 @@
 <td><p>Compiles every decode graph batch size; adds minutes to startup</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sampling</span></code></p></td>
-<td><p>see the config</p></td>
+<td><p>printed by <code class="docutils literal notranslate"><span class="pre">config</span> <span class="pre">resolve</span></code></p></td>
 <td><p>Default sampling when a session does not set its own</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">vision</span></code></p></td>
-<td><p>see the config</p></td>
+<td><p>printed by <code class="docutils literal notranslate"><span class="pre">config</span> <span class="pre">resolve</span></code></p></td>
 <td><p>Camera-frame limits per unit (1 s of audio)</p></td>
 </tr>
 </tbody>
@@ -696,7 +684,7 @@
 </tr>
 <tr class="row-odd"><td><p>Sampling</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">sampling</span></code></p></td>
-<td><p>For example <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">listen_prob_scale</span></code>; unset fields keep the defaults in <code class="docutils literal notranslate"><span class="pre">examples/full_duplex/minicpmo.yaml</span></code></p></td>
+<td><p>For example <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">listen_prob_scale</span></code>; unset fields keep the server’s defaults</p></td>
 </tr>
 <tr class="row-even"><td><p>Image detail</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">max_slice_nums</span></code></p></td>
@@ -811,7 +799,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Oct 10, 2026.
+  Last updated on Oct 11, 2026.
   <br/>
 </p>
   </div>
