@@ -192,5 +192,35 @@ Budget errors after stage acceptance terminate the stream; they are not a
 promise that retrying the same seq is safe. Public admission rejection follows
 the shared runtime's sequence/retry contract.
 
+### Persistent encoder state pool
+
+Streaming uses persistent attention and convolution buffers allocated before
+the model thread starts. Each session leases one slot; batches pass slot IDs to
+tensor gather/write-back operations.
+The encoder retains up to `sliding_window - 1` history frames per slot. Logical
+frame counts and masks handle history filling and the sliding window without
+growing or replacing the pool buffers. First and subsequent windows are grouped
+for their different causal-convolution padding, and output rows are restored to
+request order before RNN-T decoding.
+
+Pool capacity is the smaller of `max_open_sessions` and the number of complete
+session reservations that fit `max_state_bytes`. Each reservation includes the
+full encoder slot, decoder state, and the configured PCM/history/text budgets.
+A budget too small for one slot fails at startup. The pool occupies its full
+capacity even when idle; active-session usage reports each leased slot once,
+while batch temporaries and allocator overhead remain outside the state budget.
+
+EOS releases the slot after the final window has finished. Reaching the decoder
+token limit, cancellation, close, failure, and shutdown also release it. Reused
+slots are cleared before another session receives them. Completed sessions keep
+their transcript and RNN-T state until close, but no longer own encoder storage.
+All pool access and slot recycling use the existing serialized model owner.
+
+The pool is the streaming encoder's sole state representation. Encoder execution
+remains eager; tensor slot IDs provide the boundary for subsequent CUDA Graph
+support. Offline transcription continues to use model generation. CPU parity and
+lifecycle tests do not establish GPU performance or real-checkpoint recognition
+accuracy.
+
 Setting stream=true on /v1/audio/transcriptions streams the response to a
 complete uploaded file. It does not select native PCM input.
