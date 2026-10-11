@@ -284,7 +284,7 @@ MOSS-Transcribe-Diarize, in `$OUT/moss_td/<dataset>/`. The first five rows are i
 | Coverage | `summary.evaluated`, `summary.total_samples` | sample counts |
 | CER, cpCER | `diarization_metrics.cer`, `diarization_metrics.cp_cer` | fraction |
 | Valid sample counts | `diarization_metrics.cer_valid_samples`, `diarization_metrics.cp_cer_valid_samples` | sample counts |
-| Valid sample IDs | `per_sample[].id` where `cer_valid` and `cp_cer_valid` are both true | IDs |
+| Valid sample IDs | `per_sample[].id`, checked separately for `cer_valid` and `cp_cer_valid` | IDs |
 | Speaker timestamp DER | `diarization_metrics.speaker_timestamp_der`, `diarization_metrics.speaker_timestamp_der_skipped_parse_error` | fraction, count |
 | Failed requests | `speed.failed_requests` | request count |
 | Throughput | `speed.throughput_qps` | requests per second |
@@ -305,25 +305,31 @@ MOSS = ("cer", "cp_cer", "cer_valid_samples", "cp_cer_valid_samples")
 SPEED = ("throughput_qps", "latency_mean_s", "latency_p95_s", "rtf_mean")
 def load(vdir):
     out = {}
+    assert {os.path.basename(p) for p in glob.glob(f"{vdir}/run[0-9]*")} == {"run1", "run2", "run3"}, "Expected three scored runs"
     for run in sorted(glob.glob(f"{vdir}/run[0-9]*")):
         for path in glob.glob(f"{run}/*/asr_*.json"):
             r = json.load(open(path))["results"][0]
-            ok = r["evaluated"] == r["total"] and r["skipped"] == 0
-            out.setdefault(os.path.relpath(path, run), []).append((ok, {k: r[k]["mean"] for k in SEED}, set(), None))
+            expected = 1088 if path.endswith("asr_en.json") else 2020
+            ok = r["evaluated"] == r["total"] == expected and r["skipped"] == 0
+            out.setdefault(os.path.relpath(path, run), []).append((ok, {k: r[k]["mean"] for k in SEED}, {}, None))
         for path in glob.glob(f"{run}/moss_td/*/transcribe_diarize_results.json"):
             p = json.load(open(path))
             s = json.load(open(path.replace("_results.json", "_speed_results.json")))["speed"]
             d = p["diarization_metrics"]
-            ok = p["summary"]["evaluated"] == p["summary"]["total_samples"] and s.get("failed_requests") == 0
+            dataset = os.path.basename(os.path.dirname(path))
+            expected = {"movies800times": 800, "movies800times_stream": 800, "aishell4_long": 20, "googletime": 25}[dataset]
+            ok = p["summary"]["evaluated"] == p["summary"]["total_samples"] == len(p["per_sample"]) == expected and s.get("failed_requests") == 0
             m = {k: d[k] for k in MOSS} | {k: s.get(k) for k in SPEED}
-            ids = {x["id"] for x in p["per_sample"] if x["cer_valid"] and x["cp_cer_valid"]}
+            ids = {metric: {x["id"] for x in p["per_sample"] if x[f"{metric}_valid"]} for metric in ("cer", "cp_cer")}
             der = (d.get("speaker_timestamp_der"), d.get("speaker_timestamp_der_skipped_parse_error"))
             out.setdefault("moss_td/" + os.path.basename(os.path.dirname(path)), []).append((ok, m, ids, der))
+    assert out, "No scored workloads found"
     return out
 def summary(rows):
-    complete = all(ok and None not in m.values() for ok, m, _, _ in rows)
+    complete = len(rows) == 3 and all(ok and None not in m.values() for ok, m, _, _ in rows)
     means = {k: statistics.mean(r[1][k] for r in rows) for k in rows[0][1]} if complete else {}
-    return complete, means, set.intersection(*(r[2] for r in rows))
+    ids = {metric: set.intersection(*(r[2][metric] for r in rows)) for metric in rows[0][2]}
+    return complete, means, ids
 new = load(sys.argv[1])
 old = load(sys.argv[2]) if len(sys.argv) > 2 else {}
 for key, rows in sorted(new.items()):
@@ -334,7 +340,10 @@ for key, rows in sorted(new.items()):
         ocomplete, omeans, oids = summary(old[key])
         print(f"  old runs={len(old[key])} complete={ocomplete}")
         if key.startswith("moss_td/"):
-            print(f"  valid IDs of old missing in new: {len(oids - ids)} {sorted(oids - ids)[:10]}")
+            for metric in ("cer", "cp_cer"):
+                required = set.union(*(r[2][metric] for r in old[key]))
+                missing = required - ids[metric]
+                print(f"  {metric} valid IDs of old missing in new: {len(missing)} {sorted(missing)[:10]}")
     for k, v in means.items():
         line = f"  {k:26} new {v:.6f}"
         if k in omeans:
@@ -458,14 +467,14 @@ A candidate is accepted only when every rule holds for every workload that ran i
 
 **Fixed setup.** Once the loops start, the revisions of the models, datasets, scoring code and dependencies never change, and the task keeps one GPU and one CPU set. Every candidate runs its full paired loop. Never reuse stored numbers for the last accepted version. If a client command fails on the baseline, stop and report it.
 
-**Coverage.** Every version in both outputs shows `runs=3` and `complete=True`, which means the full set with zero failed requests in every scored run.
+**Coverage.** Every selected model must print all of its workload keys from [What is measured](#what-is-measured). Every key in both outputs shows `runs=3` and `complete=True`, with the expected sample count and zero failed requests in every scored run. A missing key is a failure.
 
 **Correctness**, read from the output against the baseline only:
 
 - `corpus_wer` new is at most old + 0.0002. Across 5 CI jobs on the same model, EN WER differed by at most 0.0001.
 - `cer` and `cp_cer` new are at most old + 0.001 (fractions, so 0.1 percentage points). The first and second pytest attempts inside CI job 113922224972 gave `movies800times` CER of 5.87% and 5.82%.
 - `cer_valid_samples` and `cp_cer_valid_samples` have a ratio of at least 1.0000.
-- `valid IDs of old missing in new` is `0`. Every sample ID valid in the baseline must be valid in the candidate.
+- Both `cer valid IDs of old missing in new` and `cp_cer valid IDs of old missing in new` are `0`. Any sample valid in a baseline run must stay valid in every candidate run, separately for each metric.
 - Report the `speaker_timestamp_der` line in the PR. It checks that diarization still works.
 
 **Performance**, read from both outputs:
@@ -509,11 +518,20 @@ On 2026-10-09, 5 sampled stage 1 jobs reached only 43.2 to 44.7 req/s on `movies
 
 ```bash
 git -C /base fetch origin
+git -C /ref rev-parse HEAD > /base/results/pr_accepted_commit.txt
 git -C /cand switch -c asr-hc-$(git -C /ref rev-parse --short HEAD)
 git -C /cand rebase origin/main
+git -C /ref checkout --detach origin/main
 ```
 
-If the rebase stops with a conflict, run `git -C /cand rebase --abort` and report it. Then run the venv block of Step 2 with `cd /cand`. Skip the `SAME_DEPS` check here, since main may have changed dependencies.
+If the rebase stops with a conflict, run `git -C /cand rebase --abort` and report it before the last line. Then run the venv block of Step 2 with `cd /ref` and `cd /cand`. Compare their dependencies, since both now use current main:
+
+```bash
+diff <(/ref/.venv/bin/python -m pip freeze --exclude-editable) <(/cand/.venv/bin/python -m pip freeze --exclude-editable) && echo SAME_DEPS
+export LOOP=pr-$(git -C /cand rev-parse --short HEAD)
+```
+
+The diff must print `SAME_DEPS`. Run the full paired loop from Step 8, with all four model blocks in every pass. Compare `/base/results/$LOOP/cand` with `/base/results/$LOOP/ref` using `means.py`. The target improvement and the guards must still pass on this exact PR commit. Also retain the comparison with the original baseline. Do this before the CI container step.
 
 **ASR CI.** A PR must pass the ASR CI. The tests need two GPUs. On the host, stop the task container and start a CI container on `CI_GPUS`:
 
@@ -563,10 +581,11 @@ docker start asr-hc
 docker exec -it asr-hc bash
 ```
 
-Run the container block of [Variables](#variables) again. Put `/cand` back at the last accepted version:
+Run the container block of [Variables](#variables) again. Restore the last accepted version in both checkouts:
 
 ```bash
+git -C /ref checkout --detach $(cat /base/results/pr_accepted_commit.txt)
 git -C /cand checkout --detach $(git -C /ref rev-parse HEAD)
 ```
 
-Then run the venv block of Step 2 with `cd /cand` and the `SAME_DEPS` check.
+Then run the venv block of Step 2 with `cd /ref` and `cd /cand`, and the `SAME_DEPS` check.

@@ -36,7 +36,7 @@ Open PRs: [#2443](https://github.com/sgl-project/sglang-omni/pull/2443) (CosyVoi
 | Baseline commit | main at `921ea2c83acbfd7e9247ff38d63d8963b7572b7d`. It does not follow main |
 | `/work/base`, `/work/ref`, `/work/cand` | Checkouts of the baseline, the last accepted version and the candidate. You edit and commit only in `/work/cand` |
 | B0 | The scored runs of `/work/base`, measured once in Step 10 |
-| Bk | The scored runs of the last accepted version. Before the first acceptance, Bk is B0 |
+| Bk | The last accepted version, measured again beside each candidate. Before the first acceptance, its code is the baseline |
 | Pass | One measurement session in `/work/results/<pass name>/`. Never reuse a name |
 | RUN 0 to 3 | The runs of a pass. RUN 0 only warms caches. Every number is the mean of RUN 1 to 3 |
 
@@ -82,12 +82,16 @@ Every later command runs inside the container. Open another shell with the last 
 
 ### Step 3: write the variables file
 
+Set `GIT_NAME` and `GIT_EMAIL` to the identity you use for repository commits.
+
 ```bash
 cat > /work/env.sh <<'EOF'
 export BASE_COMMIT=921ea2c83acbfd7e9247ff38d63d8963b7572b7d
 export COSYVOICE_PATH=/work/CosyVoice
 export COSYVOICE_COMMIT=074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
 export SGLANG_OMNI_STRICT_PORT=1
+export GIT_NAME="Your Name"
+export GIT_EMAIL=you@example.com
 EOF
 source /work/env.sh
 ```
@@ -115,6 +119,8 @@ git clone https://github.com/sgl-project/sglang-omni.git /work/base
 git -C /work/base checkout --detach $BASE_COMMIT
 git -C /work/base worktree add --detach /work/ref $BASE_COMMIT
 git -C /work/base worktree add --detach /work/cand $BASE_COMMIT
+git -C /work/cand config user.name "$GIT_NAME"
+git -C /work/cand config user.email "$GIT_EMAIL"
 ```
 
 ### Step 6: create a venv in each checkout
@@ -310,15 +316,14 @@ If any throughput, latency or RTF ratio is below 0.97 or above 1.03, stop and re
    ```
 
 3. Run Step 6 with `T=/work/cand`, then the second `pip freeze` diff of Step 6. It must print nothing.
-4. Set the pass name and Bk. Use `c01` for the first candidate, `c02` for the second, and so on.
+4. Set the pass name and the result path for the fresh Bk comparison. Use `c01` for the first candidate, `c02` for the second, and so on.
 
    ```bash
    PASS=c01
-   BK=$(tail -n 1 /work/accepted.txt | cut -d ' ' -f 3)
-   mkdir /work/results/$PASS
+   BK=/work/results/$PASS/ref
    ```
 
-5. Run Step 9 four times with this `PASS` and `V=cand`: `RUN=0`, `RUN=1`, `RUN=2` and `RUN=3`.
+5. Run the paired pass in Step 13 with this `PASS`. Both versions start fresh for every run, and RUN 1 to 3 are scored.
 6. Compare with Bk, then with B0:
 
    ```bash
@@ -326,7 +331,7 @@ If any throughput, latency or RTF ratio is below 0.97 or above 1.03, stop and re
    python /work/compare.py /work/results/$PASS/cand /work/results/b0/base
    ```
 
-7. Apply the [Acceptance Rules](#acceptance-rules) to the ratios against Bk. On a close call, run a paired pass (Step 13) with `PASS=c01-pair` (this pass name plus `-pair`) and judge on that pass. From here on, `PASS` is the pass you judged on.
+7. Apply the [Acceptance Rules](#acceptance-rules) to both comparisons. Keep all runs. Do not replace a scored run because its result is unfavorable.
 8. Check for shared code, which the client and Qwen3-ASR also import (for example `sglang_omni.admission`). Use the target model directory in place of `fun_cosyvoice3`:
 
    ```bash
@@ -364,7 +369,7 @@ If any throughput, latency or RTF ratio is below 0.97 or above 1.03, stop and re
 
 ### Step 13: a paired pass
 
-A paired pass runs `/work/ref` and `/work/cand` in one pass, alternating. Steps 11, 12 and 15 use it.
+A paired pass runs `/work/ref` and `/work/cand` in one pass, alternating. Every candidate uses it, as do Steps 11 and 15.
 
 1. Check the commits. Outside Step 15, the first line must match the commit on the last line of `/work/accepted.txt`.
 
@@ -373,10 +378,10 @@ A paired pass runs `/work/ref` and `/work/cand` in one pass, alternating. Steps 
    git -C /work/cand log -1 --oneline
    ```
 
-2. Create the pass. Replace `c01-pair` with the name the calling step gives.
+2. Create the pass. Replace `c01` with the name the calling step gives.
 
    ```bash
-   PASS=c01-pair
+   PASS=c01
    mkdir /work/results/$PASS
    ```
 
@@ -391,7 +396,7 @@ A paired pass runs `/work/ref` and `/work/cand` in one pass, alternating. Steps 
 
 When a candidate passes every rule:
 
-1. Record it. `PASS` is the pass the candidate was judged on (`c01`, or `c01-pair` after a close call). Its `cand` directory is the new Bk. The second line keeps the ratios to B0, so small losses that add up stay visible.
+1. Record it. `PASS` is the paired pass the candidate was judged on, such as `c01`. Its commit is the new Bk. The stored results are evidence, and the next candidate measures this version again. The second line keeps the ratios to B0.
 
    ```bash
    echo "$PASS $(git -C /work/cand rev-parse HEAD) /work/results/$PASS/cand" >> /work/accepted.txt
@@ -438,15 +443,15 @@ Performance and correctness only move forward.
 - The line is absolute, so a WER rise that stays under 0.02 passes. Report any model whose mean `wer_corpus` rises more than 0.005 above B0.
 - Look closer, with a per sample comparison in the PR, when `n_above_50_pct_wer` is above Bk, or when `audio_duration_mean_s` is more than 5 percent away from Bk. A throughput gain that comes with shorter audio is not a gain.
 
-**Performance**, as ratios of the mean against Bk:
+**Performance**, as ratios of the mean against the freshly measured Bk and the original B0:
 
 | Model | Rule |
 |---|---|
-| The target model | `throughput_qps` ratio above 1 |
-| Every other model | `throughput_qps` ratio at least 0.97 |
-| All four models | Latency mean, median, p95 and p99, and RTF mean, median, p95 and p99, ratio at most 1.03 |
+| The target model | `throughput_qps` ratio above 1 against Bk |
+| All four models | `throughput_qps` ratio at least 0.97 against both Bk and B0 |
+| All four models | Latency mean, median, p95 and p99, and RTF mean, median, p95 and p99, ratio at most 1.03 against both Bk and B0 |
 
-**Close calls.** A result is a close call when the target gain over Bk is below 3 percent, when any other ratio is within 0.01 of its bound, or when the three scored runs disagree on whether a rule passes. Every close call needs a paired pass (Step 13), because a run to run spread of about 3 percent is normal.
+**Uncertain results.** Every candidate already has a paired pass. If the scored runs disagree on whether a rule passes, report all runs to the maintainers and wait for a decision. A positive mean alone does not establish a stable improvement.
 
 **Cold start.** Torch compile is on by default for the SGLang engine stages (`SGLANG_OMNI_TORCH_COMPILE_DEFAULT` in `server_args_builder.py`), and the Fun-CosyVoice3 DiT always compiles at startup. Inductor keeps compiled graphs in `/tmp/torchinductor_<user>`, shared by all checkouts, and a changed graph compiles again. So RUN 0 is not scored.
 

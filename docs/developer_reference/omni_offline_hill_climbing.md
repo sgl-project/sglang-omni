@@ -23,7 +23,7 @@ Ten requests do not fill 16 slots, so Video-AMME Talker throughput is mostly the
 
 ## Layout and variables
 
-One container holds a GPU pair. Steps 4 to 6 measure on the first GPU, pinned to its CPU group. Step 7 runs the CI stages on both GPUs. Never run the two at the same time. Downloads and results live in `$HILL_DIR` on the host.
+One container holds a GPU pair. Steps 4 to 6 measure on the first GPU, pinned to its CPU group. Step 7 runs the CI stages on both GPUs. Never run the two at the same time. Checkouts, downloads and results live in `$HILL_DIR` on the host.
 
 The container holds three checkouts of one git repository. `/base` is the baseline, and the client and all scoring run from it. `/ref` is the last accepted version, the branch `accepted`. `/cand` is the candidate. These are all the variables:
 
@@ -39,10 +39,15 @@ The container holds three checkouts of one git repository. `/base` is the baseli
 
 On the host:
 
+Set `GIT_NAME` and `GIT_EMAIL` to the identity you use for repository commits.
+
 ```bash
 export HILL_DIR=/data/omni-hill
 export GPU_A=0 GPU_B=1
+export GIT_NAME="Your Name"
+export GIT_EMAIL=you@example.com
 mkdir -p "$HILL_DIR/hf" "$HILL_DIR/metric-cache" "$HILL_DIR/results"
+mkdir -p "$HILL_DIR/base" "$HILL_DIR/ref" "$HILL_DIR/cand"
 ```
 
 Make the CPU groups. Each GPU gets 14 cores on its NUMA node with their SMT siblings, skipping cores 0 and 1. It must print `CPUS_OK`.
@@ -79,9 +84,11 @@ A `KeyError` means a GPU of the pair gets no group. Then set `GPU_A=2 GPU_B=3` (
 ```bash
 docker run -d --init --ipc host --cap-add=SYS_PTRACE \
     --gpus "\"device=$GPU_A,$GPU_B\"" --cpuset-cpus "$CI_CPUS" --env-file "$HILL_DIR/cpus.env" \
+    -e GIT_NAME -e GIT_EMAIL \
     -v "$HILL_DIR/hf:/root/.cache/huggingface" \
     -v "$HILL_DIR/metric-cache:/root/.cache/sglang-omni" \
     -v "$HILL_DIR/results:/results" \
+    -v "$HILL_DIR/base:/base" -v "$HILL_DIR/ref:/ref" -v "$HILL_DIR/cand:/cand" \
     --name omni-hill \
     hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df \
     sleep infinity
@@ -103,8 +110,8 @@ git -C /base checkout --detach 921ea2c83acbfd7e9247ff38d63d8963b7572b7d
 git -C /base branch accepted 921ea2c83acbfd7e9247ff38d63d8963b7572b7d
 git -C /base worktree add --detach /ref accepted
 git -C /base worktree add --detach /cand accepted
-git -C /cand config user.name hill
-git -C /cand config user.email hill@localhost
+git -C /cand config user.name "$GIT_NAME"
+git -C /cand config user.email "$GIT_EMAIL"
 ```
 
 Create one venv per checkout with the CI script `.github/scripts/prepare_omni_venv.sh`. Each checkout gets the venv `omni`, as in CI. Each command ends with `Fresh environment ready`.
@@ -115,14 +122,21 @@ cd /ref && OMNI_CI_HOME=/root/venv-ref bash .github/scripts/prepare_omni_venv.sh
 cd /cand && OMNI_CI_HOME=/root/venv-cand bash .github/scripts/prepare_omni_venv.sh omni
 ```
 
+Both dependency comparisons must print nothing:
+
+```bash
+diff <(/base/omni/bin/python -m pip freeze --exclude-editable) <(/ref/omni/bin/python -m pip freeze --exclude-editable)
+diff <(/base/omni/bin/python -m pip freeze --exclude-editable) <(/cand/omni/bin/python -m pip freeze --exclude-editable)
+```
+
 ## Step 3: Download models and data
 
 ```bash
 cd /base && . omni/bin/activate
-python -c "from huggingface_hub import snapshot_download as d; d('openbmb/MiniCPM-o-4_5')"
-python -c "from huggingface_hub import snapshot_download as d; d('Qwen/Qwen3-ASR-1.7B')"
-python -c "from huggingface_hub import snapshot_download as d; d('zhaochenyang20/Video_AMME_ci', repo_type='dataset')"
-python -c "from huggingface_hub import snapshot_download as d; d('zhaochenyang20/Video_MME_ci', repo_type='dataset')"
+python -c "from huggingface_hub import snapshot_download as d; d('openbmb/MiniCPM-o-4_5', revision='503e754207c94da6bb26850b4469f367c9ea3582')"
+python -c "from huggingface_hub import snapshot_download as d; d('Qwen/Qwen3-ASR-1.7B', revision='7278e1e70fe206f11671096ffdd38061171dd6e5')"
+python -c "from huggingface_hub import snapshot_download as d; d('zhaochenyang20/Video_AMME_ci', repo_type='dataset', revision='7a37507f1b53416b9cb6641378e5a098ea535ab8')"
+python -c "from huggingface_hub import snapshot_download as d; d('zhaochenyang20/Video_MME_ci', repo_type='dataset', revision='833bd815c628ff277911bea3b1563545b21d5e27')"
 python -m benchmarks.dataset.prepare --dataset seedtts
 python -m benchmarks.dataset.prepare --dataset seedtts-50
 python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
@@ -131,7 +145,18 @@ python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
 python -m benchmarks.metrics.utmos --warm-cache
 ```
 
-`Video_MME_ci` holds the videos that Video-AMME points to, so Step 4 needs it too. `seedtts-50`, `mmmu-ci-50` and `mmsu-ci-2000` are for Step 7. Check the pinned revisions. Every line must print its `OK_` word. Runs load these repositories offline through `refs/main`, except seed-tts, which `benchmarks/dataset/seedtts.py` loads at a pinned revision.
+`Video_MME_ci` holds the videos that Video-AMME points to, so Step 4 needs it too. `seedtts-50`, `mmmu-ci-50` and `mmsu-ci-2000` are for Step 7. A download by commit does not set `refs/main`, so set those references for offline loading:
+
+```bash
+H=/root/.cache/huggingface/hub
+mkdir -p $H/models--openbmb--MiniCPM-o-4_5/refs $H/models--Qwen--Qwen3-ASR-1.7B/refs $H/datasets--zhaochenyang20--Video_AMME_ci/refs $H/datasets--zhaochenyang20--Video_MME_ci/refs
+echo -n 503e754207c94da6bb26850b4469f367c9ea3582 > $H/models--openbmb--MiniCPM-o-4_5/refs/main
+echo -n 7278e1e70fe206f11671096ffdd38061171dd6e5 > $H/models--Qwen--Qwen3-ASR-1.7B/refs/main
+echo -n 7a37507f1b53416b9cb6641378e5a098ea535ab8 > $H/datasets--zhaochenyang20--Video_AMME_ci/refs/main
+echo -n 833bd815c628ff277911bea3b1563545b21d5e27 > $H/datasets--zhaochenyang20--Video_MME_ci/refs/main
+```
+
+Check the pinned revisions. Every line must print its `OK_` word. Runs load these repositories offline through `refs/main`, except seed-tts, which `benchmarks/dataset/seedtts.py` loads at a pinned revision.
 
 ```bash
 test "$(cat ~/.cache/huggingface/hub/models--openbmb--MiniCPM-o-4_5/refs/main)" = 503e754207c94da6bb26850b4469f367c9ea3582 && echo OK_MINICPMO
@@ -323,6 +348,14 @@ for k, val in m.items():
     print(k, val)
 print("audio.rates", rates)
 valid = len(audio) > 0 and all(m[k] == 0 for k in m if k.endswith(("failed", "skipped", "empty_or_nan")))
+coverage = (len(v["per_sample"]) == v["summary"]["total_samples"] == vw["evaluated"] == 10
+            and len({r["sample_id"] for r in v["per_sample"]}) == 10
+            and len(s["per_request"]) == s["summary"]["completed_requests"] == w["evaluated"] == sim["evaluated"] == u["evaluated"] == 1088
+            and len({r["id"] for r in s["per_request"]}) == 1088
+            and len(glob.glob(f"{d}/videoamme/audio/*.wav")) == 10
+            and len(glob.glob(f"{d}/seedtts/audio/*.wav")) == 1088)
+valid = valid and coverage
+print("coverage.complete", coverage)
 tokens = {f"v/{r['sample_id']}": r["prompt_tokens"] for r in v["per_sample"]}
 tokens.update({f"s/{r['id']}": r["prompt_tokens"] for r in s["per_request"]})
 json.dump({"metrics": m, "rates": rates, "valid": valid, "prompt_tokens": tokens}, open(f"{d}/metrics.json", "w"))
@@ -402,7 +435,7 @@ export CHECKOUT=/cand OUT=/results/cand-$CAND_SHA/cand/run3
 
 ### Compare
 
-This prints the base, ref and cand means, one line per [Acceptance](#acceptance) rule (`PASS`, `FAIL` or `REVIEW`), and a verdict. A missing file means `REJECT`.
+This prints the base, ref and cand means, one line per [Acceptance](#acceptance) rule (`PASS`, `FAIL` or `REVIEW`), and a verdict. A missing file raises an error. Stop and treat that comparison as `REJECT`.
 
 ```bash
 python - /results/baseline "/results/cand-$CAND_SHA" <<'PY'
@@ -527,14 +560,14 @@ PY
 
 ## Step 8: Record the result
 
-A candidate is accepted when Step 6 printed `ACCEPT` (or the maintainers approved a `REVIEW`), and every Step 7 stage printed `PASS`, or printed `BASE_FAILS` or `UNVERIFIED` and the maintainers reviewed it. Record it and list every accepted commit:
+A candidate is accepted when Step 6 printed `ACCEPT` (or the maintainers approved a `REVIEW`), and every Step 7 stage printed `PASS`. An exception requires explicit maintainer approval for a documented existing baseline failure. Any new candidate failure still blocks acceptance. Record it and list every accepted commit:
 
 ```bash
 git -C /base branch -f accepted "$(git -C /cand rev-parse HEAD)"
 git -C /base log --oneline 921ea2c83acbfd7e9247ff38d63d8963b7572b7d..accepted
 ```
 
-At the end of the task, run `docker rm -f omni-hill` on the host. The results stay in `$HILL_DIR/results`.
+At the end of the task, run `docker rm -f omni-hill` on the host. The checkouts and accepted commits stay in `$HILL_DIR/base`, `$HILL_DIR/ref` and `$HILL_DIR/cand`. The results stay in `$HILL_DIR/results`.
 
 ## Acceptance
 
@@ -542,7 +575,7 @@ Small samples are for quick trials only. A version is accepted only after Steps 
 
 **Correctness, against the baseline.**
 
-- 0 failed requests and 0 skipped samples in every run. A missing JSON field is a failure.
+- Every run contains all 10 Video-AMME and 1088 seed-tts samples, with unique sample IDs and one WAV per sample. Generation and all scoring stages cover those counts with 0 failed requests and 0 skipped samples. A missing JSON field is a failure.
 - No speech output is empty or has NaN values, and the sample rate equals the baseline.
 - Video-AMME Talker Accuracy is not below the baseline, with no tolerance.
 - Prompt tokens equal the baseline for every sample.
@@ -556,7 +589,7 @@ Small samples are for quick trials only. A version is accepted only after Steps 
 - The other workload's Throughput is at least 0.97 × the last accepted version and 0.97 × the baseline.
 - For both workloads, latency mean, latency p95 and RTF mean are at most 1.03 × each of those two versions. Checking both stops small regressions from adding up.
 
-**CI stages.** The Step 7 verdicts apply. Step 7 runs without the CI retry wrapper (`.github/scripts/run_flaky_pytest.sh`), so a stage that fails only sometimes on the baseline counts as failing. For a `BASE_FAILS` or `UNVERIFIED` stage, record why, on which samples and with which values, from the logs under `/results/cand-$CAND_SHA/ci/`. Send this record to the maintainers and wait for their answer before Step 8. Once they review it, the stage no longer blocks.
+**CI stages.** The Step 7 verdicts apply. Step 7 runs without the CI retry wrapper (`.github/scripts/run_flaky_pytest.sh`), so a stage that fails only sometimes on the baseline counts as failing. For a `BASE_FAILS` or `UNVERIFIED` stage, record why, on which samples and with which values, from the logs under `/results/cand-$CAND_SHA/ci/`. Compare the actual failures, since matching failure counts do not show that the causes match. Wait for explicit approval of a specific baseline failure before Step 8. Reviewing the logs alone does not waive a stage, and any new failure blocks acceptance.
 
 The 1.02 factor and the tolerances are provisional. They will be tuned after baseline and A/A runs on the target machine.
 
