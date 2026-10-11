@@ -20,6 +20,9 @@ SIGN_APP=true
 APP_SIGN_IDENTITY="${DEVELOPER_ID_APP_IDENTITY:-}"
 PROVISIONING_PROFILE="${VOXT_PROVISIONING_PROFILE:-}"
 INSTALLER_SIGN_IDENTITY="${DEVELOPER_ID_INSTALLER_IDENTITY:-}"
+NOTARY_KEY=""
+NOTARY_KEY_ID=""
+NOTARY_ISSUER=""
 VERSION=""
 BUILD_NUMBER=""
 APP_NAME="Voxt"
@@ -47,6 +50,11 @@ Options:
   --app-sign-identity ID  Developer ID Application identity for app signing.
   --pkg-sign-identity ID  Developer ID Installer identity for pkg signing.
   --provisioning-profile PATH  Explicit matching Developer ID profile required for signing.
+  --notary-key PATH       App Store Connect API key (.p8) for notarization. With
+                          --notary-key-id and --notary-issuer, the app is notarized
+                          and stapled before packaging, and the DMG and PKG after.
+  --notary-key-id ID      App Store Connect API key ID.
+  --notary-issuer ID      App Store Connect API issuer ID.
   --native-runtime PATH   Embed a built Omni runtime in the app bundle.
   --no-sign               Do not sign the app after building.
   -h, --help              Show this help.
@@ -138,6 +146,21 @@ while [[ "$#" -gt 0 ]]; do
       [[ -n "$INSTALLER_SIGN_IDENTITY" ]] || die "--pkg-sign-identity requires a value"
       shift 2
       ;;
+    --notary-key)
+      NOTARY_KEY="${2:-}"
+      [[ -n "$NOTARY_KEY" ]] || die "--notary-key requires a value"
+      shift 2
+      ;;
+    --notary-key-id)
+      NOTARY_KEY_ID="${2:-}"
+      [[ -n "$NOTARY_KEY_ID" ]] || die "--notary-key-id requires a value"
+      shift 2
+      ;;
+    --notary-issuer)
+      NOTARY_ISSUER="${2:-}"
+      [[ -n "$NOTARY_ISSUER" ]] || die "--notary-issuer requires a value"
+      shift 2
+      ;;
     --native-runtime)
       NATIVE_RUNTIME_DIR="${2:-}"
       [[ -n "$NATIVE_RUNTIME_DIR" ]] || die "--native-runtime requires a value"
@@ -177,6 +200,35 @@ if [[ -n "$NATIVE_RUNTIME_DIR" ]]; then
 else
   :
 fi
+
+NOTARIZE=false
+if [[ -n "$NOTARY_KEY$NOTARY_KEY_ID$NOTARY_ISSUER" ]]; then
+  [[ -n "$NOTARY_KEY" && -n "$NOTARY_KEY_ID" && -n "$NOTARY_ISSUER" ]] \
+    || die "--notary-key, --notary-key-id and --notary-issuer go together"
+  [[ -f "$NOTARY_KEY" ]] || die "notary key not found: $NOTARY_KEY"
+  [[ "$SIGN_APP" == "true" ]] || die "notarization cannot be combined with --no-sign"
+  NOTARIZE=true
+fi
+
+notarize() {
+  local artifact="$1"
+  local result_plist submission_id status
+  result_plist="$(mktemp)"
+  log "Notarizing $(basename "$artifact")"
+  xcrun notarytool submit "$artifact" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
+    --wait --timeout 60m --output-format plist > "$result_plist" || true
+  submission_id="$(plutil -extract id raw -o - "$result_plist" 2>/dev/null || true)"
+  status="$(plutil -extract status raw -o - "$result_plist" 2>/dev/null || true)"
+  rm -f "$result_plist"
+  [[ -n "$submission_id" ]] || die "notarytool did not accept $artifact for notarization"
+  echo "$(basename "$artifact"): $status ($submission_id)"
+  if [[ "$status" != "Accepted" ]]; then
+    xcrun notarytool log "$submission_id" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" || true
+    die "notarization of $artifact ended with status '$status'"
+  else
+    :
+  fi
+}
 
 if [[ "$OPEN_AFTER_INSTALL" == "true" && "$INSTALL_APP" != "true" ]]; then
   die "--open requires --install"
@@ -250,6 +302,7 @@ xcodebuild \
   -configuration "$CONFIGURATION" \
   -destination "$DESTINATION" \
   -derivedDataPath "$DERIVED_DATA" \
+  -skipPackagePluginValidation \
   "${BUILD_ACTIONS[@]}" \
   "${BUILD_OVERRIDES[@]}"
 
@@ -355,6 +408,14 @@ else
   echo "warning: unsigned inspection artifacts, not signed validation proof" >&2
 fi
 
+if [[ "$NOTARIZE" == "true" ]]; then
+  # Stapling the app itself lets it pass Gatekeeper offline from any of the artifacts.
+  ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$OUTPUT_DIR/notarization.zip"
+  notarize "$OUTPUT_DIR/notarization.zip"
+  rm -f "$OUTPUT_DIR/notarization.zip"
+  xcrun stapler staple "$APP_PATH"
+fi
+
 log "Creating artifacts in $OUTPUT_DIR"
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 
@@ -369,6 +430,9 @@ hdiutil create \
   -format UDZO \
   "$DMG_PATH"
 rm -rf "$DMG_STAGING_DIR"
+if [[ "$SIGN_APP" == "true" && -n "$APP_SIGN_IDENTITY" ]]; then
+  codesign --force --timestamp --sign "$APP_SIGN_IDENTITY" "$DMG_PATH"
+fi
 
 PKG_ARGS=(--component "$APP_PATH" /Applications)
 if [[ -n "$INSTALLER_SIGN_IDENTITY" ]]; then
@@ -377,8 +441,20 @@ fi
 PKG_ARGS+=("$PKG_PATH")
 productbuild "${PKG_ARGS[@]}"
 
-shasum -a 256 "$ZIP_PATH" > "$ZIP_PATH.sha256"
-shasum -a 256 "$PKG_PATH" > "$PKG_PATH.sha256"
+if [[ "$NOTARIZE" == "true" ]]; then
+  notarize "$DMG_PATH"
+  notarize "$PKG_PATH"
+  xcrun stapler staple "$DMG_PATH"
+  xcrun stapler staple "$PKG_PATH"
+  spctl --assess --type execute "$APP_PATH" || die "Gatekeeper rejects $APP_PATH"
+  spctl --assess --type open --context context:primary-signature "$DMG_PATH" || die "Gatekeeper rejects $DMG_PATH"
+  spctl --assess --type install "$PKG_PATH" || die "Gatekeeper rejects $PKG_PATH"
+  echo "Gatekeeper accepts the app, the DMG and the PKG"
+fi
+
+for artifact in "$ZIP_PATH" "$DMG_PATH" "$PKG_PATH"; do
+  (cd "$OUTPUT_DIR" && shasum -a 256 "$(basename "$artifact")" > "$(basename "$artifact").sha256")
+done
 
 if [[ "$INSTALL_APP" == "true" ]]; then
   log "Installing $APP_NAME.app into $INSTALL_DIR"
