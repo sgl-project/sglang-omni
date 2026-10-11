@@ -76,7 +76,18 @@ def select_samples(dataset: Path, selection: SampleSelection) -> list[str]:
         return sample_ids
 
 
-def require_v10_subsets(dataset: Path, subsets: tuple[str, ...]) -> None:
+def leave_out_hint(selection: SampleSelection) -> str:
+    """The option change that runs without the v1.0 samples this selection asks
+    for; the three v1.0 selection modes each need a different one."""
+    if selection.sample_ids is not None:
+        return "drop the --v10-sample-id or --v10-sample-ids-file option"
+    elif selection.per_subset == 0:
+        return "drop the --v10-subset-count options"
+    else:
+        return "pass --v10-per-subset 0"
+
+
+def require_v10_subsets(dataset: Path, subsets: tuple[str, ...], hint: str) -> None:
     """Every v1.0 subset a selection reads must be staged; a partial setup
     would otherwise narrow the run without a word."""
     missing = [subset for subset in subsets if not (dataset / subset).is_dir()]
@@ -84,7 +95,7 @@ def require_v10_subsets(dataset: Path, subsets: tuple[str, ...]) -> None:
         raise SystemExit(
             f"ERROR: {dataset} lacks the v1.0 subset(s) {', '.join(missing)}. "
             "Run `python -m benchmarks.duplex.fdb_v15 setup` (it adds the v1.0 "
-            "dataset to an existing workspace), or pass --v10-per-subset 0."
+            f"dataset to an existing workspace), or {hint}."
         )
     else:
         pass
@@ -93,6 +104,7 @@ def require_v10_subsets(dataset: Path, subsets: tuple[str, ...]) -> None:
 def select_v10_samples(dataset: Path, selection: SampleSelection) -> list[str]:
     """v1.0 sample IDs: explicit IDs, or the first N per subset. Empty when every
     count is 0, which leaves v1.0 out of the run without touching its dataset."""
+    hint = leave_out_hint(selection)
     if selection.sample_ids is not None:
         named = tuple(
             subset
@@ -101,7 +113,7 @@ def select_v10_samples(dataset: Path, selection: SampleSelection) -> list[str]:
                 sample_id.startswith(f"{subset}/") for sample_id in selection.sample_ids
             )
         )
-        require_v10_subsets(dataset, named)
+        require_v10_subsets(dataset, named, hint)
         return select_sample_ids(dataset, V10_SUBSETS, selection.sample_ids, None)
     else:
         pass
@@ -110,7 +122,7 @@ def select_v10_samples(dataset: Path, selection: SampleSelection) -> list[str]:
         for subset in V10_SUBSETS
         if selection.subset_counts.get(subset, selection.per_subset) != 0
     )
-    require_v10_subsets(dataset, wanted)
+    require_v10_subsets(dataset, wanted, hint)
     return first_per_subset(dataset, selection, V10_SUBSETS)
 
 
@@ -126,7 +138,7 @@ def ids_text(sample_ids: list[str]) -> str:
 
 
 def check_matches_other_repeats(
-    repeat_dir: Path, sample_ids: list[str], v10_sample_ids: list[str]
+    repeat_dir: Path, sample_ids: list[str], v10_sample_ids: list[str], v10_hint: str
 ) -> None:
     """Repeats of one run must evaluate the same pairs, or their mean is meaningless."""
     expected = ids_text(sample_ids)
@@ -145,8 +157,8 @@ def check_matches_other_repeats(
         if not v10_ids_file.is_file() and v10_expected:
             raise SystemExit(
                 f"ERROR: {ids_file.parent} is a v1.5-only repeat (no "
-                f"{V10_DIR}/sample-ids.txt). Pass --v10-per-subset 0 to continue "
-                "this run, or use a new --run-name."
+                f"{V10_DIR}/sample-ids.txt). To continue this run {v10_hint}, "
+                "or use a new --run-name."
             )
         elif v10_ids_file.is_file() and v10_ids_file.read_text() != v10_expected:
             raise SystemExit(

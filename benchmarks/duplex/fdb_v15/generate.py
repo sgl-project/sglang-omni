@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +28,7 @@ from benchmarks.duplex.fdb_v15.selection import (
     check_matches_other_repeats,
     describe,
     ids_text,
+    leave_out_hint,
     select_samples,
     select_v10_samples,
 )
@@ -222,16 +224,21 @@ def generate(
             f"ERROR: {repeat_dir / 'recording'} exists. "
             f"Use a new --repeat, or delete {repeat_dir} to redo it."
         )
+    elif (repeat_dir / V10_DIR).exists():
+        # note (luojiaxuan): without a recording, a v10/ directory is the marker
+        # of an attempt that stopped before the server came up; this attempt's
+        # own selection decides whether the repeat has a v1.0 half.
+        shutil.rmtree(repeat_dir / V10_DIR)
     else:
         pass
     sample_ids = select_samples(settings.dataset, selection)
     v10_sample_ids = select_v10_samples(settings.dataset_v10, v10_selection)
-    check_matches_other_repeats(repeat_dir, sample_ids, v10_sample_ids)
+    v10_hint = leave_out_hint(v10_selection)
+    check_matches_other_repeats(repeat_dir, sample_ids, v10_sample_ids, v10_hint)
     if v10_sample_ids and not settings.dataset_v10_revision_file.is_file():
         raise SystemExit(
             f"ERROR: {settings.dataset_v10_revision_file} is missing. Run "
-            "`python -m benchmarks.duplex.fdb_v15 setup` again, or pass "
-            "--v10-per-subset 0."
+            f"`python -m benchmarks.duplex.fdb_v15 setup` again, or {v10_hint}."
         )
     else:
         pass

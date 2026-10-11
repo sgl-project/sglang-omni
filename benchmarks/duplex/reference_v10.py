@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import types
 from collections import Counter
 from pathlib import Path
@@ -66,10 +67,10 @@ REFERENCE_FILES_RECORD = {
     key: {"path": path, "sha256": sha256}
     for key, (path, sha256) in V10_REFERENCE_FILES.items()
 }
+OFFICIAL_JUDGE_BASE_URL = "https://api.openai.com/v1/"
 # note (luojiaxuan): the pinned evaluator sends neither a token cap nor a thinking
 # switch; a self-hosted Qwen judge would spend SGLang's default 128 new tokens on
 # reasoning, so the non-official path turns thinking off and caps the answer.
-OFFICIAL_JUDGE_BASE_URL = "https://api.openai.com/v1/"
 SELF_HOSTED_JUDGE_OPTIONS: dict[str, JsonValue] = {
     "max_tokens": 512,
     "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
@@ -460,7 +461,15 @@ def evaluate(
                 open(log_path, "w", encoding="utf-8") as log_file,
                 contextlib.redirect_stdout(log_file),
             ):
-                module.eval_user_interruption(str(subset_dir), judge)
+                try:
+                    module.eval_user_interruption(str(subset_dir), judge)
+                except Exception:
+                    # note (luojiaxuan): the subprocess tasks keep their stderr in
+                    # the log; the in-process evaluator's traceback lands there too,
+                    # so the log tells a judge failure from the takeover-count
+                    # ZeroDivisionError.
+                    traceback.print_exc(file=log_file)
+                    raise
             stdout = log_path.read_text(encoding="utf-8")
         else:
             # note (luojiaxuan): eval_backchannel opens ./icc_gt_distribution.json.

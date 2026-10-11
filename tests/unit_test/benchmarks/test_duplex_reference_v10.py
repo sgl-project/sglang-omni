@@ -367,6 +367,51 @@ def test_reference_evaluate_records_the_endpoint_the_client_resolved(
     assert [judge.summary()["official"] for judge in judges] == [False, True]
 
 
+def test_in_process_evaluator_traceback_lands_in_the_subset_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = tmp_path / "tree"
+    sample_dir = tree / "synthetic_user_interruption" / "1"
+    sample_dir.mkdir(parents=True)
+    (sample_dir / "output.json").write_text('{"text": "", "chunks": []}')
+    transcript_sha256 = sha256_bytes((sample_dir / "output.json").read_bytes())
+    rows = [
+        {
+            "sample_id": "synthetic_user_interruption/1",
+            "subset": "synthetic_user_interruption",
+            "eligible": True,
+        }
+    ]
+    (tree / "manifest.json").write_text(json.dumps({"samples": rows}))
+    (tree / "asr.json").write_text(
+        json.dumps(
+            {
+                "subsets": {
+                    "synthetic_user_interruption": {
+                        "transcripts": {"1": transcript_sha256}
+                    }
+                }
+            }
+        )
+    )
+
+    def divide_by_zero(root: str, client: object) -> None:
+        print("[Result]")
+        raise ZeroDivisionError("division by zero")
+
+    monkeypatch.setattr(
+        reference_v10,
+        "load_module",
+        lambda path, name: types.SimpleNamespace(eval_user_interruption=divide_by_zero),
+    )
+    paths = {"user_interruption": tmp_path / "eval_user_interruption.py"}
+    with pytest.raises(ZeroDivisionError):
+        reference_v10.evaluate(tree, paths, ["synthetic_user_interruption"], None)
+    log_text = (tree / "logs" / "evaluate-synthetic_user_interruption.log").read_text()
+    assert "[Result]" in log_text
+    assert "ZeroDivisionError: division by zero" in log_text
+
+
 def test_served_model_requires_base_url() -> None:
     with pytest.raises(SystemExit) as error:
         main(

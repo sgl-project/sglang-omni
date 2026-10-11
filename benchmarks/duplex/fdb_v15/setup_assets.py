@@ -192,7 +192,7 @@ def setup_scoring_venv(settings: Settings) -> None:
     if probe.returncode != 0:
         raise SystemExit(
             "ERROR: torchcodec cannot load its FFmpeg libraries in the scoring venv; "
-            "install FFmpeg (shared libraries, version 4 to 7) and rerun setup."
+            "install FFmpeg (shared libraries, version 4 to 8) and rerun setup."
         )
     else:
         pass

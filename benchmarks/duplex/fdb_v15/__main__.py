@@ -3,10 +3,13 @@
 
 Run from the repository root with the sglang-omni venv active:
     python -m benchmarks.duplex.fdb_v15 setup
-    python -m benchmarks.duplex.fdb_v15 generate --run-name smoke --per-subset 1
+    python -m benchmarks.duplex.fdb_v15 generate --run-name smoke --per-subset 1 --v10-per-subset 3
     python -m benchmarks.duplex.fdb_v15 asr --run-name smoke
     python -m benchmarks.duplex.fdb_v15 judge --run-name smoke
     python -m benchmarks.duplex.fdb_v15 aggregate --run-name smoke
+
+v1.0 takes the --per-subset count unless --v10-per-subset is given; three v1.0
+samples per subset keep the pinned evaluators from dividing by zero takeovers.
 """
 
 from __future__ import annotations
