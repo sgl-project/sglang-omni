@@ -13,6 +13,9 @@ import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from transformers import AutoTokenizer
 
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+)
 from sglang_omni.models.minicpm_o.bootstrap import (
     create_talker_scheduler,
     create_thinker_scheduler,
@@ -27,6 +30,7 @@ from sglang_omni.models.minicpm_o.native_config import TALKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.profiler.event_recorder import emit as emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
@@ -40,6 +44,7 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.streaming_detokenizer import StreamingDetokenizeScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.misc import avail_gpu_mem
@@ -51,10 +56,34 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     speech_enabled: bool = False,
-) -> SimpleScheduler[StagePayload, StagePayload]:
+    max_concurrency: int,
+) -> (
+    SimpleScheduler[StagePayload, StagePayload]
+    | ThreadedSimpleScheduler[StagePayload, StagePayload]
+):
     preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
 
-    return SimpleScheduler[StagePayload, StagePayload](preprocessor)
+    async def preprocess_with_events(payload: StagePayload) -> StagePayload:
+        emit_event(
+            request_id=payload.request_id,
+            stage="preprocessing",
+            event_name="preprocess_start",
+        )
+        try:
+            return await preprocessor(payload)
+        finally:
+            emit_event(
+                request_id=payload.request_id,
+                stage="preprocessing",
+                event_name="preprocess_end",
+            )
+
+    if max_concurrency == 1:
+        return SimpleScheduler(preprocess_with_events)
+    else:
+        return ThreadedSimpleScheduler(
+            preprocess_with_events, max_concurrency=max_concurrency
+        )
 
 
 ENCODER_CACHE_MAX_ENTRIES = 64
@@ -110,11 +139,27 @@ def create_audio_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
+    max_batch_size: int,
+    max_batch_wait_ms: int,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     encoder = MiniCPMOAudioEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
-    return create_encoder_executor(encoder, stage_name="audio_encoder")
+    cache = StageOutputCache(
+        max_size=ENCODER_CACHE_MAX_ENTRIES,
+        max_bytes=ENCODER_CACHE_MAX_BYTES,
+        cache_device="cpu",
+    )
+
+    def encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        return batch_audio_encoder_payloads(payloads, encoder=encoder, cache=cache)
+
+    return SimpleScheduler[StagePayload, StagePayload](
+        lambda payload: encode_batch([payload])[0],
+        batch_compute_fn=encode_batch,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+    )
 
 
 def create_sglang_talker_executor_from_config(
