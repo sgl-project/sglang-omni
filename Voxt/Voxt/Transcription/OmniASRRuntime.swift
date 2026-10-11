@@ -531,6 +531,47 @@ extension OmniASRRuntime {
         )
     }
 
+    /// Note (Dayuxiaoshui): Parakeet Final as MLXAudio's generateStream decoded it: the
+    /// server cuts the chunks from Voxt's chunk length and merges them.
+    nonisolated static func parakeetFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        chunkDuration: Float
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: nil,
+            prompt: nil,
+            maxNewTokens: nil,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            chunkDuration: chunkDuration
+        )
+    }
+
+    /// Note (Dayuxiaoshui): SenseVoice Final as MLXAudio decoded it: one pass, or for long
+    /// audio the speech segments' chunks; the server normalizes the hint as Voxt does.
+    nonisolated static func senseVoiceFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?,
+        useITN: Bool,
+        speechSegments: OmniSpeechSegments?
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: nil,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            speechSegments: speechSegments,
+            useITN: useITN
+        )
+    }
+
     func transcribeQwenFinal(
         samples: [Float],
         sampleRate: Int,
@@ -595,5 +636,38 @@ extension OmniASRRuntime {
             stopAtEndOfText: true,
             stopOnTokenLoop: true
         ))
+    }
+}
+
+extension OmniASRRuntime {
+    /// Nemotron 3.5 ASR Final as MLXAudio decoded it: the whole recording through
+    /// the cache-aware stream at the native chunk, with the language hint as given.
+    func transcribeNemotronFinal(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?
+    ) async throws -> OmniTranscriptionResult {
+        try await transcribe(OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: nil,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false
+        ))
+    }
+
+    /// Note (Dayuxiaoshui): Voxt maps a live language onto the checkpoint's
+    /// prompt languages, which the Swift backend read from the loaded model;
+    /// here they come from the same config.json the server loads.
+    nonisolated static func nemotronPromptLanguages(
+        modelDirectory: URL
+    ) throws -> (languages: [String], defaultLanguage: String) {
+        let data = try Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))
+        let config = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let prompt = config?["prompt"] as? [String: Any]
+        let dictionary = prompt?["prompt_dictionary"] as? [String: Any] ?? [:]
+        return (Array(dictionary.keys), config?["default_language"] as? String ?? "auto")
     }
 }

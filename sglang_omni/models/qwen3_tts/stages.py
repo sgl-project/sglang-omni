@@ -15,6 +15,10 @@ import torch
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
+from sglang_omni.models.qwen3_tts.config import (
+    load_qwen3_tts_checkpoint_config,
+    normalize_qwen3_tts_model_type,
+)
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
     move_conv_padding_to_host,
@@ -399,6 +403,12 @@ def create_vocoder_executor(
         ),
         suppress_bootstrap_silence=suppress_bootstrap_silence,
         suppress_bootstrap_max_streams=suppress_bootstrap_max_streams,
+        # note (ratish): only a Base checkpoint clones a reference voice, so only its
+        # first chunks carry reference codes.
+        has_reference_prefixed_first_chunks=normalize_qwen3_tts_model_type(
+            load_qwen3_tts_checkpoint_config(model_path).get("tts_model_type")
+        )
+        == "base",
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work
