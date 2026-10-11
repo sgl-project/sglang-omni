@@ -30,6 +30,22 @@ nonisolated final class OmniNativeStreamingSession: MLXNativeStreamingSession, @
         return OmniNativeStreamingSession(session: session, runtime: runtime)
     }
 
+    /// Nemotron 3.5 ASR's cache-aware stream over the realtime transcription
+    /// socket, with the live latency and prompt language Voxt's Swift session used.
+    static func nemotron(
+        runtime: OmniASRRuntime,
+        language: String,
+        chunkMilliseconds: Int
+    ) async throws -> OmniNativeStreamingSession {
+        let endpoint = try await runtime.beginUse()
+        let session = OmniRealtimeTranscriptionSession(
+            endpoint: endpoint,
+            language: language,
+            chunkMilliseconds: chunkMilliseconds
+        )
+        return OmniNativeStreamingSession(session: session, runtime: runtime)
+    }
+
     private init(session: OmniRealtimeTranscriptionSession, runtime: OmniASRRuntime) {
         self.session = session
         let source = session.events

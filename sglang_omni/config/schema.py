@@ -590,6 +590,7 @@ class PipelineConfig(BaseModel):
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None
+    is_realtime_only: ClassVar[bool] = False
     # Import path of the function that builds, from this config, the chat or
     # transcription request the server sends itself before it reports ready;
     # None skips the warmup.

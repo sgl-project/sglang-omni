@@ -64,7 +64,7 @@ target_compile_options(qwen3_asr PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(silero_vad STATIC src/silero_vad.cpp)
 target_include_directories(silero_vad PUBLIC src)
-target_link_libraries(silero_vad PUBLIC mlx nlohmann_json::nlohmann_json)
+target_link_libraries(silero_vad PUBLIC qwen3_asr)
 target_compile_options(silero_vad PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(sortformer STATIC
@@ -73,7 +73,7 @@ add_library(sortformer STATIC
   src/sortformer_features.cpp
   src/sortformer_state.cpp)
 target_include_directories(sortformer PUBLIC src)
-target_link_libraries(sortformer PUBLIC mlx nlohmann_json::nlohmann_json)
+target_link_libraries(sortformer PUBLIC qwen3_asr)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(asr_service STATIC src/asr_service.cpp src/http.cpp)
@@ -160,3 +160,47 @@ set_target_properties(moss_transcribe_diarize_server moss_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATION bin)
+# Note (Dayuxiaoshui): Nemotron 3.5 ASR streaming on Sortformer's NeMo front end
+# and Qwen3-ASR's checkpoint loading, with its own server and parity tool.
+add_library(nemotron_asr STATIC src/nemotron_model.cpp src/nemotron_transcriber.cpp
+  src/nemotron_realtime.cpp)
+target_link_libraries(nemotron_asr PUBLIC qwen3_asr sortformer swift_port)
+# Note (Dayuxiaoshui): the positional table is float math that must round as
+# Swift's does, so no fused multiply-add.
+target_compile_options(nemotron_asr PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(nemotron_asr_server src/nemotron_asr_server.cpp)
+target_link_libraries(nemotron_asr_server PRIVATE nemotron_asr asr_service)
+add_executable(nemotron_transcribe tools/nemotron_transcribe.cpp)
+target_link_libraries(nemotron_transcribe PRIVATE nemotron_asr)
+set_target_properties(nemotron_asr_server nemotron_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS nemotron_asr_server nemotron_transcribe RUNTIME DESTINATION bin)
+
+# Note (Dayuxiaoshui): Parakeet TDT: parakeet_server, with qwen3_asr_server's API without
+# realtime, and its parity tool; the front end is Sortformer's NeMo log-mel.
+add_library(parakeet_asr STATIC src/parakeet_model.cpp src/parakeet_transcriber.cpp)
+target_link_libraries(parakeet_asr PUBLIC qwen3_asr sortformer swift_port)
+target_compile_options(parakeet_asr PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(parakeet_server src/parakeet_server.cpp)
+target_link_libraries(parakeet_server PRIVATE parakeet_asr asr_service)
+add_executable(parakeet_transcribe tools/parakeet_transcribe.cpp)
+target_link_libraries(parakeet_transcribe PRIVATE parakeet_asr)
+set_target_properties(parakeet_server parakeet_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS parakeet_server parakeet_transcribe RUNTIME DESTINATION bin)
+
+# Note (Dayuxiaoshui): SenseVoice Small: sensevoice_server, with qwen3_asr_server's API
+# without realtime, and its parity tool; Silero VAD cuts long audio at speech.
+add_library(sensevoice_asr STATIC src/sensevoice_model.cpp src/sensevoice_transcriber.cpp)
+target_link_libraries(sensevoice_asr PUBLIC qwen3_asr swift_port silero_vad)
+target_compile_options(sensevoice_asr PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(sensevoice_server src/sensevoice_server.cpp)
+target_link_libraries(sensevoice_server PRIVATE sensevoice_asr asr_service)
+add_executable(sensevoice_transcribe tools/sensevoice_transcribe.cpp)
+target_link_libraries(sensevoice_transcribe PRIVATE sensevoice_asr)
+set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)

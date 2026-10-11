@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""GPU and port isolation for concurrent Full-Duplex-Bench jobs."""
+"""GPU and port isolation and the model server command for Full-Duplex-Bench jobs."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+from typer.testing import CliRunner
 
 from benchmarks.duplex.fdb_v15.common import (
     DEFAULT_JUDGE_PORT,
@@ -17,6 +19,10 @@ from benchmarks.duplex.fdb_v15.common import (
     NCCL_PORT_END,
     load_settings,
 )
+from benchmarks.duplex.fdb_v15.servers import model_server_command
+from sglang_omni.cli import app
+from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
 from sglang_omni.utils.port_claim import claim_tcp_port, release_tcp_port
 
 CLAIM_BASE_PORT = 25100
@@ -112,6 +118,23 @@ def test_port_inside_nccl_range_is_rejected(
     monkeypatch.setenv("JUDGE_PORT", "29600")
     with pytest.raises(SystemExit, match="NCCL"):
         load_settings("isolation")
+
+
+def test_model_server_command_launches_the_duplex_pipeline(
+    clean_job_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.config.manager.resolve_config_cls_for_model_path",
+        lambda model_path: MiniCPMOSpeechPipelineConfig,
+    )
+    launch_server = Mock()
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", launch_server)
+    server_command = model_server_command(load_settings("isolation"))
+
+    result = CliRunner().invoke(app, server_command[server_command.index("serve") :])
+
+    assert result.exit_code == 0, result.output
+    assert type(launch_server.call_args.args[0]) is MiniCPMODuplexPipelineConfig
 
 
 def test_concurrent_claims_take_different_ports(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "layers.h"
 #include "sortformer_checkpoint.h"
 
 namespace sortformer {
@@ -73,19 +74,6 @@ mx::array RelativePositionalEncoding(int length, int width, mx::Dtype dtype) {
       mx::reshape(mx::stack({mx::sin(angles), mx::cos(angles)}, -1),
                   {position_count, width});
   return mx::astype(mx::expand_dims(encoding, 0), dtype);
-}
-
-mx::array RelativeShift(const mx::array &x) {
-  const int batch = x.shape(0);
-  const int heads = x.shape(1);
-  const int query_length = x.shape(2);
-  const int position_length = x.shape(3);
-  mx::array padded = mx::pad(x, {{0, 0}, {0, 0}, {0, 0}, {1, 0}});
-  padded =
-      mx::reshape(padded, {batch, heads, position_length + 1, query_length});
-  padded = mx::slice(padded, {0, 0, 1, 0},
-                     {batch, heads, position_length + 1, query_length});
-  return mx::reshape(padded, {batch, heads, query_length, position_length});
 }
 
 } // namespace
@@ -182,7 +170,7 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
       mx::matmul(q_with_bias_u, mx::transpose(k, {0, 1, 3, 2}));
   mx::array matrix_bd =
       mx::matmul(q_with_bias_v, mx::transpose(p, {0, 1, 3, 2}));
-  matrix_bd = RelativeShift(matrix_bd);
+  matrix_bd = qwen3_asr::RelativeShift(matrix_bd);
   matrix_bd = mx::slice(matrix_bd, {0, 0, 0, 0},
                         {matrix_bd.shape(0), matrix_bd.shape(1),
                          matrix_bd.shape(2), matrix_ac.shape(3)});

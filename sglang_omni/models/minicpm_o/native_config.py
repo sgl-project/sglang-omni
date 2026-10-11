@@ -141,6 +141,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     realtime_deployment_factory: ClassVar[str] = (
         "sglang_omni.models.minicpm_o.session_adapters.build_realtime_deployment"
     )
+    is_realtime_only: ClassVar[bool] = True
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, JsonValue]:
         request_slots = (
