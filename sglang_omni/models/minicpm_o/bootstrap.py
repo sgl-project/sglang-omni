@@ -84,6 +84,11 @@ def create_talker_scheduler(
 
     output_proc = SGLangOutputProcessor()
     model_runner = MiniCPMOTalkerModelRunner(model_worker, output_proc)
+    if session_mode:
+        # note (0xtoward): a session's units replay host history, so it keeps the host sampler.
+        pass
+    else:
+        model_runner.enable_device_sampling()
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
     request_builder, result_adapter = make_talker_scheduler_adapters(
@@ -105,6 +110,12 @@ def create_talker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
+        # note (0xtoward): the default lookahead gate holds because the slot state
+        # scores the penalty and the length floor on the device inside the launch,
+        # so neither reads a token the resolve has not appended yet. A lone request
+        # also overlaps its host work with the next forward, so lookahead starts at 1.
+        enable_async_decode=not session_mode,
+        async_decode_min_batch_size=1,
     )
 
 

@@ -33,6 +33,7 @@ from sglang_omni.models.minicpm_o.talker_request import (
 )
 from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 # The generation suffix from MiniCPM-o-4_5's tokenizer template.
 GENERATION_TEMPLATE = """
@@ -303,7 +304,7 @@ def test_speech_request_prefills_its_text() -> None:
     )
 
 
-def test_speech_sampling_fields_reach_the_talker() -> None:
+def speech_talker_request(talker_params: dict[str, int]) -> SGLangARRequestData:
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor.tokenizer = SpeechTokenizer()
     preprocessor.speech_enabled = True
@@ -335,19 +336,30 @@ def test_speech_sampling_fields_reach_the_talker() -> None:
             len(token_ids) + 2, 8
         )
     )
-    sampling_params = build_sglang_talker_request(
+    return build_sglang_talker_request(
         state,
         model=talker,
         codec_vocab_size=64,
         codec_eos_id=63,
         tts_bos_token_id=151703,
         tts_eos_token_id=151704,
-        params=result.request.params,
-    ).req.sampling_params
+        params={**result.request.params, **talker_params},
+    )
+
+
+def test_speech_sampling_fields_reach_the_talker() -> None:
+    talker_request = speech_talker_request({})
+
+    sampling_params = talker_request.req.sampling_params
     assert sampling_params.max_new_tokens == 30
-    assert sampling_params.min_new_tokens == 30
+    assert talker_request.talker_model_inputs["min_new_tokens"] == 30
     assert sampling_params.temperature == pytest.approx(0.3)
     assert sampling_params.top_k == 25
+
+
+def test_a_negative_talker_minimum_length_is_rejected() -> None:
+    with pytest.raises(ValueError, match="talker_min_new_tokens"):
+        speech_talker_request({"talker_min_new_tokens": -1})
 
 
 def test_speech_prefill_advances_by_chunk_in_its_own_cache_namespace() -> None:
