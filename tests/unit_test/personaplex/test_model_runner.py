@@ -3,6 +3,7 @@
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -402,3 +403,93 @@ def test_resume_after_a_retract_replays_the_generated_positions() -> None:
     state = PersonaPlexState.from_dict(apply_lm_result(data).data)
     assert state.text_ids == [3, 77, 78, 79]
     assert data.output_ids == [77, 78, 79, 80]
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_batch_sampling_follows_requests_through_membership_changes(
+    device: str,
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    model = FakeModel(max_batch=8)
+    model.fusion_buffer = model.fusion_buffer.to(device)
+    runner = make_runner(model)
+    parameters = [
+        {"seed": 7, "audio_temperature": 0.8, "audio_top_k": 3},
+        {"seed": 42, "audio_temperature": 1.2, "audio_top_k": 0},
+        {"seed": 7, "audio_temperature": 0.0, "audio_top_k": 10},
+        {"seed": 123, "audio_temperature": 0.6, "audio_top_k": 100},
+        {"seed": 99, "audio_temperature": 0.8, "audio_top_k": 3},
+        {"seed": 321, "audio_temperature": 1.2, "audio_top_k": 0},
+        {"seed": 999, "audio_temperature": 0.6, "audio_top_k": 100},
+    ]
+    requests = [
+        make_request(4, params=params, request_id=str(0 if index == 4 else index))
+        for index, params in enumerate(parameters)
+    ]
+    references = [
+        make_request(4, params=params, request_id=str(index))
+        for index, params in enumerate(parameters)
+    ]
+    reference_samplers = [runner.audio_sampler([request]) for request in references]
+    logits = torch.randn(7, 64, device=device)
+    # Note (Codex): Remove finished/cancelled rows, then admit a fresh request with a reused ID.
+    for active_indices in (
+        [0, 1, 2, 3, 5, 6],
+        [6, 3, 2, 0, 5, 1],
+        [1, 5],
+        [4, 3, 6],
+        [4],
+    ):
+        batch_sampler = runner.audio_sampler(
+            [requests[index] for index in active_indices]
+        )
+        for _ in range(8):
+            actual = batch_sampler(logits[active_indices])
+            expected = torch.cat(
+                [
+                    reference_samplers[index](logits[index : index + 1])
+                    for index in active_indices
+                ]
+            )
+            assert torch.equal(actual, expected)
+        for index in active_indices:
+            actual_generator = requests[index].data.talker_model_inputs[
+                "audio_generator"
+            ]
+            reference_generator = references[index].data.talker_model_inputs[
+                "audio_generator"
+            ]
+            assert torch.equal(
+                actual_generator.get_state(), reference_generator.get_state()
+            )
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_compatible_unseeded_batch_preserves_draws(device: str) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    model = FakeModel(max_batch=4)
+    model.fusion_buffer = model.fusion_buffer.to(device)
+    runner = make_runner(model)
+    requests = [make_request(2, request_id=str(index)) for index in range(4)]
+    logits = torch.randn(4, 64, device=device)
+    torch.manual_seed(42)
+    sampling = requests[0].data.talker_model_inputs["sampling"].audio
+    expected = [
+        sample_token(logits, sampling, [None] * len(requests)) for _ in range(8)
+    ]
+    torch.manual_seed(42)
+    batch_sampler = runner.audio_sampler(requests)
+    actual = [batch_sampler(logits) for _ in range(8)]
+    assert all(
+        torch.equal(left, right) for left, right in zip(actual, expected, strict=True)
+    )
+    assert all(
+        "audio_generator" not in request.data.talker_model_inputs
+        for request in requests
+    )

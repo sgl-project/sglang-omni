@@ -12,7 +12,6 @@ one position later, a finished output frame streamed to the codec.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import groupby
 from typing import Protocol
 
 import torch
@@ -128,36 +127,71 @@ class PersonaPlexModelRunner(ModelRunner):
         return generator
 
     def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
-        """Sample row i with requests[i]'s audio settings and generator."""
-        runs: list[SamplingRun] = []
-        start_row = 0
-        # Note (edwardzh): Only adjacent requests share a sampling call, so rows are
-        # sliced in place and no index tensor reaches the device.
-        for sampling, run_requests in groupby(
-            requests,
-            key=lambda request: request.data.talker_model_inputs["sampling"].audio,
-        ):
-            generators = [
-                self.audio_generator(request.data) for request in run_requests
-            ]
-            end_row = start_row + len(generators)
-            runs.append(
-                SamplingRun(
-                    row_slice=slice(start_row, end_row),
-                    sampling=sampling,
-                    generators=generators,
-                )
+        """Share sampling math across compatible rows, keeping request-local RNGs."""
+        grouped_rows: dict[AudioSampling, list[int]] = {}
+        grouped_generators: dict[AudioSampling, list[torch.Generator | None]] = {}
+        for row, request in enumerate(requests):
+            sampling = request.data.talker_model_inputs["sampling"].audio
+            grouped_rows.setdefault(sampling, []).append(row)
+            grouped_generators.setdefault(sampling, []).append(
+                self.audio_generator(request.data)
             )
-            start_row = end_row
 
-        def sample(logits: torch.Tensor) -> torch.Tensor:
-            picks = [
-                sample_token(logits[run.row_slice], run.sampling, run.generators)
-                for run in runs
+        if len(grouped_rows) == 1:
+            sampling = next(iter(grouped_rows))
+            generators = grouped_generators[sampling]
+            return lambda logits: sample_token(logits, sampling, generators)
+        else:
+            pass
+
+        if grouped_rows and all(
+            rows[-1] - rows[0] + 1 == len(rows) for rows in grouped_rows.values()
+        ):
+            sampling_slices = [
+                SamplingRun(
+                    row_slice=slice(rows[0], rows[-1] + 1),
+                    sampling=sampling,
+                    generators=grouped_generators[sampling],
+                )
+                for sampling, rows in grouped_rows.items()
             ]
-            return picks[0] if len(picks) == 1 else torch.cat(picks)
 
-        return sample
+            def sample_contiguous(logits: torch.Tensor) -> torch.Tensor:
+                return torch.cat(
+                    [
+                        sample_token(
+                            logits[run.row_slice], run.sampling, run.generators
+                        )
+                        for run in sampling_slices
+                    ],
+                    dim=0,
+                )
+
+            return sample_contiguous
+        else:
+            pass
+
+        sampling_groups = [
+            (
+                torch.tensor(rows, dtype=torch.long, device=self.model_device),
+                sampling,
+                grouped_generators[sampling],
+            )
+            for sampling, rows in grouped_rows.items()
+        ]
+
+        def sample_batch(logits: torch.Tensor) -> torch.Tensor:
+            tokens = torch.empty(
+                logits.shape[0], dtype=torch.long, device=logits.device
+            )
+            for rows, sampling, generators in sampling_groups:
+                sampled = sample_token(
+                    logits.index_select(0, rows), sampling, generators
+                )
+                tokens.index_copy_(0, rows, sampled)
+            return tokens
+
+        return sample_batch
 
     def spell_frames(
         self,
