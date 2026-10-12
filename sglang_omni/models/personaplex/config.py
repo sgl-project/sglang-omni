@@ -206,6 +206,10 @@ class PersonaPlexPipelineConfig(PipelineConfig):
 
 
 class PersonaPlexRealtimePipelineConfig(PersonaPlexPipelineConfig):
+    realtime_deployment_factory: ClassVar[str | None] = (
+        "sglang_omni.models.personaplex.realtime.create_realtime_deployment"
+    )
+    is_realtime_only: ClassVar[bool] = True
     # Note (wilsonzheng0327): The offline LM and code2wav factory fields have no
     # realtime counterpart.
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -222,3 +226,8 @@ class PersonaPlexRealtimePipelineConfig(PersonaPlexPipelineConfig):
 
 
 EntryClass = PersonaPlexPipelineConfig
+
+Variants = {
+    "offline": PersonaPlexPipelineConfig,
+    "realtime": PersonaPlexRealtimePipelineConfig,
+}
