@@ -240,26 +240,31 @@ class Stage:
 
         # Start scheduler in dedicated thread
         if self.scheduler is not None:
+            serving_thread_ready = threading.Event()
 
             def _run_scheduler() -> None:
-                # Active-stage binding so ``emit(stage=None)`` from
-                # scheduler-thread descendants resolves to this stage.
-                _set_active_stage(self.name)
                 try:
-                    if self.gpu_id is not None:
-                        from sglang_omni.platforms import current_platform
+                    try:
+                        # Active-stage binding so ``emit(stage=None)`` from
+                        # scheduler-thread descendants resolves to this stage.
+                        _set_active_stage(self.name)
+                        if self.gpu_id is not None:
+                            from sglang_omni.platforms import current_platform
 
-                        current_platform.set_device(
-                            current_platform.get_device(int(self.gpu_id))
-                        )
-                        logger.info(
-                            "Scheduler thread for stage %s set %s device to %s",
-                            self.name,
-                            current_platform.device_type,
-                            self.gpu_id,
-                        )
-                    else:
-                        pass
+                            current_platform.set_device(
+                                current_platform.get_device(int(self.gpu_id))
+                            )
+                            logger.info(
+                                "Scheduler thread for stage %s set %s device to %s",
+                                self.name,
+                                current_platform.device_type,
+                                self.gpu_id,
+                            )
+                        else:
+                            pass
+                        self.scheduler.warm_up_serving_thread()
+                    finally:
+                        serving_thread_ready.set()
                     self.scheduler.start()
                 except Exception as exc:
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
@@ -279,6 +284,7 @@ class Stage:
                 daemon=True,
             )
             self.scheduler_thread.start()
+            await asyncio.to_thread(serving_thread_ready.wait)
         else:
             pass
 
@@ -521,6 +527,14 @@ class Stage:
     async def on_submit(self, msg: SubmitMessage) -> None:
         request_id = msg.request_id
         if request_id in self.aborted:
+            # A new coordinator admission needs an explicit answer. Late
+            # downstream data still follows the silent stale-result path. The
+            # message keeps the duplicate ID form so both map to one status.
+            await self.send_failure(
+                request_id,
+                f"Request {request_id} (retired after abort or failure, use a "
+                "fresh request ID) already exists",
+            )
             return
         else:
             pass
@@ -2117,15 +2131,17 @@ class Stage:
             raise RuntimeError(f"Follower stage {self.name} failed: {error}")
         else:
             pass
-        await self.control_plane.send_complete(
-            CompleteMessage(
-                request_id=request_id,
-                from_stage=self.name,
-                success=False,
-                error=error,
+        try:
+            await self.control_plane.send_complete(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    success=False,
+                    error=error,
+                )
             )
-        )
-        self.clear_request_state(request_id)
+        finally:
+            self.clear_request_state(request_id)
 
     def clear_request_state(self, request_id: str) -> None:
         self.active_requests.discard(request_id)

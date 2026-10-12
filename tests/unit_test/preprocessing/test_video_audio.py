@@ -9,7 +9,7 @@ import librosa
 import numpy as np
 import pytest
 
-from sglang_omni.preprocessing.video import extract_audio_from_path
+from sglang_omni.preprocessing.video import VideoDecodeError, extract_audio_from_path
 
 
 @pytest.mark.parametrize("sample_rate", [16000, 44100])
@@ -98,10 +98,9 @@ def test_video_without_audio_returns_none(tmp_path: Path, caplog) -> None:
     assert not caplog.records
 
 
-def test_broken_media_logs_decoding_failure(tmp_path: Path, caplog) -> None:
+def test_broken_media_rejects_invalid_input(tmp_path: Path) -> None:
     path = tmp_path / "broken.mp4"
     path.write_bytes(b"not a media container")
 
-    with caplog.at_level(logging.WARNING):
-        assert extract_audio_from_path(path, 16000) is None
-    assert "Failed to extract audio" in caplog.text
+    with pytest.raises(VideoDecodeError, match="Invalid media data"):
+        extract_audio_from_path(path, 16000)

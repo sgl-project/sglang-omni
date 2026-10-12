@@ -174,7 +174,12 @@ def run_configure_preprocessing_threads(
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in ("OMP_NUM_THREADS", "MKL_NUM_THREADS")
+        if key
+        not in (
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "SGLANG_OMNI_OMP_FROM_CPU_PLAN",
+        )
     }
     env.update(env_overrides)
     stdout = subprocess.check_output(
@@ -182,6 +187,37 @@ def run_configure_preprocessing_threads(
     )
     returned, effective, cap = (int(token) for token in stdout.split()[-3:])
     return returned, effective, cap
+
+
+@pytest.mark.parametrize(
+    "env_overrides,worker_count,expected_threads",
+    [
+        (
+            {"OMP_NUM_THREADS": "32", "SGLANG_OMNI_OMP_FROM_CPU_PLAN": "1"},
+            4,
+            8,
+        ),
+        (
+            {"OMP_NUM_THREADS": "32", "SGLANG_OMNI_OMP_FROM_CPU_PLAN": "1"},
+            8,
+            4,
+        ),
+        (
+            {"OMP_NUM_THREADS": "2", "SGLANG_OMNI_OMP_FROM_CPU_PLAN": "1"},
+            4,
+            1,
+        ),
+        ({"OMP_NUM_THREADS": "32"}, 4, 32),
+    ],
+)
+def test_fish_preprocessing_composes_cpu_plan_with_worker_policy(
+    env_overrides: dict[str, str], worker_count: int, expected_threads: int
+) -> None:
+    returned, effective, _ = run_configure_preprocessing_threads(
+        env_overrides, worker_count=worker_count
+    )
+
+    assert returned == effective == expected_threads
 
 
 @pytest.mark.parametrize(

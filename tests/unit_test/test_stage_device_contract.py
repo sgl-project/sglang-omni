@@ -77,9 +77,6 @@ def factory_parameters(dotted: str) -> dict[str, object]:
 # note (lennox): these factories raise on torch.cuda.is_available() before
 # this test's mocks run, so they need a static accelerator mark (tests/README.md).
 REQUIRES_REAL_ACCELERATOR = {
-    ("dots_tts", "reference_encode"),
-    ("dots_tts", "latent_engine"),
-    ("dots_tts", "vocoder"),
     ("minimax_music3", "minimax_music3_ar"),
     ("minimax_music3", "dit_dav"),
     ("zonos2", "tts_engine"),
@@ -237,6 +234,16 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
 # note (lennox): forwarding into resolve_device_spec isn't the same as binding
 # its result -- this drives the real build() chain and checks what it fixed.
 ENGINE_FACTORIES = {
+    "nemotron_voicechat_thinker": (
+        "sglang_omni.models.nemotron_voicechat.stages.create_thinker_executor",
+        "sglang_omni.models.nemotron_voicechat.engine_builder",
+        "NemotronVoiceChatEngineBuilder",
+    ),
+    "nemotron_voicechat_talker": (
+        "sglang_omni.models.nemotron_voicechat.stages.create_talker_executor",
+        "sglang_omni.models.nemotron_voicechat.engine_builder",
+        "NemotronVoiceChatTalkerEngineBuilder",
+    ),
     "arkasr": (
         "sglang_omni.models.arkasr.stages.create_sglang_arkasr_executor",
         "sglang_omni.models.arkasr.engine_builder",
@@ -321,9 +328,9 @@ ENGINE_FACTORIES = {
 }
 
 
-# note (lennox): same three CUDA-only models as REQUIRES_REAL_ACCELERATOR,
+# note (lennox): same CUDA-only models as REQUIRES_REAL_ACCELERATOR,
 # at this test's per-model (not per-stage) granularity.
-ACCELERATOR_ONLY_ENGINE_MODELS = {"dots_tts", "minimax_music3", "zonos2"}
+ACCELERATOR_ONLY_ENGINE_MODELS = {"minimax_music3", "zonos2"}
 
 
 def engine_factory_ids():
@@ -584,10 +591,11 @@ def config_with_one_replicated_process(config_cls, model):
     )
     stages_cfg = list(config.stages)
     if len(gpu_members) > 1:
+        stage_memory_fraction = 0.9 / len(gpu_members)
         member_names = {stage.name for stage in gpu_members}
         stages_cfg = [
             (
-                stage.model_copy(update={"gpu_memory_fraction": 0.3})
+                stage.model_copy(update={"gpu_memory_fraction": stage_memory_fraction})
                 if stage.name in member_names
                 else stage
             )

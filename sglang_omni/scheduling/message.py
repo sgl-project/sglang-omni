@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from queue import Queue
 from typing import Literal, Protocol
 
-IncomingMessageType = Literal["new_request", "stream_chunk", "stream_done", "abort"]
+IncomingMessageType = Literal[
+    "new_request", "stream_chunk", "stream_done", "abort", "admin"
+]
 
 
 @dataclass
@@ -34,6 +36,8 @@ class StageScheduler(Protocol):
 
     @property
     def outbox(self) -> Queue[OutgoingMessage]: ...
+
+    def warm_up_serving_thread(self) -> None: ...
 
     def start(self) -> None: ...
 

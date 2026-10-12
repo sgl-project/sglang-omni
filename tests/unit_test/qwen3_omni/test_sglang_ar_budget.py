@@ -667,6 +667,18 @@ def test_thinker_decode_graph_stays_available_to_an_explicit_override(
     assert overrides["disable_decode_cuda_graph"] is False
 
 
+@pytest.mark.parametrize(
+    "is_cuda, expected", [(True, "breakable"), (False, "disabled")]
+)
+def test_thinker_prefill_graph_defaults_to_breakable_on_cuda(
+    monkeypatch, is_cuda: bool, expected: str
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
+    overrides = thinker_overrides(monkeypatch, allows=True)
+
+    assert overrides["cuda_graph_backend_prefill"] == expected
+
+
 def test_importing_the_stages_module_does_not_load_the_platform_layer() -> None:
     """Read in a subprocess: the suite loads the platform layer long before this."""
     probe = (

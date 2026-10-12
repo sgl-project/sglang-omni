@@ -143,26 +143,12 @@ def encoder_bundle():
         model_parallel_is_initialized,
     )
     from sglang.srt.models.whisper import WhisperEncoder
-    from sglang.srt.runtime_context import get_context
+    from sglang.srt.runtime_context import get_context, get_parallel
     from transformers import AutoConfig
 
     DEVICE_MODULE.set_device(DEVICE)
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     os.environ.setdefault("MASTER_PORT", "29551")
-    if not torch.distributed.is_initialized():
-        init_distributed_environment(
-            world_size=1,
-            rank=0,
-            local_rank=0,
-            distributed_init_method=f"tcp://127.0.0.1:{os.environ['MASTER_PORT']}",
-            backend=get_default_distributed_backend(DEVICE.type),
-        )
-    else:
-        pass
-    if not model_parallel_is_initialized():
-        initialize_model_parallel(tensor_model_parallel_size=1)
-    else:
-        pass
 
     audio_config = AutoConfig.from_pretrained(
         snaps[0], trust_remote_code=True
@@ -170,18 +156,33 @@ def encoder_bundle():
     published = get_context().override_server_args()
     published.install()
     try:
-        encoder = WhisperEncoder(audio_config)
-        load_encoder_checkpoint(encoder, snaps[0])
-        encoder = encoder.to(device=DEVICE, dtype=torch.bfloat16).eval()
-        num_mel_bins = int(audio_config.num_mel_bins)
-        runner = WhisperEncoderCudaGraphRunner(
-            encoder,
-            num_mel_bins,
-            INPUT_FEATURE_LEN,
-            graph_backend=GRAPH_BACKEND,
-        )
-        runner.capture(CHUNK_BUCKETS)
-        yield encoder, num_mel_bins, runner
+        with get_parallel().override(tp_rank=0, attn_tp_rank=0):
+            if not torch.distributed.is_initialized():
+                init_distributed_environment(
+                    world_size=1,
+                    rank=0,
+                    local_rank=0,
+                    distributed_init_method=f"tcp://127.0.0.1:{os.environ['MASTER_PORT']}",
+                    backend=get_default_distributed_backend(DEVICE.type),
+                )
+            else:
+                pass
+            if not model_parallel_is_initialized():
+                initialize_model_parallel()
+            else:
+                pass
+            encoder = WhisperEncoder(audio_config)
+            load_encoder_checkpoint(encoder, snaps[0])
+            encoder = encoder.to(device=DEVICE, dtype=torch.bfloat16).eval()
+            num_mel_bins = int(audio_config.num_mel_bins)
+            runner = WhisperEncoderCudaGraphRunner(
+                encoder,
+                num_mel_bins,
+                INPUT_FEATURE_LEN,
+                graph_backend=GRAPH_BACKEND,
+            )
+            runner.capture(CHUNK_BUCKETS)
+            yield encoder, num_mel_bins, runner
     finally:
         published.restore()
 

@@ -35,7 +35,7 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_XPU="${REPO_ROOT}/pyproject_xpu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 
-SGLANG_VERIFIED_VERSION="v0.5.20"
+SGLANG_VERIFIED_VERSION="v0.5.21"
 WHISPER_VERSION="20250625"
 
 [[ -f "${PYPROJECT_XPU}" ]] || { echo "ERROR: ${PYPROJECT_XPU} not found" >&2; exit 1; }

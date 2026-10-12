@@ -3602,6 +3602,7 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
         "/generate",
         "/v1/chat/completions",
         "/v1/audio/speech",
+        "/v1/audio/speech/{request_id}",
         "/v1/audio/transcriptions",
         "/v1/audio/translations",
     }
@@ -3854,20 +3855,28 @@ def test_multipart_form_stream_conflicting_route_header_is_rejected() -> None:
     assert seen_workers == []
 
 
-def test_worker_crud_stays_unauthenticated_even_with_admin_key() -> None:
-    # Note (Jiaxin Deng): current behavior, frozen: worker CRUD carries no admin auth
-    # while the weight-update/broadcast routes do; the route split must not change this.
+def test_worker_crud_requires_the_admin_key() -> None:
     app = admin_router_app(admin_api_key=ROUTER_ADMIN_API_KEY)
     with TestClient(app) as client:
-        created = client.post("/workers", json={"url": "http://127.0.0.1:8199"})
+        worker = {"url": "http://127.0.0.1:8199"}
+        assert client.post("/workers", json=worker).status_code == 401
+        created = client.post("/workers", json=worker, headers=admin_headers())
         assert created.status_code == 200
-        assert client.get("/workers").status_code == 200
         worker_id = created.json()["worker"]["worker_id"]
+        assert client.get("/workers").status_code == 200
+        disable = {"disabled": True}
+        assert client.put(f"/workers/{worker_id}", json=disable).status_code == 401
+        assert client.delete(f"/workers/{worker_id}").status_code == 401
         assert (
-            client.put(f"/workers/{worker_id}", json={"disabled": True}).status_code
+            client.put(
+                f"/workers/{worker_id}", json=disable, headers=admin_headers()
+            ).status_code
             == 200
         )
-        assert client.delete(f"/workers/{worker_id}").status_code == 200
+        assert (
+            client.delete(f"/workers/{worker_id}", headers=admin_headers()).status_code
+            == 200
+        )
 
 
 def test_pool_timeout_is_router_local_not_a_worker_failure() -> None:

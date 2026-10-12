@@ -14,6 +14,7 @@ from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.mrope_positions import talker_can_use_linear_mrope
 from sglang_omni.models.qwen3_omni.payload_types import (
     EncoderInputs,
     Qwen3OmniPipelineState,
@@ -28,6 +29,7 @@ from sglang_omni.scheduling.pending_text_queue import (
     coerce_pending_text_queue,
 )
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import validate_prompt_token_ids
 from sglang_omni.scheduling.types import ARRequestData, RequestOutput
 
 if TYPE_CHECKING:
@@ -339,17 +341,9 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return payload_with_state(payload, projected)
 
 
-# note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack.
-_TALKER_UNUSED_MODEL_INPUT_KEYS = (
-    "image_deepstack_visual_embeds",
-    "video_deepstack_visual_embeds",
-    "deepstack_visual_embeds",
-)
-
-_TALKER_UNUSED_ENCODER_OUT_KEYS = (
-    "deepstack_visual_embeds_image",
-    "deepstack_visual_embeds_video",
-)
+# note (ratish): the talker projects zeros at multimodal prompt rows, so of the encoder
+# outputs it reads only what its MRoPE positions need.
+TALKER_ENCODER_OUT_KEYS = ("image_grid_thw", "video_grid_thw", "audio_feature_lengths")
 
 
 def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
@@ -358,9 +352,7 @@ def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
     encoder_out = state.encoder_outs.get(stage_name, {})
     if isinstance(encoder_out, dict):
         encoder_out = {
-            k: v
-            for k, v in encoder_out.items()
-            if k not in _TALKER_UNUSED_ENCODER_OUT_KEYS
+            k: v for k, v in encoder_out.items() if k in TALKER_ENCODER_OUT_KEYS
         }
     else:
         pass
@@ -377,21 +369,9 @@ def merge_for_talker(payloads: dict[str, StagePayload]) -> StagePayload:
 def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
     """Early-submit projection: ship prompt + thinker_inputs to the talker."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    thinker_inputs = (
-        dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
-    )
-    model_inputs = thinker_inputs.get("model_inputs")
-    if isinstance(model_inputs, dict):
-        thinker_inputs["model_inputs"] = {
-            k: v
-            for k, v in model_inputs.items()
-            if k not in _TALKER_UNUSED_MODEL_INPUT_KEYS
-        }
-    else:
-        pass
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
-        thinker_inputs=thinker_inputs,
+        thinker_inputs=dict(state.thinker_inputs),
     )
     return payload_with_state(payload, projected)
 
@@ -725,6 +705,7 @@ def build_sglang_thinker_request(
 
     prompt = state.prompt
     input_ids = prompt["input_ids"]
+    validate_prompt_token_ids(input_ids, vocab_size)
     original_input_ids = input_ids
 
     attention_mask = prompt.get("attention_mask")
@@ -956,22 +937,18 @@ def build_sglang_talker_request(
         if suppress_tokens
         else None
     )
-    if thinker_config is not None and talker_model_inputs:
-        from sglang_omni.models.qwen3_omni.mrope_positions import (
-            linear_mrope_positions,
-            talker_can_use_linear_mrope,
+    # note (ratish): omit zero-delta metadata so all-linear decode batches avoid
+    # the blocking delta copy.
+    if (
+        thinker_config is not None
+        and talker_model_inputs
+        and not talker_can_use_linear_mrope(
+            input_ids_tensor, talker_model_inputs, thinker_config
         )
-
-        ids = input_ids_tensor.to(dtype=torch.long)
-        mm_model_inputs = talker_model_inputs or {}
-        if talker_can_use_linear_mrope(ids, mm_model_inputs, thinker_config):
-            mrope_positions, mrope_position_delta = linear_mrope_positions(
-                int(ids.numel())
-            )
-        else:
-            mrope_positions, mrope_position_delta = compute_mrope_positions(
-                ids, mm_model_inputs, thinker_config
-            )
+    ):
+        mrope_positions, mrope_position_delta = compute_mrope_positions(
+            input_ids_tensor, talker_model_inputs, thinker_config
+        )
         mm_inputs = MultimodalInputs(mm_items=[])
         mm_inputs.mrope_positions = mrope_positions
         mm_inputs.mrope_position_delta = mrope_position_delta

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,7 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoTokenizer
 
+from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
 from sglang_omni.models.minicpm_o.payload_types import (
     AudioEncoderInputs,
     ImageEncoderInputs,
@@ -41,6 +43,17 @@ if TYPE_CHECKING:
 else:
     pass
 
+TTS_READ_PROMPT_EN = "Please read the following text out loud in English: "
+TTS_READ_PROMPT_ZH = "请用中文朗读以下文本: "
+# Forwarded to the talker as talker_<field>; the seed already reaches it.
+TALKER_SPEECH_SAMPLING_FIELDS = (
+    "max_new_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "repetition_penalty",
+)
+
 IMAGE_PLACEHOLDER = "<image>./</image>"
 AUDIO_PLACEHOLDER = "<audio>./</audio>"
 
@@ -49,6 +62,18 @@ ASR_PROMPT_ZH = "请仔细听这段音频片段，并将其内容逐字记录。
 ASR_PROMPT_EN = (
     "Please listen to the audio snippet carefully and transcribe the content."
 )
+
+
+def is_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+
+def tts_read_prompt(text: str, language: str | None) -> str:
+    if language in (None, "Auto"):
+        language = "Chinese" if is_chinese(text) else "English"
+    else:
+        pass
+    return TTS_READ_PROMPT_ZH if language == "Chinese" else TTS_READ_PROMPT_EN
 
 
 def first_batch_item(value: object) -> object:
@@ -106,6 +131,7 @@ class MiniCPMOPreprocessor:
         model_path: str,
         *,
         speech_enabled: bool = False,
+        device: torch.device = torch.device("cpu"),
     ) -> None:
         local_dir = str(resolve_model_path(model_path))
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -115,6 +141,7 @@ class MiniCPMOPreprocessor:
         self.model_dir = local_dir
         self._processor = None  # noqa: leading-underscore
         self.speech_enabled = speech_enabled
+        self.device = device
 
     def speech_to_text_inputs(
         self, payload: StagePayload, inputs: Mapping[str, object]
@@ -124,7 +151,9 @@ class MiniCPMOPreprocessor:
         language = str(params.get("language") or "").lower()
         prompt = ASR_PROMPT_ZH if language.startswith("zh") else ASR_PROMPT_EN
         audio, _ = AudioMediaIO(target_sr=16000).load_bytes(inputs["audio_bytes"])
-        return [{"role": "user", "content": prompt}], [audio]
+        # note (Tianyao Wu): the recipe puts a blank line between prompt and audio.
+        message = {"role": "user", "content": f"{prompt}\n\n{AUDIO_PLACEHOLDER}"}
+        return [message], [audio]
 
     def should_use_tts_template(self, payload: StagePayload) -> bool:
         return self.speech_enabled and should_generate_audio_output(payload)
@@ -135,19 +164,48 @@ class MiniCPMOPreprocessor:
             self._processor = AutoProcessor.from_pretrained(  # noqa: leading-underscore
                 self.model_dir, trust_remote_code=True
             )
+            if self.device.type == "cuda":
+                processor = self._processor  # noqa: leading-underscore
+                processor.process_image = CUDAImageProcessor(
+                    processor.image_processor, self.device
+                )
+            else:
+                pass
         else:
             pass
         return self._processor  # noqa: leading-underscore
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
+        params = payload.request.params or {}
+        metadata = payload.request.metadata or {}
+        known_tts_text = None
+        if metadata.get("task") == "tts":
+            known_tts_text = inputs["text"] if isinstance(inputs, Mapping) else inputs
+            tts_params = metadata.get("tts_params") or {}
+            read_prompt = tts_read_prompt(known_tts_text, tts_params.get("language"))
+            inputs = [{"role": "user", "content": f"{read_prompt}{known_tts_text}"}]
+            explicit_fields = tts_params.get("explicit_generation_params") or []
+            talker_params = {
+                f"talker_{field}": value
+                for field, value in params.items()
+                if field in TALKER_SPEECH_SAMPLING_FIELDS
+                and field in explicit_fields
+                and value is not None
+            }
+            params = {**params, **talker_params}
+            payload.request.params = params
+        else:
+            pass
         raw_images = None
         raw_audios = None
         raw_videos = None
         use_audio_in_video = False
         video_params: dict[str, object] = {}
+        media_placeholders_placed = False
         if isinstance(inputs, dict) and inputs.get("audio_bytes") is not None:
             messages, raw_audios = self.speech_to_text_inputs(payload, inputs)
+            media_placeholders_placed = True
         elif isinstance(inputs, dict):
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
@@ -168,6 +226,20 @@ class MiniCPMOPreprocessor:
         else:
             messages = inputs
 
+        if known_tts_text is not None:
+            if not isinstance(known_tts_text, str) or not known_tts_text.strip():
+                raise ValueError("speech input must be nonempty text")
+            elif not self.should_use_tts_template(payload):
+                raise ValueError("speech requests require the speech pipeline")
+            elif raw_images or raw_audios or raw_videos:
+                raise ValueError("speech requests take text only")
+            elif params.get("stream", False):
+                raise ValueError("MiniCPM-o speech output does not stream")
+            else:
+                pass
+        else:
+            pass
+
         if raw_images or raw_audios or raw_videos:
             return await self.preprocess_multimodal(
                 payload,
@@ -177,6 +249,7 @@ class MiniCPMOPreprocessor:
                 raw_videos=raw_videos,
                 use_audio_in_video=use_audio_in_video,
                 video_params=video_params,
+                media_placeholders_placed=media_placeholders_placed,
             )
         else:
             pass
@@ -197,12 +270,39 @@ class MiniCPMOPreprocessor:
             input_ids = encoded["input_ids"][0].to(dtype=torch.long)
         attention_mask = torch.ones_like(input_ids)
 
+        known_tts_output_ids = None
+        if known_tts_text is not None:
+            tts_bos_token_id = self.tokenizer.convert_tokens_to_ids("<|tts_bos|>")
+            tts_eos_token_id = self.tokenizer.convert_tokens_to_ids("<|tts_eos|>")
+            if int(input_ids[-1]) != tts_bos_token_id:
+                raise ValueError("speech prompt must end at the TTS boundary")
+            else:
+                pass
+            known_tts_output_ids = self.tokenizer.encode(
+                known_tts_text, add_special_tokens=False
+            )
+            if not known_tts_output_ids or any(
+                token_id in (tts_bos_token_id, tts_eos_token_id)
+                for token_id in known_tts_output_ids
+            ):
+                raise ValueError("speech input has no speakable tokens")
+            else:
+                pass
+            suffix = torch.tensor(
+                [*known_tts_output_ids, tts_eos_token_id], dtype=torch.long
+            )
+            input_ids = torch.cat((input_ids, suffix))
+            attention_mask = torch.ones_like(input_ids)
+        else:
+            pass
+
         stream_state: StreamState = {"token_ids": [], "text": ""}
         state = MiniCPMOPipelineState(
             prompt={
                 "prompt_text": prompt_text,
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
+                "known_tts_output_ids": known_tts_output_ids,
             },
             stream_state=stream_state,
         )
@@ -284,14 +384,11 @@ class MiniCPMOPreprocessor:
         raw_videos: object,
         use_audio_in_video: bool,
         video_params: Mapping[str, object],
+        media_placeholders_placed: bool,
     ) -> StagePayload:
         video_kwargs = {
             key.removeprefix("video_"): value for key, value in video_params.items()
         }
-        image_cache_key = compute_image_cache_key(raw_images)
-        video_cache_key = (
-            compute_video_cache_key(raw_videos, **video_kwargs) if raw_videos else None
-        )
 
         images = await ensure_image_list_async(raw_images)
         if raw_videos:
@@ -303,6 +400,9 @@ class MiniCPMOPreprocessor:
             )
         else:
             videos, video_audios = [], None
+        # Hash the loaded media, before video frames join the image list.
+        image_cache_key = compute_image_cache_key(images)
+        video_cache_key = compute_video_cache_key(videos, **video_kwargs)
         video_images = [frame for video in videos for frame in video_to_images(video)]
         images.extend(video_images)
         audios = await ensure_audio_list_async(raw_audios, target_sr=16000)
@@ -315,8 +415,10 @@ class MiniCPMOPreprocessor:
         cache_keys = [key for key in (image_cache_key, video_cache_key) if key]
         image_cache_key = "|".join(cache_keys) if cache_keys else None
 
-        if isinstance(messages, list) and not (
-            messages and all(isinstance(token, int) for token in messages)
+        if (
+            not media_placeholders_placed
+            and isinstance(messages, list)
+            and not (messages and all(isinstance(token, int) for token in messages))
         ):
             messages = self.messages_with_media_placeholders(
                 messages, num_images=len(images), num_audios=len(audios)

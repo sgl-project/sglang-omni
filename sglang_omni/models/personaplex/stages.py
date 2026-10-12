@@ -20,6 +20,7 @@ from sglang_omni.models.personaplex.components.mimi import (
 )
 from sglang_omni.models.personaplex.config import PREPROCESSING_STAGE
 from sglang_omni.models.personaplex.engine_builder import PersonaPlexEngineBuilder
+from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -34,7 +35,10 @@ from sglang_omni.models.personaplex.prompts import (
 )
 from sglang_omni.models.personaplex.request_builders import stage_request_params
 from sglang_omni.models.weight_loader import resolve_model_path
-from sglang_omni.preprocessing.transcription import resolve_audio_source
+from sglang_omni.preprocessing.transcription import (
+    police_request_audio,
+    resolve_audio_source,
+)
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
@@ -92,7 +96,8 @@ def create_preprocessing_executor(
         # Note (wilsonzheng0327): Channel 0, not a downmix: in a two-party recording the
         # agent is on channel 1.
         channels = load_channels(
-            caller_audio_source(payload), source_name="PersonaPlex"
+            police_request_audio(caller_audio_source(payload)),
+            source_name="PersonaPlex",
         )
         caller = torch.as_tensor(channels[0], dtype=torch.float32)
 
@@ -153,10 +158,12 @@ def create_mimi_encode_executor(
         state = PersonaPlexState.from_dict(payload.data)
         if state.waveform is not None:
             state.user_codes = encode_waveform(state.waveform)
+            state.waveform = None
         else:
             pass
         if state.voice_waveform is not None:
             state.voice_codes = encode_waveform(state.voice_waveform)
+            state.voice_waveform = None
         else:
             pass
         payload.data = state.to_dict()
@@ -206,8 +213,16 @@ def create_decode_executor(
 
 
 def create_code2wav_executor(
-    model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
+    model_path: str,
+    *,
+    num_decode_slots: int,
+    max_graph_frames: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
 ) -> PersonaPlexCode2WavScheduler:
+    """Whole-reply decode, plus streaming decode on num_decode_slots resident
+    states with device graphs for chunks of up to max_graph_frames frames."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
 
     @torch.inference_mode()
@@ -229,7 +244,10 @@ def create_code2wav_executor(
         )
         return payload
 
-    return PersonaPlexCode2WavScheduler(codec, compute_fn=decode)
+    decode_slots = MimiDecodeSlots(
+        codec, num_slots=num_decode_slots, max_graph_frames=max_graph_frames
+    )
+    return PersonaPlexCode2WavScheduler(decode_slots, compute_fn=decode)
 
 
 __all__ = [

@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.types import (
@@ -409,15 +410,39 @@ def test_generate_rejects_message_without_role_or_content() -> None:
     assert client.requests == []
 
 
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        pytest.param("input_ids", [], id="empty-input-ids"),
+        pytest.param("messages", [], id="empty-messages"),
+        pytest.param("input_ids", [5, -1], id="negative-id"),
+        pytest.param("input_ids", [1 << 63], id="id-above-int64"),
+        pytest.param("input_ids", [1 << 64], id="id-above-uint64"),
+        pytest.param("input_ids", [-1] * 20000, id="long-invalid-list"),
+    ],
+)
+def test_generate_rejects_invalid_prompt_lists(field: str, value: list[int]) -> None:
+    client = RolloutClient(text_result())
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post("/generate", json={field: value, "sampling_params": {}})
+
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert len(detail) == 1
+    assert detail[0]["loc"] == ["body", field]
+    assert client.requests == []
+
+
 def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
     req = RolloutRequest(
-        input_ids=[1, 2, 3],
+        input_ids=[0, 2, (1 << 63) - 1],
         sampling_params={"temperature": 0.5, "max_new_tokens": 8},
         return_logprob=True,
     )
     gen = build_rollout_generate_request(req)
 
-    assert gen.prompt_token_ids == [1, 2, 3]
+    assert gen.prompt_token_ids == [0, 2, (1 << 63) - 1]
     assert gen.prompt is None
     assert gen.messages is None
     assert gen.sampling.temperature == 0.5

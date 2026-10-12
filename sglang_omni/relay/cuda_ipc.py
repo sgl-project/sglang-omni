@@ -158,11 +158,22 @@ async def wait_for_cuda_event(
         pass
     try:
         result = await asyncio.wait_for(asyncio.shield(wait_future), timeout=timeout)
-    except (asyncio.CancelledError, TimeoutError):
+    except (asyncio.CancelledError, asyncio.TimeoutError) as interruption:
         # A launched GPU copy cannot be cancelled. Keep its resources alive
-        # until the kernel stops touching them, then propagate the interruption.
-        await asyncio.shield(wait_future)
-        raise
+        # until the kernel stops touching them, even if cancellation repeats,
+        # then propagate the interruption, preferring the first cancellation.
+        cancelled = (
+            interruption if isinstance(interruption, asyncio.CancelledError) else None
+        )
+        while not wait_future.done():
+            try:
+                await asyncio.shield(wait_future)
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+        if cancelled is None:
+            raise
+        else:
+            raise cancelled
     return submit_ns, result
 
 
@@ -1447,4 +1458,6 @@ class CudaIpcRelay(Relay):
         self.pool_storage_handles.clear()
         self.pool_tensor = None
         self.allocator = None
-        self.wait_executor.shutdown(wait=False, cancel_futures=True)
+        # Each queued wait guards a GPU copy that was already launched, so let
+        # queued waits finish instead of cancelling them.
+        self.wait_executor.shutdown(wait=False, cancel_futures=False)

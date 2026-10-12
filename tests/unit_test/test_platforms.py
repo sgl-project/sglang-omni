@@ -47,7 +47,6 @@ class VendorSRTPlatform(SRTPlatform, VendorDeviceMixin):
         OmniPlatform,
         CPUOmniPlatform,
         ROCMOmniPlatform,
-        XPUOmniPlatform,
         platforms.NPUOmniPlatform,
         platforms.MUSAOmniPlatform,
         platforms.AppleOmniPlatform,
@@ -95,6 +94,19 @@ def test_cuda_joint_rope_getter_propagates_import_failure(
         CUDAOmniPlatform().get_joint_rope_inplace_kernel()
 
     assert raised.value is error
+
+
+def test_xpu_joint_rope_getter_returns_the_sycl_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rope_module = ModuleType("sgl_kernel.jit.rope")
+    rope_module.apply_rope_inplace = Mock()
+    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", rope_module)
+
+    kernel = XPUOmniPlatform().get_joint_rope_inplace_kernel()
+
+    assert kernel is rope_module.apply_rope_inplace
+    kernel.assert_not_called()
 
 
 def test_cpu_platform_needs_no_stage_process_env() -> None:
@@ -294,10 +306,27 @@ def test_xpu_captures_the_qwen3_tts_code_predictor() -> None:
     assert CPUOmniPlatform().enable_tts_predictor_graph() is True
 
 
+def test_xpu_keeps_the_ming_audio_vae_streaming_graph_eager() -> None:
+    assert XPUOmniPlatform().supports_graph_captured_fft() is False
+    assert OmniPlatform().supports_graph_captured_fft() is True
+
+
 def test_musa_captures_the_qwen3_tts_code_predictor() -> None:
     from sglang_omni.platforms.musa import MUSAOmniPlatform
 
     assert MUSAOmniPlatform().enable_tts_predictor_graph() is True
+
+
+def test_only_xpu_declines_the_qwen3_tts_vocoder_fast_path() -> None:
+    """CUDA, ROCm and MUSA keep the codec decode graphs, the reference encoder
+    graphs and asynchronous decode; XPU declines them."""
+    for platform_type in (
+        CUDAOmniPlatform,
+        ROCMOmniPlatform,
+        platforms.MUSAOmniPlatform,
+    ):
+        assert platform_type().enable_tts_vocoder_fast_path() is True, platform_type
+    assert XPUOmniPlatform().enable_tts_vocoder_fast_path() is False
 
 
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
@@ -424,3 +453,18 @@ def test_only_xpu_names_a_measured_bf16_static_pool_floor() -> None:
     ):
         for device in (torch.device("cpu"), torch.device("cuda", 0)):
             assert platform_type().zonos2_bf16_mem_fraction_static(device) is None
+
+
+def test_cpu_cuda_rocm_xpu_and_musa_implement_the_shared_device_operations() -> None:
+    for platform_type in (
+        CPUOmniPlatform,
+        CUDAOmniPlatform,
+        ROCMOmniPlatform,
+        XPUOmniPlatform,
+        platforms.MUSAOmniPlatform,
+    ):
+        platform = platform_type()
+        assert type(platform).empty_cache is not DeviceMixin.empty_cache, platform_type
+        assert (
+            type(platform).get_available_memory is not DeviceMixin.get_available_memory
+        ), platform_type

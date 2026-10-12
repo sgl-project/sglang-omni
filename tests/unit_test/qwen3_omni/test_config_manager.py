@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -21,6 +22,74 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def make_stage(config, name: str):
     return next(stage for stage in config.stages if stage.name == name)
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [Qwen3OmniPipelineConfig, Qwen3OmniSpeechPipelineConfig],
+)
+def test_preprocessing_cpu_policy_is_resolved_at_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    config_cls: type[Qwen3OmniPipelineConfig | Qwen3OmniSpeechPipelineConfig],
+) -> None:
+    capacity = Mock(return_value=32)
+    monkeypatch.setattr(qwen3_omni_config, "effective_cpu_count", capacity)
+    config = config_cls(model_path="dummy")
+    document = config.model_dump()
+    capacity.assert_not_called()
+
+    assert (
+        config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "32"
+    )
+    for stage in config.stages:
+        if stage.name != "preprocessing":
+            assert "OMP_NUM_THREADS" not in config.resolved_stage_env_defaults(
+                stage.name
+            )
+    capacity.assert_called_once_with()
+    assert config.model_dump() == document
+
+    capacity.return_value = 2
+    rebuilt = config_cls.model_validate(document)
+    assert config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "2"
+    assert (
+        rebuilt.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "2"
+    )
+    assert rebuilt.model_dump() == document
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [Qwen3OmniSpeechPipelineConfig, Qwen3OmniSpeechColocatedPipelineConfig],
+)
+@pytest.mark.parametrize(
+    ("pipeline_env", "stage_env", "expected_threads"),
+    [
+        ({"OMP_NUM_THREADS": "12"}, {}, "12"),
+        ({}, {"OMP_NUM_THREADS": "6"}, "6"),
+        ({"OMP_NUM_THREADS": "12"}, {"OMP_NUM_THREADS": "6"}, "6"),
+    ],
+)
+def test_preprocessing_cpu_policy_preserves_explicit_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    config_cls: type[Qwen3OmniSpeechPipelineConfig],
+    pipeline_env: dict[str, str],
+    stage_env: dict[str, str],
+    expected_threads: str,
+) -> None:
+    capacity = Mock(side_effect=AssertionError("explicit OMP must win"))
+    monkeypatch.setattr(qwen3_omni_config, "effective_cpu_count", capacity)
+    config = config_cls(model_path="dummy")
+    config.env_defaults.update(pipeline_env)
+    config.stage_named("preprocessing").env.update(stage_env)
+    document = config.model_dump()
+
+    assert (
+        config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"]
+        == expected_threads
+    )
+    assert config.model_dump() == document
+    capacity.assert_not_called()
 
 
 def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
@@ -288,14 +357,8 @@ def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
 @pytest.mark.parametrize(
     ("is_rocm", "expected_env"),
     [
-        (
-            True,
-            {
-                "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
-                "SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1",
-            },
-        ),
-        (False, {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}),
+        (True, {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}),
+        (False, {}),
     ],
 )
 def test_qwen3_omni_talker_stage_env_defaults(
@@ -303,7 +366,7 @@ def test_qwen3_omni_talker_stage_env_defaults(
     is_rocm: bool,
     expected_env: dict[str, str],
 ) -> None:
-    """Talker disables fused atomic MoE finalize; ROCm also disables aiter greedy."""
+    """The talker stage disables aiter greedy sampling on ROCm only."""
     monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
 
     for config_cls in (

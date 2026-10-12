@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import Mapping
 
+import numpy as np
 import torch
 import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -22,6 +23,7 @@ from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageE
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
 from sglang_omni.models.minicpm_o.merge import build_decode_result
+from sglang_omni.models.minicpm_o.native_config import TALKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
@@ -49,8 +51,14 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     speech_enabled: bool = False,
+    device: str | None = None,
+    gpu_id: int | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
+    preprocessor = MiniCPMOPreprocessor(
+        model_path,
+        speech_enabled=speech_enabled,
+        device=resolve_concrete_device(device, gpu_id),
+    )
 
     return SimpleScheduler[StagePayload, StagePayload](preprocessor)
 
@@ -123,9 +131,10 @@ def create_sglang_talker_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    max_seq_len: int = 4096,
+    max_seq_len: int = TALKER_CONTEXT_LENGTH,
     server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
+    session_mode: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
@@ -135,9 +144,18 @@ def create_sglang_talker_executor_from_config(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+        enable_torch_compile=False,
         sampling_backend="pytorch",
     )
     overrides.setdefault("trust_remote_code", False)
+    if session_mode:
+        overrides.update(
+            enable_streaming_session=True,
+            disable_overlap_schedule=True,
+        )
+    else:
+        pass
     overrides["tp_size"] = tp_size
     # note (MayDomine): cap talker KV allocation so it does not starve the thinker.
     overrides.setdefault("max_total_tokens", 32 * max_seq_len)
@@ -156,6 +174,8 @@ def create_sglang_talker_executor_from_config(
         f"tp_rank={tp_rank}/{tp_size} context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"mem_fraction_static={resolved_view(server_args).mem_fraction_static} "
+        f"max_running_requests={resolved_view(server_args).max_running_requests} "
+        f"max_total_tokens={resolved_view(server_args).max_total_tokens} "
         f"pre_load_avail_mem={avail_gpu_mem(gpu_id)} pid={os.getpid()}"
     )
     scheduler = create_talker_scheduler(
@@ -164,12 +184,32 @@ def create_sglang_talker_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        session_mode=session_mode,
     )
     logger.info(
         f"sglang_ar_started stage=talker gpu_id={gpu_id} "
         f"post_load_avail_mem={avail_gpu_mem(gpu_id)} pid={os.getpid()}"
     )
     return scheduler
+
+
+def create_sglang_session_talker_executor_from_config(
+    model_path: str,
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
+    total_gpu_memory_fraction: float | None = None,
+) -> OmniScheduler[SGLangARRequestData]:
+    """Returns the talker that keeps native KV across the units of a duplex session."""
+    return create_sglang_talker_executor_from_config(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        server_args_overrides=server_args_overrides,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        session_mode=True,
+    )
 
 
 def vocode_code2wav_payloads(
@@ -190,7 +230,15 @@ def vocode_code2wav_payloads(
         f"minicpm_code2wav_batch size={len(payloads)} "
         f"max_codec_tokens={max(len(token_ids) for token_ids in codec_tokens)}"
     )
-    waveforms = model.vocode(codec_tokens, references)
+    # note (Junnan Li): model.vocode rejects empty rows, which turns without speech produce.
+    voiced = [index for index, tokens in enumerate(codec_tokens) if tokens]
+    voiced_waveforms = model.vocode(
+        [codec_tokens[index] for index in voiced],
+        [references[index] for index in voiced],
+    )
+    waveforms = [np.zeros(0, dtype=np.float32) for _ in codec_tokens]
+    for index, waveform in zip(voiced, voiced_waveforms, strict=True):
+        waveforms[index] = waveform
 
     outputs: list[StagePayload] = []
     for payload, waveform in zip(payloads, waveforms, strict=True):
@@ -209,24 +257,38 @@ def vocode_code2wav_payloads(
 def create_code2wav_executor(
     model_path: str,
     *,
+    max_batch_size: int,
+    max_batch_wait_ms: float,
+    batch_wait_when_idle: bool,
+    enable_flow_variable_length: bool,
+    reference_workers: int,
+    prompt_cache_capacity: int,
+    decode_stream_priority: int,
+    enable_flow_block_compile: bool,
+    enable_dit_torch_compile: bool,
+    enable_hift_torch_compile: bool,
     device: str | None = None,
     gpu_id: int | None = None,
-    max_batch_size: int = 8,
-    max_batch_wait_ms: float = 0.0,
-    batch_wait_when_idle: bool = False,
     dtype: str | None = None,
     max_batch_cost: int | None = None,
-    enable_flow_variable_length: bool = True,
-    reference_workers: int = 8,
-    prompt_cache_capacity: int = 32,
+    enable_flow_cuda_graph: bool,
+    flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
+    packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     model = MiniCPMOCode2Wav(
         model_path,
         device=str(resolve_concrete_device(device, gpu_id)),
         dtype=dtype,
+        enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_hift_torch_compile=enable_hift_torch_compile,
         enable_flow_variable_length=enable_flow_variable_length,
         reference_workers=reference_workers,
         prompt_cache_capacity=prompt_cache_capacity,
+        decode_stream_priority=decode_stream_priority,
+        enable_flow_block_compile=enable_flow_block_compile,
+        enable_flow_cuda_graph=enable_flow_cuda_graph,
+        flow_cuda_graph_capture_shapes=flow_cuda_graph_capture_shapes,
+        packed_dit_cuda_graph_capture_shapes=packed_dit_cuda_graph_capture_shapes,
     )
 
     def codec_token_cost(payload: StagePayload) -> int:
@@ -288,7 +350,7 @@ def create_sglang_thinker_executor_from_config(
     server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     speech_enabled: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the MiniCPM-o thinker."""
@@ -299,6 +361,8 @@ def create_sglang_thinker_executor_from_config(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
+        # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+        enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
         sampling_backend="pytorch",

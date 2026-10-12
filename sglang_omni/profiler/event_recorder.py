@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from io import TextIOWrapper
 from pathlib import Path
@@ -75,6 +76,67 @@ class RequestEvent:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class RequestEventSnapshot:
+    request_id: str
+    metadata: dict[str, int | float | str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class PendingRequestEvent:
+    request_id: str
+    event_name: str
+    metadata: dict[str, int | float | str]
+    timestamp_ns: int
+
+
+class RequestEventBuffer(threading.local):
+    """Capture scalar records on a thread, then flush outside its serving locks."""
+
+    def __init__(self) -> None:
+        self.records: list[PendingRequestEvent] = []
+
+    def capture(
+        self,
+        event_name: str,
+        snapshots: Iterable[RequestEventSnapshot],
+        metadata: dict[str, int | float | str],
+    ) -> None:
+        """Consume snapshots now; all requests in this cohort share capture clocks."""
+        if not get_recorder().is_active():
+            return
+        else:
+            pass
+        timestamp_ns = time.time_ns()
+        monotonic_s = time.monotonic()
+        worker = threading.current_thread().name
+        for snapshot in snapshots:
+            self.records.append(
+                PendingRequestEvent(
+                    request_id=snapshot.request_id,
+                    event_name=event_name,
+                    metadata={
+                        **metadata,
+                        **snapshot.metadata,
+                        "worker": worker,
+                        "monotonic_s": monotonic_s,
+                    },
+                    timestamp_ns=timestamp_ns,
+                )
+            )
+
+    def flush(self, *, stage: str | None) -> None:
+        for record in self.records:
+            emit(
+                request_id=record.request_id,
+                stage=stage,
+                event_name=record.event_name,
+                metadata=record.metadata,
+                timestamp_ns=record.timestamp_ns,
+            )
+        self.records.clear()
 
 
 class RequestEventRecorder:

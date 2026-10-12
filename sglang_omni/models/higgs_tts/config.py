@@ -10,6 +10,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.config.schema import stage_process_name
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.cpu import bounded_intraop_threads
 
@@ -97,21 +98,30 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             pass
         return {}
 
-    def model_post_init(self, __context: object = None) -> None:
-        super().model_post_init(__context)
-        stages = {stage.name: stage for stage in self.stages}
-        preprocessing = stages["preprocessing"]
-        if "OMP_NUM_THREADS" not in self.env_defaults:
-            preprocessing.env.setdefault(
-                "OMP_NUM_THREADS",
-                str(
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        env_defaults = super().resolved_stage_env_defaults(stage_name)
+        if stage_name == "preprocessing" and "OMP_NUM_THREADS" not in env_defaults:
+            process_name = stage_process_name(self.stage_named(stage_name))
+            # note (Richard Wang): a value written on any stage of the process wins.
+            if not any(
+                "OMP_NUM_THREADS" in stage.env
+                for stage in self.stages
+                if stage_process_name(stage) == process_name
+            ):
+                env_defaults["OMP_NUM_THREADS"] = str(
                     bounded_intraop_threads(
                         worker_count=_PREPROCESS_MAX_WORKERS, max_threads=8
                     )
-                ),
-            )
+                )
+            else:
+                pass
         else:
             pass
+        return env_defaults
+
+    def model_post_init(self, __context: object = None) -> None:
+        super().model_post_init(__context)
+        stages = {stage.name: stage for stage in self.stages}
         vocoder_extra = stages["vocoder"].factory.model_extra or {}
         tts_engine_extra = stages["tts_engine"].factory.model_extra or {}
         for key in self.STREAM_CADENCE_KEYS:

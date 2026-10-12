@@ -286,6 +286,7 @@ def make_args(**overrides) -> argparse.Namespace:
         port=8000,
         model_name="qwen3-omni",
         enable_realtime=False,
+        skip_server_warmup=False,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)

@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import FinishReason, RequestResult
+from benchmarks.metrics.performance import build_speed_results, compute_speed_metrics
 from benchmarks.metrics.transcribe_diarize_metrics import (
     DiarizationRow,
     _levenshtein_distance,
@@ -386,8 +387,10 @@ def test_extract_prediction_text_prefers_top_level_text_for_timestamps() -> None
     assert extract_prediction_text(payload) == payload["text"]
 
 
+@pytest.mark.parametrize("finish_reason", [None, *FinishReason])
 def test_eval_saves_and_loads_aishell4_long_raw_asr_results(
     tmp_path: Path,
+    finish_reason: FinishReason | None,
 ) -> None:
     module = load_benchmark_module()
 
@@ -426,12 +429,19 @@ def test_eval_saves_and_loads_aishell4_long_raw_asr_results(
             latency_s=1.2,
             audio_duration_s=4.0,
             rtf=0.3,
+            finish_reason=finish_reason or FinishReason.UNKNOWN,
         )
     ]
 
     path = module._save_asr_results(
         args, samples, outputs, wall_clock_s=1.3
     )  # noqa: leading-underscore  # production name
+    if finish_reason is None:
+        saved_results = json.loads(Path(path).read_text())
+        saved_results["outputs"][0].pop("finish_reason")
+        Path(path).write_text(json.dumps(saved_results))
+    else:
+        pass
     loaded_samples, loaded_outputs, loaded_config = module._load_asr_results(
         path
     )  # noqa: leading-underscore  # production name
@@ -443,6 +453,13 @@ def test_eval_saves_and_loads_aishell4_long_raw_asr_results(
     assert loaded_outputs[0].request_id == "sample-1"
     assert loaded_outputs[0].text == "[0.00][S01]hello[1.00]"
     assert loaded_outputs[0].is_success is True
+
+    original_metrics = compute_speed_metrics(outputs, wall_clock_s=1.3)
+    loaded_metrics = compute_speed_metrics(loaded_outputs, wall_clock_s=1.3)
+    assert loaded_metrics == original_metrics
+    assert build_speed_results(
+        loaded_outputs, loaded_metrics, loaded_config
+    ) == build_speed_results(outputs, original_metrics, loaded_config)
 
 
 def test_eval_saves_speed_results_before_accuracy_metrics(

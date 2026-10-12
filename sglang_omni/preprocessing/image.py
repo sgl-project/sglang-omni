@@ -16,6 +16,7 @@ from sglang_omni.preprocessing.resource_connector import MultiModalResourceConne
 
 from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
+from .resource_connector import await_media_cleanup
 
 
 def load_image_path(path: str | Path) -> Image.Image:
@@ -61,10 +62,10 @@ class ImageMediaIO(MediaIO[Image.Image]):
 
 
 def compute_image_cache_key(images: object) -> str | None:
-    """Compute cache key from raw image inputs (paths, URLs, PIL Images).
+    """Compute a cache key from loaded images.
 
-    This should be called BEFORE ensure_image_list() to capture original
-    paths/URLs which are much cheaper to hash than pixel data.
+    Pass decoded images, such as the output of ensure_image_list_async. A URL or
+    path can name different pixels over time, so it is not a stable key.
     """
     return compute_media_cache_key(images, prefix="image")
 
@@ -105,32 +106,45 @@ async def ensure_image_list_async(
     url_indices: list[int] = []
     normalized: list[object] = []
 
-    # First pass: identify URL items and create coroutines
-    for idx, item in enumerate(items):
-        if isinstance(item, (str, Path)):
-            if is_url(item):
-                # Create coroutine for async URL fetching
-                coro = media_connector.fetch_image_async(
-                    str(item), image_mode=image_mode
-                )
-                task = asyncio.create_task(coro)
-                coroutines.append(task)
-                url_indices.append(idx)
-                normalized.append(None)  # Placeholder
+    try:
+        # note (Teery): First pass: identify URL items and create coroutines
+        for idx, item in enumerate(items):
+            if isinstance(item, (str, Path)):
+                if is_url(item):
+                    # note (Teery): Create coroutine for async URL fetching
+                    coro = media_connector.fetch_image_async(
+                        str(item), image_mode=image_mode
+                    )
+                    task = asyncio.create_task(coro)
+                    coroutines.append(task)
+                    url_indices.append(idx)
+                    normalized.append(None)  # note (Teery): Placeholder
+                else:
+                    path = media_connector.local_media_path(item)
+                    normalized.append(load_image_path(path))
             else:
-                normalized.append(load_image_path(item))
-        else:
-            # Already processed (PIL Image, etc.)
-            normalized.append(item)
+                # note (Teery): Already processed (PIL Image, etc.)
+                normalized.append(item)
 
-    # Wait for all URL fetches to complete
-    if coroutines:
-        results = await asyncio.gather(*coroutines)
-        # Fill in the results at the correct indices
-        for url_idx, result in zip(url_indices, results):
-            normalized[url_idx] = result
-    else:
-        pass
+        # note (Teery): Wait for all URL fetches to complete
+        if coroutines:
+            results = await asyncio.gather(*coroutines)
+            # note (Teery): Fill in the results at the correct indices
+            for url_idx, result in zip(url_indices, results):
+                normalized[url_idx] = result
+        else:
+            pass
+    finally:
+        for task in coroutines:
+            if not task.done():
+                task.cancel()
+            else:
+                pass
+
+        async def cleanup_loaders() -> None:
+            await asyncio.gather(*coroutines, return_exceptions=True)
+
+        await await_media_cleanup(cleanup_loaders())
 
     return normalized
 

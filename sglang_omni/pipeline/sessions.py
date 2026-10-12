@@ -426,13 +426,9 @@ class CoordinatorSessions:
             raise
         finally:
             self.session_stream_handlers.pop(request_id, None)
-            if request_id in self.requests:
-                await self.abort(request_id)
-            else:
-                pass
-            future = self.completion_futures.pop(request_id, None)
-            if future is not None and not future.done():
-                future.cancel()
+            future = self.completion_futures.get(request_id)
+            if future is not None:
+                await self.release_submission(request_id, future)
             else:
                 pass
 

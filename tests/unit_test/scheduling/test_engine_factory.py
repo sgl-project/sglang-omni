@@ -7,6 +7,7 @@ import inspect
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -96,6 +97,7 @@ def test_tts_engine_builder_hook_contract_is_narrow() -> None:
 
 def test_context_length_override_is_capability_gated() -> None:
     from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
+    from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
     from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
     from sglang_omni.models.moss_tts_local.engine_builder import (
         MossTtsLocalEngineBuilder,
@@ -106,6 +108,7 @@ def test_context_length_override_is_capability_gated() -> None:
     assert ArkasrEngineBuilder.supports_context_length_override is False
     assert MossTtsEngineBuilder.supports_context_length_override is True
     assert MossTtsLocalEngineBuilder.supports_context_length_override is True
+    assert MiniCPMOThinkerEngineBuilder.supports_context_length_override is True
 
 
 @pytest.mark.parametrize(
@@ -812,3 +815,21 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
     assert captured_kwargs["tp_worker"] == "worker"
     assert captured_kwargs["request_builder"] == "request_builder"
     assert captured_kwargs["result_adapter"] == "result_adapter"
+
+
+def test_builder_forwards_placement_fraction_to_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.scheduling import bootstrap
+
+    MinimalBuilder, _, _ = build_minimal_tts_builder_harness(monkeypatch)
+    with patch.object(
+        bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        wraps=bootstrap.create_sglang_infrastructure_defer_cuda_graph,
+    ) as create_infrastructure:
+        MinimalBuilder().build(
+            "model", device="cuda", gpu_id=0, total_gpu_memory_fraction=0.52
+        )
+
+    assert create_infrastructure.call_args.kwargs["total_gpu_memory_fraction"] == 0.52

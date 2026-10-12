@@ -16,6 +16,7 @@ from sglang_omni.models.personaplex.prompts import (
     VoicePrompt,
     tokenize_text_prompt,
 )
+from sglang_omni.preprocessing import resource_connector
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.serve.openai_errors import is_bad_request_error
@@ -122,6 +123,25 @@ def test_chat_completions_audios_supply_the_caller(preprocess):
     assert is_bad_request_error(error.value)
 
 
+def test_caller_audio_follows_the_server_media_policy(
+    preprocess, monkeypatch, tmp_path
+):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"RIFF")
+    monkeypatch.setenv(resource_connector.ALLOWED_LOCAL_MEDIA_PATH_ENV, str(allowed))
+    monkeypatch.setattr(resource_connector, "_global_connector", None)
+
+    for inputs in (
+        {"audio_path": str(outside)},
+        {"messages": [], "audios": [str(outside)]},
+    ):
+        with pytest.raises(ValueError, match="not within allowed directory"):
+            preprocess(inputs=inputs)
+    assert preprocess.sources == []
+
+
 def test_engine_context_length_reaches_the_builder(monkeypatch):
     built = {}
 
@@ -146,7 +166,7 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
     num_samples = 3 * samples_per_frame + 7
 
     class _Codec:
-        device = "cpu"
+        device = torch.device("cpu")
 
         def decode(self, codes_BKF):
             return torch.arange(float(codes_BKF.shape[-1] * samples_per_frame)).view(
@@ -154,7 +174,9 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
             )
 
     monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (_Codec(), "cpu"))
-    scheduler = stages.create_code2wav_executor("m")
+    scheduler = stages.create_code2wav_executor(
+        "m", num_decode_slots=0, max_graph_frames=0
+    )
     state = PersonaPlexState(
         num_samples=num_samples, codes=torch.zeros(frames, 8, dtype=torch.long)
     )
@@ -168,7 +190,7 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
     assert rendered[-1] == num_samples - 1
 
 
-def test_mimi_encode_fills_caller_and_voice_codes(monkeypatch):
+def test_mimi_encode_replaces_caller_and_voice_waveforms_with_codes(monkeypatch):
     class _Codec:
         def encode(self, waveform_B1T):
             frames = waveform_B1T.shape[-1] // SAMPLES_PER_FRAME
@@ -192,6 +214,7 @@ def test_mimi_encode_fills_caller_and_voice_codes(monkeypatch):
     )
     assert state.user_codes.shape == (2, 8) and torch.all(state.user_codes == 1)
     assert state.voice_codes.shape == (3, 8) and torch.all(state.voice_codes == 2)
+    assert state.waveform is None and state.voice_waveform is None
 
     no_voice = run(PersonaPlexState(waveform=torch.ones(SAMPLES_PER_FRAME)))
     assert no_voice.user_codes.shape == (1, 8) and no_voice.voice_codes is None

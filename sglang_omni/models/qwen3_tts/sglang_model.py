@@ -53,6 +53,7 @@ from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
@@ -1061,6 +1062,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.predictor_rope_stores_kv = self.resolve_predictor_rope_store(
             cp_attn, device=device
         )
+        self.predictor_fused_layers = resolve_fused_predictor_layers(
+            self.code_predictor, predictor_len, max_batch_size, device, dtype
+        )
         self.sampled_token_ids = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
         )
@@ -2025,6 +2029,20 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             positions = self.predictor_pair_positions[: 2 * batch_size]
             cache_slots = self.predictor_pair_cache_slots[: 2 * batch_size]
         num_rows = batch_size * num_tokens
+        fused = self.predictor_fused_layers
+        if fused is not None and fused.covers(num_rows):
+            return fused.forward(
+                layers=self.code_predictor.model.layers,
+                final_norm=self.code_predictor.model.norm,
+                token_embeds=token_embeds,
+                batch_size=batch_size,
+                cache_len=cache_len,
+                positions=positions,
+                k_cache=self.predictor_k_cache,
+                v_cache=self.predictor_v_cache,
+            )
+        else:
+            pass
         # note(ratish): 2D rows for the fused add and norm, which every
         # backend's kernel expects and which writes both operands in place.
         residual = token_embeds.reshape(num_rows, 1, hidden_size)

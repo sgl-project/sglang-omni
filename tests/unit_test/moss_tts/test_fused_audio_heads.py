@@ -116,9 +116,8 @@ def share_stub(
     one_block: bool = True,
 ) -> tuple[SimpleNamespace, torch.Tensor]:
     monkeypatch.setattr(
-        "sglang_omni.models.moss_tts.sglang_model."
-        "get_tensor_model_parallel_world_size",
-        lambda: 1,
+        "sglang_omni.models.moss_tts.sglang_model.get_parallel",
+        lambda: SimpleNamespace(tp_size=1),
     )
     shared = torch.randn(n_audio * rows, hidden)
     heads = [ParallelLMHead(torch.randn(2, hidden))]

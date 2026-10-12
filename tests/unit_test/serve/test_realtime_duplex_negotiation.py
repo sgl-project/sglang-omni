@@ -3,15 +3,25 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
-from sglang_omni.serve.realtime.schema import JsonObject, SessionConfiguration
+from sglang_omni.serve.realtime.schema import (
+    JsonObject,
+    JsonValue,
+    SessionConfiguration,
+)
 from sglang_omni.serve.realtime.types import Capabilities, ProtocolError, RuntimeLimits
+from tests.unit_test.serve.test_realtime_reference_audio import wav_reference
 
 MODEL_NAME = "duplex-test"
+FRAMES_BY_SLICES = (4, 3, 2, 2, 1, 1, 1, 1, 1)
+IMAGE_CAPABILITIES = Capabilities(
+    input_modalities=("audio", "image"), image_frames_per_unit=FRAMES_BY_SLICES
+)
+REFERENCE = {"media_type": "audio/wav", "data": wav_reference()}
 
 
 def build_negotiation(
@@ -101,6 +111,26 @@ def test_requested_microturn_is_rejected_without_failing_the_update() -> None:
         ({"sglang": {"tail_policy": "pad"}}, "invalid_request", None),
         ({"sglang": {"timebase": {"native_unit_ms": 40}}}, "invalid_request", None),
         ({"output_modalities": ["audio"]}, "invalid_request", None),
+        (
+            {"sglang": {"sampling": {"greedy": False}}},
+            "not_applicable",
+            "session.sglang.sampling",
+        ),
+        (
+            {"sglang": {"reference_audio": REFERENCE}},
+            "not_applicable",
+            "session.sglang.reference_audio",
+        ),
+        (
+            {"sglang": {"max_slice_nums": 1}},
+            "not_applicable",
+            "session.sglang.max_slice_nums",
+        ),
+        (
+            {"sglang": {"max_slice_nums": 0}},
+            "invalid_request",
+            "session.sglang.max_slice_nums",
+        ),
     ],
 )
 def test_unsupported_configuration_is_rejected(
@@ -124,11 +154,88 @@ def test_open_session_merges_patch_into_current_configuration() -> None:
     assert config["output_modalities"] == ["audio"]
 
 
-def test_open_session_freezes_admission_fields() -> None:
-    negotiation = build_negotiation()
-    current = open_session(negotiation)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("temperature", float("nan")),
+        ("temperature", "0.7"),
+        ("top_k", True),
+        ("top_p", 1.1),
+        ("force_listen_count", 1.5),
+        ("max_new_tokens_per_unit", 0),
+        ("talker_temperature", -1.0),
+        ("length_penalty", 1.1),
+    ],
+)
+def test_invalid_sampling_is_rejected(field: str, value: JsonValue) -> None:
+    with pytest.raises(ProtocolError) as exc_info:
+        build_negotiation().negotiate(
+            {}, "CREATED", {"sglang": {"sampling": {field: value}}}
+        )
+
+    assert (exc_info.value.code, exc_info.value.param) == (
+        "invalid_request",
+        f"session.sglang.sampling.{field}",
+    )
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"instructions": "be verbose"},
+        {"sglang": {"sampling": {"temperature": 0.2}}},
+        {
+            "sglang": {
+                "reference_audio": {
+                    "media_type": "audio/wav",
+                    "data": wav_reference(frames=80),
+                }
+            }
+        },
+        {"sglang": {"max_slice_nums": 2}},
+    ],
+)
+def test_open_session_freezes_admission_fields(patch: JsonObject) -> None:
+    negotiation = build_negotiation(
+        replace(
+            IMAGE_CAPABILITIES,
+            sampling_parameters=("temperature",),
+            supports_reference_audio=True,
+        )
+    )
+    current, granted = negotiation.negotiate(
+        {},
+        "CREATED",
+        {
+            "instructions": "be brief",
+            "sglang": {
+                "sampling": {"temperature": 0.7},
+                "reference_audio": REFERENCE,
+                "max_slice_nums": 4,
+            },
+        },
+    )
+    assert current["sglang"]["sampling"] == {"temperature": 0.7}
+    assert current["sglang"]["max_slice_nums"] == 4
+    assert granted["sampling_parameters"] == ["temperature"]
+    assert granted["supports_reference_audio"] is True
 
     with pytest.raises(ProtocolError) as exc_info:
-        negotiation.negotiate(current, "OPEN", {"instructions": "be verbose"})
+        negotiation.negotiate(current, "OPEN", patch)
 
     assert exc_info.value.code == "invalid_state"
+
+
+@pytest.mark.parametrize(("slices", "frames"), [(1, 4), (4, 2), (9, 1), (10, None)])
+def test_image_frame_grant_follows_slice_setting(
+    slices: int, frames: int | None
+) -> None:
+    negotiation = build_negotiation(IMAGE_CAPABILITIES)
+    patch = {"sglang": {"max_slice_nums": slices}}
+    if frames is None:
+        with pytest.raises(ProtocolError) as exc_info:
+            negotiation.negotiate({}, "CREATED", patch)
+        assert exc_info.value.code == "invalid_request"
+    else:
+        _, granted = negotiation.negotiate({}, "CREATED", patch)
+        assert granted["input_image_format"]["max_frames_per_unit"] == frames

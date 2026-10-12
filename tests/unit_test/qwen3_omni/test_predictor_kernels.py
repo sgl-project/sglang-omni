@@ -21,19 +21,22 @@ from sglang.srt.model_executor.cuda_graph_config import (
 from sglang.srt.runtime_context import get_context
 from torch import nn
 
-from sglang_omni.models.qwen3_omni.components import predictor_kernels
-from sglang_omni.models.qwen3_omni.components.predictor_kernels import (
-    HIDDEN_SIZE,
-    add_rmsnorm_rounded,
-    allocate_split_scratch,
-    resolve_predictor_layer_shape,
-    split_count,
-    supports_exact_add_rmsnorm,
-)
+from sglang_omni.models.qwen3_omni.components import talker as talker_module
 from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
+from sglang_omni.utils import predictor_layers
+from sglang_omni.utils.predictor_layers import (
+    HIDDEN_SIZE,
+    MAX_FUSED_ROWS,
+    add_rmsnorm_rounded,
+    codebook_step,
+    resolve_fused_predictor_layers,
+    resolve_predictor_layer_shape,
+    split_count,
+    supports_exact_add_rmsnorm,
+)
 from tests.unit_test.fixtures.qwen_predictor import TupleLinear
 
 HIDDEN = 1024
@@ -107,7 +110,9 @@ def build_layer(device: torch.device) -> SimpleNamespace:
     )
 
 
-def build_talker(device: torch.device, seed: int) -> Qwen3OmniTalker:
+def build_talker(
+    device: torch.device, seed: int, max_bs: int = MAX_BS
+) -> Qwen3OmniTalker:
     """A talker whose predictor layers are real-shape modules with seeded weights."""
     torch.manual_seed(seed)
     talker = object.__new__(Qwen3OmniTalker)
@@ -120,12 +125,12 @@ def build_talker(device: torch.device, seed: int) -> Qwen3OmniTalker:
     positions = torch.arange(PREDICTOR_LEN, device=device, dtype=torch.long)
     talker.predictor_positions = positions
     talker.predictor_position_rows = (
-        positions[:, None].expand(PREDICTOR_LEN, MAX_BS).contiguous()
+        positions[:, None].expand(PREDICTOR_LEN, max_bs).contiguous()
     )
-    talker.predictor_pair_positions = positions[:2].repeat(MAX_BS)
+    talker.predictor_pair_positions = positions[:2].repeat(max_bs)
     talker.predictor_k_cache = torch.zeros(
         NUM_LAYERS,
-        MAX_BS,
+        max_bs,
         PREDICTOR_LEN,
         NUM_KV_HEADS,
         HEAD_DIM,
@@ -134,13 +139,13 @@ def build_talker(device: torch.device, seed: int) -> Qwen3OmniTalker:
     )
     talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
     talker.predictor_k_rows = [
-        layer.view(MAX_BS * PREDICTOR_LEN, -1) for layer in talker.predictor_k_cache
+        layer.view(max_bs * PREDICTOR_LEN, -1) for layer in talker.predictor_k_cache
     ]
     talker.predictor_v_rows = [
-        layer.view(MAX_BS * PREDICTOR_LEN, -1) for layer in talker.predictor_v_cache
+        layer.view(max_bs * PREDICTOR_LEN, -1) for layer in talker.predictor_v_cache
     ]
     talker.predictor_cache_slots = (
-        torch.arange(MAX_BS, device=device, dtype=torch.long)[None, :] * PREDICTOR_LEN
+        torch.arange(max_bs, device=device, dtype=torch.long)[None, :] * PREDICTOR_LEN
         + positions[:, None]
     ).contiguous()
     talker.predictor_pair_cache_slots = (
@@ -148,50 +153,31 @@ def build_talker(device: torch.device, seed: int) -> Qwen3OmniTalker:
     )
     talker.predictor_rope_stores_kv = False
     talker.predictor_exact_add_norm = True
-    talker.predictor_layer_shape = None
-    talker.predictor_q_buffer = torch.zeros(
-        2 * MAX_BS, NUM_HEADS * HEAD_DIM, device=device, dtype=DTYPE
-    )
-    talker.predictor_residual = torch.zeros(
-        2 * MAX_BS, HIDDEN, device=device, dtype=DTYPE
-    )
-    talker.predictor_activated = torch.zeros(
-        2 * MAX_BS, INTERMEDIATE, device=device, dtype=DTYPE
-    )
-    talker.predictor_partials = torch.zeros(0, device=device)
-    talker.predictor_sum_sq_partials = torch.zeros(0, device=device)
-    talker.predictor_tile_counters = torch.zeros(0, device=device, dtype=torch.int32)
+    talker.predictor_fused_layers = None
     return talker
 
 
 def fuse(talker: Qwen3OmniTalker) -> Qwen3OmniTalker:
-    """The fused path with the scratch allocated as the model loader would, under a
-    bf16 default dtype: the partials must come out fp32 regardless."""
+    """The fused path built as the model loader builds it, under a bf16 default dtype:
+    the split scratch must come out fp32 and int32 regardless."""
     device = talker.predictor_k_cache.device
-    shape = resolve_predictor_layer_shape(talker.code_predictor, PREDICTOR_LEN, device)
-    assert shape is not None
-    rows = 2 * MAX_BS
-    talker.predictor_layer_shape = shape
-    talker.predictor_q_buffer = torch.zeros(
-        rows, NUM_HEADS * HEAD_DIM, device=device, dtype=DTYPE
-    )
-    talker.predictor_residual = torch.zeros(rows, HIDDEN, device=device, dtype=DTYPE)
-    talker.predictor_activated = torch.zeros(
-        rows, INTERMEDIATE, device=device, dtype=DTYPE
-    )
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(torch.bfloat16)
     try:
-        (
-            talker.predictor_partials,
-            talker.predictor_sum_sq_partials,
-            talker.predictor_tile_counters,
-        ) = allocate_split_scratch(shape, rows, device)
+        fused = resolve_fused_predictor_layers(
+            talker.code_predictor,
+            PREDICTOR_LEN,
+            talker.predictor_k_cache.shape[1],
+            device,
+            DTYPE,
+        )
     finally:
         torch.set_default_dtype(default_dtype)
-    assert talker.predictor_partials.dtype == torch.float32
-    assert talker.predictor_sum_sq_partials.dtype == torch.float32
-    assert talker.predictor_tile_counters.dtype == torch.int32
+    assert fused is not None
+    assert fused.partials.dtype == torch.float32
+    assert fused.sum_sq_partials.dtype == torch.float32
+    assert fused.counters.dtype == torch.int32
+    talker.predictor_fused_layers = fused
     return talker
 
 
@@ -367,6 +353,28 @@ def test_fused_layer_is_deterministic_and_batch_invariant() -> None:
 @accelerator
 @pytest.mark.accelerator
 @pytest.mark.usefixtures("published_server_args")
+def test_a_pass_runs_fused_up_to_the_fused_rows_and_plain_above() -> None:
+    """A pass above MAX_FUSED_ROWS rows, the opening pair or a single token, must equal
+    the plain path bit for bit; a pass of exactly MAX_FUSED_ROWS rows runs fused."""
+    device = torch.device("cuda")
+    batch_size = MAX_FUSED_ROWS + 1
+    plain_talker = build_talker(device, seed=21, max_bs=batch_size)
+    fused_talker = fuse(build_talker(device, seed=21, max_bs=batch_size))
+    steps = predictor_inputs(device, batch_size, seed=22)
+    plain = run_sequence(plain_talker, steps)
+    fused = run_sequence(fused_talker, steps)
+    assert all(torch.equal(a, b) for a, b in zip(plain, fused))
+    assert torch.equal(plain_talker.predictor_k_cache, fused_talker.predictor_k_cache)
+    assert torch.equal(plain_talker.predictor_v_cache, fused_talker.predictor_v_cache)
+    residual = fused_talker.predictor_fused_layers.residual
+    residual.fill_(float("nan"))
+    run_sequence(fused_talker, [steps[0][: MAX_FUSED_ROWS // 2]])
+    assert not torch.any(torch.isnan(residual))
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
 def test_fused_opening_pair_matches_two_single_token_passes() -> None:
     """The second token of a pair, fed as a strided view, must equal a single pass at
     cache length 1: the residual add once read the view with the wrong row stride."""
@@ -446,9 +454,8 @@ def test_split_launches_leave_the_tile_counters_at_zero() -> None:
     talker = fuse(build_talker(device, seed=13))
     steps = predictor_inputs(device, 12, seed=14)
     run_sequence(talker, steps)
-    assert torch.equal(
-        talker.predictor_tile_counters, torch.zeros_like(talker.predictor_tile_counters)
-    )
+    counters = talker.predictor_fused_layers.counters
+    assert torch.equal(counters, torch.zeros_like(counters))
 
 
 @accelerator
@@ -459,19 +466,12 @@ def test_rows_beyond_the_batch_are_not_written() -> None:
     the q, residual or activation buffers, which later, larger batches read."""
     device = torch.device("cuda")
     talker = fuse(build_talker(device, seed=15))
-    for buffer in (
-        talker.predictor_q_buffer,
-        talker.predictor_residual,
-        talker.predictor_activated,
-    ):
+    fused = talker.predictor_fused_layers
+    for buffer in (fused.q, fused.residual, fused.activated):
         buffer.fill_(7.0)
     step = predictor_inputs(device, 3, seed=16)[1]
     run_sequence(talker, [step])
-    for buffer in (
-        talker.predictor_q_buffer,
-        talker.predictor_residual,
-        talker.predictor_activated,
-    ):
+    for buffer in (fused.q, fused.residual, fused.activated):
         assert torch.all(buffer[3:] == 7.0)
         assert not torch.all(buffer[:3] == 7.0)
 
@@ -512,6 +512,36 @@ def test_resolver_keeps_the_plain_path_for_a_partitioned_projection() -> None:
     )
 
 
+def test_without_triton_the_predictor_keeps_the_plain_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(predictor_layers, "HAS_TRITON", False)
+    cuda = torch.device("cuda")
+    assert not supports_exact_add_rmsnorm(HIDDEN_SIZE, torch.bfloat16, cuda)
+    assert (
+        resolve_fused_predictor_layers(
+            SimpleNamespace(), PREDICTOR_LEN, MAX_BS, cuda, DTYPE
+        )
+        is None
+    )
+
+
+@accelerator
+@pytest.mark.accelerator
+def test_deterministic_inference_keeps_the_plain_path() -> None:
+    """Deterministic inference promises a request the same bits at every batch size; a
+    pass above MAX_FUSED_ROWS runs plain, so the fused layers must stay off."""
+    device = torch.device("cuda")
+    talker = build_talker(device, seed=25)
+    with get_context().override_server_args(enable_deterministic_inference=True):
+        assert (
+            resolve_fused_predictor_layers(
+                talker.code_predictor, PREDICTOR_LEN, MAX_BS, device, DTYPE
+            )
+            is None
+        )
+
+
 def test_split_count_lands_the_program_count_nearest_the_sms() -> None:
     assert split_count(32, 16, 132) == 4
     assert split_count(32, 24, 132) == 4
@@ -550,12 +580,126 @@ def test_exact_add_rmsnorm_applies_to_the_predictor_shape_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cuda = torch.device("cuda")
-    monkeypatch.setattr(predictor_kernels, "current_platform", ROCMOmniPlatform())
+    monkeypatch.setattr(predictor_layers, "HAS_TRITON", True)
+    monkeypatch.setattr(predictor_layers, "current_platform", ROCMOmniPlatform())
     assert not supports_exact_add_rmsnorm(HIDDEN_SIZE, torch.bfloat16, cuda)
-    monkeypatch.setattr(predictor_kernels, "current_platform", CUDAOmniPlatform())
+    monkeypatch.setattr(predictor_layers, "current_platform", CUDAOmniPlatform())
     assert supports_exact_add_rmsnorm(HIDDEN_SIZE, torch.bfloat16, cuda)
     assert not supports_exact_add_rmsnorm(2048, torch.bfloat16, cuda)
     assert not supports_exact_add_rmsnorm(HIDDEN_SIZE, torch.float16, cuda)
     assert not supports_exact_add_rmsnorm(
         HIDDEN_SIZE, torch.bfloat16, torch.device("cpu")
     )
+
+
+@accelerator
+@pytest.mark.accelerator
+def test_codebook_step_matches_argmax_gather_and_add() -> None:
+    device = torch.device("cuda")
+    vocab, rows, column = 2048, 8, 5
+    generator = torch.Generator(device=device).manual_seed(7)
+    logits = torch.randn(rows, vocab, device=device, generator=generator).to(DTYPE)
+    logits[0, 9] = logits[0, 1700] = logits[0].max() + 1
+    logits[1, 30] = logits[1, 4] = float("nan")
+    logits[2] = float("-inf")
+    logits[3, 11] = logits[3, 2047] = float("inf")
+    weight = torch.randn(vocab, HIDDEN, device=device, generator=generator).to(DTYPE)
+    summed = torch.randn(rows, HIDDEN, device=device, generator=generator).to(DTYPE)
+    codes = torch.full((rows, NUM_CODE_GROUPS), -1, device=device, dtype=torch.long)
+    expected_codes = torch.argmax(logits, dim=-1)
+    expected_matrix = codes.clone()
+    expected_matrix[:, column] = expected_codes
+    expected_summed = summed.clone()
+    expected_summed.add_(weight[expected_codes])
+    codebook_input = codebook_step(logits, weight, codes[:, column], summed)
+    assert expected_codes[:4].tolist() == [9, 4, 0, 11]
+    assert torch.equal(codes, expected_matrix)
+    assert torch.equal(codebook_input[:, 0], weight[expected_codes])
+    assert torch.equal(summed, expected_summed)
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
+def test_captured_predictor_step_replays_fresh_inputs_as_the_torch_codebook_ops_do(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = torch.device("cuda")
+    vocab, rows = 2048, 3
+    talker = fuse(build_talker(device, seed=31))
+    talker.code_predictor.lm_head = [
+        TupleLinear(HIDDEN, vocab).to(device, DTYPE) for _ in range(NUM_CODE_GROUPS - 1)
+    ]
+    talker.code_predictor.model.codec_embedding = [
+        nn.Embedding(vocab, HIDDEN).to(device, DTYPE)
+        for _ in range(NUM_CODE_GROUPS - 1)
+    ]
+    layer0_embedding = nn.Embedding(3072, HIDDEN).to(device, DTYPE)
+    talker.get_input_embeddings = lambda: layer0_embedding
+    talker.config = SimpleNamespace(num_code_groups=NUM_CODE_GROUPS)
+    talker.predictor_input_buffer = torch.zeros(
+        MAX_BS, 2, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.output_codes = torch.zeros(
+        MAX_BS, NUM_CODE_GROUPS, device=device, dtype=torch.long
+    )
+    talker.output_embeds = torch.zeros(MAX_BS, HIDDEN, device=device, dtype=DTYPE)
+    layer0_codes = torch.zeros(rows, 1, device=device, dtype=torch.long)
+    talker_hidden = torch.zeros(rows, 1, HIDDEN, device=device, dtype=DTYPE)
+
+    def step() -> tuple[torch.Tensor, torch.Tensor]:
+        return talker.code_predictor_forward_incremental_eager(
+            layer0_codes=layer0_codes, talker_hidden=talker_hidden
+        )
+
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side), torch.no_grad():
+        step()
+    torch.cuda.current_stream().wait_stream(side)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph), torch.no_grad():
+        captured_codes, captured_embeds = step()
+
+    def torch_codebook_ops(
+        logits: torch.Tensor,
+        embedding_weight: torch.Tensor,
+        codes: torch.Tensor,
+        summed: torch.Tensor,
+    ) -> torch.Tensor:
+        code = torch.argmax(logits, dim=-1)
+        codes.copy_(code)
+        embedding = embedding_weight[code]
+        summed.add_(embedding)
+        return embedding[:, None, :]
+
+    generator = torch.Generator(device=device).manual_seed(33)
+    for _ in range(2):
+        layer0_codes.copy_(
+            torch.randint(0, 3072, (rows, 1), device=device, generator=generator)
+        )
+        talker_hidden.copy_(
+            torch.randn(rows, 1, HIDDEN, device=device, generator=generator).to(DTYPE)
+        )
+        graph.replay()
+        replayed = (captured_codes.clone(), captured_embeds.clone())
+        with monkeypatch.context() as patch, torch.no_grad():
+            patch.setattr(talker_module, "codebook_step", torch_codebook_ops)
+            expected_codes, expected_embeds = step()
+        assert torch.equal(replayed[0], expected_codes)
+        assert torch.equal(replayed[1], expected_embeds)
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
+def test_fused_layers_match_without_programmatic_dependent_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = torch.device("cuda")
+    steps = predictor_inputs(device, batch_size=8, seed=24)
+    with_pdl = run_sequence(fuse(build_talker(device, seed=23)), steps)
+    monkeypatch.setattr(predictor_layers, "is_arch_support_pdl", lambda: False)
+    without_pdl = run_sequence(fuse(build_talker(device, seed=23)), steps)
+    for expected, actual in zip(with_pdl, without_pdl, strict=True):
+        assert torch.equal(actual, expected)

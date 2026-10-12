@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import ClassVar
 
+import msgpack
 import numpy as np
 import pytest
 import torch
@@ -26,6 +27,8 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
     FunCosyVoice3StreamingVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
@@ -89,6 +92,7 @@ class RunnableFakeFlow(_PackedFlow):
     def __init__(self):
         super().__init__(channels=80, max_frames=8192)
         self.spk_embed_affine_layer = torch.nn.Linear(192, 80)
+        self.prefix_pool: stages.PrefixKVPool | None = None
 
 
 class GraphRunnableFakeFlow(RunnableFakeFlow):
@@ -205,6 +209,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
         flow_prompt_speech_token=torch.tensor([[1, 2]], dtype=torch.int32),
         flow_prompt_speech_feat=torch.ones(1, 2, 80),
         flow_embedding=torch.ones(1, 192),
+        finish_reason="length",
     )
     payload = make_payload(state)
     scheduler.stream_payloads["req"] = payload
@@ -222,6 +227,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
     messages = scheduler.on_stream_done("req")
 
     assert [message.type for message in messages] == ["stream", "result"]
+    assert messages[1].data.data["finish_reason"] == "length"
 
 
 def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
@@ -266,7 +272,9 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
             return self
 
     flow = Model()
-    flow.decoder = SimpleNamespace(estimator=torch.nn.Module())
+    estimator = torch.nn.Module()
+    estimator.transformer_blocks = torch.nn.ModuleList()
+    flow.decoder = SimpleNamespace(estimator=estimator)
     hift = Model()
 
     def fake_load_hyperpyyaml(handle, overrides):
@@ -344,12 +352,13 @@ class FakeFlow(torch.nn.Module):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1))
         self.calls = []
+        self.token_mel_ratio = 2
         self.decoder = SimpleNamespace(estimator=FakeEstimator())
 
     def inference(self, **kwargs):
         self.calls.append(kwargs)
         token_count = kwargs["token"].shape[1]
-        return torch.ones(1, 80, token_count * 2), None
+        return torch.ones(1, 80, token_count * self.token_mel_ratio), None
 
 
 def make_payload(state: FunCosyVoice3State) -> StagePayload:
@@ -446,13 +455,19 @@ def test_cosyvoice3_token2wav_chunk_slices_mel_and_hift_delta() -> None:
     assert tail.shape[-1] == 6 * 480
 
 
-def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
+@pytest.mark.parametrize("strided", [False, True])
+def test_cosyvoice3_vocoder_prepare_and_store_audio_payload(strided: bool) -> None:
+    """Completion preserves audio and reference features over MessagePack."""
     vocoder = stages.CosyVoice3Vocoder(BatchCapableFakeFlow(), FakeHiFT())
+    reference_features = torch.arange(640, dtype=torch.float32).reshape(1, 8, 80)
+    if strided:
+        reference_features = reference_features[:, ::2, :]
     state = FunCosyVoice3State(
         text="hello",
         audio_codes=torch.tensor([[1, 2], [3, 4]]),
         flow_prompt_speech_token=torch.tensor([[5]], dtype=torch.int32),
         flow_embedding=torch.ones(1, 192),
+        flow_prompt_speech_feat=reference_features,
     )
     payload = make_payload(state)
 
@@ -468,6 +483,19 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
     assert stored.data["sample_rate"] == 24000
     assert stored.data["modality"] == "audio"
     assert "audio_codes" not in stored.data
+    completion = msgpack.unpackb(
+        msgpack.packb(stored.data, use_bin_type=True), raw=False
+    )
+    decoded_state = FunCosyVoice3State.from_dict(completion)
+    torch.testing.assert_close(
+        decoded_state.flow_prompt_speech_feat, reference_features, rtol=0, atol=0
+    )
+    result = Client.default_result_builder(stored.request_id, completion)
+    np.testing.assert_array_equal(
+        result.audio_data, np.array([0.1, 0.2], dtype=np.float32)
+    )
+    assert result.sample_rate == 24000
+    assert result.modality == "audio"
 
 
 def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
@@ -478,19 +506,32 @@ def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
         vocoder.prepare_item(payload)
 
 
-def test_mlx_vocoder_audio_payload_survives_state_storage() -> None:
+@pytest.mark.parametrize("strided", [False, True])
+def test_mlx_vocoder_audio_payload_survives_state_storage(strided: bool) -> None:
+    """The MLX completion adapter also serializes reference features and usage."""
+    reference_features = torch.arange(640, dtype=torch.float32).reshape(1, 8, 80)
+    if strided:
+        reference_features = reference_features[:, ::2, :]
     state = FunCosyVoice3State(
         text="hello",
         audio_codes=torch.tensor([[1], [2]]),
         audio_samples=[9.0],
         prompt_tokens=3,
         completion_tokens=2,
+        flow_prompt_speech_feat=reference_features,
     )
     waveform = np.array([[0.1, -0.2]], dtype=np.float32)
 
     mlx_vocoder = object.__new__(stages.CosyVoice3MlxVocoderAdapter)
     stored = mlx_vocoder.store_result(make_payload(state), state, waveform, 24000)
-    result = Client.default_result_builder(stored.request_id, stored.data)
+    completion = msgpack.unpackb(
+        msgpack.packb(stored.data, use_bin_type=True), raw=False
+    )
+    decoded_state = FunCosyVoice3State.from_dict(completion)
+    torch.testing.assert_close(
+        decoded_state.flow_prompt_speech_feat, reference_features, rtol=0, atol=0
+    )
+    result = Client.default_result_builder(stored.request_id, completion)
 
     np.testing.assert_array_equal(result.audio_data, waveform.reshape(-1))
     assert result.sample_rate == 24000
@@ -883,6 +924,8 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     scheduler = stages.create_vocoder_executor(
         "model",
         flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
         device="cpu",
         flow_batch_admission_frames=2000,
         enable_dit_torch_compile=False,
@@ -900,6 +943,45 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     assert scheduler.next_message() == second
 
 
+def test_admission_budget_below_the_first_tier_keeps_finals_eager(monkeypatch) -> None:
+    """A positive admission budget below the first graph tier leaves no whole history
+    graph to capture: startup keeps every final, however long, on the eager solve
+    instead of failing on the empty ladder."""
+    fake_flow = RunnableFakeFlow()
+    fake_flow.packed_estimator.is_ragged = True
+    flow = stages.FunCosyVoice3Flow(
+        fake_flow, packed_estimator=fake_flow.packed_estimator
+    )
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cuda")
+    )
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(
+        stages,
+        "load_cosyvoice3_flow_hift",
+        lambda checkpoint_dir, device, fp16, **kwargs: (flow, FakeHiFT()),
+    )
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        dtype="float16",
+        flow_prefix_cache_gb=0.0,
+        enable_flow_cuda_graph=False,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
+        flow_batch_admission_frames=3,
+        enable_dit_torch_compile=False,
+    )
+
+    mels = scheduler.vocoder.leftover_batch([scheduler.make_warmup_flow_input(2200)])
+
+    assert flow.whole_history_cuda_graph_runner is None
+    assert [mel.shape for mel in mels] == [
+        (1, fake_flow.output_size, 2200 * fake_flow.token_mel_ratio)
+    ]
+
+
 def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
@@ -915,7 +997,12 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         ),
     )
     scheduler = stages.create_vocoder_executor(
-        "model", device="cpu", enable_dit_torch_compile=False, flow_prefix_cache_gb=0.0
+        "model",
+        device="cpu",
+        enable_dit_torch_compile=False,
+        flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
     )
 
     assert scheduler.max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
@@ -957,6 +1044,8 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     scheduler = stages.create_vocoder_executor(
         "model",
         flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
         device="cpu",
         enable_dit_torch_compile=False,
         dtype="float16",
@@ -1006,6 +1095,8 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
     stages.create_vocoder_executor(
         "model",
         flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
         device="cpu",
         max_batch_size=4,
         enable_dit_torch_compile=False,
@@ -1042,7 +1133,12 @@ def create_scheduler_recording_native_compile(
 
     monkeypatch.setattr(stages, "compile_dit_backbone", fake_compile)
     scheduler = stages.create_vocoder_executor(
-        "model", device="cpu", flow_prefix_cache_gb=0.0, **kwargs
+        "model",
+        device="cpu",
+        flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
+        **kwargs,
     )
     return compiled, scheduler
 
@@ -1089,7 +1185,7 @@ def prepare_vocoder_startup(
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
-        lambda checkpoint_dir, device, fp16, enable_flow_estimator_trt=False: (
+        lambda checkpoint_dir, device, fp16, autocast_dtype, enable_flow_estimator_trt=False: (
             fake_flow,
             FakeHiFT(),
         ),
@@ -1114,13 +1210,14 @@ def prepare_vocoder_startup(
         "warmup_packed_dit_compile",
         lambda scheduler: startup_events.append("packed_warmup"),
     )
-    if device_type == "cuda":
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    if device_type in ("cuda", "xpu"):
+        platform = CUDAOmniPlatform() if device_type == "cuda" else XPUOmniPlatform()
+        monkeypatch.setattr(stages, "current_platform", platform)
 
         class RecordingFlowCudaGraphRunner:
             def __init__(self, flow, *, device, autocast_dtype) -> None:
                 assert flow is fake_flow
-                assert device.type == "cuda"
+                assert device.type == device_type
                 assert autocast_dtype == torch.bfloat16
                 startup_events.append("runner_create")
 
@@ -1150,6 +1247,8 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     _scheduler = stages.create_vocoder_executor(
         "model",
         flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
         device="cuda",
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_cuda_graph=True,
@@ -1164,6 +1263,33 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     else:
         assert "native_compile" not in startup_events
     assert ("packed_warmup" in startup_events) is enable_dit_torch_compile
+
+
+@pytest.mark.parametrize("enable_dit_torch_compile", [False, True])
+def test_create_vocoder_executor_on_xpu_captures_flow_graphs_only_for_an_eager_dit(
+    monkeypatch: pytest.MonkeyPatch,
+    enable_dit_torch_compile: bool,
+) -> None:
+    startup_events: list[str] = []
+    prepare_vocoder_startup(
+        monkeypatch,
+        startup_events,
+        device_type="xpu",
+        allow_native_compile=enable_dit_torch_compile,
+    )
+
+    stages.create_vocoder_executor(
+        "model",
+        flow_prefix_cache_gb=0.0,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
+        device="xpu",
+        enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_flow_cuda_graph=True,
+        flow_cuda_graph_capture_shapes=FLOW_GRAPH_CAPTURE_SHAPES,
+    )
+
+    assert ("graph_capture" in startup_events) is not enable_dit_torch_compile
 
 
 def test_create_vocoder_executor_trt_without_compile_skips_the_compile(
@@ -1182,6 +1308,8 @@ def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
         stages.create_vocoder_executor(
             "model",
             flow_prefix_cache_gb=0.0,
+            enable_flow_prefix_cuda_graph=True,
+            enable_flow_whole_history_cuda_graph=True,
             enable_dit_torch_compile=True,
             enable_flow_estimator_trt=True,
         )
@@ -1319,6 +1447,8 @@ def test_create_vocoder_executor_rejects_non_positive_admission_budget(
         stages.create_vocoder_executor(
             "model",
             flow_prefix_cache_gb=0.0,
+            enable_flow_prefix_cuda_graph=True,
+            enable_flow_whole_history_cuda_graph=True,
             device="cpu",
             flow_batch_admission_frames=0,
             enable_dit_torch_compile=False,
@@ -1340,6 +1470,8 @@ def test_pipeline_config_sets_flow_batch_admission_by_default() -> None:
         "max_batch_size": 16,
         "max_batch_wait_ms": 30,
         "enable_flow_cuda_graph": True,
+        "enable_flow_prefix_cuda_graph": True,
+        "enable_flow_whole_history_cuda_graph": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
@@ -1556,7 +1688,7 @@ def prefix_pool_scheduler(
         return [torch.full((1, 1, 1), -1.0) for _ in items]
 
     vocoder = SimpleNamespace(
-        flow=SimpleNamespace(prefix_pool=object()),
+        flow=SimpleNamespace(prefix_pool=object(), token_mel_ratio=2),
         prefix_cache_rows=prefix_cache_rows,
         grow_prefix_cache=grow_prefix_cache,
         release_prefix_cache=released.append,

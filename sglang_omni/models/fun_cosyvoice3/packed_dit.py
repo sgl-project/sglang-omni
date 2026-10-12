@@ -12,11 +12,20 @@ from itertools import pairwise
 import torch
 import torch._dynamo as dynamo
 import torch.nn.functional as F
-from sglang.kernels.ops.attention.flash_attention import flash_attn_with_kvcache
+from sglang.kernels.ops.attention.flash_attention import (
+    flash_attn_varlen_func,
+    flash_attn_with_kvcache,
+)
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+from sglang.srt.utils.custom_op import register_custom_op
+
+from sglang_omni.models.fun_cosyvoice3.causal_conv import FusedConvPositionEmbedding
 
 logger = logging.getLogger(__name__)
 
+# Note (Jiaxin Deng): each positional conv has kernel 31, so it reads the 30
+# frames before its input frame.
+CONV_CONTEXT_FRAMES = 30
 # note (ratish, chenyang): a row's chunks share a key prefix, so FA3 pages are one frame.
 FA3_PAGE_SIZE = 1
 FA3_DTYPES = (torch.float16, torch.bfloat16)
@@ -37,6 +46,7 @@ def ragged_fa3(
     page_table: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
     max_seqlen_q: int,
+    num_splits: int = 0,
 ) -> torch.Tensor:
     return flash_attn_with_kvcache(
         q=q,
@@ -47,76 +57,55 @@ def ragged_fa3(
         cu_seqlens_q=cu_seqlens_q,
         max_seqlen_q=max_seqlen_q,
         causal=False,
+        num_splits=num_splits,
     )
 
 
 # note(ratish): the compiled forward calls FA3 through this alias-free op;
 # eager calls ragged_fa3 directly and skips the custom op dispatch per block.
-packed_fa3 = torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::packed_fa3", mutates_args=(), device_types="cuda"
-)(ragged_fa3)
+packed_fa3 = register_custom_op(
+    ragged_fa3, op_name="fun_cosyvoice3_packed_fa3", mutates_args=[], out_shape="q"
+)
 
 
-@packed_fa3.register_fake
-def fake_packed_fa3(
+def whole_row_fa3(
     q: torch.Tensor,
-    k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    page_table: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    max_seqlen_q: int,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
 ) -> torch.Tensor:
-    return torch.empty_like(q)
+    return flash_attn_varlen_func(
+        q=q,
+        k=k,
+        v=v,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_q=max_seqlen,
+        max_seqlen_k=max_seqlen,
+        causal=False,
+    )
 
 
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::native_mish",
-    mutates_args=(),
-    device_types="cuda",
+packed_whole_row_fa3 = register_custom_op(
+    whole_row_fa3,
+    op_name="fun_cosyvoice3_whole_row_fa3",
+    mutates_args=[],
+    out_shape="q",
 )
-def native_mish(x: torch.Tensor) -> torch.Tensor:
-    """Preserve eager CUDA Mish arithmetic across the Inductor boundary."""
-    return F.mish(x)
-
-
-@native_mish.register_fake
-def fake_native_mish(x: torch.Tensor) -> torch.Tensor:
-    return torch.empty_like(x)
-
-
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::native_layer_norm",
-    mutates_args=(),
-    device_types="cuda",
-)
-def native_layer_norm(
-    x: torch.Tensor,
-    normalized_size: int,
-    eps: float,
-) -> torch.Tensor:
-    """Keep CUDA autocast's eager FP32 LayerNorm contract."""
-    return F.layer_norm(x.float(), (normalized_size,), None, None, eps)
-
-
-@native_layer_norm.register_fake
-def fake_native_layer_norm(
-    x: torch.Tensor,
-    normalized_size: int,
-    eps: float,
-) -> torch.Tensor:
-    return torch.empty_like(x, dtype=torch.float32)
 
 
 @dataclass(frozen=True)
 class PackedRows:
     lengths: tuple[int, ...]
     starts_host: torch.Tensor
+    starts: torch.Tensor
     row_ids: torch.Tensor
     positions: torch.Tensor
-    # note(ratish): the compiled forward reads these instead of lengths,
-    # which it would guard on for every row count.
-    row_count: int
+    # note (ratish): the positional convs read the packed frames with CONV_CONTEXT_FRAMES
+    # zero frames before every row. Index 0 is the zero frame, 1 + i packed frame i.
+    conv_input_index: torch.Tensor
+    conv_output_index: torch.Tensor
     width: int
 
     @property
@@ -134,13 +123,18 @@ def pack_rows(lengths: Sequence[int], device: torch.device) -> PackedRows:
         torch.tensor(lengths, dtype=torch.int64, device=device),
         output_size=total,
     )
-    positions = torch.arange(total, device=device) - starts[row_ids]
+    frames = torch.arange(total, device=device)
+    conv_output_index = frames + CONV_CONTEXT_FRAMES * row_ids
+    conv_input_index = frames.new_zeros(total + CONV_CONTEXT_FRAMES * len(lengths))
+    conv_input_index[conv_output_index + CONV_CONTEXT_FRAMES] = frames + 1
     return PackedRows(
         lengths=lengths,
         starts_host=starts_host.to(torch.int32),
+        starts=starts.to(torch.int32),
         row_ids=row_ids,
-        positions=positions,
-        row_count=len(lengths),
+        positions=frames - starts[row_ids],
+        conv_input_index=conv_input_index,
+        conv_output_index=conv_output_index,
         width=max(lengths),
     )
 
@@ -156,10 +150,10 @@ def gather_rows(padded: torch.Tensor, rows: PackedRows) -> torch.Tensor:
 def scatter_rows(packed: torch.Tensor, rows: PackedRows, width: int) -> torch.Tensor:
     """(1, total, channels) -> (rows, width, channels), zero past each row's
     length."""
-    channels = packed.shape[2]
-    flat = packed.new_zeros(rows.row_count * width, channels)
+    row_count, channels = len(rows.lengths), packed.shape[2]
+    flat = packed.new_zeros(row_count * width, channels)
     flat[rows.row_ids * width + rows.positions] = packed[0]
-    return flat.view(rows.row_count, width, channels)
+    return flat.view(row_count, width, channels)
 
 
 def chunk_causal_mask(
@@ -173,18 +167,17 @@ def chunk_causal_mask(
 
 
 def chunk_segments(
-    lengths: Sequence[int], chunk_size: int | None
+    lengths: Sequence[int], chunk_size: int
 ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
     """One query segment per (row, chunk), reading that row's frames
-    [0, chunk end). Without a chunk size a row is one segment."""
+    [0, chunk end)."""
     segment_rows: list[int] = []
     segment_ends: list[int] = []
     offsets: list[int] = [0]
     for row, length in enumerate(lengths):
-        span = length if chunk_size is None else chunk_size
         frame = 0
         while frame < length:
-            end = min((frame // span + 1) * span, length)
+            end = min((frame // chunk_size + 1) * chunk_size, length)
             segment_rows.append(row)
             segment_ends.append(end)
             offsets.append(offsets[-1] + end - frame)
@@ -228,13 +221,14 @@ class RowAttention:
 
 
 class RaggedRowAttention:
-    """Row attention on the packed sequence via FA3 paged KV, no pad-to-widest."""
+    """Chunk causal row attention on the packed sequence via FA3 paged KV, no
+    pad-to-widest."""
 
     def __init__(
         self,
         rows: PackedRows,
         *,
-        chunk_size: int | None,
+        chunk_size: int,
         heads: int,
         head_dim: int,
     ) -> None:
@@ -278,13 +272,44 @@ class RaggedRowAttention:
         return out.reshape(1, -1, self.heads * self.head_dim)
 
 
-PackedRowAttention = RowAttention | RaggedRowAttention
+class WholeRowAttention:
+    """Bidirectional attention within each whole row of the packed sequence via
+    FA3 varlen. max_frames bounds the widest row."""
+
+    def __init__(
+        self, rows: PackedRows, *, heads: int, head_dim: int, max_frames: int
+    ) -> None:
+        self.heads = heads
+        self.head_dim = head_dim
+        self.cu_seqlens = rows.starts
+        self.max_frames = max_frames
+
+    def __call__(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """query, key, value: (1, total, heads * head_dim). Returns the same
+        shape."""
+        if torch.compiler.is_compiling():
+            fa3 = packed_whole_row_fa3
+        else:
+            fa3 = whole_row_fa3
+        head_shape = (-1, self.heads, self.head_dim)
+        out = fa3(
+            query[0].reshape(head_shape),
+            key[0].reshape(head_shape),
+            value[0].reshape(head_shape),
+            self.cu_seqlens,
+            self.max_frames,
+        )
+        return out.reshape(1, -1, self.heads * self.head_dim)
+
+
+PackedRowAttention = RowAttention | RaggedRowAttention | WholeRowAttention
 
 
 class PackedDiT:
     """DiT.forward over a packed sequence with the same modules in the same
-    order; conv pos-emb stays padded, attention is ragged on FA3 half-precision
-    CUDA and padded elsewhere.
+    order. Attention is ragged on FA3 half-precision CUDA and padded elsewhere.
     """
 
     def __init__(self, dit: torch.nn.Module, *, device: str | torch.device) -> None:
@@ -292,6 +317,37 @@ class PackedDiT:
         device = torch.device(device)
         self.is_ragged = device.type == "cuda" and _is_fa3_supported()
         self.is_compiled = False
+        # note (ratish): Parameters, whose shapes Dynamo keeps static under the dynamic
+        # prefix compile. to_q, to_k and to_v become row views of them, so the DiT
+        # must already hold its serving dtype.
+        qkv_weights: list[torch.nn.Parameter] = []
+        qkv_biases: list[torch.nn.Parameter] = []
+        with torch.no_grad():
+            for block in dit.transformer_blocks:
+                attention = block.attn
+                projections = (attention.to_q, attention.to_k, attention.to_v)
+                qkv_weight = torch.nn.Parameter(
+                    torch.cat([projection.weight for projection in projections]),
+                    requires_grad=False,
+                )
+                qkv_bias = torch.nn.Parameter(
+                    torch.cat([projection.bias for projection in projections]),
+                    requires_grad=False,
+                )
+                for index, projection in enumerate(projections):
+                    rows = slice(
+                        index * attention.inner_dim, (index + 1) * attention.inner_dim
+                    )
+                    projection.weight = torch.nn.Parameter(
+                        qkv_weight[rows], requires_grad=False
+                    )
+                    projection.bias = torch.nn.Parameter(
+                        qkv_bias[rows], requires_grad=False
+                    )
+                qkv_weights.append(qkv_weight)
+                qkv_biases.append(qkv_bias)
+        self.qkv_weights = tuple(qkv_weights)
+        self.qkv_biases = tuple(qkv_biases)
         logger.info(
             "Fun-CosyVoice3 Flow row attention on %s: %s",
             device,
@@ -306,28 +362,40 @@ class PackedDiT:
         self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
     ) -> PackedRowAttention:
         attention = self.dit.transformer_blocks[0].attn
-        chunk_size = self.chunk_size if streaming else None
-        if self.is_ragged and dtype in FA3_DTYPES:
-            attention = RaggedRowAttention(
-                rows,
-                chunk_size=chunk_size,
-                heads=attention.heads,
-                head_dim=attention.inner_dim // attention.heads,
+        heads = attention.heads
+        head_dim = attention.inner_dim // heads
+        row_attention: RaggedRowAttention | WholeRowAttention
+        if not self.is_ragged or dtype not in FA3_DTYPES:
+            return RowAttention(
+                rows, chunk_size=self.chunk_size if streaming else None, heads=heads
             )
-            if self.is_compiled:
-                # note(ratish): hints, not constraints; they share x's total frames,
-                # which the first call specializes, so mark_dynamic would fail.
-                dynamo.maybe_mark_dynamic(attention.page_table, (0, 1))
-                dynamo.maybe_mark_dynamic(attention.cu_seqlens_q, 0)
-                dynamo.maybe_mark_dynamic(attention.cache_seqlens, 0)
-                dynamo.maybe_mark_dynamic(rows.row_ids, 0)
-                dynamo.maybe_mark_dynamic(rows.positions, 0)
-            else:
-                pass
-            return attention
+        elif streaming:
+            row_attention = RaggedRowAttention(
+                rows, chunk_size=self.chunk_size, heads=heads, head_dim=head_dim
+            )
+            dynamic_dims = [
+                (row_attention.page_table, (0, 1)),
+                (row_attention.cu_seqlens_q, 0),
+                (row_attention.cache_seqlens, 0),
+            ]
+        else:
+            row_attention = WholeRowAttention(
+                rows, heads=heads, head_dim=head_dim, max_frames=rows.width
+            )
+            dynamic_dims = [(row_attention.cu_seqlens, 0)]
+        if self.is_compiled:
+            # note(ratish): hints, not constraints; they share x's total frames,
+            # which the first call specializes, so mark_dynamic would fail.
+            for tensor, dims in dynamic_dims + [
+                (rows.row_ids, 0),
+                (rows.positions, 0),
+                (rows.conv_input_index, 0),
+                (rows.conv_output_index, 0),
+            ]:
+                dynamo.maybe_mark_dynamic(tensor, dims)
         else:
             pass
-        return RowAttention(rows, chunk_size=chunk_size, heads=attention.heads)
+        return row_attention
 
     def compile(self, dtype: torch.dtype | None) -> bool:
         if not self.is_ragged or dtype not in FA3_DTYPES:
@@ -370,42 +438,57 @@ class PackedDiT:
         h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
         h = self.conv_pos_embed(h, rows) + h
         residual = h
-        for block in dit.transformer_blocks:
-            attn_norm = block.attn_norm
-            modulation = attn_norm.linear(attn_norm.silu(t))
-            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-                torch.chunk(modulation, 6, dim=1)
-            )
-            norm = layer_norm(attn_norm.norm, h) * (1 + scale_msa[:, None])
-            norm = norm + shift_msa[:, None]
+        for block_index, block in enumerate(dit.transformer_blocks):
+            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(h, emb=t)
             h = h + gate_msa.unsqueeze(1) * self.attend(
-                block.attn, norm, rope, attention
+                block.attn,
+                norm,
+                rope,
+                attention,
+                self.qkv_weights[block_index],
+                self.qkv_biases[block_index],
             )
-            ff_norm = layer_norm(block.ff_norm, h) * (1 + scale_mlp[:, None])
-            ff_norm = ff_norm + shift_mlp[:, None]
+            ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
             h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
         if dit.long_skip_connection is not None:
             h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
         else:
             pass
-        norm_out = dit.norm_out
-        scale, shift = torch.chunk(norm_out.linear(norm_out.silu(t)), 2, dim=1)
-        h = layer_norm(norm_out.norm, h) * (1 + scale)[:, None, :] + shift[:, None, :]
+        h = dit.norm_out(h, t)
         return dit.proj_out(h)
 
     def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
-        module = self.dit.input_embed.conv_pos_embed
-        x = scatter_rows(h, rows, rows.width).permute(0, 2, 1)
-        x = mish(module.conv1[0](F.pad(x, (module.kernel_size - 1, 0, 0, 0))))
-        x = mish(module.conv2[0](F.pad(x, (module.kernel_size - 1, 0, 0, 0))))
-        return gather_rows(x.permute(0, 2, 1), rows)
+        # note (ratish): the padded call zero pads conv2's input, not conv1's output,
+        # so conv2's gaps are gathered again.
+        first_input = torch.cat((h.new_zeros(1, h.shape[2]), h[0]))[
+            rows.conv_input_index
+        ]
+        first_output = self.positional_conv(first_input, 0)
+        second_input = torch.cat(
+            (
+                first_output.new_zeros(1, first_output.shape[1]),
+                first_output[rows.conv_output_index],
+            )
+        )[rows.conv_input_index]
+        second_output = self.positional_conv(second_input, 1)
+        return second_output[rows.conv_output_index].unsqueeze(0)
 
-    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
-        """cos and sin, (1, total, rotary dims) each, in float32."""
-        freqs, scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
+    def positional_conv(self, x: torch.Tensor, conv_index: int) -> torch.Tensor:
+        """Positional conv conv_index and its Mish over x: (frames, channels), each
+        output frame reading the CONV_CONTEXT_FRAMES frames before it."""
+        conv_pos_embed = self.dit.input_embed.conv_pos_embed
+        if isinstance(conv_pos_embed, FusedConvPositionEmbedding):
+            return conv_pos_embed.conv(x.unsqueeze(0), conv_index)[0]
+        else:
+            conv = (conv_pos_embed.conv1, conv_pos_embed.conv2)[conv_index]
+            return conv(x.T.unsqueeze(0))[0].T
+
+    def rope_angles(self, frame_count: int) -> torch.Tensor:
+        """RoPE angles of positions [0, frame_count), (1, frame_count, rotary
+        dims), in float32."""
+        angles, scale = self.dit.rotary_embed.forward_from_seq_len(frame_count)
         assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
-        freqs = freqs[:, rows.positions]
-        return freqs.cos(), freqs.sin()
+        return angles
 
     @staticmethod
     def attend(
@@ -413,13 +496,10 @@ class PackedDiT:
         x: torch.Tensor,
         rope: tuple[torch.Tensor, torch.Tensor],
         attention: PackedRowAttention,
+        qkv_weight: torch.Tensor,
+        qkv_bias: torch.Tensor,
     ) -> torch.Tensor:
-        # note (ratish): under autocast to_q, to_k and to_v would each cast the
-        # float32 norm output again.
-        x = x.to(attn.to_q.weight.dtype)
-        query = attn.to_q(x)
-        key = attn.to_k(x)
-        value = attn.to_v(x)
+        query, key, value = F.linear(x, qkv_weight, qkv_bias).chunk(3, dim=-1)
         if torch.compiler.is_compiling():
             query = rotated(query, *rope)
             key = rotated(key, *rope)
@@ -428,22 +508,6 @@ class PackedDiT:
             rotate_in_place(key, *rope)
         out = attention(query, key, value).to(query.dtype)
         return attn.to_out[1](attn.to_out[0](out))
-
-
-def layer_norm(module: torch.nn.LayerNorm, h: torch.Tensor) -> torch.Tensor:
-    # note(ratish): Inductor rewrites the layer norm and Mish in its own arithmetic;
-    # the custom ops keep the eager kernels, so the compiled forward stays exact.
-    if torch.compiler.is_compiling():
-        return native_layer_norm(h, module.normalized_shape[0], module.eps)
-    else:
-        return module(h)
-
-
-def mish(x: torch.Tensor) -> torch.Tensor:
-    if torch.compiler.is_compiling():
-        return native_mish(x)
-    else:
-        return F.mish(x)
 
 
 def rotate_in_place(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> None:
@@ -475,18 +539,16 @@ def solve_flow_euler_packed(
     mu: torch.Tensor,
     spks: torch.Tensor,
     cond: torch.Tensor,
-    rows: PackedRows,
+    twin_rows: PackedRows,
+    attention: PackedRowAttention,
+    angles: torch.Tensor,
     *,
     cfg_rate: float,
-    streaming: bool,
 ) -> torch.Tensor:
-    """Euler steps over a packed sequence with classifier free guidance: the
-    conditional rows and their unconditional twins share one DiT call."""
+    """Euler steps with classifier free guidance, the rows and their twins in one
+    DiT call. noise, mu, cond: (1, total, channels), spks: (rows, channels),
+    twin_rows the rows then their twins, angles covering the widest row."""
     total = noise.shape[1]
-    twin_rows = pack_rows(rows.lengths * 2, noise.device)
-    attention = estimator.row_attention(
-        twin_rows, streaming=streaming, dtype=spks.dtype
-    )
     mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=1)
     cond_cfg = torch.cat((cond, torch.zeros_like(cond)), dim=1)
     spks_cfg = torch.cat((spks, torch.zeros_like(spks)), dim=0)
@@ -494,7 +556,8 @@ def solve_flow_euler_packed(
     flow_time = torch.zeros(1, device=noise.device, dtype=spks.dtype)
     # note(ratish): once per solve and outside the compiled forward,
     # whose graph would otherwise hold RoPE's autocast region and miss the AOT cache.
-    rope = estimator.rope(twin_rows)
+    angles = angles[:, twin_rows.positions]
+    rope = (angles.cos(), angles.sin())
     x = noise
     t, dt = time_span[0], time_span[1] - time_span[0]
     for step in range(1, len(time_span)):

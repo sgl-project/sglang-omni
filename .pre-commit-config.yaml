@@ -8,14 +8,18 @@ repos:
     hooks:
     -   id: autoflake
         args: [--remove-all-unused-imports, --in-place]
-        exclude: ^\.claude/skills/
+        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
       - id: check-symlinks
       - id: destroyed-symlinks
+      # The Voxt/ import stays byte-identical to upstream; Voxt files added
+      # here (backend, Omni bridge, dev build settings) are checked normally.
       - id: trailing-whitespace
+        exclude: ^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni)
       - id: end-of-file-fixer
+        exclude: ^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni)
       - id: check-yaml
         args: [--allow-multiple-documents]
       - id: check-toml
@@ -23,7 +27,7 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: check-shebang-scripts-are-executable
-        exclude: (?:^\.claude/skills/|^sglang_omni_router/rust/tests/.*\.rs$)
+        exclude: (?:^\.claude/skills/|^sglang_omni_router/rust/tests/.*\.rs$|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
       - id: detect-private-key
       - id: debug-statements
       - id: no-commit-to-branch
@@ -31,7 +35,7 @@ repos:
     rev: 5.13.2
     hooks:
       - id: isort
-        exclude: ^\.claude/skills/
+        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.10
     hooks:
@@ -44,7 +48,7 @@ repos:
     rev: 24.10.0
     hooks:
       - id: black-jupyter
-        exclude: ^\.claude/skills/
+        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:

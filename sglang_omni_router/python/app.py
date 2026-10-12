@@ -9,7 +9,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TypedDict
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
@@ -46,6 +46,7 @@ from sglang_omni_router.python.worker import (
     HEALTH_STATE_UNKNOWN,
     Worker,
     build_workers,
+    find_worker,
 )
 
 logger = logging.getLogger(__name__)
@@ -332,7 +333,7 @@ def register_admin_routes(
             },
         )
 
-    @app.post("/workers")
+    @app.post("/workers", dependencies=[Depends(_auth)])
     async def create_worker(request: Request) -> JSONResponse:
         payload, error = await read_json_object(request)
         if error is not None:
@@ -436,7 +437,7 @@ def register_admin_routes(
             payload.update(overlay(worker))
         return JSONResponse(payload)
 
-    @app.put("/workers/{worker_id:path}")
+    @app.put("/workers/{worker_id:path}", dependencies=[Depends(_auth)])
     async def update_worker(worker_id: str, request: Request) -> JSONResponse:
         payload, error = await read_json_object(request)
         if error is not None:
@@ -474,7 +475,6 @@ def register_admin_routes(
                 payload,
                 requested_is_dead,
                 requested_disabled,
-                request,
             )
         finally:
             if lock is not None:
@@ -486,35 +486,14 @@ def register_admin_routes(
         notify_registry_change(app)
         return JSONResponse({"status": "ok", "worker": reprobe.to_dict()})
 
-    def _discard_needs_admin_auth(resolved_worker_id: str) -> bool:
-        # Note (Jiaxin Deng): discarding a journal entry asserts the weights
-        # are verified; admin-sensitive even though ordinary worker CRUD is not.
-        journal = getattr(app.state, "update_journal", None)
-        if journal is None or not admin_api_key:
-            return False
-        try:
-            return resolved_worker_id in journal.pending()
-        except Exception:
-            return True  # unreadable journal: require auth to touch it
-
     async def _apply_worker_update(
         worker_id: str,
         payload: dict[str, JsonValue],
         requested_is_dead: bool | None,
         requested_disabled: bool | None,
-        request: Request,
     ) -> tuple[JSONResponse, Worker | None]:
         """Returns the response and, when set, a worker to re-probe unlocked."""
         worker = find_worker(workers, worker_id)
-        if (
-            requested_disabled is False
-            and worker is not None
-            and _discard_needs_admin_auth(worker.worker_id)
-        ):
-            try:
-                await _auth(authorization=request.headers.get("authorization"))
-            except HTTPException as exc:
-                return error_response(exc.status_code, str(exc.detail)), None
         if worker is None:
             return error_response(404, "worker not found"), None
         next_config = worker.config
@@ -592,7 +571,7 @@ def register_admin_routes(
         notify_registry_change(app)
         return JSONResponse({"status": "ok", "worker": worker.to_dict()}), reprobe
 
-    @app.delete("/workers/{worker_id:path}")
+    @app.delete("/workers/{worker_id:path}", dependencies=[Depends(_auth)])
     async def delete_worker(worker_id: str) -> JSONResponse:
         lock, rejected = registry_lock_or_reject(app)
         if rejected is not None:
@@ -788,6 +767,11 @@ def register_data_routes(
     @app.post("/v1/audio/speech")
     async def audio_speech(request: Request) -> Response:
         return await _forward(request, "/v1/audio/speech")
+
+    @app.get("/v1/audio/speech/{request_id}")
+    async def audio_speech_outcome(request_id: str, request: Request) -> Response:
+        path = f"/v1/audio/speech/{quote(request_id, safe='')}"
+        return await _forward(request, path)
 
     @app.post("/v1/audio/transcriptions")
     async def audio_transcriptions(request: Request) -> Response:
@@ -1241,14 +1225,6 @@ def decode_response_payload(response: httpx.Response) -> JsonValue:
         return response.json()
     except Exception:
         return response.text
-
-
-def find_worker(workers: list[Worker], worker_id: str) -> Worker | None:
-    decoded = unquote(worker_id)
-    for worker in workers:
-        if worker.worker_id == worker_id or worker.url == decoded:
-            return worker
-    return None
 
 
 async def read_json_object(

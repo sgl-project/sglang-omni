@@ -74,6 +74,7 @@ def test_omni_scheduler_admin_enqueues_to_scheduler_thread() -> None:
 
     scheduler = object.__new__(OmniScheduler)
     scheduler.running = True
+    scheduler.tp_size = 1
     scheduler.admin_queue = queue.Queue()
     scheduler.scheduler_thread_id = None
 
@@ -306,6 +307,8 @@ def test_tensor_update_failure_keeps_engine_paused(failure_mode: str) -> None:
 
 
 def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
+    from sglang.srt.runtime_context import get_context
+
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
     class EmptyBatch:
@@ -339,6 +342,8 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     )
     scheduler.disaggregation_mode = None
     scheduler.enable_hierarchical_cache = False
+    scheduler.enable_lmcache = False
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.req_to_token_pool = SimpleNamespace(
         clear=lambda: reset_calls.append("req_pool"),
         reset_aux_cache_allocator=lambda: reset_calls.append("aux_cache"),
@@ -346,14 +351,14 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(
         clear=lambda: reset_calls.append("kv_pool")
     )
-    scheduler.ps = SimpleNamespace(pp_size=1)
     scheduler.metrics_reporter = SimpleNamespace(
         reset_metrics=lambda: reset_calls.append("metrics"),
         is_stats_logging_rank=False,
     )
     scheduler.draft_worker = None
 
-    assert OmniScheduler.flush_cache_after_update(scheduler) is True
+    with get_context().override_server_args():
+        assert OmniScheduler.flush_cache_after_update(scheduler) is True
     assert scheduler.device_module is not None
     assert reset_calls == [
         "tree",
@@ -363,6 +368,25 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
         "grammar",
         "metrics",
     ]
+
+
+def test_omni_scheduler_abort_pause_reports_the_dropped_requests() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    aborted: list[str] = []
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.admin_lock = threading.Lock()
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
+    scheduler.resolve_pending_async = lambda: None
+    scheduler.active_request_ids = lambda: ["req-1", "req-2"]
+    scheduler.abort = lambda request_id, **_kwargs: aborted.append(request_id)
+    scheduler.running_batch = scheduler.cur_batch = scheduler.last_batch = None
+
+    result = OmniScheduler.admin_pause_generation(scheduler, {"mode": "abort"})
+
+    assert aborted == ["req-1", "req-2"]
+    assert result["data"]["num_paused_requests"] == 2
+    assert result["data"]["aborted_request_ids"] == ["req-1", "req-2"]
 
 
 def test_omni_scheduler_distributed_update_rejects_active_requests_by_default() -> None:
@@ -423,10 +447,10 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
         nonlocal empty_cache_calls
         empty_cache_calls += 1
 
-    def abort_all_requests() -> int:
+    def abort_all_requests() -> list[str]:
         nonlocal abort_calls
         abort_calls += 1
-        return 1
+        return ["req-1"]
 
     scheduler = object.__new__(OmniScheduler)
     scheduler.model_worker = SimpleNamespace(

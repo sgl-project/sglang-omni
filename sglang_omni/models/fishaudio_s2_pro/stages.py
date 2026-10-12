@@ -45,18 +45,20 @@ _MAX_PREPROCESSING_INTRAOP_THREADS = 8
 
 def configure_preprocessing_threads(worker_count: int) -> int:
     override = os.environ.get("OMP_NUM_THREADS", "").strip()
+    from_cpu_plan = os.environ.get("SGLANG_OMNI_OMP_FROM_CPU_PLAN") == "1"
     if override.isdigit() and int(override) >= 1:
-        requested = int(override)
-        torch.set_num_threads(requested)
-        return requested
+        if not from_cpu_plan:
+            requested = int(override)
+            torch.set_num_threads(requested)
+            return requested
+        else:
+            cpu_count = int(override)
     else:
-        pass
-
-    cpu_count = (
-        len(os.sched_getaffinity(0))
-        if hasattr(os, "sched_getaffinity")
-        else (os.cpu_count() or 1)
-    )
+        cpu_count = (
+            len(os.sched_getaffinity(0))
+            if hasattr(os, "sched_getaffinity")
+            else (os.cpu_count() or 1)
+        )
     # Requests already fan out across worker threads; bound the shared intra-op
     # pool so reference encoding cannot starve the GPU pipeline process.
     intraop_threads = min(

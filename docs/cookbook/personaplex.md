@@ -14,7 +14,7 @@ hf download nvidia/personaplex-7b-v1
 
 It ships the 7B weights, the Mimi codec, the SentencePiece text model and `voices.tgz`, which is unpacked into `voices/` next to the checkpoint on first use, or into the temp directory when that folder cannot be written. Recorded voice prompts (`--voice some.wav`) also need `pip install pyloudnorm`; the packaged `.pt` voices do not.
 
-Everything runs on one GPU. On an H200 the LM engine reserves `mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each; lower `--lm.engine.mem_fraction_static` on smaller cards.
+Everything runs on one GPU. On an H200 the LM engine reserves `mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each. This value is a fraction of total device memory, so a smaller-memory device can need a higher fraction to fit the model weights.
 
 ## Running the offline example
 
@@ -33,6 +33,8 @@ Five stages run under `MultiProcessPipelineRunner` (preprocessing, Mimi encode, 
 - The reply is exactly as long as the input, offset by one frame: the model answers while it listens, so leave silence after the caller's last words if you want a full answer.
 - Prompt plus reply must fit the LM context, 8192 positions by default (about 10.8 minutes); a longer recording is rejected with the limit in the message and needs `--lm.engine.context_length`.
 - The reply text is the model's inner monologue with the frame markers (`PAD`, `EPAD`, `BOS`, `EOS`) removed.
+
+For Intel GPUs, follow the [PersonaPlex XPU recipe](../get_started/installation_xpu.md#personaplex-speech-to-speech-single-xpu).
 
 ## Serving over HTTP
 
@@ -85,8 +87,9 @@ The fixed caller-frame budget still determines the number of generated frames.
 
 ## Known limitations
 
-- Offline, one request at a time (`max_running_requests=1`).
-- CUDA graphs are off; a 7B decode step plus 8 depformer steps runs close to the 80 ms frame budget rather than well inside it.
+- Offline, one request at a time by default (`max_running_requests=1`). If you raise `--lm.engine.max_running_requests`, the requests in a batch share one depformer pass per frame, and each seeded request still draws from its own generator. A seeded reply repeats exactly only with one request in flight, because batched kernels can round differently.
+- On CUDA the backbone's decode step replays a CUDA graph (`--lm.engine.disable_cuda_graph true` turns it off); the 8 depformer steps still run eagerly, so a frame runs close to the 80 ms budget rather than well inside it.
+- On CUDA, streaming Mimi decode replays CUDA graphs for chunks of 1 to `max_graph_frames` frames (default 1, the LM's chunk width) on `num_decode_slots` resident decode states (default 8); other platforms decode eagerly. A stream that arrives while every slot is taken decodes eagerly, so keep `--code2wav.factory.num_decode_slots` at or above `--lm.engine.max_running_requests`; `--code2wav.factory.max_graph_frames 0` turns the graphs off.
 - The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
 
 ## Tests
@@ -97,9 +100,26 @@ The fixed caller-frame budget still determines the number of generated frames.
 pytest tests/unit_test/personaplex/ -q
 ```
 
-Reference comparisons and reproducibility checks are evaluation scripts under
-`benchmarks/eval/`, separate from the unit suite. See the
-[PersonaPlex evaluation guide](../../benchmarks/eval/personaplex.md) for checkpoint,
-reference-environment and output setup. The greedy comparison checks a matching
-prefix, not full-output equality; the component comparison includes a diagnostic
-for the reference depformer ring behavior.
+### Reference parity
+
+Two opt-in tests compare against an [NVIDIA/personaplex](https://github.com/NVIDIA/personaplex) checkout. Its `moshi` package pins `torch < 2.5`, so it needs its own environment, separate from the serving one:
+
+```bash
+git clone https://github.com/NVIDIA/personaplex.git /path/to/personaplex
+uv venv /path/to/personaplex/.venv -p 3.12
+uv pip install --python /path/to/personaplex/.venv/bin/python /path/to/personaplex/moshi/
+```
+
+Then run the tests from the serving environment. They need CUDA, skip unless both variables are set, and run one file per command:
+
+```bash
+export PERSONAPLEX_REFERENCE_SOURCE=/path/to/personaplex
+export PERSONAPLEX_REFERENCE_PYTHON=/path/to/personaplex/.venv/bin/python
+python -m pytest tests/test_model/test_personaplex_parity.py -v -s
+python -m pytest tests/test_model/test_personaplex_components.py -v -s
+```
+
+- `test_personaplex_parity.py`: greedy replies to the reference's two test recordings must have the input's length, match it for at least the first 100 frames, and agree in text over that prefix; greedy and seeded replies must also repeat. **This is not full-output parity.**
+- `test_personaplex_components.py`: Mimi, the input embeddings and the depformer logits on the public `kyutai/moshiko-pytorch-bf16` base. The last depformer step matches only with the reference's ring behavior emulated, which diagnoses a known difference rather than proving a match.
+
+`PERSONAPLEX_PARITY_CHECKPOINT` and `PERSONAPLEX_MOSHI_CHECKPOINT` override the checkpoints, `PERSONAPLEX_STAGE_ARGS` forwards pipeline flags such as `'--lm.engine.mem_fraction_static 0.5'`, and `PERSONAPLEX_REFERENCE_REPO` sets the reference CLI's config lookup. Reference outputs are regenerated on every run under pytest's temporary directory.

@@ -1,0 +1,10 @@
+Candidate terms extracted from the final changed fragment:
+<candidate_terms>
+{{CANDIDATE_TERMS}}
+</candidate_terms>
+
+Additional decision rules:
+5. If <baseline_changed_fragment> and <final_changed_fragment> are both short terms or phrases, and the final form clearly corrects a proper noun, product, tool, technical term, command, or mixed-language term, return the final correct form directly.
+6. For misspellings, phonetic confusions, or incorrect word boundaries such as “Cloud Code -> Claude Code”, “Go Host -> Ghostty”, “Wechart -> WeChat”, or “SG 骆魔鬼群 -> SGLang 魔鬼群”, prefer the complete final term.
+7. Prefer genuine dictionary entries from <candidate_terms>. Return an empty array when candidates are only numbers, units, times, ordinary formatting changes, or full-sentence fragments.
+8. Even when the context is a full sentence, return only the shortest, most stable, final corrected term—not the sentence.

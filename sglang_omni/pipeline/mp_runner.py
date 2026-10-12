@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
-import socket
 from collections.abc import Mapping
 from typing import TypedDict
 
@@ -27,7 +26,11 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    PipelineConfig,
+    StageConfig,
+    parse_replica_instance_name,
+)
 from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
 from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
 from sglang_omni.pipeline import Coordinator
@@ -42,9 +45,12 @@ from sglang_omni.pipeline.stage_workers import (
     StageGroup,
     StageLaunchConfig,
     StageWorkerProcessSpec,
+    stage_gpu_ids,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
+from sglang_omni.utils.cpu import effective_cpu_count, gpu_local_affinity
 from sglang_omni.utils.imports import import_string
+from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN, claim_tcp_port
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +104,7 @@ class StageLaunchKwargs(TypedDict):
     route_fn: str | None
     is_terminal: bool
     env_defaults: dict[str, str]
+    written_env: frozenset[str]
     wait_for: list[str] | None
     wait_for_fn: str | None
     merge_fn: str | None
@@ -170,6 +177,7 @@ def build_stage_groups(
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
+        logical_stage_name, _ = parse_replica_instance_name(stage_cfg.name)
         tp_size = stage_cfg.tp_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
@@ -194,7 +202,9 @@ def build_stage_groups(
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
-            env_defaults={**config.resolved_env_defaults(), **stage_cfg.env},
+            env_defaults=config.resolved_stage_env_defaults(logical_stage_name),
+            written_env=frozenset(config.env_defaults)
+            | frozenset(config.stage_named(logical_stage_name).env),
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -273,6 +283,56 @@ def build_stage_groups(
     attach_process_memory_fraction_defaults(groups)
 
     return groups
+
+
+def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
+    """Set equal-share thread-pool fallbacks for final OS worker processes.
+
+    Environment and model policies can override these defaults; their sum
+    does not bound the pipeline's concurrent CPU usage.
+    """
+    process_specs = [spec for group in groups for spec in group.process_specs]
+    if not process_specs:
+        return {}
+    else:
+        pass
+
+    cpu_budget = effective_cpu_count()
+    process_count = len(process_specs)
+    threads_per_process = max(1, cpu_budget // process_count)
+    plan = {}
+    # note (Richard Wang): CPU-only processes stay near the GPUs the pipeline
+    # uses, not every visible one, and are left alone when it uses none.
+    pipeline_gpu_ids = sorted(
+        {gpu_id for spec in process_specs for gpu_id in stage_gpu_ids(spec.stage_specs)}
+    )
+    for spec in process_specs:
+        # note (Richard Wang): a process bound near its GPUs gets at most one
+        # thread per bound CPU, so a share of the whole host cannot oversubscribe.
+        gpu_ids = stage_gpu_ids(spec.stage_specs) or pipeline_gpu_ids
+        spec.cpu_affinity = gpu_local_affinity(gpu_ids) if gpu_ids else None
+        spec.cpu_threads = (
+            threads_per_process
+            if spec.cpu_affinity is None
+            else min(threads_per_process, len(spec.cpu_affinity))
+        )
+        plan[spec.process_name] = spec.cpu_threads
+
+    allocations = {
+        spec.process_name: {
+            "fallback_threads": spec.cpu_threads,
+            "cpus": len(spec.cpu_affinity) if spec.cpu_affinity else None,
+            "stages": [stage.stage_name for stage in spec.stage_specs],
+        }
+        for spec in process_specs
+    }
+    logger.info(
+        f"CPU thread fallback plan: budget={cpu_budget} processes={process_count} "
+        f"fallback_threads_per_process={threads_per_process} "
+        f"fallback_overcommitted={str(process_count > cpu_budget).lower()} "
+        f"allocations={allocations}"
+    )
+    return plan
 
 
 def attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
@@ -495,22 +555,20 @@ def resolve_comm_config(
 
 
 class NcclPortAllocator:
-    """Allocate unique NCCL ports for per-stage TP groups."""
+    """Allocate unique NCCL ports for per-stage TP groups.
 
-    def __init__(self, base_port: int = 29500) -> None:
+    Claims are exclusive across processes, so two servers started together
+    do not pick the same port.
+    """
+
+    def __init__(self, base_port: int = NCCL_PORT_BASE) -> None:
         self.next = base_port
 
     def allocate(self) -> int:
-        """Return an available port, incrementing the counter."""
-        while True:
-            port = self.next
-            self.next += 1
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("127.0.0.1", port))
-                    return port
-            except OSError:
-                continue
+        """Return an available port and advance past it."""
+        port = claim_tcp_port(self.next, NCCL_PORT_SPAN)
+        self.next = port + 1
+        return port
 
 
 async def finish_despite_cancellation(coro) -> None:
@@ -631,6 +689,7 @@ class MultiProcessPipelineRunner:
                 process_plan=prep.process_plan,
                 replica_topology=prep.replica_topology,
             )
+            apply_cpu_thread_plan(groups)
 
             # Note (Jiaxin Deng): roles are assigned before the coordinator
             # binds and before any child is spawned, so an unshareable topology
@@ -778,7 +837,7 @@ class MultiProcessPipelineRunner:
             else:
                 pass
             try:
-                await self.cleanup_on_failure()
+                await finish_despite_cancellation(self.cleanup_on_failure())
             finally:
                 if self.mps is not None:
                     try:

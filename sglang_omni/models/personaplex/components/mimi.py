@@ -58,8 +58,8 @@ class SEANetResnetBlock(StreamingModule):
             y = module(y)
         return x + y
 
-    def init_state(self) -> SEANetState:
-        return stack_state(self.block)
+    def init_state(self, batch_size: int) -> SEANetState:
+        return stack_state(self.block, batch_size)
 
     def step(self, x: torch.Tensor, state: SEANetState) -> torch.Tensor:
         y = x
@@ -75,8 +75,18 @@ def run_stack(modules: nn.ModuleList, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def stack_state(modules: nn.ModuleList) -> SEANetState:
-    return [m.init_state() for m in modules]
+def stack_state(modules: nn.ModuleList, batch_size: int) -> SEANetState:
+    return [m.init_state(batch_size) for m in modules]
+
+
+def reset_stack(state: SEANetState) -> None:
+    for module_state in state:
+        if isinstance(module_state, list):
+            reset_stack(module_state)
+        elif module_state is not None:
+            module_state.reset()
+        else:
+            pass
 
 
 def step_stack(
@@ -113,8 +123,8 @@ class SEANetEncoder(StreamingModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return run_stack(self.model, x)
 
-    def init_state(self) -> SEANetState:
-        return stack_state(self.model)
+    def init_state(self, batch_size: int) -> SEANetState:
+        return stack_state(self.model, batch_size)
 
     def step(self, x: torch.Tensor, state: SEANetState) -> torch.Tensor:
         return step_stack(self.model, x, state)
@@ -148,8 +158,8 @@ class SEANetDecoder(StreamingModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return run_stack(self.model, x)
 
-    def init_state(self) -> SEANetState:
-        return stack_state(self.model)
+    def init_state(self, batch_size: int) -> SEANetState:
+        return stack_state(self.model, batch_size)
 
     def step(self, x: torch.Tensor, state: SEANetState) -> torch.Tensor:
         return step_stack(self.model, x, state)
@@ -256,6 +266,12 @@ class MimiDecodeState:
     transformer: TransformerState
     decoder: SEANetState
 
+    def reset(self) -> None:
+        """Back to a fresh stream, in place, so captured graphs keep their addresses."""
+        self.upsample.reset()
+        self.transformer.reset()
+        reset_stack(self.decoder)
+
 
 class MimiCodec(nn.Module):
     def __init__(self, spec: MimiSpec = MIMI) -> None:
@@ -304,11 +320,11 @@ class MimiCodec(nn.Module):
         latent = self.upsample(self.quantizer.decode(codes_BKF))
         return self.decoder(self.decoder_transformer(latent))
 
-    def init_encode_state(self) -> MimiEncodeState:
+    def init_encode_state(self, batch_size: int) -> MimiEncodeState:
         return MimiEncodeState(
-            encoder=self.encoder.init_state(),
-            transformer=self.encoder_transformer.init_state(),
-            downsample=self.downsample.init_state(),
+            encoder=self.encoder.init_state(batch_size),
+            transformer=self.encoder_transformer.init_state(batch_size),
+            downsample=self.downsample.init_state(batch_size),
         )
 
     @torch.inference_mode()
@@ -326,11 +342,11 @@ class MimiCodec(nn.Module):
             pass
         return self.quantizer.encode(latent)
 
-    def init_decode_state(self) -> MimiDecodeState:
+    def init_decode_state(self, batch_size: int) -> MimiDecodeState:
         return MimiDecodeState(
-            upsample=self.upsample.init_state(),
-            transformer=self.decoder_transformer.init_state(),
-            decoder=self.decoder.init_state(),
+            upsample=self.upsample.init_state(batch_size),
+            transformer=self.decoder_transformer.init_state(batch_size),
+            decoder=self.decoder.init_state(batch_size),
         )
 
     @torch.inference_mode()

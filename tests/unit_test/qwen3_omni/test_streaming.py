@@ -35,6 +35,7 @@ from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+from tests.unit_test.fixtures.qwen_fakes import deliver_code2wav_chunk
 
 
 class ByteTokenizer:
@@ -259,13 +260,9 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
     prefill_builder.speaker_map = {}
 
     prompt_ids = torch.tensor([10, 20, 30, 31, 10, 40, 41], dtype=torch.long)
-    prompt_embed = token_embedding_rows(prompt_ids)
-    prompt_hidden = prompt_embed.clone()
-    prompt_hidden[2] = torch.tensor([5.0, 6.0])
     prefill_builder.reconstruct_prompt_states = lambda state: (
         prompt_ids,
-        prompt_embed,
-        prompt_hidden,
+        token_embedding_rows(prompt_ids),
         {},
     )
     prefill_builder.load_prompt_token_embeddings = token_embedding_rows
@@ -286,7 +283,7 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
     )
 
     expected_user_rows = torch.cat(
-        [text_projected(10, 20), torch.tensor([[105.0, 106.0]]), text_projected(31)]
+        [text_projected(10, 20), torch.tensor([[100.0, 100.0]]), text_projected(31)]
     )
     expected_assistant_rows = torch.cat(
         [
@@ -392,6 +389,23 @@ def test_utf8_multibyte_hold_then_emit():
     out = drain_outbox(sched)
     assert len(out) == 1
     assert out[0].data["text"] == "hello"
+
+
+def test_literal_replacement_character_does_not_hold_later_text():
+    """Only an incomplete UTF-8 suffix holds; a complete U+FFFD streams with what follows."""
+    tok = ByteTokenizer(
+        vocab={1: "\ufffd".encode(), 2: b" next", 3: b"\xe4", 4: b"\xbd\xa0"},
+    )
+    sched = StreamingDetokenizeScheduler(tokenizer=tok, eos_token_id=None)
+
+    sched.on_stream_chunk("req-1", FakeStreamItem(data=1))
+    sched.on_stream_chunk("req-1", FakeStreamItem(data=2))
+    assert [m.data["text"] for m in drain_outbox(sched)] == ["\ufffd next"]
+
+    sched.on_stream_chunk("req-1", FakeStreamItem(data=3))
+    assert drain_outbox(sched) == [], "an incomplete character still holds"
+    sched.on_stream_chunk("req-1", FakeStreamItem(data=4))
+    assert [m.data["text"] for m in drain_outbox(sched)] == ["你"]
 
 
 def test_special_tokens_emit_no_delta():
@@ -583,8 +597,8 @@ def test_code2wav_streaming_emits_per_window_and_slim_final():
     sched.stream_payloads["req-1"] = payload
 
     # Two chunks trigger the first decode step (stream_chunk_size=2).
-    sched.handle_stream_chunk("req-1", make_code_chunk(metadata={"stream": True}))
-    sched.handle_stream_chunk("req-1", make_code_chunk(metadata={"stream": True}))
+    deliver_code2wav_chunk(sched, "req-1", make_code_chunk(metadata={"stream": True}))
+    deliver_code2wav_chunk(sched, "req-1", make_code_chunk(metadata={"stream": True}))
 
     out: list[OutgoingMessage] = []
     while not sched.outbox.empty():

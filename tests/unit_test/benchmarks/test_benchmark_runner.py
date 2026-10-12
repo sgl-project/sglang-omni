@@ -2,12 +2,51 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 
+import aiohttp
 import numpy as np
 import pytest
+from aiohttp import web
 
+import benchmarks.benchmarker.runner as runner_module
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trust_env", [False, True])
+async def test_environment_proxy_is_opt_in(monkeypatch, trust_env: bool) -> None:
+    async def proxy(_request):
+        return web.Response(text="via proxy")
+
+    app = web.Application()
+    app.router.add_get("/{path:.*}", proxy)
+    server = web.AppRunner(app)
+    await server.setup()
+    site = web.TCPSite(server, "127.0.0.1", 0)
+    await site.start()
+    port = server.addresses[0][1]
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{port}")
+    monkeypatch.setenv("no_proxy", "")
+
+    async def send(session, sample):
+        assert session.trust_env is trust_env
+        if not trust_env:
+            return RequestResult(request_id=sample, is_success=True)
+        async with session.get(
+            "http://benchmark-proxy-test.invalid/result"
+        ) as response:
+            return RequestResult(
+                request_id=sample, text=await response.text(), is_success=True
+            )
+
+    try:
+        runner = BenchmarkRunner(RunConfig(warmup=0, trust_env=trust_env, timeout_s=2))
+        results = await runner.run(["one"], send)
+        assert results[0].text == ("via proxy" if trust_env else "")
+    finally:
+        await server.cleanup()
 
 
 @pytest.mark.parametrize(
@@ -126,6 +165,59 @@ async def test_requests_that_get_a_slot_at_once_are_not_marked() -> None:
     assert not any(r.waited_for_slot for r in results)
 
 
+@pytest.mark.asyncio
+async def test_after_send_runs_outside_the_slot_and_the_timed_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second_started = asyncio.Event()
+    timer_stopped = asyncio.Event()
+    followed: list[str] = []
+    release_followups = asyncio.Event()
+    clock_seconds = 10.0
+
+    def read_clock() -> float:
+        if second_started.is_set():
+            timer_stopped.set()
+        else:
+            pass
+        return clock_seconds
+
+    monkeypatch.setattr(runner_module, "time", SimpleNamespace(perf_counter=read_clock))
+
+    async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
+        nonlocal clock_seconds
+        if sample == "b":
+            clock_seconds = 12.0
+            second_started.set()
+        else:
+            pass
+        return RequestResult(request_id=sample, is_success=True)
+
+    async def after_send(result: RequestResult) -> None:
+        if result.request_id == "a":
+            await asyncio.wait_for(second_started.wait(), timeout=1)
+        else:
+            pass
+        await release_followups.wait()
+        followed.append(result.request_id)
+
+    runner = BenchmarkRunner(RunConfig(max_concurrency=1, warmup=2, disable_tqdm=True))
+    task = asyncio.create_task(runner.run(["a", "b"], send, after_send=after_send))
+    try:
+        await asyncio.wait_for(timer_stopped.wait(), timeout=2)
+        assert runner.wall_clock_s == 2.0
+        assert not task.done()
+        assert not followed
+    finally:
+        clock_seconds = 112.0
+        release_followups.set()
+        results = await asyncio.wait_for(task, timeout=2)
+
+    assert [r.request_id for r in results] == ["a", "b"]
+    assert sorted(followed) == ["a", "b"]
+    assert runner.wall_clock_s == 2.0
+
+
 def arrival_offsets(seed: int, rate: float, count: int) -> np.ndarray:
     return np.cumsum(np.random.default_rng(seed).exponential(1.0 / rate, count))
 
@@ -202,3 +294,9 @@ async def test_closed_loop_runs_do_not_report_dispatch_lateness() -> None:
     results = await runner.run(["a", "b"], _send)
 
     assert all(r.dispatch_lateness_s is None for r in results)
+
+
+def test_run_config_preserves_positional_arrival_seed() -> None:
+    config = RunConfig(4, 2.0, 0, True, 60, 42)
+    assert config.arrival_seed == 42
+    assert config.trust_env is False

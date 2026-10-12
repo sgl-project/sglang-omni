@@ -2,6 +2,11 @@
 
 Run these commands from the repository root after installing `sglang-omni`.
 
+## Full-duplex audio
+
+MiniCPM-o launch commands, server settings, and the realtime protocol are in the
+[MiniCPM-o cookbook](../docs/cookbook/minicpm_o.md).
+
 ## Unified Launcher
 
 `run_omni.py` keeps model and topology choices in reusable presets. Use

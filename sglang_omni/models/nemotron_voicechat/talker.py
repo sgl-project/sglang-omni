@@ -152,6 +152,7 @@ class EarTtsTalker(nn.Module):
         top_p: float | None = None,
         noise_scale: float = 1.0,
         guidance_scale: float = 0.0,
+        assignment_counts: tuple[int, ...] | None = None,
     ):
         if guidance_scale > 0:
             hidden_TD, uncond_TD = hidden_TD.chunk(2)
@@ -161,13 +162,17 @@ class EarTtsTalker(nn.Module):
         codes_TQ = torch.zeros(
             frames, self.num_quantizers, dtype=torch.long, device=hidden_TD.device
         )
-        rates = torch.linspace(0.0, 1.0, num_iter + 1, device=hidden_TD.device)[:-1]
-        masking = (1.0 - rates.pow(exponent)).pow(1.0 / exponent)
-        counts = torch.ceil(masking * self.num_quantizers).long()
-        counts = counts - torch.cat([counts[1:], counts.new_zeros(1)])
+        if assignment_counts is None:
+            rates = torch.linspace(0.0, 1.0, num_iter + 1, device=hidden_TD.device)[:-1]
+            masking = (1.0 - rates.pow(exponent)).pow(1.0 / exponent)
+            counts = torch.ceil(masking * self.num_quantizers).long()
+            counts = counts - torch.cat([counts[1:], counts.new_zeros(1)])
+            assignment_counts = tuple(counts.tolist())
+        else:
+            pass
 
         assigned = 0
-        for count in counts.tolist():
+        for count in assignment_counts:
             if count == 0:
                 continue
             else:

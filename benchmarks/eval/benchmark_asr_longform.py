@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 
 from benchmarks.benchmarker.fingerprint import (
@@ -54,6 +55,7 @@ from benchmarks.eval.benchmark_asr_seedtts import (
     finalize_args,
 )
 from benchmarks.runtime_metrics import collect_benchmark_provenance
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,6 +81,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     config = ASR_LONGFORM_DATASETS[args.dataset]
     dataset_revision = args.dataset_revision or config.revision

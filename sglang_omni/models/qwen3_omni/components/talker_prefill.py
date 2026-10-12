@@ -91,65 +91,6 @@ def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Te
     return torch.stack(rows, dim=0)
 
 
-def coerce_feature_tensor(value: object) -> torch.Tensor | None:
-    if value is None:
-        return None
-    else:
-        pass
-    if isinstance(value, torch.Tensor):
-        tensor = value
-    elif isinstance(value, (list, tuple)):
-        tensors = [item for item in value if isinstance(item, torch.Tensor)]
-        if not tensors:
-            return None
-        else:
-            pass
-        tensor = torch.cat(tensors, dim=0)
-    else:
-        return None
-
-    if tensor.dim() == 3 and tensor.shape[0] == 1:
-        return tensor[0]
-    else:
-        pass
-    if tensor.dim() > 2:
-        return tensor.reshape(-1, tensor.shape[-1])
-    else:
-        pass
-    return tensor
-
-
-def merge_prompt_modality(
-    prompt_ids: torch.Tensor,
-    prompt_embed: torch.Tensor,
-    prompt_hidden: torch.Tensor,
-    *,
-    token_id: int | None,
-    features: object,
-) -> None:
-    if token_id is None:
-        return
-    else:
-        pass
-    feature_tensor = coerce_feature_tensor(features)
-    if feature_tensor is None:
-        return
-    else:
-        pass
-
-    mask = prompt_ids == int(token_id)
-    if not mask.any():
-        return
-    else:
-        pass
-
-    prompt_embed[mask] = feature_tensor.to(
-        device=prompt_embed.device,
-        dtype=prompt_embed.dtype,
-    )
-    prompt_hidden[mask] = 0.0
-
-
 class TalkerPromptPrefill(TypedDict):
     input_embeds: torch.Tensor
     input_ids: torch.Tensor
@@ -248,8 +189,8 @@ class TalkerPrefillBuilder:
             pass
 
         state = Qwen3OmniPipelineState.from_dict(payload.data)
-        prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs = (
-            self.reconstruct_prompt_states(state)
+        prompt_ids, prompt_embed, prompt_model_inputs = self.reconstruct_prompt_states(
+            state
         )
 
         assistant_token_ids = self.extract_chunk_token_ids(thinker_chunks)
@@ -257,7 +198,11 @@ class TalkerPrefillBuilder:
 
         thinker_input_ids = torch.cat([prompt_ids, assistant_token_ids], dim=0)
         thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
-        thinker_hidden = torch.cat([prompt_hidden, assistant_embed], dim=0)
+        # note (ratish): the talker projects zeros in place of the thinker's hidden at
+        # multimodal prompt rows, the only prompt rows the hidden is read at.
+        thinker_hidden = torch.cat(
+            [torch.zeros_like(prompt_embed), assistant_embed], dim=0
+        )
         multimodal_mask = self.build_multimodal_mask(thinker_input_ids)
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.get_tts_special_embeds()
@@ -403,7 +348,7 @@ class TalkerPrefillBuilder:
 
     def reconstruct_prompt_states(
         self, state: Qwen3OmniPipelineState
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, object]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, object]]:
         prompt = state.prompt or {}
         prompt_input_ids = prompt["input_ids"]
         if prompt_input_ids.dim() == 2:
@@ -413,32 +358,7 @@ class TalkerPrefillBuilder:
         prompt_ids = prompt_input_ids.to(dtype=torch.long).cpu()
 
         prompt_embed = self.load_prompt_token_embeddings(prompt_ids)
-        prompt_hidden = prompt_embed.clone()
-        prompt_model_inputs = self.prompt_model_inputs(state)
-
-        merge_prompt_modality(
-            prompt_ids,
-            prompt_embed,
-            prompt_hidden,
-            token_id=self.audio_token_id,
-            features=prompt_model_inputs.get("audio_embeds"),
-        )
-        merge_prompt_modality(
-            prompt_ids,
-            prompt_embed,
-            prompt_hidden,
-            token_id=self.image_token_id,
-            features=prompt_model_inputs.get("image_embeds"),
-        )
-        merge_prompt_modality(
-            prompt_ids,
-            prompt_embed,
-            prompt_hidden,
-            token_id=self.video_token_id,
-            features=prompt_model_inputs.get("video_embeds"),
-        )
-
-        return prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs
+        return prompt_ids, prompt_embed, self.prompt_model_inputs(state)
 
     def load_prompt_token_embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
         token_ids = token_ids.to(dtype=torch.long).view(-1).cpu()

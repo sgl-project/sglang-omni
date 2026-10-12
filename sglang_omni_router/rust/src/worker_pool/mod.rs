@@ -201,6 +201,12 @@ pub(crate) struct ContentBlindMediaHttp<'a> {
     cohort: &'a HomogeneousMediaCohort,
 }
 
+/// A configured worker the caller named for a follow-up lookup.
+pub(crate) struct PinnedWorker<'a> {
+    pool: &'a WorkerPool,
+    record: &'a Arc<WorkerRecord>,
+}
+
 impl WorkerPool {
     pub(crate) fn build(
         config: &Config,
@@ -626,6 +632,17 @@ impl WorkerPool {
             .map(|cohort| ContentBlindMediaHttp { pool: self, cohort })
     }
 
+    pub(crate) fn pinned_worker(
+        &self,
+        trust: &TrustDomain,
+        worker_id: &str,
+    ) -> Option<PinnedWorker<'_>> {
+        self.records
+            .iter()
+            .find(|record| record.worker_id.as_str() == worker_id && &record.trust_domain == trust)
+            .map(|record| PinnedWorker { pool: self, record })
+    }
+
     pub(crate) fn operations_snapshot(&self) -> OperationsSnapshot {
         let raw_admission = self.admission.snapshot();
         let admission = std::array::from_fn(|index| AdmissionSnapshot {
@@ -769,6 +786,18 @@ impl ContentBlindMediaHttp<'_> {
                         }
                 })
         })
+    }
+}
+
+impl PinnedWorker<'_> {
+    pub(crate) fn dispatch(self, envelope: EnvelopeLease) -> Result<RequestLease, DispatchError> {
+        if !self.record.is_routable() {
+            return Err(DispatchError::Unavailable);
+        }
+        let policy = self.pool.selector.lock();
+        let lease = RequestLease::new_pinned(envelope, Arc::clone(self.record));
+        drop(policy);
+        Ok(lease)
     }
 }
 
@@ -2298,6 +2327,41 @@ mod tests {
                 Some(DispatchError::Unavailable)
             );
         }
+    }
+
+    #[test]
+    fn pinned_worker_dispatch_needs_a_healthy_worker_in_the_trust_domain() {
+        let pool = media_pool(vec![voice_speech_record(0), voice_speech_record(1)]);
+        let trust = TrustDomain::new(String::from("local"));
+        assert!(pool.pinned_worker(&trust, "voice-9").is_none());
+        assert!(
+            pool.pinned_worker(&TrustDomain::new(String::from("other")), "voice-1")
+                .is_none()
+        );
+
+        let lease = pool
+            .pinned_worker(&trust, "voice-1")
+            .expect("configured worker")
+            .dispatch(pool.try_admit_envelope().expect("pinned admission"))
+            .expect("healthy pinned dispatch");
+        assert_eq!(lease.worker_id(), "voice-1");
+        assert_eq!(lease.registration_ordinal(), 1);
+        assert_eq!(pool.records[1].load(), 1);
+        drop(lease);
+        assert_eq!(pool.records[1].load(), 0);
+        assert_eq!(
+            pool.operations_snapshot().workers[1].voice_control_dispatches,
+            0
+        );
+
+        pool.records[1].health.store(WorkerHealth::Unhealthy);
+        assert_eq!(
+            pool.pinned_worker(&trust, "voice-1")
+                .expect("still configured")
+                .dispatch(pool.try_admit_envelope().expect("unhealthy admission"))
+                .err(),
+            Some(DispatchError::Unavailable)
+        );
     }
 
     #[test]

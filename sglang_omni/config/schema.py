@@ -590,6 +590,11 @@ class PipelineConfig(BaseModel):
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None
+    is_realtime_only: ClassVar[bool] = False
+    # Import path of the function that builds, from this config, the chat or
+    # transcription request the server sends itself before it reports ready;
+    # None skips the warmup.
+    server_warmup_request_factory: ClassVar[str | None] = None
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float | None] = None
     min_tail_s: ClassVar[float] = 0.5
@@ -787,6 +792,14 @@ class PipelineConfig(BaseModel):
         wins over a derivation.
         """
         return dict(self.env_defaults)
+
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        """Resolve launch-time environment defaults for a logical stage.
+
+        Stage settings override pipeline defaults; model policies may derive
+        missing values here without persisting them in the configuration.
+        """
+        return {**self.resolved_env_defaults(), **self.stage_named(stage_name).env}
 
     @classmethod
     def generation_admission_defaults(cls) -> dict[str, int]:

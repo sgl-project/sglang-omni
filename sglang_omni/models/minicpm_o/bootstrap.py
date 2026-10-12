@@ -22,6 +22,7 @@ def create_talker_scheduler(
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
+    session_mode: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Create a codec scheduler with per-request condition embeddings."""
     from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -33,6 +34,7 @@ def create_talker_scheduler(
     from sglang_omni.models.minicpm_o.talker_request import (
         make_talker_scheduler_adapters,
     )
+    from sglang_omni.models.minicpm_o.talker_session import TalkerAdapter
     from sglang_omni.scheduling.bootstrap import (
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
@@ -82,6 +84,11 @@ def create_talker_scheduler(
 
     output_proc = SGLangOutputProcessor()
     model_runner = MiniCPMOTalkerModelRunner(model_worker, output_proc)
+    if session_mode:
+        # note (0xtoward): a session's units replay host history, so it keeps the host sampler.
+        pass
+    else:
+        model_runner.enable_device_sampling()
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
     request_builder, result_adapter = make_talker_scheduler_adapters(
@@ -102,6 +109,10 @@ def create_talker_scheduler(
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
+        session_adapter=TalkerAdapter(model) if session_mode else None,
+        # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
+        enable_async_decode=not session_mode,
+        async_decode_min_batch_size=1,
     )
 
 
@@ -113,7 +124,7 @@ def create_thinker_scheduler(
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     speech_enabled: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Create a thinker scheduler with optional hidden-state capture for speech."""
@@ -193,9 +204,14 @@ def create_thinker_scheduler(
         capture_hidden=speech_enabled,
         should_emit_hidden=_should_emit_hidden if speech_enabled else None,
     )
-    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc)
-
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
+    # note (ruinique): thinker chunks terminate on any of these tokens.
+    eos_token_ids = [
+        int(tokenizer.convert_tokens_to_ids(token))
+        for token in ("<|tts_eos|>", "<|im_end|>", "</s>")
+    ]
+    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc, eos_token_ids)
+
     request_builder, result_adapter = make_thinker_scheduler_adapters(
         tokenizer=tokenizer,
         vocab_size=model_config.vocab_size,

@@ -24,9 +24,14 @@ from sglang_omni.models.ming_omni.io import (
 )
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.preprocessing.audio import compute_audio_cache_key, load_audio_path
+from sglang_omni.preprocessing.base import is_url
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
+)
+from sglang_omni.preprocessing.resource_connector import (
+    MediaPolicyError,
+    get_global_resource_connector,
 )
 from sglang_omni.preprocessing.video import (
     compute_video_cache_key,
@@ -479,61 +484,40 @@ class MingPreprocessor:
             else:
                 pass
 
-        # Compute cache keys BEFORE async loading; same content -> same key so
-        # SGLang's radix prefix cache can correctly reuse KVs across requests, and
-        # different content -> different key so it never falsely aliases image
-        # placeholder positions (which share the same generic image_patch_token).
-        image_cache_key = compute_image_cache_key(raw_images) if raw_images else None
-        audio_cache_key = compute_audio_cache_key(audio_urls) if audio_urls else None
-        video_cache_key = (
-            compute_video_cache_key(
-                raw_videos,
-                fps=float(video_fps) if video_fps is not None else None,
-                max_frames=(
-                    int(video_max_frames) if video_max_frames is not None else None
-                ),
-                min_pixels=(
-                    int(video_min_pixels) if video_min_pixels is not None else None
-                ),
-                max_pixels=(
-                    int(video_max_pixels) if video_max_pixels is not None else None
-                ),
-                total_pixels=(
-                    int(video_total_pixels) if video_total_pixels is not None else None
-                ),
-            )
-            if raw_videos
-            else None
-        )
+        video_kwargs = {
+            "fps": float(video_fps) if video_fps is not None else None,
+            "max_frames": (
+                int(video_max_frames) if video_max_frames is not None else None
+            ),
+            "min_pixels": (
+                int(video_min_pixels) if video_min_pixels is not None else None
+            ),
+            "max_pixels": (
+                int(video_max_pixels) if video_max_pixels is not None else None
+            ),
+            "total_pixels": (
+                int(video_total_pixels) if video_total_pixels is not None else None
+            ),
+        }
 
         # --- Load images, videos and audio concurrently ---
         image_coro = ensure_image_list_async(raw_images) if raw_images else None
         video_coro = (
-            ensure_video_list_async(
-                raw_videos,
-                fps=float(video_fps) if video_fps is not None else None,
-                max_frames=(
-                    int(video_max_frames) if video_max_frames is not None else None
-                ),
-                min_pixels=(
-                    int(video_min_pixels) if video_min_pixels is not None else None
-                ),
-                max_pixels=(
-                    int(video_max_pixels) if video_max_pixels is not None else None
-                ),
-                total_pixels=(
-                    int(video_total_pixels) if video_total_pixels is not None else None
-                ),
-            )
-            if raw_videos
-            else None
+            ensure_video_list_async(raw_videos, **video_kwargs) if raw_videos else None
         )
+        # note (Richard Wang): check client audio paths against the server's
+        # media policy before any read, so a refused path fails the request.
+        connector = get_global_resource_connector()
+        audio_paths = [
+            url if is_url(url) else connector.local_media_path(url)
+            for url in audio_urls
+        ]
         audio_coros = (
             [
-                asyncio.to_thread(load_audio_path, url, target_sr=WHISPER_SAMPLE_RATE)
-                for url in audio_urls
+                asyncio.to_thread(load_audio_path, path, target_sr=WHISPER_SAMPLE_RATE)
+                for path in audio_paths
             ]
-            if audio_urls
+            if audio_paths
             else []
         )
 
@@ -561,7 +545,9 @@ class MingPreprocessor:
         if image_coro is not None:
             img_result = results[idx]
             idx += 1
-            if isinstance(img_result, list):
+            if isinstance(img_result, MediaPolicyError):
+                raise img_result
+            elif isinstance(img_result, list):
                 images = img_result
             elif isinstance(img_result, BaseException):
                 logger.error("Failed to load images: %s", img_result)
@@ -572,7 +558,9 @@ class MingPreprocessor:
         if video_coro is not None:
             vid_result = results[idx]
             idx += 1
-            if isinstance(vid_result, BaseException):
+            if isinstance(vid_result, MediaPolicyError):
+                raise vid_result
+            elif isinstance(vid_result, BaseException):
                 logger.error("Failed to load videos: %s", vid_result)
             else:
                 # ensure_video_list_async returns (videos, sample_fps, audio)
@@ -584,6 +572,13 @@ class MingPreprocessor:
         waveforms: list[np.ndarray[tuple[int, ...], np.dtype[np.generic]]] = [
             a for a in audio_results if isinstance(a, np.ndarray)
         ]
+
+        # Key the loaded media, not the request strings. These keys also set the
+        # pad values that stop the radix prefix cache from reusing KV across
+        # different content behind the same URL or path.
+        image_cache_key = compute_image_cache_key(images)
+        audio_cache_key = compute_audio_cache_key(waveforms)
+        video_cache_key = compute_video_cache_key(videos, **video_kwargs)
 
         # --- Process images ---
         image_token_counts: list[int] = []
