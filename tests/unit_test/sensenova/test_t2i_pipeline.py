@@ -30,6 +30,7 @@ def test_t2i_api_returns_all_outputs_in_one_request():
     buffer = io.BytesIO()
     Image.new("RGB", (32, 32)).save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
     class MultiClient:
         calls = 0
 
@@ -44,9 +45,9 @@ def test_t2i_api_returns_all_outputs_in_one_request():
     )
     response = client.post("/v1/images/generations", json={"prompt": "a cat", "n": 3})
     assert response.status_code == 200
-    assert response.json()["data"] == [
-        {"b64_json": encoded, "output_format": "png"}
-    ] * 3
+    assert (
+        response.json()["data"] == [{"b64_json": encoded, "output_format": "png"}] * 3
+    )
     assert backend.calls == 1
     assert (
         client.post(

@@ -305,8 +305,6 @@ class ImageGenerationRequest(BaseModel):
     cache_dit_params: dict[str, object] | None = None
 
 
-
-
 SUPPORTED_TTS_RESPONSE_FORMATS = frozenset({"wav", "mp3", "flac", "pcm", "aac", "opus"})
 SUPPORTED_TTS_LANGUAGES = frozenset(
     {

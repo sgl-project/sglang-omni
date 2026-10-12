@@ -57,7 +57,9 @@ def generate_image(
         else:
             pass
         result = _generate_text_to_image(payload, model, tokenizer)
-        result.data["image_usage"] = build_image_usage(payload.request.inputs, tokenizer)
+        result.data["image_usage"] = build_image_usage(
+            payload.request.inputs, tokenizer
+        )
         return result
     except Exception:
         unmount_cache_dit_after_failure(model)

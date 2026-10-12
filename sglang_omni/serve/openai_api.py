@@ -1098,7 +1098,9 @@ def _register_image_generations(app: FastAPI) -> None:
         if response is not None:
             return response
         else:
-            raise HTTPException(status_code=500, detail="SenseNova-U1 returned no result")
+            raise HTTPException(
+                status_code=500, detail="SenseNova-U1 returned no result"
+            )
 
 
 def _register_image_edits(app: FastAPI) -> None:
