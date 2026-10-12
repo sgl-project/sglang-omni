@@ -28,7 +28,7 @@ from tests.test_model.rust_router_config import CiRouterTopology
         ("mmmu_ci", "qwen3_omni_fp8_colocated_server"),
         ("mmmu_talker_ci", "qwen3_omni_bf16_disagg_server"),
         ("mmsu_ci", "qwen3_omni_bf16_colocated_thinker_server"),
-        ("mmsu_talker_ci", "qwen3_omni_fp8_tp2_server"),
+        ("mmsu_talker_ci", "qwen3_omni_mmsu_talker_server"),
         ("videomme_ci", "qwen3_omni_bf16_disagg_server"),
         ("videomme_talker_ci", "qwen3_omni_bf16_disagg_server"),
         ("videoamme_ci", "qwen3_omni_fp8_colocated_server"),
