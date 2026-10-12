@@ -9,7 +9,7 @@ from sglang.srt.layers.sampler import sampling_from_probs_torch
 
 # note (Yucheng Hu): the redraw reusing the first draw's seeded noise would be
 # conditioned on the rejected candidate having won that draw.
-REDRAW_SEED_SALT = 0x2545F491
+COSYVOICE3_RAS_SEED_SALT = 0x2545F491
 
 
 def repetition_aware_redraw(
@@ -34,7 +34,9 @@ def repetition_aware_redraw(
         redraw_probs.sum(dim=1, keepdim=True) > 0, redraw_probs, row_probs
     )
     redraw_seeds = (
-        None if sampling_seeds is None else sampling_seeds[rows] ^ REDRAW_SEED_SALT
+        None
+        if sampling_seeds is None
+        else sampling_seeds[rows] ^ COSYVOICE3_RAS_SEED_SALT
     )
     token_ids = sampled_ids.clone()
     token_ids[rows] = sampling_from_probs_torch(

@@ -147,7 +147,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
-        if not self.uses_mps_ras_fallback(logits_output.next_token_logits):
+        if not self.is_mps_ras_fallback(logits_output.next_token_logits):
             return super().sample_next_token_ids(
                 logits_output,
                 forward_batch,
@@ -235,7 +235,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             pass
         return next_token_ids
 
-    def uses_mps_ras_fallback(self, logits: torch.Tensor) -> bool:
+    def is_mps_ras_fallback(self, logits: torch.Tensor) -> bool:
         """Torch MPS without float64 samples one request and redraws it itself."""
         return (
             logits.device.type == "mps" and not current_platform.is_float64_supported()
@@ -384,7 +384,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         if (
             forward_batch is None
             or not forward_batch.forward_mode.is_decode()
-            or self.uses_mps_ras_fallback(result.next_token_ids)
+            or self.is_mps_ras_fallback(result.next_token_ids)
         ):
             return token_ids
         else:
