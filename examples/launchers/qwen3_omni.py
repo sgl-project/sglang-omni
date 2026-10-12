@@ -269,8 +269,8 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Context length for preprocessing and the thinker stage; the "
-            "checkpoint's thinker context when omitted."
+            "Context length for preprocessing and the thinker stage. Defaults to "
+            "the checkpoint's thinker context."
         ),
     )
     target.add_argument(
@@ -278,8 +278,8 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Context length for the talker_ar stage; the checkpoint's context "
-            "when omitted."
+            "Context length for the talker_ar stage. Defaults to the checkpoint's "
+            "context."
         ),
     )
     _add_qwen_speech_mem_args(target)
