@@ -2,7 +2,7 @@
 """Native relay of unit images and audio from perception into the thinker session."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock, call
+from unittest.mock import AsyncMock, Mock, call
 
 import numpy as np
 import pytest
@@ -10,8 +10,11 @@ import torch
 from PIL import Image
 
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
+    IMAGE_PREFETCH_CLEAR_MODALITY,
+    IMAGE_PREFETCH_MODALITY,
     MiniCPMOPerceptionState,
     PerceptionStepPlan,
+    PreparedImageFeatures,
 )
 from sglang_omni.models.minicpm_o.duplex_sampler import (
     build_forbidden_token_index,
@@ -22,7 +25,10 @@ from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner,
 )
-from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
+from sglang_omni.models.minicpm_o.session_adapters import (
+    MiniCPMORealtimeAdapter,
+    ThinkerAdapter,
+)
 from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
 from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -306,6 +312,240 @@ def test_batched_sessions_keep_vision_and_audio_associated(
     assert torch.equal(
         second_payload.data["input_embeds"][-10:], torch.full((10, 4), 10.0)
     )
+
+
+def test_batched_prefetch_sideband_stays_session_local(
+    perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
+) -> None:
+    second_identity = SessionIdentity("second")
+    second_state = MiniCPMOPerceptionState(
+        tokenizer=perception.tokenizer,
+        processor=perception.processor,
+        audio_encoder=perception.audio_encoder,
+        image_encoder=perception.image_encoder,
+        max_slice_nums=1,
+        mel_filter_bank=perception.mel_filter_bank,
+    )
+    second_state.prepare_audio = Mock(return_value=np.ones(4, dtype=np.float32))
+    second_state.mel_chunk = Mock(return_value=Mock(batch_key=Mock(return_value=())))
+    second_state.finish_audio = Mock()
+    second_state.prepare_image = Mock(return_value=Mock())
+    second_state.encode_images = Mock(return_value=(torch.full((64, 4), 3.0),))
+    second_state.build_step_plan = Mock(return_value={"session": "second"})
+    hooks.states[second_identity] = second_state
+
+    first_prepared_image = Mock()
+    perception.prepare_image.return_value = first_prepared_image
+    first_payload = unit_payload()
+    second_payload = unit_payload()
+    appends = [
+        SessionAppend(
+            chunk=TimedChunk(IMAGE_PREFETCH_MODALITY, 0, 0, 0, b"frame"),
+            payload=first_payload,
+            context=SimpleNamespace(session_identity=IDENTITY),
+        ),
+        SessionAppend(
+            chunk=TimedChunk(
+                "audio", 0, 1000, 0, {"pcm": b"\0\0", "images": [b"frame"]}
+            ),
+            payload=second_payload,
+            context=SimpleNamespace(session_identity=second_identity),
+        ),
+    ]
+
+    assert hooks.append_batch(appends) == [first_payload, second_payload]
+    assert first_payload.data is None
+    assert second_payload.data == {"session": "second"}
+    perception.prepare_image.assert_called_once_with(b"frame")
+    perception.encode_images.assert_not_called()
+    perception.prepare_audio.assert_not_called()
+    perception.mel_chunk.assert_not_called()
+    perception.finish_audio.assert_not_called()
+    second_state.prepare_image.assert_called_once_with(b"frame")
+    second_state.encode_images.assert_called_once_with(
+        (second_state.prepare_image.return_value,)
+    )
+    second_state.prepare_audio.assert_called_once()
+    second_state.finish_audio.assert_called_once_with(None)
+    perception.audio_encoder.forward_streaming_batch.assert_called_once()
+
+
+def test_prefetched_image_hit_skips_normal_preparation(
+    perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
+) -> None:
+    prepared_image = Mock()
+    perception.prepare_image.return_value = prepared_image
+    append_unit(
+        hooks,
+        TimedChunk(IMAGE_PREFETCH_MODALITY, 0, 0, 0, b"frame"),
+        unit_payload(),
+    )
+    assert perception.prepare_image.call_count == 1
+    perception.encode_images.assert_not_called()
+
+    append_unit(
+        hooks,
+        TimedChunk("audio", 0, 1000, 0, {"pcm": b"\0\0", "images": [b"frame"]}),
+        unit_payload(),
+    )
+    perception.prepare_image.assert_called_once_with(b"frame")
+    perception.encode_images.assert_called_once_with((prepared_image,))
+
+
+def test_prefetched_image_miss_uses_synchronous_fallback(
+    perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
+) -> None:
+    prepared_image = Mock()
+    perception.prepare_image.return_value = prepared_image
+
+    append_unit(
+        hooks,
+        TimedChunk("audio", 0, 1000, 0, {"pcm": b"\0\0", "images": [b"frame"]}),
+        unit_payload(),
+    )
+
+    perception.prepare_image.assert_called_once_with(b"frame")
+    perception.encode_images.assert_called_once_with((prepared_image,))
+
+
+def test_prefetched_image_hits_and_misses_preserve_final_frame_order(
+    perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
+) -> None:
+    first_prepared = Mock()
+    middle_prepared = Mock()
+    last_prepared = Mock()
+    perception.prepare_image.side_effect = [middle_prepared]
+    perception.prefetched_images[4] = [
+        (b"first", first_prepared),
+        (b"last", last_prepared),
+    ]
+
+    append_unit(
+        hooks,
+        TimedChunk(
+            "audio",
+            0,
+            1000,
+            4,
+            {"pcm": b"\0\0", "images": [b"first", b"middle", b"last"]},
+        ),
+        unit_payload(),
+    )
+
+    perception.prepare_image.assert_called_once_with(b"middle")
+    perception.encode_images.assert_called_once_with(
+        (first_prepared, middle_prepared, last_prepared)
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("bad frame"),
+        ValueError("bad frame"),
+        Image.DecompressionBombError("big"),
+    ],
+)
+def test_bad_prefetched_image_is_nonfatal(
+    perception: MiniCPMOPerceptionState,
+    hooks: PerceptionHooks,
+    error: Exception,
+) -> None:
+    perception.prepare_image.side_effect = error
+    payload = unit_payload()
+
+    result = append_unit(
+        hooks,
+        TimedChunk(IMAGE_PREFETCH_MODALITY, 0, 0, 0, b"bad"),
+        payload,
+    )
+
+    assert result is payload
+    assert payload.data is None
+    assert perception.prefetched_images == {}
+    perception.encode_images.assert_not_called()
+
+
+def test_prefetch_clear_drops_cached_images(
+    perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
+) -> None:
+    perception.prefetched_images[0] = [(b"frame", Mock())]
+    payload = unit_payload()
+
+    append_unit(
+        hooks,
+        TimedChunk(IMAGE_PREFETCH_CLEAR_MODALITY, 0, 0, 0, None),
+        payload,
+    )
+
+    assert payload.data is None
+    assert perception.prefetched_images == {}
+
+
+def test_late_prefetched_image_is_ignored(
+    perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
+) -> None:
+    perception.next_image_unit_index = 2
+
+    append_unit(
+        hooks,
+        TimedChunk(IMAGE_PREFETCH_MODALITY, 0, 0, 1, b"late"),
+        unit_payload(),
+    )
+
+    perception.prepare_image.assert_not_called()
+    assert perception.prefetched_images == {}
+
+
+def test_close_drops_prefetched_images(perception: MiniCPMOPerceptionState) -> None:
+    perception.prefetched_images[0] = [(b"frame", Mock())]
+
+    perception.close()
+
+    assert perception.prefetched_images == {}
+    assert perception.held().bytes == 0
+
+
+def test_held_counts_prefetched_raw_and_tensor_bytes(
+    perception: MiniCPMOPerceptionState,
+) -> None:
+    prepared_image = PreparedImageFeatures(
+        pixel_values=[torch.zeros((2, 3), dtype=torch.float32)],
+        tgt_sizes=torch.zeros((2, 2), dtype=torch.int32),
+    )
+    perception.prefetched_images[0] = [(b"frame", prepared_image)]
+
+    assert perception.held().bytes == perception.mel_samples.nbytes + 45
+
+
+@pytest.mark.asyncio
+async def test_minicpm_realtime_prefetch_targets_perception_only() -> None:
+    client = Mock()
+    client.append_session_stage = AsyncMock()
+    adapter = MiniCPMORealtimeAdapter(
+        client,
+        stages=["perception", "thinker", "talker", "speech"],
+        request_builder=Mock(),
+        output_converter=Mock(),
+        atomic_consumption=True,
+    )
+    adapter.session_identity = IDENTITY
+
+    await adapter.prefetch_image(3, 300.0, b"frame")
+    await adapter.clear()
+
+    assert client.append_session_stage.await_args_list == [
+        call(
+            IDENTITY,
+            TimedChunk(IMAGE_PREFETCH_MODALITY, 300.0, 0, 3, b"frame"),
+            stage="perception",
+        ),
+        call(
+            IDENTITY,
+            TimedChunk(IMAGE_PREFETCH_CLEAR_MODALITY, 0, 0, 0, None),
+            stage="perception",
+        ),
+    ]
 
 
 @pytest.mark.parametrize("finish", ["complete", "abort"])

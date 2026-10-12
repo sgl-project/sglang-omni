@@ -25,6 +25,9 @@ UNIT_MS = 1000
 FIRST_CHUNK_MS = 1035
 IMAGE_TOKENS = 64
 MAX_FRAME_PIXELS = 4096 * 4096
+IMAGE_PREFETCH_MODALITY = "image_prefetch"
+IMAGE_PREFETCH_CLEAR_MODALITY = "image_prefetch_clear"
+
 # note (Junnan Li): The constants below reproduce the checkpoint's exact streaming mel in its duplex configuration.
 N_FFT = 400
 HOP_LENGTH = 160
@@ -183,6 +186,10 @@ class MiniCPMOPerceptionState:
     window_start_frame: int = 0
     unit_token_id: int = field(init=False)
     image_marker_ids: dict[str, int] = field(init=False)
+    prefetched_images: dict[int, list[tuple[bytes, PreparedImageFeatures]]] = field(
+        default_factory=dict
+    )
+    next_image_unit_index: int = 0
     is_open: bool = True
 
     def __post_init__(self) -> None:
@@ -241,6 +248,38 @@ class MiniCPMOPerceptionState:
         self.mel_samples = np.zeros(0, dtype=np.float32)
         self.audio_encoder_state = None
         self.prefix_embeds = None
+        self.prefetched_images.clear()
+
+    def take_prefetched_image(
+        self, unit_index: int, encoded_image: bytes
+    ) -> PreparedImageFeatures | None:
+        prefetched_images = self.prefetched_images.get(unit_index, [])
+        for image_index, (cached_image, prepared_image) in enumerate(prefetched_images):
+            if cached_image == encoded_image:
+                prefetched_images.pop(image_index)
+                if prefetched_images:
+                    pass
+                else:
+                    self.prefetched_images.pop(unit_index, None)
+                return prepared_image
+            else:
+                pass
+        return None
+
+    def finish_image_unit(self, unit_index: int) -> None:
+        self.next_image_unit_index = max(self.next_image_unit_index, unit_index + 1)
+        self.prefetched_images.pop(unit_index, None)
+
+    def prepared_image_nbytes(
+        self, prepared_image_features: PreparedImageFeatures
+    ) -> int:
+        return sum(
+            pixel_value.numel() * pixel_value.element_size()
+            for pixel_value in prepared_image_features.pixel_values
+        ) + (
+            prepared_image_features.tgt_sizes.numel()
+            * prepared_image_features.tgt_sizes.element_size()
+        )
 
     def held(self) -> ResourceUsage:
         if not self.is_open:
@@ -255,6 +294,12 @@ class MiniCPMOPerceptionState:
                     else 0
                 )
                 + estimate_cache_bytes(self.prefix_embeds)
+                + sum(
+                    len(encoded_image)
+                    + self.prepared_image_nbytes(prepared_image_features)
+                    for prefetched_images in self.prefetched_images.values()
+                    for encoded_image, prepared_image_features in prefetched_images
+                )
             )
             return ResourceUsage(slots={"perception": 1}, bytes=max(size, 1))
 

@@ -262,6 +262,35 @@ class CoordinatorSessions:
         session.wake.set()
         return chunk.seq
 
+    async def append_session_stage(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        stage: str,
+    ) -> None:
+        """Append a side operation to one owned stage of a session route."""
+        session = self.get_session(session_identity)
+        if session.is_closing or session.is_closed:
+            raise RuntimeError("session is closing")
+        else:
+            pass
+        owner = next(
+            (
+                session_stage
+                for session_stage in session.stages
+                if self.replica_topology.logical_name(session_stage) == stage
+            ),
+            None,
+        )
+        if owner is None:
+            raise ValueError(f"stage {stage!r} is not part of the session route")
+        else:
+            pass
+        await self.session_operation(
+            session, "append", owner=owner, chunk=chunk, close_on_error=False
+        )
+
     async def session_outputs(
         self, session_identity: SessionIdentity
     ) -> AsyncIterator[OutputChunk]:
@@ -365,12 +394,22 @@ class CoordinatorSessions:
         *,
         owner: str | None = None,
         chunk: TimedChunk | None = None,
+        close_on_error: bool = True,
     ) -> None:
         session_identity = session.session_identity
+        operation_stages = session.stages
+        if operation == "append" and owner is not None:
+            try:
+                owner_index = session.stages.index(owner)
+            except ValueError as exc:
+                raise ValueError("session operation owner is not in the route") from exc
+            operation_stages = session.stages[: owner_index + 1]
+        else:
+            pass
         session_operation = SessionOperation(
             operation=operation,
             session_identity=session_identity,
-            stages=session.stages,
+            stages=operation_stages,
             chunk=chunk,
         )
         request = replace(
@@ -418,11 +457,17 @@ class CoordinatorSessions:
             else:
                 await asyncio.wait_for(run(), session.limits.operation_timeout_s)
         except asyncio.TimeoutError as exc:
-            self.begin_session_close(session)
+            if close_on_error:
+                self.begin_session_close(session)
+            else:
+                pass
             raise TimeoutError(f"session {operation} timed out") from exc
         except BaseException:
             # Note (Junnan Li): Request abort can yield before the pump sees this fatal failure.
-            self.begin_session_close(session)
+            if close_on_error:
+                self.begin_session_close(session)
+            else:
+                pass
             raise
         finally:
             self.session_stream_handlers.pop(request_id, None)

@@ -8,7 +8,7 @@ from typing import Literal
 import pytest
 
 from sglang_omni.pipeline.sessions import Session
-from sglang_omni.proto import OmniRequest
+from sglang_omni.proto import OmniRequest, SubmitMessage
 from sglang_omni.proto.session import TimedChunk, find_session_operation
 from tests.unit_test.fixtures.session_pipeline import chunk, event_log, pipeline
 
@@ -204,6 +204,76 @@ async def test_append_visits_owners_in_route_order(linear_triple) -> None:
     assert output_chunk.kind == "data"
     await outputs.aclose()
     assert append_owners(events) == ["source", "middle", "sink"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_stage_local_append_stops_at_requested_owner(linear_pair) -> None:
+    coordinator, events, _ = linear_pair
+    session_identity = await coordinator.open_session(
+        OmniRequest(None), stages=["source", "sink"]
+    )
+    await coordinator.append_session_stage(
+        session_identity,
+        TimedChunk("image_prefetch", 0, 0, 0, b"frame"),
+        stage="source",
+    )
+    assert append_owners(events) == ["source"]
+    with pytest.raises(ValueError, match="not part of the session route"):
+        await coordinator.append_session_stage(
+            session_identity,
+            TimedChunk("image_prefetch", 0, 0, 1, b"frame"),
+            stage="missing",
+        )
+    await coordinator.close_session(session_identity)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_stage_local_append_failure_does_not_close_session(
+    linear_pair, monkeypatch
+) -> None:
+    coordinator, _, _ = linear_pair
+    original_submit = coordinator.control_plane.submit_to_stage
+    failed = False
+
+    async def submit(stage: str, endpoint: str, message: SubmitMessage) -> None:
+        nonlocal failed
+        session_operation = find_session_operation(message.data.request.metadata)
+        if (
+            not failed
+            and session_operation is not None
+            and session_operation.operation == "append"
+            and session_operation.chunk is not None
+            and session_operation.chunk.modality == "image_prefetch"
+        ):
+            failed = True
+            raise RuntimeError("injected stage-local failure")
+        else:
+            pass
+        return await original_submit(stage, endpoint, message)
+
+    monkeypatch.setattr(coordinator.control_plane, "submit_to_stage", submit)
+    session_identity = await coordinator.open_session(
+        OmniRequest(None), stages=["source", "sink"]
+    )
+    outputs = coordinator.session_outputs(session_identity)
+    try:
+        with pytest.raises(RuntimeError, match="injected stage-local failure"):
+            await coordinator.append_session_stage(
+                session_identity,
+                TimedChunk("image_prefetch", 0, 0, 0, b"frame"),
+                stage="source",
+            )
+        session = coordinator.sessions[session_identity.id]
+        assert not session.is_closing
+        assert not session.is_closed
+
+        await coordinator.append_session(session_identity, chunk(0, eos=True))
+        data = await asyncio.wait_for(anext(outputs), STAGE_REPLY_TIMEOUT_S)
+        receipt = await asyncio.wait_for(anext(outputs), STAGE_REPLY_TIMEOUT_S)
+        assert data.kind == "data"
+        assert receipt.kind == "input_done" and receipt.eos
+    finally:
+        await outputs.aclose()
 
 
 @pytest.mark.asyncio(loop_scope="session")

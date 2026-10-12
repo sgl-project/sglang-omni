@@ -1494,9 +1494,10 @@ class Stage:
             index = owners.index(self.name)
             if index + 1 < len(owners):
                 expected = self.logical_source(owners[index + 1])
+                actual = self.get_next(request_id, result)
             else:
                 expected = None
-            actual = self.get_next(request_id, result)
+                actual = None
             if isinstance(actual, list) and len(actual) == 1:
                 actual_target = actual[0]
             else:

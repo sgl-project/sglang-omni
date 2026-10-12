@@ -10,6 +10,8 @@ from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
+    IMAGE_PREFETCH_CLEAR_MODALITY,
+    IMAGE_PREFETCH_MODALITY,
     SAMPLE_RATE,
     UNIT_MS,
     PerceptionStepPlan,
@@ -42,6 +44,25 @@ from sglang_omni.serve.realtime.output import (
     TextFinished,
 )
 from sglang_omni.serve.realtime.types import Capabilities
+
+
+class MiniCPMORealtimeAdapter(CoordinatorAdapter):
+    async def prefetch_image(self, unit_index: int, t_ms: float, image: bytes) -> None:
+        assert self.session_identity is not None
+        await self.client.append_session_stage(
+            self.session_identity,
+            TimedChunk(IMAGE_PREFETCH_MODALITY, t_ms, 0, unit_index, image),
+            stage="perception",
+        )
+
+    async def clear(self) -> int:
+        assert self.session_identity is not None
+        await self.client.append_session_stage(
+            self.session_identity,
+            TimedChunk(IMAGE_PREFETCH_CLEAR_MODALITY, 0, 0, 0, None),
+            stage="perception",
+        )
+        return 0
 
 
 class ThinkerAdapter(ARSessionAdapter):
@@ -215,8 +236,8 @@ def build_realtime_deployment(
     client: Client, config: MiniCPMODuplexPipelineConfig
 ) -> RealtimeDeployment:
 
-    def factory() -> CoordinatorAdapter:
-        return CoordinatorAdapter(
+    def factory() -> MiniCPMORealtimeAdapter:
+        return MiniCPMORealtimeAdapter(
             client,
             stages=["perception", "thinker", "talker", "speech"],
             request_builder=lambda session: OmniRequest(

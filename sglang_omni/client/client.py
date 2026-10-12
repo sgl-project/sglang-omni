@@ -137,6 +137,17 @@ class Client:
     ) -> int:
         return await self.coordinator.append_session(session_identity, chunk)
 
+    async def append_session_stage(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        stage: str,
+    ) -> None:
+        await self.coordinator.append_session_stage(
+            session_identity, chunk, stage=stage
+        )
+
     def session_outputs(
         self, session_identity: SessionIdentity
     ) -> AsyncIterator[OutputChunk]:

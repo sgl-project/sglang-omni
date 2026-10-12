@@ -62,6 +62,37 @@ class GatedAdapter(InteractionAdapter):
         pass
 
 
+class GatedPrefetchAdapter(GatedAdapter):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.prefetch_started = asyncio.Event()
+        self.prefetch_release = asyncio.Event()
+        self.prefetch_finished = asyncio.Event()
+        self.prefetch_cancelled = asyncio.Event()
+        self.clear_started = asyncio.Event()
+        self.prefetched: list[tuple[int, float, bytes]] = []
+        self.calls: list[str] = []
+
+    async def prefetch_image(self, unit_index: int, t_ms: float, image: bytes) -> None:
+        self.prefetch_started.set()
+        try:
+            await self.prefetch_release.wait()
+        except asyncio.CancelledError:
+            self.prefetch_cancelled.set()
+            raise
+        self.prefetched.append((unit_index, t_ms, image))
+        self.calls.append("prefetch")
+        self.prefetch_finished.set()
+
+    async def clear(self) -> int:
+        self.calls.append("clear")
+        self.clear_started.set()
+        return 0
+
+    async def close(self) -> None:
+        self.calls.append("close")
+
+
 async def open_runtime(adapter: GatedAdapter) -> SessionRuntime:
     runtime = SessionRuntime(
         MODEL_NAME, Capabilities(), lambda: adapter, RuntimeLimits()
@@ -95,10 +126,72 @@ async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> No
     adapter.release.set()
     drained = (await receive_until(runtime, Drained))[-1].event
     await runtime.close("client_closed")
-
     assert [unit.eos for unit in adapter.units] == [False, False, True]
     assert isinstance(drained, Drained)
     assert (drained.accepted_end_ms, drained.consumed_ms) == (60.0, 60.0)
+
+
+@pytest.mark.asyncio
+async def test_image_append_schedules_prefetch_without_waiting() -> None:
+    adapter = GatedPrefetchAdapter()
+    runtime = await open_image_runtime(adapter)
+    image = b"\xff\xd8frame"
+
+    await asyncio.wait_for(runtime.append_image(image, 0.0, "frame"), 1)
+    assert runtime.pending_frames == {0: [(0.0, image)]}
+    await asyncio.wait_for(adapter.prefetch_started.wait(), 1)
+    assert not adapter.prefetch_finished.is_set()
+
+    adapter.prefetch_release.set()
+    await asyncio.wait_for(adapter.prefetch_finished.wait(), 1)
+    assert adapter.prefetched == [(0, 0.0, image)]
+    await runtime.close("client_closed")
+
+
+async def open_image_runtime(adapter: GatedPrefetchAdapter) -> SessionRuntime:
+    runtime = SessionRuntime(
+        MODEL_NAME,
+        Capabilities(input_modalities=("audio", "image")),
+        lambda: adapter,
+        RuntimeLimits(),
+    )
+    await runtime.update({}, "client_update")
+    return runtime
+
+
+@pytest.mark.asyncio
+async def test_clear_waits_for_inflight_image_prefetch() -> None:
+    adapter = GatedPrefetchAdapter()
+    runtime = await open_image_runtime(adapter)
+    await runtime.append_image(b"\xff\xd8frame", 0.0, "frame")
+    await asyncio.wait_for(adapter.prefetch_started.wait(), 1)
+
+    clear_task = asyncio.create_task(runtime.clear("client_clear"))
+    await asyncio.sleep(0)
+    assert not clear_task.done()
+    assert not adapter.clear_started.is_set()
+
+    adapter.prefetch_release.set()
+    await asyncio.wait_for(clear_task, 1)
+    assert runtime.pending_frames == {}
+    assert adapter.calls == ["prefetch", "clear"]
+
+    await runtime.close("client_closed")
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_inflight_image_prefetch() -> None:
+    adapter = GatedPrefetchAdapter()
+    runtime = await open_image_runtime(adapter)
+    await runtime.append_image(b"\xff\xd8frame", 0.0, "frame")
+    await asyncio.wait_for(adapter.prefetch_started.wait(), 1)
+
+    await runtime.close("client_closed")
+
+    assert adapter.prefetch_cancelled.is_set()
+    assert runtime.image_prefetch_tasks == set()
+    assert runtime.state == "CLOSED"
+    assert adapter.calls == ["close"]
 
 
 @pytest.mark.asyncio

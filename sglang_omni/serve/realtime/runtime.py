@@ -78,6 +78,7 @@ class SessionRuntime:
         self.padding_samples = 0
         self.pending_pcm = bytearray()
         self.pending_frames: dict[int, list[tuple[float, bytes]]] = {}
+        self.image_prefetch_tasks: set[asyncio.Task[None]] = set()
         self.next_unit_index = 0
         self.is_input_ended = False
         self.end_event_id: str | None = None
@@ -274,11 +275,41 @@ class SessionRuntime:
             else:
                 self.pending_frames.setdefault(unit_index, []).append((t_ms, image))
                 self.notify(ImageAccepted(f"unit_{unit_index}", event_id))
+                self.schedule_image_prefetch(unit_index, t_ms, image)
+
+    def schedule_image_prefetch(
+        self, unit_index: int, t_ms: float, image: bytes
+    ) -> None:
+        task = asyncio.create_task(self.run_image_prefetch(unit_index, t_ms, image))
+        self.image_prefetch_tasks.add(task)
+        task.add_done_callback(self.image_prefetch_task_done)
+
+    async def run_image_prefetch(
+        self, unit_index: int, t_ms: float, image: bytes
+    ) -> None:
+        assert self.adapter is not None
+        try:
+            await self.adapter.prefetch_image(unit_index, t_ms, image)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                f"Realtime image prefetch failed for {self.session_id} "
+                f"unit={unit_index}: {exc}",
+                exc_info=True,
+            )
+
+    def image_prefetch_task_done(self, task: asyncio.Task[None]) -> None:
+        self.image_prefetch_tasks.discard(task)
 
     async def clear(self, event_id: str) -> None:
         async with self.command_lock:
             self.require_open()
             assert self.adapter is not None
+            if self.image_prefetch_tasks:
+                await asyncio.gather(*self.image_prefetch_tasks, return_exceptions=True)
+            else:
+                pass
             cleared_samples = self.pending_samples + await self.adapter.clear()
             self.pending_pcm.clear()
             self.pending_frames.clear()
@@ -450,6 +481,12 @@ class SessionRuntime:
         self.pending_pcm.clear()
         self.input_ready.set()
         cleanup_error: Exception | None = None
+        try:
+            await cancel_local_tasks(
+                self.image_prefetch_tasks, self.limits.cleanup_timeout_s
+            )
+        except Exception as exc:
+            cleanup_error = exc
         try:
             if self.adapter is not None:
                 await asyncio.wait_for(

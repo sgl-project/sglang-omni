@@ -190,6 +190,9 @@ class InteractionAdapter:
     async def process(self, unit: Unit) -> int | tuple[int, int]:
         raise NotImplementedError
 
+    async def prefetch_image(self, unit_index: int, t_ms: float, image: bytes) -> None:
+        pass
+
     async def clear(self) -> int:
         return 0
 
