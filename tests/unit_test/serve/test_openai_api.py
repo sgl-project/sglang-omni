@@ -3385,15 +3385,33 @@ def test_transcription_endpoint_returns_text_json() -> None:
             "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
             400,
         ),
+        ("video_fps must be positive and finite", 400),
+        ("video_max_frames must be positive", 400),
+        ("Video pixel budgets must be positive", 400),
+        ("Video minimum pixel budget exceeds maximum budget", 400),
+        ("Video input has invalid duration or frame rate", 400),
+        ("MiniCPM-o video stack_frames currently supports only 1", 400),
+        ("MiniCPM-o video inputs must be frame images or a pixel tensor", 400),
+        ("MiniCPM-o video inputs must have shape (T, C, H, W), got (3, 64, 64)", 400),
+        (
+            "MiniCPM-o video frames must have 1, 3, or 4 channels, got (1, 2, 64, 64)",
+            400,
+        ),
+        ("video_url requires a media URL", 400),
         ("Failed to extract embedded audio from /tmp/video.mp4: out of memory", 500),
         (
             "Failed to extract embedded audio from /tmp/video.mp4: permission denied",
             500,
         ),
+        (
+            "MiniCPM-o timed video input requires decord==0.6.0; "
+            "its prebuilt Linux wheel supports x86_64 only",
+            500,
+        ),
     ],
 )
 @pytest.mark.parametrize("stream", [False, True])
-def test_chat_endpoint_classifies_embedded_audio_errors(
+def test_chat_endpoint_classifies_video_media_errors(
     error: str, expected_status: int, stream: bool
 ) -> None:
     client = TestClient(create_app(fault_client("qwen3-omni", error=error)))
