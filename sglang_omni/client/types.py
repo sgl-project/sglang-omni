@@ -17,8 +17,17 @@ class TokenUsageDict(TypedDict):
 
 class UsageInfoDict(TokenUsageDict, total=False):
     engine_time_s: float
-    prompt_tokens_details: dict[str, int]
-    reasoning_tokens: int
+
+
+class ImageInputTokensDetailsDict(TypedDict):
+    text_tokens: int | None
+    image_tokens: int
+
+
+class ImageUsageDict(TypedDict, total=False):
+    input_tokens: int
+    total_tokens: int
+    input_tokens_details: ImageInputTokensDetailsDict
 
 
 # note (Yucheng Hu): finish reason reported on speech surfaces when the model
@@ -46,7 +55,6 @@ class UsageInfo:
     total_tokens: int | None = None
     engine_time_s: float | None = None
     prompt_tokens_details: dict[str, int] | None = None
-    reasoning_tokens: int | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object] | None) -> "UsageInfo | None":
@@ -60,7 +68,6 @@ class UsageInfo:
             total_tokens=data.get("total_tokens"),
             engine_time_s=data.get("engine_time_s"),
             prompt_tokens_details=data.get("prompt_tokens_details"),
-            reasoning_tokens=data.get("reasoning_tokens"),
         )
 
     def to_dict(self) -> UsageInfoDict:
@@ -73,10 +80,6 @@ class UsageInfo:
             d["engine_time_s"] = self.engine_time_s
         else:
             pass
-        if self.prompt_tokens_details is not None:
-            d["prompt_tokens_details"] = dict(self.prompt_tokens_details)
-        if self.reasoning_tokens is not None:
-            d["reasoning_tokens"] = self.reasoning_tokens
         return d
 
 
@@ -175,6 +178,7 @@ class GenerateChunk:
     language: str | None = None
     audio_data: object = None
     sample_rate: int | None = None
+    image_usage: ImageUsageDict | None = None
 
     @property
     def reported_finish_reason(self) -> str:
@@ -202,6 +206,7 @@ class GenerateChunk:
             "language": self.language,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
+            "image_usage": self.image_usage,
         }
 
 

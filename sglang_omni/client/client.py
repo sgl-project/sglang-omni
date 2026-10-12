@@ -122,6 +122,8 @@ class Client:
         omni_request = self.build_omni_request(request)
         if self.request_metrics is not None:
             omni_request.metadata["omni_metrics_enabled"] = True
+        else:
+            pass
         if request.stream:
             coordinator_stream = self.coordinator.stream(req_id, omni_request)
             async with aclosing(coordinator_stream):
@@ -160,7 +162,6 @@ class Client:
         audio_chunks: list[object] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
-        final_usage: UsageInfo | None = None
         finish_reason: str | None = None
         logprobs_parts: list[list[float | int]] = []
         saw_output_token_logprobs = False
@@ -170,8 +171,6 @@ class Client:
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
-            if chunk.usage is not None:
-                final_usage = chunk.usage
             if chunk.text:
                 text_parts.append(chunk.text)
             else:
@@ -239,7 +238,7 @@ class Client:
             text=full_text,
             audio=audio,
             finish_reason=finish_reason or "stop",
-            usage=final_usage,
+            usage=last_chunk.usage,
             output_token_logprobs=(
                 logprobs_parts if saw_output_token_logprobs else None
             ),
@@ -321,7 +320,6 @@ class Client:
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         extra_params = dict(request.extra_params)
-        final_usage: UsageInfo | None = None
         extra_params.pop("stream", None)
         request = replace(request, stream=False, extra_params=extra_params)
 
@@ -335,8 +333,6 @@ class Client:
             else:
                 pass
             last_chunk = chunk
-            if chunk.usage is not None:
-                final_usage = chunk.usage
 
         if not audio_chunks:
             raise ClientError("No audio output generated from the pipeline.")
@@ -379,7 +375,7 @@ class Client:
             mime_type=mime_type,
             format=actual_format,
             sample_rate=sample_rate,
-            usage=final_usage,
+            usage=last_chunk.usage if last_chunk else None,
             finish_reason=(
                 (last_chunk.reported_finish_reason or UNKNOWN_FINISH_REASON)
                 if last_chunk
@@ -588,12 +584,15 @@ class Client:
             usage["engine_time_s"] = data.get("engine_time_s")
         else:
             pass
-        for key in ("prompt_tokens_details", "reasoning_tokens"):
-            if key not in usage and data.get(key) is not None:
-                usage[key] = data[key]
-        cached_tokens = usage.get("cached_tokens", data.get("cached_tokens"))
-        if "prompt_tokens_details" not in usage and cached_tokens is not None:
-            usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+        details = usage.get("prompt_tokens_details", data.get("prompt_tokens_details"))
+        if details is not None:
+            usage["prompt_tokens_details"] = details
+        else:
+            cached_tokens = usage.get("cached_tokens", data.get("cached_tokens"))
+            if cached_tokens is not None:
+                usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+            else:
+                pass
         return UsageInfo.from_dict(usage)
 
     @staticmethod
@@ -737,6 +736,7 @@ class Client:
                 pass
             Client.set_audio_data(chunk, result)
             chunk.usage = Client.build_usage_info(result)
+            chunk.image_usage = result.get("image_usage")
             return chunk
         else:
             pass

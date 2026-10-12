@@ -1,17 +1,16 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""SenseNova Images compatibility check, NOT acceptance of Chat/usage features."""
+"""Verify SenseNova Images responses and input-token usage contracts."""
 
 import argparse
 import base64
 import io
 import json
 import os
-from pathlib import Path
 import time
 import urllib.error
 import urllib.request
 import uuid
+from pathlib import Path
 
 from PIL import Image
 
@@ -38,8 +37,8 @@ def main():
     out = args.out_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
     summary = {
-        "scope": "SenseNova Images compatibility only",
-        "response_usage_acceptance": "NOT_COVERED",
+        "scope": "SenseNova Images response and usage; not tokenizer ground truth",
+        "not_covered": ["Chat usage", "performance benchmarks", "image edit quality"],
         "results": [],
     }
 
@@ -67,7 +66,23 @@ def main():
                 isinstance(images, list) and len(images) == expected_count
             ), "Unexpected image count"
             width, height = map(int, args.size.split("x"))
+            usage = data.get("usage")
+            assert isinstance(usage, dict), "Missing Images usage"
+            details = usage.get("input_tokens_details")
+            assert isinstance(details, dict), "Missing input_tokens_details"
+            for key in ("text_tokens", "image_tokens"):
+                value = details.get(key)
+                assert type(value) is int and value >= 0, f"Invalid {key}"
+            assert usage.get("input_tokens") == details["text_tokens"]
+            assert usage.get("total_tokens") == details["text_tokens"]
+            assert usage.get("image_count") == expected_count
+            assert (usage.get("width"), usage.get("height")) == (width, height)
+            if name == "t2i":
+                assert details["image_tokens"] == 0
+            else:
+                assert details["image_tokens"] > 0
             for index, item in enumerate(images):
+                assert item.get("output_format") == "png", "Missing PNG output_format"
                 png = base64.b64decode(item["b64_json"], validate=True)
                 with Image.open(io.BytesIO(png)) as image:
                     image.load()
@@ -82,7 +97,7 @@ def main():
         except urllib.error.HTTPError as error:
             record["http_status"] = error.code
             record["error"] = error.read().decode("utf-8", errors="replace")[:4000]
-        except Exception as error:
+        except (AssertionError, OSError, ValueError, TypeError, KeyError) as error:
             record["error"] = str(error)
         record["client_e2e_seconds"] = time.monotonic() - started
         summary["results"].append(record)
@@ -109,7 +124,7 @@ def main():
         boundary = "omni-" + uuid.uuid4().hex
         fields = dict(
             payload,
-            n=1,
+            n=args.n,
             img_cfg_scale=1.0,
             prompt="Keep the subject, composition and lighting unchanged. Make the background light blue.",
         )
@@ -130,11 +145,12 @@ def main():
             "/v1/images/edits",
             b"".join(parts),
             f"multipart/form-data; boundary={boundary}",
-            1,
+            args.n,
         )
     summary["images_regression_passed"] = all(
         result["passed"] for result in summary["results"]
     )
+    summary["passed"] = summary["images_regression_passed"]
     (out / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )

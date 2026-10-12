@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """Run native Linux model-free metrics regression without platform mocks."""
 

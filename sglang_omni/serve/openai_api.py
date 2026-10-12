@@ -345,6 +345,8 @@ def create_app(
         client.request_metrics = app.state.request_metrics
         if getattr(client, "coordinator", None) is not None:
             client.coordinator.request_metrics = app.state.request_metrics
+        else:
+            pass
         app.add_middleware(MetricsMiddleware, metrics=app.state.request_metrics)
 
         @app.get("/metrics", include_in_schema=False)
@@ -359,6 +361,8 @@ def create_app(
                 headers={"Content-Type": CONTENT_TYPE_LATEST},
             )
 
+    else:
+        pass
     return app
 
 
@@ -862,8 +866,6 @@ async def chat_non_stream(
             prompt_tokens=result.usage.prompt_tokens or 0,
             completion_tokens=result.usage.completion_tokens or 0,
             total_tokens=result.usage.total_tokens or 0,
-            prompt_tokens_details=result.usage.prompt_tokens_details,
-            reasoning_tokens=result.usage.reasoning_tokens,
         )
     else:
         pass
@@ -956,19 +958,19 @@ async def chat_stream_events(
     )
     async with aclosing(chunk_stream):
         async for chunk in chunk_stream:
-            if chunk.usage is not None:
-                final_usage = UsageResponse(
-                    prompt_tokens=chunk.usage.prompt_tokens or 0,
-                    completion_tokens=chunk.usage.completion_tokens or 0,
-                    total_tokens=chunk.usage.total_tokens or 0,
-                    prompt_tokens_details=chunk.usage.prompt_tokens_details,
-                    reasoning_tokens=chunk.usage.reasoning_tokens,
-                )
             # Capture finish info for the dedicated finish chunk after the loop.
             # Some pipelines only emit a final aggregate chunk; do not drop its
             # text/audio just because it already carries a finish reason.
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
+                if chunk.usage is not None:
+                    final_usage = UsageResponse(
+                        prompt_tokens=chunk.usage.prompt_tokens or 0,
+                        completion_tokens=chunk.usage.completion_tokens or 0,
+                        total_tokens=chunk.usage.total_tokens or 0,
+                    )
+                else:
+                    pass
                 has_payload = (
                     chunk.modality == "text"
                     and bool(chunk.text)
@@ -1056,22 +1058,12 @@ async def chat_stream_events(
                 finish_reason=finish_reason or "stop",
             )
         ],
-        usage=final_usage if req.stream_options is None else None,
+        usage=final_usage,
     )
     data = finish_resp.model_dump(exclude_none=True)
     for choice in data.get("choices", []):
         choice.setdefault("finish_reason", None)
     yield f"data: {json.dumps(data)}\n\n"
-
-    if req.stream_options is not None and req.stream_options.include_usage:
-        usage_resp = ChatCompletionStreamResponse(
-            id=response_id,
-            created=created,
-            model=model,
-            choices=[],
-            usage=final_usage,
-        )
-        yield f"data: {json.dumps(usage_resp.model_dump())}\n\n"
 
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
@@ -1439,11 +1431,6 @@ def build_generate_response(
         finish_reason=finish_reason,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        cached_tokens=(
-            usage.prompt_tokens_details.get("cached_tokens", 0)
-            if usage is not None and usage.prompt_tokens_details is not None
-            else 0
-        ),
         weight_version=result.weight_version,
         request_metadata=req.metadata,
         output_token_logprobs=(
