@@ -54,6 +54,48 @@ def test_failed_scheduler_scrape_is_not_successful():
     assert TestClient(app).get("/metrics").status_code == 503
 
 
+def test_backend_histogram_is_visible_on_http_scrape():
+    class BackendClient:
+        async def admin(self, *args, **kwargs):
+            return {
+                "success": True,
+                "results": [
+                    {
+                        "success": True,
+                        "stage": "decode",
+                        "data": {
+                            "num_running_reqs": 0,
+                            "num_queue_reqs": 0,
+                            "backend_metrics": [
+                                {
+                                    "name": "sglang:per_stage_req_latency_seconds",
+                                    "documentation": "Backend latency",
+                                    "type": "histogram",
+                                    "samples": [
+                                        {
+                                            "name": "sglang:per_stage_req_latency_seconds_bucket",
+                                            "labels": {
+                                                "stage": "prefill_waiting",
+                                                "le": "+Inf",
+                                            },
+                                            "value": 2,
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+
+    app = create_app(BackendClient(), model_name="test", enable_metrics=True)
+    response = TestClient(app).get("/metrics")
+    assert response.status_code == 200
+    assert 'omni_stage="decode"' in response.text
+    assert 'stage="prefill_waiting"' in response.text
+    assert "sglang:per_stage_req_latency_seconds_bucket{" in response.text
+
+
 def test_unmatched_paths_do_not_become_labels():
     app = create_app(MetricsClient(), enable_metrics=True)
     client = TestClient(app)

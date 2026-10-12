@@ -2,11 +2,55 @@
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_queue_batch_and_compute_events(monkeypatch, fails):
+    def compute(payload):
+        if fails:
+            raise ValueError("failed")
+        return payload
+
+    scheduler = SimpleScheduler(compute)
+    clock = iter([1, 3, 8])
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.simple_scheduler.time.perf_counter",
+        lambda: next(clock),
+    )
+    payload = SimpleNamespace(
+        request=SimpleNamespace(metadata={"omni_metrics_enabled": True})
+    )
+    scheduler.enqueue(IncomingMessage("r", "new_request", payload))
+    loop = asyncio.new_event_loop()
+    try:
+        if fails:
+            with pytest.raises(ValueError):
+                scheduler.run_single(scheduler.next_message(), loop)
+        else:
+            scheduler.run_single(scheduler.next_message(), loop)
+    finally:
+        loop.close()
+    events = []
+    while not scheduler.outbox.empty():
+        event = scheduler.outbox.get_nowait()
+        if event.type == "metrics":
+            events.append(event.data)
+    assert events == [
+        {"event": "queue", "duration": 2},
+        {"event": "batch", "size": 1},
+        {
+            "event": "execution",
+            "duration": 5,
+            "outcome": "error" if fails else "completed",
+        },
+    ]
+    assert not scheduler.metrics_started
 
 
 def test_concurrent_workers_report_actual_running_requests():

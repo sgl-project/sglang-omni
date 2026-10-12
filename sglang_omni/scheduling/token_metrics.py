@@ -4,6 +4,38 @@
 from sglang_omni.scheduling.message import OutgoingMessage
 
 
+def batch_metrics_messages(reqs, *, is_entry_rank: bool, now: float):
+    if not is_entry_rank:
+        return []
+    tracked = []
+    messages = []
+    for req in reqs:
+        payload = getattr(getattr(req, "omni_data", None), "stage_payload", None)
+        if payload is None or not payload.request.metadata.get("omni_metrics_enabled"):
+            continue
+        tracked.append(req)
+        stats = getattr(req, "time_stats", None)
+        queued = getattr(stats, "wait_queue_entry_time", 0)
+        if queued > 0 and not getattr(req, "_omni_queue_metrics_reported", False):
+            req._omni_queue_metrics_reported = True
+            messages.append(
+                OutgoingMessage(
+                    request_id=req.rid,
+                    type="metrics",
+                    data={"event": "queue", "duration": max(0, now - queued)},
+                )
+            )
+    if tracked:
+        messages.append(
+            OutgoingMessage(
+                request_id=tracked[0].rid,
+                type="metrics",
+                data={"event": "batch", "size": len(reqs)},
+            )
+        )
+    return messages
+
+
 def token_metrics_message(req, *, is_entry_rank: bool, aborted: bool):
     payload = getattr(getattr(req, "omni_data", None), "stage_payload", None)
     if (

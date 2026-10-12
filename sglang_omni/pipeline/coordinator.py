@@ -893,6 +893,9 @@ class Coordinator(CoordinatorSessions):
         if msg.modality == "metrics":
             metrics = getattr(self, "request_metrics", None)
             if metrics is not None:
+                if "event" in msg.chunk:
+                    metrics.observe_scheduler_event(msg.from_stage, msg.chunk)
+                    return
                 metrics.observe_tokens(
                     request_id,
                     msg.from_stage,

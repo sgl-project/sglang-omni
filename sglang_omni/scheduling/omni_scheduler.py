@@ -90,7 +90,10 @@ from sglang_omni.scheduling.sglang_backend.ar_session import (
     is_close_request,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-from sglang_omni.scheduling.token_metrics import token_metrics_message
+from sglang_omni.scheduling.token_metrics import (
+    batch_metrics_messages,
+    token_metrics_message,
+)
 from sglang_omni.scheduling.types import (
     ARRequestData,
     DeferredAdmission,
@@ -1971,6 +1974,10 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def stamp_batch_launch(self, batch) -> None:
         """Mirror upstream per-forward bookkeeping for custom runner paths."""
+        for message in batch_metrics_messages(
+            batch.reqs, is_entry_rank=self.is_entry_rank, now=time.perf_counter()
+        ):
+            self.outbox.put(message)
         self.forward_ct += 1
         batch.forward_iter = self.forward_ct
         batch.launch_ts = time.monotonic()
@@ -2685,7 +2692,12 @@ class OmniScheduler(Generic[RequestDataT]):
             "data": {"skipped": True, "unsupported": True},
         }
 
-    def metrics_snapshot(self) -> dict[str, int]:
+    def metrics_snapshot(self) -> dict[str, object]:
+        from sglang_omni.scheduling.metrics_snapshot import (
+            backend_metrics_snapshot,
+            engine_metrics_snapshot,
+        )
+
         with self.request_admission_lock:
             running = {
                 req.rid
@@ -2697,6 +2709,8 @@ class OmniScheduler(Generic[RequestDataT]):
             return {
                 "num_running_reqs": len(running),
                 "num_queue_reqs": len(self.waiting_queue),
+                "engine_gauges": engine_metrics_snapshot(self),
+                "backend_metrics": backend_metrics_snapshot(self),
             }
 
     def admin_model_info(self) -> AdminActionResult:

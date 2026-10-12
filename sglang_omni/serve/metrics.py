@@ -11,6 +11,9 @@ from contextlib import aclosing
 from dataclasses import dataclass
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+from prometheus_client.core import Metric
+
+from sglang_omni.scheduling.metrics_snapshot import ENGINE_GAUGES
 
 
 def validate_metrics_environment():
@@ -19,6 +22,39 @@ def validate_metrics_environment():
             "Omni metrics use a single HTTP-process registry. Unset "
             "PROMETHEUS_MULTIPROC_DIR before launching the service."
         )
+
+
+class BackendMetricsCollector:
+    """Export leader snapshots, excluding HTTP-owned metric families."""
+
+    def __init__(self, model_name, owned_names):
+        self.model_name = model_name
+        self.owned_names = owned_names
+        self.snapshots = []
+
+    def describe(self):
+        return []
+
+    def collect(self):
+        families = {}
+        for stage, snapshot in self.snapshots:
+            for item in snapshot:
+                name = item["name"]
+                if name in self.owned_names:
+                    continue
+                family = families.setdefault(
+                    name, Metric(name, item["documentation"], item["type"])
+                )
+                if family.type != item["type"]:
+                    raise ValueError(f"Conflicting backend metric type: {name}")
+                for sample in item["samples"]:
+                    labels = {
+                        **sample["labels"],
+                        "model_name": self.model_name,
+                        "omni_stage": stage,
+                    }
+                    family.add_sample(sample["name"], labels, sample["value"])
+        yield from families.values()
 
 
 @dataclass
@@ -114,6 +150,59 @@ class RequestMetrics:
             labels,
             registry=self.registry,
         )
+        token_buckets = (
+            100,
+            300,
+            500,
+            700,
+            1000,
+            1500,
+            2000,
+            3000,
+            4000,
+            5000,
+            6000,
+            7000,
+            8000,
+            9000,
+            10000,
+            12500,
+            15000,
+            17500,
+            20000,
+            22500,
+            25000,
+            27500,
+            30000,
+            35000,
+            40000,
+            60000,
+            80000,
+            100000,
+            200000,
+            300000,
+            400000,
+            600000,
+            800000,
+            1000000,
+            1100000,
+        )
+        self.token_lengths = {
+            name: Histogram(
+                f"sglang:{name}_histogram",
+                f"Histogram of {name.replace('_', ' ')} length.",
+                ("model_name",),
+                buckets=token_buckets,
+                registry=self.registry,
+            )
+            for name in ("prompt_tokens", "uncached_prompt_tokens", "generation_tokens")
+        }
+        self.cached_tokens = Counter(
+            "sglang:cached_tokens_total",
+            "Number of cached prompt tokens by source.",
+            ("model_name", "cache_source"),
+            registry=self.registry,
+        )
         self.requests = Counter(
             "sglang:num_requests_total",
             "Number of requests processed.",
@@ -145,6 +234,94 @@ class RequestMetrics:
             registry=self.registry,
         )
         self.scrape_lock = asyncio.Lock()
+        self.engine_gauges = {
+            name: Gauge(
+                f"sglang:{name}",
+                f"Backend scheduler {name}.",
+                ("model_name", "stage"),
+                registry=self.registry,
+            )
+            for name in ENGINE_GAUGES
+        }
+        self.queue_latency = Histogram(
+            "sglang:queue_time_seconds",
+            "Scheduler queue duration in seconds.",
+            ("model_name", "stage"),
+            registry=self.registry,
+            buckets=(
+                0,
+                0.001,
+                0.005,
+                0.01,
+                0.05,
+                0.1,
+                0.2,
+                0.5,
+                1,
+                2,
+                3,
+                4,
+                5,
+                10,
+                15,
+                20,
+                30,
+                40,
+                50,
+                60,
+                70,
+                80,
+                90,
+                100,
+                200,
+                300,
+                400,
+                500,
+                600,
+                700,
+                800,
+                900,
+                1000,
+                1200,
+                1400,
+                1600,
+                1800,
+                2000,
+                2500,
+                3000,
+            ),
+        )
+        self.batch_size = Histogram(
+            "sglang_omni:scheduler_batch_size",
+            "Requests dispatched per compute call.",
+            ("model_name", "stage"),
+            buckets=(1, 2, 4, 8, 16, 32, 64, 128),
+            registry=self.registry,
+        )
+        self.execution = Histogram(
+            "sglang_omni:stage_compute_duration_seconds",
+            "Host compute duration, without device synchronization.",
+            ("model_name", "stage", "outcome"),
+            registry=self.registry,
+        )
+        self.stage_duration = Histogram(
+            "sglang_omni:stage_request_duration_seconds",
+            "Stage dispatch through routing/cleanup, including scheduler waiting.",
+            ("model_name", "stage", "outcome"),
+            registry=self.registry,
+        )
+        self.audio_seconds = Counter(
+            "sglang_omni:audio_output_seconds_total",
+            "Completed output waveform duration before encoding/speed conversion.",
+            ("model_name", "stage"),
+            registry=self.registry,
+        )
+        self.images = Counter(
+            "sglang_omni:generated_images_total",
+            "Images in the completed output list, not diffusion steps.",
+            ("model_name", "stage"),
+            registry=self.registry,
+        )
         self.active_requests: dict[str, TokenObservation] = {}
         self.http_requests = Counter(
             "sglang_omni:http_requests_total",
@@ -164,6 +341,24 @@ class RequestMetrics:
             "Active HTTP requests.",
             registry=self.registry,
         )
+
+        self.backend = BackendMetricsCollector(
+            self.model_name, {family.name for family in self.registry.collect()}
+        )
+        self.registry.register(self.backend)
+
+    def observe_scheduler_event(self, stage, data):
+        labels = (self.model_name, stage)
+        if data["event"] == "queue":
+            self.queue_latency.labels(*labels).observe(data["duration"])
+        elif data["event"] == "batch":
+            self.batch_size.labels(*labels).observe(data["size"])
+        elif data["event"] == "execution":
+            self.execution.labels(*labels, data["outcome"]).observe(data["duration"])
+        elif data["event"] == "stage":
+            self.stage_duration.labels(*labels, data["outcome"]).observe(
+                data["duration"]
+            )
 
     def observe_tokens(self, request_id, stage, prompt_tokens, completion_tokens):
         state = self.active_requests.get(request_id)
@@ -197,6 +392,8 @@ class RequestMetrics:
         finished_at = None
         usage = None
         aborted = False
+        audio_seconds = {}
+        image_counts = {}
         try:
             async with aclosing(source):
                 async for chunk in source:
@@ -212,6 +409,32 @@ class RequestMetrics:
                             if chunk.usage is not None:
                                 usage = chunk.usage
                     aborted = aborted or chunk.finish_reason == "abort"
+                    stage = chunk.stage_name or "unknown"
+                    audio = getattr(chunk, "audio_data", None)
+                    sample_rate = getattr(chunk, "sample_rate", None)
+                    if (
+                        audio is not None
+                        and sample_rate is not None
+                        and sample_rate > 0
+                    ):
+                        shape = getattr(audio, "shape", None)
+                        if shape is not None and len(shape) in (1, 2):
+                            samples = shape[-1]
+                        elif isinstance(audio, (list, tuple)) and (
+                            not audio or isinstance(audio[0], (int, float))
+                        ):
+                            samples = len(audio)
+                        else:
+                            samples = None
+                        if samples is not None:
+                            audio_seconds[stage] = (
+                                audio_seconds.get(stage, 0) + samples / sample_rate
+                            )
+                    images = getattr(chunk, "images_b64", None)
+                    if images is not None:
+                        image_counts[stage] = len(images)
+                    elif getattr(chunk, "image_b64", None):
+                        image_counts[stage] = 1
                     yield chunk
         except (asyncio.CancelledError, GeneratorExit):
             self.aborted.labels(self.model_name).inc()
@@ -224,6 +447,18 @@ class RequestMetrics:
                 return
             if aborted:
                 self.aborted.labels(self.model_name).inc()
+            else:
+                for stage, seconds in audio_seconds.items():
+                    self.audio_seconds.labels(self.model_name, stage).inc(seconds)
+                for stage, count in image_counts.items():
+                    self.images.labels(self.model_name, stage).inc(count)
+            # Cache details belong to the same text stage as the token counts.
+            # Never combine another stage's usage with native AR observations.
+            details = (
+                getattr(usage, "prompt_tokens_details", None)
+                if state.stage is None or state.stage == text_stage
+                else None
+            )
             self.observe_finished(
                 stream=stream,
                 latency=finished_at - started,
@@ -237,6 +472,7 @@ class RequestMetrics:
                     if state.last_time is not None
                     else (usage.completion_tokens if usage else None)
                 ),
+                cached_tokens=details.get("cached_tokens") if details else None,
             )
         finally:
             if request_id is not None:
@@ -253,6 +489,9 @@ class RequestMetrics:
                 raise RuntimeError("A stage failed to report scheduler metrics")
             self.running.clear()
             self.waiting.clear()
+            snapshots = []
+            for gauge in self.engine_gauges.values():
+                gauge.clear()
             for result in response["results"]:
                 if not result["success"]:
                     continue
@@ -260,10 +499,18 @@ class RequestMetrics:
                 if "num_running_reqs" not in data:
                     continue
                 stage = result["stage"]
+                snapshots.append((stage, data.get("backend_metrics", [])))
                 self.running.labels(self.model_name, stage).set(
                     data["num_running_reqs"]
                 )
                 self.waiting.labels(self.model_name, stage).set(data["num_queue_reqs"])
+                for name, value in data.get("engine_gauges", {}).items():
+                    if name in self.engine_gauges:
+                        self.engine_gauges[name].labels(self.model_name, stage).set(
+                            value
+                        )
+
+            self.backend.snapshots = snapshots
 
     def observe_interval(self, interval: float, num_new_tokens: int) -> None:
         if num_new_tokens <= 0:
@@ -283,14 +530,31 @@ class RequestMetrics:
         latency: float,
         prompt_tokens: int | None,
         generation_tokens: int | None,
+        cached_tokens: int | None = None,
     ) -> None:
         labels = (self.model_name, "true" if stream else "false")
         self.requests.labels(*labels).inc()
         self.e2e.labels(*labels).observe(latency)
         if prompt_tokens is not None:
             self.prompt_tokens.labels(*labels).inc(prompt_tokens)
+            self.token_lengths["prompt_tokens"].labels(self.model_name).observe(
+                prompt_tokens
+            )
         if generation_tokens is not None:
             self.generation_tokens.labels(*labels).inc(generation_tokens)
+            self.token_lengths["generation_tokens"].labels(self.model_name).observe(
+                generation_tokens
+            )
+        if (
+            cached_tokens is not None
+            and prompt_tokens is not None
+            and 0 <= cached_tokens <= prompt_tokens
+        ):
+            self.token_lengths["uncached_prompt_tokens"].labels(
+                self.model_name
+            ).observe(prompt_tokens - cached_tokens)
+            if cached_tokens > 0:
+                self.cached_tokens.labels(self.model_name, "total").inc(cached_tokens)
 
 
 class MetricsMiddleware:

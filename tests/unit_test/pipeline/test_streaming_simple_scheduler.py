@@ -75,6 +75,24 @@ class StreamingSchedulerUnderTest(StreamingSimpleScheduler):
         return payloads
 
 
+def test_streaming_scheduler_metrics_cover_queue_compute_and_abort():
+    scheduler = StreamingSimpleScheduler(lambda payload: payload)
+
+    def compute(payload):
+        assert scheduler.metrics_snapshot() == {
+            "num_running_reqs": 1,
+            "num_queue_reqs": 1,
+        }
+        return payload
+
+    scheduler.compute_fn = compute
+    scheduler.enqueue(IncomingMessage("a", "new_request", make_payload("a")))
+    scheduler.enqueue(IncomingMessage("b", "new_request", make_payload("b")))
+    assert scheduler.metrics_snapshot() == {"num_running_reqs": 0, "num_queue_reqs": 2}
+    scheduler.handle_new_request_batch([scheduler.inbox.get_nowait()])
+    scheduler.abort("b")
+    assert scheduler.metrics_snapshot() == {"num_running_reqs": 0, "num_queue_reqs": 0}
+
 def drain_results(scheduler: StreamingSimpleScheduler) -> list[OutgoingMessage]:
     messages: list[OutgoingMessage] = []
     while True:
