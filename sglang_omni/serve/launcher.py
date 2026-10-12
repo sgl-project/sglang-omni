@@ -51,6 +51,7 @@ from sglang_omni.preprocessing.resource_connector import export_media_policy
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
+from sglang_omni.serve.metrics import validate_metrics_environment
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
@@ -483,8 +484,6 @@ async def run_server(
     """
     export_media_policy(allowed_local_media_path, allowed_media_domains)
     if enable_metrics:
-        from sglang_omni.serve.metrics import validate_metrics_environment
-
         validate_metrics_environment()
     else:
         pass

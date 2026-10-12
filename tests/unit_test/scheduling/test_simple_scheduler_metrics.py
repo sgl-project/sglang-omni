@@ -11,8 +11,10 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 
 @pytest.mark.parametrize("fails", [False, True])
-def test_queue_batch_and_compute_events(monkeypatch, fails):
-    def compute(payload):
+def test_queue_batch_and_compute_events(
+    monkeypatch: pytest.MonkeyPatch, fails: bool
+) -> None:
+    def compute(payload: SimpleNamespace) -> SimpleNamespace:
         if fails:
             raise ValueError("failed")
         return payload
@@ -53,10 +55,10 @@ def test_queue_batch_and_compute_events(monkeypatch, fails):
     assert not scheduler.metrics_started
 
 
-def test_concurrent_workers_report_actual_running_requests():
+def test_concurrent_workers_report_actual_running_requests() -> None:
     release = threading.Event()
 
-    def compute(payload):
+    def compute(payload: int) -> int:
         assert release.wait(3)
         return payload
 
@@ -96,10 +98,10 @@ def test_concurrent_workers_report_actual_running_requests():
     assert not thread.is_alive()
 
 
-def test_waiting_running_and_abort():
+def test_waiting_running_and_abort() -> None:
     scheduler = None
 
-    def compute(payload):
+    def compute(payload: int) -> int:
         assert scheduler.metrics_snapshot() == {
             "num_running_reqs": 1,
             "num_queue_reqs": 1,
@@ -119,8 +121,8 @@ def test_waiting_running_and_abort():
     assert scheduler.metrics_snapshot() == {"num_running_reqs": 0, "num_queue_reqs": 0}
 
 
-def test_batch_failure_clears_running():
-    def fail(payloads):
+def test_batch_failure_clears_running() -> None:
+    def fail(payloads: list[int]) -> list[int]:
         assert scheduler.metrics_snapshot()["num_running_reqs"] == 2
         raise ValueError("failed")
 

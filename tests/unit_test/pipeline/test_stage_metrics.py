@@ -8,7 +8,9 @@ from sglang_omni.pipeline.stage.runtime import Stage
 
 
 @pytest.mark.parametrize("outcome", ["completed", "error", "aborted"])
-def test_stage_duration_is_emitted_once(monkeypatch, outcome):
+def test_stage_duration_is_emitted_once(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
     stage = object.__new__(Stage)
     stage.metrics_started = {"r": 1}
     stage.scheduler = SimpleNamespace(outbox=queue.Queue())

@@ -42,6 +42,16 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+except ModuleNotFoundError as error:
+    if error.name != "prometheus_client":
+        raise
+    else:
+        pass
+else:
+    pass
 from starlette.types import ASGIApp
 from starlette.types import Message as ASGIMessage
 from starlette.types import Receive, Scope, Send
@@ -80,6 +90,7 @@ from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
+from sglang_omni.serve.metrics import MetricsMiddleware, RequestMetrics
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -336,11 +347,6 @@ def create_app(
         pass
 
     if enable_metrics:
-        from fastapi.responses import Response
-        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-
-        from sglang_omni.serve.metrics import MetricsMiddleware, RequestMetrics
-
         app.state.request_metrics = RequestMetrics(app.state.model_name)
         client.request_metrics = app.state.request_metrics
         if getattr(client, "coordinator", None) is not None:

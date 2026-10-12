@@ -1,16 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """Build host-only token telemetry after SGLang updates request output IDs."""
 
+from typing import Protocol
+
 from sglang_omni.scheduling.message import OutgoingMessage
 
 
-def batch_metrics_messages(reqs, *, is_entry_rank: bool, now: float):
+class TokenMetricsRequest(Protocol):
+    rid: str
+    origin_input_ids: list[int]
+    output_ids: list[int]
+
+
+def batch_metrics_messages(
+    reqs: list[TokenMetricsRequest], *, is_entry_rank: bool, now: float
+) -> list[OutgoingMessage]:
     if not is_entry_rank:
         return []
     else:
         pass
-    tracked = []
-    messages = []
+    tracked: list[TokenMetricsRequest] = []
+    messages: list[OutgoingMessage] = []
     for req in reqs:
         payload = getattr(getattr(req, "omni_data", None), "stage_payload", None)
         if payload is None or not payload.request.metadata.get("omni_metrics_enabled"):
@@ -44,7 +54,9 @@ def batch_metrics_messages(reqs, *, is_entry_rank: bool, now: float):
     return messages
 
 
-def token_metrics_message(req, *, is_entry_rank: bool, aborted: bool):
+def token_metrics_message(
+    req: TokenMetricsRequest, *, is_entry_rank: bool, aborted: bool
+) -> OutgoingMessage | None:
     payload = getattr(getattr(req, "omni_data", None), "stage_payload", None)
     if (
         not is_entry_rank

@@ -83,6 +83,11 @@ from sglang_omni.proto.admin import (
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import find_session_operation
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.metrics_snapshot import (
+    SchedulerMetricsSnapshot,
+    backend_metrics_snapshot,
+    engine_metrics_snapshot,
+)
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionBridge,
@@ -2694,12 +2699,7 @@ class OmniScheduler(Generic[RequestDataT]):
             "data": {"skipped": True, "unsupported": True},
         }
 
-    def metrics_snapshot(self) -> dict[str, object]:
-        from sglang_omni.scheduling.metrics_snapshot import (
-            backend_metrics_snapshot,
-            engine_metrics_snapshot,
-        )
-
+    def metrics_snapshot(self) -> SchedulerMetricsSnapshot:
         with self.request_admission_lock:
             running = {
                 req.rid

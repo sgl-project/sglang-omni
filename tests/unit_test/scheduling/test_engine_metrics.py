@@ -1,17 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
+import multiprocessing
+from concurrent.futures import Future
+from multiprocessing.connection import Connection
 from types import SimpleNamespace
 
+import pytest
+from prometheus_client import CollectorRegistry, Counter, Histogram
+
+from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
+from sglang_omni.proto.admin import AdminResult
+from sglang_omni.proto.messages import AdminResultMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.metrics_snapshot import (
     backend_metrics_snapshot,
     engine_metrics_snapshot,
 )
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
 
-def send_backend_snapshot(connection):
-    from prometheus_client import CollectorRegistry, Counter
-
-    from sglang_omni.pipeline.control_plane import serialize_message
-    from sglang_omni.proto import AdminResult, AdminResultMessage
+def send_backend_snapshot(connection: Connection) -> None:
 
     counter = Counter(
         "sglang:spec_verify_calls_total", "Verify", registry=CollectorRegistry()
@@ -34,10 +41,7 @@ def send_backend_snapshot(connection):
     connection.close()
 
 
-def test_backend_snapshot_crosses_spawned_process_control_serialization():
-    import multiprocessing
-
-    from sglang_omni.pipeline.control_plane import deserialize_message
+def test_backend_snapshot_crosses_spawned_process_control_serialization() -> None:
 
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
@@ -60,7 +64,7 @@ def test_backend_snapshot_crosses_spawned_process_control_serialization():
             process.join(timeout=5)
 
 
-def test_engine_snapshot_uses_pool_and_backend_reporter():
+def test_engine_snapshot_uses_pool_and_backend_reporter() -> None:
     pool = SimpleNamespace(
         get_kv_token_stats=lambda: (20, 0.2),
         full_token_usage=0.2,
@@ -90,12 +94,11 @@ def test_engine_snapshot_uses_pool_and_backend_reporter():
     }
 
 
-def test_non_kv_scheduler_does_not_publish_synthetic_zeros():
+def test_non_kv_scheduler_does_not_publish_synthetic_zeros() -> None:
     assert engine_metrics_snapshot(SimpleNamespace()) == {}
 
 
-def test_backend_snapshot_preserves_native_types_labels_and_samples():
-    from prometheus_client import CollectorRegistry, Counter, Histogram
+def test_backend_snapshot_preserves_native_types_labels_and_samples() -> None:
 
     registry = CollectorRegistry()
     count = Counter(
@@ -123,8 +126,7 @@ def test_backend_snapshot_preserves_native_types_labels_and_samples():
     assert backend_metrics_snapshot(scheduler) == []
 
 
-def test_radix_collector_exports_without_reporter_but_storage_is_deferred():
-    from prometheus_client import CollectorRegistry, Counter
+def test_radix_collector_exports_without_reporter_but_storage_is_deferred() -> None:
 
     registry = CollectorRegistry()
     eviction = Counter(
@@ -154,11 +156,7 @@ def test_radix_collector_exports_without_reporter_but_storage_is_deferred():
     assert backend_metrics_snapshot(scheduler) == []
 
 
-def test_threaded_snapshot_counts_queued_and_running_futures():
-    from concurrent.futures import Future
-
-    from sglang_omni.scheduling.message import IncomingMessage
-    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+def test_threaded_snapshot_counts_queued_and_running_futures() -> None:
 
     scheduler = ThreadedSimpleScheduler(lambda value: value)
     running = Future()
@@ -173,12 +171,9 @@ def test_threaded_snapshot_counts_queued_and_running_futures():
     scheduler.executor.shutdown(wait=False, cancel_futures=True)
 
 
-def test_threaded_compute_events_clean_state_and_report_failure():
-    import pytest
+def test_threaded_compute_events_clean_state_and_report_failure() -> None:
 
-    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
-
-    def fail(payload):
+    def fail(payload: None) -> None:
         raise ValueError("failure")
 
     scheduler = ThreadedSimpleScheduler(fail)

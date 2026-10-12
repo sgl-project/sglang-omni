@@ -4,6 +4,8 @@
 Callers supply lifecycle timestamps; HTTP chunks are not token observations.
 """
 
+from __future__ import annotations
+
 import asyncio
 import os
 import time
@@ -11,16 +13,32 @@ from collections.abc import AsyncGenerator, Iterator
 from contextlib import aclosing
 from dataclasses import dataclass
 
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
-from prometheus_client.core import Metric
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateChunk, UsageInfo
 from sglang_omni.scheduling.metrics_snapshot import ENGINE_GAUGES, BackendMetricFamily
 
+METRICS_DEPENDENCY_ERROR: ModuleNotFoundError | None = None
+try:
+    from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+    from prometheus_client.core import Metric
+except ModuleNotFoundError as error:
+    if error.name != "prometheus_client":
+        raise
+    else:
+        METRICS_DEPENDENCY_ERROR = error
+else:
+    pass
+
 
 def validate_metrics_environment() -> None:
+    if METRICS_DEPENDENCY_ERROR is not None:
+        raise RuntimeError(
+            "Metrics require prometheus-client; install sglang-omni[metrics]."
+        ) from METRICS_DEPENDENCY_ERROR
+    else:
+        pass
     if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
         raise ValueError(
             "Omni metrics use a single HTTP-process registry. Unset "
