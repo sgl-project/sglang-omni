@@ -46,6 +46,16 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+except ModuleNotFoundError as error:
+    if error.name != "prometheus_client":
+        raise
+    else:
+        pass
+else:
+    pass
+
 from sglang_omni import __version__
 from sglang_omni.client import (
     Client,
@@ -79,6 +89,7 @@ from sglang_omni.serve.image_response import (
     ImageGenerationResponse,
     build_image_response,
 )
+from sglang_omni.serve.metrics import MetricsMiddleware, RequestMetrics
 from sglang_omni.serve.openai_errors import (
     is_bad_request_error as _is_bad_request_error,
 )
@@ -320,11 +331,6 @@ def create_app(
         _register_realtime(app)
 
     if enable_metrics:
-        from fastapi.responses import Response
-        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-
-        from sglang_omni.serve.metrics import MetricsMiddleware, RequestMetrics
-
         app.state.request_metrics = RequestMetrics(app.state.model_name)
         client.request_metrics = app.state.request_metrics
         if getattr(client, "_coordinator", None) is not None:

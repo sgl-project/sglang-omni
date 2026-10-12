@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
+from concurrent.futures import Future
 from types import SimpleNamespace
 
+import pytest
 from prometheus_client import CollectorRegistry, Counter
 
+from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.metrics_snapshot import backend_metrics_snapshot
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
 
-def test_radix_bridge_retains_deduplication_and_defers_storage():
+def test_radix_bridge_retains_deduplication_and_defers_storage() -> None:
     registry = CollectorRegistry()
     eviction = Counter("sglang:evicted_tokens_total", "Eviction", registry=registry)
     storage = Counter("sglang:prefetched_tokens_total", "Storage", registry=registry)
@@ -29,11 +33,7 @@ def test_radix_bridge_retains_deduplication_and_defers_storage():
     assert backend_metrics_snapshot(scheduler) == []
 
 
-def test_threaded_snapshot_counts_queue_and_aborted_running_work():
-    from concurrent.futures import Future
-
-    from sglang_omni.scheduling.messages import IncomingMessage
-    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+def test_threaded_snapshot_counts_queue_and_aborted_running_work() -> None:
 
     scheduler = ThreadedSimpleScheduler(lambda payload: payload)
     try:
@@ -55,12 +55,9 @@ def test_threaded_snapshot_counts_queue_and_aborted_running_work():
         scheduler._executor.shutdown(wait=False, cancel_futures=True)
 
 
-def test_threaded_compute_metrics_clean_state_after_failure():
-    import pytest
+def test_threaded_compute_metrics_clean_state_after_failure() -> None:
 
-    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
-
-    def fail(payload):
+    def fail(payload: None) -> None:
         raise ValueError("failure")
 
     scheduler = ThreadedSimpleScheduler(fail)

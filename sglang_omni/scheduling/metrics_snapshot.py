@@ -2,7 +2,11 @@
 """Read host-side SGLang scheduler statistics without device synchronization."""
 
 import time
-from typing import TypedDict
+from typing import Protocol, TypedDict
+
+
+class MetricsSnapshotSource(Protocol):
+    enable_metrics: bool
 
 
 class BackendMetricSample(TypedDict):
@@ -16,6 +20,24 @@ class BackendMetricFamily(TypedDict):
     documentation: str
     type: str
     samples: list[BackendMetricSample]
+
+
+class SchedulerMetricsSnapshot(TypedDict, total=False):
+    num_running_reqs: int
+    num_queue_reqs: int
+    engine_gauges: dict[str, int | float]
+    backend_metrics: list[BackendMetricFamily]
+
+
+class MetricsAdminStageResult(TypedDict):
+    stage: str
+    success: bool
+    data: SchedulerMetricsSnapshot
+
+
+class MetricsAdminResponse(TypedDict, total=False):
+    success: bool
+    results: list[MetricsAdminStageResult]
 
 
 ENGINE_GAUGES = (
@@ -32,8 +54,10 @@ ENGINE_GAUGES = (
 )
 
 
-def engine_metrics_snapshot(scheduler):
-    values = {}
+def engine_metrics_snapshot(
+    scheduler: MetricsSnapshotSource,
+) -> dict[str, int | float]:
+    values: dict[str, int | float] = {}
     observer = getattr(scheduler, "pool_stats_observer", None)
     if observer is not None:
         pool = observer.get_pool_stats()
@@ -78,7 +102,9 @@ def engine_metrics_snapshot(scheduler):
     return values
 
 
-def backend_metrics_snapshot(scheduler):
+def backend_metrics_snapshot(
+    scheduler: MetricsSnapshotSource,
+) -> list[BackendMetricFamily]:
     """Serialize existing backend collectors; do not register new worker metrics."""
     if not getattr(scheduler, "enable_metrics", False):
         return []
@@ -90,8 +116,8 @@ def backend_metrics_snapshot(scheduler):
         getattr(reporter, "metrics_collector", None),
         getattr(cache, "metrics_collector", None),
     )
-    families = []
-    seen = set()
+    families: list[BackendMetricFamily] = []
+    seen: set[int] = set()
     metrics = [
         metric
         for collector in collectors

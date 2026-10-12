@@ -2,6 +2,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
+from typing import TypedDict
 
 import pytest
 
@@ -11,8 +12,24 @@ from sglang_omni.pipeline.control_plane import deserialize_message, serialize_me
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.proto import CompleteMessage, StreamMessage
+from sglang_omni.proto.request import OmniRequest
 from sglang_omni.serve.metrics import RequestMetrics
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
+
+
+class DecodeMetricsResult(TypedDict):
+    text: str
+    finish_reason: str
+    stage_name: str
+    prompt_tokens: int
+    completion_tokens: int
+    prompt_tokens_details: dict[str, int]
+
+
+class CacheFields(TypedDict, total=False):
+    cached_tokens: int
+    prompt_tokens_details: dict[str, int]
+    usage: dict[str, dict[str, int]]
 
 
 @pytest.mark.parametrize("audio_stage", ["code2wav", "talker", "talker_stream"])
@@ -80,8 +97,10 @@ def test_merged_audio_preserves_only_decode_token_metrics(
 
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("terminal", ["generate", "generate@r0"])
-def test_nonstream_image_metrics_keep_logical_stage(enabled, terminal):
-    async def run():
+def test_nonstream_image_metrics_keep_logical_stage(
+    enabled: bool, terminal: str
+) -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -109,7 +128,7 @@ def test_nonstream_image_metrics_keep_logical_stage(enabled, terminal):
             assert result["stage_name"] == "generate"
             chunk = Client._default_result_builder("image-request", result)
 
-            async def source():
+            async def source() -> AsyncGenerator[GenerateChunk, None]:
                 yield chunk
 
             async for observed in metrics.generate(source(), False):
@@ -135,7 +154,9 @@ def test_nonstream_image_metrics_keep_logical_stage(enabled, terminal):
         {"usage": {"prompt_tokens_details": {"cached_tokens": 4}}},
     ],
 )
-def test_cache_metrics_do_not_require_chat_usage_extensions(cache_fields):
+def test_cache_metrics_do_not_require_chat_usage_extensions(
+    cache_fields: CacheFields,
+) -> None:
     result = {
         "text": "hello",
         "prompt_tokens": 10,
@@ -148,10 +169,10 @@ def test_cache_metrics_do_not_require_chat_usage_extensions(cache_fields):
 
     metrics = RequestMetrics("test")
 
-    async def source():
+    async def source() -> AsyncGenerator[GenerateChunk, None]:
         yield chunk
 
-    async def run():
+    async def run() -> None:
         async for _ in metrics.generate(source(), False):
             pass
 
@@ -167,14 +188,18 @@ def test_cache_metrics_do_not_require_chat_usage_extensions(cache_fields):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("token_stage", ["decode", "decode@r0"])
-def test_client_coordinator_token_telemetry_does_not_leak(stream, token_stage):
+def test_client_coordinator_token_telemetry_does_not_leak(
+    stream: bool, token_stage: str
+) -> None:
     metrics = RequestMetrics("test")
 
     class FakeCoordinator:
-        request_metrics = metrics
-        _replica_topology = ReplicaTopology(replicas={"decode": ("decode@r0",)})
+        request_metrics: RequestMetrics = metrics
+        _replica_topology: ReplicaTopology = ReplicaTopology(
+            replicas={"decode": ("decode@r0",)}
+        )
 
-        async def report(self, request_id, request):
+        async def report(self, request_id: str, request: OmniRequest) -> None:
             assert request.metadata["omni_metrics_enabled"] is True
             for count in [1, 3]:
                 message = StreamMessage(
@@ -187,7 +212,9 @@ def test_client_coordinator_token_telemetry_does_not_leak(stream, token_stage):
                     self, deserialize_message(serialize_message(message))
                 )
 
-        async def submit(self, request_id, request):
+        async def submit(
+            self, request_id: str, request: OmniRequest
+        ) -> DecodeMetricsResult:
             await self.report(request_id, request)
             return {
                 "text": "hello",
@@ -198,13 +225,15 @@ def test_client_coordinator_token_telemetry_does_not_leak(stream, token_stage):
                 "prompt_tokens_details": {"cached_tokens": 4},
             }
 
-        async def stream(self, request_id, request):
+        async def stream(
+            self, request_id: str, request: OmniRequest
+        ) -> AsyncGenerator[SimpleNamespace, None]:
             yield SimpleNamespace(result=await self.submit(request_id, request))
 
     client = Client(FakeCoordinator())
     client.request_metrics = metrics
 
-    async def run():
+    async def run() -> list[GenerateChunk]:
         return [
             chunk
             async for chunk in client.generate(
@@ -241,13 +270,13 @@ def test_client_coordinator_token_telemetry_does_not_leak(stream, token_stage):
     )
 
 
-def test_disabled_client_does_not_request_telemetry():
+def test_disabled_client_does_not_request_telemetry() -> None:
     class FakeCoordinator:
-        async def submit(self, request_id, request):
+        async def submit(self, request_id: str, request: OmniRequest) -> str:
             assert "omni_metrics_enabled" not in request.metadata
             return "hello"
 
-    async def run():
+    async def run() -> list[GenerateChunk]:
         return [
             chunk
             async for chunk in Client(FakeCoordinator()).generate(

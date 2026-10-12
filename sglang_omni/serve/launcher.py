@@ -45,6 +45,7 @@ from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
+from sglang_omni.serve.metrics import validate_metrics_environment
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
@@ -392,8 +393,6 @@ async def _run_server(
     """
     # 0. Check port availability before loading models
     if enable_metrics:
-        from sglang_omni.serve.metrics import validate_metrics_environment
-
         validate_metrics_environment()
     port = _find_available_port(host, port)
 

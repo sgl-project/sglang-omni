@@ -61,6 +61,11 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.metrics_snapshot import (
+    SchedulerMetricsSnapshot,
+    backend_metrics_snapshot,
+    engine_metrics_snapshot,
+)
 from sglang_omni.scheduling.token_metrics import (
     batch_metrics_messages,
     token_metrics_message,
@@ -1967,12 +1972,7 @@ class OmniScheduler:
             "data": {"skipped": True, "unsupported": True},
         }
 
-    def metrics_snapshot(self) -> dict[str, object]:
-        from sglang_omni.scheduling.metrics_snapshot import (
-            backend_metrics_snapshot,
-            engine_metrics_snapshot,
-        )
-
+    def metrics_snapshot(self) -> SchedulerMetricsSnapshot:
         with self._request_admission_lock:
             running = {
                 req.rid

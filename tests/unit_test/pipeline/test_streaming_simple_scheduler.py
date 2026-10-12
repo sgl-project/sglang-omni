@@ -75,7 +75,7 @@ class _TestStreamingScheduler(StreamingSimpleScheduler):
         return payloads
 
 
-def test_streaming_metrics_cover_queue_compute_and_abort():
+def test_streaming_metrics_cover_queue_compute_and_abort() -> None:
     scheduler = StreamingSimpleScheduler(lambda payload: payload)
 
     def compute(payload):

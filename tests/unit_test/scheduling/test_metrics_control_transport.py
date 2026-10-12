@@ -3,9 +3,11 @@
 
 import asyncio
 import multiprocessing
+from multiprocessing.connection import Connection
 from types import SimpleNamespace
 
 import zmq
+from prometheus_client import CollectorRegistry, Counter
 
 from sglang_omni.pipeline.control_plane import (
     ControlPlaneContext,
@@ -21,10 +23,11 @@ from sglang_omni.proto import (
 from sglang_omni.scheduling.metrics_snapshot import backend_metrics_snapshot
 
 
-def metrics_worker(connection, completion_endpoint, abort_endpoint):
-    from prometheus_client import CollectorRegistry, Counter
+def metrics_worker(
+    connection: Connection, completion_endpoint: str, abort_endpoint: str
+) -> None:
 
-    async def run():
+    async def run() -> None:
         plane = StageControlPlane(
             "decode", "tcp://127.0.0.1:*", completion_endpoint, abort_endpoint
         )
@@ -73,8 +76,8 @@ def metrics_worker(connection, completion_endpoint, abort_endpoint):
         loop.close()
 
 
-def test_metrics_admin_round_trip_over_tcp_to_spawned_worker():
-    async def run():
+def test_metrics_admin_round_trip_over_tcp_to_spawned_worker() -> None:
+    async def run() -> None:
         plane = CoordinatorControlPlane("tcp://127.0.0.1:*", "tcp://127.0.0.1:*")
         context = multiprocessing.get_context("spawn")
         receiver, sender = context.Pipe(duplex=False)
