@@ -230,7 +230,16 @@ def project_preprocessing_to_encoder(
     state = MiniCPMOPipelineState.from_dict(payload.data)
     stage_inputs = state.encoder_inputs.get(stage_name)
     encoder_inputs = (
-        {stage_name: dict(stage_inputs)} if isinstance(stage_inputs, dict) else {}
+        {
+            stage_name: {
+                input_name: (
+                    list(input_value) if isinstance(input_value, list) else input_value
+                )
+                for input_name, input_value in stage_inputs.items()
+            }
+        }
+        if isinstance(stage_inputs, dict)
+        else {}
     )
     if stage_name == IMAGE_STAGE and isinstance(stage_inputs, dict):
         encoder_inputs[stage_name]["pixel_values"] = list(stage_inputs["pixel_values"])
