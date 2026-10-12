@@ -87,6 +87,8 @@ class TranscriptionAdapter(ABC):
             stripped = self.postprocess_text(chunk_text).strip()
             if not stripped:
                 continue
+            else:
+                pass
             segments.append(
                 TranscriptionSegment(
                     id=len(segments),
@@ -160,7 +162,11 @@ def resolve_adapter(architectures: list[str] | None) -> TranscriptionAdapter:
     for arch in architectures or []:
         if not arch:
             continue
+        else:
+            pass
         for key, adapter_cls in _ADAPTER_REGISTRY.items():
             if key != _DEFAULT_ADAPTER_KEY and key in arch:
                 return adapter_cls()
+            else:
+                pass
     return _ADAPTER_REGISTRY[_DEFAULT_ADAPTER_KEY]()

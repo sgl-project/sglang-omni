@@ -12,6 +12,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.benchmarker.conditions import (
+    add_fingerprint_argument,
+    fingerprint_fields,
+    warn_if_tail_percentile_is_thin,
+)
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.mmar import MmarSample, load_mmar_samples
@@ -22,15 +27,11 @@ from benchmarks.tasks.audio_understanding import (
     make_mmsu_send_fn,
     save_mmsu_results,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 DEFAULT_PROMPT = (
     "Listen to the audio and answer the multiple-choice question. "
     "Reply with only the option letter."
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 
 
@@ -56,6 +57,7 @@ async def run(
         modalities=["text"],
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        seed=args.seed,
     )
     if args.prompt:
         send_fn_kwargs["prompt"] = args.prompt
@@ -74,6 +76,7 @@ async def run(
     results = build_mmsu_results(request_results, samples, ["text"])
     metrics = compute_mmsu_metrics(results)
     speed = compute_speed_metrics(request_results, wall_clock_s=runner.wall_clock_s)
+    warn_if_tail_percentile_is_thin(len(request_results))
     output = {
         "accuracy": metrics,
         "speed": speed,
@@ -97,6 +100,7 @@ async def run(
                 "warmup": runner.config.effective_warmup,
                 "max_concurrency": args.max_concurrency,
                 "request_rate": args.request_rate,
+                **fingerprint_fields(args.fingerprint, base_url),
             },
             args.output_dir,
             benchmark_name="mmar",
@@ -107,6 +111,11 @@ async def run(
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     p = argparse.ArgumentParser(description="MMAR benchmark.")
     p.add_argument("--base-url", type=str, default=None)
     p.add_argument("--host", type=str, default="localhost")
@@ -129,7 +138,13 @@ def main() -> None:
     p.add_argument("--request-rate", type=float, default=float("inf"))
     p.add_argument("--timeout-s", type=int, default=300)
     p.add_argument("--disable-tqdm", action="store_true")
-    p.add_argument("--seed", type=int, default=None)
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Dataset shuffle seed, also sent on each chat request.",
+    )
+    add_fingerprint_argument(p)
     p.add_argument("--repo-id", type=str, default="BoJack/MMAR")
     p.add_argument("--split", type=str, default="test")
     p.add_argument("--audio-root", type=str, default=None)

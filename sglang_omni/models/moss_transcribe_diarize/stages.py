@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any
+from types import ModuleType
 
 from transformers import AutoConfig, GenerationConfig
 
@@ -21,28 +21,34 @@ _DEFAULT_ENCODER_CHUNK_BUCKETS = list(range(1, 9))
 
 
 @contextmanager
-def _missing_additional_chat_templates_compat() -> Iterator[None]:
+def missing_additional_chat_templates_compat() -> Iterator[None]:
     """Treat a missing optional chat-template directory as no extra templates."""
     import transformers.processing_utils as processing_utils
     import transformers.utils.hub as hub_utils
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    patched: list[tuple[Any, Any]] = []
+    patched: list[tuple[ModuleType, Callable[..., list[str]]]] = []
 
-    def patch_list_repo_templates(module: Any) -> None:
+    def patch_list_repo_templates(
+        module: ModuleType,
+    ) -> None:
         original = getattr(module, "list_repo_templates", None)
         if original is None:
             return
+        else:
+            pass
 
-        def wrapped(*args: Any, **kwargs: Any) -> Any:
+        def wrapped(*args: object, **kwargs: object) -> list[str]:
             try:
                 return original(*args, **kwargs)
             except RepositoryNotFoundError as exc:
                 if "additional_chat_templates" in str(exc):
                     return []
+                else:
+                    pass
                 raise
 
-        setattr(module, "list_repo_templates", wrapped)
+        module.list_repo_templates = wrapped
         patched.append((module, original))
 
     try:
@@ -51,16 +57,16 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
         yield
     finally:
         for module, original in reversed(patched):
-            setattr(module, "list_repo_templates", original)
+            module.list_repo_templates = original
 
 
-def _default_context_length(model_path: str) -> int:
+def default_context_length(model_path: str) -> int:
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     text_config = getattr(config, "text_config", None)
     return int(getattr(text_config, "max_position_embeddings", 131072))
 
 
-def _default_max_new_tokens(model_path: str) -> int:
+def default_max_new_tokens(model_path: str) -> int:
     try:
         generation_config = GenerationConfig.from_pretrained(model_path)
     except Exception:
@@ -80,7 +86,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     mem_fraction_static: float | None = 0.80,
     mm_embedding_cache_size_bytes: int = 0,
     encoder_cache_size_bytes: int = 0,
-    enable_torch_compile: bool = False,
+    enable_torch_compile: bool | None = None,
     torch_compile_max_bs: int = 4,
     # note (yichi): MOSS-TD overlaps host collect starting at batch size 1;
     # --asr.factory.enable_async_decode false remains the operator opt-out.
@@ -99,7 +105,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
         MossTranscribeDiarizeEngineBuilder,

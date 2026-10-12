@@ -79,12 +79,12 @@ async def test_stage_releases_resources_on_partial_startup(tmp_path, cancel, blo
             while not (
                 finalizer.exists()
                 if block
-                else runner._groups and runner._groups[0].is_ready
+                else runner.groups and runner.groups[0].is_ready
             ):
                 if starting.done():
                     starting.result()
                 await asyncio.sleep(0.02)
-        processes = [p for group in runner._groups for p in group.processes]
+        processes = [p for group in runner.groups for p in group.processes]
         assert resource.exists() and finalizer.exists()
         if cancel:
             starting.cancel()

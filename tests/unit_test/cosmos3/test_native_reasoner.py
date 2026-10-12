@@ -19,7 +19,7 @@ from sglang_omni.models.cosmos3.reasoner import (
     native_reasoner_kwargs,
 )
 from sglang_omni.proto import OmniRequest, StagePayload, StreamMessage
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 class NativeRequest(SimpleNamespace):
@@ -136,7 +136,7 @@ def running(*, request_type=NativeRequest):
         scheduler.stop()
         thread.join(timeout=3)
         assert not thread.is_alive()
-        assert not scheduler._loop_thread.is_alive()
+        assert not scheduler.loop_thread.is_alive()
         assert engine.loop.is_closed()
         assert engine.shutdown_count == 1
 
@@ -256,7 +256,7 @@ def test_native_scheduler_receives_concurrent_requests_on_one_loop():
         assert {m.request_id for m in messages} == {"r1", "r2", "r3"}
         assert all(m.type == "result" for m in messages)
         assert chat.peak > 1
-        chunk = Client._default_result_builder("r1", messages[0].data.data)
+        chunk = Client.default_result_builder("r1", messages[0].data.data)
         assert chunk.text == "你好"
         assert chunk.output_token_logprobs == [[-0.1, 1, "你"], [-0.2, 2, "好"]]
         assert chunk.usage.completion_tokens == 2
@@ -269,11 +269,11 @@ def test_stream_preserves_unicode_without_duplicate_terminal_text():
         while True:
             msg = scheduler.outbox.get(timeout=3)
             if msg.type == "result":
-                chunks.append(Client._default_result_builder("r1", msg.data.data))
+                chunks.append(Client.default_result_builder("r1", msg.data.data))
                 break
             assert msg.type == "stream"
             chunks.append(
-                Client._default_stream_builder(
+                Client.default_stream_builder(
                     "r1",
                     StreamMessage(
                         request_id="r1",
@@ -321,14 +321,14 @@ def test_abort_during_executor_dispatch_does_not_start_native_request():
     with running() as (scheduler, _, chat):
         entered = threading.Event()
         release = threading.Event()
-        original = scheduler._fn
+        original = scheduler.fn
 
         def delayed(item):
             entered.set()
             assert release.wait(2)
             return original(item)
 
-        scheduler._fn = delayed
+        scheduler.fn = delayed
         enqueue(scheduler, payload())
         assert entered.wait(2)
         scheduler.abort("r1")
@@ -353,7 +353,7 @@ def test_shutdown_cancels_active_native_work_and_joins_threads():
         assert chat.started.wait(2)
         scheduler.stop()
         assert ("", True) in engine.aborts
-        assert not scheduler._loop_thread.is_alive()
+        assert not scheduler.loop_thread.is_alive()
 
 
 def test_reasoner_variant_uses_native_child_process_ownership():

@@ -4,7 +4,7 @@ use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor
 
 use crate::error::HttpFault;
 use crate::speech_facts::{
-    BatchSpeechFields, SpeechFields, effective_reference_forms,
+    BatchSpeechFields, ScalarFactSeed, SpeechFields, effective_reference_forms,
     named_voice as classify_named_voice, read_batch_field, read_field as read_speech_field,
     read_stream as read_speech_stream, reference_forms,
     response_format as classify_response_format, task as classify_task,
@@ -46,7 +46,12 @@ pub(super) fn speech_with_hints(
             .unwrap_or("wav"),
     )
     .ok_or(HttpFault::MalformedRequest)?;
-    let body_stream = fields.stream.as_ref().and_then(|value| *value);
+    // The worker streams SSE even when stream is false, so routing must as well.
+    let body_stream = if fields.stream_format.as_ref().and_then(Option::as_deref) == Some("sse") {
+        Some(true)
+    } else {
+        fields.stream.as_ref().and_then(|value| *value)
+    };
     let stream = merge_stream(body_stream, route_stream)?;
     if stream && format != SpeechResponseFormat::Pcm {
         return Err(HttpFault::MalformedRequest);
@@ -382,6 +387,9 @@ impl<'de> Visitor<'de> for RootVisitor {
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "stream" => read_speech_stream(&mut map, &mut fields)?,
+                "stream_format" => {
+                    fields.stream_format = Some(map.next_value_seed(ScalarFactSeed)?.into_string())
+                }
                 "items" if matches!(self.0, RootMode::Batch) => {
                     items = Some(map.next_value_seed(ItemsSeed)?)
                 }
@@ -1329,5 +1337,64 @@ stream_modes = ["non_streaming", "streaming"]
             .err(),
             Some(HttpFault::MalformedRequest)
         );
+    }
+
+    #[test]
+    fn sse_stream_format_classifies_as_streaming() {
+        let trust = TrustDomain::new(String::from("local"));
+        let stream_mode = |body: &[u8], route_stream| -> Result<StreamMode, HttpFault> {
+            let classified = speech_with_hints(body, None, route_stream, &trust)?;
+            let ProfileRequirement::SpeechHttp { stream_mode, .. } =
+                classified.requirement.profile()
+            else {
+                panic!("speech requirement")
+            };
+            Ok(*stream_mode)
+        };
+        for body in [
+            br#"{"model":"tts","input":"x","response_format":"pcm","stream_format":"sse"}"#
+                .as_slice(),
+            br#"{"model":"tts","input":"x","response_format":"pcm","stream":false,"stream_format":"sse"}"#
+                .as_slice(),
+        ] {
+            assert_eq!(stream_mode(body, None), Ok(StreamMode::Streaming));
+            assert_eq!(stream_mode(body, Some(true)), Ok(StreamMode::Streaming));
+            assert_eq!(
+                stream_mode(body, Some(false)),
+                Err(HttpFault::MalformedRequest)
+            );
+        }
+        assert_eq!(
+            stream_mode(
+                br#"{"model":"tts","input":"x","response_format":"wav","stream_format":"sse"}"#,
+                None,
+            ),
+            Err(HttpFault::MalformedRequest)
+        );
+
+        for stream_format in [r#""audio""#, r#""SSE""#, "null", "7", r#"["sse"]"#] {
+            let body = format!(
+                r#"{{"model":"tts","input":"x","response_format":"wav","stream_format":{stream_format}}}"#
+            );
+            assert_eq!(
+                stream_mode(body.as_bytes(), None),
+                Ok(StreamMode::NonStreaming)
+            );
+            let body = format!(
+                r#"{{"model":"tts","input":"x","response_format":"pcm","stream":true,"stream_format":{stream_format}}}"#
+            );
+            assert_eq!(
+                stream_mode(body.as_bytes(), None),
+                Ok(StreamMode::Streaming)
+            );
+        }
+
+        batch_with_hints(
+            br#"{"model":"tts","stream_format":"sse","items":[{"input":"x"}]}"#,
+            None,
+            None,
+            &trust,
+        )
+        .expect("batch ignores stream_format");
     }
 }

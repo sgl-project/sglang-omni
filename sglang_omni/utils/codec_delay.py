@@ -17,15 +17,21 @@ def reverse_delay_pattern(
         raise ValueError(
             f"delayed codes must be 2-D [L, N], got shape {tuple(delayed.shape)}"
         )
+    else:
+        pass
     length, num_codebooks = delayed.shape
     rows = length - (num_codebooks - 1)
     if rows <= 0:
         if allow_short:
             return delayed.new_empty((0, num_codebooks))
+        else:
+            pass
         raise ValueError(
             f"delayed has L={length}, N={num_codebooks}; need L >= N so at "
             f"least one data row can be recovered."
         )
+    else:
+        pass
     out = torch.empty((rows, num_codebooks), device=delayed.device, dtype=delayed.dtype)
     for c in range(num_codebooks):
         out[:, c] = delayed[c : c + rows, c]

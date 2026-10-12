@@ -53,7 +53,7 @@ def test_invalid_action_dispatch_is_rejected_before_native_call(
     request = payload()
     request.request.inputs.update(inputs)
     with pytest.raises(ValueError):
-        scheduler._generate(request)
+        scheduler.generate(request)
     assert not action_runtime.generator.generate_action.called
     assert not list(tmp_path.iterdir())
 
@@ -63,10 +63,10 @@ def test_action_json_crosses_client_boundary_and_survives_delivery(
     action_runtime, tmp_path, mode
 ):
     scheduler = NativeGenerationScheduler(action_runtime.generator, str(tmp_path))
-    result = scheduler._generate(
+    result = scheduler.generate(
         payload(" " + mode.upper() + " ", num_frames=17, guidance_scale=1.0, seed=0)
     )
-    chunk = Client._default_result_builder(result.request_id, result.data)
+    chunk = Client.default_result_builder(result.request_id, result.data)
     assert chunk.media[0]["modality"] == "action"
     path = Path(chunk.media[0]["path"])
     assert path.parent.parent == tmp_path
@@ -100,7 +100,7 @@ def test_forward_dynamics_keeps_native_video_path(action_runtime, tmp_path):
     action_runtime.generator.generate = lambda **kwargs: calls.append(kwargs) or result
     scheduler = NativeGenerationScheduler(action_runtime.generator, str(tmp_path))
     actions = [[0.0] * 9] * 16
-    output = scheduler._generate(
+    output = scheduler.generate(
         payload("forward_dynamics", action=actions, image_path="input.png")
     )
     assert not action_runtime.generator.generate_action.called
@@ -123,14 +123,14 @@ def test_failed_action_removes_only_its_owned_output(action_runtime, tmp_path, f
     elif failure == "serialization":
         action_runtime.response["invalid"] = float("nan")
     if failure == "delivery":
-        result = scheduler._generate(payload())
+        result = scheduler.generate(payload())
         assert scheduler.claim_result(result, terminal=True)
         scheduler.release_result(result, delivered=False)
     else:
         with pytest.raises((RuntimeError, ValueError)):
-            scheduler._generate(payload())
+            scheduler.generate(payload())
     assert list(tmp_path.iterdir()) == [keep]
-    assert not scheduler._native_requests
+    assert not scheduler.native_requests
 
 
 def test_active_action_cancel_waits_for_native_settlement(action_runtime, tmp_path):
@@ -147,7 +147,7 @@ def test_active_action_cancel_waits_for_native_settlement(action_runtime, tmp_pa
 
     def run():
         try:
-            scheduler._generate(payload())
+            scheduler.generate(payload())
         except BaseException as exc:
             errors.append(exc)
 
@@ -155,7 +155,7 @@ def test_active_action_cancel_waits_for_native_settlement(action_runtime, tmp_pa
     thread.start()
     try:
         assert started.wait(3)
-        directory = scheduler._native_requests["action-1"].directory
+        directory = scheduler.native_requests["action-1"].directory
         scheduler.abort("action-1")
         assert directory.exists(), "Cleanup ran before native settled"
     finally:
@@ -163,4 +163,4 @@ def test_active_action_cancel_waits_for_native_settlement(action_runtime, tmp_pa
         thread.join(5)
     assert not thread.is_alive() and not errors
     assert not directory.exists()
-    assert not scheduler._native_requests
+    assert not scheduler.native_requests

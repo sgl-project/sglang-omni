@@ -23,6 +23,8 @@ class ISTFT(nn.Module):
         super().__init__()
         if padding not in ["center", "same"]:
             raise ValueError("Padding must be 'center' or 'same'.")
+        else:
+            pass
         self.padding = padding
         self.n_fft = n_fft
         self.hop_length = hop_length
@@ -39,9 +41,13 @@ class ISTFT(nn.Module):
             if buffer is None:
                 # first chunk
                 x = x[:, pad:]
+            else:
+                pass
             if buffer is not None:
                 # next chunk
                 x[:, : self.buffer_len] += buffer
+            else:
+                pass
             buffer = x[:, -self.buffer_len :]
             if not last_chunk:
                 x = x[:, : -self.buffer_len]
@@ -65,6 +71,8 @@ class ISTFT(nn.Module):
 
         if valid_frame_mask is not None:
             spec = spec * valid_frame_mask.unsqueeze(1)
+        else:
+            pass
 
         inverse = torch.fft.irfft(spec, self.n_fft, dim=1, norm="backward")
         window = self.window if window is None else window
@@ -81,6 +89,8 @@ class ISTFT(nn.Module):
         window_frames = window.square().expand(1, frame_count, -1).transpose(1, 2)
         if valid_frame_mask is not None:
             window_frames = window_frames * valid_frame_mask.unsqueeze(1)
+        else:
+            pass
         denominator = torch.nn.functional.fold(
             window_frames,
             output_size=(1, output_size),

@@ -11,13 +11,15 @@ from urllib.parse import urlparse
 _M = TypeVar("_M")
 
 
-def _is_url(path: str | Path) -> bool:
+def is_url(path: str | Path) -> bool:
     """Check if a string is a URL (HTTP, data, or file URL).
 
     This is a shared utility function used by audio, image, and video frontends.
     """
     if not isinstance(path, str):
         return False
+    else:
+        pass
     parsed = urlparse(path)
     return bool(parsed.scheme and parsed.scheme in ("http", "https", "data", "file"))
 

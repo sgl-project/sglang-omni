@@ -8,8 +8,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class FlowConfig:
     inference_cfg_rate: float = 0.7
 
     @classmethod
-    def from_dict(cls, values: dict[str, Any] | None) -> "FlowConfig":
+    def from_dict(cls, values: Mapping[str, object] | None) -> "FlowConfig":
         values = dict(values or {})
         dit = dict(values.pop("dit", values.pop("estimator", {})) or {})
         aliases = {
@@ -55,6 +55,8 @@ class FlowConfig:
         for source, target in aliases.items():
             if source in dit:
                 values[target] = dit[source]
+            else:
+                pass
         allowed = cls.__dataclass_fields__
         return cls(**{key: value for key, value in values.items() if key in allowed})
 
@@ -86,13 +88,15 @@ class HiFTConfig:
     conv_pre_look_right: int = 4
 
     @classmethod
-    def from_dict(cls, values: dict[str, Any] | None) -> "HiFTConfig":
+    def from_dict(cls, values: Mapping[str, object] | None) -> "HiFTConfig":
         values = dict(values or {})
         if "istft_params" not in values:
             values["istft_params"] = {
                 "n_fft": int(values.pop("istft_n_fft", 16)),
                 "hop_len": int(values.pop("istft_hop_len", 4)),
             }
+        else:
+            pass
         allowed = cls.__dataclass_fields__
         return cls(**{key: value for key, value in values.items() if key in allowed})
 
@@ -105,7 +109,7 @@ class VocoderConfig:
     hift: HiFTConfig = field(default_factory=HiFTConfig)
 
     @classmethod
-    def from_dict(cls, values: dict[str, Any]) -> "VocoderConfig":
+    def from_dict(cls, values: Mapping[str, object]) -> "VocoderConfig":
         return cls(
             flow=FlowConfig.from_dict(values.get("flow")),
             hift=HiFTConfig.from_dict(values.get("hifigan", values.get("hift"))),

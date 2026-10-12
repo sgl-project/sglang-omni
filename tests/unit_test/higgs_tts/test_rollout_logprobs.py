@@ -21,9 +21,7 @@ N = 8
 V = 1026
 
 
-def _manual(
-    logits_NV: torch.Tensor, codes_N: torch.Tensor, temp: float
-) -> torch.Tensor:
+def manual(logits_NV: torch.Tensor, codes_N: torch.Tensor, temp: float) -> torch.Tensor:
     lp = torch.log_softmax(logits_NV.float() / temp, dim=-1)
     return lp.gather(-1, codes_N.long().unsqueeze(-1)).squeeze(-1)
 
@@ -39,7 +37,7 @@ def test_matches_manual_log_softmax_per_row_temperature():
 
     got = selected_token_logprobs(logits, codes, temperature=temperature)
 
-    expected = torch.stack([_manual(logits[b], codes[b], temps[b]) for b in range(B)])
+    expected = torch.stack([manual(logits[b], codes[b], temps[b]) for b in range(B)])
     assert got.shape == (B, N)
     assert torch.allclose(got, expected, atol=1e-5, rtol=1e-4)
     # Distinct temps give distinct logprobs on the same logits/codes.
@@ -100,5 +98,5 @@ def test_mixed_greedy_and_sampled_rows():
             raw = torch.log_softmax(logits[b].float(), dim=-1)
             exp_b = raw.gather(-1, codes[b].long().unsqueeze(-1)).squeeze(-1)
         else:
-            exp_b = _manual(logits[b], codes[b], temp_val)
+            exp_b = manual(logits[b], codes[b], temp_val)
         assert torch.allclose(got[b], exp_b, atol=1e-5), f"row {b}"

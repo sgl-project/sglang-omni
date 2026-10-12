@@ -15,6 +15,7 @@ from typing import Any, TypedDict
 
 import aiohttp
 
+from benchmarks.benchmarker.conditions import sampling_seed_field
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
 from benchmarks.benchmarker.utils import get_wav_duration
@@ -117,6 +118,7 @@ def make_video_send_fn(
     enable_audio_input: bool = False,
     audio_output_dir: str | None = None,
     fixed_prompt: str | None = None,
+    seed: int | None = None,
 ) -> SendFn:
     """Build video requests; optional completion(payload) replaces HTTP only.
 
@@ -143,6 +145,7 @@ def make_video_send_fn(
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
+            **sampling_seed_field(seed),
         }
         if enable_audio_input:
             assert isinstance(sample, VideoAMMESample)
@@ -201,9 +204,9 @@ def build_videomme_result_records(
     results: list[RequestResult],
 ) -> list[VideoMMERecord]:
     """Parse responses into persisted per-sample records."""
-    assert len(samples) == len(results), (
-        f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
-    )
+    assert len(samples) == len(
+        results
+    ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
     random.seed(42)
 
     per_sample: list[VideoMMERecord] = []

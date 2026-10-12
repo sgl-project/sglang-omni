@@ -55,7 +55,9 @@ def deployment(record_testsuite_property):
         and 0 <= min(devices) <= max(devices) < torch.cuda.device_count()
     )
     for name in ("CHECKPOINT_REVISION", "NATIVE_REVISION"):
-        record_testsuite_property(name, os.environ.get(f"COSMOS3_SUPER_{name}", "unset"))
+        record_testsuite_property(
+            name, os.environ.get(f"COSMOS3_SUPER_{name}", "unset")
+        )
     root = Path(__file__).resolve().parents[3]
     record_testsuite_property(
         "omni_revision",
@@ -70,7 +72,7 @@ def deployment(record_testsuite_property):
     return model, devices
 
 
-def _config(kind, model, devices, output):
+def build_config(kind, model, devices, output):
     from sglang_omni.config.manager import ConfigManager
 
     root = Path(__file__).resolve().parents[3]
@@ -100,7 +102,9 @@ def _config(kind, model, devices, output):
         )
     residency = os.environ.get("COSMOS3_SUPER_RESIDENCY", "layerwise-offload")
     if residency not in ("resident", "layerwise-offload"):
-        raise ValueError("COSMOS3_SUPER_RESIDENCY must be resident or layerwise-offload")
+        raise ValueError(
+            "COSMOS3_SUPER_RESIDENCY must be resident or layerwise-offload"
+        )
     if kind == "generation" and residency == "resident":
         overrides["component_residency"] = {"transformer": "resident"}
         overrides.pop("layerwise_resident_layers", None)
@@ -108,7 +112,7 @@ def _config(kind, model, devices, output):
 
 
 @asynccontextmanager
-async def _running(config):
+async def running(config):
     import psutil
 
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
@@ -119,7 +123,7 @@ async def _running(config):
         await runner.start(
             timeout=float(os.environ.get("COSMOS3_SUPER_STARTUP_TIMEOUT", "1800"))
         )
-        for group in runner._groups:
+        for group in runner.groups:
             for process in group.processes:
                 owner = psutil.Process(process.pid)
                 owned.extend([owner, *owner.children(recursive=True)])
@@ -130,7 +134,7 @@ async def _running(config):
         assert not alive, "Owned stage/native processes remained after shutdown"
 
 
-async def _generate(runner, request, request_id=None):
+async def generate(runner, request, request_id=None):
     from sglang_omni.client import Client
 
     async def collect():
@@ -149,7 +153,7 @@ async def _generate(runner, request, request_id=None):
     return chunks[0]
 
 
-def _check_media(item, frames, width, height):
+def check_media(item, frames, width, height):
     import numpy as np
     from PIL import Image
 
@@ -172,7 +176,7 @@ def _check_media(item, frames, width, height):
             assert decoded == frames
 
 
-def _write_video(path, images, fps):
+def write_video(path, images, fps):
     import av
 
     with av.open(str(path), "w") as output:
@@ -186,7 +190,7 @@ def _write_video(path, images, fps):
             output.mux(packet)
 
 
-def _generation_case(mode, directory):
+def generation_case(mode, directory):
     from PIL import Image, ImageDraw
 
     frames = 1 if mode == "t2i" else 49 if mode == "sound" else 17
@@ -216,7 +220,7 @@ def _generation_case(mode, directory):
         inputs["image_path"] = str(path)
     if mode in ("v2v", "inverse_dynamics"):
         path = directory / "synthetic.mp4"
-        _write_video(path, images, inputs["fps"])
+        write_video(path, images, inputs["fps"])
         inputs["video_path"] = str(path)
         if mode == "v2v":
             inputs.update(condition_frame_indexes=[0, 1], condition_video_keep="first")
@@ -241,7 +245,7 @@ def _generation_case(mode, directory):
     return inputs
 
 
-def _check_audio(path, expected_seconds):
+def check_audio(path, expected_seconds):
     import av
     import numpy as np
 
@@ -261,7 +265,7 @@ def _check_audio(path, expected_seconds):
     assert abs(seconds - expected_seconds) <= 0.15
 
 
-def _check_action(item, mode, horizon, dimension):
+def check_action(item, mode, horizon, dimension):
     import numpy as np
 
     assert item["modality"] == "action"
@@ -293,21 +297,19 @@ async def test_super_generation(tmp_path, mode, deployment):
     from sglang_omni.client import GenerateRequest
 
     model, devices = deployment
-    config = _config("generation", model, devices, tmp_path / "media")
-    inputs = _generation_case(mode, tmp_path)
+    config = build_config("generation", model, devices, tmp_path / "media")
+    inputs = generation_case(mode, tmp_path)
     # T2I also checks serving after the first owner completely shuts down.
     for _ in range(2 if mode == "t2i" else 1):
-        async with _running(config) as runner:
-            chunk = await _generate(
-                runner, GenerateRequest(prompt=inputs, stream=False)
-            )
+        async with running(config) as runner:
+            chunk = await generate(runner, GenerateRequest(prompt=inputs, stream=False))
             assert chunk.media and len(chunk.media) == 1
             if mode in ("policy", "inverse_dynamics"):
-                _check_action(chunk.media[0], mode, inputs["num_frames"] - 1, 9)
+                check_action(chunk.media[0], mode, inputs["num_frames"] - 1, 9)
             else:
-                _check_media(chunk.media[0], inputs["num_frames"], 832, 480)
+                check_media(chunk.media[0], inputs["num_frames"], 832, 480)
                 if mode == "sound":
-                    _check_audio(chunk.media[0]["path"], inputs["sound_duration"])
+                    check_audio(chunk.media[0]["path"], inputs["sound_duration"])
 
 
 @pytest.mark.parametrize("mode", ["text", "image", "video"])
@@ -320,7 +322,7 @@ async def test_super_reasoner(tmp_path, mode, deployment):
     from sglang_omni.client import GenerateRequest, SamplingParams
 
     model, devices = deployment
-    config = _config("reasoner", model, devices, tmp_path)
+    config = build_config("reasoner", model, devices, tmp_path)
     prompt = "What is two plus two? Give a short answer."
     if mode != "text":
         if mode == "image":
@@ -333,7 +335,7 @@ async def test_super_reasoner(tmp_path, mode, deployment):
             question = "Name the dominant color."
         else:
             reference = tmp_path / "colors.mp4"
-            _write_video(
+            write_video(
                 reference,
                 [
                     Image.new("RGB", (224, 224), color)
@@ -356,8 +358,8 @@ async def test_super_reasoner(tmp_path, mode, deployment):
                 }
             ]
         }
-    async with _running(config) as runner:
-        chunk = await _generate(
+    async with running(config) as runner:
+        chunk = await generate(
             runner,
             GenerateRequest(
                 prompt=prompt,
@@ -382,7 +384,7 @@ async def test_super_reasoner_lifecycle(tmp_path, deployment):
     from sglang_omni.client import Client, GenerateRequest, SamplingParams
 
     model, devices = deployment
-    config = _config("reasoner", model, devices, tmp_path)
+    config = build_config("reasoner", model, devices, tmp_path)
     long_request = GenerateRequest(
         prompt="Count upward from one, writing every integer on a separate line.",
         sampling=SamplingParams(temperature=0.0, max_new_tokens=2048),
@@ -390,11 +392,11 @@ async def test_super_reasoner_lifecycle(tmp_path, deployment):
     )
 
     # A native request can be cancelled without poisoning the live deployment.
-    async with _running(config) as runner:
+    async with running(config) as runner:
         client = Client(runner.coordinator)
         request_id = "cosmos3-super-cancel"
         pending = asyncio.create_task(
-            _generate(runner, long_request, request_id=request_id), name=request_id
+            generate(runner, long_request, request_id=request_id), name=request_id
         )
         for _ in range(100):
             if await client.get_status(request_id) is not None:
@@ -406,7 +408,7 @@ async def test_super_reasoner_lifecycle(tmp_path, deployment):
         assert aborted.success
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(pending, timeout=30)
-        followup = await _generate(
+        followup = await generate(
             runner,
             GenerateRequest(
                 prompt="What is two plus two? Give a short answer.",
@@ -417,15 +419,15 @@ async def test_super_reasoner_lifecycle(tmp_path, deployment):
         assert followup.text and followup.text.strip().endswith("4")
 
     # The runner notices an unexpected stage death and releases the process tree.
-    async with _running(config) as runner:
-        worker = runner._groups[0].processes[0]
+    async with running(config) as runner:
+        worker = runner.groups[0].processes[0]
         worker.terminate()
         with pytest.raises(RuntimeError, match="Dead stage process"):
             await asyncio.wait_for(runner.wait_failed(), timeout=30)
 
     # A fresh native owner can start after the failed worker has been cleaned up.
-    async with _running(config) as runner:
-        restarted = await _generate(
+    async with running(config) as runner:
+        restarted = await generate(
             runner,
             GenerateRequest(
                 prompt="What is two plus two? Give a short answer.",

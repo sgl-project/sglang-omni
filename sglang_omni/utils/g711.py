@@ -45,18 +45,28 @@ def resolve_g711_encoding(
     normalized = (content_type or "").split(";", 1)[0].strip().lower()
     if normalized in _MULAW_CONTENT_TYPES:
         return MULAW
+    else:
+        pass
     if normalized in _ALAW_CONTENT_TYPES:
         return ALAW
+    else:
+        pass
     if normalized not in _GENERIC_CONTENT_TYPES:
         return None
+    else:
+        pass
 
     name = (filename or "").strip().lower()
     dot = name.rfind(".")
     extension = name[dot:] if dot >= 0 else ""
     if extension in _MULAW_EXTENSIONS:
         return MULAW
+    else:
+        pass
     if extension in _ALAW_EXTENSIONS:
         return ALAW
+    else:
+        pass
     return None
 
 
@@ -66,6 +76,8 @@ def wrap_g711_as_wav(
     """Put a WAV header in front of headerless G.711 bytes."""
     if is_riff_wav(data) or is_sun_au(data):
         return data
+    else:
+        pass
     try:
         fmt_tag = _WAV_FORMAT_TAGS[encoding]
     except KeyError:

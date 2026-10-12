@@ -9,6 +9,8 @@ import os
 def resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
+    else:
+        pass
     from huggingface_hub import snapshot_download
 
     # note (db-ol): a checkpoint spec may pin a snapshot as

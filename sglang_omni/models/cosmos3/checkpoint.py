@@ -24,4 +24,6 @@ def resolve_native_checkpoint(kwargs: dict[str, Any]) -> dict[str, Any]:
         resolved["served_model_name"] = (
             model_path if is_local else model_path.partition("@")[0]
         )
+    else:
+        pass
     return resolved

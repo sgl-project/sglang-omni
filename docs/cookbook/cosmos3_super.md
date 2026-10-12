@@ -48,6 +48,13 @@ The recorded SDK generation runs bypassed HTTP setup. The extended tests below n
 
 ## Reproduce the GPU checks
 
+The [GPU qualification script](../../tests/integration/cosmos3/run_super_gpu_qualification.sh)
+lists and runs the shared accelerator checks, Super smoke/lifecycle tests,
+SDK/HTTP generation, and Reasoner accuracy tests sequentially. Set
+`COSMOS3_SUPER_NATIVE_REVISION` to the installed native git SHA, then run it
+with `bash` from this checkout. It defaults to GPUs 0–1 and both transports,
+and saves logs, JUnit reports, and model artifacts in a new directory per run.
+
 Use the runtime above, plus pytest, pytest-asyncio, psutil, Pillow, NumPy and PyAV.
 Run sequentially, without pytest-xdist:
 

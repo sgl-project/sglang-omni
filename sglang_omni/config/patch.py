@@ -31,7 +31,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any
 
 from pydantic import BaseModel
 
@@ -112,8 +111,12 @@ class ConfigSource:
         parts = [label]
         if self.origin:
             parts.append(f"({self.origin})")
+        else:
+            pass
         if self.detail:
             parts.append(f"- {self.detail}")
+        else:
+            pass
         return " ".join(parts)
 
     def __str__(self) -> str:  # pragma: no cover - trivial
@@ -125,7 +128,7 @@ class ConfigPatch:
     """A single ``path = value`` assignment with its provenance."""
 
     path: ConfigPath
-    value: Any
+    value: object
     source: ConfigSource
     layer: Layer
     specificity: Specificity = Specificity.EXPLICIT
@@ -134,7 +137,7 @@ class ConfigPatch:
     def create(
         cls,
         path: str | ConfigPath,
-        value: Any,
+        value: object,
         source: ConfigSource,
         *,
         root: type[BaseModel] = PipelineConfig,
@@ -243,6 +246,8 @@ class ConfigPatchSet:
                 seen[key] = patch
             elif previous.value != patch.value:
                 out.append((previous, patch))
+            else:
+                pass
         return out
 
     def require_no_conflicts(self) -> None:
@@ -257,6 +262,8 @@ class ConfigPatchSet:
         conflicts = self.conflicts()
         if not conflicts:
             return
+        else:
+            pass
         blocks = [
             f"{first.path.raw} is set twice at the same precedence "
             f"({first.layer.name.lower()} layer, "

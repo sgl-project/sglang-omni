@@ -14,7 +14,7 @@ from sglang_omni.models.qwen3_asr import sglang_model
 from sglang_omni.models.qwen3_asr.sglang_model import Qwen3ASRForConditionalGeneration
 
 
-def _forward_batch(*, carries_mrope: bool) -> SimpleNamespace:
+def make_forward_batch(*, carries_mrope: bool) -> SimpleNamespace:
     positions = torch.arange(3)
     return SimpleNamespace(
         positions=positions,
@@ -24,7 +24,7 @@ def _forward_batch(*, carries_mrope: bool) -> SimpleNamespace:
     )
 
 
-def _eager_positions(
+def eager_positions(
     monkeypatch: pytest.MonkeyPatch, forward_batch: SimpleNamespace
 ) -> torch.Tensor:
     model = SimpleNamespace(language_model=object(), get_audio_feature=object())
@@ -44,11 +44,13 @@ def _eager_positions(
     return captured["positions"]
 
 
-def _captured_positions(forward_batch: SimpleNamespace) -> torch.Tensor:
+def captured_positions(forward_batch: SimpleNamespace) -> torch.Tensor:
     runner = SimpleNamespace(
         model_runner=SimpleNamespace(model=Qwen3ASRForConditionalGeneration)
     )
-    return PrefillCudaGraphRunner._get_layer_model_positions(runner, forward_batch)
+    return PrefillCudaGraphRunner._get_layer_model_positions(
+        runner, forward_batch
+    )  # noqa: leading-underscore  # upstream name
 
 
 @pytest.mark.parametrize("carries_mrope", [True, False])
@@ -56,10 +58,10 @@ def test_capture_selects_value_equal_positions_to_eager(
     monkeypatch: pytest.MonkeyPatch,
     carries_mrope: bool,
 ) -> None:
-    forward_batch = _forward_batch(carries_mrope=carries_mrope)
+    forward_batch = make_forward_batch(carries_mrope=carries_mrope)
 
-    eager = _eager_positions(monkeypatch, forward_batch)
-    captured = _captured_positions(forward_batch)
+    eager = eager_positions(monkeypatch, forward_batch)
+    captured = captured_positions(forward_batch)
 
     assert captured is forward_batch.positions
     assert torch.equal(captured.to(eager.dtype), eager)
@@ -111,7 +113,7 @@ def test_fused_rope_hook_feeds_the_kernel_int32_positions(
     positions = torch.arange(3, dtype=positions_dtype)
     hidden_states = torch.zeros((3, 8), dtype=torch.bfloat16)
 
-    query, key, value = sglang_model._fused_asr_forward_prepare_native(
+    query, key, value = sglang_model.fused_asr_forward_prepare_native(
         attention, positions, hidden_states
     )
 

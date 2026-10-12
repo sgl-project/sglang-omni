@@ -14,6 +14,7 @@ from typing import TypedDict
 
 import aiohttp
 
+from benchmarks.benchmarker.conditions import sampling_seed_field
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
 from benchmarks.dataset.mmmu import MMMUSample
@@ -227,6 +228,7 @@ def make_mmmu_send_fn(
     completion=None,
     max_tokens: int = 2048,
     temperature: float = 0.0,
+    seed: int | None = None,
     enable_audio: bool = False,
     audio_dir: str | None = None,
 ) -> SendFn:
@@ -262,6 +264,7 @@ def make_mmmu_send_fn(
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
+            **sampling_seed_field(seed),
         }
         if enable_audio:
             payload["audio"] = {"format": "wav"}
@@ -327,9 +330,9 @@ def build_mmmu_result_records(
     results: list[RequestResult],
 ) -> list[MMMURecord]:
     """Parse responses into persisted per-sample records."""
-    assert len(samples) == len(results), (
-        f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
-    )
+    assert len(samples) == len(
+        results
+    ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
     # Fix the random seed so MC fallback choices stay deterministic across CI runs.
     random.seed(42)
 

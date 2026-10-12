@@ -142,7 +142,7 @@ SINGLE_CALL_MODES = ["t2i", "t2v", "i2v", "t2vs", "v2v", "inverse_dynamics"]
 MODES = ["t2i", "t2v", "i2v", "t2vs", "v2v", "forward_dynamics", "inverse_dynamics"]
 
 
-def _devices() -> list[int]:
+def gpu_devices() -> list[int]:
     devices = [
         int(v) for v in os.environ.get("COSMOS3_SUPER_GPU_IDS", "0,1").split(",")
     ]
@@ -150,7 +150,7 @@ def _devices() -> list[int]:
     return devices
 
 
-def _resolve_model(kind="generation") -> Path:
+def resolve_model(kind="generation") -> Path:
     """Return a local checkpoint snapshot dir (assets/ included).
 
     Honors COSMOS3_SUPER_MODEL_PATH for an offline snapshot; otherwise resolves
@@ -171,20 +171,20 @@ def _resolve_model(kind="generation") -> Path:
     return Path(resolve_checkpoint(model_path)).resolve()
 
 
-def _compact(path: Path) -> str:
+def compact(path: Path) -> str:
     """Load a structured-prompt JSON asset and re-serialize it compactly."""
     return json.dumps(json.loads(path.read_text()), separators=(",", ":"))
 
 
-def _config(model: Path, devices: list[int], output: Path):
-    from tests.integration.cosmos3.test_super_gpu import _config as smoke_config
+def build_config(model: Path, devices: list[int], output: Path):
+    from tests.integration.cosmos3.test_super_gpu import build_config as smoke_config
 
     # Share placement and the single-GPU fallback; leave the recipe in the YAML.
     return smoke_config("generation", str(model), devices, output)
 
 
 @asynccontextmanager
-async def _running(config):
+async def running(config):
     import psutil
 
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
@@ -195,7 +195,7 @@ async def _running(config):
         await runner.start(
             timeout=float(os.environ.get("COSMOS3_SUPER_STARTUP_TIMEOUT", "1800"))
         )
-        for group in runner._groups:
+        for group in runner.groups:
             for process in group.processes:
                 owner = psutil.Process(process.pid)
                 owned.extend([owner, *owner.children(recursive=True)])
@@ -206,7 +206,7 @@ async def _running(config):
         assert not alive, "Owned stage/native processes remained after shutdown"
 
 
-async def _generate(runner, inputs: dict):
+async def generate(runner, inputs: dict):
     if isinstance(runner, SuperClient):
         return await runner.generate(inputs)
     from sglang_omni.client import Client, GenerateRequest
@@ -227,7 +227,7 @@ async def _generate(runner, inputs: dict):
     return chunks[0]
 
 
-def _check_media(item: dict, frames: int, width: int, height: int) -> None:
+def check_media(item: dict, frames: int, width: int, height: int) -> None:
     path = Path(item["path"])
     assert path.is_file() and path.stat().st_size > 0
     if frames == 1:
@@ -248,7 +248,7 @@ def _check_media(item: dict, frames: int, width: int, height: int) -> None:
         assert decoded == frames
 
 
-def _check_audio(path: str, expected_seconds: float) -> None:
+def check_audio(path: str, expected_seconds: float) -> None:
     import av
     import numpy as np
 
@@ -268,7 +268,7 @@ def _check_audio(path: str, expected_seconds: float) -> None:
     assert abs(seconds - expected_seconds) <= 0.15
 
 
-def _check_action(item: dict, mode: str, horizon: int, dimension: int) -> None:
+def check_action(item: dict, mode: str, horizon: int, dimension: int) -> None:
     import numpy as np
 
     assert item["modality"] == "action"
@@ -282,7 +282,7 @@ def _check_action(item: dict, mode: str, horizon: int, dimension: int) -> None:
     assert values.shape == (horizon, dimension) and np.isfinite(values).all()
 
 
-def _video_size(path: Path) -> tuple[int, int]:
+def video_size(path: Path) -> tuple[int, int]:
     import av
 
     with av.open(str(path)) as container:
@@ -291,7 +291,7 @@ def _video_size(path: Path) -> tuple[int, int]:
     raise AssertionError(f"No decodable frames in {path}")
 
 
-def _last_frame_png(video_path: Path, dest: Path):
+def last_frame_png(video_path: Path, dest: Path):
     import av
     from PIL import Image  # noqa: F401  (kept for parity; to_image returns PIL)
 
@@ -304,20 +304,20 @@ def _last_frame_png(video_path: Path, dest: Path):
     return dest
 
 
-def _case_inputs(mode: str, assets: Path, tmp_dir: Path) -> dict:
+def case_inputs(mode: str, assets: Path, tmp_dir: Path) -> dict:
     """Build the request for a single-call mode (all except forward_dynamics)."""
     if mode == "t2i":
         return {
             **RECIPE,
             "num_frames": 1,
             "prompt": json.dumps(T2I_PROMPT, separators=(",", ":")),
-            "negative_prompt": _compact(assets / "negative_prompt.json"),
+            "negative_prompt": compact(assets / "negative_prompt.json"),
         }
     if mode in ("t2v", "i2v", "t2vs"):
         inputs = {
             **RECIPE,
-            "negative_prompt": _compact(assets / "negative_prompt.json"),
-            "prompt": _compact(assets / f"example_{mode}_prompt.json"),
+            "negative_prompt": compact(assets / "negative_prompt.json"),
+            "prompt": compact(assets / f"example_{mode}_prompt.json"),
         }
         if mode == "i2v":
             inputs["image_path"] = str(assets / "example_i2v_input.jpg")
@@ -329,8 +329,8 @@ def _case_inputs(mode: str, assets: Path, tmp_dir: Path) -> dict:
         # Continue the checkpoint's own i2v output clip with its i2v prompt.
         return {
             **RECIPE,
-            "negative_prompt": _compact(assets / "negative_prompt.json"),
-            "prompt": _compact(assets / "example_i2v_prompt.json"),
+            "negative_prompt": compact(assets / "negative_prompt.json"),
+            "prompt": compact(assets / "example_i2v_prompt.json"),
             "video_path": str(assets / "example_i2v_output.mp4"),
             "condition_frame_indexes": [0, 1],
             "condition_video_keep": "first",
@@ -341,7 +341,7 @@ def _case_inputs(mode: str, assets: Path, tmp_dir: Path) -> dict:
         ref = json.loads((assets / "example_action_id_av_0_output.json").read_text())
         horizon, dim = ref["shape"]
         video = assets / "example_action_id_av_0_input.mp4"
-        width, height = _video_size(video)
+        width, height = video_size(video)
         return {
             "width": width,
             "height": height,
@@ -362,7 +362,7 @@ def _case_inputs(mode: str, assets: Path, tmp_dir: Path) -> dict:
     raise AssertionError(f"Unhandled single-call mode: {mode}")
 
 
-async def _run_forward_dynamics(runner, assets: Path, tmp_dir: Path) -> list[str]:
+async def run_forward_dynamics(runner, assets: Path, tmp_dir: Path) -> list[str]:
     """Full 4-chunk autoregressive AgiBotWorld rollout.
 
     Chunk 0 conditions on the bundled first frame; chunks 1-3 condition on the
@@ -397,13 +397,13 @@ async def _run_forward_dynamics(runner, assets: Path, tmp_dir: Path) -> list[str
             "use_duration_template": False,
             "action": action,
         }
-        chunk = await _generate(runner, inputs)
+        chunk = await generate(runner, inputs)
         assert chunk.media and len(chunk.media) == 1
         item = chunk.media[0]
-        _check_media(item, chunk_size + 1, size, size)
+        check_media(item, chunk_size + 1, size, size)
         outputs.append(item["path"])
         # Condition the next chunk on this chunk's final generated frame.
-        image_path = _last_frame_png(
+        image_path = last_frame_png(
             Path(item["path"]), tmp_dir / f"fd-chunk-{index}-last.png"
         )
     assert len(outputs) == int(meta["num_chunks"])
@@ -415,8 +415,8 @@ async def _run_forward_dynamics(runner, assets: Path, tmp_dir: Path) -> list[str
 async def test_generation_quality(tmp_path, transport):
     """Serve the generation stage once and validate every generation mode:
     T2I, T2V, I2V, T2V+sound, V2V continuation, forward/inverse dynamics."""
-    devices = _devices()
-    model = _resolve_model()
+    devices = gpu_devices()
+    model = resolve_model()
     assets = model / "assets"
     required = (
         "negative_prompt.json",
@@ -433,26 +433,26 @@ async def test_generation_quality(tmp_path, transport):
     missing = [name for name in required if not (assets / name).is_file()]
     assert not missing, f"Missing checkpoint assets: {missing}"
 
-    config = _config(model, devices, tmp_path / "media")
+    config = build_config(model, devices, tmp_path / "media")
     async with deployment(config, transport, tmp_path / transport) as runner:
         for mode in MODES:
             if mode == "forward_dynamics":
-                await _run_forward_dynamics(runner, assets, tmp_path)
+                await run_forward_dynamics(runner, assets, tmp_path)
                 continue
-            inputs = _case_inputs(mode, assets, tmp_path)
-            chunk = await _generate(runner, inputs)
+            inputs = case_inputs(mode, assets, tmp_path)
+            chunk = await generate(runner, inputs)
             assert chunk.media and len(chunk.media) == 1
             item = chunk.media[0]
             if mode in ("policy", "inverse_dynamics"):
-                _check_action(
+                check_action(
                     item, mode, inputs["num_frames"] - 1, inputs["raw_action_dim"]
                 )
             else:
-                _check_media(
+                check_media(
                     item, inputs["num_frames"], inputs["width"], inputs["height"]
                 )
                 if mode == "t2vs":
-                    _check_audio(item["path"], SOUND_DURATION)
+                    check_audio(item["path"], SOUND_DURATION)
 
 
 if __name__ == "__main__":

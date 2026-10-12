@@ -59,9 +59,13 @@ def build_user_part(
     )
     if multimodal_mask.any():
         result[multimodal_mask] = hidden_projection(thinker_hidden[multimodal_mask])
+    else:
+        pass
     text_mask = ~multimodal_mask
     if text_mask.any():
         result[text_mask] = text_projection(thinker_embed[text_mask])
+    else:
+        pass
     return result
 
 
@@ -95,6 +99,8 @@ def build_assistant_part(
             "<|im_start|>assistant chat-template prefix) to assemble the 9-row "
             f"prompt tail; got {projected.shape[0]}"
         )
+    else:
+        pass
     fourth_token = (
         projected[3:4]
         if projected.shape[0] > 3
@@ -210,6 +216,8 @@ def build_prefill_input(
     for seg_idx, seg in enumerate(segments):
         if seg["role"] == "system":
             continue
+        else:
+            pass
 
         start, end = seg["start"], seg["end"]
         # HF includes im_start token in each segment's slice
@@ -231,6 +239,8 @@ def build_prefill_input(
         elif seg["role"] == "assistant":
             if last_assistant_idx is not None and seg_idx != last_assistant_idx:
                 continue
+            else:
+                pass
             # Strip <|im_end|> from the assistant segment to match HF,
             # whose thinker_embed never contains a hidden state for the
             # EOS token produced by generate().
@@ -240,6 +250,8 @@ def build_prefill_input(
                 and int(thinker_input_ids[end - 1].item()) == im_end_token_id
             ):
                 seg_embed = seg_embed[:-1]
+            else:
+                pass
             assistant_result = build_assistant_part(
                 assistant_embed=seg_embed,
                 text_projection=text_projection,
@@ -269,6 +281,10 @@ def build_prefill_input(
                 and future_text_rows.shape[0] > 0
             ):
                 future_text_rows = future_text_rows[:-1]
+            else:
+                pass
+        else:
+            pass
 
     return {
         "input_embeds": torch.cat(all_embeds, dim=0),

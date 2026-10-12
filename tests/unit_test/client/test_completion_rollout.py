@@ -9,30 +9,30 @@ from typing import Any
 import pytest
 
 from sglang_omni.client import Client
-from sglang_omni.client.client import _extract_inputs
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.client import extract_inputs
+from sglang_omni.client.types import GenerateChunk, GenerateRequest
 
 
-class _SubmitStubCoordinator:
+class SubmitStubCoordinator:
     """Non-streaming coordinator stub: completion() only needs submit()."""
 
     def __init__(self, result: Any) -> None:
-        self._result = result
+        self.result = result
 
     async def submit(self, request_id: str, omni_request: Any) -> Any:
         del request_id, omni_request
-        return self._result
+        return self.result
 
 
-class _StreamStubCoordinator:
+class StreamStubCoordinator:
     """Streaming coordinator stub: yields the given StreamMessages in order."""
 
     def __init__(self, messages: list[Any]) -> None:
-        self._messages = messages
+        self.messages = messages
 
     async def stream(self, request_id: str, omni_request: Any):
         del request_id, omni_request
-        for message in self._messages:
+        for message in self.messages:
             yield message
 
 
@@ -44,7 +44,7 @@ def test_completion_surfaces_logprobs_and_weight_version() -> None:
         "weight_version": "v7",
         "completion_tokens": 3,
     }
-    client = Client(_SubmitStubCoordinator(result))
+    client = Client(SubmitStubCoordinator(result))
 
     out = asyncio.run(
         client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
@@ -56,7 +56,7 @@ def test_completion_surfaces_logprobs_and_weight_version() -> None:
 
 def test_speech_surfaces_finish_reason() -> None:
     client = Client(
-        _SubmitStubCoordinator(
+        SubmitStubCoordinator(
             {
                 "audio_data": [0.0, 0.1, -0.1],
                 "sample_rate": 24000,
@@ -76,6 +76,40 @@ def test_speech_surfaces_finish_reason() -> None:
     assert result.finish_reason == "length"
     assert result.mime_type == "audio/pcm"
 
+    unreported = asyncio.run(
+        Client(
+            SubmitStubCoordinator({"audio_data": [0.0, 0.1], "sample_rate": 24000})
+        ).speech(GenerateRequest(prompt="hello"), request_id="speech-2")
+    )
+    assert unreported.finish_reason == "unknown"
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "stop", None])
+def test_speech_preserves_reason_provenance_through_typed_and_serialized_results(
+    finish_reason: str | None,
+) -> None:
+    typed = GenerateChunk(
+        request_id="speech-typed",
+        audio_data=[0.0, 0.1],
+        sample_rate=24000,
+        finish_reason=finish_reason,
+    )
+    raw = {"audio_data": [0.0, 0.1], "sample_rate": 24000}
+    if finish_reason is not None:
+        raw["finish_reason"] = finish_reason
+    else:
+        pass
+    adapted = Client.default_result_builder("speech-adapted", raw)
+    for payload in (typed, typed.to_dict(), adapted, adapted.to_dict()):
+        result = asyncio.run(
+            Client(SubmitStubCoordinator(payload)).speech(
+                GenerateRequest(prompt="hello"),
+                request_id="speech-1",
+                response_format="pcm",
+            )
+        )
+        assert result.finish_reason == (finish_reason or "unknown")
+
 
 def test_completion_surfaces_omni_rollout() -> None:
     rollout = {
@@ -90,7 +124,7 @@ def test_completion_surfaces_omni_rollout() -> None:
         "finish_reason": "stop",
         "omni_rollout": rollout,
     }
-    client = Client(_SubmitStubCoordinator(result))
+    client = Client(SubmitStubCoordinator(result))
 
     out = asyncio.run(
         client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
@@ -101,7 +135,7 @@ def test_completion_surfaces_omni_rollout() -> None:
 
 def test_completion_surfaces_language() -> None:
     client = Client(
-        _SubmitStubCoordinator(
+        SubmitStubCoordinator(
             {"text": "hello", "language": "English", "finish_reason": "stop"}
         )
     )
@@ -115,7 +149,7 @@ def test_completion_surfaces_language() -> None:
 
 def test_completion_without_logprobs_leaves_fields_none() -> None:
     result = {"text": "hello", "finish_reason": "stop"}
-    client = Client(_SubmitStubCoordinator(result))
+    client = Client(SubmitStubCoordinator(result))
 
     out = asyncio.run(
         client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
@@ -132,7 +166,7 @@ def test_completion_preserves_empty_logprob_list() -> None:
         "finish_reason": "stop",
         "output_token_logprobs": [],
     }
-    client = Client(_SubmitStubCoordinator(result))
+    client = Client(SubmitStubCoordinator(result))
 
     out = asyncio.run(
         client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
@@ -152,7 +186,7 @@ def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
         },
         "code2wav": {"audio_data": [0.0, 0.1, -0.1], "sample_rate": 24000},
     }
-    client = Client(_SubmitStubCoordinator(result))
+    client = Client(SubmitStubCoordinator(result))
 
     out = asyncio.run(
         client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
@@ -194,7 +228,7 @@ def test_completion_concatenates_streamed_logprobs() -> None:
             modality="text",
         ),
     ]
-    client = Client(_StreamStubCoordinator(messages))
+    client = Client(StreamStubCoordinator(messages))
 
     out = asyncio.run(
         client.completion(GenerateRequest(prompt="hi", stream=True), request_id="r1")
@@ -213,17 +247,17 @@ def test_extract_inputs_rejects_prompt_with_multimodal_train_inputs() -> None:
     )
 
     with pytest.raises(ValueError, match="requires prompt_token_ids"):
-        _extract_inputs(request)
+        extract_inputs(request)
 
 
 def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
-    bundle = {"version": 1, "tensors": {}}
+    bundle: dict[str, object] = {"version": 1, "tensors": {}}
     request = GenerateRequest(
         prompt_token_ids=[1, 2, 3],
         multimodal_train_inputs=bundle,
     )
 
-    assert _extract_inputs(request) == {
+    assert extract_inputs(request) == {
         "input_ids": [1, 2, 3],
         "multimodal_train_inputs": bundle,
     }

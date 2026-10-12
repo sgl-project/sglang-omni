@@ -7,12 +7,12 @@ from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
 from sglang_omni.models.cosmos3.reasoner import native_reasoner_kwargs
 from sglang_omni.models.cosmos3.stages import native_server_kwargs
 from sglang_omni.pipeline import runtime_config
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.replicas import validate_device_assignment
-from sglang_omni.pipeline.stage_workers import _stage_gpu_ids
+from sglang_omni.pipeline.stage_workers import stage_gpu_ids
 
 
-def config(devices=(1, 3)):
+def build_config(devices=(1, 3)):
     cfg = Cosmos3PipelineConfig(model_path="checkpoint")
     cfg.stages[0].gpu = devices[0]
     cfg.stages[0].runtime_gpu_ids = list(devices)
@@ -20,11 +20,11 @@ def config(devices=(1, 3)):
 
 
 def test_native_workers_reserve_all_gpus_but_use_one_omni_process(monkeypatch):
-    monkeypatch.setattr(runtime_config, "_visible_device_count", lambda: 4)
-    cfg = config()
+    monkeypatch.setattr(runtime_config, "visible_device_count", lambda: 4)
+    cfg = build_config()
     prep = runtime_config.prepare_pipeline_runtime(cfg)
     try:
-        groups = _build_stage_groups(
+        groups = build_stage_groups(
             cfg,
             stages_cfg=prep.stages_cfg,
             endpoints=prep.endpoints,
@@ -37,13 +37,13 @@ def test_native_workers_reserve_all_gpus_but_use_one_omni_process(monkeypatch):
         spec = groups[0].specs[0]
         assert spec.tp_size == 1
         assert spec.factory_kwargs["runtime_gpu_ids"] == [1, 3]
-        assert _stage_gpu_ids(groups[0].specs) == [1, 3]
+        assert stage_gpu_ids(groups[0].specs) == [1, 3]
     finally:
         prep.runtime_dir.close()
 
 
 def test_native_gpu_budget_includes_child_devices():
-    cfg = config()
+    cfg = build_config()
     cfg.stages[0].gpu_memory_fraction = 0.6
     cfg.stages.append(
         StageConfig(
@@ -60,7 +60,7 @@ def test_native_gpu_budget_includes_child_devices():
 
 def test_native_gpu_range_is_validated_before_spawn():
     with pytest.raises(ValueError, match="GPU id 3 out of range"):
-        validate_device_assignment(config().stages, device_count=2)
+        validate_device_assignment(build_config().stages, device_count=2)
 
 
 def test_native_parallel_options_use_the_declared_gpu_group():
@@ -75,15 +75,15 @@ def test_native_parallel_options_use_the_declared_gpu_group():
 
 @pytest.mark.parametrize("devices", [[], [1, 1], [2, 3], [1, -1]])
 def test_invalid_native_gpu_lists_are_rejected(devices):
-    cfg = config()
+    cfg = build_config()
     cfg.stages[0].runtime_gpu_ids = devices
     with pytest.raises(ValueError):
         build_stage_placement_plan(cfg)
 
 
 def test_native_runtime_cannot_share_a_process_with_another_stage(monkeypatch):
-    monkeypatch.setattr(runtime_config, "_visible_device_count", lambda: 4)
-    cfg = config()
+    monkeypatch.setattr(runtime_config, "visible_device_count", lambda: 4)
+    cfg = build_config()
     cfg.stages.append(
         StageConfig(
             name="other",

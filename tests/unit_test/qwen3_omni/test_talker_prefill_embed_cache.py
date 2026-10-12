@@ -17,13 +17,13 @@ def model_dir(tmp_path):
     save_file({"thinker.model.embed_tokens.weight": weight}, str(tmp_path / shard))
     index = {"weight_map": {"thinker.model.embed_tokens.weight": shard}}
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
-    talker_prefill._EMBED_SOURCE_CACHE.clear()
-    talker_prefill._EMBED_HANDLE_CACHE.clear()
+    talker_prefill._EMBED_SOURCE_CACHE.clear()  # noqa: leading-underscore  # production name
+    talker_prefill._EMBED_HANDLE_CACHE.clear()  # noqa: leading-underscore  # production name
     try:
         yield tmp_path
     finally:
-        talker_prefill._EMBED_SOURCE_CACHE.clear()
-        talker_prefill._EMBED_HANDLE_CACHE.clear()
+        talker_prefill._EMBED_SOURCE_CACHE.clear()  # noqa: leading-underscore  # production name
+        talker_prefill._EMBED_HANDLE_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_rows_correct(model_dir):
@@ -70,8 +70,8 @@ def test_repeated_rows_stay_identical(model_dir):
 
 def test_no_index_fallback_cached(model_dir, monkeypatch):
     (model_dir / "model.safetensors.index.json").unlink()
-    talker_prefill._EMBED_SOURCE_CACHE.clear()
-    talker_prefill._EMBED_HANDLE_CACHE.clear()
+    talker_prefill._EMBED_SOURCE_CACHE.clear()  # noqa: leading-underscore  # production name
+    talker_prefill._EMBED_HANDLE_CACHE.clear()  # noqa: leading-underscore  # production name
     rows = talker_prefill.load_thinker_embedding_rows(str(model_dir), [5])
     expected = torch.arange(VOCAB * HIDDEN, dtype=torch.float32).reshape(VOCAB, HIDDEN)
     assert torch.equal(rows, expected[[5]])
@@ -88,6 +88,6 @@ def test_no_index_fallback_cached(model_dir, monkeypatch):
 
 
 def test_missing_weights_raises(tmp_path):
-    talker_prefill._EMBED_SOURCE_CACHE.clear()
+    talker_prefill._EMBED_SOURCE_CACHE.clear()  # noqa: leading-underscore  # production name
     with pytest.raises(KeyError):
         talker_prefill.load_thinker_embedding_rows(str(tmp_path), [0])

@@ -120,15 +120,15 @@ def measurements(directory, devices):
             )
         )
         if succeeded:
-            assert records and all("error" not in row for row in records), (
-                "Memory sampling failed; inspect memory.json"
-            )
+            assert records and all(
+                "error" not in row for row in records
+            ), "Memory sampling failed; inspect memory.json"
 
 
 @asynccontextmanager
 async def deployment(config, transport, directory):
     from benchmarks.benchmarker.utils import managed_omni_server
-    from tests.integration.cosmos3.test_super_gpu import _running
+    from tests.integration.cosmos3.test_super_gpu import running
 
     directory.mkdir(parents=True, exist_ok=True)
     config_path = write_config(config, directory)
@@ -152,7 +152,7 @@ async def deployment(config, transport, directory):
     )
     with measurements(directory, config.stages[0].runtime_gpu_ids):
         if transport == "sdk":
-            async with _running(config) as runner:
+            async with running(config) as runner:
                 yield SuperClient(transport, directory, runner=runner)
         else:
             with socket.socket() as sock:
@@ -189,7 +189,7 @@ class SuperClient:
             async with asyncio.timeout(
                 float(os.environ.get("COSMOS3_SUPER_REQUEST_TIMEOUT", "1800"))
             ):
-                body = await self._completion(payload)
+                body = await self.send_completion(payload)
             if not body["choices"][0]["message"]["content"].strip():
                 raise ValueError("Empty Reasoner response")
             return body
@@ -197,7 +197,7 @@ class SuperClient:
             # Shared benchmark senders persist transport failures as failed samples.
             raise aiohttp.ClientError(str(exc)) from exc
 
-    async def _completion(self, payload):
+    async def send_completion(self, payload):
         if self.transport == "http":
             response = await self.http.post("/v1/chat/completions", json=payload)
             response.raise_for_status()
@@ -229,7 +229,7 @@ class SuperClient:
             async with asyncio.timeout(
                 float(os.environ.get("COSMOS3_SUPER_REQUEST_TIMEOUT", "1800"))
             ):
-                return await self._generate(inputs)
+                return await self.generate_output(inputs)
         finally:
             with (self.directory / "requests.jsonl").open("a") as output:
                 output.write(
@@ -239,13 +239,13 @@ class SuperClient:
                     + "\n"
                 )
 
-    async def _generate(self, inputs):
+    async def generate_output(self, inputs):
         from sglang_omni.client import GenerateChunk
 
         if self.transport == "sdk":
-            from tests.test_model.test_cosmos3_super_generator_ci import _generate
+            from tests.test_model.test_cosmos3_super_generator_ci import generate
 
-            return await _generate(self.runner, inputs)
+            return await generate(self.runner, inputs)
         self.sequence += 1
         action = inputs.get("action_mode") in ("policy", "inverse_dynamics")
         image = inputs.get("num_frames") == 1 and not action
@@ -304,5 +304,10 @@ class SuperClient:
         return GenerateChunk(
             request_id=str(self.sequence),
             finish_reason="stop",
-            media=[{"path": str(path)}],
+            media=[
+                {
+                    "path": str(path),
+                    "modality": "action" if action else "image" if image else "video",
+                }
+            ],
         )

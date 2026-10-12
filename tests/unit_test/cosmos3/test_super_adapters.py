@@ -134,7 +134,7 @@ def test_http_and_sdk_share_one_snapshot_even_if_hub_revision_moves(
         return str(snapshot)
 
     monkeypatch.setattr(checkpoint, "resolve_checkpoint", resolve)
-    monkeypatch.setattr(media, "_unused_port", lambda excluded: max(excluded) + 10)
+    monkeypatch.setattr(media, "unused_port", lambda excluded: max(excluded) + 10)
     config = Cosmos3PipelineConfig(model_path="nvidia/Cosmos3-Super@campaign")
     stage = config.stages[0]
     stage.runtime_gpu_ids = [0, 1, 2, 3]
@@ -165,7 +165,7 @@ def test_http_and_sdk_share_one_snapshot_even_if_hub_revision_moves(
 def test_failed_frontend_does_not_publish_partial_factory_state(
     native, snapshot, monkeypatch
 ):
-    monkeypatch.setattr(media, "_unused_port", lambda excluded: max(excluded) + 10)
+    monkeypatch.setattr(media, "unused_port", lambda excluded: max(excluded) + 10)
     module = native.modules["sglang.multimodal_gen.runtime.entrypoints.http_server"]
     original_create = module.create_app
 
@@ -188,7 +188,7 @@ def test_failed_frontend_does_not_publish_partial_factory_state(
 def test_frontend_honors_stage_checkpoint_and_explicit_alias(
     native, snapshot, monkeypatch
 ):
-    monkeypatch.setattr(media, "_unused_port", lambda excluded: max(excluded) + 10)
+    monkeypatch.setattr(media, "unused_port", lambda excluded: max(excluded) + 10)
     config = Cosmos3PipelineConfig(model_path="unused-root-checkpoint")
     config.stages[0].factory.model_path = str(snapshot)
     config.stages[0].factory.server_args_overrides = {

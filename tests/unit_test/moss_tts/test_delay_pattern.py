@@ -8,7 +8,7 @@ import torch
 from sglang_omni.models.moss_tts.delay_pattern import split_moss_audio_segments
 
 
-def _delay(raw_codes: torch.Tensor, *, fill: int = 1024) -> torch.Tensor:
+def delay(raw_codes: torch.Tensor, *, fill: int = 1024) -> torch.Tensor:
     frames, num_codebooks = raw_codes.shape
     delayed = torch.full(
         (frames + num_codebooks - 1, num_codebooks),
@@ -26,7 +26,7 @@ def test_split_moss_audio_segments_reverses_delay_pattern() -> None:
         dtype=torch.long,
     )
 
-    segments = split_moss_audio_segments(_delay(raw_codes), audio_pad_code=1024)
+    segments = split_moss_audio_segments(delay(raw_codes), audio_pad_code=1024)
 
     assert len(segments) == 1
     assert torch.equal(segments[0], raw_codes)
@@ -44,7 +44,7 @@ def test_split_moss_audio_segments_preserves_contiguous_runs() -> None:
         dtype=torch.long,
     )
 
-    segments = split_moss_audio_segments(_delay(raw_codes), audio_pad_code=1024)
+    segments = split_moss_audio_segments(delay(raw_codes), audio_pad_code=1024)
 
     assert [segment.tolist() for segment in segments] == [
         [[1, 2, 3], [4, 5, 6]],
@@ -59,7 +59,7 @@ def test_split_moss_audio_segments_trims_assistant_prefix() -> None:
     )
 
     segments = split_moss_audio_segments(
-        _delay(raw_codes),
+        delay(raw_codes),
         audio_pad_code=1024,
         assistant_start_length=2,
     )
@@ -70,7 +70,7 @@ def test_split_moss_audio_segments_trims_assistant_prefix() -> None:
 
 def test_split_moss_audio_segments_accepts_noncontiguous_input() -> None:
     raw_codes = torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.long)
-    delayed = _delay(raw_codes)
+    delayed = delay(raw_codes)
     storage = torch.full(
         (delayed.shape[0], delayed.shape[1] * 2),
         -1,

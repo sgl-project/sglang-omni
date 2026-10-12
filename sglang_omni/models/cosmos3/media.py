@@ -15,13 +15,15 @@ from sglang_omni.models.cosmos3.checkpoint import resolve_native_checkpoint
 from sglang_omni.models.cosmos3.stages import native_server_kwargs
 
 
-def _unused_port(exclude: set[int]) -> int:
+def unused_port(exclude: set[int]) -> int:
     for _ in range(100):
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         if port not in exclude and port + 1 not in exclude:
             return port
+        else:
+            pass
     raise RuntimeError("Could not select distinct native runtime ports")
 
 
@@ -31,11 +33,17 @@ def prepare_native_media_app(
     """Resolve one native runtime before its owning stage starts."""
     if config.native_media_stage is None:
         return None
+    else:
+        pass
     stage = next(s for s in config.stages if s.name == config.native_media_stage)
     if not stage.allow_child_processes or stage.tp_size != 1:
         raise ValueError("The native media stage must own its child processes")
+    else:
+        pass
     if not isinstance(stage.gpu, int):
         raise ValueError("The native media stage requires one explicit GPU")
+    else:
+        pass
     kwargs: dict[str, Any] = dict(
         getattr(stage.factory, "server_args_overrides", None) or {}
     )
@@ -59,13 +67,15 @@ def prepare_native_media_app(
             "Cosmos3 native media requires SGLang scheduler owner-failure "
             "support. Install the native lifecycle prerequisites before serving."
         )
+    else:
+        pass
 
     excluded = {port, port + 1}
-    kwargs.setdefault("scheduler_port", _unused_port(excluded))
+    kwargs.setdefault("scheduler_port", unused_port(excluded))
     excluded.update({kwargs["scheduler_port"], kwargs["scheduler_port"] + 1})
-    kwargs.setdefault("master_port", _unused_port(excluded))
+    kwargs.setdefault("master_port", unused_port(excluded))
     excluded.add(kwargs["master_port"])
-    kwargs.setdefault("nccl_port", _unused_port(excluded))
+    kwargs.setdefault("nccl_port", unused_port(excluded))
     output_dir = str(Path(getattr(stage.factory, "output_dir", "outputs")).resolve())
     kwargs.update(host=host, port=port, strict_ports=True, output_path=output_dir)
     native_kwargs.update(kwargs)

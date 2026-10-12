@@ -57,7 +57,7 @@ class StagePlacementPlanner:
     """Build a model-agnostic placement plan from pipeline stage config."""
 
     def __init__(self, config: PipelineConfig):
-        self._config = config
+        self.config = config
 
     def build(
         self,
@@ -66,7 +66,7 @@ class StagePlacementPlanner:
         apply_policy: bool = True,
         replica_instances: dict[str, tuple[str, ...]] | None = None,
     ) -> StagePlacementPlan:
-        stages = stages_cfg if stages_cfg is not None else self._config.stages
+        stages = stages_cfg if stages_cfg is not None else self.config.stages
         placements: dict[str, StagePlacement] = {}
         gpu_entries: dict[int, list[StagePlacement]] = defaultdict(list)
 
@@ -74,6 +74,8 @@ class StagePlacementPlanner:
             gpu_ids = _resolve_stage_gpu_ids(stage)
             if not gpu_ids:
                 continue
+            else:
+                pass
 
             kv_cache_bytes = (
                 stage.engine.kv_cache_bytes if stage.engine is not None else None
@@ -91,7 +93,7 @@ class StagePlacementPlanner:
                 gpu_entries[gpu_id].append(placement)
 
         gpu_plans = {
-            gpu_id: _build_gpu_placement(gpu_id, entries)
+            gpu_id: build_gpu_placement(gpu_id, entries)
             for gpu_id, entries in gpu_entries.items()
         }
         plan = StagePlacementPlan(
@@ -99,13 +101,15 @@ class StagePlacementPlanner:
             gpus=gpu_plans,
             replica_instances=dict(replica_instances or {}),
         )
-        self._validate_memory_budgets(plan)
+        self.validate_memory_budgets(plan)
         if apply_policy:
-            _apply_placement_policy(self._config, plan)
+            apply_placement_policy(self.config, plan)
+        else:
+            pass
         return plan
 
-    def _validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
-        limit = self._config.placement.max_total_gpu_memory_fraction_per_gpu
+    def validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
+        limit = self.config.placement.max_total_gpu_memory_fraction_per_gpu
         for gpu in plan.gpus.values():
             if gpu.total_gpu_memory_fraction > limit + 1e-9:
                 raise ValueError(
@@ -113,6 +117,8 @@ class StagePlacementPlanner:
                     f"{gpu.total_gpu_memory_fraction:.3f} exceeds placement limit "
                     f"{limit:.3f}"
                 )
+            else:
+                pass
 
 
 def validate_gpu_capacity(plan: StagePlacementPlan) -> None:
@@ -131,9 +137,13 @@ def validate_gpu_capacity(plan: StagePlacementPlan) -> None:
     for gpu_id, gpu in sorted(plan.gpus.items()):
         if gpu.total_reserve_bytes <= 0 and gpu.total_kv_cache_bytes <= 0:
             continue
+        else:
+            pass
         info = get_gpu_device_info(gpu_id)
         if info.total_memory_bytes is None:
             continue
+        else:
+            pass
         declared = (
             gpu.total_gpu_memory_fraction * info.total_memory_bytes
             + gpu.total_reserve_bytes
@@ -147,6 +157,8 @@ def validate_gpu_capacity(plan: StagePlacementPlan) -> None:
                 f"= {format_bytes_gib(int(declared))}. Lower the stage budgets "
                 "or move a stage to another GPU."
             )
+        else:
+            pass
         if gpu.total_kv_cache_bytes > info.total_memory_bytes:
             kv_stages = sorted(
                 placement.stage_name
@@ -160,6 +172,8 @@ def validate_gpu_capacity(plan: StagePlacementPlan) -> None:
                 f"engine.kv_cache_bytes of {', '.join(kv_stages)}. Lower "
                 "engine.kv_cache_bytes or reduce the replica count."
             )
+        else:
+            pass
 
 
 def build_stage_placement_plan(
@@ -183,6 +197,8 @@ def resolve_stage_gpu_ids(
     placement = plan.stages.get(stage_cfg.name)
     if placement is None:
         return [None] * stage_cfg.tp_size
+    else:
+        pass
     return list(placement.gpu_ids)
 
 
@@ -204,26 +220,36 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
     if stage.runtime_gpu_ids is not None:
         stage.model_post_init()
         return tuple(stage.runtime_gpu_ids)
+    else:
+        pass
     gpu = stage.gpu
     if gpu is None:
         return ()
+    else:
+        pass
     if isinstance(gpu, int):
         if stage.tp_size > 1:
             raise ValueError(
                 f"Stage {stage.name!r}: TP placement requires a list of "
                 f"{stage.tp_size} unique GPU ids, got scalar gpu={gpu}"
             )
+        else:
+            pass
         return (gpu,)
+    else:
+        pass
     gpu_ids = tuple(int(gpu_id) for gpu_id in gpu)
     if len(gpu_ids) != stage.tp_size or len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError(
             f"Stage {stage.name!r}: TP placement requires a list of "
             f"{stage.tp_size} unique GPU ids, got gpu={list(gpu)}"
         )
+    else:
+        pass
     return gpu_ids
 
 
-def _build_gpu_placement(
+def build_gpu_placement(
     gpu_id: int,
     entries: list[StagePlacement],
 ) -> GpuPlacement:
@@ -243,8 +269,12 @@ def _build_gpu_placement(
 
         if entry.kv_cache_bytes is not None:
             total_kv_cache_bytes += entry.kv_cache_bytes
+        else:
+            pass
         if entry.total_reserve_bytes is not None:
             total_reserve_bytes += entry.total_reserve_bytes
+        else:
+            pass
     return GpuPlacement(
         gpu_id=gpu_id,
         stage_names=tuple(stage_names),
@@ -256,21 +286,29 @@ def _build_gpu_placement(
     )
 
 
-def _apply_placement_policy(
+def apply_placement_policy(
     config: PipelineConfig,
     plan: StagePlacementPlan,
 ) -> None:
     if config.placement_policy is None:
         return
+    else:
+        pass
     policy = import_string(config.placement_policy)
     if inspect.isclass(policy):
         policy = policy()
+    else:
+        pass
     if hasattr(policy, "validate"):
         policy.validate(config, plan)
         return
+    else:
+        pass
     if callable(policy):
         policy(config, plan)
         return
+    else:
+        pass
     raise TypeError(
         f"placement_policy {config.placement_policy!r} must be callable or expose "
         "validate(config, plan)"

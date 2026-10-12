@@ -34,11 +34,15 @@ def import_dots_tts() -> ModuleType:
     with _IMPORT_LOCK:
         if "dots_tts" in sys.modules:
             return importlib.import_module("dots_tts")
+        else:
+            pass
         reader = importlib.metadata.version
 
         def bridged(distribution_name: str) -> str:
             if distribution_name == "torchaudio":
                 return reader("torch")
+            else:
+                pass
             return reader(distribution_name)
 
         importlib.metadata.version = bridged

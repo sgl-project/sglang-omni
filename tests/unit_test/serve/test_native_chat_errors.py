@@ -18,7 +18,7 @@ from sglang_omni.client.types import CompletionStreamChunk
 from sglang_omni.models.cosmos3.reasoner import NativeReasonerScheduler
 from sglang_omni.proto import StagePayload
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_errors import http_status_from_error
+from sglang_omni.serve.openai_errors import generation_error_status_code
 
 
 class NativeValidationClient:
@@ -35,9 +35,9 @@ class NativeValidationClient:
         return {"running": True}
 
     async def completion(self, request, *, request_id, audio_format):
-        payload = StagePayload(request_id, Client._build_omni_request(request), None)
+        payload = StagePayload(request_id, Client.build_omni_request(request), None)
         try:
-            return await self.scheduler._complete(payload)
+            return await self.scheduler.complete(payload)
         except ValueError as exc:
             raise QueueFullError.from_message(str(exc)) from exc
 
@@ -89,7 +89,9 @@ def test_native_chat_rejections_survive_http_and_stage_transport(stream, option)
 
 def test_internal_value_errors_keep_server_error_classification():
     assert (
-        http_status_from_error(QueueFullError.from_message("internal shape mismatch"))
+        generation_error_status_code(
+            QueueFullError.from_message("internal shape mismatch")
+        )
         == 500
     )
 
@@ -120,13 +122,13 @@ def test_native_internal_errors_remain_server_errors(stream):
 
 
 @pytest.mark.asyncio
-async def test_cancelled_chat_stream_closes_its_source():
-    from sglang_omni.serve.openai_api import _chat_stream_errors
+async def test_cancelled_chat_stream_closes_its_source(monkeypatch):
+    from sglang_omni.serve import openai_api
 
     entered = asyncio.Event()
     closed = asyncio.Event()
 
-    async def source():
+    async def source(**kwargs):
         try:
             yield "first"
             entered.set()
@@ -134,7 +136,10 @@ async def test_cancelled_chat_stream_closes_its_source():
         finally:
             closed.set()
 
-    stream = _chat_stream_errors(source())
+    monkeypatch.setattr(openai_api, "chat_stream_events", source)
+    stream = openai_api.chat_stream(
+        None, None, "cancel", "response", 0, "super", None, "wav"
+    )
     assert await anext(stream) == "first"
     pending = asyncio.create_task(anext(stream))
     await entered.wait()

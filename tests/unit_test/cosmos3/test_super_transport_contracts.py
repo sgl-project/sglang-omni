@@ -10,7 +10,7 @@ import pytest
 
 from sglang_omni.config.manager import ConfigManager
 from tests.integration.cosmos3.super_harness import SuperClient, write_config
-from tests.integration.cosmos3.test_super_gpu import _config
+from tests.integration.cosmos3.test_super_gpu import build_config
 
 
 @pytest.mark.parametrize("kind", ["reasoner", "generation"])
@@ -21,7 +21,7 @@ def test_http_config_preserves_placement_and_residency(
     monkeypatch.setenv(
         "COSMOS3_SUPER_RESIDENCY", "resident" if resident else "layerwise-offload"
     )
-    config = _config(kind, "local-snapshot", [0, 1, 2, 3], tmp_path)
+    config = build_config(kind, "local-snapshot", [0, 1, 2, 3], tmp_path)
     restored = ConfigManager.from_file(str(write_config(config, tmp_path))).config
     assert restored.model_path == "local-snapshot"
     assert restored.stages[0].runtime_gpu_ids == [0, 1, 2, 3]
@@ -118,6 +118,11 @@ async def test_http_upload_poll_download_and_parameters(tmp_path, mode):
 
     output = Path(chunk.media[0]["path"])
     assert output.is_file() and output.stat().st_size
+    assert chunk.media[0]["modality"] == (
+        "action"
+        if mode in ("policy", "inverse_dynamics")
+        else "image" if mode == "t2i" else "video"
+    )
     if mode not in ("t2i", "policy", "inverse_dynamics"):
         assert [r.method for r in requests] == ["POST", "GET", "GET"]
 

@@ -9,7 +9,7 @@ import torch
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoder
 
 
-def _tiny_repository_vocoder(
+def tiny_repository_vocoder(
     *, positional_embedding: str = "rope", context_duration: float = 4.0
 ) -> MossAudioTokenizerVocoder:
     config = {
@@ -67,7 +67,7 @@ def _tiny_repository_vocoder(
     ],
 )
 def test_native_decoder_rejects_padded_or_aliased_rows(slots, lengths, valid, error):
-    model = _tiny_repository_vocoder()
+    model = tiny_repository_vocoder()
     model.initialize_decoder_state_pool(2, scratch_capacity=1)
     try:
         with pytest.raises(ValueError, match=error):
@@ -82,12 +82,12 @@ def test_native_decoder_rejects_padded_or_aliased_rows(slots, lengths, valid, er
 
 
 def test_repository_codec_native_pool_keeps_compact_slots_isolated() -> None:
-    from sglang_omni.models.moss_tts_local.streaming_vocoder import _CodecStreamSession
+    from sglang_omni.models.moss_tts_local.streaming_vocoder import CodecStreamSession
 
-    session = _CodecStreamSession(_tiny_repository_vocoder(), stream_slots=4, n_vq=1)
+    session = CodecStreamSession(tiny_repository_vocoder(), stream_slots=4, n_vq=1)
     first, second, third = [session.acquire() for _ in range(3)]
     references = {
-        slot: _CodecStreamSession(_tiny_repository_vocoder(), stream_slots=1, n_vq=1)
+        slot: CodecStreamSession(tiny_repository_vocoder(), stream_slots=1, n_vq=1)
         for slot in (first, second, third)
     }
     for reference in references.values():
@@ -109,8 +109,8 @@ def test_repository_codec_native_pool_keeps_compact_slots_isolated() -> None:
         session.release(first)
         assert session.acquire() == first
         references[first].close()
-        references[first] = _CodecStreamSession(
-            _tiny_repository_vocoder(), stream_slots=1, n_vq=1
+        references[first] = CodecStreamSession(
+            tiny_repository_vocoder(), stream_slots=1, n_vq=1
         )
         assert references[first].acquire() == 0
         check_step([third, first], 3)
@@ -129,7 +129,7 @@ def test_native_scheduler_keeps_offline_decode_out_of_streaming_state(
         MossTTSLocalStreamingVocoderScheduler,
     )
 
-    model = _tiny_repository_vocoder(positional_embedding="rope")
+    model = tiny_repository_vocoder(positional_embedding="rope")
     scheduler = MossTTSLocalStreamingVocoderScheduler(
         model,
         n_vq=1,
@@ -142,24 +142,24 @@ def test_native_scheduler_keeps_offline_decode_out_of_streaming_state(
     rows = [
         torch.arange(2 + i).remainder(8).view(-1, 1) for i in range(offline_batch_size)
     ]
-    expected_offline = scheduler._decode_codes_rows(rows)
-    session = scheduler._ensure_session()
+    expected_offline = scheduler.decode_codes_rows(rows)
+    session = scheduler.ensure_session()
     first = {2: torch.tensor([[1, 2, 3]])}
     second = {2: torch.tensor([[4, 5]])}
     try:
         session.step(first)
         expected_stream = session.step(second)[2]
-        session._reset_slots([2])
+        session.reset_slots([2])
         session.step(first)
         # Non-streaming traffic can arrive at any batch width while a stream
         # owns its slot. Its output and the stream's continuation must not change.
-        actual_offline = scheduler._decode_codes_rows(rows)
+        actual_offline = scheduler.decode_codes_rows(rows)
         actual_stream = session.step(second)[2]
         for actual, expected in zip(actual_offline, expected_offline, strict=True):
             torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         torch.testing.assert_close(actual_stream, expected_stream, rtol=0, atol=0)
         # The wrappers isolate state without duplicating model weights.
-        assert list(scheduler._nonstream_decoder.parameters()) == list(
+        assert list(scheduler.nonstream_decoder.parameters()) == list(
             model.decoder.parameters()
         )
     finally:
@@ -167,8 +167,8 @@ def test_native_scheduler_keeps_offline_decode_out_of_streaming_state(
 
 
 def test_indexed_attention_matches_sequential_across_chunk_sizes() -> None:
-    model = _tiny_repository_vocoder(positional_embedding="rope", context_duration=0.5)
-    reference = _tiny_repository_vocoder(
+    model = tiny_repository_vocoder(positional_embedding="rope", context_duration=0.5)
+    reference = tiny_repository_vocoder(
         positional_embedding="rope", context_duration=0.5
     )
     model.initialize_decoder_state_pool(3)

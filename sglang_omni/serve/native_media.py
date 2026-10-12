@@ -18,15 +18,21 @@ def prepare_native_media_app(
     """Construct the native frontend declared by the model configuration."""
     if config.native_media_stage is None:
         return None
+    else:
+        pass
     factory_path = config.native_media_factory_path
     if factory_path is None:
         raise ValueError(
             "native_media_stage requires a model native_media_factory_path"
         )
+    else:
+        pass
     factory = import_string(factory_path)
     native_app = factory(config, host=host, port=port)
     if not isinstance(native_app, FastAPI):
         raise TypeError("native_media_factory_path must return a FastAPI application")
+    else:
+        pass
     return native_app
 
 
@@ -39,6 +45,8 @@ def mount_native_media_app(
     """Preserve native routing and run its lifespan before worker shutdown."""
     if runtime_failure is not None:
         native_app.state.scheduler_failure = runtime_failure
+    else:
+        pass
     previous_lifespan = app.router.lifespan_context
 
     @asynccontextmanager

@@ -22,35 +22,26 @@ from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
+from tests.test_model.omni_ci_config import OmniCiModelPreset
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
 )
-from tests.utils import MetricCheckCollector, apply_slack, assert_speed_thresholds
+from tests.utils import MetricCheckCollector, assert_speed_thresholds
 
 CONCURRENCY = 16
-
-MMMU_MIN_ACCURACY = 0.6
-
-_MMMU_P95 = {
-    16: {
-        "throughput_qps": 1.917,
-        "output_tok_per_req_s": 90.1,
-        "latency_mean_s": 6.816,
-    },
-}
-MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
 
 
 @pytest.mark.benchmark
 def test_mmmu_accuracy_and_speed(
-    qwen3_omni_fp8_colocated_server: ManagedRouterHandle,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMMU eval and assert accuracy and speed meet thresholds."""
     config = MMMUEvalConfig(
-        model="qwen3-omni",
-        port=qwen3_omni_fp8_colocated_server.port,
+        model=omni_ci_model.name,
+        port=omni_ci_server.port,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu"),
         repo_id=DATASETS["mmmu-ci-50"],
@@ -61,8 +52,8 @@ def test_mmmu_accuracy_and_speed(
         warmup=2,
     )
     with router_worker_traffic_guard(
-        qwen3_omni_fp8_colocated_server,
-        label="Qwen3-Omni MMMU",
+        omni_ci_server,
+        label=f"{omni_ci_model.name} MMMU",
     ) as router_guard:
         results = asyncio.run(run_mmmu_eval(config))
 
@@ -79,6 +70,7 @@ def test_mmmu_accuracy_and_speed(
 
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
+    thresholds = omni_ci_model.thresholds["mmmu"]
     checks = MetricCheckCollector("MMMU accuracy and speed")
     checks.check_assertion(
         "router traffic",
@@ -94,15 +86,17 @@ def test_mmmu_accuracy_and_speed(
     accuracy = summary.get("accuracy")
     if accuracy is None:
         checks.fail("MMMU accuracy missing from summary")
-    else:
+    elif thresholds.calibrated:
         checks.check(
-            accuracy >= MMMU_MIN_ACCURACY,
+            accuracy >= thresholds.accuracy,
             f"MMMU accuracy {accuracy:.4f} "
             f"({accuracy * 100:.1f}%) < "
-            f"threshold {MMMU_MIN_ACCURACY} ({MMMU_MIN_ACCURACY * 100:.0f}%)",
+            f"threshold {thresholds.accuracy} ({thresholds.accuracy * 100:.0f}%)",
         )
 
-    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY, collector=checks)
+    if thresholds.calibrated:
+        assert_speed_thresholds(speed, thresholds.speed, CONCURRENCY, collector=checks)
+    thresholds.require_calibrated(omni_ci_model.name, "mmmu", checks)
     checks.assert_all()
 
 

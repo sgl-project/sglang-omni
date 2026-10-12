@@ -6,19 +6,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 
-class _TensorLike:
+class TensorLike:
     def __init__(self, n: int):
-        self._n = n
+        self.n = n
 
     def numel(self) -> int:
-        return self._n
+        return self.n
 
 
 def test_build_text_usage_counts_tensor_prompt_and_output_ids() -> None:
     from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 
     state = SimpleNamespace(
-        prompt={"input_ids": _TensorLike(11)},
+        prompt={"input_ids": TensorLike(11)},
         thinker_out={"output_ids": [101, 102, 103]},
     )
 
@@ -34,7 +34,7 @@ def test_build_text_usage_counts_attribute_prompt_input_ids() -> None:
     from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 
     class PromptObject:
-        input_ids = _TensorLike(11)
+        input_ids = TensorLike(11)
 
     state = MingOmniPipelineState(
         prompt=PromptObject(),  # type: ignore[arg-type]

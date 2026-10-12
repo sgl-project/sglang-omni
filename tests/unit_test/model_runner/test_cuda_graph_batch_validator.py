@@ -15,25 +15,25 @@ from sglang_omni.utils.cuda_graph_batch_validator import (
     validate_stage,
 )
 
-_BAGS = SimpleNamespace(schedule=SimpleNamespace(), graph=SimpleNamespace())
+BAGS = SimpleNamespace(schedule=SimpleNamespace(), graph=SimpleNamespace())
 
 
 @pytest.fixture(autouse=True)
-def _published_bags(monkeypatch):
-    _BAGS.schedule = SimpleNamespace(max_running_requests=64)
-    _BAGS.graph = SimpleNamespace(disable_cuda_graph=False, cuda_graph_config=None)
-    monkeypatch.setattr(cgv, "get_schedule", lambda: _BAGS.schedule)
-    monkeypatch.setattr(cgv, "get_exec", lambda: SimpleNamespace(graph=_BAGS.graph))
+def published_bags(monkeypatch):
+    BAGS.schedule = SimpleNamespace(max_running_requests=64)
+    BAGS.graph = SimpleNamespace(disable_cuda_graph=False, cuda_graph_config=None)
+    monkeypatch.setattr(cgv, "get_schedule", lambda: BAGS.schedule)
+    monkeypatch.setattr(cgv, "get_exec", lambda: SimpleNamespace(graph=BAGS.graph))
 
 
-class _FakeTensor:
+class FakeTensor:
     """Minimal stand-in for a torch tensor exposing only ``.shape``."""
 
     def __init__(self, first_dim: int):
         self.shape = (first_dim, 8)
 
 
-def _fake_runner(
+def fake_runner(
     *,
     model=None,
     max_running_requests=64,
@@ -46,8 +46,8 @@ def _fake_runner(
     decode_cuda_graph_runner = (
         SimpleNamespace(capture_bs=capture_bs) if has_decode_cuda_graph_runner else None
     )
-    _BAGS.schedule.max_running_requests = max_running_requests
-    _BAGS.graph.disable_cuda_graph = disable_cuda_graph
+    BAGS.schedule.max_running_requests = max_running_requests
+    BAGS.graph.disable_cuda_graph = disable_cuda_graph
     return SimpleNamespace(
         server_args=SimpleNamespace(
             cuda_graph_config=SimpleNamespace(
@@ -162,34 +162,34 @@ def test_missing_buffer_validates_partial():
 
 
 def test_read_captured_bs_sorts_and_ints():
-    runner = _fake_runner(capture_bs=[64, 1, 16, 4])
+    runner = fake_runner(capture_bs=[64, 1, 16, 4])
     assert read_captured_bs(runner) == [1, 4, 16, 64]
 
 
 def test_read_captured_bs_missing_capture_returns_none():
-    runner = _fake_runner(has_decode_cuda_graph_runner=True, capture_bs=None)
+    runner = fake_runner(has_decode_cuda_graph_runner=True, capture_bs=None)
     assert read_captured_bs(runner) is None
 
 
 def test_read_captured_bs_no_graph_runner_returns_none():
-    runner = _fake_runner(has_decode_cuda_graph_runner=False)
+    runner = fake_runner(has_decode_cuda_graph_runner=False)
     assert read_captured_bs(runner) is None
 
 
 def test_read_captured_bs_malformed_element_degrades_to_none():
-    runner = _fake_runner(capture_bs=[1, 16, "auto"])
+    runner = fake_runner(capture_bs=[1, 16, "auto"])
     assert read_captured_bs(runner) is None
 
 
 def test_read_captured_bs_empty_list_is_none():
-    runner = _fake_runner(capture_bs=[])
+    runner = fake_runner(capture_bs=[])
     assert read_captured_bs(runner) is None
 
 
 # --- model-side buffer reader ---------------------------------------------
 
 
-def _as_named(_unused, clsname, **attrs):
+def as_named(_unused, clsname, **attrs):
     """Build an object whose ``type().__name__ == clsname`` carrying attrs."""
     obj = type(clsname, (), {})()
     for k, v in attrs.items():
@@ -198,63 +198,63 @@ def _as_named(_unused, clsname, **attrs):
 
 
 def test_read_buffer_higgs_sampler_pool():
-    model = _as_named(
+    model = as_named(
         None,
         "HiggsTTSModel",
-        _sampler_pool=SimpleNamespace(seeds=_FakeTensor(65)),
+        sampler_pool=SimpleNamespace(seeds=FakeTensor(65)),
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 65
-    assert "_sampler_pool.seeds.shape[0]" in source
+    assert "sampler_pool.seeds.shape[0]" in source
 
 
 def test_read_buffer_returns_minimum_across_registered_buffers():
-    model = _as_named(
+    model = as_named(
         None,
         "HiggsTTSModel",
-        _sampler_pool=SimpleNamespace(seeds=_FakeTensor(65)),
-        _cg_codes_BN=_FakeTensor(40),
-        _cg_active_last_codes=_FakeTensor(65),
+        sampler_pool=SimpleNamespace(seeds=FakeTensor(65)),
+        cg_codes_BN=FakeTensor(40),
+        cg_active_last_codes=FakeTensor(65),
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 40
-    assert "_cg_codes_BN.shape[0]" in source
+    assert "cg_codes_BN.shape[0]" in source
 
 
 def test_read_buffer_qwen3_tts_feedback():
-    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
+    model = as_named(None, "Qwen3TTSTalker", feedback_buffer=FakeTensor(64))
     cap, source = read_model_buffer_capacity(model)
     assert cap == 64
-    assert "_feedback_buffer.shape[0]" in source
+    assert "feedback_buffer.shape[0]" in source
 
 
 def test_read_buffer_inner_submodule_fallback():
-    inner = _as_named(None, "Inner", _feedback_buffer=_FakeTensor(32))
-    model = _as_named(None, "Qwen3OmniTalker", model=inner)
+    inner = as_named(None, "Inner", feedback_buffer=FakeTensor(32))
+    model = as_named(None, "Qwen3OmniTalker", model=inner)
     cap, source = read_model_buffer_capacity(model)
     assert cap == 32
     assert source.startswith("model.model.")
 
 
 def test_read_buffer_qwen3_omni_prefers_top_level_alias():
-    inner = _as_named(None, "TextModel", _feedback_buffer=_FakeTensor(48))
-    model = _as_named(
-        None, "Qwen3OmniTalker", model=inner, _feedback_buffer=inner._feedback_buffer
+    inner = as_named(None, "TextModel", feedback_buffer=FakeTensor(48))
+    model = as_named(
+        None, "Qwen3OmniTalker", model=inner, feedback_buffer=inner.feedback_buffer
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 48
-    assert source == "model._feedback_buffer.shape[0]"
+    assert source == "model.feedback_buffer.shape[0]"
 
 
 def test_read_buffer_unregistered_model():
-    model = _as_named(None, "TotallyUnknownModel")
+    model = as_named(None, "TotallyUnknownModel")
     cap, source = read_model_buffer_capacity(model)
     assert cap is None
     assert "no buffer probe registered" in source
 
 
 def test_read_buffer_registered_but_unallocated():
-    model = _as_named(None, "S2ProSGLangTextModel")
+    model = as_named(None, "S2ProSGLangTextModel")
     cap, source = read_model_buffer_capacity(model)
     assert cap is None
     assert "none of its buffers resolved" in source
@@ -270,8 +270,8 @@ def test_read_buffer_none_model():
 
 
 def test_validate_stage_auto_reads_buffer_and_passes():
-    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
-    runner = _fake_runner(model=model, capture_bs=[1, 2, 4, 8, 16, 32, 64])
+    model = as_named(None, "Qwen3TTSTalker", feedback_buffer=FakeTensor(64))
+    runner = fake_runner(model=model, capture_bs=[1, 2, 4, 8, 16, 32, 64])
     report = validate_stage("tts_engine", runner)
     assert report.buffer_capacity == 64
     assert report.stage == "tts_engine (Qwen3TTSTalker)"
@@ -279,10 +279,10 @@ def test_validate_stage_auto_reads_buffer_and_passes():
 
 
 def test_validate_stage_detects_undersized_buffer_end_to_end():
-    model = _as_named(
-        None, "VoxtralSGLangTTSModel", _decode_input_embed_buffer=_FakeTensor(64)
+    model = as_named(
+        None, "VoxtralSGLangTTSModel", decode_input_embed_buffer=FakeTensor(64)
     )
-    runner = _fake_runner(
+    runner = fake_runner(
         model=model,
         max_running_requests=128,
         cuda_graph_max_bs=128,
@@ -296,16 +296,16 @@ def test_validate_stage_detects_undersized_buffer_end_to_end():
 
 
 def test_validate_stage_caller_override_buffer():
-    model = _as_named(None, "TotallyUnknownModel")
-    runner = _fake_runner(model=model, capture_bs=[1, 16, 64])
+    model = as_named(None, "TotallyUnknownModel")
+    runner = fake_runner(model=model, capture_bs=[1, 16, 64])
     report = validate_stage("tts_engine", runner, buffer_capacity=65)
     assert report.buffer_capacity == 65
     assert report.buffer_source == "caller-provided"
 
 
 def test_validate_stage_disabled_cuda_graph_is_valid_no_op():
-    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
-    runner = _fake_runner(
+    model = as_named(None, "Qwen3TTSTalker", feedback_buffer=FakeTensor(64))
+    runner = fake_runner(
         model=model,
         disable_cuda_graph=True,
         capture_bs=None,
@@ -319,8 +319,8 @@ def test_validate_stage_disabled_cuda_graph_is_valid_no_op():
 
 
 def test_validate_stage_unregistered_model_partial_report():
-    model = _as_named(None, "TotallyUnknownModel")
-    runner = _fake_runner(model=model, capture_bs=[1, 16, 64])
+    model = as_named(None, "TotallyUnknownModel")
+    runner = fake_runner(model=model, capture_bs=[1, 16, 64])
     report = validate_stage("tts_engine", runner)
     assert report.buffer_capacity is None
     assert report.is_valid
@@ -328,8 +328,8 @@ def test_validate_stage_unregistered_model_partial_report():
 
 
 def test_validate_stage_names_the_stage():
-    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
-    runner = _fake_runner(model=model, capture_bs=[1, 16, 64])
+    model = as_named(None, "Qwen3TTSTalker", feedback_buffer=FakeTensor(64))
+    runner = fake_runner(model=model, capture_bs=[1, 16, 64])
     out = validate_stage("talker_ar", runner).format()
     assert "Stage: talker_ar (Qwen3TTSTalker)" in out
     assert "VERDICT:" in out
@@ -349,10 +349,12 @@ def test_every_generation_model_has_a_probe():
         "VoxtralSGLangTTSModel",
         "Qwen3OmniTalker",
     }
-    assert expected <= set(cgv._BUFFER_PROBES)
+    assert expected <= set(
+        cgv._BUFFER_PROBES
+    )  # noqa: leading-underscore  # production name
 
 
-def _real_prefill_runner(
+def real_prefill_runner(
     *,
     backend: str = "breakable",
     buckets: tuple[int, ...] = (128, 256),
@@ -371,26 +373,26 @@ def _real_prefill_runner(
     return runner
 
 
-def _declare_prefill_graphs(
+def declare_prefill_graphs(
     *,
     backend: str = "breakable",
     bs: tuple[int, ...] = (128, 256),
 ) -> None:
-    _BAGS.graph.cuda_graph_config = SimpleNamespace(
+    BAGS.graph.cuda_graph_config = SimpleNamespace(
         prefill=SimpleNamespace(backend=backend, bs=list(bs))
     )
 
 
 def test_attest_prefill_graphs_accepts_matching_capture():
-    model_runner = SimpleNamespace(prefill_cuda_graph_runner=_real_prefill_runner())
-    _declare_prefill_graphs()
+    model_runner = SimpleNamespace(prefill_cuda_graph_runner=real_prefill_runner())
+    declare_prefill_graphs()
 
     cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)
 
 
 def test_attest_prefill_graphs_rejects_missing_runner():
     model_runner = SimpleNamespace(prefill_cuda_graph_runner=SimpleNamespace())
-    _declare_prefill_graphs()
+    declare_prefill_graphs()
 
     with pytest.raises(RuntimeError, match="did not construct"):
         cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)
@@ -398,7 +400,7 @@ def test_attest_prefill_graphs_rejects_missing_runner():
 
 def test_attest_prefill_graphs_allows_auto_backend_to_fall_back(caplog):
     model_runner = SimpleNamespace(prefill_cuda_graph_runner=SimpleNamespace())
-    _declare_prefill_graphs()
+    declare_prefill_graphs()
 
     cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=False)
 
@@ -407,9 +409,9 @@ def test_attest_prefill_graphs_allows_auto_backend_to_fall_back(caplog):
 
 def test_attest_prefill_graphs_rejects_backend_mismatch():
     model_runner = SimpleNamespace(
-        prefill_cuda_graph_runner=_real_prefill_runner(backend="full")
+        prefill_cuda_graph_runner=real_prefill_runner(backend="full")
     )
-    _declare_prefill_graphs()
+    declare_prefill_graphs()
 
     with pytest.raises(RuntimeError, match="backend mismatch"):
         cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)
@@ -417,9 +419,9 @@ def test_attest_prefill_graphs_rejects_backend_mismatch():
 
 def test_attest_prefill_graphs_rejects_bucket_mismatch():
     model_runner = SimpleNamespace(
-        prefill_cuda_graph_runner=_real_prefill_runner(buckets=(128,))
+        prefill_cuda_graph_runner=real_prefill_runner(buckets=(128,))
     )
-    _declare_prefill_graphs()
+    declare_prefill_graphs()
 
     with pytest.raises(RuntimeError, match="capture shapes differ"):
         cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)
@@ -427,9 +429,9 @@ def test_attest_prefill_graphs_rejects_bucket_mismatch():
 
 def test_attest_prefill_graphs_rejects_missing_embeds_slot():
     model_runner = SimpleNamespace(
-        prefill_cuda_graph_runner=_real_prefill_runner(has_slot=False)
+        prefill_cuda_graph_runner=real_prefill_runner(has_slot=False)
     )
-    _declare_prefill_graphs()
+    declare_prefill_graphs()
 
     with pytest.raises(RuntimeError, match="input_embeds slot"):
         cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)

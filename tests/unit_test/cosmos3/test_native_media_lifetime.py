@@ -47,16 +47,16 @@ def queued_result(tmp_path):
     keep.write_text("keep")
     scheduler = NativeGenerationScheduler(SavedGenerator(), str(tmp_path))
     payload = StagePayload("request", OmniRequest("image"), None)
-    result = scheduler._generate(payload)
+    result = scheduler.generate(payload)
     path = Path(result.data["media"][0]["path"])
-    scheduler._emit_result(payload.request_id, result, scheduler.outbox)
+    scheduler.emit_result(payload.request_id, result, scheduler.outbox)
     stage = make_stage(
         name="generation",
         scheduler=scheduler,
         is_terminal=True,
         control_plane=SavedControlPlane(),
     )
-    stage._active_requests.add(payload.request_id)
+    stage.active_requests.add(payload.request_id)
     return scheduler, stage, path, keep
 
 
@@ -66,17 +66,17 @@ def test_queued_result_drop_releases_only_its_owned_files(tmp_path, drop):
         scheduler, stage, path, keep = queued_result(tmp_path)
         assert path.read_bytes() == b"native result"
         if drop == "abort":
-            stage._on_abort("request")
+            stage.on_abort("request")
         elif drop == "inactive":
-            stage._active_requests.clear()
+            stage.active_requests.clear()
         else:
             scheduler.stop()
-        await asyncio.wait_for(stage._drain_outbox(), 2)
+        await asyncio.wait_for(stage.drain_outbox(), 2)
         assert stage.control_plane.completions == []
         assert not path.parent.exists()
         assert list(tmp_path.iterdir()) == [keep]
         assert keep.read_text() == "keep"
-        assert scheduler._native_requests == {}
+        assert scheduler.native_requests == {}
 
     asyncio.run(run())
 
@@ -84,12 +84,12 @@ def test_queued_result_drop_releases_only_its_owned_files(tmp_path, drop):
 def test_successful_stage_delivery_transfers_saved_output_to_client(tmp_path):
     async def run():
         scheduler, stage, path, keep = queued_result(tmp_path)
-        await asyncio.wait_for(stage._drain_outbox(), 2)
+        await asyncio.wait_for(stage.drain_outbox(), 2)
         message = stage.control_plane.completions[0]
-        chunk = Client._default_result_builder(message.request_id, message.result)
+        chunk = Client.default_result_builder(message.request_id, message.result)
         assert Path(chunk.media[0]["path"]).read_bytes() == b"native result"
-        assert scheduler._native_requests == {}
-        stage._on_abort("request")
+        assert scheduler.native_requests == {}
+        stage.on_abort("request")
         scheduler.stop()
         assert path.read_bytes() == b"native result"
         assert keep.read_text() == "keep"
@@ -106,10 +106,10 @@ def test_failed_result_route_releases_owned_output(tmp_path):
 
         stage.control_plane.send_complete = fail_send
         with pytest.raises(RuntimeError, match="completion transport failed"):
-            await asyncio.wait_for(stage._drain_outbox(), 2)
+            await asyncio.wait_for(stage.drain_outbox(), 2)
         assert not path.parent.exists()
         assert list(tmp_path.iterdir()) == [keep]
-        assert scheduler._native_requests == {}
+        assert scheduler.native_requests == {}
 
     asyncio.run(run())
 
@@ -132,11 +132,11 @@ def test_in_flight_result_owns_files_until_routing_settles(
             await send(message, on_submitted=on_submitted)
 
         stage.control_plane.send_complete = held_send
-        pending = asyncio.create_task(stage._drain_outbox())
+        pending = asyncio.create_task(stage.drain_outbox())
         try:
             await asyncio.wait_for(entered.wait(), 2)
             if interrupt == "abort":
-                stage._on_abort("request")
+                stage.on_abort("request")
             else:
                 scheduler.stop()
             assert path.read_bytes() == b"native result"
@@ -163,7 +163,7 @@ def test_in_flight_result_owns_files_until_routing_settles(
                 pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
         assert path.exists() is (outcome == "delivered")
-        assert scheduler._native_requests == {}
+        assert scheduler.native_requests == {}
         assert keep.read_text() == "keep"
 
     asyncio.run(run())
@@ -174,19 +174,19 @@ def test_saved_paths_reject_nonterminal_delivery_before_sending(tmp_path):
         scheduler, stage, path, keep = queued_result(tmp_path)
         sent = []
         stage.get_next = lambda request_id, result: ["consumer"]
-        stage._stream_targets = ["consumer"]
+        stage.stream_targets = ["consumer"]
 
         async def send(*args, **kwargs):
             sent.append(args)
 
-        stage._send_to_stage = send
-        stage._send_stream_signal_to_target = send
+        stage.send_to_stage = send
+        stage.send_stream_signal_to_target = send
         with pytest.raises(ValueError, match="requires terminal delivery"):
-            await asyncio.wait_for(stage._drain_outbox(), 2)
+            await asyncio.wait_for(stage.drain_outbox(), 2)
         assert sent == []
         assert stage.control_plane.completions == []
         assert list(tmp_path.iterdir()) == [keep]
-        assert scheduler._native_requests == {}
+        assert scheduler.native_requests == {}
 
     asyncio.run(run())
 
@@ -198,14 +198,14 @@ def test_delivered_file_survives_later_local_cleanup_error(tmp_path):
         def fail_cleanup(*args, **kwargs):
             raise RuntimeError("local cleanup failed")
 
-        stage._clear_request_state = fail_cleanup
+        stage.clear_request_state = fail_cleanup
         with pytest.raises(RuntimeError, match="local cleanup failed"):
-            await asyncio.wait_for(stage._drain_outbox(), 2)
+            await asyncio.wait_for(stage.drain_outbox(), 2)
         assert len(stage.control_plane.completions) == 1
         scheduler.stop()
         assert path.read_bytes() == b"native result"
         assert keep.read_text() == "keep"
-        assert scheduler._native_requests == {}
+        assert scheduler.native_requests == {}
 
     asyncio.run(run())
 
@@ -223,11 +223,11 @@ def test_cancellation_uses_raw_transport_outcome(tmp_path, accepted):
                 return raw_send
 
         socket = PushSocket("unused")
-        socket._socket = PendingSocket()
+        socket.socket = PendingSocket()
         control = StageControlPlane("generation", "", "", "")
-        control._coordinator_socket = socket
+        control.coordinator_socket = socket
         stage.control_plane = control
-        pending = asyncio.create_task(stage._drain_outbox())
+        pending = asyncio.create_task(stage.drain_outbox())
         try:
             await asyncio.wait_for(entered.wait(), 2)
             if accepted:
@@ -243,7 +243,7 @@ def test_cancellation_uses_raw_transport_outcome(tmp_path, accepted):
         scheduler.stop()
         assert path.exists() is accepted
         assert raw_send.cancelled() is (not accepted)
-        assert scheduler._native_requests == {}
+        assert scheduler.native_requests == {}
         assert keep.read_text() == "keep"
 
     asyncio.run(run())
@@ -254,8 +254,8 @@ def test_old_result_release_cannot_delete_new_request_output(tmp_path):
     old = scheduler.outbox.get_nowait().data
     scheduler.abort("request")
     # The scheduler consumes its cancellation tombstone before admitting reuse.
-    scheduler._emit_result("request", old, scheduler.outbox)
-    newer = scheduler._generate(StagePayload("request", OmniRequest("new image"), None))
+    scheduler.emit_result("request", old, scheduler.outbox)
+    newer = scheduler.generate(StagePayload("request", OmniRequest("new image"), None))
     new_path = Path(newer.data["media"][0]["path"])
     scheduler.release_result(old, delivered=False)
     assert not old_path.parent.exists()

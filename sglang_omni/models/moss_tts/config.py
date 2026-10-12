@@ -47,7 +47,7 @@ class MossTTSVocoderStageConfig(StageConfig):
     )
 
 
-def _stages(*, colocated: bool) -> list[StageConfig]:
+def stages(*, colocated: bool) -> list[StageConfig]:
     # Note (Jiaxin Deng): the vocoder's Python decode loop shares the interpreter
     # with the AR scheduler when both live in one process; on H200 isolating it
     # lifts single-replica throughput by ~70% at every concurrency cap.
@@ -122,7 +122,7 @@ class MossTTSPipelineConfig(PipelineConfig):
         # PreparedRequestQueue that the AR stage pops in-process.
         return frozenset({("preprocessing", "tts_engine")})
 
-    stages: list[StageConfig] = Field(default_factory=lambda: _stages(colocated=True))
+    stages: list[StageConfig] = Field(default_factory=lambda: stages(colocated=True))
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
@@ -131,7 +131,7 @@ class MossTTSPipelineConfig(PipelineConfig):
 class MossTTSSingleProcessPipelineConfig(MossTTSPipelineConfig):
     """All three stages in one process, the layout before the vocoder split."""
 
-    stages: list[StageConfig] = Field(default_factory=lambda: _stages(colocated=False))
+    stages: list[StageConfig] = Field(default_factory=lambda: stages(colocated=False))
 
 
 EntryClass = MossTTSPipelineConfig

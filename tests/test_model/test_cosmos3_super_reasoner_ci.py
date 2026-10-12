@@ -35,8 +35,8 @@ from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from tests.integration.cosmos3.super_harness import deployment, transports
-from tests.integration.cosmos3.test_super_gpu import _config
-from tests.test_model.test_cosmos3_super_generator_ci import _devices, _resolve_model
+from tests.integration.cosmos3.test_super_gpu import build_config
+from tests.test_model.test_cosmos3_super_generator_ci import gpu_devices, resolve_model
 from tests.utils import MetricCheckCollector
 
 pytestmark = pytest.mark.skipif(
@@ -61,12 +61,12 @@ MMMU_STRICT_MIN_ACCURACY = 0.48
 VIDEOMME_MIN_ACCURACY = 0.44
 
 
-def _fraction(correct: int, total: int) -> str:
+def fraction(correct: int, total: int) -> str:
     pct = (correct / total * 100) if total else 0.0
     return f"{correct}/{total} ({pct:.0f}%)"
 
 
-def _strict_mmmu(per_sample: list[dict]) -> tuple[int, int]:
+def strict_mmmu(per_sample: list[dict]) -> tuple[int, int]:
     """Correct/total when MC parse fallbacks count as incorrect."""
     total = len(per_sample)
     correct = sum(
@@ -77,7 +77,7 @@ def _strict_mmmu(per_sample: list[dict]) -> tuple[int, int]:
     return correct, total
 
 
-def _print_accuracy_table(rows: list[tuple[str, str, str]]) -> None:
+def print_accuracy_table(rows: list[tuple[str, str, str]]) -> None:
     """Print a paste-ready #2107-style markdown table from the run's results."""
     print("\n### Cosmos3-Super Reasoner accuracy (Omni vs. ground truth)\n")
     print("| Evaluation | Sample source | Omni |")
@@ -91,12 +91,14 @@ def _print_accuracy_table(rows: list[tuple[str, str, str]]) -> None:
 @pytest.mark.benchmark
 @pytest.mark.asyncio
 async def test_reasoner_accuracy(tmp_path: Path, transport: str) -> None:
-    config = _config("reasoner", str(_resolve_model("reasoner")), _devices(), tmp_path)
+    config = build_config(
+        "reasoner", str(resolve_model("reasoner")), gpu_devices(), tmp_path
+    )
     async with deployment(config, transport, tmp_path / transport) as client:
-        await _reasoner_accuracy(client, tmp_path / transport)
+        await reasoner_accuracy(client, tmp_path / transport)
 
 
-async def _reasoner_accuracy(client, tmp_path):
+async def reasoner_accuracy(client, tmp_path):
     checks = MetricCheckCollector("Cosmos3-Super Reasoner accuracy")
     table: list[tuple[str, str, str]] = []
 
@@ -121,16 +123,16 @@ async def _reasoner_accuracy(client, tmp_path):
         ),
     )
     mmmu_total = mmmu_summary.get("total_samples", 0)
-    strict_correct, strict_total = _strict_mmmu(mmmu["per_sample"])
+    strict_correct, strict_total = strict_mmmu(mmmu["per_sample"])
     strict_acc = strict_correct / strict_total if strict_total else 0.0
     table.append(
-        ("MMMU", "50 samples from CI", _fraction(mmmu_summary["correct"], mmmu_total))
+        ("MMMU", "50 samples from CI", fraction(mmmu_summary["correct"], mmmu_total))
     )
     table.append(
         (
             "MMMU, strict scoring",
             "Same 50 CI examples; random-fallback answers count as incorrect",
-            _fraction(strict_correct, strict_total),
+            fraction(strict_correct, strict_total),
         )
     )
 
@@ -166,11 +168,11 @@ async def _reasoner_accuracy(client, tmp_path):
         (
             "VideoMME",
             "50 samples from CI",
-            _fraction(videomme_summary["correct"], videomme_total),
+            fraction(videomme_summary["correct"], videomme_total),
         )
     )
 
-    _print_accuracy_table(table)
+    print_accuracy_table(table)
 
     # --- assertions (failures + provisional floors) ---
     for name, summary in (

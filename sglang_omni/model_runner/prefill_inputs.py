@@ -14,9 +14,14 @@ the forward completes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+else:
+    pass
 
 _OMNI_PREFILL_INPUTS_ATTR = "_sglang_omni_prefill_inputs"
 
@@ -39,13 +44,15 @@ class OmniPrefillInputs:
 
 
 def attach_omni_prefill_inputs(
-    forward_batch: Any, prefill_inputs: OmniPrefillInputs
+    forward_batch: ForwardBatch, prefill_inputs: OmniPrefillInputs
 ) -> None:
     """Attach prefill_inputs without modifying upstream-owned fields."""
     if forward_batch.replace_embeds is not None:
         raise RuntimeError(
             "OmniPrefillInputs conflicts with forward_batch.replace_embeds"
         )
+    else:
+        pass
     num_tokens = len(forward_batch.input_ids)
     if prefill_inputs.input_embeds.shape[0] != num_tokens:
         raise RuntimeError(
@@ -53,18 +60,24 @@ def attach_omni_prefill_inputs(
             f"embeds rows={prefill_inputs.input_embeds.shape[0]}, "
             f"batch tokens={num_tokens}"
         )
+    else:
+        pass
     setattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR, prefill_inputs)
 
 
-def get_omni_prefill_inputs(forward_batch: Any) -> OmniPrefillInputs | None:
+def get_omni_prefill_inputs(
+    forward_batch: ForwardBatch | None,
+) -> OmniPrefillInputs | None:
     """Return the private Omni payload, or None when none is attached."""
     return getattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR, None)
 
 
-def clear_omni_prefill_inputs(forward_batch: Any) -> None:
+def clear_omni_prefill_inputs(forward_batch: ForwardBatch | None) -> None:
     """Remove the private Omni payload, if present."""
     if hasattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR):
         delattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR)
+    else:
+        pass
 
 
 __all__ = [

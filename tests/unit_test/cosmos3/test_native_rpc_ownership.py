@@ -47,7 +47,7 @@ def test_native_http_app_and_generation_share_no_rpc_deadline(
             if port not in excluded and port + 1 not in excluded
         )
 
-    monkeypatch.setattr(media, "_unused_port", available_port)
+    monkeypatch.setattr(media, "unused_port", available_port)
     config = Cosmos3PipelineConfig(model_path=str(tmp_path))
     config.stages[0].gpu = 0
     assert prepare_native_media_app(config, host="127.0.0.1", port=19000) is app

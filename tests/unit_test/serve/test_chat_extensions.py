@@ -12,7 +12,7 @@ from sglang_omni.client.types import CompletionStreamChunk, UsageInfo
 from sglang_omni.models.cosmos3.reasoner import build_chat_fields
 from sglang_omni.proto import StagePayload
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_api import _build_chat_generate_request
+from sglang_omni.serve.openai_api import build_chat_generate_request
 from sglang_omni.serve.protocol import ChatCompletionRequest
 
 
@@ -35,9 +35,9 @@ def test_backend_options_reach_the_native_request_validator():
         temperature=0.0,
         **options,
     )
-    generated = _build_chat_generate_request(request)
+    generated = build_chat_generate_request(request)
     assert generated.extra_params == options
-    payload = StagePayload("owned-request", Client._build_omni_request(generated), None)
+    payload = StagePayload("owned-request", Client.build_omni_request(generated), None)
     fields = build_chat_fields(
         payload, "native-model", set(NativeChatRequest.model_fields)
     )
@@ -63,7 +63,7 @@ def test_invalid_backend_options_reach_native_validation():
     )
     payload = StagePayload(
         "owned-request",
-        Client._build_omni_request(_build_chat_generate_request(request)),
+        Client.build_omni_request(build_chat_generate_request(request)),
         None,
     )
     fields = build_chat_fields(
