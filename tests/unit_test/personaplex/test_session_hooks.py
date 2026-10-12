@@ -155,3 +155,11 @@ def test_code2wav_refuses_a_unit_wider_than_its_decoder_ring(random_codec):
     state = PersonaPlexState(codes=torch.zeros(3, 8, dtype=torch.long))
     with pytest.raises(ValueError, match="at most 2 frames"):
         hooks.append(unit(0), payload(state), context([]))
+
+
+def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
+    encode = MimiEncodeSessionHooks(random_codec, torch.device("cpu"))
+    decode = Code2WavSessionHooks(random_codec, torch.device("cpu"), PieceTokenizer())
+    encode.warm_up_serving_thread()
+    decode.warm_up_serving_thread()
+    assert encode.encode_states == {} and decode.calls == {}
