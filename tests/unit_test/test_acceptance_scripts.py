@@ -15,7 +15,8 @@ from PIL import Image
 
 
 @pytest.mark.parametrize(
-    "api,bad_usage", [("chat", False), ("images", False), ("chat", True)]
+    "api,bad_usage",
+    [("chat", False), ("images", False), ("chat", True), ("images", True)],
 )
 def test_live_acceptance_scripts_record_success_and_response_failure(
     tmp_path, api, bad_usage
@@ -54,7 +55,19 @@ def test_live_acceptance_scripts_record_success_and_response_failure(
             self.send_response(200)
             self.end_headers()
             if api == "images":
-                data = {"created": 1, "data": [{"b64_json": encoded}]}
+                data = {
+                    "created": 1,
+                    "data": [{"b64_json": encoded, "output_format": "png"}],
+                    "usage": {
+                        "input_tokens": 10,
+                        "total_tokens": 999 if bad_usage else 10,
+                        "input_tokens_details": {"text_tokens": 10, "image_tokens": 0},
+                        "reasoning_tokens": 0,
+                        "image_count": 1,
+                        "width": 32,
+                        "height": 32,
+                    },
+                }
                 self.wfile.write(json.dumps(data).encode())
                 return
             usage = {"prompt_tokens": 10, "completion_tokens": 12, "total_tokens": 22}
@@ -73,12 +86,10 @@ def test_live_acceptance_scripts_record_success_and_response_failure(
                 {
                     "object": "chat.completion.chunk",
                     "choices": [{"finish_reason": "stop"}],
+                    "usage": usage,
                 }
             ]
-            if payload.get("stream_options", {}).get("include_usage"):
-                events.append(
-                    {"object": "chat.completion.chunk", "choices": [], "usage": usage}
-                )
+            assert "stream_options" not in payload
             body = "".join("data: " + json.dumps(event) + "\n\n" for event in events)
             self.wfile.write((body + "data: [DONE]\n\n").encode())
 

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import base64
 import io
 
 import pytest
@@ -114,6 +115,10 @@ def test_unmatched_paths_do_not_become_labels():
 @pytest.mark.parametrize("editing", [False, True])
 @pytest.mark.parametrize("fail_after_image", [False, True])
 def test_images_finish_iteration_before_recording_success(editing, fail_after_image):
+    image = io.BytesIO()
+    Image.new("RGB", (32, 32)).save(image, format="PNG")
+    encoded = base64.b64encode(image.getvalue()).decode("ascii")
+
     class ImageClient(Client, MetricsClient):
         def __init__(self):
             super().__init__(None)
@@ -124,7 +129,15 @@ def test_images_finish_iteration_before_recording_success(editing, fail_after_im
                 request_id=request_id,
                 stage_name="generate",
                 modality="image",
-                image_b64="aW1hZ2U=",
+                image_b64=encoded,
+                image_usage={
+                    "input_tokens": 3,
+                    "total_tokens": 3,
+                    "input_tokens_details": {
+                        "text_tokens": 3,
+                        "image_tokens": 4 if editing else 0,
+                    },
+                },
                 finish_reason="stop",
             )
             if fail_after_image:
@@ -159,22 +172,51 @@ def test_images_finish_iteration_before_recording_success(editing, fail_after_im
             or 0
         ) == 0
         if fail_after_image:
-            assert metrics.registry.get_sample_value(
-                "sglang_omni:failed_requests_total", {"model_name": "test"}
-            ) == 1
-            assert metrics.registry.get_sample_value(
-                "sglang:e2e_request_latency_seconds_count", labels
-            ) is None
+            assert (
+                metrics.registry.get_sample_value(
+                    "sglang_omni:failed_requests_total", {"model_name": "test"}
+                )
+                == 1
+            )
+            assert (
+                metrics.registry.get_sample_value(
+                    "sglang:e2e_request_latency_seconds_count", labels
+                )
+                is None
+            )
         else:
             assert backend.exhausted
-            assert response.json()["data"] == [{"b64_json": "aW1hZ2U="}]
-            assert metrics.registry.get_sample_value(
-                "sglang:e2e_request_latency_seconds_count", labels
-            ) == 1
-            assert metrics.registry.get_sample_value(
-                "sglang:num_requests_total", labels
-            ) == 1
-            assert metrics.registry.get_sample_value(
-                "sglang_omni:generated_images_total",
-                {"model_name": "test", "stage": "generate"},
-            ) == 1
+            assert response.json()["data"] == [
+                {"b64_json": encoded, "output_format": "png"}
+            ]
+            assert response.json()["usage"]["input_tokens"] == 3
+            assert response.json()["usage"]["input_tokens_details"]["image_tokens"] == (
+                4 if editing else 0
+            )
+            assert (
+                metrics.registry.get_sample_value(
+                    "sglang:e2e_request_latency_seconds_count", labels
+                )
+                == 1
+            )
+            assert (
+                metrics.registry.get_sample_value("sglang:num_requests_total", labels)
+                == 1
+            )
+            assert (
+                metrics.registry.get_sample_value(
+                    "sglang_omni:generated_images_total",
+                    {"model_name": "test", "stage": "generate"},
+                )
+                == 1
+            )
+            assert (
+                metrics.registry.get_sample_value("sglang:prompt_tokens_total", labels)
+                is None
+            )
+            assert (
+                metrics.registry.get_sample_value(
+                    "sglang:generation_tokens_total", labels
+                )
+                is None
+            )

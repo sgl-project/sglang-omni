@@ -8,21 +8,7 @@ import binascii
 import math
 from typing import Any, Literal
 
-from pydantic import (
-    AliasChoices,
-    BaseModel,
-    ConfigDict,
-    Field,
-    model_serializer,
-    model_validator,
-)
-
-
-class PromptTokensDetails(BaseModel):
-    cached_tokens: int | None = None
-    image_tokens: int | None = None
-    audio_tokens: int | None = None
-    video_tokens: int | None = None
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class UsageResponse(BaseModel):
@@ -31,26 +17,6 @@ class UsageResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-    prompt_tokens_details: PromptTokensDetails | None = None
-    reasoning_tokens: int | None = None
-
-    @model_serializer(mode="wrap")
-    def serialize_usage(self, handler):
-        data = handler(self)
-        for key in ("prompt_tokens_details", "reasoning_tokens"):
-            if data.get(key) is None:
-                data.pop(key, None)
-        if "prompt_tokens_details" in data:
-            data["prompt_tokens_details"] = {
-                key: value
-                for key, value in data["prompt_tokens_details"].items()
-                if value is not None
-            }
-        return data
-
-
-class StreamOptions(BaseModel):
-    include_usage: bool = False
 
 
 class ChatMessage(BaseModel):
@@ -93,7 +59,6 @@ class ChatCompletionRequest(BaseModel):
 
     # Streaming
     stream: bool = False
-    stream_options: StreamOptions | None = None
 
     # Multi-modal output control
     modalities: list[str] | None = None  # e.g. ["text", "audio"]
@@ -336,15 +301,6 @@ class ImageGenerationRequest(BaseModel):
     seed: int = Field(default=42, ge=0)
     num_inference_steps: int = Field(default=50, ge=1)
     guidance_scale: float = Field(default=4.0, ge=0, allow_inf_nan=False)
-
-
-class ImageGenerationData(BaseModel):
-    b64_json: str
-
-
-class ImageGenerationResponse(BaseModel):
-    created: int
-    data: list[ImageGenerationData]
 
 
 SUPPORTED_TTS_RESPONSE_FORMATS = frozenset({"wav", "mp3", "flac", "pcm", "aac", "opus"})

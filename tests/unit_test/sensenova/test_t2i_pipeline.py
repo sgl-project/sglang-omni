@@ -27,13 +27,17 @@ from sglang_omni.serve.openai_api import create_app
 
 
 def test_t2i_api_returns_all_outputs_in_one_request():
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 32)).save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
     class MultiClient:
         calls = 0
 
         async def generate(self, request, request_id):
             self.calls += 1
             assert request.extra_params["n"] == 3
-            yield GenerateChunk(request_id=request_id, images_b64=["a", "b", "c"])
+            yield GenerateChunk(request_id=request_id, images_b64=[encoded] * 3)
 
     backend = MultiClient()
     client = TestClient(
@@ -41,7 +45,9 @@ def test_t2i_api_returns_all_outputs_in_one_request():
     )
     response = client.post("/v1/images/generations", json={"prompt": "a cat", "n": 3})
     assert response.status_code == 200
-    assert response.json()["data"] == [{"b64_json": value} for value in ("a", "b", "c")]
+    assert (
+        response.json()["data"] == [{"b64_json": encoded, "output_format": "png"}] * 3
+    )
     assert backend.calls == 1
     assert (
         client.post(
@@ -562,9 +568,7 @@ def test_sensenova_dp_expands_to_distinct_gpu_replicas():
     config = SenseNovaU1PipelineConfig(
         model_path="/model/sensenova",
         processes={
-            "sensenova_generate": ProcessConfig(
-                num_replicas=2, replica_devices=[0, 1]
-            )
+            "sensenova_generate": ProcessConfig(num_replicas=2, replica_devices=[0, 1])
         },
     )
 

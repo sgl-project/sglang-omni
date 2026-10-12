@@ -12,6 +12,44 @@ from sglang_omni.proto import StreamMessage
 from sglang_omni.serve.metrics import RequestMetrics
 
 
+@pytest.mark.parametrize(
+    "cache_fields",
+    [
+        {"cached_tokens": 4},
+        {"prompt_tokens_details": {"cached_tokens": 4}},
+        {"usage": {"prompt_tokens_details": {"cached_tokens": 4}}},
+    ],
+)
+def test_cache_metrics_do_not_require_chat_usage_extensions(cache_fields):
+    result = {
+        "text": "hello",
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        **cache_fields,
+    }
+    chunk = Client._default_result_builder("cache-request", result)
+    assert chunk.usage.prompt_tokens_details == {"cached_tokens": 4}
+    assert "prompt_tokens_details" not in chunk.usage.to_dict()
+
+    metrics = RequestMetrics("test")
+
+    async def source():
+        yield chunk
+
+    async def run():
+        async for _ in metrics.generate(source(), False):
+            pass
+
+    asyncio.run(run())
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang:cached_tokens_total",
+            {"model_name": "test", "cache_source": "total"},
+        )
+        == 4
+    )
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_client_coordinator_token_telemetry_does_not_leak(stream):
     metrics = RequestMetrics("test")

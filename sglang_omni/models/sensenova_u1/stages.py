@@ -15,6 +15,7 @@ from sglang_omni.models.sensenova_u1.sampling import (
     SenseNovaU1ImageEditSampling,
     SenseNovaU1Sampling,
 )
+from sglang_omni.models.sensenova_u1.usage import build_image_usage
 from sglang_omni.proto.request import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,9 @@ def generate_image(payload: StagePayload, model: Any, tokenizer: Any) -> StagePa
     inputs = payload.request.inputs
     if isinstance(inputs, dict) and inputs.get("task") == "image_edit":
         return _generate_image_edit(payload, model, tokenizer)
-    return _generate_text_to_image(payload, model, tokenizer)
+    result = _generate_text_to_image(payload, model, tokenizer)
+    result.data["image_usage"] = build_image_usage(payload.request.inputs, tokenizer)
+    return result
 
 
 def generate_images(
@@ -72,6 +75,13 @@ def generate_images(
 
     if any(result is None for result in results):
         raise RuntimeError("SenseNova-U1 failed to produce every batched result")
+    for result in results:
+        if "image_usage" not in result.data:
+            result.data["image_usage"] = build_image_usage(
+                result.request.inputs, tokenizer
+            )
+        else:
+            pass
     return [result for result in results if result is not None]
 
 
@@ -198,12 +208,14 @@ def _generate_image_edit(
         raise ValueError("SenseNova-U1 requires a non-empty image edit prompt")
     options = SenseNovaU1ImageEditSampling.from_params(payload.request.params)
     references = _prepare_reference_images(inputs.get("image_b64"), options)
+    token_usage = {}
     width, height = _resolve_edit_output_size(references, options)
     with torch.inference_mode():
         images = model.it2i_generate(
             tokenizer,
             prompt,
             references,
+            usage=token_usage,
             batch_size=1,
             seed=options.seed,
             image_size=(width, height),
@@ -217,7 +229,11 @@ def _generate_image_edit(
             t_eps=0.02,
             think_mode=False,
         )
-    return _encode_image(payload, images, width, height)
+    result = _encode_image(payload, images, width, height)
+    result.data["image_usage"] = build_image_usage(
+        prompt, tokenizer, token_usage.get("image_tokens", 0)
+    )
+    return result
 
 
 def _decode_reference_images(value: Any) -> list[Any]:

@@ -2530,6 +2530,7 @@ class NEOChatModel(PreTrainedModel):
         think_mode=False,
         seed=0,
         max_think_tokens=1024,
+        usage=None,
     ):
         if getattr(self, "_sensenova_compact_mode", False):
             raise RuntimeError(
@@ -2611,6 +2612,14 @@ class NEOChatModel(PreTrainedModel):
                 query_img_condition = query_img_condition.replace(
                     "<image>", image_tokens, 1
                 )
+
+        if usage is not None:
+            usage["image_tokens"] = sum(
+                int(grid_hw[i, 0] * grid_hw[i, 1] * self.downsample_ratio**2)
+                for i in range(grid_hw.shape[0])
+            )
+        else:
+            pass
 
         input_embeds_condition, indexes_condition, attention_mask_condition_prefix = (
             self._build_it2i_inputs(tokenizer, query_condition, pixel_values, grid_hw)

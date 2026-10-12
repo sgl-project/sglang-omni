@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """Check live metrics snapshots/deltas around AR Chat or SenseNova Images requests."""
 

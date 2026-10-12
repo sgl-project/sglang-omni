@@ -75,6 +75,10 @@ from sglang_omni.http.favicon import register_favicon
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
+from sglang_omni.serve.image_response import (
+    ImageGenerationResponse,
+    build_image_response,
+)
 from sglang_omni.serve.openai_errors import (
     is_bad_request_error as _is_bad_request_error,
 )
@@ -95,9 +99,7 @@ from sglang_omni.serve.protocol import (
     GenerateFinishReason,
     GenerateMetaInfo,
     GenerateResponse,
-    ImageGenerationData,
     ImageGenerationRequest,
-    ImageGenerationResponse,
     InitWeightsUpdateGroupRequest,
     ModelCard,
     ModelList,
@@ -125,9 +127,7 @@ from sglang_omni.serve.speech_limits import (
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
 from sglang_omni.serve.speech_ws import SpeechWebSocketSession
-from sglang_omni.serve.streaming import (
-    STREAM_DONE_SENTINEL,
-)
+from sglang_omni.serve.streaming import STREAM_DONE_SENTINEL
 from sglang_omni.serve.streaming import (
     ClosableStreamingResponse as _ClosableStreamingResponse,
 )
@@ -807,8 +807,6 @@ async def _chat_non_stream(
             prompt_tokens=result.usage.prompt_tokens or 0,
             completion_tokens=result.usage.completion_tokens or 0,
             total_tokens=result.usage.total_tokens or 0,
-            prompt_tokens_details=result.usage.prompt_tokens_details,
-            reasoning_tokens=result.usage.reasoning_tokens,
         )
 
     response = ChatCompletionResponse(
@@ -851,19 +849,17 @@ async def _chat_stream(
     )
     async with aclosing(chunk_stream):
         async for chunk in chunk_stream:
-            if chunk.usage is not None:
-                final_usage = UsageResponse(
-                    prompt_tokens=chunk.usage.prompt_tokens or 0,
-                    completion_tokens=chunk.usage.completion_tokens or 0,
-                    total_tokens=chunk.usage.total_tokens or 0,
-                    prompt_tokens_details=chunk.usage.prompt_tokens_details,
-                    reasoning_tokens=chunk.usage.reasoning_tokens,
-                )
             # Capture finish info for the dedicated finish chunk after the loop.
             # Some pipelines only emit a final aggregate chunk; do not drop its
             # text/audio just because it already carries a finish reason.
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
+                if chunk.usage is not None:
+                    final_usage = UsageResponse(
+                        prompt_tokens=chunk.usage.prompt_tokens or 0,
+                        completion_tokens=chunk.usage.completion_tokens or 0,
+                        total_tokens=chunk.usage.total_tokens or 0,
+                    )
                 has_payload = (
                     chunk.modality == "text"
                     and bool(chunk.text)
@@ -939,22 +935,12 @@ async def _chat_stream(
                 finish_reason=finish_reason or "stop",
             )
         ],
-        usage=final_usage if req.stream_options is None else None,
+        usage=final_usage,
     )
     data = finish_resp.model_dump(exclude_none=True)
     for choice in data.get("choices", []):
         choice.setdefault("finish_reason", None)
     yield f"data: {json.dumps(data)}\n\n"
-
-    if req.stream_options is not None and req.stream_options.include_usage:
-        usage_resp = ChatCompletionStreamResponse(
-            id=response_id,
-            created=created,
-            model=model,
-            choices=[],
-            usage=final_usage,
-        )
-        yield f"data: {json.dumps(usage_resp.model_dump())}\n\n"
 
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
@@ -1119,10 +1105,7 @@ def _register_image_generations(app: FastAPI) -> None:
                     raise RuntimeError(
                         f"SenseNova-U1 expected {req.n} images, got {len(images)}"
                     )
-                response = ImageGenerationResponse(
-                    created=int(time.time()),
-                    data=[ImageGenerationData(b64_json=item) for item in images],
-                )
+                response = build_image_response(images, chunk.image_usage)
         except Exception as exc:
             logger.exception("Image generation failed for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1204,6 +1187,7 @@ def _register_image_edits(app: FastAPI) -> None:
             base64.b64encode(item).decode("ascii") for item in image_bytes
         ]
         data = []
+        image_usage = None
         parent_request_id = str(uuid.uuid4())
         try:
             for output_index in range(num_outputs):
@@ -1229,7 +1213,11 @@ def _register_image_edits(app: FastAPI) -> None:
                         continue
                     if chunk.image_b64 is None:
                         raise RuntimeError("SenseNova-U1 generated no image")
-                    result = ImageGenerationData(b64_json=chunk.image_b64)
+                    result = chunk.image_b64
+                    if output_index == 0:
+                        image_usage = chunk.image_usage
+                    else:
+                        pass
                 if result is not None:
                     data.append(result)
         except Exception as exc:
@@ -1239,7 +1227,7 @@ def _register_image_edits(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=500, detail="SenseNova-U1 returned no result"
             )
-        return ImageGenerationResponse(created=int(time.time()), data=data)
+        return build_image_response(data, image_usage)
 
 
 async def _read_image_edit_upload(image: UploadFile) -> bytes:
@@ -1449,11 +1437,6 @@ def _build_generate_response(
         finish_reason=finish_reason,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        cached_tokens=(
-            usage.prompt_tokens_details.get("cached_tokens", 0)
-            if usage is not None and usage.prompt_tokens_details is not None
-            else 0
-        ),
         weight_version=result.weight_version,
         request_metadata=req.metadata,
         output_token_logprobs=(
