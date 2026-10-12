@@ -470,7 +470,7 @@ def test_audio_content_reaches_processor_in_turn_order(
         "<|im_start|>assistant\nOK.<|im_end|>\n"
         f"<|im_start|>user\nFinally\n{AUDIO_PLACEHOLDER}<|im_end|>\n"
     )
-    assert recording_processor.audio_parts == [[0, 0, 2]]
+    assert recording_processor.audio_parts is None
     for actual_waveform, expected_waveform in zip(
         recording_processor.audios[0],
         [first_waveform, second_waveform, third_waveform],
@@ -505,9 +505,9 @@ def test_audio_cache_identity_includes_turn_grouping(
     )
 
     same_turn_result = asyncio.run(media_preprocessor(same_turn_payload))
-    assert recording_processor.audio_parts == [[0, 0]]
+    assert recording_processor.audio_parts is None
     separate_turns_result = asyncio.run(media_preprocessor(separate_turns_payload))
-    assert recording_processor.audio_parts == [[0, 2]]
+    assert recording_processor.audio_parts is None
 
     same_turn_cache_key = same_turn_result.data["encoder_inputs"]["audio_encoder"][
         "cache_key"
@@ -628,4 +628,4 @@ def test_openai_inline_media_decode_in_original_order(
         np.full((4, 4, 3), [255, 0, 0], dtype=np.uint8),
     )
     np.testing.assert_allclose(recording_processor.audios[0][0], 0.25)
-    assert recording_processor.audio_parts == [[0]]
+    assert recording_processor.audio_parts is None

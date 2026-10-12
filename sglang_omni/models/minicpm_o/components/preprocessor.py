@@ -417,7 +417,9 @@ class MiniCPMOPreprocessor:
         )
         audio_cache_key = compute_audio_cache_key(audios)
         if audio_cache_key is not None and audio_turn_indices is not None:
-            audio_cache_key = f"{audio_cache_key}|parts={audio_turn_indices}"
+            audio_cache_key = (
+                f"{audio_cache_key}|parts={audio_turn_indices}|segments=v1"
+            )
         else:
             pass
 
@@ -454,15 +456,11 @@ class MiniCPMOPreprocessor:
             use_tts_template=bool(audios) or self.should_use_tts_template(payload),
         )
 
+        # Note (Akazaakane): Independent extraction matches per-segment placeholder rounding.
         processed = self.processor(
             prompt_text,
             images=[images] if images else None,
             audios=[audios] if audios else None,
-            **(
-                {"audio_parts": [audio_turn_indices]}
-                if audio_turn_indices is not None
-                else {}
-            ),
             return_tensors="pt",
             **processor_video_options,
         )

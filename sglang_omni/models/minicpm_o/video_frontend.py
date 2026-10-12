@@ -111,18 +111,16 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
             else:
                 pass
             if self.frames_per_second is not None:
-                timestamps_seconds = np.arange(
-                    0, duration_seconds, 1.0 / self.frames_per_second
-                ).tolist()
+                sample_interval_seconds = 1.0 / self.frames_per_second
+                candidate_frame_count = math.ceil(
+                    duration_seconds / sample_interval_seconds
+                )
             elif duration_seconds > MAX_VIDEO_FRAMES:
-                timestamps_seconds = [
-                    round(index * LONG_VIDEO_SAMPLE_INTERVAL_SECONDS, 1)
-                    for index in range(
-                        int(duration_seconds / LONG_VIDEO_SAMPLE_INTERVAL_SECONDS)
-                    )
-                ]
+                sample_interval_seconds = LONG_VIDEO_SAMPLE_INTERVAL_SECONDS
+                candidate_frame_count = int(duration_seconds / sample_interval_seconds)
             else:
-                timestamps_seconds = list(range(math.ceil(duration_seconds)))
+                sample_interval_seconds = 1.0
+                candidate_frame_count = math.ceil(duration_seconds)
             maximum_frame_count = (
                 self.maximum_frame_count
                 if self.maximum_frame_count is not None
@@ -130,12 +128,21 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
             )
             if maximum_frame_count < 1:
                 raise ValueError("video_max_frames must be positive")
-            elif len(timestamps_seconds) > maximum_frame_count:
-                sample_indices = np.linspace(
-                    0, len(timestamps_seconds) - 1, maximum_frame_count, dtype=int
-                ).tolist()
+            elif candidate_frame_count > maximum_frame_count:
+                sample_indices = [
+                    index
+                    * (candidate_frame_count - 1)
+                    // max(maximum_frame_count - 1, 1)
+                    for index in range(maximum_frame_count)
+                ]
+            else:
+                sample_indices = range(candidate_frame_count)
+            timestamps_seconds = [
+                index * sample_interval_seconds for index in sample_indices
+            ]
+            if self.frames_per_second is None and duration_seconds > MAX_VIDEO_FRAMES:
                 timestamps_seconds = [
-                    timestamps_seconds[index] for index in sample_indices
+                    round(seconds, 1) for seconds in timestamps_seconds
                 ]
             else:
                 pass

@@ -10,6 +10,7 @@ import threading
 from fractions import Fraction
 from pathlib import Path
 from typing import Literal
+from unittest.mock import AsyncMock
 
 import audioread
 import av
@@ -166,7 +167,7 @@ def test_inline_video_preserves_frame_audio_order_and_surrounding_text(
             video_processor.audios[0], decoded_video.audio_segments, strict=True
         ):
             np.testing.assert_array_equal(actual_waveform, expected_waveform)
-        assert video_processor.audio_parts == [[0, 0]]
+        assert video_processor.audio_parts is None
     else:
         assert video_processor.audios is None
     assert video_processor.max_slice_nums == 1
@@ -213,7 +214,7 @@ def test_top_level_video_audio_follows_explicit_media(
         video_processor.audios[0], expected_waveforms, strict=True
     ):
         np.testing.assert_array_equal(actual_waveform, expected_waveform)
-    assert video_processor.audio_parts == [[0] * len(expected_waveforms)]
+    assert video_processor.audio_parts is None
 
 
 @pytest.mark.parametrize("video_alias", ["video", "videos"])
@@ -282,7 +283,7 @@ def test_top_level_video_audio_matches_inline_reference_policy(
             top_level_modality["bounds"], inline_modality["bounds"]
         )
     assert video_processor.images == [decoded_video.frames]
-    assert video_processor.audio_parts == [[2, 2]]
+    assert video_processor.audio_parts is None
     assert video_processor.max_slice_nums == 1
 
 
@@ -516,7 +517,7 @@ def test_omni_video_joins_text_parts_in_preceding_turns(
     assert result.data["prompt"]["prompt_text"].startswith(
         "<|im_start|>user\nHelloWorld<|im_end|>\n<|im_start|>assistant\nOK<|im_end|>\n"
     )
-    assert video_processor.audio_parts == [[2, 2]]
+    assert video_processor.audio_parts is None
 
 
 @pytest.mark.parametrize("use_audio", [False, True])
@@ -744,6 +745,29 @@ def test_video_decoder_samples_matching_frames_and_audio_intervals(
         )
 
 
+@pytest.mark.parametrize("max_frames", [1, 3])
+def test_video_decoder_caps_timestamp_allocation(
+    encoded_video_path: Path, monkeypatch: pytest.MonkeyPatch, max_frames: int
+) -> None:
+    original_arange = np.arange
+
+    def bounded_arange(
+        start: float, stop: float, step: float
+    ) -> npt.NDArray[np.float64]:
+        assert (stop - start) / step <= max_frames
+        return original_arange(start, stop, step)
+
+    monkeypatch.setattr(video_frontend.np, "arange", bounded_arange)
+    video = MiniCPMVideoIO(use_audio=False, fps=1e12, max_frames=max_frames).load_file(
+        encoded_video_path
+    )
+
+    assert len(video.frames) == max_frames
+    assert video.timestamps_seconds[0] == 0.0
+    if max_frames > 1:
+        assert video.timestamps_seconds[-1] == pytest.approx(2.3 - 1e-12)
+
+
 def test_video_decoder_pads_short_tail_audio(
     encoded_video_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -854,6 +878,68 @@ def checkpoint_processor() -> ProcessorMixin:
     if not (checkpoint / "processing_minicpmo.py").exists():
         pytest.skip("Set MINICPMO_CHECKPOINT to a MiniCPM-o processor checkpoint")
     return AutoProcessor.from_pretrained(str(checkpoint), trust_remote_code=True)
+
+
+@pytest.mark.parametrize(
+    "as_video", [False, True], ids=["two-clips", "three-fps-video"]
+)
+def test_real_processor_fractional_audio_segments_match_embedding_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_processor: ProcessorMixin,
+    as_video: bool,
+) -> None:
+    if as_video:
+        waveform = np.sin(np.arange(16000, dtype=np.float32) / 20)
+        segments = list(np.split(waveform, [16000 // 3, 32000 // 3]))
+        video = TimedVideo(
+            frames=[Image.new("RGB", (56, 56)) for _ in segments],
+            audio_segments=segments,
+            timestamps_seconds=[0.0, 1.0 / 3, 2.0 / 3],
+            duration_seconds=1.0,
+        )
+        monkeypatch.setattr(
+            "sglang_omni.models.minicpm_o.prompt_frontend.load_timed_video",
+            AsyncMock(return_value=video),
+        )
+        content = [
+            {"type": "video_url", "video_url": {"url": "clip.mp4", "use_audio": True}}
+        ]
+    else:
+        segments = [np.sin(np.arange(16800, dtype=np.float32) / 20) for _ in range(2)]
+        content = segments
+
+    preprocessor = object.__new__(MiniCPMOPreprocessor)
+    preprocessor._processor = checkpoint_processor  # noqa: leading-underscore  # Existing processor injection contract.
+    preprocessor.tokenizer = checkpoint_processor.tokenizer
+    preprocessor.speech_enabled = False
+    result = asyncio.run(
+        preprocessor(
+            StagePayload(
+                request_id="fractional-audio-segments",
+                request=OmniRequest(inputs=[{"role": "user", "content": content}]),
+                data=None,
+            )
+        )
+    )
+    audio_bounds = result.data["mm_inputs"]["audio"]["bounds"]
+    audio_inputs = result.data["encoder_inputs"]["audio_encoder"]
+    embedding_lengths = feature_lens_after_pooling(
+        audio_inputs["audio_feature_lens"], checkpoint_processor.pool_step
+    )
+    assert len(embedding_lengths) == len(segments)
+    torch.testing.assert_close(
+        audio_bounds[:, 1] - audio_bounds[:, 0], embedding_lengths, check_dtype=False
+    )
+    embedding_row_count = int(embedding_lengths.sum())
+    assert embedding_row_count == (9 if as_video else 20)
+    embeddings = {"audio_embeds": torch.zeros(embedding_row_count, 2)}
+    _, positions = apply_mm_pad_values(
+        result.data["prompt"]["input_ids"],
+        mm_inputs=result.data["mm_inputs"],
+        model_inputs=embeddings,
+        vocab_size=checkpoint_processor.tokenizer.vocab_size,
+    )
+    assert len(positions["audio"]) == embedding_row_count
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
