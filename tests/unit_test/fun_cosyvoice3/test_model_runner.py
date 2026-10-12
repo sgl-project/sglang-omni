@@ -302,11 +302,12 @@ def test_cosyvoice3_ras_masks_and_redraws_repeated_speech_tokens(
     use_ascend_backend: bool,
 ) -> None:
     """A repeated speech token must not crowd out EOS until the length cap."""
-    probs = torch.zeros((5, EOS_ID + 1))
+    probs = torch.zeros((6, EOS_ID + 1))
     probs[0, 9], probs[0, EOS_ID] = 0.9, 0.1
-    probs[1:4, 2] = 0.4
-    probs[1, 5] = probs[2, 9] = probs[3, EOS_ID] = 0.6
+    probs[[1, 2, 3, 5], 2] = 0.4
+    probs[1, 5] = probs[2, 9] = probs[3, EOS_ID] = probs[5, 9] = 0.6
     probs[4, 9] = 1.0
+    histories = [[9] + [4] * 9, [1, 2, 3], [9], [EOS_ID], [9], [9] + [4] * 10]
     runner = object.__new__(FunCosyVoice3ModelRunner)
     runner.outbox = None
     runner.tp_worker = SimpleNamespace(
@@ -324,10 +325,10 @@ def test_cosyvoice3_ras_masks_and_redraws_repeated_speech_tokens(
                 ),
             )
         )
-        for row, output_ids in enumerate([[4, 9, 7], [1, 2, 3], [9], [EOS_ID], [9]])
+        for row, output_ids in enumerate(histories)
     ]
     result = SimpleNamespace(
-        next_token_ids=torch.tensor([9, 5, 9, EOS_ID, 9], dtype=torch.int32),
+        next_token_ids=torch.tensor([9, 5, 9, EOS_ID, 9, 9], dtype=torch.int32),
         logits_output=SimpleNamespace(
             next_token_logits=torch.log(probs) + 1 if use_ascend_backend else probs
         ),
@@ -335,15 +336,15 @@ def test_cosyvoice3_ras_masks_and_redraws_repeated_speech_tokens(
     forward_batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_decode=lambda: True),
         sampling_info=SimpleNamespace(sampling_seed=None),
-        positions=torch.arange(5),
+        positions=torch.arange(6),
     )
 
     runner.collect_tokens(result, forward_batch, None, requests)
 
-    assert result.next_token_ids.tolist() == [EOS_ID, 5, 9, EOS_ID, 9]
+    assert result.next_token_ids.tolist() == [EOS_ID, 5, 9, EOS_ID, 9, 9]
     assert [
         [int(code) for code in request.data.output_codes] for request in requests
-    ] == [[], [5], [9], [], [9]]
+    ] == [[], [5], [9], [], [9], [9]]
 
 
 def test_cosyvoice3_load_weights_maps_custom_and_backbone_keys(
