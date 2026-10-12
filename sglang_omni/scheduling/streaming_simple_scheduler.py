@@ -98,6 +98,8 @@ class StreamingSimpleScheduler:
         if message.type == "new_request":
             with self.metrics_lock:
                 self.metrics_waiting.add(message.request_id)
+        else:
+            pass
         self.inbox.put(message)
 
     def metrics_snapshot(self) -> dict[str, int]:

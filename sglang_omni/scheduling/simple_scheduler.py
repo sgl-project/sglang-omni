@@ -128,6 +128,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                             data={"event": "queue", "duration": now - queued},
                         )
                     )
+                else:
+                    pass
             if tracked:
                 self.outbox.put(
                     OutgoingMessage(
@@ -136,6 +138,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                         data={"event": "batch", "size": len(request_ids)},
                     )
                 )
+            else:
+                pass
 
     def metrics_end(self, request_ids: list[str], outcome: str = "completed") -> None:
         with self.metrics_lock:
@@ -158,6 +162,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                             },
                         )
                     )
+                else:
+                    pass
 
     def cleanup_aborted_request(self, request_id: str) -> None:
         if self.abort_callback is None:
@@ -184,6 +190,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         with self.metrics_lock:
             if request_id in self.metrics_started:
                 self.metrics_outcomes[request_id] = "aborted"
+            else:
+                pass
         return True
 
     def enqueue(self, message: IncomingMessage) -> None:
@@ -198,6 +206,10 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                 request = getattr(message.data, "request", None)
                 if request is not None and request.metadata.get("omni_metrics_enabled"):
                     self.metrics_queued[message.request_id] = time.perf_counter()
+                else:
+                    pass
+        else:
+            pass
         self.inbox.put(message)
 
     def message_cost(self, msg: IncomingMessage) -> int:
@@ -339,6 +351,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             for msg in batch:
                 self.run_single(msg, loop)
             return
+        else:
+            pass
         request_ids = [msg.request_id for msg in batch]
         self.metrics_begin(request_ids)
         outcome = "completed"
@@ -381,6 +395,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                 with self.metrics_lock:
                     if msg.request_id in self.metrics_started:
                         self.metrics_outcomes[msg.request_id] = "error"
+                    else:
+                        pass
                 self.emit_error(msg.request_id, result, self.outbox)
             else:
                 self.emit_result(msg.request_id, result, self.outbox)

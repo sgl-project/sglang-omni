@@ -34,18 +34,32 @@ def engine_metrics_snapshot(scheduler):
             value = getattr(pool, name, None)
             if value is not None:
                 values[name] = value
+            else:
+                pass
+    else:
+        pass
     capacity = getattr(scheduler, "max_total_num_tokens", None)
     if capacity is not None:
         values["max_total_num_tokens"] = capacity
+    else:
+        pass
     reporter = getattr(scheduler, "metrics_reporter", None)
     if reporter is not None:
-        throughput = getattr(reporter, "_current_gen_throughput", None)
+        throughput = getattr(
+            reporter, "_current_gen_throughput", None
+        )  # noqa: leading-underscore - backend reporter API
         if throughput is not None:
             values["gen_throughput"] = throughput(time.perf_counter())
+        else:
+            pass
         # Prefix-cache statistics are maintained by the backend, not inferred
         # from completed HTTP usage or the current contents of the KV pool.
         if getattr(scheduler, "enable_metrics", False):
             values["cache_hit_rate"] = reporter.stats.cache_hit_rate
+        else:
+            pass
+    else:
+        pass
     return values
 
 
@@ -53,6 +67,8 @@ def backend_metrics_snapshot(scheduler):
     """Serialize existing backend collectors; do not register new worker metrics."""
     if not getattr(scheduler, "enable_metrics", False):
         return []
+    else:
+        pass
     reporter = getattr(scheduler, "metrics_reporter", None)
     cache = getattr(scheduler, "tree_cache", None)
     collectors = (
@@ -71,10 +87,14 @@ def backend_metrics_snapshot(scheduler):
         collect = getattr(metric, "collect", None)
         if not callable(collect) or id(metric) in seen:
             continue
+        else:
+            pass
         seen.add(id(metric))
         for family in collect():
             if not family.name.startswith("sglang:"):
                 continue
+            else:
+                pass
             families.append(
                 {
                     "name": family.name,

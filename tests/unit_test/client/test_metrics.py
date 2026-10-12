@@ -102,18 +102,20 @@ def test_cache_metrics_do_not_require_chat_usage_extensions(cache_fields):
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_client_coordinator_token_telemetry_does_not_leak(stream):
+@pytest.mark.parametrize("token_stage", ["decode", "decode@r0"])
+def test_client_coordinator_token_telemetry_does_not_leak(stream, token_stage):
     metrics = RequestMetrics("test")
 
     class FakeCoordinator:
         request_metrics = metrics
+        replica_topology = ReplicaTopology(replicas={"decode": ("decode@r0",)})
 
         async def report(self, request_id, request):
             assert request.metadata["omni_metrics_enabled"] is True
             for count in [1, 3]:
                 message = StreamMessage(
                     request_id=request_id,
-                    from_stage="decode",
+                    from_stage=token_stage,
                     modality="metrics",
                     chunk={"prompt_tokens": 10, "completion_tokens": count},
                 )
@@ -123,11 +125,17 @@ def test_client_coordinator_token_telemetry_does_not_leak(stream):
 
         async def submit(self, request_id, request):
             await self.report(request_id, request)
-            return {"text": "hello", "finish_reason": "stop"}
+            return {
+                "text": "hello",
+                "finish_reason": "stop",
+                "stage_name": "decode",
+                "prompt_tokens": 10,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {"cached_tokens": 4},
+            }
 
         async def stream(self, request_id, request):
-            await self.report(request_id, request)
-            yield SimpleNamespace(result={"text": "hello", "finish_reason": "stop"})
+            yield SimpleNamespace(result=await self.submit(request_id, request))
 
     client = Client(FakeCoordinator())
     client.request_metrics = metrics
@@ -143,6 +151,13 @@ def test_client_coordinator_token_telemetry_does_not_leak(stream):
     chunks = asyncio.run(run())
     assert len(chunks) == 1
     assert chunks[0].text == "hello"
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang:cached_tokens_total",
+            {"model_name": "test", "cache_source": "total"},
+        )
+        == 4
+    )
     assert metrics.active_requests == {}
     labels = {"model_name": "test", "is_streaming": str(stream).lower()}
     assert (

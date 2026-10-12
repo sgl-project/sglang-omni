@@ -93,6 +93,7 @@ def test_streaming_scheduler_metrics_cover_queue_compute_and_abort():
     scheduler.abort("b")
     assert scheduler.metrics_snapshot() == {"num_running_reqs": 0, "num_queue_reqs": 0}
 
+
 def drain_results(scheduler: StreamingSimpleScheduler) -> list[OutgoingMessage]:
     messages: list[OutgoingMessage] = []
     while True:

@@ -1119,6 +1119,8 @@ class Stage:
             "omni_metrics_enabled"
         ):
             self.metrics_started.setdefault(request_id, time.perf_counter())
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -1191,6 +1193,10 @@ class Stage:
                     return self.admin_result(
                         operation, success=True, data=snapshot(), message="ok"
                     )
+                else:
+                    pass
+            else:
+                pass
             handler = getattr(self.scheduler, "admin", None)
             if handler is None:
                 return self.admin_result(
@@ -2183,6 +2189,8 @@ class Stage:
                     },
                 )
             )
+        else:
+            pass
 
     def clear_request_state(self, request_id: str) -> None:
         self.finish_stage_metrics(request_id, "completed")

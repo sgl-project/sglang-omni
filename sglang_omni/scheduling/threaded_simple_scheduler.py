@@ -186,6 +186,8 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
             request = getattr(msg.data, "request", None)
             if request is not None and request.metadata.get("omni_metrics_enabled"):
                 self.metrics_queued[msg.request_id] = time.perf_counter()
+            else:
+                pass
             self.inbox.put(msg)
 
     def abort(self, request_id: str) -> None:
@@ -196,6 +198,8 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
                 request_id in self.metrics_active or request_id in self.metrics_queued
             ):
                 self.metrics_aborted.add(request_id)
+            else:
+                pass
             self.metrics_queued.pop(request_id, None)
             if future is not None:
                 self.aborted_futures.add(future)
@@ -280,6 +284,8 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     data={"event": "queue", "duration": started - queued},
                 )
             )
+        else:
+            pass
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
@@ -299,6 +305,8 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
                 if request_id in self.metrics_aborted:
                     self.metrics_aborted.discard(request_id)
                     outcome = "aborted"
+                else:
+                    pass
             self.outbox.put(
                 OutgoingMessage(
                     request_id=request_id,

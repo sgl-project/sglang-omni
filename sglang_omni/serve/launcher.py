@@ -486,6 +486,8 @@ async def run_server(
         from sglang_omni.serve.metrics import validate_metrics_environment
 
         validate_metrics_environment()
+    else:
+        pass
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
 

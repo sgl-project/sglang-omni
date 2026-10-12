@@ -906,7 +906,7 @@ class Coordinator(CoordinatorSessions):
                     pass
                 metrics.observe_tokens(
                     request_id,
-                    msg.from_stage,
+                    self.replica_topology.logical_name(msg.from_stage),
                     msg.chunk["prompt_tokens"],
                     msg.chunk["completion_tokens"],
                 )

@@ -2249,6 +2249,8 @@ class OmniScheduler(Generic[RequestDataT]):
             )
             if telemetry is not None:
                 self.outbox.put(telemetry)
+            else:
+                pass
             if not req.finished():
                 continue
             else:
