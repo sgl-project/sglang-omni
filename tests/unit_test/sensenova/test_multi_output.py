@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 import base64
 import io
-from unittest.mock import Mock
+from unittest.mock import Mock, create_autospec
 
 import pytest
 import torch
 from PIL import Image
+from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.sensenova_u1.stages import (
     generate_image,
@@ -16,7 +17,14 @@ from sglang_omni.models.sensenova_u1.stages import (
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
 
-def payload(n=1):
+@pytest.fixture
+def tokenizer() -> PreTrainedTokenizerBase:
+    return create_autospec(
+        PreTrainedTokenizerBase, instance=True, return_value={"input_ids": [1, 2, 3]}
+    )
+
+
+def payload(n: int = 1) -> StagePayload:
     return StagePayload(
         request_id=str(n),
         request=OmniRequest(
@@ -28,13 +36,20 @@ def payload(n=1):
 
 
 @pytest.mark.parametrize("n", [1, 2, 4, 10])
-def test_native_outputs_and_seed_order(n):
+def test_native_outputs_and_seed_order(
+    n: int, tokenizer: PreTrainedTokenizerBase
+) -> None:
     model = Mock()
     model.t2i_generate.return_value = torch.stack(
         [torch.full((3, 32, 32), -1 + i / 8) for i in range(n)]
     )
     request = payload(n)
-    generate_image(request, model, None)
+    generate_image(request, model, tokenizer)
+    assert request.data["image_usage"] == {
+        "input_tokens": 3,
+        "total_tokens": 3,
+        "input_tokens_details": {"text_tokens": 3, "image_tokens": 0},
+    }
     model.t2i_generate.assert_called_once()
     assert model.t2i_generate.call_args.args[1] == "a cat"
     assert model.t2i_generate.call_args.kwargs["batch_size"] == n
@@ -55,22 +70,30 @@ def test_native_outputs_and_seed_order(n):
         )
 
 
-def test_multi_output_requests_execute_separately():
+def test_multi_output_requests_execute_separately(
+    tokenizer: PreTrainedTokenizerBase,
+) -> None:
     model = Mock()
     model.t2i_generate.side_effect = [
         torch.zeros(2, 3, 32, 32),
         torch.zeros(1, 3, 32, 32),
     ]
     requests = [payload(2), payload(1)]
-    assert generate_images(requests, model, None) == requests
+    assert generate_images(requests, model, tokenizer) == requests
+    assert [request.data["image_usage"]["input_tokens"] for request in requests] == [
+        3,
+        3,
+    ]
     assert [
         call.kwargs["batch_size"] for call in model.t2i_generate.call_args_list
     ] == [2, 1]
 
 
 @pytest.mark.parametrize("output", [None, torch.zeros(1, 3, 32, 32)])
-def test_invalid_multi_output_result_is_rejected(output):
+def test_invalid_multi_output_result_is_rejected(
+    output: torch.Tensor | None, tokenizer: PreTrainedTokenizerBase
+) -> None:
     model = Mock()
     model.t2i_generate.return_value = output
     with pytest.raises(ValueError, match="invalid multi-output"):
-        generate_image(payload(2), model, None)
+        generate_image(payload(2), model, tokenizer)
