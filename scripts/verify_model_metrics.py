@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--n", type=int, default=1)
     parser.add_argument("--image", type=Path)
+    parser.add_argument("--expected-image-stage", default="generate")
     parser.add_argument("--timeout", type=float, default=900)
     args = parser.parse_args()
     if args.timeout <= 0:
@@ -133,6 +134,30 @@ def main():
             assert observed and all(
                 math.isfinite(value) and value >= 0 for value in observed
             ), name
+        if args.api == "images":
+            stage_deltas = {}
+            for sample in after:
+                if sample.name == "sglang_omni:generated_images_total":
+                    baseline = sum(
+                        item.value
+                        for item in before
+                        if item.name == sample.name and item.labels == sample.labels
+                    )
+                    stage = sample.labels.get("stage", "unknown")
+                    stage_deltas[stage] = (
+                        stage_deltas.get(stage, 0) + sample.value - baseline
+                    )
+            summary["image_stage_deltas"] = stage_deltas
+            assert (
+                stage_deltas.get(args.expected_image_stage, 0) > 0
+            ), f"No images observed for stage={args.expected_image_stage}"
+            assert all(
+                delta == 0
+                for stage, delta in stage_deltas.items()
+                if stage != args.expected_image_stage
+            ), f"Unexpected image stages: {stage_deltas}"
+        else:
+            pass
         summary["passed"] = True
     except Exception as error:
         summary["error"] = str(error)
