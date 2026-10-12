@@ -1,0 +1,1028 @@
+diff -ruN a/kernels/ops/attention/fla/fused_kda_conv_recurrent_verify.py b/kernels/ops/attention/fla/fused_kda_conv_recurrent_verify.py
+--- a/kernels/ops/attention/fla/fused_kda_conv_recurrent_verify.py	2026-10-12 03:16:04.554617194 +0530
++++ b/kernels/ops/attention/fla/fused_kda_conv_recurrent_verify.py	2026-10-10 14:18:09.084742664 +0530
+@@ -527,7 +527,11 @@
+     grid = (NV, B * HV)
+     # PDL (sm90+): chain behind the producer qkv-projection GEMM and signal the
+     # downstream o_norm / o_proj. Scheduling only — bit-exactness unaffected.
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+     fused_kda_conv_gating_verify_kernel[grid](
+         x=mixed_qkv,
+         w=conv_weight,
+diff -ruN a/kernels/ops/attention/fla/fused_norm_gate.py b/kernels/ops/attention/fla/fused_norm_gate.py
+--- a/kernels/ops/attention/fla/fused_norm_gate.py	2026-10-12 03:16:04.569617730 +0530
++++ b/kernels/ops/attention/fla/fused_norm_gate.py	2026-10-10 14:18:09.084742664 +0530
+@@ -225,7 +225,9 @@
+     if D <= 512:
+         BT = 32
+         pdl_kwargs = (
+-            {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++            {"USE_GDC": True, "launch_pdl": True}
++            if is_arch_support_pdl()
++            else {"USE_GDC": False}
+         )
+         layer_norm_gated_fwd_kernel[(cdiv(T, BT),)](
+             x=x,
+diff -ruN a/kernels/ops/attention/fla/fused_sigmoid_gating_recurrent.py b/kernels/ops/attention/fla/fused_sigmoid_gating_recurrent.py
+--- a/kernels/ops/attention/fla/fused_sigmoid_gating_recurrent.py	2026-10-12 03:16:04.590618482 +0530
++++ b/kernels/ops/attention/fla/fused_sigmoid_gating_recurrent.py	2026-10-10 14:18:09.084742664 +0530
+@@ -462,7 +462,11 @@
+     # PDL (sm90+): chain this kernel behind its producer conv1d_update, which
+     # already launches dependents. Bit-exact (scheduling only) — benefits both
+     # KDA and GDN recurrent paths.
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+ 
+     fused_sigmoid_gating_delta_rule_update_kernel[grid](
+         A_log=A_log,
+diff -ruN a/kernels/ops/attention/fla/layernorm_gated.py b/kernels/ops/attention/fla/layernorm_gated.py
+--- a/kernels/ops/attention/fla/layernorm_gated.py	2026-10-12 03:16:04.624619695 +0530
++++ b/kernels/ops/attention/fla/layernorm_gated.py	2026-10-10 14:18:09.084742664 +0530
+@@ -275,7 +275,11 @@
+     rows_per_block = calc_rows_per_block(M, x.device)
+     # Update grid to use rows_per_block
+     grid = (cdiv(M, rows_per_block), ngroups)
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+     # Workaround for PyTorch <= 2.12: torch.xpu.device is not Dynamo-compatible
+     # in that release — it creates a DynamoConfigPatchProxy that
+     # SourcelessBuilder cannot wrap, causing a hard error under
+diff -ruN a/kernels/ops/kvcache/mla_buffer.py b/kernels/ops/kvcache/mla_buffer.py
+--- a/kernels/ops/kvcache/mla_buffer.py	2026-10-12 03:16:06.350681393 +0530
++++ b/kernels/ops/kvcache/mla_buffer.py	2026-10-10 14:18:09.085742697 +0530
+@@ -171,7 +171,9 @@
+         BLOCK = triton.next_power_of_2(nope_dim)
+         grid = (n_loc, 1)
+         pdl_kwargs = (
+-            {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++            {"USE_GDC": True, "launch_pdl": True}
++            if is_arch_support_pdl()
++            else {"USE_GDC": False}
+         )
+         set_mla_kv_buffer_kernel_norope[grid](
+             kv_buffer,
+@@ -218,7 +220,11 @@
+     total_dim = nope_dim + rope_dim
+     BLOCK = triton.next_power_of_2(total_dim)
+     grid = (n_loc, 1)
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+     set_mla_kv_buffer_kernel[grid](
+         kv_buffer,
+         cache_k_nope,
+@@ -367,7 +373,11 @@
+     n_loc = loc.numel()
+     grid = (n_loc, triton.cdiv(total_dim, BLOCK))
+ 
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+ 
+     set_mla_kv_buffer_fp8_quant_kernel[grid](
+         kv_buffer_fp8,
+diff -ruN a/kernels/ops/mamba/causal_conv1d_triton.py b/kernels/ops/mamba/causal_conv1d_triton.py
+--- a/kernels/ops/mamba/causal_conv1d_triton.py	2026-10-12 03:16:06.503686861 +0530
++++ b/kernels/ops/mamba/causal_conv1d_triton.py	2026-10-10 14:18:09.088742794 +0530
+@@ -1142,7 +1142,11 @@
+     else:
+         stride_retrieve_parent_token_seq = stride_retrieve_parent_token_token = 0
+ 
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+ 
+     _causal_conv1d_update_kernel[grid](
+         # Pointers to matrices
+diff -ruN a/kernels/ops/mamba/triton_ops/mamba_ssm.py b/kernels/ops/mamba/triton_ops/mamba_ssm.py
+--- a/kernels/ops/mamba/triton_ops/mamba_ssm.py	2026-10-12 03:16:06.521687505 +0530
++++ b/kernels/ops/mamba/triton_ops/mamba_ssm.py	2026-10-10 14:18:09.088742794 +0530
+@@ -495,7 +495,11 @@
+         else None
+     )
+ 
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+ 
+     with torch.get_device_module(x.device).device(x.device.index):
+         _selective_scan_update_kernel[grid](
+diff -ruN a/kernels/ops/moe/fused_moe_triton_kernels.py b/kernels/ops/moe/fused_moe_triton_kernels.py
+--- a/kernels/ops/moe/fused_moe_triton_kernels.py	2026-10-12 03:16:06.630691401 +0530
++++ b/kernels/ops/moe/fused_moe_triton_kernels.py	2026-10-10 14:18:09.088742794 +0530
+@@ -994,7 +994,7 @@
+         pdl_kwargs = (
+             {"USE_GDC": True, "launch_pdl": True, "GDC_EARLY": A.shape[0] <= 512}
+             if is_arch_support_pdl()
+-            else {}
++            else {"USE_GDC": False, "GDC_EARLY": False}
+         )
+         fused_moe_kernel[grid](
+             A,
+@@ -1254,7 +1254,11 @@
+         triton.cdiv(hidden_dim, BLOCK_DIM),
+     )
+ 
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+     _moe_sum_reduce_kernel[grid](
+         input,
+         *input.stride(),
+diff -ruN a/kernels/ops/moe/inkling_moe.py b/kernels/ops/moe/inkling_moe.py
+--- a/kernels/ops/moe/inkling_moe.py	2026-10-12 03:16:06.644691902 +0530
++++ b/kernels/ops/moe/inkling_moe.py	2026-10-10 14:18:09.088742794 +0530
+@@ -370,7 +370,11 @@
+         BLOCK_SIZE_N=BLOCK_SIZE_N,
+         EVEN_N=N % BLOCK_SIZE_N == 0,
+         INT64_INDEX=gateup_output.nbytes >= 2**31,
+-        **({"USE_PDL": True, "launch_pdl": True} if is_arch_support_pdl() else {}),
++        **(
++            {"USE_PDL": True, "launch_pdl": True}
++            if is_arch_support_pdl()
++            else {"USE_PDL": False}
++        ),
+     )
+ 
+     return down_input
+diff -ruN a/kernels/ops/moe/moe_align_small_numel.py b/kernels/ops/moe/moe_align_small_numel.py
+--- a/kernels/ops/moe/moe_align_small_numel.py	2026-10-12 03:16:06.666692689 +0530
++++ b/kernels/ops/moe/moe_align_small_numel.py	2026-10-10 14:18:09.088742794 +0530
+@@ -131,7 +131,11 @@
+     than the two-kernel path.
+     """
+     numel = topk_ids.numel()
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+     _moe_align_small_numel_kernel[(1,)](
+         topk_ids,
+         sorted_token_ids,
+diff -ruN a/kernels/ops/moe/router.py b/kernels/ops/moe/router.py
+--- a/kernels/ops/moe/router.py	2026-10-12 03:16:06.673692939 +0530
++++ b/kernels/ops/moe/router.py	2026-10-10 14:18:09.088742794 +0530
+@@ -495,7 +495,11 @@
+     # Single k-iteration whenever K fits one block: no serial dependent-load
+     # chain on a cold weight.
+     block_k = min(4096, triton.next_power_of_2(K))
+-    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_GDC": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_GDC": False}
++    )
+     router_gate_matvec_kernel[(M, triton.cdiv(E, block_e))](
+         hidden_states,
+         weight,
+diff -ruN a/kernels/ops/quantization/fp8_kernel.py b/kernels/ops/quantization/fp8_kernel.py
+--- a/kernels/ops/quantization/fp8_kernel.py	2026-10-12 03:16:06.899701016 +0530
++++ b/kernels/ops/quantization/fp8_kernel.py	2026-10-10 14:18:09.088742794 +0530
+@@ -916,7 +916,11 @@
+     # heuristics for number of warps
+     num_warps = min(max(BLOCK // 256, 1), 8)
+     num_stages = 1
+-    pdl_kwargs = {"USE_PDL": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    pdl_kwargs = (
++        {"USE_PDL": True, "launch_pdl": True}
++        if is_arch_support_pdl()
++        else {"USE_PDL": False}
++    )
+     _static_quant_fp8[(M,)](
+         x,
+         x_q.view(torch.uint8),
+diff -ruN a/srt/layers/attention/base_attn_backend.py b/srt/layers/attention/base_attn_backend.py
+--- a/srt/layers/attention/base_attn_backend.py	2026-10-12 03:16:16.467042889 +0530
++++ b/srt/layers/attention/base_attn_backend.py	2026-10-10 16:34:06.525449135 +0530
+@@ -2,7 +2,7 @@
+ 
+ from abc import ABC
+ from enum import Enum
+-from typing import TYPE_CHECKING, Iterable, Optional
++from typing import TYPE_CHECKING, Iterable, Optional, Sequence
+ 
+ import torch
+ 
+@@ -218,6 +218,21 @@
+         """
+         raise NotImplementedError()
+ 
++    def breakable_cuda_graph_request_slots(self, max_bs: int) -> tuple[int, ...]:
++        """Request counts to capture per token bucket under captured metadata.
++
++        Empty when the captured metadata does not depend on the request
++        count. Otherwise the runner captures one graph per listed count and
++        replays the smallest one that holds the batch.
++        """
++        return ()
++
++    def can_replay_breakable_cuda_graph(
++        self, *, batch_size: int, prefix_lens: Optional[Sequence[int]]
++    ) -> bool:
++        """Whether captured metadata can describe this batch at replay."""
++        return True
++
+     def get_cuda_graph_seq_len_fill_value(self):
+         """Get the fill value for padded seq lens. Typically, it is 0 or 1."""
+         raise NotImplementedError()
+diff -ruN a/srt/layers/attention/hybrid_linear_attn_backend.py b/srt/layers/attention/hybrid_linear_attn_backend.py
+--- a/srt/layers/attention/hybrid_linear_attn_backend.py	2026-10-12 03:16:16.829055822 +0530
++++ b/srt/layers/attention/hybrid_linear_attn_backend.py	2026-10-10 16:39:09.262730660 +0530
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ 
+ import logging
+-from typing import TYPE_CHECKING, Optional, Union
++from typing import TYPE_CHECKING, Optional, Sequence, Union
+ 
+ import torch
+ 
+@@ -972,6 +972,120 @@
+             assert get_exec().mamba.mamba_track_interval >= self.mamba_chunk_size, (
+                 f"mamba_track_interval ({get_exec().mamba.mamba_track_interval}) must be >= mamba_chunk_size ({self.mamba_chunk_size})"
+             )
++        # Radix-cache state tracking plans its copies on the host per batch,
++        # so only untracked prefill can run from captured metadata.
++        self.use_captured_forward_metadata_for_breakable_cuda_graph = (
++            not get_exec().mamba.enable_mamba_extra_buffer
++        )
++        self._pad_mamba_index: Optional[torch.Tensor] = None
++
++    def breakable_cuda_graph_request_slots(self, max_bs: int) -> tuple[int, ...]:
++        # Every sequence of the captured layout computes and writes a full
++        # SSM state, so pad sequences cost as much as live ones: capture a
++        # geometric ladder of request counts instead of one max-size layout.
++        slots = [1]
++        while slots[-1] * 2 < max_bs:
++            slots.append(slots[-1] * 2)
++        if slots[-1] != max_bs:
++            slots.append(max_bs)
++        return tuple(slots)
++
++    def can_replay_breakable_cuda_graph(
++        self, *, batch_size: int, prefix_lens: Optional[Sequence[int]]
++    ) -> bool:
++        # Initial states need host-planned chunk indices, which a graph
++        # cannot refresh.
++        return prefix_lens is None or not any(prefix_lens)
++
++    def _mamba_pad_index(self) -> torch.Tensor:
++        # Req-pool row 0 maps to the reserved mamba padding slot.
++        if self._pad_mamba_index is None:
++            row = torch.zeros((1,), dtype=torch.int64, device=self.device)
++            self._pad_mamba_index = self._translate_mamba_indices(
++                self.req_to_token_pool.get_mamba_indices(row)
++            )
++        return self._pad_mamba_index
++
++    def init_forward_metadata_for_breakable_cuda_graph_capture(
++        self, forward_batch: ForwardBatch
++    ) -> Mamba2Metadata:
++        """Capture the batch's requests plus one pad sequence.
++
++        At replay the pad sequence absorbs the bucket's padding tokens and
++        any unused request slots become zero-length sequences; all of them
++        write the reserved padding slot.
++        """
++        num_tokens = len(forward_batch.input_ids)
++        num_seqs = forward_batch.batch_size + 1
++        live_indices = self._translate_mamba_indices(
++            self.req_to_token_pool.get_mamba_indices(forward_batch.req_pool_indices)
++        )
++        mamba_cache_indices = torch.cat([live_indices, self._mamba_pad_index()])
++        lens = [*forward_batch.extend_seq_lens_cpu, 0]
++        query_start_loc = torch.zeros(
++            (num_seqs + 1,), dtype=torch.int32, device=self.device
++        )
++        query_start_loc[1:] = torch.tensor(lens, device=self.device).cumsum(0)
++        seq_idx = torch.repeat_interleave(
++            torch.arange(num_seqs, dtype=torch.int32, device=self.device),
++            torch.tensor(lens, device=self.device),
++            output_size=num_tokens,
++        ).unsqueeze(0)
++        metadata = Mamba2Metadata(
++            query_start_loc=query_start_loc,
++            mamba_cache_indices=mamba_cache_indices,
++            num_prefills=num_seqs,
++            num_prefill_tokens=num_tokens,
++            num_decodes=0,
++            mixed_metadata=Mamba2Metadata.MixedMetadata(
++                has_initial_states=torch.zeros(
++                    (num_seqs,), dtype=torch.bool, device=self.device
++                ),
++                prep_initial_states=False,
++                chunk_size=self.mamba_chunk_size,
++                seq_idx=seq_idx,
++                chunk_indices=None,
++                chunk_offsets=None,
++                # Sizes the causal-conv launch grid only, so it must cover
++                # the longest sequence any replay can bring.
++                extend_seq_lens_cpu=[num_tokens] + [0] * (num_seqs - 1),
++            ),
++        )
++        self.forward_metadata = metadata
++        return metadata
++
++    def prepare_forward_metadata_for_breakable_cuda_graph_replay(
++        self,
++        capture_metadata: Mamba2Metadata,
++        forward_batch: ForwardBatch,
++        *,
++        static_forward_batch: Optional[ForwardBatch] = None,
++    ) -> None:
++        del static_forward_batch
++        bs = forward_batch.batch_size
++        num_seqs = capture_metadata.num_prefills
++        num_tokens = capture_metadata.num_prefill_tokens
++        assert bs < num_seqs, f"{bs=} needs a capture with more than {num_seqs=}"
++        live_tokens = int(sum(forward_batch.extend_seq_lens_cpu))
++        query_start_loc = capture_metadata.query_start_loc
++        query_start_loc[:bs].copy_(forward_batch.extend_start_loc)
++        query_start_loc[bs] = live_tokens
++        query_start_loc[bs + 1 :] = num_tokens
++        seq_idx = capture_metadata.mixed_metadata.seq_idx[0]
++        seq_idx[:live_tokens] = torch.repeat_interleave(
++            torch.arange(bs, dtype=torch.int32, device=self.device),
++            forward_batch.extend_seq_lens,
++            output_size=live_tokens,
++        )
++        seq_idx[live_tokens:] = bs
++        mamba_cache_indices = capture_metadata.mamba_cache_indices
++        mamba_cache_indices[:bs].copy_(
++            self._translate_mamba_indices(
++                self.req_to_token_pool.get_mamba_indices(forward_batch.req_pool_indices)
++            )
++        )
++        mamba_cache_indices[bs:] = self._mamba_pad_index()
++        self.forward_metadata = capture_metadata
+ 
+     def init_forward_metadata_out_graph(
+         self,
+@@ -1148,6 +1262,50 @@
+         for attn_backend in self.attn_backend_list:
+             attn_backend.init_forward_metadata_in_graph(forward_batch)
+ 
++    # Full attention runs eagerly between breakable graph segments, so only
++    # the linear backend's metadata is captured.
++    @property
++    def use_captured_forward_metadata_for_breakable_cuda_graph(self) -> bool:
++        return (
++            self.linear_attn_backend.use_captured_forward_metadata_for_breakable_cuda_graph
++        )
++
++    def breakable_cuda_graph_request_slots(self, max_bs: int) -> tuple[int, ...]:
++        return self.linear_attn_backend.breakable_cuda_graph_request_slots(max_bs)
++
++    def can_replay_breakable_cuda_graph(
++        self, *, batch_size: int, prefix_lens: Optional[Sequence[int]]
++    ) -> bool:
++        return self.linear_attn_backend.can_replay_breakable_cuda_graph(
++            batch_size=batch_size, prefix_lens=prefix_lens
++        )
++
++    def init_forward_metadata_for_breakable_cuda_graph_capture(
++        self, forward_batch: ForwardBatch
++    ):
++        self.full_attn_backend.init_forward_metadata(forward_batch)
++        return self.linear_attn_backend.init_forward_metadata_for_breakable_cuda_graph_capture(
++            forward_batch
++        )
++
++    def prepare_forward_metadata_for_breakable_cuda_graph_replay(
++        self,
++        capture_metadata,
++        forward_batch: ForwardBatch,
++        *,
++        static_forward_batch: Optional[ForwardBatch] = None,
++    ) -> None:
++        self.full_attn_backend.init_forward_metadata(forward_batch)
++        if static_forward_batch is not None:
++            self.prepare_prefill_shared_read_snapshot(
++                forward_batch, num_qo_tokens=len(static_forward_batch.input_ids)
++            )
++        self.linear_attn_backend.prepare_forward_metadata_for_breakable_cuda_graph_replay(
++            capture_metadata,
++            forward_batch,
++            static_forward_batch=static_forward_batch,
++        )
++
+     def get_indexer_metadata(self, layer_id: int, forward_batch: ForwardBatch):
+         if layer_id in self.full_attn_layers:
+             return self.full_attn_backend.get_indexer_metadata(layer_id, forward_batch)
+diff -ruN a/srt/layers/attention/mamba/mamba.py b/srt/layers/attention/mamba/mamba.py
+--- a/srt/layers/attention/mamba/mamba.py	2026-10-12 03:16:16.937059681 +0530
++++ b/srt/layers/attention/mamba/mamba.py	2026-10-10 14:18:09.089742826 +0530
+@@ -39,6 +39,7 @@
+     is_xpu,
+     set_weight_attrs,
+ )
++from sglang.srt.utils.custom_op import register_custom_op
+ 
+ if is_cuda():
+     from sglang.kernels.ops.mamba.causal_conv1d_triton import (
+@@ -80,6 +81,57 @@
+ logger = logging.getLogger(__name__)
+ 
+ 
++# The decode state updates are opaque ops with declared mutations. Traced as
++# Triton kernels under torch.compile, Inductor clones the per-layer state pool,
++# sized by max_running_requests, around every call instead of updating in place.
++@register_custom_op(mutates_args=["conv_state"], out_shape=0)
++def mamba2_decode_conv_state_update(
++    x: torch.Tensor,
++    conv_state: torch.Tensor,
++    weight: torch.Tensor,
++    bias: Optional[torch.Tensor],
++    activation: Optional[str],
++    conv_state_indices: torch.Tensor,
++) -> torch.Tensor:
++    return causal_conv1d_update_triton(
++        x,
++        conv_state,
++        weight,
++        bias,
++        activation,
++        conv_state_indices=conv_state_indices,
++    )
++
++
++@register_custom_op(mutates_args=["state", "out"])
++def mamba2_decode_ssm_state_update(
++    state: torch.Tensor,
++    x: torch.Tensor,
++    dt: torch.Tensor,
++    A: torch.Tensor,
++    B: torch.Tensor,
++    C: torch.Tensor,
++    D: torch.Tensor,
++    dt_bias: torch.Tensor,
++    state_batch_indices: torch.Tensor,
++    out: torch.Tensor,
++) -> None:
++    selective_state_update(
++        state,
++        x,
++        dt,
++        A,
++        B,
++        C,
++        D,
++        z=None,
++        dt_bias=dt_bias,
++        dt_softplus=True,
++        state_batch_indices=state_batch_indices,
++        out=out,
++    )
++
++
+ def mamba_v2_sharded_weight_loader(
+     shard_spec: List[Tuple[int, int, float]],
+     tp_size: int,
+@@ -674,13 +726,17 @@
+                 hidden_states_B_C_d = hidden_states_B_C_d_processed.transpose(
+                     1, 2
+                 ).view(num_decode_tokens, -1)
+-            else:
+-                ccu = (
+-                    causal_conv1d_update
+-                    if not use_triton_causal_conv
+-                    else causal_conv1d_update_triton
++            elif use_triton_causal_conv:
++                hidden_states_B_C_d = mamba2_decode_conv_state_update(
++                    hidden_states_B_C_d,
++                    conv_state,
++                    conv_weights,
++                    self.conv1d.bias,
++                    self.activation,
++                    state_indices_tensor_d,
+                 )
+-                hidden_states_B_C_d = ccu(
++            else:
++                hidden_states_B_C_d = causal_conv1d_update(
+                     hidden_states_B_C_d,
+                     conv_state,
+                     conv_weights,
+@@ -741,7 +797,7 @@
+                     intermediate_state_indices=self.intermediate_state_indices,
+                 )
+             else:
+-                selective_state_update(
++                mamba2_decode_ssm_state_update(
+                     ssm_state,
+                     hidden_states_d,
+                     dt_d,
+@@ -749,11 +805,9 @@
+                     B_d,
+                     C_d,
+                     D_d,
+-                    z=None,
+-                    dt_bias=dt_bias,
+-                    dt_softplus=True,
+-                    state_batch_indices=state_indices_tensor_d,
+-                    out=preallocated_ssm_out_d.view(num_decodes, -1, self.head_dim),
++                    dt_bias,
++                    state_indices_tensor_d,
++                    preallocated_ssm_out_d.view(num_decodes, -1, self.head_dim),
+                 )
+ 
+         # 4. gated MLP
+diff -ruN a/srt/layers/moe/fused_moe_native.py b/srt/layers/moe/fused_moe_native.py
+--- a/srt/layers/moe/fused_moe_native.py	2026-10-12 03:16:17.398076150 +0530
++++ b/srt/layers/moe/fused_moe_native.py	2026-10-10 17:55:56.307869705 +0530
+@@ -18,6 +18,18 @@
+ from sglang.srt.layers.moe.topk import StandardTopKOutput
+ 
+ 
++def _apply_ungated_activation(x: torch.Tensor, activation: str) -> torch.Tensor:
++    if activation == "relu2":
++        x = F.relu(x)
++        return x * x
++    elif activation == "silu":
++        return F.silu(x)
++    elif activation == "gelu":
++        return F.gelu(x)
++    else:
++        raise ValueError(f"Unsupported activation for non-gated MoE: {activation=}")
++
++
+ def fused_moe_forward_native(
+     layer: torch.nn.Module,
+     dispatch_output: StandardDispatchOutput,
+@@ -33,28 +45,38 @@
+     topk_weights, topk_ids, _ = topk_output
+ 
+     w13_weights = layer.w13_weight[topk_ids]
+-    w1_weights, w3_weights = torch.chunk(w13_weights, 2, dim=2)
+     w2_weights = layer.w2_weight[topk_ids]
+-    x1 = torch.einsum("ti,taoi -> tao", x, w1_weights)
+-    if moe_runner_config.activation == "silu":
+-        x1 = F.silu(x1)
+-    elif moe_runner_config.activation == "gelu":
+-        x1 = F.gelu(x1)
+-    elif moe_runner_config.activation == "situ":
+-        beta = (
+-            moe_runner_config.gemm1_alpha
+-            if moe_runner_config.gemm1_alpha is not None
+-            else 4.0
+-        )
+-        x1 = beta * torch.tanh(x1.float() / beta) * torch.sigmoid(x1.float())
+-        x1 = x1.to(x.dtype)
++
++    if not moe_runner_config.is_gated:
++        x1 = torch.einsum("ti,taoi -> tao", x, w13_weights)
++        intermediate = _apply_ungated_activation(x1, moe_runner_config.activation)
+     else:
+-        raise ValueError(f"Unsupported activation: {moe_runner_config.activation=}")
+-    x3 = torch.einsum("ti, taoi -> tao", x, w3_weights)
+-    expert_outs = torch.einsum("tao, taio -> tai", (x1 * x3), w2_weights)
++        w1_weights, w3_weights = torch.chunk(w13_weights, 2, dim=2)
++        x1 = torch.einsum("ti,taoi -> tao", x, w1_weights)
++        if moe_runner_config.activation == "silu":
++            x1 = F.silu(x1)
++        elif moe_runner_config.activation == "gelu":
++            x1 = F.gelu(x1)
++        elif moe_runner_config.activation == "situ":
++            beta = (
++                moe_runner_config.gemm1_alpha
++                if moe_runner_config.gemm1_alpha is not None
++                else 4.0
++            )
++            x1 = beta * torch.tanh(x1.float() / beta) * torch.sigmoid(x1.float())
++            x1 = x1.to(x.dtype)
++        else:
++            raise ValueError(
++                f"Unsupported activation: {moe_runner_config.activation=}"
++            )
++        intermediate = x1 * torch.einsum("ti, taoi -> tao", x, w3_weights)
++    expert_outs = torch.einsum("tao, taio -> tai", intermediate, w2_weights)
+     expert_outs = torch.einsum(
+         "tai,ta -> ti", expert_outs, topk_weights.to(expert_outs.dtype)
+     )
++    # The Triton runner this path replaces scales the combined routed output.
++    if moe_runner_config.routed_scaling_factor is not None:
++        expert_outs = expert_outs * moe_runner_config.routed_scaling_factor
+     return StandardCombineInput(hidden_states=expert_outs)
+ 
+ 
+@@ -81,7 +103,9 @@
+     sorted_tokens = x[idxs // topk_ids.shape[1]]
+     tokens_per_expert = tokens_per_expert.cpu().numpy()
+ 
+-    if moe_runner_config.activation == "silu":
++    if not moe_runner_config.is_gated:
++        act = None
++    elif moe_runner_config.activation == "silu":
+         act = SiluAndMul()
+     elif moe_runner_config.activation == "gelu":
+         act = GeluAndMul()
+@@ -126,7 +150,9 @@
+             gate_up = gate_up_fp32.to(original_dtype)
+ 
+         # Apply activation
+-        if (
++        if act is None:
++            gate_up = _apply_ungated_activation(gate_up, moe_runner_config.activation)
++        elif (
+             moe_runner_config.activation == "silu"
+             and moe_runner_config.gemm1_alpha is not None
+         ):
+diff -ruN a/srt/model_executor/model_runner_components/cuda_graph_setup.py b/srt/model_executor/model_runner_components/cuda_graph_setup.py
+--- a/srt/model_executor/model_runner_components/cuda_graph_setup.py	2026-10-12 03:16:25.244356424 +0530
++++ b/srt/model_executor/model_runner_components/cuda_graph_setup.py	2026-10-10 16:21:19.156855578 +0530
+@@ -90,6 +90,16 @@
+     return attention_layer_count >= end_layer - start_layer
+ 
+ 
++def count_attention_free_layers(layer_model) -> int:
++    """Count local layers that need no attention metadata, such as the MLP and
++    MoE stages of hybrid models. They keep a ``None`` attention slot, which
++    must not disable the prefill CUDA graph."""
++    layers = layer_model.layers
++    if hasattr(layers, "values"):
++        layers = layers.values()
++    return sum(getattr(layer, "is_attention_free", False) for layer in layers)
++
++
+ def index_attention_layers_by_global_id(
+     attention_layers: list[Any],
+     mha_companion_layers: list[Any],
+@@ -478,7 +488,8 @@
+     if not has_standard_gqa_for_all_local_layers(
+         attention_layer_count=sum(
+             layer is not None for layer in model_runner.attention_layers
+-        ),
++        )
++        + count_attention_free_layers(layer_model),
+         start_layer=model_runner.layer_info.start_layer,
+         end_layer=model_runner.layer_info.end_layer,
+     ):
+diff -ruN a/srt/model_executor/runner/prefill_cuda_graph_runner.py b/srt/model_executor/runner/prefill_cuda_graph_runner.py
+--- a/srt/model_executor/runner/prefill_cuda_graph_runner.py	2026-10-12 03:16:25.432363139 +0530
++++ b/srt/model_executor/runner/prefill_cuda_graph_runner.py	2026-10-10 16:34:57.242155931 +0530
+@@ -162,6 +162,20 @@
+     return f"chunked_prefix:{num_chunks}"
+ 
+ 
++def _req_slots_variant(req_slots: int) -> str:
++    return f"req_slots:{req_slots}"
++
++
++def _spread_capture_seq_lens(seq_lens: list[int], req_slots: int) -> list[int]:
++    """Spread a capture bucket over exactly ``req_slots`` requests by moving
++    single tokens off the first request."""
++    extra = req_slots - len(seq_lens)
++    assert 0 <= extra < seq_lens[0], (
++        f"cannot spread {seq_lens=} over {req_slots} requests"
++    )
++    return [seq_lens[0] - extra, *seq_lens[1:], *([1] * extra)]
++
++
+ def _ceil_div(a: int, b: int) -> int:
+     return -(-a // b)
+ 
+@@ -541,9 +555,18 @@
+             self.use_captured_attn_metadata = model_runner.attn_backend.use_captured_forward_metadata_for_breakable_cuda_graph
+         else:
+             self.use_captured_attn_metadata = False
+-        self.attn_metadata_buffers: Optional[Dict[int, object]] = (
++        self.attn_metadata_buffers: Optional[Dict[ShapeKey, object]] = (
+             {} if self.use_captured_attn_metadata else None
+         )
++        self._captured_req_slots: tuple[int, ...] = (
++            tuple(
++                model_runner.attn_backend.breakable_cuda_graph_request_slots(
++                    self.max_bs
++                )
++            )
++            if self.use_captured_attn_metadata
++            else ()
++        )
+ 
+         # BCG and Full CG capture only the transformer body (layer_model.forward),
+         # not the LM head + logits_processor — the eager tail keeps the captured
+@@ -559,8 +582,13 @@
+                     f"unsupported for this model architecture."
+                 ) from exc
+             params = list(inspect.signature(self.layer_model.forward).parameters)
+-            self._input_embeds_arg_idx = (
+-                params.index("input_embeds") if "input_embeds" in params else None
++            self._input_embeds_arg_idx = next(
++                (
++                    params.index(name)
++                    for name in ("input_embeds", "inputs_embeds")
++                    if name in params
++                ),
++                None,
+             )
+ 
+         # --- aiter chip info pre-warming (AMD) -------------------------
+@@ -918,6 +946,12 @@
+                     "prefix batch has no captured FullCG variant"
+                 )
+                 variant = _chunked_prefix_variant(captured_n)
++        if self._captured_req_slots:
++            req_slots = self._select_req_slots(num_tokens, forward_batch.batch_size)
++            assert req_slots is not None, (
++                "prefill batch has no captured request-slot variant"
++            )
++            variant = _req_slots_variant(req_slots)
+         return ShapeKey(size=num_tokens, variant_label=variant)
+ 
+     def _create_chunked_prefix_buffers(self) -> _ChunkedPrefixCaptureBuffers:
+@@ -1054,7 +1088,7 @@
+         )
+ 
+     def _init_forward_metadata_for_capture(
+-        self, forward_batch: ForwardBatch, num_tokens: int
++        self, forward_batch: ForwardBatch, shape_key: ShapeKey
+     ) -> None:
+         """Capture-time metadata init for the BCG-with-captured-metadata
+         contract. For opt-in backends (DSV4), call the BCG-specific entry
+@@ -1071,13 +1105,13 @@
+                 )
+             )
+             assert self.attn_metadata_buffers is not None
+-            self.attn_metadata_buffers[num_tokens] = metadata
++            self.attn_metadata_buffers[shape_key] = metadata
+ 
+     def _prepare_forward_metadata_for_replay(
+         self,
+         forward_batch: ForwardBatch,
+         static_forward_batch: ForwardBatch,
+-        num_tokens: int,
++        shape_key: ShapeKey,
+     ) -> None:
+         """Replay-time metadata refresh for the BCG-with-captured-metadata
+         contract. For opt-in backends, refresh the stashed per-bucket
+@@ -1108,11 +1142,11 @@
+         if not self.use_captured_attn_metadata:
+             attn_backend.init_forward_metadata(forward_batch)
+             attn_backend.prepare_prefill_shared_read_snapshot(
+-                forward_batch, num_qo_tokens=num_tokens
++                forward_batch, num_qo_tokens=shape_key.size
+             )
+             return
+         assert self.attn_metadata_buffers is not None
+-        metadata = self.attn_metadata_buffers[num_tokens]
++        metadata = self.attn_metadata_buffers[shape_key]
+         attn_backend.prepare_forward_metadata_for_breakable_cuda_graph_replay(
+             metadata,
+             forward_batch,
+@@ -1157,6 +1191,13 @@
+             return False
+         if replace_embeds is not None:
+             return False
++        if (
++            self.use_captured_attn_metadata
++            and not self.model_runner.attn_backend.can_replay_breakable_cuda_graph(
++                batch_size=batch_size, prefix_lens=prefix_lens
++            )
++        ):
++            return False
+         # Off CUDA, BCG takes the MHA companion, whose prefix path is uncapturable.
+         if (
+             self.prefill_backend_name == Backend.BREAKABLE
+@@ -1189,6 +1230,11 @@
+         padded_num_tokens = self._pad_to_bucket(num_tokens, self.capture_num_tokens)
+         if padded_num_tokens > num_tokens * _MAX_PREFILL_CUDA_GRAPH_PADDING_FACTOR:
+             return False
++        if (
++            self._captured_req_slots
++            and self._select_req_slots(padded_num_tokens, batch_size) is None
++        ):
++            return False
+         return True
+ 
+     def can_run_graph(self, forward_batch: ForwardBatch) -> bool:
+@@ -1253,24 +1299,44 @@
+             hidden_states=self.static_draft_hidden_states[:num_tokens],
+         )
+ 
+-    def capture_prepare(self, num_tokens: int) -> tuple[ForwardBatch, AttentionBackend]:
++    def _fewest_capture_seq_lens(self, num_tokens: int) -> list[int]:
++        context_length = self.model_runner.model_config.context_len
++        # A prefill bucket is an aggregate token count. Capture it as the
++        # fewest synthetic requests, with every request containing no more
++        # than context_length tokens.
++        return [
++            min(context_length, num_tokens - start)
++            for start in range(0, num_tokens, context_length)
++        ]
++
++    def _req_slots_for_bucket(self, num_tokens: int) -> list[int]:
++        """Captured request-count variants of one token bucket; each needs at
++        least one token per request."""
++        min_reqs = len(self._fewest_capture_seq_lens(num_tokens))
++        return [r for r in self._captured_req_slots if min_reqs <= r <= num_tokens]
++
++    def _select_req_slots(self, num_tokens: int, batch_size: int) -> Optional[int]:
++        return next(
++            (r for r in self._req_slots_for_bucket(num_tokens) if r >= batch_size),
++            None,
++        )
++
++    def capture_prepare(
++        self, num_tokens: int, req_slots: Optional[int] = None
++    ) -> tuple[ForwardBatch, AttentionBackend]:
+         """Build a dummy prefill ForwardBatch for capture/warmup at this shape.
+ 
+         Default tensor inputs are fresh literals; under a Breakable
+         backend, we swap in slices of our static buffers so captured
+-        segments read from stable addresses.
++        segments read from stable addresses. ``req_slots`` fixes the
++        request count for backends whose captured metadata depends on it.
+ 
+         Returns ``(forward_batch, attn_backend)`` to mirror decode's
+         capture_prepare signature.
+         """
+-        context_length = self.model_runner.model_config.context_len
+-        # A prefill bucket is an aggregate token count. Capture it as the
+-        # fewest synthetic requests, with every request containing no more
+-        # than context_length tokens.
+-        capture_seq_lens = [
+-            min(context_length, num_tokens - start)
+-            for start in range(0, num_tokens, context_length)
+-        ]
++        capture_seq_lens = self._fewest_capture_seq_lens(num_tokens)
++        if req_slots is not None:
++            capture_seq_lens = _spread_capture_seq_lens(capture_seq_lens, req_slots)
+         if self.prefill_backend_name == Backend.FULL:
+             # Full captures a fixed request-axis shape; unused slots are
+             # zero-length sentinels after the context-bounded real requests.
+@@ -1445,17 +1511,27 @@
+                 capture_range.set_description(
+                     f"Capturing num tokens ({num_tokens=} {avail_mem=:.2f} GB)"
+                 )
+-            self.capture_one_shape(num_tokens)
++            if self._captured_req_slots:
++                for req_slots in self._req_slots_for_bucket(num_tokens):
++                    self.capture_one_shape(num_tokens, req_slots=req_slots)
++            else:
++                self.capture_one_shape(num_tokens)
+             if self._capture_chunked_prefix:
+                 for captured_n in self._prefix_capture_variants:
+                     self.capture_one_shape(num_tokens, prefix_num_chunks=captured_n)
+ 
+-    def capture_one_shape(self, size: int, *, prefix_num_chunks: int = 0) -> None:
++    def capture_one_shape(
++        self,
++        size: int,
++        *,
++        prefix_num_chunks: int = 0,
++        req_slots: Optional[int] = None,
++    ) -> None:
+         """Per-shape capture: build dummy ForwardBatch + run_once,
+         delegate to backend. size is the prefill token count.
+         """
+         num_tokens = size
+-        forward_batch, attn_backend = self.capture_prepare(num_tokens)
++        forward_batch, attn_backend = self.capture_prepare(num_tokens, req_slots)
+         if self.enable_cp_bcg_capture:
+             assert self.prefill_cp_bcg_input is not None
+             self.prefill_cp_bcg_input.prepare(
+@@ -1474,14 +1550,13 @@
+                 "limits; the graph would read stale LoRA metadata at replay."
+             )
+             lora_manager.prepare_lora_batch(forward_batch)
+-        shape_key = ShapeKey(
+-            size=num_tokens,
+-            variant_label=(
+-                _chunked_prefix_variant(prefix_num_chunks)
+-                if prefix_num_chunks
+-                else None
+-            ),
+-        )
++        if prefix_num_chunks:
++            variant_label = _chunked_prefix_variant(prefix_num_chunks)
++        elif req_slots is not None:
++            variant_label = _req_slots_variant(req_slots)
++        else:
++            variant_label = None
++        shape_key = ShapeKey(size=num_tokens, variant_label=variant_label)
+         if prefix_num_chunks:
+             self._prepare_chunked_prefix_capture(
+                 forward_batch, shape_key, prefix_num_chunks
+@@ -1496,7 +1571,7 @@
+             # Reaching into a backend-specific metadata cache here would make
+             # this path incompatible with the OSS FlashAttention backend.
+         else:
+-            self._init_forward_metadata_for_capture(forward_batch, num_tokens)
++            self._init_forward_metadata_for_capture(forward_batch, shape_key)
+ 
+         def run_once():
+             # Record LoRA kernels even when capture uses base-model requests.
+@@ -1775,8 +1850,9 @@
+             )
+             metadata_forward_batch = static_forward_batch
+ 
++        shape_key = self._shape_key(static_num_tokens, forward_batch)
+         self._prepare_forward_metadata_for_replay(
+-            metadata_forward_batch, static_forward_batch, static_num_tokens
++            metadata_forward_batch, static_forward_batch, shape_key
+         )
+ 
+         return static_forward_batch
+@@ -1806,6 +1882,8 @@
+             # current request's embeddings (mirrors main's BCG closure).
+             if self.buffer_registry.has_slot("input_embeds"):
+                 ie = layer_kwargs.get("input_embeds")
++                if ie is None:
++                    ie = layer_kwargs.get("inputs_embeds")
+                 if ie is None and ie_idx is not None and len(args) > ie_idx:
+                     ie = args[ie_idx]
+                 if ie is not None:
+@@ -1924,8 +2002,7 @@
+             static_num_tokens = len(static_forward_batch.input_ids)
+             raw_num_tokens = self.raw_num_tokens
+             shape_key = self._shape_key(static_num_tokens, forward_batch)
+-            # The only variants this runner records are chunked-prefix ones.
+-            if shape_key.variant_label is not None:
++            if self._capture_chunked_prefix and shape_key.variant_label is not None:
+                 self._prepare_chunked_prefix_replay(shape_key, forward_batch)
+             # Replay prep, including the optional chunked-prefix gather above,
+             # has finished every scheduler-shared read.
+diff -ruN a/srt/models/nemotron_h.py b/srt/models/nemotron_h.py
+--- a/srt/models/nemotron_h.py	2026-10-12 03:16:31.149567305 +0530
++++ b/srt/models/nemotron_h.py	2026-10-10 17:55:56.308869740 +0530
+@@ -292,8 +292,12 @@
+         self,
+         hidden_states: torch.Tensor,
+     ) -> tuple[torch.Tensor, torch.Tensor | None]:
+-        if _is_cuda and (
+-            not get_moe_a2a_backend().is_flashinfer() or get_is_capture_mode()
++        # Dynamo cannot replay the side-stream switches: the compiled graph
++        # looks the streams up in a side table that later traces reset.
++        if (
++            _is_cuda
++            and not torch.compiler.is_compiling()
++            and (not get_moe_a2a_backend().is_flashinfer() or get_is_capture_mode())
+         ):
+             return self._forward_core_shared_routed_overlap(hidden_states)
+         return self._forward_core_normal(hidden_states)
+@@ -387,6 +391,8 @@
+ class NemotronHMLPLikeDecoderLayer(nn.Module):
+     """Shared forward for the dense-MLP / MoE decoder layers."""
+ 
++    is_attention_free = True
++
+     def forward(
+         self,
+         *,
+@@ -593,7 +599,12 @@
+             if get_real_num_tokens(hidden_states, forward_batch) == 0:
+                 return torch.zeros_like(hidden_states), residual
+ 
+-            if is_in_breakable_cuda_graph():
++            if (
++                is_in_breakable_cuda_graph()
++                and get_attn_backend().use_captured_forward_metadata_for_breakable_cuda_graph
++            ):
++                output = self._forward_mamba(hidden_states, forward_batch)
++            elif is_in_breakable_cuda_graph():
+                 output = torch.empty_like(hidden_states)
+                 breakable_nemotron_mamba2_with_output(
+                     hidden_states, output, self.layer_id, False
+@@ -616,7 +627,12 @@
+         )
+ 
+         with get_forward().scoped(fuse_mlp_allreduce=fuse_mlp_allreduce):
+-            if is_in_breakable_cuda_graph():
++            if (
++                is_in_breakable_cuda_graph()
++                and get_attn_backend().use_captured_forward_metadata_for_breakable_cuda_graph
++            ):
++                output = self._forward_mamba(hidden_states, forward_batch)
++            elif is_in_breakable_cuda_graph():
+                 output = torch.empty_like(hidden_states)
+                 breakable_nemotron_mamba2_with_output(
+                     hidden_states, output, self.layer_id, fuse_mlp_allreduce
