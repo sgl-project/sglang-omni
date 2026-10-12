@@ -9,13 +9,18 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.sources import patches_from_stages_mapping
 from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.components.mimi import MimiCodec
-from sglang_omni.models.personaplex.config import PersonaPlexPipelineConfig
+from sglang_omni.models.personaplex.config import (
+    REALTIME_STAGES,
+    PersonaPlexPipelineConfig,
+    PersonaPlexRealtimePipelineConfig,
+)
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -170,6 +175,79 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
 
     stages.create_lm_executor("m", enable_async_decode=False, context_length=4096)
     assert built["context_length"] == 4096 and built["overrides"] is None
+
+
+def test_realtime_engine_keeps_a_request_slot_beyond_its_calls(monkeypatch):
+    built = {}
+
+    class Builder:
+        def __init__(
+            self, *, max_running_requests, context_length, enable_async_decode
+        ):
+            built["max_running_requests"] = max_running_requests
+            built["enable_async_decode"] = enable_async_decode
+
+        def build(self, model_path, **kwargs):
+            pass
+
+    monkeypatch.setattr(stages, "PersonaPlexRealtimeEngineBuilder", Builder)
+    stages.create_realtime_lm_executor("m", max_sessions=2)
+    assert built["max_running_requests"] == (
+        2 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+    )
+    assert built["enable_async_decode"] is False
+
+
+def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially(
+    monkeypatch, tmp_path
+):
+    loaded_modes = []
+
+    def load_codec(*args, mode, **kwargs):
+        loaded_modes.append(mode)
+        return Mock(), "cpu"
+
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    monkeypatch.setattr(stages, "load_codec", load_codec)
+    prompt = stages.create_realtime_preprocessing_executor(
+        str(tmp_path), max_sessions=3
+    )
+    codecs = [
+        stages.create_realtime_mimi_encode_executor(str(tmp_path), max_sessions=3),
+        stages.create_realtime_code2wav_executor(str(tmp_path), max_sessions=3),
+    ]
+    for scheduler in [prompt, *codecs]:
+        assert scheduler.max_open_sessions == 3
+    assert all(scheduler.max_concurrency == 1 for scheduler in codecs)
+    assert loaded_modes == ["encode", "decode"]
+
+
+def test_a_call_follows_the_realtime_stages_and_streams_nothing():
+    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex")
+    assert config.session_route() == list(REALTIME_STAGES)
+    assert config.session_graph() is None
+    assert not any(stage.stream_to for stage in config.stages)
+
+
+def test_realtime_factories_get_no_offline_factory_fields_after_an_override():
+    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex")
+    patches = patches_from_stages_mapping(
+        {"lm": {"engine": {"mem_fraction_static": 0.5}}}, type(config), ["lm"]
+    )
+    resolved = ConfigResolver(config).resolve(patches).config
+    lm_args = resolve_stage_factory_args(resolved.stage_named("lm"), resolved)
+    code2wav_args = resolve_stage_factory_args(
+        resolved.stage_named("code2wav"), resolved
+    )
+    assert "enable_async_decode" not in lm_args
+    assert "chunk_ramp_frames" not in code2wav_args
+
+
+def test_every_realtime_stage_holds_max_sessions_calls():
+    assert PersonaPlexRealtimePipelineConfig(model_path="personaplex").max_sessions == 1
+    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex", max_sessions=3)
+    for name in REALTIME_STAGES:
+        assert config.stage_factory_kwargs(name) == {"max_sessions": 3}
 
 
 def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):

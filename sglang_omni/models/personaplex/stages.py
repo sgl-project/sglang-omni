@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage factories: preprocessing, Mimi encode, the LM engine, decode and code2wav."""
+"""Stage factories: preprocessing, Mimi encode, the LM engine, decode and code2wav,
+for recordings and for full-duplex calls."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import numpy as np
 import torch
 from sentencepiece import SentencePieceProcessor
 
+from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.models.personaplex.architecture import MIMI_WEIGHTS_GLOB, SAMPLE_RATE
 from sglang_omni.models.personaplex.code2wav_stream import (
     PersonaPlexCode2WavScheduler,
@@ -24,7 +26,10 @@ from sglang_omni.models.personaplex.config import (
     DEFAULT_LM_MAX_RUNNING_REQUESTS,
     PREPROCESSING_STAGE,
 )
-from sglang_omni.models.personaplex.engine_builder import PersonaPlexEngineBuilder
+from sglang_omni.models.personaplex.engine_builder import (
+    PersonaPlexEngineBuilder,
+    PersonaPlexRealtimeEngineBuilder,
+)
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
@@ -39,7 +44,13 @@ from sglang_omni.models.personaplex.prompts import (
     tokenize_text_prompt,
 )
 from sglang_omni.models.personaplex.request_builders import stage_request_params
-from sglang_omni.models.personaplex.session_hooks import PromptPreparer, encode_waveform
+from sglang_omni.models.personaplex.session_hooks import (
+    Code2WavSessionHooks,
+    MimiEncodeSessionHooks,
+    PromptPreparer,
+    PromptSessionHooks,
+    encode_waveform,
+)
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.transcription import (
     police_request_audio,
@@ -47,6 +58,7 @@ from sglang_omni.preprocessing.transcription import (
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache, value_size_bytes
@@ -153,6 +165,16 @@ def create_preprocessing_executor(
     return SimpleScheduler(preprocess)
 
 
+def create_realtime_preprocessing_executor(
+    model_path: str, *, max_sessions: int, **_
+) -> SessionScheduler:
+    model_dir = Path(resolve_model_path(model_path))
+    return SessionScheduler(
+        PromptSessionHooks(prompt_preparer(model_dir, load_text_tokenizer(model_dir))),
+        max_open_sessions=max_sessions,
+    )
+
+
 def load_codec(
     model_path: str,
     *,
@@ -188,6 +210,51 @@ def create_mimi_encode_executor(
     return SimpleScheduler(encode)
 
 
+def create_realtime_mimi_encode_executor(
+    model_path: str,
+    *,
+    max_sessions: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
+) -> SessionScheduler:
+    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
+    return SessionScheduler(
+        MimiEncodeSessionHooks(codec, device),
+        max_open_sessions=max_sessions,
+        max_concurrency=1,
+    )
+
+
+def start_lm_engine(
+    builder_type: type[PersonaPlexEngineBuilder],
+    model_path: str,
+    *,
+    max_running_requests: int,
+    enable_async_decode: bool,
+    dtype: str | None,
+    device: str | None,
+    gpu_id: int | None,
+    context_length: int | None,
+    server_args_overrides: dict[str, object],
+) -> OmniScheduler[SGLangARRequestData]:
+    # Note (wilsonzheng0327): The shim config is written before the engine reads its
+    # overrides, so an engine context_length must reach the builder too.
+    context_length = server_args_overrides.get("context_length", context_length)
+    builder = builder_type(
+        max_running_requests=max_running_requests,
+        context_length=context_length,
+        enable_async_decode=enable_async_decode,
+    )
+    return builder.build(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        dtype=dtype or "bfloat16",
+        server_args_overrides=server_args_overrides or None,
+    )
+
+
 def create_lm_executor(
     model_path: str,
     *,
@@ -199,21 +266,43 @@ def create_lm_executor(
     server_args_overrides: dict[str, object] | None = None,
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
-    server_args_overrides = {**overrides, **(server_args_overrides or {})}
-    # Note (wilsonzheng0327): The shim config is written before the engine reads its
-    # overrides, so an engine context_length must reach the builder too.
-    context_length = server_args_overrides.get("context_length", context_length)
-    builder = PersonaPlexEngineBuilder(
-        max_running_requests=DEFAULT_LM_MAX_RUNNING_REQUESTS,
-        context_length=context_length,
-        enable_async_decode=enable_async_decode,
-    )
-    return builder.build(
+    return start_lm_engine(
+        PersonaPlexEngineBuilder,
         model_path,
+        max_running_requests=DEFAULT_LM_MAX_RUNNING_REQUESTS,
+        enable_async_decode=enable_async_decode,
+        dtype=dtype,
         device=device,
         gpu_id=gpu_id,
-        dtype=dtype or "bfloat16",
-        server_args_overrides=server_args_overrides or None,
+        context_length=context_length,
+        server_args_overrides={**overrides, **(server_args_overrides or {})},
+    )
+
+
+def create_realtime_lm_executor(
+    model_path: str,
+    *,
+    max_sessions: int,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    context_length: int | None = None,
+    server_args_overrides: dict[str, object] | None = None,
+    **overrides: object,
+) -> OmniScheduler[SGLangARRequestData]:
+    return start_lm_engine(
+        PersonaPlexRealtimeEngineBuilder,
+        model_path,
+        # Note (wilsonzheng0327): The session bridge admits a call's first unit
+        # only while these slots stay free for calls already holding KV.
+        max_running_requests=max_sessions
+        + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
+        enable_async_decode=False,
+        dtype=dtype,
+        device=device,
+        gpu_id=gpu_id,
+        context_length=context_length,
+        server_args_overrides={**overrides, **(server_args_overrides or {})},
     )
 
 
@@ -278,10 +367,31 @@ def create_code2wav_executor(
     )
 
 
+def create_realtime_code2wav_executor(
+    model_path: str,
+    *,
+    max_sessions: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
+) -> SessionScheduler:
+    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
+    tokenizer = load_text_tokenizer(resolve_model_path(model_path))
+    return SessionScheduler(
+        Code2WavSessionHooks(codec, device, tokenizer),
+        max_open_sessions=max_sessions,
+        max_concurrency=1,
+    )
+
+
 __all__ = [
     "create_code2wav_executor",
     "create_decode_executor",
     "create_lm_executor",
     "create_mimi_encode_executor",
     "create_preprocessing_executor",
+    "create_realtime_code2wav_executor",
+    "create_realtime_lm_executor",
+    "create_realtime_mimi_encode_executor",
+    "create_realtime_preprocessing_executor",
 ]
