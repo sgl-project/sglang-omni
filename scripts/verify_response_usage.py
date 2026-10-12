@@ -25,9 +25,8 @@ def main():
             "Run in Linux; this acceptance does not mock Unix/platform dependencies."
         )
     tests = [
-        "tests/unit_test/client/test_usage.py",
+        "tests/unit_test/serve/test_image_response.py",
         "tests/unit_test/client/test_completion_rollout.py",
-        "tests/unit_test/serve/test_usage_response.py",
     ]
     if args.mode == "full":
         tests += [
