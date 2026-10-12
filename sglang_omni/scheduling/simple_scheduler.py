@@ -93,6 +93,10 @@ class SimpleScheduler:
                 request = getattr(message.data, "request", None)
                 if request is not None and request.metadata.get("omni_metrics_enabled"):
                     self.metrics_queued[message.request_id] = time.perf_counter()
+                else:
+                    pass
+        else:
+            pass
         self.inbox.put(message)
 
     def metrics_snapshot(self) -> dict[str, int]:

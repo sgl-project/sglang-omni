@@ -159,6 +159,7 @@ class GenerateChunk:
     image_b64: str | None = None
     images_b64: list[str] | None = None
     image_usage: ImageUsageDict | None = None
+    text_usage_stage: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {

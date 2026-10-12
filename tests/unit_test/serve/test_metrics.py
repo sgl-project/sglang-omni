@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
+from sglang_omni.client.types import GenerateChunk, UsageInfo
 from sglang_omni.serve.metrics import MetricsMiddleware, RequestMetrics
 
 
@@ -102,13 +102,20 @@ def test_http_error_and_cancel_return_inflight_to_zero(error, outcome):
     )
 
 
-def chunk(count=None, *, stage="decode", modality="text", finish=None):
-    return SimpleNamespace(
+def chunk(
+    count: int | None = None,
+    *,
+    stage: str = "decode",
+    modality: str = "text",
+    finish: str | None = None,
+) -> GenerateChunk:
+    return GenerateChunk(
+        request_id="r",
         modality=modality,
         stage_name=stage,
         finish_reason=finish,
         usage=(
-            SimpleNamespace(prompt_tokens=10, completion_tokens=count)
+            UsageInfo(prompt_tokens=10, completion_tokens=count)
             if count is not None
             else None
         ),

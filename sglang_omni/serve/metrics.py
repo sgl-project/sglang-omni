@@ -7,16 +7,20 @@ Callers supply lifecycle timestamps; HTTP chunks are not token observations.
 import asyncio
 import os
 import time
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import aclosing
 from dataclasses import dataclass
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client.core import Metric
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from sglang_omni.scheduling.metrics_snapshot import ENGINE_GAUGES
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateChunk, UsageInfo
+from sglang_omni.scheduling.metrics_snapshot import ENGINE_GAUGES, BackendMetricFamily
 
 
-def validate_metrics_environment():
+def validate_metrics_environment() -> None:
     if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
         raise ValueError(
             "Omni metrics use a single HTTP-process registry. Unset "
@@ -29,16 +33,16 @@ def validate_metrics_environment():
 class BackendMetricsCollector:
     """Export leader snapshots, excluding HTTP-owned metric families."""
 
-    def __init__(self, model_name, owned_names):
-        self.model_name = model_name
-        self.owned_names = owned_names
-        self.snapshots = []
+    def __init__(self, model_name: str, owned_names: set[str]) -> None:
+        self.model_name: str = model_name
+        self.owned_names: set[str] = owned_names
+        self.snapshots: list[tuple[str, list[BackendMetricFamily]]] = []
 
-    def describe(self):
+    def describe(self) -> list[Metric]:
         return []
 
-    def collect(self):
-        families = {}
+    def collect(self) -> Iterator[Metric]:
+        families: dict[str, Metric] = {}
         for stage, snapshot in self.snapshots:
             for item in snapshot:
                 name = item["name"]
@@ -74,10 +78,10 @@ class TokenObservation:
 
 
 class RequestMetrics:
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str) -> None:
         validate_metrics_environment()
-        self.registry = CollectorRegistry()
-        self.model_name = model_name
+        self.registry: CollectorRegistry = CollectorRegistry()
+        self.model_name: str = model_name
         labels = ("model_name", "is_streaming")
         latency_buckets = (
             0.1,
@@ -99,21 +103,21 @@ class RequestMetrics:
             200,
             400,
         )
-        self.e2e = Histogram(
+        self.e2e: Histogram = Histogram(
             "sglang:e2e_request_latency_seconds",
             "Histogram of End-to-end request latency in seconds",
             labels,
             buckets=(*latency_buckets, 600, 1200, 1800, 2400),
             registry=self.registry,
         )
-        self.ttft = Histogram(
+        self.ttft: Histogram = Histogram(
             "sglang:time_to_first_token_seconds",
             "Histogram of time to first token in seconds.",
             labels,
             buckets=latency_buckets,
             registry=self.registry,
         )
-        self.itl = Histogram(
+        self.itl: Histogram = Histogram(
             "sglang:inter_token_latency_seconds",
             "Histogram of inter-token latency in seconds.",
             ("model_name",),
@@ -144,13 +148,13 @@ class RequestMetrics:
             ),
             registry=self.registry,
         )
-        self.prompt_tokens = Counter(
+        self.prompt_tokens: Counter = Counter(
             "sglang:prompt_tokens_total",
             "Number of prompt tokens processed.",
             labels,
             registry=self.registry,
         )
-        self.generation_tokens = Counter(
+        self.generation_tokens: Counter = Counter(
             "sglang:generation_tokens_total",
             "Number of tokens generated.",
             labels,
@@ -193,7 +197,7 @@ class RequestMetrics:
             1000000,
             1100000,
         )
-        self.token_lengths = {
+        self.token_lengths: dict[str, Histogram] = {
             name: Histogram(
                 f"sglang:{name}_histogram",
                 f"Histogram of {name.replace('_', ' ')} length.",
@@ -203,44 +207,44 @@ class RequestMetrics:
             )
             for name in ("prompt_tokens", "uncached_prompt_tokens", "generation_tokens")
         }
-        self.cached_tokens = Counter(
+        self.cached_tokens: Counter = Counter(
             "sglang:cached_tokens_total",
             "Number of cached prompt tokens by source.",
             ("model_name", "cache_source"),
             registry=self.registry,
         )
-        self.requests = Counter(
+        self.requests: Counter = Counter(
             "sglang:num_requests_total",
             "Number of requests processed.",
             labels,
             registry=self.registry,
         )
-        self.aborted = Counter(
+        self.aborted: Counter = Counter(
             "sglang:num_aborted_requests_total",
             "Number of requests aborted.",
             ("model_name",),
             registry=self.registry,
         )
-        self.failed = Counter(
+        self.failed: Counter = Counter(
             "sglang_omni:failed_requests_total",
             "Number of failed pipeline requests.",
             ("model_name",),
             registry=self.registry,
         )
-        self.running = Gauge(
+        self.running: Gauge = Gauge(
             "sglang:num_running_reqs",
             "Number of requests running in a stage.",
             ("model_name", "stage"),
             registry=self.registry,
         )
-        self.waiting = Gauge(
+        self.waiting: Gauge = Gauge(
             "sglang:num_queue_reqs",
             "Number of requests waiting in a stage.",
             ("model_name", "stage"),
             registry=self.registry,
         )
-        self.scrape_lock = asyncio.Lock()
-        self.engine_gauges = {
+        self.scrape_lock: asyncio.Lock = asyncio.Lock()
+        self.engine_gauges: dict[str, Gauge] = {
             name: Gauge(
                 f"sglang:{name}",
                 f"Backend scheduler {name}.",
@@ -249,7 +253,7 @@ class RequestMetrics:
             )
             for name in ENGINE_GAUGES
         }
-        self.queue_latency = Histogram(
+        self.queue_latency: Histogram = Histogram(
             "sglang:queue_time_seconds",
             "Scheduler queue duration in seconds.",
             ("model_name", "stage"),
@@ -297,63 +301,65 @@ class RequestMetrics:
                 3000,
             ),
         )
-        self.batch_size = Histogram(
+        self.batch_size: Histogram = Histogram(
             "sglang_omni:scheduler_batch_size",
             "Requests dispatched per compute call.",
             ("model_name", "stage"),
             buckets=(1, 2, 4, 8, 16, 32, 64, 128),
             registry=self.registry,
         )
-        self.execution = Histogram(
+        self.execution: Histogram = Histogram(
             "sglang_omni:stage_compute_duration_seconds",
             "Host compute duration, without device synchronization.",
             ("model_name", "stage", "outcome"),
             registry=self.registry,
         )
-        self.stage_duration = Histogram(
+        self.stage_duration: Histogram = Histogram(
             "sglang_omni:stage_request_duration_seconds",
             "Stage dispatch through routing/cleanup, including scheduler waiting.",
             ("model_name", "stage", "outcome"),
             registry=self.registry,
         )
-        self.audio_seconds = Counter(
+        self.audio_seconds: Counter = Counter(
             "sglang_omni:audio_output_seconds_total",
             "Completed output waveform duration before encoding/speed conversion.",
             ("model_name", "stage"),
             registry=self.registry,
         )
-        self.images = Counter(
+        self.images: Counter = Counter(
             "sglang_omni:generated_images_total",
             "Images in the completed output list, not diffusion steps.",
             ("model_name", "stage"),
             registry=self.registry,
         )
         self.active_requests: dict[str, TokenObservation] = {}
-        self.http_requests = Counter(
+        self.http_requests: Counter = Counter(
             "sglang_omni:http_requests_total",
             "HTTP requests including errors.",
             ("method", "route", "status_code", "outcome"),
             registry=self.registry,
         )
-        self.http_latency = Histogram(
+        self.http_latency: Histogram = Histogram(
             "sglang_omni:http_request_duration_seconds",
             "HTTP duration through the final response body or disconnect.",
             ("method", "route", "outcome"),
             registry=self.registry,
             buckets=(*latency_buckets, 600, 1200, 1800, 2400),
         )
-        self.http_inflight = Gauge(
+        self.http_inflight: Gauge = Gauge(
             "sglang_omni:http_requests_inflight",
             "Active HTTP requests.",
             registry=self.registry,
         )
 
-        self.backend = BackendMetricsCollector(
+        self.backend: BackendMetricsCollector = BackendMetricsCollector(
             self.model_name, {family.name for family in self.registry.collect()}
         )
         self.registry.register(self.backend)
 
-    def observe_scheduler_event(self, stage, data):
+    def observe_scheduler_event(
+        self, stage: str, data: dict[str, str | int | float]
+    ) -> None:
         labels = (self.model_name, stage)
         if data["event"] == "queue":
             self.queue_latency.labels(*labels).observe(data["duration"])
@@ -368,7 +374,13 @@ class RequestMetrics:
         else:
             pass
 
-    def observe_tokens(self, request_id, stage, prompt_tokens, completion_tokens):
+    def observe_tokens(
+        self,
+        request_id: str,
+        stage: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> None:
         state = self.active_requests.get(request_id)
         if state is None or completion_tokens <= 0:
             return
@@ -398,20 +410,25 @@ class RequestMetrics:
             pass
         state.prompt_tokens = prompt_tokens
 
-    async def generate(self, source, stream, request_id=None):
+    async def generate(
+        self,
+        source: AsyncGenerator[GenerateChunk, None],
+        stream: bool,
+        request_id: str | None = None,
+    ) -> AsyncGenerator[GenerateChunk, None]:
         started = time.perf_counter()
         state = TokenObservation(started, stream)
         if request_id is not None:
             self.active_requests[request_id] = state
         else:
             pass
-        text_stage = None
+        text_stage: str | None = None
         selected_text_stage = False
-        finished_at = None
-        usage = None
+        finished_at: float | None = None
+        usage: UsageInfo | None = None
         aborted = False
-        audio_seconds = {}
-        image_counts = {}
+        audio_seconds: dict[str, float] = {}
+        image_counts: dict[str, int] = {}
         try:
             async with aclosing(source):
                 async for chunk in source:
@@ -419,13 +436,14 @@ class RequestMetrics:
                     finished_at = now
                     # Audio stages may carry their own token counts. Do not add
                     # their cumulative snapshots to the text engine's usage.
-                    if chunk.modality == "text":
+                    usage_stage = chunk.text_usage_stage or chunk.stage_name
+                    if chunk.modality == "text" or chunk.text_usage_stage is not None:
                         if not selected_text_stage and chunk.usage is not None:
-                            text_stage = chunk.stage_name
+                            text_stage = usage_stage
                             selected_text_stage = True
                         else:
                             pass
-                        if selected_text_stage and chunk.stage_name == text_stage:
+                        if selected_text_stage and usage_stage == text_stage:
                             if chunk.usage is not None:
                                 usage = chunk.usage
                             else:
@@ -436,8 +454,8 @@ class RequestMetrics:
                         pass
                     aborted = aborted or chunk.finish_reason == "abort"
                     stage = chunk.stage_name or "unknown"
-                    audio = getattr(chunk, "audio_data", None)
-                    sample_rate = getattr(chunk, "sample_rate", None)
+                    audio = chunk.audio_data
+                    sample_rate = chunk.sample_rate
                     if (
                         audio is not None
                         and sample_rate is not None
@@ -489,8 +507,9 @@ class RequestMetrics:
             # Cache details belong to the same text stage as the token counts.
             # Never combine another stage's usage with native AR observations.
             details = (
-                getattr(usage, "prompt_tokens_details", None)
-                if state.stage is None or state.stage == text_stage
+                usage.prompt_tokens_details
+                if usage is not None
+                and (state.stage is None or state.stage == text_stage)
                 else None
             )
             self.observe_finished(
@@ -514,7 +533,7 @@ class RequestMetrics:
             else:
                 pass
 
-    async def refresh_scheduler(self, client):
+    async def refresh_scheduler(self, client: Client) -> None:
         # Reuse the control plane: no extra ports, shared files or per-TP
         # counter aggregation. Each stage reports its leader snapshot.
         async with self.scrape_lock:
@@ -621,11 +640,11 @@ class RequestMetrics:
 class MetricsMiddleware:
     """Pure ASGI instrumentation: do not buffer or parse streaming bodies."""
 
-    def __init__(self, app, metrics: RequestMetrics):
-        self.app = app
-        self.metrics = metrics
+    def __init__(self, app: ASGIApp, metrics: RequestMetrics) -> None:
+        self.app: ASGIApp = app
+        self.metrics: RequestMetrics = metrics
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["path"] in {
             "/metrics",
             "/health",
@@ -642,7 +661,7 @@ class MetricsMiddleware:
         disconnected = False
         self.metrics.http_inflight.inc()
 
-        async def wrapped_receive():
+        async def wrapped_receive() -> Message:
             nonlocal disconnected
             message = await receive()
             if message["type"] == "http.disconnect":
@@ -651,7 +670,7 @@ class MetricsMiddleware:
                 pass
             return message
 
-        async def wrapped_send(message):
+        async def wrapped_send(message: Message) -> None:
             nonlocal status, finished, outcome
             if message["type"] == "http.response.start":
                 status = message["status"]

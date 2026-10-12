@@ -525,9 +525,11 @@ class Client:
                 if weight_version is not None:
                     chunk.weight_version = weight_version
                 Client._set_audio_data(chunk, audio_result)
-                chunk.usage = Client._build_usage_info(
-                    decode_result
-                ) or Client._build_usage_info(audio_result)
+                chunk.usage = Client._build_usage_info(decode_result)
+                if chunk.usage is not None:
+                    chunk.text_usage_stage = decode_result.get("stage_name") or "decode"
+                else:
+                    chunk.usage = Client._build_usage_info(audio_result)
                 return chunk
             text = result.get("text")
             if isinstance(text, str):
