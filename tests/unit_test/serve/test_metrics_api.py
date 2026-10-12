@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-from fastapi.testclient import TestClient
+import io
 
+import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
+
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateChunk
 from sglang_omni.serve.openai_api import create_app
 
 
@@ -103,3 +109,72 @@ def test_unmatched_paths_do_not_become_labels():
     text = client.get("/metrics").text
     assert 'route="unmatched"' in text
     assert "private-id" not in text
+
+
+@pytest.mark.parametrize("editing", [False, True])
+@pytest.mark.parametrize("fail_after_image", [False, True])
+def test_images_finish_iteration_before_recording_success(editing, fail_after_image):
+    class ImageClient(Client, MetricsClient):
+        def __init__(self):
+            super().__init__(None)
+            self.exhausted = False
+
+        async def _generate_uninstrumented(self, request, request_id):
+            yield GenerateChunk(
+                request_id=request_id,
+                stage_name="generate",
+                modality="image",
+                image_b64="aW1hZ2U=",
+                finish_reason="stop",
+            )
+            if fail_after_image:
+                raise RuntimeError("Image backend failed during completion")
+            self.exhausted = True
+
+    backend = ImageClient()
+    app = create_app(
+        backend, model_name="test", architectures=["NEOChatModel"], enable_metrics=True
+    )
+    with TestClient(app) as client:
+        if editing:
+            image = io.BytesIO()
+            Image.new("RGB", (32, 32)).save(image, format="PNG")
+            response = client.post(
+                "/v1/images/edits",
+                data={"model": "test", "prompt": "Make the background blue"},
+                files={"image": ("reference.png", image.getvalue(), "image/png")},
+            )
+        else:
+            response = client.post(
+                "/v1/images/generations",
+                json={"model": "test", "prompt": "A red mug", "size": "512x512"},
+            )
+        assert response.status_code == (500 if fail_after_image else 200)
+        metrics = app.state.request_metrics
+        labels = {"model_name": "test", "is_streaming": "false"}
+        assert (
+            metrics.registry.get_sample_value(
+                "sglang:num_aborted_requests_total", {"model_name": "test"}
+            )
+            or 0
+        ) == 0
+        if fail_after_image:
+            assert metrics.registry.get_sample_value(
+                "sglang_omni:failed_requests_total", {"model_name": "test"}
+            ) == 1
+            assert metrics.registry.get_sample_value(
+                "sglang:e2e_request_latency_seconds_count", labels
+            ) is None
+        else:
+            assert backend.exhausted
+            assert response.json()["data"] == [{"b64_json": "aW1hZ2U="}]
+            assert metrics.registry.get_sample_value(
+                "sglang:e2e_request_latency_seconds_count", labels
+            ) == 1
+            assert metrics.registry.get_sample_value(
+                "sglang:num_requests_total", labels
+            ) == 1
+            assert metrics.registry.get_sample_value(
+                "sglang_omni:generated_images_total",
+                {"model_name": "test", "stage": "generate"},
+            ) == 1
