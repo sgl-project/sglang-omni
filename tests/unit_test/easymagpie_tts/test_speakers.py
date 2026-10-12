@@ -76,6 +76,29 @@ def test_registry_rejects_unsupported_voice_language_pairs(tmp_path) -> None:
         catalog.resolve("context_fr", "")
 
 
+def test_registry_accepts_locale_language_keys(tmp_path) -> None:
+    write_registry(
+        tmp_path,
+        langs_supported={"en-US": ["Aria"], "fr-FR": ["Remy", "Aria"]},
+        voice_contexts={
+            "Aria": {"en-US": "Aria", "fr-FR": "context_fr"},
+            "Remy": {"fr-FR": "Remy"},
+        },
+    )
+    catalog = load_voice_catalog(tmp_path, 8)
+
+    assert catalog.resolve("Aria", "French") == "context_fr"
+    assert catalog.resolve("Aria", "fr-CA") == "context_fr"
+    assert catalog.resolve("", "fr-FR") == "Remy"
+    assert catalog.resolve("Aria", "") == "Aria"
+
+
+def test_registry_rejects_ambiguous_language_keys(tmp_path) -> None:
+    write_registry(tmp_path, langs_supported={"en-US": ["Aria"], "en-GB": ["Aria"]})
+    with pytest.raises(ValueError, match="'en-GB' more than once"):
+        load_voice_catalog(tmp_path, 8)
+
+
 def test_registry_validates_contexts_and_default_voice(tmp_path) -> None:
     write_registry(tmp_path, default_speaker_id="Nobody")
     with pytest.raises(ValueError, match="default voice 'Nobody'"):

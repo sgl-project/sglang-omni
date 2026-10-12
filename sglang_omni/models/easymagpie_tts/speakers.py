@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -123,6 +124,22 @@ def checked_rows(
     return embedding.detach().to(torch.float16)
 
 
+def by_primary_language(mapping: dict[str, Any], owner: str) -> dict[str, Any]:
+    """Re-key a language map by primary subtag, so locale-keyed registries
+    (``en-US``) resolve the same as primary-keyed ones (``en``)."""
+    keyed: dict[str, Any] = {}
+    for language, value in mapping.items():
+        code = language_code(str(language))
+        if not code or code in keyed:
+            raise ValueError(
+                f"EasyMagpie {owner} lists language {language!r} more than once "
+                "or without a language subtag"
+            )
+        else:
+            keyed[code] = value
+    return keyed
+
+
 def load_registry(directory: Path, embedding_dim: int) -> VoiceCatalog:
     from safetensors.torch import load_file
 
@@ -140,7 +157,10 @@ def load_registry(directory: Path, embedding_dim: int) -> VoiceCatalog:
         )
         texts[context_id] = str(entry["context_text"])
     # Without voice_contexts, voices are the context ids themselves.
-    voice_contexts = dict(registry.get("voice_contexts") or {})
+    voice_contexts = {
+        voice: by_primary_language(languages, f"voice {voice!r}")
+        for voice, languages in (registry.get("voice_contexts") or {}).items()
+    }
     for voice, languages in voice_contexts.items():
         unknown = sorted(set(languages.values()) - set(rows))
         if not languages or unknown:
@@ -161,7 +181,9 @@ def load_registry(directory: Path, embedding_dim: int) -> VoiceCatalog:
         default_voice=default_voice,
         context_texts=texts,
         voice_contexts=voice_contexts,
-        langs_supported=dict(registry.get("langs_supported") or {}),
+        langs_supported=by_primary_language(
+            registry.get("langs_supported") or {}, "langs_supported"
+        ),
     )
 
 
