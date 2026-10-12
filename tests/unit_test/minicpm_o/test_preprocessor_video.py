@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import http.server
 import os
 import threading
 from fractions import Fraction
@@ -20,11 +22,16 @@ from transformers import AutoProcessor, PreTrainedTokenizerBase, ProcessorMixin
 
 from sglang_omni.models.minicpm_o import video_frontend
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
+from sglang_omni.models.minicpm_o.components.audio_encoder import (
+    feature_lens_after_pooling,
+)
 from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.prompt_frontend import video_to_images
+from sglang_omni.models.minicpm_o.request_builders import apply_mm_pad_values
 from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.preprocessing.video import load_video_path
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
     CHAT_TEMPLATE,
@@ -210,14 +217,12 @@ def test_top_level_video_audio_follows_explicit_media(
 
 
 @pytest.mark.parametrize("video_alias", ["video", "videos"])
-@pytest.mark.parametrize("use_audio", [False, True])
 @pytest.mark.parametrize("include_text", [False, True])
-def test_top_level_video_matches_inline_reference_policy(
+def test_top_level_video_audio_matches_inline_reference_policy(
     video_preprocessor: MiniCPMOPreprocessor,
     video_processor: VideoRecordingProcessor,
     decoded_video: TimedVideo,
     video_alias: str,
-    use_audio: bool,
     include_text: bool,
 ) -> None:
     messages = [
@@ -233,7 +238,7 @@ def test_top_level_video_matches_inline_reference_policy(
                     inputs={
                         "messages": messages,
                         video_alias: "clip.mp4",
-                        "use_audio_in_video": use_audio,
+                        "use_audio_in_video": True,
                     }
                 ),
                 data=None,
@@ -254,7 +259,7 @@ def test_top_level_video_matches_inline_reference_policy(
                                     "type": "video_url",
                                     "video_url": {
                                         "url": "clip.mp4",
-                                        "use_audio": use_audio,
+                                        "use_audio": True,
                                     },
                                 },
                                 *(messages[-1]["content"] if include_text else []),
@@ -277,19 +282,20 @@ def test_top_level_video_matches_inline_reference_policy(
             top_level_modality["bounds"], inline_modality["bounds"]
         )
     assert video_processor.images == [decoded_video.frames]
-    if use_audio:
-        assert video_processor.audio_parts == [[2, 2]]
-    else:
-        assert video_processor.audios is None
+    assert video_processor.audio_parts == [[2, 2]]
     assert video_processor.max_slice_nums == 1
 
 
 @pytest.mark.parametrize("include_video_file", [False, True])
+@pytest.mark.parametrize("video_alias", ["video", "videos"])
+@pytest.mark.parametrize("bare_tensor", [False, True])
 def test_top_level_video_preserves_predecoded_tensor_support(
     video_preprocessor: MiniCPMOPreprocessor,
     video_processor: VideoRecordingProcessor,
     encoded_video_path: Path,
     include_video_file: bool,
+    video_alias: str,
+    bare_tensor: bool,
 ) -> None:
     frames = torch.zeros((2, 3, 64, 64), dtype=torch.uint8)
     frames[0, 0] = 255
@@ -301,18 +307,21 @@ def test_top_level_video_preserves_predecoded_tensor_support(
                 request=OmniRequest(
                     inputs={
                         "messages": [{"role": "user", "content": "Describe."}],
-                        "videos": (
+                        video_alias: (
                             [encoded_video_path, frames]
                             if include_video_file
-                            else [frames]
+                            else frames if bare_tensor else [frames]
                         ),
+                        "video_fps": 2,
+                        "video_min_pixels": 3136,
+                        "video_max_pixels": 3136,
                     }
                 ),
                 data=None,
             )
         )
     )
-    frame_count = 5 if include_video_file else 2
+    frame_count = 6 if include_video_file else 2
     expected_content = "\n".join(["<image>./</image>"] * frame_count + ["Describe."])
     assert result.data["prompt"]["prompt_text"].startswith(
         f"<|im_start|>user\n{expected_content}<|im_end|>"
@@ -321,6 +330,129 @@ def test_top_level_video_preserves_predecoded_tensor_support(
     assert video_processor.images[0][-2].getpixel((0, 0)) == (255, 0, 0)
     assert video_processor.images[0][-1].getpixel((0, 0)) == (0, 0, 255)
     assert video_processor.audios is None
+    assert video_processor.max_slice_nums == 1
+    assert video_processor.use_image_id is False
+
+
+@pytest.mark.parametrize("video_alias", ["video", "videos"])
+@pytest.mark.parametrize("source_kind", ["path", "file_uri", "url"])
+def test_top_level_video_question_audio_retains_legacy_inputs(
+    video_preprocessor: MiniCPMOPreprocessor,
+    video_processor: VideoRecordingProcessor,
+    encoded_video_path: Path,
+    video_alias: str,
+    source_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    explicit_image = Image.new("RGB", (4, 4), "green")
+    question_audio = np.full(1600, 0.25, dtype=np.float32)
+    expected_video, _ = load_video_path(
+        encoded_video_path, fps=2, max_frames=128, min_pixels=3136, max_pixels=3136
+    )
+    expected_frames = video_to_images(expected_video)
+    assert len(expected_frames) == 4
+    assert all(frame.size == (56, 56) for frame in expected_frames)
+    assert [round(np.asarray(frame).mean() / 10) for frame in expected_frames] == [
+        0,
+        7,
+        15,
+        22,
+    ]
+
+    async def reject_timed_video(
+        source: str,
+        *,
+        use_audio: bool,
+        fps: float | None = None,
+        max_frames: int | None = None,
+        min_pixels: int | None = None,
+        max_pixels: int | None = None,
+        total_pixels: int | None = None,
+    ) -> TimedVideo:
+        raise AssertionError(
+            "Top-level video without audio must retain legacy decoding"
+        )
+
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.prompt_frontend.load_timed_video",
+        reject_timed_video,
+    )
+    connector = MultiModalResourceConnector(
+        allowed_local_media_path=str(encoded_video_path.parent)
+    )
+    monkeypatch.setattr(
+        "sglang_omni.preprocessing.resource_connector.get_global_resource_connector",
+        lambda: connector,
+    )
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        functools.partial(
+            http.server.SimpleHTTPRequestHandler,
+            directory=str(encoded_video_path.parent),
+        ),
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        if source_kind == "url":
+            video_source = (
+                f"http://127.0.0.1:{server.server_port}/{encoded_video_path.name}"
+            )
+        elif source_kind == "file_uri":
+            video_source = encoded_video_path.as_uri()
+        else:
+            video_source = str(encoded_video_path)
+        result = asyncio.run(
+            video_preprocessor(
+                StagePayload(
+                    request_id="legacy-video-question",
+                    request=OmniRequest(
+                        inputs={
+                            "messages": [{"role": "user", "content": "Answer."}],
+                            "images": [explicit_image],
+                            "audios": [question_audio],
+                            video_alias: video_source,
+                            "use_audio_in_video": False,
+                            "video_fps": 2,
+                            "video_max_frames": 128,
+                            "video_min_pixels": 3136,
+                            "video_max_pixels": 3136,
+                        },
+                        metadata={"videos": [video_source], "audios": [question_audio]},
+                    ),
+                    data=None,
+                )
+            )
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+    expected_content = "\n".join(
+        ["<image>./</image>"] * 5 + ["<audio>./</audio>", "Answer."]
+    )
+    assert result.data["prompt"]["prompt_text"].startswith(
+        f"<|im_start|>user\n{expected_content}<|im_end|>"
+    )
+    assert video_processor.images[0][0] == explicit_image
+    for actual_frame, expected_frame in zip(
+        video_processor.images[0][1:], expected_frames, strict=True
+    ):
+        np.testing.assert_array_equal(
+            np.asarray(actual_frame), np.asarray(expected_frame)
+        )
+    np.testing.assert_array_equal(video_processor.audios[0][0], question_audio)
+    assert video_processor.audio_parts is None
+    assert video_processor.max_slice_nums == 1
+    assert video_processor.use_image_id is False
+    image_cache_key = result.data["mm_inputs"]["image"]["cache_key"]
+    assert image_cache_key.endswith("|policy=video-v1")
+    assert (
+        result.data["encoder_inputs"]["image_encoder"]["cache_key"] == image_cache_key
+    )
+    assert result.request.inputs is None
+    assert "videos" not in result.request.metadata
+    assert "audios" not in result.request.metadata
 
 
 def test_silent_video_keeps_chat_separators_and_omits_audio(
@@ -500,6 +632,73 @@ def encoded_video_path(tmp_path: Path) -> Path:
         for packet in stream.encode():
             container.mux(packet)
     return video_path
+
+
+def test_top_level_video_real_processor_bounds_match_embedding_rows(
+    encoded_video_path: Path,
+) -> None:
+    checkpoint = os.environ.get("MINICPMO_CHECKPOINT")
+    if not checkpoint:
+        pytest.skip("MINICPMO_CHECKPOINT is required for real processor validation")
+    processor = AutoProcessor.from_pretrained(checkpoint, trust_remote_code=True)
+    preprocessor = object.__new__(MiniCPMOPreprocessor)
+    preprocessor._processor = (
+        processor  # noqa: leading-underscore  # Existing processor injection contract.
+    )
+    preprocessor.tokenizer = processor.tokenizer
+    preprocessor.speech_enabled = False
+    explicit_image = Image.new("RGB", (56, 56), "green")
+    question_audio = np.sin(np.arange(16000, dtype=np.float32) / 20)
+    result = asyncio.run(
+        preprocessor(
+            StagePayload(
+                request_id="real-video-bounds",
+                request=OmniRequest(
+                    inputs={
+                        "messages": [{"role": "user", "content": "Answer."}],
+                        "images": [explicit_image],
+                        "videos": [str(encoded_video_path)],
+                        "audios": [question_audio],
+                        "video_fps": 2,
+                        "video_min_pixels": 3136,
+                        "video_max_pixels": 3136,
+                    }
+                ),
+                data=None,
+            )
+        )
+    )
+    image_bounds = result.data["mm_inputs"]["image"]["bounds"]
+    audio_bounds = result.data["mm_inputs"]["audio"]["bounds"]
+    image_inputs = result.data["encoder_inputs"]["image_encoder"]
+    audio_inputs = result.data["encoder_inputs"]["audio_encoder"]
+    assert image_bounds.shape == (5, 2)
+    assert len(image_inputs["pixel_values"]) == 5
+    assert image_inputs["tgt_sizes"].shape[0] == 5
+    image_row_count = int((image_bounds[:, 1] - image_bounds[:, 0]).sum())
+    audio_row_count = int((audio_bounds[:, 1] - audio_bounds[:, 0]).sum())
+    assert image_row_count == 5 * processor.image_processor.image_feature_size
+    assert audio_row_count == int(
+        feature_lens_after_pooling(
+            audio_inputs["audio_feature_lens"], processor.pool_step
+        ).sum()
+    )
+    assert int(image_bounds[-1, 1]) < int(audio_bounds[0, 0])
+    embeddings = {
+        "image_embeds": torch.full((image_row_count, 2), 1.0),
+        "audio_embeds": torch.full((audio_row_count, 2), 2.0),
+    }
+    input_ids, positions = apply_mm_pad_values(
+        result.data["prompt"]["input_ids"],
+        mm_inputs=result.data["mm_inputs"],
+        model_inputs=embeddings,
+        vocab_size=processor.tokenizer.vocab_size,
+    )
+    for modality in ("image", "audio"):
+        assert len(positions[modality]) == embeddings[f"{modality}_embeds"].shape[0]
+        assert torch.all(
+            input_ids[positions[modality]] == embeddings["pad_values"][modality]
+        )
 
 
 @pytest.mark.parametrize(

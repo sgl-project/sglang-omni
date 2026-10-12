@@ -5,12 +5,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
 import torch
-from PIL import Image
 from transformers import AutoProcessor, AutoTokenizer, ProcessorMixin
 
 from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
@@ -35,10 +33,7 @@ from sglang_omni.models.minicpm_o.prompt_frontend import (
     video_to_images,
 )
 from sglang_omni.models.minicpm_o.routing import should_generate_audio_output
-from sglang_omni.models.minicpm_o.video_frontend import (
-    VideoProcessingOptions,
-    load_timed_video,
-)
+from sglang_omni.models.minicpm_o.video_frontend import VideoProcessingOptions
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import (
     AudioMediaIO,
@@ -49,7 +44,10 @@ from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
 )
-from sglang_omni.preprocessing.video import compute_video_cache_key
+from sglang_omni.preprocessing.video import (
+    compute_video_cache_key,
+    ensure_video_list_async,
+)
 from sglang_omni.proto import StagePayload
 
 TTS_READ_PROMPT_EN = "Please read the following text out loud in English: "
@@ -176,7 +174,15 @@ class MiniCPMOPreprocessor:
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
             raw_audios = inputs.get("audio") or inputs.get("audios")
-            raw_videos = inputs.get("videos") or inputs.get("video")
+            raw_videos = inputs.get("videos")
+            if raw_videos is None:
+                raw_videos = inputs.get("video")
+            else:
+                pass
+            if raw_videos is not None and not isinstance(raw_videos, list):
+                raw_videos = [raw_videos]
+            else:
+                pass
             use_audio_in_video = bool(inputs.get("use_audio_in_video", False))
             video_options = VideoProcessingOptions.model_validate(inputs)
         else:
@@ -196,17 +202,15 @@ class MiniCPMOPreprocessor:
         else:
             pass
 
-        if raw_videos and not has_inline_media(messages):
+        if raw_videos and use_audio_in_video and not has_inline_media(messages):
             video_sources = raw_videos if isinstance(raw_videos, list) else [raw_videos]
             has_only_video_sources = all(
                 isinstance(source, str) for source in video_sources
             )
-            if use_audio_in_video and not has_only_video_sources:
+            if not has_only_video_sources:
                 raise ValueError(
                     "Video audio interleaving requires file or URL video sources"
                 )
-            elif not has_only_video_sources:
-                pass
             elif (
                 not isinstance(messages, list)
                 or not messages
@@ -381,22 +385,17 @@ class MiniCPMOPreprocessor:
             else await ensure_image_list_async(raw_images)
         )
         if raw_videos:
-            video_sources = raw_videos if isinstance(raw_videos, list) else [raw_videos]
-            videos: list[list[Image.Image]] = []
-            for source in video_sources:
-                if isinstance(source, (str, Path)):
-                    video = await load_timed_video(
-                        str(source),
-                        use_audio=False,
-                        fps=video_options.video_fps,
-                        max_frames=video_options.video_max_frames,
-                        min_pixels=video_options.video_min_pixels,
-                        max_pixels=video_options.video_max_pixels,
-                        total_pixels=video_options.video_total_pixels,
-                    )
-                    videos.append(video.frames)
-                else:
-                    videos.append(video_to_images(source))
+            # note (AkazaAkane): top-level videos without audio retain the existing input policy.
+            videos, _, _ = await ensure_video_list_async(
+                raw_videos,
+                fps=video_options.video_fps,
+                max_frames=video_options.video_max_frames,
+                min_pixels=video_options.video_min_pixels,
+                max_pixels=video_options.video_max_pixels,
+                total_pixels=video_options.video_total_pixels,
+                extract_audio=False,
+                audio_target_sr=16000,
+            )
         else:
             videos = []
         # note (Yuhao Chen): image and video cache identities use separate source media.

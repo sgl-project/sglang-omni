@@ -51,13 +51,17 @@ print(message.audio.transcript or message.content)
 ## Video Chat Inputs
 
 Chat accepts inline video_url content and top-level video or videos fields.
-File and URL inputs use the same MiniCPM sampling and resizing policy in both
-forms. Set use_audio on an inline video, or use_audio_in_video on a top-level
-request, to include interleaved audio. Top-level media is placed before the
-final user message's text. Predecoded video tensors remain supported without
-audio interleaving.
+Top-level requests without use_audio_in_video retain the existing shared video
+sampling and resizing policy. They place explicit images, video frames, and
+independent audio before the final user message's text, in that order.
+Predecoded video tensors remain supported, including mixed file/tensor inputs.
 
-Sampled frames retain native resolution by default; the MiniCPM image processor
+Inline videos and top-level requests with use_audio_in_video use MiniCPM timed
+video sampling. Set use_audio on an inline video, or use_audio_in_video on a
+top-level request, to include interleaved audio from file or URL sources.
+Top-level interleaved videos follow explicit images and independent audio.
+
+Timed video frames retain native resolution by default; the MiniCPM image processor
 performs the final resize. video_max_frames limits the sampled frame count,
 while video_max_pixels and video_total_pixels resize frames after decoding.
 Those pixel options do not bound the initial native-resolution allocation.
