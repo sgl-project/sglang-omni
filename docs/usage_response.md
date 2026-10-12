@@ -22,4 +22,4 @@ No SenseNova model implementation is imported into the main-based branch.
 
 The previous Chat usage extensions, streaming usage options, and `/generate`
 cached-token mapping are withdrawn. Existing base token usage is unchanged.
-Metrics remain a separate branch and are outside this change.
+Metrics use internal producer statistics without extending Chat or /generate usage.

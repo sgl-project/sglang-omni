@@ -114,8 +114,9 @@ its buckets match SGLang's defaults, with an additional `stage` label.
 per image or request result. `sglang_omni:stage_compute_duration_seconds` records
 host compute lifetime with `model_name`, `stage`, and `outcome` labels
 (`completed`, `error`, `aborted`). It is not synchronized device time. These
-events currently cover SimpleScheduler only; other scheduler lifecycles must
-be instrumented separately. Cancelled queue entries emit no compute sample.
+events cover SimpleScheduler and ThreadedSimpleScheduler; other scheduler
+compute lifecycles require separate instrumentation. Cancelled queue entries
+emit no compute sample.
 
 Token-length metrics are `sglang:prompt_tokens_histogram`,
 `sglang:generation_tokens_histogram`, and

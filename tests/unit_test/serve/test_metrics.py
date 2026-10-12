@@ -19,7 +19,9 @@ def test_http_stream_records_only_after_final_body():
     async def app(scope, receive, send):
         await send({"type": "http.response.start", "status": 200})
         await send({"type": "http.response.body", "body": b"first", "more_body": True})
-        assert metrics.http_inflight._value.get() == 1
+        assert (
+            metrics.registry.get_sample_value("sglang_omni:http_requests_inflight") == 1
+        )
         assert (
             metrics.registry.get_sample_value("sglang_omni:http_requests_total", labels)
             is None
@@ -34,7 +36,7 @@ def test_http_stream_records_only_after_final_body():
             {"type": "http", "path": "/generate", "method": "POST"}, noop, noop
         )
     )
-    assert metrics.http_inflight._value.get() == 0
+    assert metrics.registry.get_sample_value("sglang_omni:http_requests_inflight") == 0
     assert (
         metrics.registry.get_sample_value("sglang_omni:http_requests_total", labels)
         == 1
@@ -85,7 +87,7 @@ def test_http_error_and_cancel_return_inflight_to_zero(error, outcome):
                 {"type": "http", "path": "/generate", "method": "POST"}, noop, noop
             )
         )
-    assert metrics.http_inflight._value.get() == 0
+    assert metrics.registry.get_sample_value("sglang_omni:http_requests_inflight") == 0
     assert (
         metrics.registry.get_sample_value(
             "sglang_omni:http_requests_total",

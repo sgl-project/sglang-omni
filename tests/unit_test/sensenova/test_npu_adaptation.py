@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from sglang.srt.layers.layernorm import RMSNorm
 from transformers.cache_utils import DynamicCache
 
-from sglang_omni.models.sensenova_u1 import neo_unify, stages
+from sglang_omni.models.sensenova_u1 import stages
 from sglang_omni.models.sensenova_u1.neo_unify.configuration_neo_chat import (
     NEOLLMConfig,
 )
@@ -440,9 +440,6 @@ def test_prefix_and_denoise_attention_match_singletons(monkeypatch):
 def test_generation_executor_uses_resolved_npu_device(monkeypatch):
     from transformers import AutoModel, AutoTokenizer
 
-    from sglang_omni.models import weight_loader
-    from sglang_omni.utils import device as device_utils
-
     calls = {}
     tokenizer = object()
 
@@ -469,13 +466,13 @@ def test_generation_executor_uses_resolved_npu_device(monkeypatch):
         return FakeModel()
 
     monkeypatch.setattr(
-        neo_unify, "register", lambda: calls.setdefault("registered", True)
+        stages, "register", lambda: calls.setdefault("registered", True)
     )
     monkeypatch.setattr(AutoTokenizer, "from_pretrained", lambda path: tokenizer)
     monkeypatch.setattr(AutoModel, "from_pretrained", load_model)
-    monkeypatch.setattr(weight_loader, "resolve_dtype", lambda dtype: torch.bfloat16)
+    monkeypatch.setattr(stages, "resolve_dtype", lambda dtype: torch.bfloat16)
     monkeypatch.setattr(
-        device_utils,
+        stages,
         "resolve_concrete_device",
         lambda device, gpu_id: resolved_device,
     )
@@ -489,6 +486,7 @@ def test_generation_executor_uses_resolved_npu_device(monkeypatch):
         max_batch_size=2,
         max_batch_wait_ms=7,
         max_batch_cost=1234,
+        enable_cache_dit=False,
     )
 
     assert scheduler._fn is not None

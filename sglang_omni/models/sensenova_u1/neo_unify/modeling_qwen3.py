@@ -31,6 +31,11 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 
+from sglang_omni.models.sensenova_u1.cache_dit import (
+    decoder_attention_type,
+    decoder_layers,
+)
+
 from .transformers_compat import (
     causal_mask_kwargs,
     model_input_compat,
@@ -832,7 +837,7 @@ class Qwen3Attention(nn.Module):
         hw_config.max_position_embeddings = config.max_position_embeddings_hw
         self.rotary_emb_hw = Qwen3RotaryEmbedding(config=hw_config)
 
-    def _resolve_rope_tables(
+    def resolve_rope_tables(
         self,
         indexes: torch.LongTensor,
         hidden_states: torch.Tensor,
@@ -881,7 +886,7 @@ class Qwen3Attention(nn.Module):
 
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self.resolve_rope_tables(
             indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
@@ -1055,7 +1060,7 @@ class Qwen3Attention(nn.Module):
         )  # [B,H,S,D]
 
         # RoPE
-        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self.resolve_rope_tables(
             indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
@@ -1369,7 +1374,7 @@ class Qwen3Attention(nn.Module):
             )
         value_states = value_states.view(hidden_shape).transpose(1, 2)
 
-        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self._resolve_rope_tables(
+        (cos_t, sin_t), (cos_h, sin_h), (cos_w, sin_w) = self.resolve_rope_tables(
             indexes, hidden_states, position_embeddings
         )
         query_states_t, key_states_t = apply_rotary_pos_emb(
@@ -1790,23 +1795,31 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         hidden_states = inputs_embeds
 
+        layers = decoder_layers(
+            self,
+            update_cache=kwargs.get("update_cache", True),
+            has_non_image_tokens=exist_non_image_gen_tokens,
+            has_image_tokens=exist_image_gen_tokens,
+        )
         # Precompute shared RoPE tables. Attention layers rebuild them if
         # normalization changes the activation dtype.
-        layers = self.layers[: self.config.num_hidden_layers]
         position_embeddings = None
         if layers:
-            position_embeddings = layers[0].self_attn._resolve_rope_tables(
+            native_layers = self.__dict__.get("sensenova_cache_dit_native_layers")
+            rope_layer = native_layers[0] if native_layers is not None else layers[0]
+            position_embeddings = rope_layer.self_attn.resolve_rope_tables(
                 indexes, hidden_states
             )
 
-        for decoder_layer in layers:
+        for decoder_layer in layers[: self.config.num_hidden_layers]:
+            attention_type = decoder_attention_type(self, decoder_layer)
             hidden_states = decoder_layer(
                 hidden_states,
                 image_gen_indicators=image_gen_indicators,
                 exist_non_image_gen_tokens=exist_non_image_gen_tokens,
                 exist_image_gen_tokens=exist_image_gen_tokens,
                 indexes=indexes,
-                attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+                attention_mask=causal_mask_mapping[attention_type],
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,

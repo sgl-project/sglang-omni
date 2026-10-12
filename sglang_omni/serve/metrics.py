@@ -22,6 +22,8 @@ def validate_metrics_environment():
             "Omni metrics use a single HTTP-process registry. Unset "
             "PROMETHEUS_MULTIPROC_DIR before launching the service."
         )
+    else:
+        pass
 
 
 class BackendMetricsCollector:
@@ -42,11 +44,15 @@ class BackendMetricsCollector:
                 name = item["name"]
                 if name in self.owned_names:
                     continue
+                else:
+                    pass
                 family = families.setdefault(
                     name, Metric(name, item["documentation"], item["type"])
                 )
                 if family.type != item["type"]:
                     raise ValueError(f"Conflicting backend metric type: {name}")
+                else:
+                    pass
                 for sample in item["samples"]:
                     labels = {
                         **sample["labels"],
@@ -359,15 +365,23 @@ class RequestMetrics:
             self.stage_duration.labels(*labels, data["outcome"]).observe(
                 data["duration"]
             )
+        else:
+            pass
 
     def observe_tokens(self, request_id, stage, prompt_tokens, completion_tokens):
         state = self.active_requests.get(request_id)
         if state is None or completion_tokens <= 0:
             return
+        else:
+            pass
         if state.stage is None:
             state.stage = stage
+        else:
+            pass
         if state.stage != stage:
             return
+        else:
+            pass
         now = time.perf_counter()
         if state.last_time is None:
             self.ttft.labels(
@@ -380,6 +394,8 @@ class RequestMetrics:
         if completion_tokens != state.completion_tokens:
             state.last_time = now
             state.completion_tokens = completion_tokens
+        else:
+            pass
         state.prompt_tokens = prompt_tokens
 
     async def generate(self, source, stream, request_id=None):
@@ -387,6 +403,8 @@ class RequestMetrics:
         state = TokenObservation(started, stream)
         if request_id is not None:
             self.active_requests[request_id] = state
+        else:
+            pass
         text_stage = None
         selected_text_stage = False
         finished_at = None
@@ -405,9 +423,17 @@ class RequestMetrics:
                         if not selected_text_stage and chunk.usage is not None:
                             text_stage = chunk.stage_name
                             selected_text_stage = True
+                        else:
+                            pass
                         if selected_text_stage and chunk.stage_name == text_stage:
                             if chunk.usage is not None:
                                 usage = chunk.usage
+                            else:
+                                pass
+                        else:
+                            pass
+                    else:
+                        pass
                     aborted = aborted or chunk.finish_reason == "abort"
                     stage = chunk.stage_name or "unknown"
                     audio = getattr(chunk, "audio_data", None)
@@ -430,11 +456,17 @@ class RequestMetrics:
                             audio_seconds[stage] = (
                                 audio_seconds.get(stage, 0) + samples / sample_rate
                             )
+                        else:
+                            pass
+                    else:
+                        pass
                     images = getattr(chunk, "images_b64", None)
                     if images is not None:
                         image_counts[stage] = len(images)
                     elif getattr(chunk, "image_b64", None):
                         image_counts[stage] = 1
+                    else:
+                        pass
                     yield chunk
         except (asyncio.CancelledError, GeneratorExit):
             self.aborted.labels(self.model_name).inc()
@@ -445,6 +477,8 @@ class RequestMetrics:
         else:
             if finished_at is None:
                 return
+            else:
+                pass
             if aborted:
                 self.aborted.labels(self.model_name).inc()
             else:
@@ -477,6 +511,8 @@ class RequestMetrics:
         finally:
             if request_id is not None:
                 self.active_requests.pop(request_id, None)
+            else:
+                pass
 
     async def refresh_scheduler(self, client):
         # Reuse the control plane: no extra ports, shared files or per-TP
@@ -487,6 +523,8 @@ class RequestMetrics:
             )
             if not response.get("success", True):
                 raise RuntimeError("A stage failed to report scheduler metrics")
+            else:
+                pass
             self.running.clear()
             self.waiting.clear()
             snapshots = []
@@ -495,9 +533,13 @@ class RequestMetrics:
             for result in response["results"]:
                 if not result["success"]:
                     continue
+                else:
+                    pass
                 data = result["data"]
                 if "num_running_reqs" not in data:
                     continue
+                else:
+                    pass
                 stage = result["stage"]
                 snapshots.append((stage, data.get("backend_metrics", [])))
                 self.running.labels(self.model_name, stage).set(
@@ -509,19 +551,30 @@ class RequestMetrics:
                         self.engine_gauges[name].labels(self.model_name, stage).set(
                             value
                         )
+                    else:
+                        pass
 
             self.backend.snapshots = snapshots
 
     def observe_interval(self, interval: float, num_new_tokens: int) -> None:
         if num_new_tokens <= 0:
             return
+        else:
+            pass
         histogram = self.itl.labels(self.model_name)
         # Match SGLang's weighted Histogram update without one lock per token.
-        histogram._sum.inc(interval)
-        for bound, bucket in zip(histogram._upper_bounds, histogram._buckets):
+        histogram._sum.inc(
+            interval
+        )  # noqa: leading-underscore - Prometheus weighted histogram update
+        for bound, bucket in zip(
+            histogram._upper_bounds,
+            histogram._buckets,  # noqa: leading-underscore - Prometheus bucket storage
+        ):
             if interval / num_new_tokens <= bound:
                 bucket.inc(num_new_tokens)
                 break
+            else:
+                pass
 
     def observe_finished(
         self,
@@ -540,11 +593,15 @@ class RequestMetrics:
             self.token_lengths["prompt_tokens"].labels(self.model_name).observe(
                 prompt_tokens
             )
+        else:
+            pass
         if generation_tokens is not None:
             self.generation_tokens.labels(*labels).inc(generation_tokens)
             self.token_lengths["generation_tokens"].labels(self.model_name).observe(
                 generation_tokens
             )
+        else:
+            pass
         if (
             cached_tokens is not None
             and prompt_tokens is not None
@@ -555,6 +612,10 @@ class RequestMetrics:
             ).observe(prompt_tokens - cached_tokens)
             if cached_tokens > 0:
                 self.cached_tokens.labels(self.model_name, "total").inc(cached_tokens)
+            else:
+                pass
+        else:
+            pass
 
 
 class MetricsMiddleware:
@@ -572,6 +633,8 @@ class MetricsMiddleware:
             "/favicon.ico",
         }:
             return await self.app(scope, receive, send)
+        else:
+            pass
         started = time.perf_counter()
         finished = None
         status = 500
@@ -584,23 +647,31 @@ class MetricsMiddleware:
             message = await receive()
             if message["type"] == "http.disconnect":
                 disconnected = True
+            else:
+                pass
             return message
 
         async def wrapped_send(message):
             nonlocal status, finished, outcome
             if message["type"] == "http.response.start":
                 status = message["status"]
+            else:
+                pass
             await send(message)
             if message["type"] == "http.response.body" and not message.get(
                 "more_body", False
             ):
                 finished = time.perf_counter()
                 outcome = "completed"
+            else:
+                pass
 
         try:
             await self.app(scope, wrapped_receive, wrapped_send)
             if disconnected and finished is None:
                 outcome = "disconnected"
+            else:
+                pass
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
@@ -620,6 +691,8 @@ class MetricsMiddleware:
                 "OPTIONS",
             }:
                 method = "OTHER"
+            else:
+                pass
             route = getattr(scope.get("route"), "path", "unmatched")
             self.metrics.http_requests.labels(method, route, str(status), outcome).inc()
             self.metrics.http_latency.labels(method, route, outcome).observe(

@@ -11,9 +11,11 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 def test_concurrent_workers_report_actual_running_requests():
     release = threading.Event()
+
     def compute(payload):
         assert release.wait(3)
         return payload
+
     scheduler = SimpleScheduler(compute, max_concurrency=2)
     thread = threading.Thread(target=scheduler.start, daemon=True)
     thread.start()
@@ -21,16 +23,28 @@ def test_concurrent_workers_report_actual_running_requests():
         for i in range(3):
             scheduler.enqueue(IncomingMessage(str(i), "new_request", i))
         deadline = time.monotonic() + 2
-        while scheduler.metrics_snapshot()["num_running_reqs"] != 2 and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert scheduler.metrics_snapshot() == {"num_running_reqs": 2, "num_queue_reqs": 1}
+        while (
+            scheduler.metrics_snapshot()["num_running_reqs"] != 2
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert scheduler.metrics_snapshot() == {
+            "num_running_reqs": 2,
+            "num_queue_reqs": 1,
+        }
         release.set()
         for _ in range(3):
             scheduler.outbox.get(timeout=3)
         deadline = time.monotonic() + 2
-        while scheduler.metrics_snapshot()["num_running_reqs"] and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert scheduler.metrics_snapshot() == {"num_running_reqs": 0, "num_queue_reqs": 0}
+        while (
+            scheduler.metrics_snapshot()["num_running_reqs"]
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert scheduler.metrics_snapshot() == {
+            "num_running_reqs": 0,
+            "num_queue_reqs": 0,
+        }
     finally:
         release.set()
         scheduler.stop()
