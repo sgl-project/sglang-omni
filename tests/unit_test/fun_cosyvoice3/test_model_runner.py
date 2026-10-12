@@ -347,6 +347,54 @@ def test_cosyvoice3_ras_masks_and_redraws_repeated_speech_tokens(
     ] == [[], [5], [9], [], [9], [9]]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cosyvoice3_seeded_ras_redraw_of_a_row_subset_matches_the_full_draw() -> None:
+    rows = 256
+    probs = torch.zeros((rows, 8), device="cuda")
+    probs[:, 3], probs[:, 5], probs[:, 6] = 0.9, 0.06, 0.04
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.token_id_host_bufs = None
+    runner.token_id_host_slot = 0
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(sampler=SimpleNamespace(use_ascend_backend=False))
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        sampling_info=SimpleNamespace(
+            sampling_seed=torch.arange(1, rows + 1, device="cuda")
+        ),
+        positions=torch.arange(rows, device="cuda"),
+    )
+    subset = range(1, rows, 3)
+
+    def redraw(repeating_rows: range) -> list[int]:
+        requests = [
+            SimpleNamespace(
+                data=SimpleNamespace(
+                    req=SimpleNamespace(
+                        output_ids=array("q", [3 if row in repeating_rows else 4]),
+                        sampling_params=SimpleNamespace(top_k=20),
+                    )
+                )
+            )
+            for row in range(rows)
+        ]
+        result = SimpleNamespace(
+            next_token_ids=torch.full((rows,), 3, dtype=torch.int32, device="cuda"),
+            logits_output=SimpleNamespace(next_token_logits=probs),
+        )
+        return runner.redraw_repeated_tokens(
+            result, forward_batch, requests, [3] * rows
+        )
+
+    full = redraw(range(rows))
+    partial = redraw(subset)
+
+    assert 3 not in full
+    assert [partial[row] for row in subset] == [full[row] for row in subset]
+
+
 def test_cosyvoice3_load_weights_maps_custom_and_backbone_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
