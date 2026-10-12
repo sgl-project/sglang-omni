@@ -5,7 +5,7 @@ import pytest
 
 from sglang_omni.config import StageConfig
 from sglang_omni.config.placement import build_stage_placement_plan
-from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
+from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig, Variants
 from sglang_omni.models.cosmos3.stages import native_server_kwargs
 from sglang_omni.pipeline import runtime_config
 from sglang_omni.pipeline.mp_runner import build_stage_groups
@@ -259,3 +259,12 @@ def test_generation_factory_selects_cooperative_cancellation(
     # Without the server warmup, the stage warms in the background once it
     # serves.
     assert scheduler.warm_in_background is (case != "native")
+
+
+def test_text_variant_serves_the_reasoner_as_an_engine_stage():
+    from sglang_omni.cli.serve import engine_stage_names
+
+    config = Variants["text"](model_path="m")
+    assert engine_stage_names(config) == ["reasoner"]
+    # The Reasoner has no generation stage, so it serves no native media routes.
+    assert not any(stage.http_routes for stage in config.stages)

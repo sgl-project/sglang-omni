@@ -1630,6 +1630,20 @@ def test_chat_request_does_not_mark_null_sampling_params_explicit() -> None:
     assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
 
 
+def test_chat_request_ignores_undeclared_fields() -> None:
+    req = ChatCompletionRequest(
+        model="qwen3-omni",
+        messages=[{"role": "user", "content": "hello"}],
+        speaker="Aiden",
+        max_new_tokens=5,
+    )
+
+    params = Client.build_omni_request(build_chat_generate_request(req)).params
+
+    assert "speaker" not in params
+    assert "max_new_tokens" not in params
+
+
 def test_speech_stream_defaults_to_raw_pcm() -> None:
     client = TestClient(
         create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
