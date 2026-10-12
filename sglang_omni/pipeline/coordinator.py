@@ -685,6 +685,12 @@ class Coordinator:
 
         # Single active terminal (original behavior) or no terminal_stages configured
         if len(expected_terminal_stages) <= 1:
+            if getattr(self, "request_metrics", None) is not None and isinstance(
+                msg.result, dict
+            ):
+                msg = replace(msg, result={**msg.result, "stage_name": from_stage})
+            else:
+                pass
             info.state = RequestState.COMPLETED
             info.result = msg.result
             if request_id in self._completion_futures:
