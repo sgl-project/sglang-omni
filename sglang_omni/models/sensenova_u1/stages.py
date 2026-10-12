@@ -34,6 +34,7 @@ from sglang_omni.models.sensenova_u1.sampling import (
     image_guidance_branch_count,
     resolve_cache_dit_defaults,
 )
+from sglang_omni.models.sensenova_u1.usage import build_image_usage
 from sglang_omni.models.weight_loader import resolve_dtype
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -55,7 +56,9 @@ def generate_image(
             return _generate_image_edit(payload, model, tokenizer)
         else:
             pass
-        return _generate_text_to_image(payload, model, tokenizer)
+        result = _generate_text_to_image(payload, model, tokenizer)
+        result.data["image_usage"] = build_image_usage(payload.request.inputs, tokenizer)
+        return result
     except Exception:
         unmount_cache_dit_after_failure(model)
         raise
@@ -124,6 +127,13 @@ def generate_images(
         raise RuntimeError("SenseNova-U1 failed to produce every batched result")
     else:
         pass
+    for result in results:
+        if "image_usage" not in result.data:
+            result.data["image_usage"] = build_image_usage(
+                result.request.inputs, tokenizer
+            )
+        else:
+            pass
     return [result for result in results if result is not None]
 
 
@@ -274,6 +284,7 @@ def _generate_image_edit(
         pass
     options = SenseNovaU1ImageEditSampling.from_params(payload.request.params)
     references = _prepare_reference_images(inputs.get("image_b64"), options)
+    token_usage = {}
     width, height = _resolve_edit_output_size(references, options)
     prepare_cache_dit(
         model,
@@ -289,6 +300,7 @@ def _generate_image_edit(
             tokenizer,
             prompt,
             references,
+            usage=token_usage,
             batch_size=1,
             seed=options.seed,
             image_size=(width, height),
@@ -302,7 +314,11 @@ def _generate_image_edit(
             t_eps=0.02,
             think_mode=False,
         )
-    return _encode_image(payload, images, width, height)
+    result = _encode_image(payload, images, width, height)
+    result.data["image_usage"] = build_image_usage(
+        prompt, tokenizer, token_usage.get("image_tokens", 0)
+    )
+    return result
 
 
 def decode_reference_images(value: str | list[str] | None) -> list[Image.Image]:

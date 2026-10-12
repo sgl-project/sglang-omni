@@ -75,6 +75,10 @@ from sglang_omni.http.favicon import register_favicon
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
+from sglang_omni.serve.image_response import (
+    ImageGenerationResponse,
+    build_image_response,
+)
 from sglang_omni.serve.openai_errors import (
     is_bad_request_error as _is_bad_request_error,
 )
@@ -95,9 +99,7 @@ from sglang_omni.serve.protocol import (
     GenerateFinishReason,
     GenerateMetaInfo,
     GenerateResponse,
-    ImageGenerationData,
     ImageGenerationRequest,
-    ImageGenerationResponse,
     InitWeightsUpdateGroupRequest,
     ModelCard,
     ModelList,
@@ -1073,10 +1075,15 @@ def _register_image_generations(app: FastAPI) -> None:
             stream=False,
         )
         request_id = str(uuid.uuid4())
+        response = None
         try:
             async for chunk in app.state.client.generate(
                 request, request_id=request_id
             ):
+                if response is not None:
+                    continue
+                else:
+                    pass
                 images = chunk.images_b64 or (
                     [chunk.image_b64] if chunk.image_b64 is not None else []
                 )
@@ -1084,14 +1091,14 @@ def _register_image_generations(app: FastAPI) -> None:
                     raise RuntimeError(
                         f"SenseNova-U1 expected {req.n} images, got {len(images)}"
                     )
-                return ImageGenerationResponse(
-                    created=int(time.time()),
-                    data=[ImageGenerationData(b64_json=item) for item in images],
-                )
+                response = build_image_response(images, chunk.image_usage)
         except Exception as exc:
             logger.exception("Image generation failed for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        raise HTTPException(status_code=500, detail="SenseNova-U1 returned no result")
+        if response is not None:
+            return response
+        else:
+            raise HTTPException(status_code=500, detail="SenseNova-U1 returned no result")
 
 
 def _register_image_edits(app: FastAPI) -> None:
@@ -1182,6 +1189,7 @@ def _register_image_edits(app: FastAPI) -> None:
             base64.b64encode(item).decode("ascii") for item in image_bytes
         ]
         data = []
+        image_usage = None
         parent_request_id = str(uuid.uuid4())
         try:
             for output_index in range(num_outputs):
@@ -1199,13 +1207,25 @@ def _register_image_edits(app: FastAPI) -> None:
                     stream=False,
                 )
                 request_id = f"{parent_request_id}:{output_index}"
+                result = None
                 async for chunk in app.state.client.generate(
                     request, request_id=request_id
                 ):
+                    if result is not None:
+                        continue
+                    else:
+                        pass
                     if chunk.image_b64 is None:
                         raise RuntimeError("SenseNova-U1 generated no image")
-                    data.append(ImageGenerationData(b64_json=chunk.image_b64))
-                    break
+                    result = chunk.image_b64
+                    if output_index == 0:
+                        image_usage = chunk.image_usage
+                    else:
+                        pass
+                if result is not None:
+                    data.append(result)
+                else:
+                    pass
         except Exception as exc:
             logger.exception("Image edit failed for request %s", parent_request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1213,7 +1233,7 @@ def _register_image_edits(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=500, detail="SenseNova-U1 returned no result"
             )
-        return ImageGenerationResponse(created=int(time.time()), data=data)
+        return build_image_response(data, image_usage)
 
 
 async def _read_image_edit_upload(image: UploadFile) -> bytes:

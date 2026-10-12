@@ -545,6 +545,7 @@ class Client:
             ):
                 chunk.images_b64 = images_b64
             chunk.usage = Client._build_usage_info(result)
+            chunk.image_usage = result.get("image_usage")
             return chunk
         if isinstance(result, str):
             chunk.text = result

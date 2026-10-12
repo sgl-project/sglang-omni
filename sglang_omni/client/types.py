@@ -5,7 +5,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TypedDict
+
+
+class ImageInputTokensDetailsDict(TypedDict):
+    text_tokens: int | None
+    image_tokens: int
+
+
+class ImageUsageDict(TypedDict, total=False):
+    input_tokens: int
+    total_tokens: int
+    input_tokens_details: ImageInputTokensDetailsDict
 
 
 @dataclass
@@ -145,6 +156,7 @@ class GenerateChunk:
     sample_rate: int | None = None
     image_b64: str | None = None
     images_b64: list[str] | None = None
+    image_usage: ImageUsageDict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -166,6 +178,7 @@ class GenerateChunk:
             "sample_rate": self.sample_rate,
             "image_b64": self.image_b64,
             "images_b64": self.images_b64,
+            "image_usage": self.image_usage,
         }
 
 
