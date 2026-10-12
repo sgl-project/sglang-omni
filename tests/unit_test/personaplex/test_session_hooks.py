@@ -146,3 +146,11 @@ def test_an_empty_end_of_input_emits_only_the_end(random_codec):
     assert [(chunk.modality, chunk.eos, chunk.payload) for chunk in emitted] == [
         ("audio", True, None)
     ]
+
+
+def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
+    encode = MimiEncodeSessionHooks(random_codec, torch.device("cpu"))
+    decode = Code2WavSessionHooks(random_codec, torch.device("cpu"), PieceTokenizer())
+    encode.warm_up_serving_thread()
+    decode.warm_up_serving_thread()
+    assert encode.encode_states == {} and decode.calls == {}

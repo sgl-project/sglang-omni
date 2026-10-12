@@ -15,6 +15,7 @@ from sglang_omni.models.personaplex.architecture import (
     AUDIO_CODEBOOKS_PER_STREAM,
     SAMPLE_RATE,
     SAMPLES_PER_FRAME,
+    SILENCE_CODES,
     TEXT_MARKER_IDS,
 )
 from sglang_omni.models.personaplex.components.mimi import (
@@ -32,6 +33,9 @@ PCM16_SCALE = 32768.0
 PCM16_BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2
 MS_PER_SECOND = 1000
 WORD_BOUNDARY = "▁"
+# Note (wilsonzheng0327): A call's first unit returns two agent frames, the prompt's
+# last among them, and every later unit one.
+WARM_UP_FRAMES_PER_UNIT = (2, 1)
 
 
 def pcm16_to_waveform(chunk: TimedChunk) -> torch.Tensor:
@@ -110,6 +114,15 @@ class MimiEncodeSessionHooks(SessionHooks):
         self.device = device
         self.encode_states: dict[SessionIdentity, MimiEncodeState] = {}
 
+    @torch.inference_mode()
+    def warm_up_serving_thread(self) -> None:
+        """Encode a unit of silence on a throwaway state, so the codec's first use
+        on the serving thread happens before the first call."""
+        self.codec.encode_step(
+            torch.zeros(1, 1, SAMPLES_PER_FRAME, device=self.device),
+            self.codec.init_encode_state(batch_size=1),
+        )
+
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.encode_states[session_identity] = self.codec.init_encode_state(
             batch_size=1
@@ -165,6 +178,15 @@ class Code2WavSessionHooks(SessionHooks):
         self.device = device
         self.tokenizer = tokenizer
         self.calls: dict[SessionIdentity, Code2WavCall] = {}
+
+    @torch.inference_mode()
+    def warm_up_serving_thread(self) -> None:
+        """Decode silence as a call's units arrive, on a throwaway state, so the
+        codec's first use on the serving thread happens before the first call."""
+        decode_state = self.codec.init_decode_state(batch_size=1)
+        silence = torch.tensor(SILENCE_CODES, dtype=torch.long, device=self.device)
+        for num_frames in WARM_UP_FRAMES_PER_UNIT:
+            self.codec.decode_step(silence.repeat(num_frames, 1).T[None], decode_state)
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.calls[session_identity] = Code2WavCall(
