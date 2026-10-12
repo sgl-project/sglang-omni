@@ -2,6 +2,21 @@
 """Read host-side SGLang scheduler statistics without device synchronization."""
 
 import time
+from typing import TypedDict
+
+
+class BackendMetricSample(TypedDict):
+    name: str
+    labels: dict[str, str]
+    value: float
+
+
+class BackendMetricFamily(TypedDict):
+    name: str
+    documentation: str
+    type: str
+    samples: list[BackendMetricSample]
+
 
 ENGINE_GAUGES = (
     "gen_throughput",

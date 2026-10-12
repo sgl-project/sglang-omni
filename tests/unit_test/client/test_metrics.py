@@ -1,17 +1,81 @@
 # SPDX-License-Identifier: Apache-2.0
 import asyncio
+from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 
 import pytest
 
 from sglang_omni.client.client import Client
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import GenerateChunk, GenerateRequest
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.proto import CompleteMessage, StreamMessage
 from sglang_omni.serve.metrics import RequestMetrics
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
+
+
+@pytest.mark.parametrize("audio_stage", ["code2wav", "talker", "talker_stream"])
+@pytest.mark.parametrize("native_tokens", [False, True])
+@pytest.mark.parametrize("decode_usage", [False, True])
+def test_merged_audio_preserves_only_decode_token_metrics(
+    audio_stage: str, native_tokens: bool, decode_usage: bool
+) -> None:
+    decode_result = (
+        {
+            "text": "hello",
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 4},
+        }
+        if decode_usage
+        else {"text": "hello"}
+    )
+    chunk = Client.default_result_builder(
+        "merged",
+        {
+            "decode": decode_result,
+            audio_stage: {
+                "audio_data": [0.0] * 160,
+                "sample_rate": 16000,
+                "prompt_tokens": 100,
+                "completion_tokens": 40,
+                "prompt_tokens_details": {"cached_tokens": 80},
+            },
+        },
+    )
+    assert chunk.modality == "audio"
+    metrics = RequestMetrics("test")
+
+    async def source() -> AsyncGenerator[GenerateChunk, None]:
+        if native_tokens:
+            metrics.observe_tokens("merged", "decode", 10, 1)
+            metrics.observe_tokens("merged", "decode", 10, 2)
+        else:
+            pass
+        yield chunk
+
+    async def run() -> None:
+        async for observed in metrics.generate(source(), False, "merged"):
+            assert observed is chunk
+
+    asyncio.run(run())
+    labels = {"model_name": "test", "is_streaming": "false"}
+    expected_prompt = 10 if decode_usage or native_tokens else None
+    expected_generation = 2 if decode_usage or native_tokens else None
+    assert (
+        metrics.registry.get_sample_value("sglang:prompt_tokens_total", labels)
+        == expected_prompt
+    )
+    assert (
+        metrics.registry.get_sample_value("sglang:generation_tokens_total", labels)
+        == expected_generation
+    )
+    assert metrics.registry.get_sample_value(
+        "sglang:cached_tokens_total", {"model_name": "test", "cache_source": "total"}
+    ) == (4 if decode_usage else None)
+    assert metrics.active_requests == {}
+    assert "text_usage_stage" not in chunk.to_dict()
 
 
 @pytest.mark.parametrize("enabled", [False, True])

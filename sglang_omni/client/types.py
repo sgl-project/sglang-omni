@@ -179,6 +179,7 @@ class GenerateChunk:
     audio_data: object = None
     sample_rate: int | None = None
     image_usage: ImageUsageDict | None = None
+    text_usage_stage: str | None = None
 
     @property
     def reported_finish_reason(self) -> str:
