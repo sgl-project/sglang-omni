@@ -155,26 +155,6 @@ def cleanup_prepared_moss_tts_local_request(request_id: str) -> None:
     _QUEUE.abort(str(request_id))
 
 
-def pop_prepared_moss_tts_local_request(
-    payload: StagePayload,
-) -> MossTTSLocalPreparedRequest | None:
-    data = payload.data if isinstance(payload.data, dict) else {}
-    marker = data.get(_MOSS_TTS_LOCAL_PREPARED_MARKER)
-    if marker is None:
-        return None
-    else:
-        pass
-    prepared = _QUEUE.pop(str(marker))
-    if prepared is None:
-        raise RuntimeError(
-            "MOSS-TTS Local preprocessing state is missing for prepared payload "
-            f"{marker!r}; the AR scheduler must not rebuild it"
-        )
-    else:
-        pass
-    return prepared
-
-
 def build_moss_tts_local_state(payload: StagePayload) -> MossTTSLocalState:
     inputs = payload.request.inputs or {}
     params = payload.request.params or {}
@@ -381,14 +361,12 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
     except BaseException:
         _QUEUE.fail_inflight(rid)
         raise
-    # note (Yue Yin): publish fails closed; when it drops the handoff (aborted
-    # mid-flight or context reset) skip the marker, so the AR stage never pops a
-    # marker whose prepared state no longer exists.
     published = _QUEUE.publish(rid, prepared)
-
     data = prepared.state.to_dict()
-    if published:
-        data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
+    prepared = _QUEUE.pop(rid) if published else None
+    if prepared is not None:
+        # note (Zhang Yiyang): A dict exposes prepared tensors to the stage relay.
+        data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = vars(prepared)
     else:
         pass
     return StagePayload(
@@ -429,14 +407,16 @@ def build_sglang_moss_tts_local_request(
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
-    prepared = pop_prepared_moss_tts_local_request(payload)
-    if prepared is None:
+    payload_data = payload.data if isinstance(payload.data, dict) else {}
+    prepared_fields = payload_data.pop(_MOSS_TTS_LOCAL_PREPARED_MARKER, None)
+    if prepared_fields is None:
         raise RuntimeError(
             "MOSS-TTS Local AR request builder requires a payload prepared by "
             "preprocess_moss_tts_local_payload"
         )
     else:
         pass
+    prepared = MossTTSLocalPreparedRequest(**prepared_fields)
 
     cfg = model.config
     gen_kwargs = prepared.gen_kwargs

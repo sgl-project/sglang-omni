@@ -267,10 +267,10 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
     target.add_argument(
         "--thinker-max-seq-len",
         type=int,
-        default=8192,
+        default=None,
         help=(
-            "Context length for the thinker stage, preprocessing, and talker "
-            "context guards."
+            "Context length for preprocessing and the thinker stage. Defaults to "
+            "the checkpoint's thinker context."
         ),
     )
     target.add_argument(
@@ -278,8 +278,8 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Context length for the talker_ar KV pool. Uses the pipeline "
-            "default when omitted."
+            "Context length for the talker_ar stage. Defaults to the checkpoint's "
+            "context."
         ),
     )
     _add_qwen_speech_mem_args(target)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import pickle
 import struct
 import sys
 import types
@@ -12,6 +13,7 @@ import pytest
 import torch
 
 from sglang_omni.client.audio import encode_audio, encode_wav
+from sglang_omni.comm.stage_io import extract_tensors, restore_tensors
 from sglang_omni.config import StageConfig
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioEncoder
@@ -33,6 +35,8 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     apply_sglang_moss_tts_local_result,
     build_generation_kwargs,
     build_moss_tts_local_state,
+    build_sglang_moss_tts_local_request,
+    cleanup_prepared_moss_tts_local_request,
     clear_moss_tts_local_preprocessing_context,
     preprocess_moss_tts_local_payload,
     set_moss_tts_local_preprocessing_context,
@@ -456,6 +460,7 @@ def test_registry_resolves_local_architecture():
 
 def test_pipeline_stage_wiring():
     config = MossTTSLocalPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
+    assert config.mps == "auto"
     assert [stage.name for stage in config.stages] == [
         "preprocessing",
         "tts_engine",
@@ -468,7 +473,7 @@ def test_pipeline_stage_wiring():
     assert stages["vocoder"].terminal
     for stage in stages.values():
         assert "moss_tts_local" in stage.factory_path
-    assert stages["preprocessing"].process == "pipeline"
+    assert stages["preprocessing"].process == "preprocessing"
     assert stages["preprocessing"].gpu == 0
     assert stages["preprocessing"].factory.device is None
     assert stages["preprocessing"].factory.max_concurrency == 16
@@ -496,14 +501,15 @@ def test_pipeline_stage_wiring():
     assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(1.0)
     assert placement.gpus[0].missing_fraction_stage_names == ()
     topology = build_compiled_process_topology(config)
-    assert topology.stage_to_process["preprocessing"] == "pipeline"
+    assert topology.stage_to_process["preprocessing"] == "preprocessing"
     assert topology.stage_to_process["tts_engine"] == "pipeline"
     assert topology.stage_to_process["vocoder"] == "vocoder"
-    assert config.process_local_edges() == frozenset({("preprocessing", "tts_engine")})
+    assert config.process_local_edges() == frozenset()
 
     colocated = MossTTSLocalColocatedPipelineConfig(
         model_path="OpenMOSS-Team/moss-local-test"
     )
+    assert colocated.mps == "auto"
     colocated_stages = {stage.name: stage for stage in colocated.stages}
     assert colocated_stages["preprocessing"].factory.device is None
     assert (
@@ -513,20 +519,22 @@ def test_pipeline_stage_wiring():
     assert colocated_stages["vocoder"].factory.device is None
 
     split = MossTTSLocalSplitPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
+    assert split.mps == "auto"
     split_stages = {stage.name: stage for stage in split.stages}
     assert split_stages["preprocessing"].factory.device is None
     assert split_stages["preprocessing"].gpu == 0
     assert split_stages["tts_engine"].gpu == 0
-    assert split_stages["tts_engine"].gpu_memory_fraction is None
+    assert split_stages["tts_engine"].gpu_memory_fraction == pytest.approx(0.85)
     assert split_stages["tts_engine"].engine.mem_fraction_static == pytest.approx(0.85)
-    assert split_stages["preprocessing"].gpu_memory_fraction is None
+    assert split_stages["preprocessing"].gpu_memory_fraction == pytest.approx(0.15)
     assert split_stages["vocoder"].gpu_memory_fraction is None
     assert split_stages["vocoder"].gpu == 1
     assert split_stages["vocoder"].factory.device is None
     assert split_stages["vocoder"].process == "vocoder"
     split_topology = build_compiled_process_topology(split)
     assert [(group.name, group.stage_names) for group in split_topology.groups] == [
-        ("pipeline", ("preprocessing", "tts_engine")),
+        ("preprocessing", ("preprocessing",)),
+        ("pipeline", ("tts_engine",)),
         ("vocoder", ("vocoder",)),
     ]
 
@@ -1135,7 +1143,9 @@ def test_build_state_token_count_and_language():
 class FakeProcessor:
     """Builds deterministic [1, T, 13] rows from the message text length."""
 
-    model_config = type("_FakeModelConfig", (), {"n_vq": N_VQ})()
+    model_config = types.SimpleNamespace(
+        n_vq=N_VQ, audio_end_token_id=151670, vocab_size_list=[151936]
+    )
 
     @staticmethod
     def build_user_message(**kwargs):
@@ -1244,28 +1254,12 @@ def test_preprocess_and_result_adapter():
     set_moss_tts_local_preprocessing_context(processor=FakeProcessor())
     try:
         payload = preprocess_moss_tts_local_payload(make_payload())
-        assert payload.data.get("_moss_tts_local_prepared_request") == "req-1"
-
-        from sglang_omni.models.moss_tts_local.request_builders import (
-            pop_prepared_moss_tts_local_request,
+        data = build_sglang_moss_tts_local_request(
+            payload, model=types.SimpleNamespace(config=FakeProcessor.model_config)
         )
-
-        prepared = pop_prepared_moss_tts_local_request(payload)
-        assert prepared is not None
-        assert prepared.prompt_rows.ndim == 2
-        assert prepared.prompt_rows.shape[1] == N_VQ + 1
-        assert len(prepared.input_ids_list) == prepared.prompt_rows.shape[0]
-
-        data = MossTTSLocalSGLangRequestData(
-            input_ids=prepared.input_ids,
-            max_new_tokens=16,
-            temperature=0.0,
-            output_ids=[],
-            state=prepared.state,
-            prompt_rows=prepared.prompt_rows,
-            stage_payload=payload,
-            engine_start_s=0.0,
-        )
+        assert data.prompt_rows.ndim == 2
+        assert data.prompt_rows.shape[1] == N_VQ + 1
+        assert len(data.req.origin_input_ids) == data.prompt_rows.shape[0]
         data.output_rows = [
             torch.cat([torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)])
             for _ in range(3)
@@ -1274,7 +1268,63 @@ def test_preprocess_and_result_adapter():
         codes = torch.as_tensor(result.data["audio_codes"])
         assert codes.shape == (3, N_VQ)
         assert result.data["completion_tokens"] == 3
-        assert result.data["prompt_tokens"] == prepared.prompt_rows.shape[0]
+        assert result.data["prompt_tokens"] == data.prompt_rows.shape[0]
+    finally:
+        clear_moss_tts_local_preprocessing_context()
+
+
+def test_pipeline_preserves_explicit_process_and_mps_overrides() -> None:
+    config = MossTTSLocalPipelineConfig(
+        model_path="OpenMOSS-Team/moss-local-test", mps="off"
+    )
+    config.stage_named("preprocessing").process = "pipeline"
+    topology = build_compiled_process_topology(config)
+    assert config.mps == "off"
+    assert topology.stage_to_process == {
+        "preprocessing": "pipeline",
+        "tts_engine": "pipeline",
+        "vocoder": "vocoder",
+    }
+
+
+def test_prepared_request_survives_stage_transport() -> None:
+    model = types.SimpleNamespace(config=FakeProcessor.model_config)
+    set_moss_tts_local_preprocessing_context(processor=FakeProcessor())
+    try:
+        expected = preprocess_moss_tts_local_payload(make_payload())
+        payload = preprocess_moss_tts_local_payload(make_payload())
+        prepared = build_sglang_moss_tts_local_request(expected, model=model)
+        header, tensors = extract_tensors(payload.data)
+        clear_moss_tts_local_preprocessing_context()
+        payload.data = restore_tensors(pickle.loads(pickle.dumps(header)), tensors)
+        restored = build_sglang_moss_tts_local_request(payload, model=model)
+        assert len(tensors) == 2
+        torch.testing.assert_close(restored.input_ids, prepared.input_ids)
+        torch.testing.assert_close(restored.prompt_rows, prepared.prompt_rows)
+        assert restored.req.origin_input_ids == prepared.req.origin_input_ids
+        assert restored.state == prepared.state
+    finally:
+        clear_moss_tts_local_preprocessing_context()
+
+
+def test_preprocessing_abort_discards_prepared_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processor = FakeProcessor()
+    original = processor.build_user_message
+
+    def abort_during_preprocessing(text: str, **kwargs: str) -> dict[str, str]:
+        cleanup_prepared_moss_tts_local_request("req-1")
+        return original(text=text, **kwargs)
+
+    monkeypatch.setattr(processor, "build_user_message", abort_during_preprocessing)
+    set_moss_tts_local_preprocessing_context(processor=processor)
+    try:
+        payload = preprocess_moss_tts_local_payload(make_payload())
+        with pytest.raises(RuntimeError, match="requires a payload prepared"):
+            build_sglang_moss_tts_local_request(
+                payload, model=types.SimpleNamespace(config=FakeProcessor.model_config)
+            )
     finally:
         clear_moss_tts_local_preprocessing_context()
 

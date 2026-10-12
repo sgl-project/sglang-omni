@@ -2653,7 +2653,7 @@ def construct_omni_scheduler(
         req_to_token_pool=req_to_token_pool(),
         token_to_kv_pool_allocator=None,
         server_args=server_args,
-        model_config=SimpleNamespace(),
+        model_config=SimpleNamespace(context_len=128),
         **kwargs,
     )
 
@@ -2906,7 +2906,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         req_to_token_pool=req_to_token_pool(),
         token_to_kv_pool_allocator=None,
         server_args=server_args,
-        model_config=SimpleNamespace(),
+        model_config=SimpleNamespace(context_len=128),
         model_runner=None if bind_late else model_runner,
         enable_overlap=enable_overlap,
         enable_async_decode=enable_async_decode,

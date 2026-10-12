@@ -64,7 +64,7 @@ def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageC
         name="preprocessing",
         process=process,
         factory_path=f"{_PKG}.stages.create_preprocessing_executor",
-        factory=FactoryArgs(max_seq_len=8192),
+        factory=FactoryArgs(),
         next=next_stages,
         route_fn=route_fn,
         project_payload={
@@ -147,11 +147,9 @@ def aggregate_stage(*, process: str, gpu: int) -> StageConfig:
 def thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
     # note (jiaxin deng): async decode defaults on;
     # --thinker.factory.enable_async_decode false overrides it.
-    factory_group = FactoryArgs(max_seq_len=8192, enable_async_decode=True)
+    factory_group = FactoryArgs(enable_async_decode=True)
     if speech_enabled:
-        factory_group = FactoryArgs(
-            max_seq_len=8192, enable_async_decode=True, speech_enabled=True
-        )
+        factory_group = FactoryArgs(enable_async_decode=True, speech_enabled=True)
     else:
         pass
     join_kwargs: dict = {}
@@ -224,15 +222,7 @@ def talker_stage(
         wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
         merge_fn=f"{_PKG}.request_builders.merge_for_talker",
         factory_path=f"{_PKG}.stages.create_talker_ar_executor_from_config",
-        # Note (Xuesong): max_seq_len must exceed talker_max_new_tokens (4096)
-        # + prefill, else req_to_token_pool OOBs and crashes talker_ar.
-        # Note (Chenyang): bumped 8192 → 32768 because the V1 talker
-        # prefill replays the full thinker prompt as projected
-        # embeddings, and a 30-frame video prompt is ~22K positions,
-        # which overflows 8192 and triggers a FusedAddRMSNorm illegal
-        # memory access in the talker forward.
         factory=FactoryArgs(
-            max_seq_len=32768,
             enable_partial_start=enable_partial_start,
             partial_start_min_chunks=5,
             # Note (wenyao): Match the default serial Code2Wav window so later
