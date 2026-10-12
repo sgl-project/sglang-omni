@@ -22,7 +22,6 @@ class TransportKind(str, Enum):
 class DataKind(str, Enum):
     STAGE_PAYLOAD = "stage_payload"
     STREAM_CHUNK = "stream_chunk"
-    STREAM_METADATA_TENSOR = "stream_metadata_tensor"
     KV_PAGES = "kv_pages"
     WEIGHT_BUCKET = "weight_bucket"
     MOE_EXPERT_PAYLOAD = "moe_expert_payload"
@@ -98,21 +97,6 @@ class BackendRef(msgspec.Struct, frozen=True):
         )
 
 
-class MetadataTensorRef(msgspec.Struct, frozen=True):
-    path: str
-    ref: "DataRef"
-
-    def to_dict(self) -> dict[str, object]:
-        return {"path": self.path, "ref": self.ref.to_dict()}
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "MetadataTensorRef":
-        return cls(
-            path=required(value, "path", str),
-            ref=DataRef.from_dict(required(value, "ref", dict)),
-        )
-
-
 class DataRef(msgspec.Struct, frozen=True):
     """Control-plane pointer to one data-plane object."""
 
@@ -129,7 +113,6 @@ class DataRef(msgspec.Struct, frozen=True):
     device: str | None = None
     offset: int | None = None
     metadata: dict[str, object] | None = None
-    metadata_tensors: tuple[MetadataTensorRef, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -141,9 +124,6 @@ class DataRef(msgspec.Struct, frozen=True):
             "layout": self.layout.value,
             "buffer": self.buffer.to_dict(),
             "tensors": [tensor.to_dict() for tensor in self.tensors],
-            "metadata_tensors": [
-                tensor_ref.to_dict() for tensor_ref in self.metadata_tensors
-            ],
         }
         if self.header is not None:
             value["header"] = self.header
@@ -199,10 +179,6 @@ class DataRef(msgspec.Struct, frozen=True):
             offset=required(value, "offset", int) if "offset" in value else None,
             metadata=(
                 required(value, "metadata", dict) if "metadata" in value else None
-            ),
-            metadata_tensors=tuple(
-                MetadataTensorRef.from_dict(item)
-                for item in required(value, "metadata_tensors", list)
             ),
         )
 

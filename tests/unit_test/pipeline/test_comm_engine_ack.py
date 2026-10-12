@@ -221,18 +221,15 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
         )
 
         assert data_ref_a.object_id != data_ref_b.object_id
-        metadata_a = data_ref_a.metadata_tensors[0].ref.object_id
-        metadata_b = data_ref_b.metadata_tensors[0].ref.object_id
-        assert metadata_a != metadata_b
-        assert metadata_a.startswith(f"{data_ref_a.object_id}:meta:0")
-        assert metadata_b.startswith(f"{data_ref_b.object_id}:meta:0")
+        assert [entry.path for entry in data_ref_a.tensors] == ["embedding"]
+        assert [entry.path for entry in data_ref_b.tensors] == ["embedding"]
         assert set(engine.pending) == {
             data_ref_a.object_id,
             data_ref_b.object_id,
         }
 
-        ops_a = relay.ops[:2]
-        ops_b = relay.ops[2:]
+        ops_a = relay.ops[:1]
+        ops_b = relay.ops[1:]
         engine.ack_transfer(
             stream_ack(request_id="req-reused", object_id=data_ref_a.object_id)
         )
@@ -445,7 +442,6 @@ def test_data_ref_rejects_bool_int_fields() -> None:
         "layout": "raw_tensor",
         "buffer": {"transport": "shm", "info": {}, "length": 1},
         "tensors": [],
-        "metadata_tensors": [],
         "shape": [1],
         "dtype": "torch.uint8",
         "offset": 0,

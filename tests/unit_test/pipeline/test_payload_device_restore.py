@@ -152,8 +152,8 @@ def test_a_metadata_tensor_records_its_own_source_device() -> None:
 
     data_ref, _ = asyncio.run(stream_round_trip(None, with_metadata=True))
 
-    assert data_ref.metadata_tensors
-    assert all(ref.ref.device == "cpu" for ref in data_ref.metadata_tensors)
+    assert data_ref.tensors
+    assert all(entry.device == "cpu" for entry in data_ref.tensors)
 
 
 def test_a_chunk_without_metadata_still_records_its_device() -> None:

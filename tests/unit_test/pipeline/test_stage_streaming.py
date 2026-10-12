@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
-from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
+from sglang_omni.comm.data_ref import DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
@@ -127,24 +127,15 @@ async def make_relay_chunk(
     data,
     metadata: dict | None = None,
 ) -> DataReadyMessage:
-    object_id = f"{request_id}:stream:{from_stage}:{to_stage}:{chunk_id}"
-    data_ref, op = await stage_io.write_tensor(
+    data_ref, _ = await stage_io.write_stream_chunk(
         relay,
-        object_id,
-        data,
-        transport=TransportKind.SHM,
-        kind=DataKind.STREAM_CHUNK,
         request_id=request_id,
+        data=data,
+        target_stage=to_stage,
         from_stage=from_stage,
-        to_stage=to_stage,
-    )
-    pending_ops = [op]
-    data_ref = await stage_io.with_stream_metadata(
-        relay,
-        data_ref,
-        metadata,
-        TransportKind.SHM,
-        pending_ops,
+        chunk_id=chunk_id,
+        metadata=metadata,
+        transport=TransportKind.SHM,
     )
     return DataReadyMessage(
         request_id=request_id,
@@ -1033,7 +1024,7 @@ def test_stage_drains_relay_stream_chunk_for_already_aborted_request() -> None:
         )
 
         assert scheduler.inbox.empty()
-        assert relay.gets == 2
+        assert relay.gets == 1
 
     asyncio.run(run())
 
@@ -1144,5 +1135,58 @@ def test_stage_drops_payload_after_abort_during_relay_read() -> None:
         await stage.on_data_ready(await make_relay_payload(relay, payload))
 
         assert scheduler.inbox.empty()
+
+    asyncio.run(run())
+
+
+def test_stream_chunk_with_tensor_metadata_publishes_within_relay_credits() -> None:
+    """Fun-CosyVoice3's first stream chunk carries three Flow prompt tensors in
+    its metadata. Written as one relay put per tensor, the chunk needed four shm
+    credits before its DataReady could go out while the default relay grants two,
+    so the sender blocked forever and a process-isolated vocoder never saw a
+    chunk. One relay object per chunk keeps the publish within the credits."""
+
+    async def run() -> None:
+        relay = ShmRelay(engine_id="tts_engine", credits=2)
+        codes = torch.tensor([11, 12, 13], dtype=torch.long)
+        metadata = {
+            "stream": True,
+            "flow_prompt_speech_token": torch.arange(25, dtype=torch.int32).reshape(
+                1, 25
+            ),
+            "flow_prompt_speech_feat": torch.full((1, 50, 80), 0.5),
+            "flow_embedding": torch.ones(1, 192),
+        }
+
+        data_ref, ops = await asyncio.wait_for(
+            stage_io.write_stream_chunk(
+                relay,
+                request_id="req",
+                data=codes,
+                target_stage="vocoder",
+                from_stage="tts_engine",
+                chunk_id=0,
+                metadata=metadata,
+                transport=TransportKind.SHM,
+            ),
+            timeout=2.0,
+        )
+        try:
+            data, restored = await stage_io.read_stream_chunk(relay, data_ref, None)
+        finally:
+            for op in ops:
+                op.mark_receiver_done()
+                await op.wait_for_completion()
+
+        assert len(ops) == 1
+        assert data.tolist() == codes.tolist()
+        assert restored["stream"] is True
+        assert torch.equal(
+            restored["flow_prompt_speech_token"], metadata["flow_prompt_speech_token"]
+        )
+        assert torch.equal(
+            restored["flow_prompt_speech_feat"], metadata["flow_prompt_speech_feat"]
+        )
+        assert torch.equal(restored["flow_embedding"], metadata["flow_embedding"])
 
     asyncio.run(run())

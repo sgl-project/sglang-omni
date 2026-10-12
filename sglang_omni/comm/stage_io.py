@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 import pickle
 from dataclasses import fields, is_dataclass
 from multiprocessing.reduction import ForkingPickler
@@ -17,7 +18,6 @@ from sglang_omni.comm.data_ref import (
     DataKind,
     DataLayout,
     DataRef,
-    MetadataTensorRef,
     TensorMeta,
     TransportKind,
 )
@@ -576,66 +576,72 @@ async def read_payload(
     )
 
 
-async def write_tensor(
+_STREAM_CHUNK_DATA_PATH = "<stream_chunk>"
+
+
+async def write_stream_chunk(
     relay: Relay,
-    object_id: str,
-    tensor: torch.Tensor,
     *,
+    request_id: str,
+    data: torch.Tensor,
+    target_stage: str,
+    from_stage: str,
+    chunk_id: int,
+    object_id: str | None = None,
+    metadata: dict[str, object] | None = None,
     transport: TransportKind,
-    kind: DataKind = DataKind.STREAM_CHUNK,
-    request_id: str | None = None,
-    from_stage: str | None = None,
-    to_stage: str | None = None,
-) -> tuple[DataRef, RelayOperation]:
-    if not isinstance(tensor, torch.Tensor):
+) -> tuple[DataRef, list[RelayOperation]]:
+    if not isinstance(data, torch.Tensor):
         raise TypeError(
-            f"write_tensor requires torch.Tensor, got {type(tensor).__name__}"
+            f"write_stream_chunk requires torch.Tensor, got {type(data).__name__}"
         )
     else:
         pass
-    source_device = str(tensor.device)
-    packed = tensor.contiguous().view(torch.uint8).reshape(-1)
-    target_device = torch.device(relay_device(relay))
-    if packed.device != target_device:
-        packed = packed.to(device=target_device)
+    if object_id is None:
+        object_id = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
     else:
         pass
-    offset = pad_offset(0, dtype_alignment(tensor.dtype))
-    if offset:
-        packed = torch.cat(
-            [torch.zeros(offset, dtype=torch.uint8, device=target_device), packed]
-        )
+    tensors: dict[str, torch.Tensor] = {}
+    if metadata is not None:
+        metadata, tensors = extract_tensors(metadata)
     else:
         pass
+    # Note (Jiaxin Deng): one relay object per chunk; a put per metadata tensor
+    # needed more shm credits than the relay grants before DataReady, deadlocking.
+    packed, entries = pack_tensors(
+        {_STREAM_CHUNK_DATA_PATH: data, **tensors}, device=relay_device(relay)
+    )
+    data_entry, *metadata_entries = entries
     op = await relay.put_async(
         packed,
         request_id=object_id,
-        receiver_id=to_stage,
+        receiver_id=target_stage,
     )
-    return (
-        DataRef(
-            version=1,
-            object_id=object_id,
-            kind=kind,
+    data_ref = DataRef(
+        version=1,
+        object_id=object_id,
+        kind=DataKind.STREAM_CHUNK,
+        transport=transport,
+        layout=DataLayout.RAW_TENSOR,
+        buffer=BackendRef.from_relay_info(
             transport=transport,
-            layout=DataLayout.RAW_TENSOR,
-            buffer=BackendRef.from_relay_info(
-                transport=transport,
-                relay_info=op.metadata,
-            ),
-            shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=str(tensor.dtype),
-            device=source_device,
-            offset=offset,
+            relay_info=op.metadata,
         ),
-        op,
+        tensors=tuple(metadata_entries),
+        shape=data_entry.shape,
+        dtype=data_entry.dtype,
+        device=data_entry.device,
+        offset=data_entry.offset,
+        metadata=metadata,
     )
+    return data_ref, [op]
 
 
-async def read_tensor(
+async def read_stream_chunk(
     relay: Relay,
     data_ref: DataRef,
-) -> torch.Tensor:
+    local_device: str | None = None,
+) -> tuple[torch.Tensor, dict[str, object] | None]:
     if data_ref.layout is not DataLayout.RAW_TENSOR:
         raise ValueError(f"expected raw_tensor layout, got {data_ref.layout.value}")
     else:
@@ -653,75 +659,44 @@ async def read_tensor(
     else:
         pass
     transfer_buf = await read_transfer_buffer(relay, data_ref.object_id, data_ref)
-    return (
-        transfer_buf[data_ref.offset :]
-        .view(torch_dtype(data_ref.dtype))
-        .reshape(data_ref.shape)
+    data = unpack_tensor(
+        transfer_buf, offset=data_ref.offset, shape=data_ref.shape, dtype=data_ref.dtype
     )
-
-
-async def write_stream_chunk(
-    relay: Relay,
-    *,
-    request_id: str,
-    data: torch.Tensor,
-    target_stage: str,
-    from_stage: str,
-    chunk_id: int,
-    object_id: str | None = None,
-    metadata: dict[str, object] | None = None,
-    transport: TransportKind,
-) -> tuple[DataRef, list[RelayOperation]]:
-    if object_id is None:
-        object_id = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
-    else:
-        pass
-    data_ref, op = await write_tensor(
-        relay,
-        object_id,
-        data,
-        transport=transport,
-        kind=DataKind.STREAM_CHUNK,
-        request_id=request_id,
-        from_stage=from_stage,
-        to_stage=target_stage,
-    )
-    pending_ops = [op]
-    data_ref = await with_stream_metadata(
-        relay,
-        data_ref,
-        metadata,
-        transport,
-        pending_ops,
-        receiver_id=target_stage,
-    )
-    return data_ref, pending_ops
-
-
-async def read_stream_chunk(
-    relay: Relay,
-    data_ref: DataRef,
-    local_device: str | None = None,
-) -> tuple[torch.Tensor, dict[str, object] | None]:
-    data = await read_tensor(relay, data_ref)
     if data_ref.device is not None:
         data = restore_tensor_device(data, data_ref.device, local_device)
     else:
         pass
     metadata = dict(data_ref.metadata or {})
-    if data_ref.metadata_tensors:
-        tensors = {}
-        for ref in data_ref.metadata_tensors:
-            tensor = await read_tensor(relay, ref.ref)
-            if ref.ref.device is not None:
-                tensor = restore_tensor_device(tensor, ref.ref.device, local_device)
-            else:
-                pass
-            tensors[ref.path] = tensor
+    if data_ref.tensors:
+        tensors = {
+            entry.path: restore_tensor_device(
+                unpack_tensor(
+                    transfer_buf,
+                    offset=entry.offset,
+                    shape=entry.shape,
+                    dtype=entry.dtype,
+                ),
+                entry.device,
+                local_device,
+            )
+            for entry in data_ref.tensors
+        }
         metadata = restore_tensors(metadata, tensors)
     else:
         pass
     return data, metadata or None
+
+
+def unpack_tensor(
+    buf: torch.Tensor,
+    *,
+    offset: int,
+    shape: tuple[int, ...],
+    dtype: str,
+) -> torch.Tensor:
+    torch_type = torch_dtype(dtype)
+    nbytes = math.prod(shape) * torch_type.itemsize
+    return buf[offset : offset + nbytes].view(torch_type).reshape(shape)
 
 
 async def send_stream_signal(
@@ -747,48 +722,6 @@ async def send_stream_signal(
             error=error,
             replica_bindings=replica_bindings,
         ),
-    )
-
-
-async def with_stream_metadata(
-    relay: Relay,
-    data_ref: DataRef,
-    metadata: dict[str, object] | None,
-    transport: TransportKind,
-    pending_ops: list[RelayOperation],
-    *,
-    receiver_id: str | None = None,
-) -> DataRef:
-    if metadata is None:
-        return data_ref
-    else:
-        pass
-    metadata_without_tensors, tensors = extract_tensors(metadata)
-    tensor_refs = []
-    for idx, (path, tensor) in enumerate(tensors.items()):
-        ref, op = await write_tensor(
-            relay,
-            f"{data_ref.object_id}:meta:{idx}",
-            tensor,
-            transport=transport,
-            kind=DataKind.STREAM_METADATA_TENSOR,
-            to_stage=receiver_id,
-        )
-        tensor_refs.append(MetadataTensorRef(path=path, ref=ref))
-        pending_ops.append(op)
-    return DataRef(
-        version=data_ref.version,
-        object_id=data_ref.object_id,
-        kind=data_ref.kind,
-        transport=data_ref.transport,
-        layout=data_ref.layout,
-        buffer=data_ref.buffer,
-        shape=data_ref.shape,
-        dtype=data_ref.dtype,
-        device=data_ref.device,
-        offset=data_ref.offset,
-        metadata=metadata_without_tensors,
-        metadata_tensors=tuple(tensor_refs),
     )
 
 

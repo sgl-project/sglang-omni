@@ -161,8 +161,8 @@ For nonlocal stream targets:
   and whose metadata contains no tensors may ride directly in `DataReadyMessage`
 - inline envelopes own their bytes and therefore require no relay ACK; chunks
   that exceed the limit continue through the selected relay
-- the chunk is written with `write_tensor()`
-- tensor-valued metadata is extracted and written as separate `DataRef`s
+- the chunk and its tensor-valued metadata are packed into one relay object by
+  `write_stream_chunk()`; the metadata tensors ride in `DataRef.tensors`
 - the control message is sent before waiting for pending put operations
 - the receiver reads the blob in `Stage._on_stream_chunk()` and enqueues a
   `stream_chunk` message into `scheduler.inbox`
