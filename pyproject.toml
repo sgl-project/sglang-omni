@@ -182,8 +182,6 @@ include = [
     "sglang_omni.*",
     "sglang_omni_router.python",
     "sglang_omni_router.python.*",
-    "sglang_omni_mlx",
-    "sglang_omni_mlx.*",
 ]
 namespaces = true
 

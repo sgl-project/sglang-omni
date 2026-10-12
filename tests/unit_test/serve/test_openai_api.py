@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from sglang_omni.admission import QueueFullError
@@ -26,15 +27,18 @@ from sglang_omni.proto import (
 )
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
+    ServerStatus,
     _ClosableStreamingResponse,
     await_speech_response,
     build_chat_generate_request,
+    chat_non_stream,
     chat_stream,
     speech_audio_response,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
+from sglang_omni.serve.speech_to_text import complete_speech_to_text_request
 from sglang_omni.serve.transcriptions import (
     _first_transcription_chunk,
     _transcription_stream,
@@ -362,6 +366,25 @@ class BlockingNonStreamingSpeechClient:
         allow_format_fallback: bool = True,
     ):
         del request, request_id, response_format, speed, allow_format_fallback
+        self.started.set()
+        await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class BlockingCompletionClient:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.aborted: list[str] = []
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ) -> None:
         self.started.set()
         await asyncio.Future()
 
@@ -926,6 +949,24 @@ def test_create_app_passes_model_specific_speech_input_limit() -> None:
     )
 
     assert app.state.speech_service.max_speech_input_chars is None
+
+
+def test_health_reports_starting_until_the_launcher_marks_the_server_up() -> None:
+    client, coordinator, _ = streaming_client()
+    app = create_app(client)
+    http_client = TestClient(app)
+
+    coordinator.running = True
+    app.state.server_status = ServerStatus.STARTING
+    starting = http_client.get("/health")
+    app.state.server_status = ServerStatus.UP
+    healthy = http_client.get("/health")
+    coordinator.running = False
+    stopped = http_client.get("/health")
+
+    assert (starting.status_code, starting.json()["status"]) == (503, "starting")
+    assert (healthy.status_code, healthy.json()["status"]) == (200, "healthy")
+    assert (stopped.status_code, stopped.json()["status"]) == (503, "unhealthy")
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -1909,6 +1950,56 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert client.aborted == ["req-1"]
+
+    asyncio.run(drive())
+
+
+def test_buffered_chat_aborts_its_request_on_client_disconnect() -> None:
+    async def drive() -> None:
+        client = BlockingCompletionClient()
+        request = DisconnectingRequest()
+        task = asyncio.create_task(
+            chat_non_stream(
+                request=request,
+                client=client,
+                gen_req=GenerateRequest(model="qwen3-omni", prompt="hello"),
+                request_id="req-1",
+                response_id="chatcmpl-req-1",
+                created=0,
+                model="qwen3-omni",
+                req=ChatCompletionRequest(
+                    messages=[{"role": "user", "content": "hello"}]
+                ),
+                audio_format="wav",
+            )
+        )
+        await client.started.wait()
+        request.disconnected.set()
+        with pytest.raises(HTTPException, match="Client disconnected"):
+            await task
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(drive())
+
+
+def test_speech_to_text_completion_aborts_its_request_on_client_disconnect() -> None:
+    async def drive() -> None:
+        client = BlockingCompletionClient()
+        request = DisconnectingRequest()
+        task = asyncio.create_task(
+            complete_speech_to_text_request(
+                request,
+                client,
+                GenerateRequest(model="moss-td", prompt="hello"),
+                request_id="transcription-1",
+                error_log_message="Error transcribing audio for request %s",
+            )
+        )
+        await client.started.wait()
+        request.disconnected.set()
+        with pytest.raises(HTTPException, match="Client disconnected"):
+            await task
+        assert client.aborted == ["transcription-1"]
 
     asyncio.run(drive())
 

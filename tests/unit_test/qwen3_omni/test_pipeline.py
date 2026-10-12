@@ -7,6 +7,7 @@ import base64
 import inspect
 import threading
 from copy import deepcopy
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -14,6 +15,7 @@ import numpy as np
 import pytest
 import torch
 import typer
+from PIL import Image
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.layers.rotary_embedding.mrope_rope_index import (
     get_rope_index_qwen3_omni,
@@ -62,6 +64,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages,
     resolve_preprocessing_next_stages_speech,
 )
+from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.preprocessing.text import split_content_parts
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
@@ -2878,3 +2881,36 @@ def test_top_level_media_precede_plain_text() -> None:
             ],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "modalities", "talker_max_new_tokens"),
+    [
+        (Qwen3OmniPipelineConfig, ["text"], None),
+        (Qwen3OmniSpeechPipelineConfig, ["text", "audio"], 8),
+    ],
+)
+def test_server_warmup_request_carries_an_image_and_a_second_of_audio(
+    config_cls: type[Qwen3OmniPipelineConfig | Qwen3OmniSpeechPipelineConfig],
+    modalities: list[str],
+    talker_max_new_tokens: int | None,
+) -> None:
+    config = config_cls(model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct")
+    request = import_string(config_cls.server_warmup_request_factory)(config)
+
+    _, media = split_content_parts(
+        [message.model_dump() for message in request.messages]
+    )
+    audio, sample_rate = decode_audio_bytes(
+        base64.b64decode(media.audios[0].split(",", 1)[1])
+    )
+    image = Image.open(BytesIO(base64.b64decode(media.images[0].split(",", 1)[1])))
+    image.load()
+
+    assert request.modalities == modalities
+    assert (request.max_tokens, request.talker_max_new_tokens) == (
+        8,
+        talker_max_new_tokens,
+    )
+    assert (len(media.images), len(media.audios), len(media.videos)) == (1, 1, 0)
+    assert len(audio) == sample_rate
