@@ -92,7 +92,45 @@ def build_easymagpie_state(payload: StagePayload) -> EasyMagpieTTSState:
         top_k=top_k,
         max_new_frames=max_new_frames,
         seed=None if seed is None else int(seed),
+        text_token_ids=supplied_text_token_ids(params),
     )
+
+
+def supplied_text_token_ids(params: dict[str, Any]) -> list[int]:
+    """Pre-tokenized text from ``stage_params.preprocessing.text_token_ids``.
+
+    Lets a frontend that owns tokenization (inline phonemes, pronunciation
+    dictionaries, punctuation rules) pass its exact ids; ``input`` then only
+    labels the request. Empty when the caller supplied none.
+    """
+    stage_params = params.get("stage_params")
+    preprocessing = (
+        stage_params.get("preprocessing") if isinstance(stage_params, dict) else None
+    )
+    if not isinstance(preprocessing, dict) or "text_token_ids" not in preprocessing:
+        return []
+    else:
+        pass
+    ids = preprocessing["text_token_ids"]
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in ids)
+    ):
+        raise ValueError(
+            "EasyMagpie TTS text_token_ids must be a non-empty list of "
+            "non-negative integers"
+        )
+    else:
+        pass
+    if len(ids) > MAX_TEXT_TOKENS:
+        raise ValueError(
+            f"EasyMagpie TTS text has {len(ids)} tokens; "
+            f"at most {MAX_TEXT_TOKENS} are supported"
+        )
+    else:
+        pass
+    return list(ids)
 
 
 @dataclass
@@ -110,6 +148,8 @@ def prompt_cache_key(state: EasyMagpieTTSState) -> str:
     for part in (state.voice, state.context_text, state.text):
         digest.update(part.encode())
         digest.update(b"\0")
+    # The same text can map to different ids (pronunciation dictionaries).
+    digest.update(",".join(map(str, state.text_token_ids)).encode())
     return f"easymagpie:{digest.hexdigest()}"
 
 
@@ -266,4 +306,5 @@ __all__ = [
     "is_streaming_request",
     "max_decode_tokens",
     "prompt_cache_key",
+    "supplied_text_token_ids",
 ]

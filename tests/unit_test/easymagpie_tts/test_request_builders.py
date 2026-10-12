@@ -86,6 +86,28 @@ def test_state_rejects_invalid_generation_params(tts_params) -> None:
         build_easymagpie_state(make_payload("hi", tts_params=tts_params))
 
 
+def test_state_reads_supplied_text_ids_from_preprocessing_stage_params() -> None:
+    params = {"stage_params": {"preprocessing": {"text_token_ids": [4, 5]}}}
+    assert build_easymagpie_state(make_payload("hi", params=params)).text_token_ids == [
+        4,
+        5,
+    ]
+    other_stage = {"stage_params": {"tts_engine": {"text_token_ids": [4]}}}
+    assert (
+        build_easymagpie_state(make_payload("hi", params=other_stage)).text_token_ids
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "ids", [[], [1, -1], [1, True], [1, 2.0], "12", [1] * (MAX_TEXT_TOKENS + 1)]
+)
+def test_state_rejects_malformed_supplied_text_ids(ids) -> None:
+    params = {"stage_params": {"preprocessing": {"text_token_ids": ids}}}
+    with pytest.raises(ValueError, match="text_token_ids|at most"):
+        build_easymagpie_state(make_payload("hi", params=params))
+
+
 def preprocessed_state(**overrides) -> EasyMagpieTTSState:
     values = {
         "text": "hello",
@@ -126,6 +148,8 @@ def test_cache_key_separates_prompts_with_identical_placeholder_ids() -> None:
     assert prompt_cache_key(base) == prompt_cache_key(preprocessed_state())
     assert prompt_cache_key(base) != prompt_cache_key(preprocessed_state(text="bye"))
     assert prompt_cache_key(base) != prompt_cache_key(preprocessed_state(voice="x"))
+    respelled = preprocessed_state(text_token_ids=[11, 40, 41, 15, 63])
+    assert prompt_cache_key(base) != prompt_cache_key(respelled)
 
 
 def test_result_carries_codes_and_usage() -> None:

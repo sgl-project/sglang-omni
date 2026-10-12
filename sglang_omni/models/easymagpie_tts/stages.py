@@ -45,6 +45,7 @@ def create_preprocessing_executor(
         checkpoint, trust_remote_code=False, fix_mistral_regex=True
     )
     text_eos_id = int(config["text_eos_id"])
+    text_vocab_size = int(config["text_vocab_size"])
     phoneme_delay = int(config["streaming_phonemes_delay"])
     speech_delay = int(config["streaming_speech_delay"])
     if speech_delay <= phoneme_delay:
@@ -78,10 +79,22 @@ def create_preprocessing_executor(
             state.audio_emit_delay = max(speech_delay - 1, state.text_prefill_num)
         else:
             state.audio_emit_delay = speech_delay
-        state.text_token_ids = [
-            *tokenizer.encode(state.text, add_special_tokens=False),
-            text_eos_id,
-        ]
+        if state.text_token_ids:
+            supplied = state.text_token_ids
+            if supplied[-1] == text_eos_id:
+                supplied = supplied[:-1]
+            else:
+                pass
+            if not supplied or max(supplied) >= text_vocab_size:
+                raise ValueError(
+                    "EasyMagpie TTS text_token_ids must be non-empty and below "
+                    f"text_vocab_size={text_vocab_size}"
+                )
+            else:
+                pass
+        else:
+            supplied = tokenizer.encode(state.text, add_special_tokens=False)
+        state.text_token_ids = [*supplied, text_eos_id]
         state.context_token_ids = list(
             tokenizer.encode(state.context_text, add_special_tokens=False)
         )

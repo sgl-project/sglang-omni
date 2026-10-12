@@ -80,6 +80,37 @@ def test_preprocessing_tokenizes_text_context_and_attaches_the_voice(
     assert scheduler.max_concurrency == 64
 
 
+def supplied_ids_payload(ids) -> StagePayload:
+    return StagePayload(
+        request_id="req-0",
+        request=OmniRequest(
+            inputs="ab",
+            params={"stage_params": {"preprocessing": {"text_token_ids": ids}}},
+            metadata={},
+        ),
+        data={},
+    )
+
+
+@pytest.mark.parametrize("ids", [[5, 62, 9], [5, 62, 9, 63]])
+def test_preprocessing_keeps_supplied_text_ids_and_appends_one_eos(
+    checkpoint, ids
+) -> None:
+    scheduler = stages.create_preprocessing_executor(str(checkpoint))
+    state = EasyMagpieTTSState.from_dict(scheduler.fn(supplied_ids_payload(ids)).data)
+    assert state.text_token_ids == [5, 62, 9, 63]
+    assert state.context_token_ids == [ord(char) % 60 for char in "[EN]"]
+
+
+@pytest.mark.parametrize("ids", [[5, 64], [63]])
+def test_preprocessing_rejects_supplied_ids_outside_the_text_vocab(
+    checkpoint, ids
+) -> None:
+    scheduler = stages.create_preprocessing_executor(str(checkpoint))
+    with pytest.raises(ValueError, match="text_vocab_size=64"):
+        scheduler.fn(supplied_ids_payload(ids))
+
+
 def test_preprocessing_can_drop_the_lead_in_frame(checkpoint) -> None:
     scheduler = stages.create_preprocessing_executor(
         str(checkpoint), lead_in_frame=False
