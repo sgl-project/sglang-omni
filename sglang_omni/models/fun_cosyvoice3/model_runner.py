@@ -56,39 +56,6 @@ COSYVOICE3_RAS_WINDOW_SIZE = 10
 COSYVOICE3_RAS_SEED_SALT = 0x2545F491
 
 
-def repetition_aware_redraw(
-    probs: torch.Tensor,
-    sampled_ids: torch.Tensor,
-    rows: torch.Tensor,
-    sampling_seeds: torch.Tensor | None,
-    positions: torch.Tensor,
-) -> torch.Tensor:
-    """Redraw the given rows from their full distribution with the sampled token masked.
-
-    probs holds the probabilities after penalties and temperature but before
-    top-k/top-p, so masking the repeated token keeps a stop token reachable.
-    """
-    # note (ratish): float64, as SGLang's own seeded draw feeds its compiled
-    # multinomial_with_seed, so a seeded redraw reuses that graph, not a new one.
-    row_probs = probs[rows].to(torch.float64)
-    redraw_probs = row_probs.scatter(1, sampled_ids[rows].long().unsqueeze(1), 0.0)
-    # note (Yucheng Hu): multinomial rejects an all-zero row, and a row whose
-    # whole mass sat on the candidate has nothing else to draw.
-    redraw_probs = torch.where(
-        redraw_probs.sum(dim=1, keepdim=True) > 0, redraw_probs, row_probs
-    )
-    redraw_seeds = (
-        None
-        if sampling_seeds is None
-        else sampling_seeds[rows] ^ COSYVOICE3_RAS_SEED_SALT
-    )
-    token_ids = sampled_ids.clone()
-    token_ids[rows] = sampling_from_probs_torch(
-        redraw_probs, redraw_seeds, positions[rows]
-    ).to(token_ids.dtype)
-    return token_ids
-
-
 class FunCosyVoice3ModelRunner(ModelRunner):
     """Runs Fun-CosyVoice3 AR steps and collects generated speech tokens."""
 
@@ -448,13 +415,29 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             )
         else:
             probs = result.logits_output.next_token_logits
-        redrawn_ids = repetition_aware_redraw(
-            probs,
-            result.next_token_ids.reshape(-1),
-            torch.tensor(rows, device=probs.device),
-            forward_batch.sampling_info.sampling_seed,
-            forward_batch.positions,
+        sampled_ids = result.next_token_ids.reshape(-1)
+        row_index = torch.tensor(rows, device=probs.device)
+        sampling_seeds = forward_batch.sampling_info.sampling_seed
+        # note (ratish): float64, as SGLang's own seeded draw feeds its compiled
+        # multinomial_with_seed, so a seeded redraw reuses that graph, not a new one.
+        row_probs = probs[row_index].to(torch.float64)
+        redraw_probs = row_probs.scatter(
+            1, sampled_ids[row_index].long().unsqueeze(1), 0.0
         )
+        # note (Yucheng Hu): multinomial rejects an all-zero row, and a row whose
+        # whole mass sat on the candidate has nothing else to draw.
+        redraw_probs = torch.where(
+            redraw_probs.sum(dim=1, keepdim=True) > 0, redraw_probs, row_probs
+        )
+        redraw_seeds = (
+            None
+            if sampling_seeds is None
+            else sampling_seeds[row_index] ^ COSYVOICE3_RAS_SEED_SALT
+        )
+        redrawn_ids = sampled_ids.clone()
+        redrawn_ids[row_index] = sampling_from_probs_torch(
+            redraw_probs, redraw_seeds, forward_batch.positions[row_index]
+        ).to(redrawn_ids.dtype)
         result.next_token_ids = redrawn_ids.view_as(result.next_token_ids)
         self.stage_token_ids(result, redrawn_ids)
         return self.resolve_host_token_ids(result).tolist()
