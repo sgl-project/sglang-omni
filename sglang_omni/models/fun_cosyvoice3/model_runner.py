@@ -418,7 +418,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         sampled_ids = result.next_token_ids.reshape(-1)
         row_index = torch.tensor(rows, device=probs.device)
         sampling_seeds = forward_batch.sampling_info.sampling_seed
-        # note (ratish): float64, as SGLang's own seeded draw feeds its compiled
+        # note (ratish): float64, as the first seeded draw feeds the compiled
         # multinomial_with_seed, so a seeded redraw reuses that graph, not a new one.
         row_probs = probs[row_index].to(torch.float64)
         redraw_probs = row_probs.scatter(
