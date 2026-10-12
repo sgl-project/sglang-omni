@@ -66,6 +66,7 @@ from sglang_omni.scheduling.message import (
     ResultOwningScheduler,
     StageScheduler,
 )
+from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -132,6 +133,7 @@ class Stage:
         is_terminal: bool = False,
         replica_topology: dict[str, list[str]] | None = None,
         allow_child_processes: bool = False,
+        http_socket_path: str | None = None,
     ) -> None:
         self.name = name
         self.role = role
@@ -158,6 +160,9 @@ class Stage:
         self.tp_fanout = tp_fanout
         self.is_terminal = is_terminal
         self.owns_external_io = role in {"single", "leader"}
+        # Only the instance that owns external I/O serves the stage's routes.
+        self.http_socket_path = http_socket_path if self.owns_external_io else None
+        self.http_server: StageHttpServer | None = None
         self.replica_topology = ReplicaTopology.from_dict(replica_topology)
         self.replica_bindings: dict[str, dict[str, int]] = {}
 
@@ -300,8 +305,28 @@ class Stage:
             await asyncio.to_thread(serving_thread_ready.wait)
         else:
             pass
+        if self.http_socket_path is not None:
+            await self.start_http_routes(self.http_socket_path)
+        else:
+            pass
 
         logger.info("Stage %s started", self.name)
+
+    async def start_http_routes(self, socket_path: str) -> None:
+        """Serve the scheduler's HTTP app before the stage reports ready."""
+        app_factory = getattr(self.scheduler, "http_app", None)
+        if not callable(app_factory):
+            raise StageRoutesError(
+                f"Stage {self.name} declares http_routes, but its scheduler "
+                f"{type(self.scheduler).__name__} provides no http_app()"
+            )
+        else:
+            pass
+        app = await asyncio.to_thread(app_factory)
+        server = StageHttpServer(self.name, app, socket_path)
+        await asyncio.to_thread(server.start)
+        self.http_server = server
+        logger.info("Stage %s serves its HTTP routes", self.name)
 
     async def stop(self) -> None:
         self.running = False
@@ -321,6 +346,18 @@ class Stage:
             else:
                 pass
 
+        # The routes stop first, so no new request reaches a stopping scheduler.
+        http_server = self.http_server
+        self.http_server = None
+        if http_server is not None:
+            try:
+                await asyncio.to_thread(
+                    http_server.stop, _SCHEDULER_THREAD_JOIN_TIMEOUT_S
+                )
+            except Exception as exc:
+                _record_cleanup_error("HTTP routes", exc)
+        else:
+            pass
         receive_tasks = list(self.receive_tasks)
         for task in receive_tasks:
             task.cancel()

@@ -4,6 +4,7 @@
 from typing import ClassVar
 
 from sglang_omni.config import FactoryArgs, PipelineConfig, StageConfig
+from sglang_omni.native_generation import ROUTE_PREFIXES
 
 
 class Cosmos3PipelineConfig(PipelineConfig):
@@ -19,6 +20,8 @@ class Cosmos3PipelineConfig(PipelineConfig):
             factory=FactoryArgs(),
             gpu=0,
             terminal=True,
+            # The stage serves native SGLang's media routes from its own process.
+            http_routes=list(ROUTE_PREFIXES),
         )
     ]
 

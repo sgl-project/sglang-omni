@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import multiprocessing
 import multiprocessing.connection
@@ -11,12 +12,17 @@ import queue
 import shutil
 import tempfile
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from sglang_omni.native_generation import cancellation
+from sglang_omni.native_generation.media import (
+    NativeMediaApp,
+    native_media_server_kwargs,
+)
 from sglang_omni.preprocessing.resource_connector import (
     MediaPolicyError,
     get_global_resource_connector,
@@ -291,10 +297,13 @@ class NativeGenerationScheduler(SimpleScheduler):
         self.workers = list(generator.local_scheduler_process or [])
         self.worker_failure: RuntimeError | None = None
         self.closing = False
+        # Set when native generation still runs its first request cold once
+        # the stage serves, see start.
+        self.warm_in_background = False
         super().__init__(
             self.generate,
             abort_callback=self.cancel_native,
-            shutdown_callback=generator.shutdown,
+            shutdown_callback=self.shutdown_native,
         )
         self.requires_tp_work_fanout = False
         if self.workers:
@@ -310,6 +319,45 @@ class NativeGenerationScheduler(SimpleScheduler):
             f"Native generation worker {process.pid} exited "
             f"with code {process.exitcode}"
         )
+
+    def shutdown_native(self) -> None:
+        """Shut native generation down, waiting for its workers only while
+        they live.
+
+        Native shutdown asks the scheduler to stop and waits for its answer,
+        up to its own timeout. A worker that already exited, as on a signal
+        to the whole process group, never answers, so the stage stops waiting
+        once every worker exited, and the rest of the native shutdown, which
+        only joins those workers and closes the client, finishes on its own
+        thread.
+        """
+        reader, writer = multiprocessing.Pipe(duplex=False)
+        failure: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                self.generator.shutdown()
+            except BaseException as exc:
+                failure.append(exc)
+            finally:
+                writer.close()
+
+        threading.Thread(target=run, name="native-shutdown", daemon=True).start()
+        waiting = [reader, *(process.sentinel for process in self.workers)]
+        try:
+            while reader in waiting and len(waiting) > 1:
+                for ready in multiprocessing.connection.wait(waiting):
+                    waiting.remove(ready)
+            if reader in waiting and not self.workers:
+                multiprocessing.connection.wait([reader])
+            else:
+                pass
+        finally:
+            reader.close()
+        if failure:
+            raise failure[0]
+        else:
+            pass
 
     def watch_workers(self) -> None:
         """Fail the stage on a native worker exit while idle, without polling."""
@@ -330,8 +378,13 @@ class NativeGenerationScheduler(SimpleScheduler):
             pass
         return super().next_message()
 
-    def run_native(self, kwargs: dict[str, object]) -> object:
-        """Run native generation on a helper thread and wait for it or a worker exit.
+    def run_native(
+        self,
+        kwargs: dict[str, object],
+        target: Callable[..., object] | None = None,
+    ) -> object:
+        """Run native generation, or target, on a helper thread and wait for it
+        or a worker exit.
 
         Native generation blocks until its scheduler answers, which never
         happens once a worker died, so waiting on the worker sentinels fails the
@@ -342,7 +395,7 @@ class NativeGenerationScheduler(SimpleScheduler):
 
         def run() -> None:
             try:
-                outcome["result"] = self.generator.generate(**kwargs)
+                outcome["result"] = (target or self.generator.generate)(**kwargs)
             except BaseException as exc:
                 outcome["error"] = exc
             finally:
@@ -365,6 +418,107 @@ class NativeGenerationScheduler(SimpleScheduler):
             raise outcome["error"]
         else:
             return outcome.get("result")
+
+    def warm_up(self, directory: str | None = None) -> None:
+        """Run native's synthetic server warmup, before the stage reports ready.
+
+        These are the requests, shapes and residency probe that native's own
+        server sends before it reports ready, sent through the scheduler client
+        every request of this stage uses. Native fails open without explicit
+        warmup resolutions, the only case this runs in, so a failed warmup is
+        logged and startup continues, while a worker exit fails the start. The
+        warmup image goes to a directory inside ``directory`` (the temporary
+        directory by default) removed afterwards, because native writes it to
+        a new temporary directory it never removes when input_save_path is
+        None.
+        """
+        from sglang.multimodal_gen.runtime.scheduler_client import sync_scheduler_client
+        from sglang.multimodal_gen.runtime.server_warmup import run_sync_client_warmup
+
+        with tempfile.TemporaryDirectory(
+            prefix="sglang-omni-native-warmup-", dir=directory
+        ) as inputs:
+            server_args = copy.copy(self.generator.server_args)
+            server_args.input_save_path = inputs
+            kwargs = {
+                "server_args": server_args,
+                "forward": sync_scheduler_client.forward,
+            }
+            try:
+                self.run_native(kwargs, run_sync_client_warmup)
+            except Exception:
+                if self.worker_failure is not None:
+                    raise
+                else:
+                    logger.warning(
+                        "Synthetic server warmup failed, continuing startup",
+                        exc_info=True,
+                    )
+
+    def start(self) -> None:
+        """Serve requests, first starting the background warmup when due.
+
+        Without native's server warmup before readiness, the first native
+        request would pay one time costs, such as loading kernels, that no
+        later request pays. The stage instead sends one step of native's
+        synthetic warmup request while it already serves, so readiness never
+        waits for it. A request that arrives meanwhile queues behind that step
+        in the native scheduler and then runs warm.
+        """
+        if self.warm_in_background:
+            self.warm_in_background = False
+            threading.Thread(
+                target=self.warm_up_in_background, name="native-warmup", daemon=True
+            ).start()
+        else:
+            pass
+        super().start()
+
+    def warm_up_in_background(self) -> None:
+        from sglang.multimodal_gen.runtime.scheduler_client import sync_scheduler_client
+        from sglang.multimodal_gen.runtime.server_warmup import (
+            build_client_warmup_reqs,
+            prepare_warmup_image_path,
+            should_include_warmup_image,
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="sglang-omni-native-warmup-", dir=self.output_dir
+        ) as inputs:
+            server_args = copy.copy(self.generator.server_args)
+            server_args.input_save_path = inputs
+            try:
+                image = (
+                    prepare_warmup_image_path(server_args)
+                    if should_include_warmup_image(
+                        server_args, server_based_warmup=True
+                    )
+                    else None
+                )
+                for req in build_client_warmup_reqs(
+                    server_args, warmup_input_path=image, step_limit=1
+                ):
+                    if self.closing:
+                        return
+                    else:
+                        pass
+                    error = sync_scheduler_client.forward(req).error
+                    if error is not None:
+                        raise RuntimeError(error)
+                    else:
+                        pass
+            except Exception:
+                if not self.closing:
+                    logger.warning(
+                        "Background warmup failed, the first request runs cold",
+                        exc_info=True,
+                    )
+                else:
+                    pass
+
+    def http_app(self) -> NativeMediaApp:
+        """Native SGLang's media routes, served from this stage's process."""
+        return NativeMediaApp(self.generator.server_args, self.request_fields)
 
     def signal_native_cancellation(self, request: GenerationRequest) -> None:
         """Mark a running request cancelled. Call with abort_lock held, so the
@@ -636,6 +790,13 @@ def create_generation_scheduler(
     runtime_gpu_ids: list[int] | None = None,
     server_args_overrides: dict[str, object] | None = None,
 ) -> NativeGenerationScheduler:
+    """Start native generation for this stage.
+
+    The native settings the media routes rely on are settled here, in the
+    stage process, before the native runtime starts, and the scheduler serves
+    those routes from this process. When the native server arguments select
+    native's server warmup, the stage runs it before it reports ready, as
+    native's own server does, with its input under output_dir."""
     from sglang_omni.utils.device import resolve_concrete_device
 
     concrete_device = resolve_concrete_device(device, gpu_id)
@@ -653,12 +814,21 @@ def create_generation_scheduler(
     )
     from sglang.multimodal_gen.runtime.platforms.plugins import apply_plugin_hooks
     from sglang.multimodal_gen.runtime.server_args import ServerArgs
-
-    kwargs = native_server_kwargs(
-        model_path, gpu_id, server_args_overrides, runtime_gpu_ids
+    from sglang.multimodal_gen.runtime.server_warmup import (
+        is_realtime_serving,
+        should_run_explicit_client_warmup,
+        should_run_synthetic_server_warmup,
+        supports_synthetic_warmup,
     )
+
     output_dir = str(Path(output_dir).resolve())
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    kwargs = native_server_kwargs(
+        model_path,
+        gpu_id,
+        native_media_server_kwargs(server_args_overrides, output_dir=output_dir),
+        runtime_gpu_ids,
+    )
     # Native applies plugin hooks once per process, ahead of its server
     # arguments as DiffGenerator.from_pretrained does. Applying them here,
     # outside the activation below, keeps this host out of the hooks it arms
@@ -696,15 +866,33 @@ def create_generation_scheduler(
         )
     else:
         pass
+    scheduler = None
     try:
-        return NativeGenerationScheduler(
+        scheduler = NativeGenerationScheduler(
             generator,
             output_dir,
             COMMON_REQUEST_FIELDS | model_request_fields(generator.server_args),
             cancellation_mode=mode,
         )
+        # With explicit warmup resolutions DiffGenerator already warmed up.
+        if should_run_explicit_client_warmup(generator.server_args):
+            pass
+        elif should_run_synthetic_server_warmup(generator.server_args):
+            # A stage stopped during the warmup runs no finalizer, so its
+            # input sits with the request workspaces of this stage.
+            scheduler.warm_up(output_dir)
+        else:
+            scheduler.warm_in_background = supports_synthetic_warmup(
+                generator.server_args
+            ) and not is_realtime_serving(generator.server_args)
+        return scheduler
     except BaseException:
-        generator.shutdown()
+        if scheduler is None:
+            generator.shutdown()
+        else:
+            # Stopping marks it closing, so its worker watch takes the exit
+            # that follows as a stop.
+            scheduler.stop()
         raise
 
 

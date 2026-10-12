@@ -341,3 +341,75 @@ def test_media_paths_follow_the_server_media_policy(tmp_path, monkeypatch, insid
         assert "image_path refused" in str(failure.value)
         assert generator.calls == []
     assert list(output.iterdir()) == []
+
+
+def test_background_warmup_sends_one_step_while_the_stage_serves(tmp_path, monkeypatch):
+    from sglang.multimodal_gen.runtime import scheduler_client, server_warmup
+
+    sent = []
+    release = threading.Event()
+
+    def build(server_args, *, warmup_input_path=None, step_limit=None):
+        assert step_limit == 1 and server_args.input_save_path.startswith(str(tmp_path))
+        return ["warmup"]
+
+    def forward(req):
+        sent.append(req)
+        release.wait(5)
+        return SimpleNamespace(error=None)
+
+    monkeypatch.setattr(server_warmup, "build_client_warmup_reqs", build)
+    monkeypatch.setattr(
+        server_warmup, "should_include_warmup_image", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(scheduler_client.sync_scheduler_client, "forward", forward)
+    generator = Generator(None)
+    generator.server_args = SimpleNamespace(input_save_path=None)
+    scheduler = NativeGenerationScheduler(generator, str(tmp_path))
+    scheduler.warm_in_background = True
+    scheduler.inbox.put(IncomingMessage("request-1", "new_request", payload()))
+    thread = threading.Thread(target=scheduler.start)
+    thread.start()
+    try:
+        # The stage serves while the warmup step is still in flight.
+        assert scheduler.outbox.get(timeout=3).type == "error"
+        assert sent == ["warmup"] and len(generator.calls) == 1
+    finally:
+        release.set()
+        scheduler.stop()
+        thread.join(timeout=3)
+    deadline = time.monotonic() + 3
+    while list(tmp_path.iterdir()) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    # The warmup input goes once the step ends.
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_stop_stops_waiting_on_native_shutdown_once_workers_exited(tmp_path):
+    import multiprocessing
+
+    parent, child = multiprocessing.get_context("fork").Pipe()
+    worker = multiprocessing.get_context("fork").Process(target=child.recv)
+    worker.start()
+    release = threading.Event()
+
+    class StuckGenerator(Generator):
+        local_scheduler_process = [worker]
+
+        def shutdown(self):
+            super().shutdown()
+            # Native waits for the scheduler's answer, which a worker that
+            # already left never sends.
+            release.wait(30)
+
+    generator = StuckGenerator(None)
+    scheduler = NativeGenerationScheduler(generator, str(tmp_path))
+    threading.Timer(0.2, parent.send, args=("exit",)).start()
+    started = time.monotonic()
+    try:
+        scheduler.stop()
+        assert time.monotonic() - started < 10
+        assert generator.shutdown_count == 1
+    finally:
+        release.set()
+        worker.join(timeout=5)

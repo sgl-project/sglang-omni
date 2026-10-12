@@ -155,6 +155,7 @@ def test_generation_factory_selects_cooperative_cancellation(
     import logging
     import os
 
+    from sglang.multimodal_gen.runtime import scheduler_client, server_warmup
     from sglang.multimodal_gen.runtime.entrypoints.diffusion_generator import (
         DiffGenerator,
     )
@@ -197,13 +198,33 @@ def test_generation_factory_selects_cooperative_cancellation(
         return SimpleNamespace(
             shutdown=lambda: None,
             local_scheduler_process=[],
-            server_args=None,
+            server_args=SimpleNamespace(resolved=case),
             supports_cancellation=case == "native",
         )
 
     monkeypatch.setattr(ServerArgs, "from_kwargs", lambda **kwargs: kwargs)
     monkeypatch.setattr(DiffGenerator, "from_server_args", start_workers)
     monkeypatch.setattr(stages, "model_request_fields", lambda server_args: frozenset())
+    monkeypatch.setattr(
+        server_warmup,
+        "should_run_synthetic_server_warmup",
+        lambda server_args: server_args.resolved == "native",
+    )
+    monkeypatch.setattr(
+        server_warmup, "should_run_explicit_client_warmup", lambda server_args: False
+    )
+    monkeypatch.setattr(server_warmup, "supports_synthetic_warmup", lambda args: True)
+    monkeypatch.setattr(server_warmup, "is_realtime_serving", lambda args: False)
+    warmups = []
+
+    def warm_up(server_args, forward):
+        # Native writes its warmup image under input_save_path, then fails.
+        with open(os.path.join(server_args.input_save_path, "warmup_image"), "x"):
+            pass
+        warmups.append((server_args, forward))
+        raise RuntimeError("warmup request failed")
+
+    monkeypatch.setattr(server_warmup, "run_sync_client_warmup", warm_up)
     with caplog.at_level(logging.WARNING, logger="sglang_omni.models.cosmos3.stages"):
         scheduler = stages.create_generation_scheduler(
             "checkpoint",
@@ -222,3 +243,19 @@ def test_generation_factory_selects_cooperative_cancellation(
     assert applied[0] is None
     assert activations[0] is None or not os.path.exists(activations[0])
     assert cancellation.ACTIVATION_ENV not in os.environ
+    # Arguments that select native's server warmup run it in the stage before
+    # it is ready, through the client every request uses, failing open as
+    # native does without explicit warmup resolutions, and its input goes. It
+    # lives under the stage's output directory, with its request workspaces.
+    if case == "native":
+        [(warmup_args, forward)] = warmups
+        assert forward == scheduler_client.sync_scheduler_client.forward
+        assert warmup_args.resolved == case
+        assert os.path.dirname(warmup_args.input_save_path) == str(tmp_path)
+        assert not os.path.exists(warmup_args.input_save_path)
+        assert "Synthetic server warmup failed" in caplog.text
+    else:
+        assert warmups == []
+    # Without the server warmup, the stage warms in the background once it
+    # serves.
+    assert scheduler.warm_in_background is (case != "native")
