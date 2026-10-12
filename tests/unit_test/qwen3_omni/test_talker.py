@@ -2765,13 +2765,6 @@ def test_talker_sampling_buffers_hold_values_bf16_rounds(monkeypatch) -> None:
             self.feedback_mask = None
             self.layers = [SimpleNamespace(self_attn=SimpleNamespace(rotary_emb=None))]
 
-    class Head(nn.Module):
-        def __init__(self, *args, **kwargs) -> None:
-            super().__init__()
-
-        def forward(self, states: torch.Tensor) -> tuple[torch.Tensor, None]:
-            return states @ torch.ones(4, vocab, dtype=states.dtype), None
-
     class Predictor(nn.Module):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__()
@@ -2786,7 +2779,7 @@ def test_talker_sampling_buffers_hold_values_bf16_rounds(monkeypatch) -> None:
     monkeypatch.setattr(talker_module, "Qwen3OmniMoeTalkerConfig", SimpleNamespace)
     monkeypatch.setattr(talker_module, "Qwen3OmniMoeTalkerTextModel", Backbone)
     monkeypatch.setattr(talker_module, "ResizeMLP", Stub)
-    monkeypatch.setattr(talker_module, "ReplicatedLinear", Head)
+    monkeypatch.setattr(talker_module, "ReplicatedLinear", Stub)
     monkeypatch.setattr(talker_module, "Qwen3OmniMoeTalkerCodePredictor", Predictor)
     monkeypatch.setattr(
         talker_module, "get_context", lambda: SimpleNamespace(server_args=None)
