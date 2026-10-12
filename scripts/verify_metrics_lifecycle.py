@@ -13,6 +13,55 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from prometheus_client.parser import text_string_to_metric_families
+from prometheus_client.samples import Sample
+
+
+def check_histogram_delta(
+    before: list[Sample], after: list[Sample], name: str, expected_count: int
+) -> dict[str, float]:
+    deltas = {}
+    for suffix in ("_count", "_sum", "_bucket"):
+        current = [sample for sample in after if sample.name == name + suffix]
+        assert current, f"Missing {name + suffix}"
+        for sample in current:
+            assert math.isfinite(sample.value) and sample.value >= 0, name
+            baseline = sum(
+                previous.value
+                for previous in before
+                if previous.name == sample.name and previous.labels == sample.labels
+            )
+            delta = sample.value - baseline
+            assert delta >= 0, f"Counter reset for {name}"
+            if delta > 0 and name in (
+                "sglang:queue_time_seconds",
+                "sglang_omni:scheduler_batch_size",
+                "sglang_omni:stage_compute_duration_seconds",
+                "sglang_omni:stage_request_duration_seconds",
+            ):
+                assert (
+                    sample.labels.get("stage") == "generate"
+                ), f"Unexpected stage for {name}: {sample.labels}"
+            else:
+                pass
+            if suffix == "_bucket":
+                bound = sample.labels["le"]
+                deltas[bound] = deltas.get(bound, 0) + delta
+            else:
+                deltas[suffix] = deltas.get(suffix, 0) + delta
+    assert deltas["_count"] == expected_count, f"{name}: {deltas}"
+    assert deltas["+Inf"] == expected_count, f"{name}: +Inf/count mismatch"
+    buckets = [
+        value
+        for bound, value in sorted(
+            (
+                (float(bound), value)
+                for bound, value in deltas.items()
+                if bound not in ("_count", "_sum")
+            ),
+        )
+    ]
+    assert buckets == sorted(buckets), f"{name}: non-monotonic bucket deltas"
+    return {"count_delta": deltas["_count"], "sum_delta": deltas["_sum"]}
 
 
 def main() -> int:
@@ -28,6 +77,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=900)
     parser.add_argument("--poll-seconds", type=float, default=0.5)
     parser.add_argument("--require-queue", action="store_true")
+    parser.add_argument("--all-sensenova-metrics", action="store_true")
     args = parser.parse_args()
     if args.concurrency < 2 or args.timeout <= 0 or args.poll_seconds <= 0:
         parser.error(
@@ -50,6 +100,7 @@ def main() -> int:
         ],
     }
     snapshots = []
+    sample_snapshots: list[list[Sample]] = []
 
     def scrape() -> dict[str, float]:
         with urllib.request.urlopen(
@@ -58,12 +109,17 @@ def main() -> int:
             raw = response.read().decode()
         (out / f"snapshot-{len(snapshots):04d}.prom").write_text(raw, encoding="utf-8")
         values = {}
+        selected = []
         for family in text_string_to_metric_families(raw):
             for sample in family.samples:
-                if sample.labels.get("model_name") == label:
+                if sample.labels.get("model_name") == label or sample.name.startswith(
+                    "sglang_omni:http_"
+                ):
+                    selected.append(sample)
                     values[sample.name] = values.get(sample.name, 0) + sample.value
                 else:
                     pass
+        sample_snapshots.append(selected)
         for name in ("sglang:num_running_reqs", "sglang:num_queue_reqs"):
             assert (
                 name in values and math.isfinite(values[name]) and values[name] >= 0
@@ -131,7 +187,7 @@ def main() -> int:
             "sglang:num_requests_total",
             "sglang:e2e_request_latency_seconds_count",
             "sglang_omni:generated_images_total",
-            "sglang:num_failed_requests_total",
+            "sglang_omni:failed_requests_total",
             "sglang:num_aborted_requests_total",
         )
         assert all(
@@ -185,6 +241,96 @@ def main() -> int:
             assert delta == expected, f"{name}: expected {expected}, got {delta}"
         for name in counters[3:]:
             assert after.get(name, 0) == before.get(name, 0), f"Unexpected {name}"
+        if args.all_sensenova_metrics:
+            histogram_checks = {}
+            for name in (
+                "sglang:prompt_tokens_total",
+                "sglang:generation_tokens_total",
+                "sglang:time_to_first_token_seconds_count",
+                "sglang:inter_token_latency_seconds_count",
+                "sglang:prompt_tokens_histogram_count",
+                "sglang:uncached_prompt_tokens_histogram_count",
+                "sglang:generation_tokens_histogram_count",
+                "sglang:cached_tokens_total",
+                "sglang_omni:audio_output_seconds_total",
+            ):
+                assert after.get(name, 0) == before.get(
+                    name, 0
+                ), f"Images request incorrectly updated {name}"
+            for name in (
+                "sglang:e2e_request_latency_seconds",
+                "sglang:queue_time_seconds",
+                "sglang_omni:scheduler_batch_size",
+                "sglang_omni:stage_compute_duration_seconds",
+                "sglang_omni:stage_request_duration_seconds",
+            ):
+                histogram_checks[name] = check_histogram_delta(
+                    sample_snapshots[0], sample_snapshots[-1], name, expected
+                )
+            assert (
+                histogram_checks["sglang:queue_time_seconds"]["sum_delta"] > 0
+            ), "No positive queue duration; increase concurrency/steps"
+            assert (
+                histogram_checks["sglang_omni:scheduler_batch_size"]["sum_delta"]
+                == expected
+            ), "This n=1 test requires scheduler max_batch_size=1"
+            for name in (
+                "sglang:e2e_request_latency_seconds",
+                "sglang_omni:stage_compute_duration_seconds",
+                "sglang_omni:stage_request_duration_seconds",
+            ):
+                assert histogram_checks[name]["sum_delta"] > 0, name
+            histogram_checks["sglang_omni:http_request_duration_seconds"] = (
+                check_histogram_delta(
+                    sample_snapshots[0],
+                    sample_snapshots[-1],
+                    "sglang_omni:http_request_duration_seconds",
+                    expected + 1,
+                )
+            )
+
+            def http_count(samples: list[Sample], route: str, status: str) -> float:
+                return sum(
+                    sample.value
+                    for sample in samples
+                    if sample.name == "sglang_omni:http_requests_total"
+                    and sample.labels.get("method") == "POST"
+                    and sample.labels.get("route") == route
+                    and sample.labels.get("status_code") == status
+                    and sample.labels.get("outcome") == "completed"
+                )
+
+            for route, status, count in (
+                ("/v1/images/generations", "200", args.concurrency),
+                ("/v1/images/edits", "200", args.concurrency if args.image else 0),
+                ("/v1/images/generations", str(summary["rejected_http_status"]), 1),
+            ):
+                delta = http_count(sample_snapshots[-1], route, status) - http_count(
+                    sample_snapshots[0], route, status
+                )
+                assert (
+                    delta == count
+                ), f"HTTP {route}/{status}: expected {count}, got {delta}"
+            assert (
+                before.get("sglang_omni:http_requests_inflight") == 0
+            ), "HTTP inflight missing or service not idle"
+            assert (
+                after.get("sglang_omni:http_requests_inflight") == 0
+            ), "HTTP inflight not idle"
+            assert (
+                max(
+                    snapshot.get("sglang_omni:http_requests_inflight", 0)
+                    for snapshot in snapshots
+                )
+                > 0
+            ), "No HTTP inflight transition captured"
+            summary["histogram_checks"] = histogram_checks
+            summary["sensenova_applicable_metrics_passed"] = 12
+            summary["scope"] = (
+                "SenseNova single-stage, max_batch_size=1 success/queue/HTTP rejection"
+            )
+        else:
+            pass
         summary["passed"] = True
     except Exception as error:
         summary["error"] = str(error)
