@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 import base64
 import io
+from collections.abc import AsyncIterator
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateChunk, GenerateRequest
 from sglang_omni.serve.openai_api import create_app
 
 
@@ -14,18 +16,20 @@ from sglang_omni.serve.openai_api import create_app
 @pytest.mark.parametrize("outputs", [1, 3])
 @pytest.mark.parametrize("fail_after_image", [False, True])
 def test_images_usage_and_complete_result_consumption(
-    editing, outputs, fail_after_image
-):
+    editing: bool, outputs: int, fail_after_image: bool
+) -> None:
     buffer = io.BytesIO()
     Image.new("RGB", (64, 32)).save(buffer, format="PNG")
     encoded_image = base64.b64encode(buffer.getvalue()).decode("ascii")
 
     class ImageClient(Client):
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__(None)
-            self.completed = 0
+            self.completed: int = 0
 
-        async def generate(self, request, request_id):
+        async def generate(
+            self, request: GenerateRequest, request_id: str
+        ) -> AsyncIterator[GenerateChunk]:
             yield self._default_result_builder(
                 request_id,
                 {

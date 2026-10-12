@@ -2530,7 +2530,7 @@ class NEOChatModel(PreTrainedModel):
         think_mode=False,
         seed=0,
         max_think_tokens=1024,
-        usage=None,
+        usage: dict[str, int] | None = None,
     ):
         if getattr(self, "_sensenova_compact_mode", False):
             raise RuntimeError(
