@@ -93,6 +93,25 @@ class ThreadedSimpleScheduler:
         self._aborted_futures: set[Future] = set()
         self._running = False
         self._abort_callback = abort_callback
+        self.metrics_queued: dict[str, float] = {}
+        self.metrics_active: set[str] = set()
+        self.metrics_aborted: set[str] = set()
+
+    def metrics_snapshot(self) -> dict[str, int]:
+        with self._lock:
+            with self.inbox.mutex:
+                queued = set(self.inbox._request_counts) | set(
+                    self.inbox._claimed_counts
+                )
+            queued.difference_update(self._queued_aborts)
+            running = sum(future.running() for future in self._pending.values())
+            running += sum(future.running() for future in self._aborted_futures)
+            for request_id, future in self._pending.items():
+                if future.running() or future.done():
+                    queued.discard(request_id)
+                else:
+                    queued.add(request_id)
+            return {"num_running_reqs": running, "num_queue_reqs": len(queued)}
 
     def start(self) -> None:
         self._running = True
@@ -111,8 +130,14 @@ class ThreadedSimpleScheduler:
                 with self._lock:
                     try:
                         if self._consume_reachable_tombstone(request_id):
+                            self.metrics_queued.pop(request_id, None)
                             continue
-                        future = self._executor.submit(self._run_one, msg.data)
+                        if request_id in self.metrics_queued:
+                            future = self._executor.submit(
+                                self._run_one_tracked, request_id, msg.data
+                            )
+                        else:
+                            future = self._executor.submit(self._run_one, msg.data)
                         self._pending[request_id] = future
                     finally:
                         self.inbox.release_claim(request_id)
@@ -124,6 +149,8 @@ class ThreadedSimpleScheduler:
 
     def stop(self) -> None:
         self._running = False
+        with self._lock:
+            self.metrics_queued.clear()
 
     def enqueue(self, msg: IncomingMessage) -> None:
         """Promote speculative aborts atomically with enqueue (scheduler lock first)."""
@@ -134,12 +161,20 @@ class ThreadedSimpleScheduler:
             if msg.request_id in self._speculative_aborts:
                 self._speculative_aborts.pop(msg.request_id, None)
                 self._queued_aborts.add(msg.request_id)
+            request = getattr(msg.data, "request", None)
+            if request is not None and request.metadata.get("omni_metrics_enabled"):
+                self.metrics_queued[msg.request_id] = time.perf_counter()
             self.inbox.put(msg)
 
     def abort(self, request_id: str) -> None:
         """Cancel running work or suppress it before dispatch."""
         with self._lock:
             future = self._pending.pop(request_id, None)
+            if future is not None and (
+                request_id in self.metrics_active or request_id in self.metrics_queued
+            ):
+                self.metrics_aborted.add(request_id)
+            self.metrics_queued.pop(request_id, None)
             if future is not None:
                 self._aborted_futures.add(future)
             elif self.inbox.is_reachable(request_id):
@@ -196,8 +231,54 @@ class ThreadedSimpleScheduler:
             result = asyncio.run(result)
         return result
 
+    def _run_one_tracked(self, request_id: str, payload: Any) -> Any:
+        started = time.perf_counter()
+        with self._lock:
+            queued = self.metrics_queued.pop(request_id, None)
+            self.metrics_active.add(request_id)
+        if queued is not None:
+            self.outbox.put(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="metrics",
+                    data={"event": "queue", "duration": started - queued},
+                )
+            )
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="metrics",
+                data={"event": "batch", "size": 1},
+            )
+        )
+        outcome = "completed"
+        try:
+            return self._run_one(payload)
+        except BaseException:
+            outcome = "error"
+            raise
+        finally:
+            with self._lock:
+                self.metrics_active.discard(request_id)
+                if request_id in self.metrics_aborted:
+                    self.metrics_aborted.discard(request_id)
+                    outcome = "aborted"
+            self.outbox.put(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="metrics",
+                    data={
+                        "event": "execution",
+                        "duration": time.perf_counter() - started,
+                        "outcome": outcome,
+                    },
+                )
+            )
+
     def _finish(self, request_id: str, future: Future) -> None:
         with self._lock:
+            self.metrics_queued.pop(request_id, None)
+            self.metrics_aborted.discard(request_id)
             if self._pending.get(request_id) is future:
                 self._pending.pop(request_id, None)
             aborted = future in self._aborted_futures

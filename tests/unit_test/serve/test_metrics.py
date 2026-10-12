@@ -41,6 +41,32 @@ def test_http_stream_records_only_after_final_body():
     )
 
 
+def test_scheduler_events_export_queue_batch_and_outcome():
+    metrics = RequestMetrics("test")
+    metrics.observe_scheduler_event("generate", {"event": "queue", "duration": 2})
+    metrics.observe_scheduler_event("generate", {"event": "batch", "size": 3})
+    metrics.observe_scheduler_event(
+        "generate", {"event": "execution", "duration": 5, "outcome": "error"}
+    )
+    labels = {"model_name": "test", "stage": "generate"}
+    assert (
+        metrics.registry.get_sample_value("sglang:queue_time_seconds_sum", labels) == 2
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang_omni:scheduler_batch_size_sum", labels
+        )
+        == 3
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang_omni:stage_compute_duration_seconds_sum",
+            {**labels, "outcome": "error"},
+        )
+        == 5
+    )
+
+
 @pytest.mark.parametrize(
     "error,outcome", [(ValueError, "error"), (asyncio.CancelledError, "cancelled")]
 )
@@ -87,6 +113,92 @@ def chunk(count=None, *, stage="decode", modality="text", finish=None):
     )
 
 
+@pytest.mark.parametrize("cached", [None, 0, 4])
+def test_finished_token_histograms_and_cache(cached):
+    metrics = RequestMetrics("test")
+
+    async def source():
+        for count in (1, 4):
+            item = chunk(count)
+            item.usage.prompt_tokens_details = (
+                {"cached_tokens": cached} if cached is not None else None
+            )
+            yield item
+
+    async def run():
+        return [item async for item in metrics.generate(source(), False)]
+
+    asyncio.run(run())
+    labels = {"model_name": "test"}
+    for name, value in (("prompt_tokens", 10), ("generation_tokens", 4)):
+        assert (
+            metrics.registry.get_sample_value(f"sglang:{name}_histogram_count", labels)
+            == 1
+        )
+        assert (
+            metrics.registry.get_sample_value(f"sglang:{name}_histogram_sum", labels)
+            == value
+        )
+    assert metrics.registry.get_sample_value(
+        "sglang:uncached_prompt_tokens_histogram_sum", labels
+    ) == (None if cached is None else 10 - cached)
+    assert metrics.registry.get_sample_value(
+        "sglang:cached_tokens_total", {**labels, "cache_source": "total"}
+    ) == (cached if cached else None)
+
+
+def test_invalid_cache_count_is_not_published():
+    metrics = RequestMetrics("test")
+    metrics.observe_finished(
+        stream=False,
+        latency=1,
+        prompt_tokens=10,
+        generation_tokens=4,
+        cached_tokens=11,
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang:uncached_prompt_tokens_histogram_count", {"model_name": "test"}
+        )
+        is None
+    )
+
+
+def test_images_do_not_publish_token_histograms():
+    metrics = RequestMetrics("test")
+    metrics.observe_finished(
+        stream=False, latency=1, prompt_tokens=None, generation_tokens=None
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang:prompt_tokens_histogram_count", {"model_name": "test"}
+        )
+        is None
+    )
+
+
+def test_cache_from_another_stage_is_not_combined_with_native_tokens():
+    metrics = RequestMetrics("test")
+
+    async def source():
+        metrics.observe_tokens("r", "decode", 10, 4)
+        item = chunk(4, stage="other")
+        item.usage.prompt_tokens_details = {"cached_tokens": 4}
+        yield item
+
+    async def run():
+        return [item async for item in metrics.generate(source(), False, "r")]
+
+    asyncio.run(run())
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang:cached_tokens_total",
+            {"model_name": "test", "cache_source": "total"},
+        )
+        is None
+    )
+
+
 def test_generate_keeps_latest_usage_without_summing(monkeypatch):
     metrics = RequestMetrics("test")
     times = iter([0, 1, 1.06, 1.07, 1.08, 1.09])
@@ -115,6 +227,13 @@ def test_generate_keeps_latest_usage_without_summing(monkeypatch):
         )
         is None
     )
+
+
+def test_deferred_request_features_are_not_registered():
+    metrics = RequestMetrics("test")
+    families = {family.name for family in metrics.registry.collect()}
+    assert "sglang:spec_verify_calls" not in families
+    assert "sglang:num_so_requests" not in families
 
 
 @pytest.mark.parametrize("stream", [True, False])
@@ -175,6 +294,12 @@ def test_failure_does_not_publish_success_usage(error):
     labels = {"model_name": "test", "is_streaming": "true"}
     assert (
         metrics.registry.get_sample_value("sglang:generation_tokens_total", labels)
+        is None
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang:generation_tokens_histogram_count", {"model_name": "test"}
+        )
         is None
     )
     name = (
@@ -258,6 +383,122 @@ def test_interval_is_weighted_by_new_tokens():
     )
 
 
+def test_engine_gauges_are_leader_snapshots_and_removed_when_missing():
+    metrics = RequestMetrics("test")
+
+    class Client:
+        async def admin(self, *args, **kwargs):
+            return {
+                "results": [
+                    {
+                        "stage": "decode",
+                        "success": True,
+                        "data": {
+                            "num_running_reqs": 1,
+                            "num_queue_reqs": 2,
+                            "engine_gauges": {"token_usage": 0.5},
+                            "rank_results": [{"engine_gauges": {"token_usage": 0.9}}],
+                        },
+                    }
+                ]
+            }
+
+    asyncio.run(metrics.refresh_scheduler(Client()))
+    labels = {"model_name": "test", "stage": "decode"}
+    assert metrics.registry.get_sample_value("sglang:token_usage", labels) == 0.5
+
+    class EmptyClient:
+        async def admin(self, *args, **kwargs):
+            return {"results": []}
+
+    asyncio.run(metrics.refresh_scheduler(EmptyClient()))
+    assert metrics.registry.get_sample_value("sglang:token_usage", labels) is None
+
+
+@pytest.mark.parametrize("aborted", [False, True])
+def test_modality_counts_use_waveform_and_final_image_list(aborted):
+    metrics = RequestMetrics("test")
+
+    async def source():
+        audio = chunk(stage="vocoder", modality="audio")
+        audio.audio_data = [0.0] * 20
+        audio.sample_rate = 10
+        yield audio
+        image = chunk(stage="generate", modality="image")
+        image.images_b64 = ["image1", "image2"]
+        yield image
+        yield chunk(finish="abort" if aborted else "stop")
+
+    async def run():
+        return [item async for item in metrics.generate(source(), False)]
+
+    asyncio.run(run())
+    assert metrics.registry.get_sample_value(
+        "sglang_omni:audio_output_seconds_total",
+        {"model_name": "test", "stage": "vocoder"},
+    ) == (None if aborted else 2)
+    assert metrics.registry.get_sample_value(
+        "sglang_omni:generated_images_total",
+        {"model_name": "test", "stage": "generate"},
+    ) == (None if aborted else 2)
+
+
+def test_backend_export_preserves_types_and_excludes_duplicate_owned_names():
+    metrics = RequestMetrics("test")
+    metrics.backend.snapshots = [
+        (
+            "decode",
+            [
+                {
+                    "name": "sglang:num_retracted_reqs",
+                    "documentation": "Verify",
+                    "type": "counter",
+                    "samples": [
+                        {
+                            "name": "sglang:num_retracted_reqs_total",
+                            "labels": {"mode": "decode"},
+                            "value": 3,
+                        }
+                    ],
+                },
+                {
+                    "name": "sglang:prompt_tokens",
+                    "documentation": "Duplicate",
+                    "type": "counter",
+                    "samples": [
+                        {
+                            "name": "sglang:prompt_tokens_total",
+                            "labels": {},
+                            "value": 999,
+                        }
+                    ],
+                },
+            ],
+        )
+    ]
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang:num_retracted_reqs_total",
+            {
+                "model_name": "test",
+                "omni_stage": "decode",
+                "mode": "decode",
+            },
+        )
+        == 3
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "sglang:prompt_tokens_total",
+            {
+                "model_name": "test",
+                "stage": "decode",
+            },
+        )
+        is None
+    )
+
+
 def test_nonpositive_token_delta_is_ignored():
     metrics = RequestMetrics("test")
     metrics.observe_interval(1, 0)
@@ -292,9 +533,11 @@ def test_multiprocess_environment_is_rejected(monkeypatch):
 
 def test_failed_stage_does_not_serve_stale_gauges():
     metrics = RequestMetrics("test")
+
     class FailedClient:
         async def admin(self, action, timeout_s):
             return {"success": False, "results": []}
+
     with pytest.raises(RuntimeError):
         asyncio.run(metrics.refresh_scheduler(FailedClient()))
 

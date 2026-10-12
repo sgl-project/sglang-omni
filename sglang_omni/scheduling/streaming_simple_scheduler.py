@@ -76,6 +76,22 @@ class StreamingSimpleScheduler:
         self.completed_non_streaming_request_ids: set[str] = set()
         self.state_lock = threading.RLock()
         self.abort_lock = threading.Lock()
+        self.metrics_lock = threading.Lock()
+        self.metrics_waiting: set[str] = set()
+        self.metrics_running: set[str] = set()
+
+    def enqueue(self, message: IncomingMessage) -> None:
+        if message.type == "new_request":
+            with self.metrics_lock:
+                self.metrics_waiting.add(message.request_id)
+        self.inbox.put(message)
+
+    def metrics_snapshot(self) -> dict[str, int]:
+        with self.metrics_lock:
+            return {
+                "num_running_reqs": len(self.metrics_running),
+                "num_queue_reqs": len(self.metrics_waiting),
+            }
 
     def is_streaming_payload(self, payload: Any) -> bool:
         return False
@@ -166,6 +182,8 @@ class StreamingSimpleScheduler:
 
     def stop(self) -> None:
         self.running = False
+        with self.metrics_lock:
+            self.metrics_waiting.clear()
 
     def abort(self, request_id: str) -> None:
         self.abort_state(request_id)
@@ -220,6 +238,8 @@ class StreamingSimpleScheduler:
     def clear_request_state(
         self, request_id: str, *, keep_aborted: bool = False
     ) -> None:
+        with self.metrics_lock:
+            self.metrics_waiting.discard(request_id)
         with self.state_lock:
             self.stream_payloads.pop(request_id, None)
             self.pending_done.discard(request_id)
@@ -364,6 +384,21 @@ class StreamingSimpleScheduler:
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
+        request_ids = {message.request_id for message in batch}
+        with self.metrics_lock:
+            self.metrics_waiting.difference_update(request_ids)
+            self.metrics_running.update(request_ids)
+        try:
+            self.handle_new_request_batch_untracked(batch, loop)
+        finally:
+            with self.metrics_lock:
+                self.metrics_running.difference_update(request_ids)
+
+    def handle_new_request_batch_untracked(
+        self,
+        batch: list[IncomingMessage],
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
         owns_loop = loop is None
         if loop is None:
             loop = asyncio.new_event_loop()
@@ -495,6 +530,15 @@ class StreamingSimpleScheduler:
                 self.handle_stream_done(request_id)
 
     def handle_stream_chunk(self, request_id: str, item: Any) -> None:
+        with self.metrics_lock:
+            self.metrics_running.add(request_id)
+        try:
+            self.handle_stream_chunk_untracked(request_id, item)
+        finally:
+            with self.metrics_lock:
+                self.metrics_running.discard(request_id)
+
+    def handle_stream_chunk_untracked(self, request_id: str, item: Any) -> None:
         item = self.validate_stream_chunk_item(request_id, item)
         with self.state_lock:
             for out in self.on_stream_chunk(request_id, item):
@@ -502,6 +546,16 @@ class StreamingSimpleScheduler:
                     self.outbox.put(out)
 
     def handle_stream_chunk_batch(self, batch: list[IncomingMessage]) -> None:
+        request_ids = {message.request_id for message in batch}
+        with self.metrics_lock:
+            self.metrics_running.update(request_ids)
+        try:
+            self.handle_stream_chunk_batch_untracked(batch)
+        finally:
+            with self.metrics_lock:
+                self.metrics_running.difference_update(request_ids)
+
+    def handle_stream_chunk_batch_untracked(self, batch: list[IncomingMessage]) -> None:
         items: list[tuple[str, StreamItem]] = []
         for msg in batch:
             if self.is_aborted(msg.request_id):
