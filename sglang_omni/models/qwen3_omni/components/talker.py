@@ -1377,8 +1377,8 @@ class Qwen3OmniTalker(nn.Module):
     ) -> LogitsProcessorOutput:
         """Compute codec logits directly for decode/CUDA-graph capture."""
         next_token_logits, _ = self.codec_head(hidden_states)
-        # note (ratish): sglang's sampler divides and softmaxes in the logits' own dtype;
-        # the reference samples from fp32 logits, as sglang's logits processor returns them.
+        # note (ratish): sglang's sampler divides and softmaxes in the logits' own dtype.
+        # The reference samples from fp32 logits, as sglang's logits processor returns them.
         return LogitsProcessorOutput(
             next_token_logits=next_token_logits.float(),
             hidden_states=hidden_states,
