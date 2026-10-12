@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from sglang_omni.sampling.repetition_aware import repetition_aware_redraw
+from sglang_omni.models.fun_cosyvoice3.model_runner import repetition_aware_redraw
 
 ROWS = 4096
 
