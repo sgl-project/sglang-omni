@@ -901,6 +901,8 @@ class CudaIpcRelay(Relay):
                 )
             except Exception:
                 logger.exception("Failed to trace stranded CUDA-IPC pool state")
+        else:
+            pass
 
     def raise_if_failed(self) -> None:
         if self.failed_error is not None:

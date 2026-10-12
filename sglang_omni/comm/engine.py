@@ -1269,6 +1269,8 @@ class CommEngine:
     ) -> None:
         if watch_start is None or not _comm_trace_enabled():
             return
+        else:
+            pass
         _comm_trace(
             "comm_transfer_failed",
             object_id=object_id,
