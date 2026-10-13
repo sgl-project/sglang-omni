@@ -18,8 +18,11 @@ from pathlib import Path
 
 import pytest
 import websockets
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
+from websockets.asyncio.server import ServerConnection
 
+from benchmarks.dataset.seedtts import SampleInput
+from benchmarks.eval.benchmark_asr_realtime import run_asr_realtime_once
 from benchmarks.realtime_asr.client import (
     SAMPLE_RATE,
     ReceivedEvent,
@@ -197,6 +200,50 @@ def test_manual_session_records_packets_and_events(fake_server):
         metrics["done_to_completed_s"] is not None
         and metrics["done_to_completed_s"] >= 0
     )
+
+
+def test_native_benchmark_waits_for_drain_before_close() -> None:
+    close_commands: list[str] = []
+
+    async def handler(websocket: ServerConnection) -> None:
+        async def send(event: dict[str, JsonValue]) -> None:
+            await websocket.send(json.dumps(event))
+
+        await send({"type": "session.created", "session": {}})
+        assert json.loads(await websocket.recv())["session"] == {
+            "output_modalities": ["text"]
+        }
+        await send({"type": "session.updated", "session": {}})
+        for sequence in range(2):
+            packet = json.loads(await websocket.recv())
+            assert packet["type"] == "input_audio_buffer.append"
+            assert packet["sglang"]["seq"] == sequence
+            await send({"type": "sglang.input_audio.accepted", "seq": sequence})
+        assert json.loads(await websocket.recv())["type"] == "sglang.input_audio.end"
+        await send({"type": "response.output_text.done", "text": "hello"})
+        await send({"type": "response.done", "response": {"status": "completed"}})
+        await send({"type": "sglang.input_audio.drained"})
+        close_commands.append(json.loads(await websocket.recv())["type"])
+        await send({"type": "session.closed"})
+
+    async def run() -> None:
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            result = await run_asr_realtime_once(
+                [SampleInput("clip", "hello", "clip.wav", "")],
+                host="127.0.0.1",
+                port=server.sockets[0].getsockname()[1],
+                protocol="native",
+                packet_ms=500,
+                paced=False,
+                timeout_s=2,
+                pcm_cache={"clip.wav": pcm_seconds(1.0)},
+                model_path="nemotron-test",
+            )
+            assert result["per_sample"][0]["text"] == "hello"
+            assert result["summary"]["sessions_with_violations"] == 0
+            assert close_commands == ["session.close"]
+
+    asyncio.run(run())
 
 
 def test_paced_send_spreads_packets_over_wall_clock(fake_server):

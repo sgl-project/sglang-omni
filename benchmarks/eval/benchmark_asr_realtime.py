@@ -36,6 +36,11 @@ Usage:
     # Manual commit instead of server VAD:
     python -m benchmarks.eval.benchmark_asr_realtime \\
         --port 8000 --max-samples 50 --mode manual
+
+    # Nemotron native streaming sessions:
+    python -m benchmarks.eval.benchmark_asr_realtime \\
+        --port 8000 --max-samples 50 --protocol native \\
+        --model-path nvidia/nemotron-3.5-asr-streaming-0.6b
 """
 
 from __future__ import annotations
@@ -49,7 +54,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -84,6 +89,7 @@ from benchmarks.tasks.asr import (
 )
 from sglang_omni.utils.logging import configure_dependency_loggers
 
+PROTOCOLS = ("transcription", "native")
 MODES = ("vad", "manual")
 DEFAULT_TRAILING_SILENCE_MS = 1000
 """Longer than the server VAD default ``silence_duration_ms`` (500), so the
@@ -205,7 +211,8 @@ async def run_asr_realtime_once(
     port: int,
     concurrency: int = 1,
     packet_ms: int = 200,
-    mode: str = "vad",
+    protocol: Literal["transcription", "native"] = "transcription",
+    mode: Literal["vad", "manual"] | None = None,
     lang: str = "en",
     paced: bool = True,
     trailing_silence_ms: int = DEFAULT_TRAILING_SILENCE_MS,
@@ -222,14 +229,25 @@ async def run_asr_realtime_once(
     corpus WER, and how many sessions violated a protocol invariant. Nothing is
     asserted here; CI decides what to gate on.
     """
-    session_kwargs = _session_kwargs(mode)
-    url = realtime_url(host, port)
+    if protocol == "native":
+        if mode is not None:
+            raise ValueError("mode is unavailable with the native protocol")
+        else:
+            pass
+        session_kwargs = {"turn_detection": None, "manual_commit": False}
+        trailing_silence_ms = 0
+        url = realtime_url(host, port, protocol="native")
+    else:
+        mode = mode or "vad"
+        session_kwargs = _session_kwargs(mode)
+        url = realtime_url(host, port)
     pcm_cache = {} if pcm_cache is None else pcm_cache
     for sample in samples:
         if sample.ref_audio not in pcm_cache:
             pcm_cache[sample.ref_audio] = load_pcm16(sample.ref_audio)
 
     config = {
+        "protocol": protocol,
         "mode": mode,
         "concurrency": concurrency,
         "packet_ms": packet_ms,
@@ -287,6 +305,7 @@ async def run_asr_realtime_once(
                 language=lang,
                 trailing_silence_ms=trailing_silence_ms,
                 timeout_s=timeout_s,
+                protocol=protocol,
                 **session_kwargs,
             )
 
@@ -324,12 +343,17 @@ async def run_asr_realtime_once(
         per_sample.append(record)
 
     decode_intervals = {t.session.get("decode_interval_ms") for t in traces}
+    native_units = {
+        (t.session.get("sglang", {}).get("granted") or {}).get("native_unit_ms")
+        for t in traces
+    }
     result: dict[str, Any] = {
         "config": {
             **config,
             "decode_interval_ms": (
                 decode_intervals.pop() if len(decode_intervals) == 1 else None
             ),
+            "native_unit_ms": native_units.pop() if len(native_units) == 1 else None,
         },
         "summary": _summary(per_sample, outputs, lang=lang, wall_clock_s=wall_clock_s),
         "per_sample": per_sample,
@@ -368,17 +392,18 @@ def _fmt_stat(stat: dict[str, Any] | None) -> str:
 def _print_table(results: list[dict[str, Any]]) -> None:
     print()
     print(
-        "| conc | mode | interval ms | sessions | violations | corpus WER | HTTP WER "
+        "| conc | protocol | mode | interval ms | sessions | violations | corpus WER | HTTP WER "
         "| ΔWER vs HTTP (common n) "
         "| first partial mean/p50/p95 s | partial gap mean/p50/p95 s "
         "| final mean/p50/p95 s | done→completed mean/p50/p95 s | wall s |"
     )
-    print("|" + "---|" * 13)
+    print("|" + "---|" * 14)
     for result in results:
         config, summary = result["config"], result["summary"]
+        interval_ms = config["decode_interval_ms"] or config["native_unit_ms"]
         print(
-            f"| {config['concurrency']} | {config['mode']} "
-            f"| {config['decode_interval_ms']} | {summary['total']} "
+            f"| {config['concurrency']} | {config['protocol']} | {config['mode'] or 'n/a'} "
+            f"| {interval_ms} | {summary['total']} "
             f"| {summary['sessions_with_violations']} "
             f"| {_fmt(summary['corpus_wer'], 4)} "
             f"| {_fmt(summary.get('http_corpus_wer'), 4)} "
@@ -410,7 +435,13 @@ def parse_args() -> argparse.Namespace:
         default=[1],
         help="Comma-separated simultaneous session counts; one result each.",
     )
-    parser.add_argument("--mode", choices=MODES, default="vad")
+    parser.add_argument("--protocol", choices=PROTOCOLS, default="transcription")
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default=None,
+        help="Turn closing for the transcription protocol (default: vad).",
+    )
     parser.add_argument("--packet-ms", type=_positive_int, default=200)
     parser.add_argument(
         "--no-pace",
@@ -432,7 +463,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Save inputs and raw session observations here (default: OUTPUT.traces).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.protocol == "native" and args.mode is not None:
+        parser.error("--mode is only available with --protocol transcription")
+    else:
+        return args
 
 
 def main() -> None:
@@ -459,7 +494,8 @@ def main() -> None:
         raise RuntimeError(f"No SeedTTS samples loaded from {args.meta!r}")
     print(
         f"Loaded {len(samples)} SeedTTS {args.lang} samples; streaming "
-        f"mode={args.mode} packet={args.packet_ms}ms paced={not args.no_pace} "
+        f"protocol={args.protocol} mode={args.mode or 'default'} "
+        f"packet={args.packet_ms}ms paced={not args.no_pace} "
         f"concurrencies={args.concurrencies} against {args.host}:{args.port}"
     )
 
@@ -473,6 +509,7 @@ def main() -> None:
                 port=args.port,
                 concurrency=concurrency,
                 packet_ms=args.packet_ms,
+                protocol=args.protocol,
                 mode=args.mode,
                 lang=args.lang,
                 paced=not args.no_pace,
