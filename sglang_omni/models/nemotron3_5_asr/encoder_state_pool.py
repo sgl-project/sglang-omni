@@ -165,17 +165,19 @@ class PooledAttentionCache:
     slot_ids: torch.Tensor
 
     def update(
-        self, keys: torch.Tensor, values: torch.Tensor, layer_idx: int
+        self, keys: torch.Tensor, values: torch.Tensor, layer_index: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
         history_frames = self.pool.layout.attention_shape[2]
-        key_history = self.pool.key_states[layer_idx].index_select(0, self.slot_ids)
-        value_history = self.pool.value_states[layer_idx].index_select(0, self.slot_ids)
+        key_history = self.pool.key_states[layer_index].index_select(0, self.slot_ids)
+        value_history = self.pool.value_states[layer_index].index_select(
+            0, self.slot_ids
+        )
         keys = torch.cat((key_history, keys), dim=2)
         values = torch.cat((value_history, values), dim=2)
-        self.pool.key_states[layer_idx].index_copy_(
+        self.pool.key_states[layer_index].index_copy_(
             0, self.slot_ids, keys[:, :, -history_frames:]
         )
-        self.pool.value_states[layer_idx].index_copy_(
+        self.pool.value_states[layer_index].index_copy_(
             0, self.slot_ids, values[:, :, -history_frames:]
         )
         return keys, values
@@ -214,7 +216,7 @@ class PooledPaddingCache:
         self,
         hidden_states: torch.Tensor,
         cache_key: str,
-        conv_module: (
+        convolution_module: (
             NemotronAsrStreamingEncoderCausalConv1d
             | NemotronAsrStreamingEncoderCausalConv2D
         ),
@@ -222,7 +224,7 @@ class PooledPaddingCache:
         convolution_states = self.pool.convolution_states[cache_key]
         previous_context = convolution_states.index_select(0, self.slot_ids)
         padded_hidden_states = torch.cat((previous_context, hidden_states), dim=2)
-        padding_frames = conv_module.left_pad
+        padding_frames = convolution_module.left_pad
         if padding_frames > 0:
             convolution_states.index_copy_(
                 0, self.slot_ids, padded_hidden_states[:, :, -padding_frames:]
@@ -230,11 +232,11 @@ class PooledPaddingCache:
         else:
             pass
         if self.is_first_chunk and isinstance(
-            conv_module, NemotronAsrStreamingEncoderCausalConv2D
+            convolution_module, NemotronAsrStreamingEncoderCausalConv2D
         ):
             return F.pad(
                 padded_hidden_states,
-                (0, 0, conv_module.left_pad_init - padding_frames, 0),
+                (0, 0, convolution_module.left_pad_init - padding_frames, 0),
             )
         else:
             return padded_hidden_states

@@ -16,7 +16,11 @@ from tokenizers.models import WordLevel
 from transformers.cache_utils import DynamicCache
 from transformers.generation import GenerationMixin
 
-from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import EncoderPoolLayout
+from sglang_omni.models.nemotron3_5_asr.encoder import encode_pooled_streaming_batch
+from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import (
+    EncoderPoolLayout,
+    NemotronEncoderStatePool,
+)
 from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
@@ -130,30 +134,9 @@ def test_processor_text_decode_preserves_repeated_tokens() -> None:
         processor.decode(token_ids, durations=torch.ones(len(token_ids)))
 
 
-@pytest.mark.parametrize("blank_only", [False, True])
-@pytest.mark.parametrize(
-    "prior_chunks,frames,lookahead,first_frames",
-    [
-        ((0, 0), 8, 0, 8),
-        ((1, 3), 8, 0, 8),
-        ((3, 5), 8, 0, 8),
-        ((1, 3), 6, 3, 6),
-        ((3, 5), 6, 3, 6),
-        ((0, 3), 8, 3, 7),
-        ((3, 0), 8, 3, 7),
-        ((0, 6), 2, 0, 1),
-    ],
-)
-def test_local_model_preserves_streaming_results_and_caches_when_batched(
-    tmp_path: Path,
-    prior_chunks: tuple[int, int],
-    frames: int,
-    lookahead: int,
-    first_frames: int,
-    blank_only: bool,
-) -> None:
-
-    config = Nemotron3_5AsrConfig(
+@pytest.fixture
+def tiny_model_config() -> Nemotron3_5AsrConfig:
+    return Nemotron3_5AsrConfig(
         vocab_size=16,
         decoder_hidden_size=8,
         num_decoder_layers=1,
@@ -176,6 +159,32 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
             "default_num_lookahead_tokens": 0,
         },
     )
+
+
+@pytest.mark.parametrize("blank_only", [False, True])
+@pytest.mark.parametrize(
+    "prior_chunks,frames,lookahead,first_frames",
+    [
+        ((0, 0), 8, 0, 8),
+        ((1, 3), 8, 0, 8),
+        ((3, 5), 8, 0, 8),
+        ((1, 3), 6, 3, 6),
+        ((3, 5), 6, 3, 6),
+        ((0, 3), 8, 3, 7),
+        ((3, 0), 8, 3, 7),
+        ((0, 6), 2, 0, 1),
+    ],
+)
+def test_local_model_preserves_streaming_results_and_caches_when_batched(
+    tmp_path: Path,
+    tiny_model_config: Nemotron3_5AsrConfig,
+    prior_chunks: tuple[int, int],
+    frames: int,
+    lookahead: int,
+    first_frames: int,
+    blank_only: bool,
+) -> None:
+    config = tiny_model_config
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(0)
         model = Nemotron3_5AsrForRNNT(config)
@@ -282,6 +291,54 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
             != batched[1].decoder_cache.cache.data_ptr()
         )
     runner.close()
+
+
+@torch.inference_mode()
+def test_encoder_outputs_after_slot_reuse(
+    tiny_model_config: Nemotron3_5AsrConfig,
+) -> None:
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(7)
+        model = Nemotron3_5AsrForRNNT(tiny_model_config).eval()
+    generator = torch.Generator().manual_seed(11)
+    pool = NemotronEncoderStatePool(EncoderPoolLayout.from_model(model), 2)
+    slots = [pool.acquire(), pool.acquire()]
+    references = [ReferenceDecodeState.create(model) for _ in slots]
+    for step, rows in enumerate(((0,), (1, 0), (0, 1), (1, 0), (0, 1))):
+        if step == 3:
+            released_slot_id = slots[0].slot_id
+            slots[0].release()
+            slots[0] = pool.acquire()
+            assert slots[0].slot_id == released_slot_id
+            references[0] = ReferenceDecodeState.create(model)
+        else:
+            pass
+        features, expected = [], []
+        prompt_ids = torch.tensor(rows)
+        for index, row in enumerate(rows):
+            reference = references[row]
+            mel_frames = 7 if reference.attention_cache.get_seq_length() == 0 else 8
+            features.append(torch.randn(1, mel_frames, 4, generator=generator))
+            expected.append(
+                model.get_audio_features(
+                    input_features=features[index],
+                    prompt_ids=prompt_ids[index : index + 1],
+                    past_key_values=reference.attention_cache,
+                    padding_cache=reference.padding_cache,
+                    num_lookahead_tokens=3,
+                    use_cache=True,
+                ).pooler_output
+            )
+        actual = encode_pooled_streaming_batch(
+            model,
+            features,
+            prompt_ids,
+            encoder_slots=[slots[row] for row in rows],
+            num_lookahead_tokens=3,
+        )
+        # note (wirybeaver): Batch size and padded history change floating-point reduction order.
+        torch.testing.assert_close(actual, torch.cat(expected), rtol=1e-4, atol=1e-5)
+    pool.close()
 
 
 def test_parakeet_compat_forwards_cache_aware_encoder_kwargs(
