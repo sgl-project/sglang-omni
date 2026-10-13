@@ -19,6 +19,17 @@ class UsageInfoDict(TokenUsageDict, total=False):
     engine_time_s: float
 
 
+class ImageInputTokensDetailsDict(TypedDict):
+    text_tokens: int | None
+    image_tokens: int
+
+
+class ImageUsageDict(TypedDict, total=False):
+    input_tokens: int
+    total_tokens: int
+    input_tokens_details: ImageInputTokensDetailsDict
+
+
 # note (Yucheng Hu): finish reason reported on speech surfaces when the model
 # did not say how generation ended.
 UNKNOWN_FINISH_REASON = "unknown"
@@ -43,6 +54,7 @@ class UsageInfo:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     engine_time_s: float | None = None
+    prompt_tokens_details: dict[str, int] | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object] | None) -> "UsageInfo | None":
@@ -55,6 +67,7 @@ class UsageInfo:
             completion_tokens=data.get("completion_tokens"),
             total_tokens=data.get("total_tokens"),
             engine_time_s=data.get("engine_time_s"),
+            prompt_tokens_details=data.get("prompt_tokens_details"),
         )
 
     def to_dict(self) -> UsageInfoDict:
@@ -165,6 +178,8 @@ class GenerateChunk:
     language: str | None = None
     audio_data: object = None
     sample_rate: int | None = None
+    image_usage: ImageUsageDict | None = None
+    text_usage_stage: str | None = None
 
     @property
     def reported_finish_reason(self) -> str:
@@ -192,6 +207,7 @@ class GenerateChunk:
             "language": self.language,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
+            "image_usage": self.image_usage,
         }
 
 

@@ -311,7 +311,7 @@ def chunk(seq: int, eos: bool = False) -> TimedChunk:
     return TimedChunk("audio", seq * 20, 20, seq, b"pcm", eos=eos)
 
 
-PipelineResources = tuple[Coordinator, Queue[StageEvent], list[SpawnProcess]]
+PipelineResources = tuple[Coordinator, "Queue[StageEvent]", list[SpawnProcess]]
 
 
 def event_log(events: Queue[StageEvent]) -> list[StageEvent]:

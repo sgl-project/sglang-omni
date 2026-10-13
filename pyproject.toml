@@ -103,6 +103,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+metrics = ["prometheus-client>=0.20"]
 audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",

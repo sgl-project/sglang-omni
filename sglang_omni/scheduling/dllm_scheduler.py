@@ -116,6 +116,24 @@ class DllmScheduler:
     def warm_up_serving_thread(self) -> None:
         pass
 
+    def metrics_snapshot(self) -> dict[str, int]:
+        with self.abort_lock:
+            aborted = set(self.aborted_request_ids)
+        running = {
+            req.rid
+            for req in self.staging_queue
+            if req.rid not in aborted and not req.finished()
+        }
+        waiting = {
+            req.rid
+            for req in self.waiting_queue
+            if req.rid not in aborted and not req.finished()
+        }
+        return {
+            "num_running_reqs": len(running),
+            "num_queue_reqs": len(waiting - running),
+        }
+
     def start(self) -> None:
         self.running = True
         self._event_loop()

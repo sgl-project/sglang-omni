@@ -118,6 +118,7 @@ class Client:
         self.coordinator = coordinator
         self.result_builder = result_builder or self.default_result_builder
         self.stream_builder = stream_builder or self.default_stream_builder
+        self.request_metrics = None
 
     async def open_session(
         self,
@@ -164,8 +165,30 @@ class Client:
         request: GenerateRequest,
         request_id: str | None = None,
     ) -> AsyncIterator[GenerateChunk]:
+        request_id = request_id or str(uuid.uuid4())
+        if self.request_metrics is None:
+            source = self.generate_uninstrumented(request, request_id)
+        else:
+            source = self.request_metrics.generate(
+                self.generate_uninstrumented(request, request_id),
+                request.stream,
+                request_id,
+            )
+        async with aclosing(source):
+            async for chunk in source:
+                yield chunk
+
+    async def generate_uninstrumented(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ) -> AsyncIterator[GenerateChunk]:
         req_id = request_id or str(uuid.uuid4())
         omni_request = self.build_omni_request(request)
+        if self.request_metrics is not None:
+            omni_request.metadata["omni_metrics_enabled"] = True
+        else:
+            pass
         if request.stream:
             coordinator_stream = self.coordinator.stream(req_id, omni_request)
             async with aclosing(coordinator_stream):
@@ -659,6 +682,15 @@ class Client:
             usage["engine_time_s"] = data.get("engine_time_s")
         else:
             pass
+        details = usage.get("prompt_tokens_details", data.get("prompt_tokens_details"))
+        if details is not None:
+            usage["prompt_tokens_details"] = details
+        else:
+            cached_tokens = usage.get("cached_tokens", data.get("cached_tokens"))
+            if cached_tokens is not None:
+                usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+            else:
+                pass
         return UsageInfo.from_dict(usage)
 
     @staticmethod
@@ -740,9 +772,11 @@ class Client:
                 else:
                     pass
                 Client.set_audio_data(chunk, audio_result)
-                chunk.usage = Client.build_usage_info(
-                    decode_result
-                ) or Client.build_usage_info(audio_result)
+                chunk.usage = Client.build_usage_info(decode_result)
+                if chunk.usage is not None:
+                    chunk.text_usage_stage = decode_result.get("stage_name") or "decode"
+                else:
+                    chunk.usage = Client.build_usage_info(audio_result)
                 return chunk
             else:
                 pass
@@ -802,6 +836,7 @@ class Client:
                 pass
             Client.set_audio_data(chunk, result)
             chunk.usage = Client.build_usage_info(result)
+            chunk.image_usage = result.get("image_usage")
             return chunk
         else:
             pass
