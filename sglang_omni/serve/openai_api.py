@@ -1112,6 +1112,8 @@ def _register_image_generations(app: FastAPI) -> None:
             ):
                 if response is not None:
                     continue
+                else:
+                    pass
                 images = chunk.images_b64 or (
                     [chunk.image_b64] if chunk.image_b64 is not None else []
                 )
@@ -1125,7 +1127,10 @@ def _register_image_generations(app: FastAPI) -> None:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         if response is not None:
             return response
-        raise HTTPException(status_code=500, detail="SenseNova-U1 returned no result")
+        else:
+            raise HTTPException(
+                status_code=500, detail="SenseNova-U1 returned no result"
+            )
 
 
 def _register_image_edits(app: FastAPI) -> None:
@@ -1240,6 +1245,8 @@ def _register_image_edits(app: FastAPI) -> None:
                 ):
                     if result is not None:
                         continue
+                    else:
+                        pass
                     if chunk.image_b64 is None:
                         raise RuntimeError("SenseNova-U1 generated no image")
                     result = chunk.image_b64
@@ -1249,6 +1256,8 @@ def _register_image_edits(app: FastAPI) -> None:
                         pass
                 if result is not None:
                     data.append(result)
+                else:
+                    pass
         except Exception as exc:
             logger.exception("Image edit failed for request %s", parent_request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
