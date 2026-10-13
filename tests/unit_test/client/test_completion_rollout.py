@@ -175,7 +175,10 @@ def test_completion_preserves_empty_logprob_list() -> None:
     assert out.output_token_logprobs == []
 
 
-def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
+@pytest.mark.parametrize("audio_stage", ["code2wav", "vocoder"])
+def test_completion_surfaces_rollout_from_multiterminal_decode(
+    audio_stage: str,
+) -> None:
     result = {
         "decode": {
             "text": "hi",
@@ -184,7 +187,7 @@ def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
             "weight_version": "v9",
             "omni_rollout": {"version": 1, "action_streams": []},
         },
-        "code2wav": {"audio_data": [0.0, 0.1, -0.1], "sample_rate": 24000},
+        audio_stage: {"audio_data": [0.0, 0.1, -0.1], "sample_rate": 24000},
     }
     client = Client(SubmitStubCoordinator(result))
 

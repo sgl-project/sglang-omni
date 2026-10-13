@@ -460,6 +460,25 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
        "messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'
 ```
 
+### AURA Omni (speech and video in, speech out, three XPUs)
+
+Qwen3-ASR, AURA (a Qwen3-VL-8B fine-tune) and Qwen3-TTS each get a card. AURA's 16.5 GiB of
+weights leave SGLang's automatic budget no room for a KV pool on a 24 GB card, so the
+checked-in config pins its fraction:
+
+```bash
+sgl-omni serve --config examples/configs/aura_omni_xpu_b60.yaml --host 0.0.0.0 --port 8000
+# ask about a clip; the spoken answer comes back base64-encoded in choices[0].message.audio.data
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"aura","modalities":["text","audio"],
+       "messages":[{"role":"user","content":[
+         {"type":"video_url","video_url":{"url":"file:///path/to/clip.mp4"}},
+         {"type":"audio_url","audio_url":{"url":"file:///path/to/question.wav"}}]}]}' -o reply.json
+```
+
+See the [AURA Omni cookbook](../cookbook/aura_omni.md) for voices, silent turns and timings.
+
 ### MiniMax Music 3 (text-to-music, two XPUs)
 ```bash
 # server
@@ -506,7 +525,7 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > ✅ Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
+> Qwen3-Omni, AURA Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
-> ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
+> ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards; AURA Omni needs three;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).

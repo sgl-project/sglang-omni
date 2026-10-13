@@ -582,7 +582,7 @@ def config_with_one_replicated_process(config_cls, model):
         if gpu_members and all(stage.tp_size == 1 for stage in members):
             candidates.append((process_name, gpu_members))
     if not candidates:
-        return None, None
+        return None, None, None
     # A process with a single GPU stage needs no colocation memory budget; fall
     # back to the fullest process and budget every member when none exists.
     singles = [c for c in candidates if len(c[1]) == 1]
@@ -601,9 +601,18 @@ def config_with_one_replicated_process(config_cls, model):
             )
             for stage in stages_cfg
         ]
+    # Replicas go on the first two cards no stage uses, so a third card in the
+    # topology does not turn replication into unbudgeted sharing.
+    used_gpus = {
+        gpu
+        for stage in config.stages
+        for gpu in ([stage.gpu] if isinstance(stage.gpu, int) else stage.gpu or [])
+    }
+    first_free_gpu = max(used_gpus | {1}) + 1
+    replica_devices = [first_free_gpu, first_free_gpu + 1]
     processes = dict(config.processes)
     existing = processes.get(process_name)
-    replica_fields = {"num_replicas": 2, "replica_devices": [2, 3]}
+    replica_fields = {"num_replicas": 2, "replica_devices": replica_devices}
     processes[process_name] = (
         existing.model_copy(update=replica_fields)
         if existing is not None
@@ -612,6 +621,7 @@ def config_with_one_replicated_process(config_cls, model):
     return (
         config.model_copy(update={"stages": stages_cfg, "processes": processes}),
         [stage.name for stage in gpu_members],
+        replica_devices,
     )
 
 
@@ -639,13 +649,13 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
     if getattr(module, "EntryClass", None) is not None:
         topologies["default"] = module.EntryClass
     topologies.update(getattr(module, "Variants", None) or {})
-    config, replicated_stages = config_with_one_replicated_process(
+    config, replicated_stages, replica_devices = config_with_one_replicated_process(
         topologies[label], model
     )
     if config is None:
         pytest.skip("no tp_size=1 GPU process to replicate")
 
-    # note (lennox): the replica cards (2, 3) need not exist on this host; the
+    # note (lennox): the replica cards need not exist on this host; the
     # test stops at the launch specs, before any process or device is touched.
     monkeypatch.setattr(runtime_config, "visible_device_count", lambda: None)
     # note (lennox): budget here is unrelated to gpu routing, set it only for local test run on Windows.
@@ -671,7 +681,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         prep.runtime_dir.close()
 
     specs = {spec.stage_name: spec for group in groups for spec in group.specs}
-    for replica_id, expected_gpu in ((0, 2), (1, 3)):
+    for replica_id, expected_gpu in enumerate(replica_devices):
         for stage_name in replicated_stages:
             spec = specs[f"{stage_name}@r{replica_id}"]
             assert spec.factory_arg_defaults["gpu_id"] == expected_gpu

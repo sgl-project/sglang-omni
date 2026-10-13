@@ -48,6 +48,9 @@ _BAD_REQUEST_MARKERS = (
     "PersonaPlex takes one caller recording",
     "Unsupported PersonaPlex audio input",
     "; packaged voices:",
+    "AURA Omni expects",
+    "AURA Omni transcribes one audio input",
+    "AURA Omni request needs",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(
