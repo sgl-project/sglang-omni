@@ -28,6 +28,16 @@ TRANSCRIPT_DELTAS = (
     "response.output_audio_transcript.delta",
     "response.output_text.delta",
 )
+AUDIO_DELTA = "response.output_audio.delta"
+LEGACY_TRANSCRIPT_DELTAS = ("response.text.delta",)
+LEGACY_AUDIO_DELTA = "response.audio.delta"
+# note (luojiaxuan): The facade clears the output buffer whenever it interrupts a
+# response; a client that asked for interruption also stops at speech_started.
+LEGACY_BARGE_IN_CUT = (
+    "playout cursor cut at the client receipt of output_audio_buffer.cleared, or of "
+    "input_audio_buffer.speech_started when turn_detection.interrupt_response is not "
+    "false"
+)
 # note (wenyao): Playout and event spans assume paced source time within one packet.
 PACING_TOLERANCE_S = PACKET_MS / 1000
 INPUT_TIMING_CAVEAT = (
@@ -108,6 +118,9 @@ def reconstruct_output(
     """Rebuild model audio and a SIMULATED zero-buffer client playout from a trace."""
     profile_contract = PROFILES[profile]
     output_sample_rate = profile_contract.output_sample_rate
+    legacy = profile_contract.protocol == "legacy"
+    audio_delta = LEGACY_AUDIO_DELTA if legacy else AUDIO_DELTA
+    transcript_deltas = LEGACY_TRANSCRIPT_DELTAS if legacy else TRANSCRIPT_DELTAS
     errors: list[str] = []
     records = []
     with (variant_dir / "continuous.jsonl").open(encoding="utf-8") as trace_file:
@@ -132,8 +145,11 @@ def reconstruct_output(
     media = bytearray()
     playout = bytearray()
     chunks = []
+    cuts = []
     transcript_events = []
     appends = []
+    input_end_s = 0.0
+    interrupts_on_speech = None
     for line_number, record in records:
         event = record["event"]
         event_type = event.get("type")
@@ -158,9 +174,45 @@ def reconstruct_output(
                     "send_deviation_s": elapsed_s - source_start_ms / 1000,
                 }
             )
+            if legacy:
+                input_end_s = source_start_ms / 1000 + len(
+                    base64.b64decode(event["audio"], validate=True)
+                ) / (2 * SAMPLE_RATE)
+            else:
+                pass
+        elif (
+            legacy
+            and record["direction"] == "send"
+            and event_type == "session.update"
+            and interrupts_on_speech is None
+        ):
+            turn_detection = event["session"].get("turn_detection") or {}
+            interrupts_on_speech = turn_detection.get("interrupt_response") is not False
         elif record["direction"] != "receive":
             continue
-        elif event_type in TRANSCRIPT_DELTAS:
+        elif legacy and (
+            event_type == "output_audio_buffer.cleared"
+            or (
+                event_type == "input_audio_buffer.speech_started"
+                and interrupts_on_speech
+            )
+        ):
+            cut_sample = round(elapsed_s * output_sample_rate)
+            dropped = len(playout) // 2 - cut_sample
+            if dropped > 0:
+                del playout[2 * cut_sample :]
+                cuts.append(
+                    {
+                        "trace_line": line_number,
+                        "type": event_type,
+                        "receipt_s": elapsed_s,
+                        "cut_sample": cut_sample,
+                        "dropped_samples": dropped,
+                    }
+                )
+            else:
+                pass
+        elif event_type in transcript_deltas:
             transcript_events.append(
                 {
                     "trace_line": line_number,
@@ -170,7 +222,7 @@ def reconstruct_output(
                     "delta": event.get("delta"),
                 }
             )
-        elif event_type == "response.output_audio.delta":
+        elif event_type == audio_delta:
             try:
                 pcm = base64.b64decode(event.get("delta") or "", validate=True)
             except (binascii.Error, TypeError) as exc:
@@ -230,7 +282,11 @@ def reconstruct_output(
         )
     else:
         pass
-    if not media and not profile_contract.continuous_output and appends:
+    if media or profile_contract.continuous_output or not appends:
+        pass
+    elif legacy:
+        playout.extend(bytes(round(input_end_s * output_sample_rate) * 2))
+    else:
         accepted = [
             trace_record["event"]["accepted_end_ms"]
             for _, trace_record in records
@@ -241,8 +297,6 @@ def reconstruct_output(
             playout.extend(bytes(round(max(accepted) * output_sample_rate / 1000) * 2))
         else:
             pass
-    else:
-        pass
     pcm_sha256 = {}
     for name, pcm in (("output-media.wav", media), ("output-playout.wav", playout)):
         if pcm or not profile_contract.continuous_output:
@@ -263,7 +317,10 @@ def reconstruct_output(
     write_json(
         variant_dir / "transcript.json",
         {
-            "provenance": "native server transcript deltas from continuous.jsonl",
+            "provenance": (
+                f"{profile_contract.protocol} server transcript deltas from "
+                "continuous.jsonl"
+            ),
             "independent_asr": False,
             "events": transcript_events,
             "text": transcript_texts,
@@ -283,12 +340,17 @@ def reconstruct_output(
         "input_timing": input_timing,
         "errors": errors,
     }
+    if legacy:
+        summary["barge_in"] = {"rule": LEGACY_BARGE_IN_CUT, "cuts": len(cuts)}
+    else:
+        pass
     write_json(
         variant_dir / "playout.json",
         {
             **summary,
             "input_timing": {**input_timing, "appends": appends},
             "chunks": chunks,
+            **({"cuts": cuts} if legacy else {}),
         },
     )
     return summary

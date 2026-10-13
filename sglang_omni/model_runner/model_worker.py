@@ -283,7 +283,7 @@ class ModelWorker:
             self.model_runner.effective_max_total_num_tokens
         )
         max_req_len = min(
-            self.server_args.context_length - 1,
+            self.model_config.context_len - 1,
             effective_max_total_num_tokens - 1,
         )
         max_req_input_len = max_req_len - 1

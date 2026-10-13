@@ -18,15 +18,20 @@ from pydantic import JsonValue
 import benchmarks.duplex.v15_dataset as v15_dataset
 from benchmarks.duplex.artifacts import replay_run, source_fingerprint
 from benchmarks.duplex.client import (
+    LEGACY_TAIL_S,
+    LEGACY_TRANSPORT,
     MAX_TIMEOUT_S,
     PACKET_MS,
     SAMPLE_RATE,
     TRANSPORT,
+    TurnDetection,
+    legacy_protocol,
     run_session,
 )
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, ProfileName
+from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 from benchmarks.duplex.v10_dataset import Sample as V10Sample
 from benchmarks.duplex.v15_audio import (
+    LEGACY_BARGE_IN_CUT,
     PACING_TOLERANCE_S,
     normalize_audio,
     reconstruct_output,
@@ -125,12 +130,11 @@ def summarize_load(
             default=None,
         ),
         "input_pacing_violations": sum(
-            not timing["within_tolerance"] for timing in timings
+            timing["max_abs_deviation_s"] is not None and not timing["within_tolerance"]
+            for timing in timings
         ),
-        "admission_denied_variants": sum(
-            any("admission denied" in error for error in variant["errors"])
-            or bool(variant["output"] and variant["output"]["admission_denials"])
-            for variant in variants
+        "variants_with_admission_denials": sum(
+            bool(output["admission_denials"]) for output in outputs
         ),
         "variants_passed": sum(variant["status"] == "pass" for variant in variants),
     }
@@ -151,11 +155,13 @@ async def run_samples(
     kind: str = RUN_KIND,
     profile: ProfileName = DEFAULT_PROFILE,
     concurrency: int = 1,
+    turn_detection: TurnDetection | None = None,
+    legacy_tail_s: float = LEGACY_TAIL_S,
 ) -> dict[str, JsonValue]:
     """Run selected sample variants, retaining failures in the selected denominator.
 
-    At most concurrency sessions are open at once; past the server's max_sessions
-    the extra handshakes are denied with HTTP 503 and those variants fail.
+    turn_detection and legacy_tail_s configure legacy-protocol sessions; see
+    benchmarks.duplex.client.run_session.
     """
     if not dataset_revision:
         raise ValueError("dataset_revision must be nonempty")
@@ -169,6 +175,17 @@ async def run_samples(
         raise ValueError("concurrency must be at least 1")
     else:
         pass
+    legacy = legacy_protocol(profile, turn_detection)
+    legacy_config = (
+        {
+            "turn_detection": turn_detection.model_dump(mode="json"),
+            "tail_s": legacy_tail_s,
+            "barge_in_cut": LEGACY_BARGE_IN_CUT,
+            **LEGACY_TRANSPORT,
+        }
+        if turn_detection is not None
+        else None
+    )
     variants = VARIANTS if variants is None else variants
     dataset_root = dataset_root.resolve()
     samples = dataset.discover_samples(dataset_root, sample_ids, max_per_subset)
@@ -236,6 +253,8 @@ async def run_samples(
                 "pacing_tolerance_s": PACING_TOLERANCE_S,
                 "transport": TRANSPORT,
                 "response_cancel": "never sent",
+                "protocol": PROFILES[profile].protocol,
+                "legacy": legacy_config,
             },
             "samples": [
                 {
@@ -288,11 +307,12 @@ async def run_samples(
                     "sha256": hashlib.sha256(pcm).hexdigest(),
                     "duration_s": duration_s,
                 }
-                if duration_s >= timeout_s:
+                if duration_s + (legacy_tail_s if legacy else 0.0) >= timeout_s:
                     variant_state["status"] = "invalid"
                     variant_state["errors"].append(
-                        f"input duration {duration_s:.3f}s is not below timeout "
-                        f"{timeout_s}s"
+                        f"input duration {duration_s:.3f}s"
+                        + (f" plus legacy tail {legacy_tail_s}s" if legacy else "")
+                        + f" is not below timeout {timeout_s}s"
                     )
                     continue
                 else:
@@ -320,6 +340,8 @@ async def run_samples(
                             "transport": TRANSPORT,
                             "dataset_sample": sample.id,
                             "dataset_variant": variant,
+                            "protocol": PROFILES[profile].protocol,
+                            "legacy": legacy_config,
                         },
                         "input": {
                             "file": "input.pcm",
@@ -377,6 +399,8 @@ async def run_samples(
                     trace_path=variant_dir / "continuous.jsonl",
                     timeout_s=timeout_s,
                     profile=profile,
+                    turn_detection=turn_detection,
+                    tail_s=legacy_tail_s,
                 )
                 # note (wenyao): trace parsing and WAV writes run off the loop so
                 # they do not stall the 80 ms pacing of the other open sessions.

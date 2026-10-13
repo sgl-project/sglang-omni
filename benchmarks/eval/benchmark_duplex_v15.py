@@ -9,8 +9,11 @@ import json
 import logging
 from pathlib import Path
 
-from benchmarks.duplex.artifacts import add_server_identity_args, server_identity
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
+from benchmarks.duplex.artifacts import (
+    add_protocol_args,
+    add_server_identity_args,
+    server_identity,
+)
 from benchmarks.duplex.run_artifacts import TIMELINES, accounting, load_run
 from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.duplex.v15_transcribe import add_transcribe_arguments
@@ -35,6 +38,8 @@ def record(args: argparse.Namespace) -> int:
             sample_ids=args.sample_id,
             max_per_subset=args.max_per_subset,
             concurrency=args.concurrency,
+            turn_detection=args.turn_detection,
+            legacy_tail_s=args.legacy_tail,
         )
     )
     manifest, _, _ = load_run(args.output)
@@ -56,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         "--output", type=Path, required=True, help="New immutable run directory"
     )
     add_server_identity_args(record_parser)
-    record_parser.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE)
+    add_protocol_args(record_parser)
     record_parser.add_argument(
         "--dataset-revision", required=True, help="Dataset release or archive digest"
     )
@@ -67,8 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         "--concurrency",
         type=int,
         default=1,
-        help="Sessions kept open at once; must not exceed the server's max_sessions, "
-        "past it the server answers HTTP 503 and those sessions fail",
+        help="Maximum concurrent variants; excess connections may receive "
+        "HTTP 503 and fail if admission retries are exhausted",
     )
     selection = record_parser.add_mutually_exclusive_group()
     selection.add_argument(

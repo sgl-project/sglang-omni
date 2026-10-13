@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import threading
 import time
 from collections import deque
@@ -2702,6 +2703,175 @@ def test_talker_prefill_forward_invalidates_next_decode_reuse() -> None:
     )
 
     assert float(fake.sampling_temperatures[0, 0]) == pytest.approx(0.8)
+
+
+def test_talker_samples_from_fp32_logits() -> None:
+    """Both logits paths hand the sampler fp32, and the repetition penalty and the
+    suppression run on it in fp32, as the reference samples."""
+    fake = talker_seed_self(max_bs=2, vocab=4)
+    head = nn.Linear(3, 4, bias=False).to(torch.bfloat16)
+    fake.codec_head = lambda states: (head(states), None)
+    fake.extend_last_index = lambda forward_batch, device: torch.tensor([1, 3])
+    hidden = torch.randn(4, 3, dtype=torch.bfloat16)
+
+    extend = Qwen3OmniTalker.manual_extend_logits(fake, hidden, SimpleNamespace())
+    decode = Qwen3OmniTalker.manual_decode_logits(fake, hidden[:2])
+
+    assert extend.next_token_logits.dtype == torch.float32
+    assert decode.next_token_logits.dtype == torch.float32
+
+    logits = torch.tensor([[2.0, -1.0, 0.5, 1.9], [0.1, 0.2, 0.3, -3.0]])
+    fake.repetition_penalties[:2, 0] = torch.tensor([1.05, 2.0])
+    fake.repetition_mask[0, 0] = True
+    fake.repetition_mask[1, 3] = True
+    fake.suppress_mask[1, 2] = True
+    seen: dict[str, torch.Tensor] = {}
+
+    def sampler(logits_output, *args):
+        seen["logits"] = logits_output.next_token_logits.clone()
+        return logits_output.next_token_logits.argmax(dim=-1)
+
+    fake.sampler = sampler
+    fake.build_static_sampling_info = lambda batch_size: None
+
+    tokens = Qwen3OmniTalker.sample_decode_tokens(
+        fake, logits, SimpleNamespace(positions=None)
+    )
+
+    expected = logits.double()
+    expected[0, 0] /= 1.05
+    expected[1, 3] *= 2.0
+    expected[1, 2] = float("-inf")
+    assert seen["logits"].dtype == torch.float32
+    torch.testing.assert_close(seen["logits"].double(), expected, rtol=0, atol=1e-6)
+    assert tokens.tolist() == [0, 1]
+
+
+def test_talker_sampling_buffers_hold_values_bf16_rounds(monkeypatch) -> None:
+    """A request's repetition penalty, temperature, top_p and min_p reach the talker's
+    sampling buffers exactly, not rounded to the codec embedding's bf16."""
+    vocab = 6
+
+    class Stub(nn.Module):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__()
+
+    class Backbone(nn.Module):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__()
+            self.codec_embedding = nn.Embedding(vocab, 4, dtype=torch.bfloat16)
+            self.cp_enabled = False
+            self.feedback_buffer = None
+            self.feedback_mask = None
+            self.layers = [SimpleNamespace(self_attn=SimpleNamespace(rotary_emb=None))]
+
+    class Predictor(nn.Module):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__()
+            self.model = SimpleNamespace(
+                layers=[
+                    SimpleNamespace(
+                        self_attn=SimpleNamespace(num_kv_heads=1, head_dim=2)
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(talker_module, "Qwen3OmniMoeTalkerConfig", SimpleNamespace)
+    monkeypatch.setattr(talker_module, "Qwen3OmniMoeTalkerTextModel", Backbone)
+    monkeypatch.setattr(talker_module, "ResizeMLP", Stub)
+    monkeypatch.setattr(talker_module, "ReplicatedLinear", Stub)
+    monkeypatch.setattr(talker_module, "Qwen3OmniMoeTalkerCodePredictor", Predictor)
+    monkeypatch.setattr(
+        talker_module, "get_context", lambda: SimpleNamespace(server_args=None)
+    )
+    monkeypatch.setattr(
+        talker_module,
+        "get_schedule",
+        lambda: SimpleNamespace(max_running_requests=2),
+    )
+    monkeypatch.setattr(
+        talker_module, "resolve_fused_predictor_layers", lambda *args: None
+    )
+    monkeypatch.setattr(
+        talker_module, "supports_exact_add_rmsnorm", lambda *args: False
+    )
+    monkeypatch.setattr(
+        Qwen3OmniTalker,
+        "resolve_predictor_rope_store",
+        staticmethod(lambda attention, *, device: False),
+    )
+    monkeypatch.setattr(
+        Qwen3OmniTalker,
+        "normalize_predictor_decode_graph_batch_sizes",
+        staticmethod(lambda server_args, *, max_batch_size: ()),
+    )
+    talker = Qwen3OmniTalker(
+        SimpleNamespace(
+            thinker_hidden_size=4,
+            num_code_groups=2,
+            text_config=SimpleNamespace(
+                intermediate_size=8, hidden_size=4, vocab_size=vocab
+            ),
+        )
+    )
+    request = talker_seed_req(seed=3, rid="r0")
+    request.data.req.sampling_params.repetition_penalty = 1.05
+    request.data.req.sampling_params.temperature = 0.9
+    request.data.req.sampling_params.min_p = 0.05
+
+    talker.prepare_decode_buffers([request])
+
+    exact = torch.tensor([1.05, 0.9, 0.9, 0.05], dtype=torch.float32)
+    held = torch.stack(
+        [
+            talker.repetition_penalties[0, 0],
+            talker.sampling_temperatures[0, 0],
+            talker.sampling_top_ps[0],
+            talker.sampling_min_ps[0],
+        ]
+    )
+    assert torch.equal(held, exact)
+
+
+@torch.no_grad()
+def test_talker_penalty_precompile_leaves_the_first_prefill_samples_nothing_to_compile(
+    monkeypatch,
+) -> None:
+    """A request's first one-row and multi-row prefill samples reuse the penalty graphs
+    the talker compiled after loading, instead of compiling on the request path."""
+    from torch._dynamo.utils import counters
+
+    monkeypatch.setattr(
+        talker_module,
+        "apply_scaling_penalties",
+        torch.compile(
+            inspect.unwrap(talker_module.apply_scaling_penalties),
+            dynamic=True,
+            backend="eager",
+        ),
+    )
+    head = nn.Linear(4, 6, bias=False).to(torch.bfloat16)
+    fake = SimpleNamespace(
+        model=SimpleNamespace(codec_embedding=nn.Embedding(6, 4, dtype=torch.bfloat16)),
+        config=SimpleNamespace(text_config=SimpleNamespace(vocab_size=6)),
+        codec_head=lambda states: (head(states), None),
+        extend_last_index=lambda forward_batch, device: (
+            torch.cumsum(forward_batch.extend_seq_lens, 0) - 1
+        ),
+    )
+    torch._dynamo.reset()  # noqa: leading-underscore  # production name
+    Qwen3OmniTalker.precompile_kernels_after_loading(fake)
+    compiled = counters["stats"]["unique_graphs"]
+
+    for rows in (1, 3):
+        logits = Qwen3OmniTalker.manual_extend_logits(
+            fake,
+            torch.randn(2 * rows, 4, dtype=torch.bfloat16),
+            SimpleNamespace(extend_seq_lens=torch.full((rows,), 2)),
+        ).next_token_logits
+        talker_module.apply_scaling_penalties(logits, torch.full_like(logits, 1.05))
+
+    assert counters["stats"]["unique_graphs"] == compiled
 
 
 @pytest.mark.parametrize(("is_rocm", "expected"), [(True, False), (False, True)])

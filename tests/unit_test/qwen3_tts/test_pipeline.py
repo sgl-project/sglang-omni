@@ -37,15 +37,16 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     split_frames_by_width,
 )
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+from sglang_omni.models.qwen3_tts.prompt_frontend import Qwen3TTSPromptFrontend
 from sglang_omni.models.qwen3_tts.request_builders import (
     Qwen3TTSPreparedRequest,
     Qwen3TTSSGLangRequestData,
     apply_sglang_qwen3_tts_result,
-    build_embedding_cache_key_ids,
     build_qwen3_tts_state,
     build_sglang_qwen3_tts_request,
     derive_qwen3_tts_sampling_seeds,
 )
+from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptConstants
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     IncrementalDecodePlan,
@@ -57,6 +58,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
 from sglang_omni.profiler import event_recorder
 from sglang_omni.profiler.event_recorder import (
     RequestEventSnapshot,
@@ -77,6 +79,24 @@ from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
 from tests.unit_test.fakes import FakeExecutionBridge
+
+
+def placeholder_prompt_constants(
+    custom_voice_speaker_embeds: dict[str, torch.Tensor] | None = None,
+) -> Qwen3TTSPromptConstants:
+    return Qwen3TTSPromptConstants(
+        tts_bos_embed=torch.zeros(1, 1, 4),
+        tts_eos_embed=torch.zeros(1, 1, 4),
+        tts_pad_embed=torch.zeros(1, 1, 4),
+        codec_pad_bos_embed=torch.zeros(1, 2, 4),
+        codec_prefill_embeds={None: torch.zeros(1, 3, 4)},
+        custom_voice_speaker_embeds=custom_voice_speaker_embeds or {},
+        feedback_pad_embed=torch.zeros(4),
+    )
+
+
+def placeholder_prompt_row_cache_keys() -> PromptRowCacheKeys:
+    return PromptRowCacheKeys.for_rows(row_bytes=16, device=torch.device("cpu"))
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -407,8 +427,12 @@ def test_qwen3_tts_engine_attaches_the_vocoder_speech_tokenizer_before_the_pool(
 
     class FakeTalker:
         device = torch.device("cpu")
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
         speech_tokenizer = None
         speaker_encoder_graph_runner = None
+
+        def build_prompt_constants(self):
+            return placeholder_prompt_constants()
 
         def load_speech_tokenizer(self, tokenizer) -> None:
             self.speech_tokenizer = tokenizer
@@ -960,18 +984,6 @@ def test_qwen3_tts_forwards_tts_engine_stage_sampling_params() -> None:
     }
 
 
-def test_qwen3_tts_embedding_cache_keys_are_stable_and_content_based() -> None:
-    """Protects radix-cache keys for Qwen requests that prefill with embeddings."""
-    embeds = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-    same = embeds.clone()
-    different_same_length = torch.tensor([[1.0, 2.0], [3.0, 5.0]])
-
-    assert build_embedding_cache_key_ids(embeds) == build_embedding_cache_key_ids(same)
-    assert build_embedding_cache_key_ids(embeds) != build_embedding_cache_key_ids(
-        different_same_length
-    )
-
-
 def test_qwen3_tts_maps_ref_audio_form_and_explicit_sampling() -> None:
     payload = make_payload(
         inputs="target",
@@ -1117,6 +1129,8 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
         payload,
         model=FakeModel(),
         wrapper=FakeWrapper(),
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
 
     assert prepared.state.seed is None
@@ -1179,11 +1193,6 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
         def text_projection(self, embeds):
             return embeds
 
-    monkeypatch.setattr(
-        qwen3_request_builders,
-        "build_qwen3_tts_pad_embed",
-        lambda model: torch.zeros(4),
-    )
     model = FakeModel()
     wrapper = FakeWrapper()
 
@@ -1202,6 +1211,8 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
         make_uploaded_payload(7),
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     cached = cache.get(
         SpeakerCacheKey("qwen3_tts_icl", "guide", 7, "voice_clone_prompt")
@@ -1217,17 +1228,23 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
         make_uploaded_payload(7),
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     qwen3_request_builders.prepare_qwen3_tts_request(
         make_uploaded_payload(8),
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     cache.clear_voice("guide")
     qwen3_request_builders.prepare_qwen3_tts_request(
         make_uploaded_payload(8),
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
 
     assert calls == 3
@@ -1292,11 +1309,6 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
         def text_projection(self, embeds):
             return embeds
 
-    monkeypatch.setattr(
-        qwen3_request_builders,
-        "build_qwen3_tts_pad_embed",
-        lambda model: torch.zeros(4),
-    )
     model = FakeModel()
     wrapper = FakeWrapper()
 
@@ -1312,11 +1324,15 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
         make_adhoc_payload(),
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     qwen3_request_builders.prepare_qwen3_tts_request(
         make_adhoc_payload(),
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     assert calls == 1
     assert cache.stats()["entries"] == 0
@@ -1325,12 +1341,16 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
         make_adhoc_payload(ref_text="different"),
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     assert calls == 2
     qwen3_request_builders.prepare_qwen3_tts_request(
         make_adhoc_payload(x_vector_only_mode=True),
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     assert calls == 2
     qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
@@ -1439,6 +1459,9 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
         def extract_speaker_embedding(self, *, audio, sr):
             return torch.ones(4)
 
+        def build_prompt_constants(self):
+            return placeholder_prompt_constants()
+
         def build_voice_clone_inputs(self, **kwargs):
             del kwargs
             return (
@@ -1454,11 +1477,6 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
         def text_projection(self, embeds):
             return embeds
 
-    monkeypatch.setattr(
-        qwen3_request_builders,
-        "build_qwen3_tts_pad_embed",
-        lambda model: torch.zeros(4),
-    )
     qwen3_request_builders.set_qwen3_tts_preprocessing_context(
         model=FakeModel(),
         wrapper=FakeWrapper(),
@@ -1821,12 +1839,6 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
         def text_projection(self, embeds):
             return embeds
 
-    monkeypatch.setattr(
-        qwen3_request_builders,
-        "build_qwen3_tts_pad_embed",
-        lambda model: torch.zeros(4),
-    )
-
     payload = make_payload(
         inputs="target",
         tts_params={
@@ -1843,6 +1855,8 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
         payload,
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     cached = cache.get(
         SpeakerCacheKey("qwen3_tts_xvec", "guide", 9, "voice_clone_prompt")
@@ -1855,6 +1869,8 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
         payload,
         model=model,
         wrapper=wrapper,
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
 
     assert calls == 1
@@ -2254,6 +2270,7 @@ def test_qwen3_tts_custom_voice_requires_speaker_table(
             voice="Vivian",
             language="auto",
             non_streaming_mode=True,
+            prompt_constants=placeholder_prompt_constants(),
         )
 
 
@@ -2275,6 +2292,9 @@ def test_qwen3_tts_custom_voice_rejects_invalid_speaker(
             voice="Missing",
             language="auto",
             non_streaming_mode=True,
+            prompt_constants=placeholder_prompt_constants(
+                {"vivian": torch.zeros(1, 1, 4)}
+            ),
         )
 
     assert is_bad_request_error(raised.value)
@@ -6948,12 +6968,6 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
                 None,
             )
 
-    monkeypatch.setattr(
-        qwen3_request_builders,
-        "build_qwen3_tts_pad_embed",
-        lambda model: torch.zeros(4),
-    )
-
     prepared = qwen3_request_builders.prepare_qwen3_tts_request(
         make_payload(
             inputs="target",
@@ -6965,6 +6979,8 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
         ),
         model=FakeModel(),
         wrapper=FakeWrapper(),
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
 
     assert prepared.state.task_type == "CustomVoice"
@@ -7006,12 +7022,6 @@ def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
                 None,
             )
 
-    monkeypatch.setattr(
-        qwen3_request_builders,
-        "build_qwen3_tts_pad_embed",
-        lambda model: torch.zeros(4),
-    )
-
     prepared = qwen3_request_builders.prepare_qwen3_tts_request(
         make_payload(
             inputs="target",
@@ -7022,6 +7032,8 @@ def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
         ),
         model=FakeModel(),
         wrapper=FakeWrapper(),
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
 
     assert prepared.state.task_type == "VoiceDesign"
@@ -7073,6 +7085,8 @@ def test_qwen3_tts_request_contract_errors_are_bad_requests(
             make_payload(inputs="target", tts_params=tts_params),
             model=model,
             wrapper=FakeWrapper(),
+            prompt_constants=placeholder_prompt_constants(),
+            prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
         )
 
     assert is_bad_request_error(raised.value)
@@ -8019,7 +8033,11 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     events: list[str] = []
 
     class FakeModel:
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
         speaker_encoder_graph_runner = None
+
+        def build_prompt_constants(self):
+            return placeholder_prompt_constants()
 
         def load_speech_tokenizer(self, tokenizer) -> None:
             self.speech_tokenizer = tokenizer
@@ -8867,6 +8885,9 @@ def test_qwen3_tts_standalone_preprocessing_ships_tensors_without_registry(
         speech_tokenizer = object()
         speaker_encoder_sample_rate = 24000
 
+        def build_prompt_constants(self):
+            return placeholder_prompt_constants()
+
         def build_voice_clone_inputs(self, **kwargs):
             del kwargs
             return (
@@ -8884,12 +8905,9 @@ def test_qwen3_tts_standalone_preprocessing_ships_tensors_without_registry(
     monkeypatch.setattr(
         qwen3_request_builders,
         "prepare_qwen3_tts_base_request",
-        lambda *, state, model, wrapper: model.build_voice_clone_inputs(),
-    )
-    monkeypatch.setattr(
-        qwen3_request_builders,
-        "build_qwen3_tts_pad_embed",
-        lambda model: torch.zeros(4),
+        lambda *, state, model, wrapper, prompt_constants: (
+            model.build_voice_clone_inputs()
+        ),
     )
     qwen3_request_builders.set_qwen3_tts_preprocessing_context(
         model=FakeModel(), wrapper=FakeWrapper(), standalone=True
@@ -9053,19 +9071,16 @@ def test_qwen3_tts_shared_gpu_layout_demands_no_preprocessing_fraction() -> None
     assert placement.gpus[0].missing_fraction_stage_names == ("tts_engine", "vocoder")
 
 
-def test_qwen3_tts_prompt_frontend_builds_a_custom_voice_prompt() -> None:
-    """The frontend must satisfy the prompt builders it inherits, not just load weights."""
-    from sglang_omni.models.qwen3_tts import prompt_frontend
-
+def make_prompt_frontend() -> Qwen3TTSPromptFrontend:
     talker = SimpleNamespace(
-        vocab_size=6,
-        hidden_size=4,
-        text_vocab_size=9,
-        text_hidden_size=3,
+        vocab_size=12,
+        hidden_size=8,
+        text_vocab_size=12,
+        text_hidden_size=6,
         num_code_groups=3,
-        code_predictor_config=SimpleNamespace(vocab_size=5),
-        spk_id={"vivian": 3},
-        codec_language_id={"en": 1},
+        code_predictor_config=SimpleNamespace(vocab_size=7),
+        spk_id={"Vivian": 9},
+        codec_language_id={"english": 6, "chinese": 7},
         codec_pad_id=0,
         codec_bos_id=1,
         codec_nothink_id=2,
@@ -9080,22 +9095,103 @@ def test_qwen3_tts_prompt_frontend_builds_a_custom_voice_prompt() -> None:
         tts_eos_token_id=1,
         tts_pad_token_id=2,
     )
-    frontend = prompt_frontend.Qwen3TTSPromptFrontend(
-        root, device="cpu", dtype=torch.float32
+    return Qwen3TTSPromptFrontend(root, device="cpu", dtype=torch.float32)
+
+
+def embed_text_rows(frontend: Qwen3TTSPromptFrontend, ids: list[int]) -> torch.Tensor:
+    return frontend.text_projection(frontend.get_text_embeddings()(torch.tensor([ids])))
+
+
+def embed_codec_rows(frontend: Qwen3TTSPromptFrontend, ids: list[int]) -> torch.Tensor:
+    return frontend.get_input_embeddings()(torch.tensor([ids]))
+
+
+def test_qwen3_tts_custom_voice_prompts_match_fresh_embeddings() -> None:
+    frontend = make_prompt_frontend()
+    prompt_constants = frontend.build_prompt_constants()
+    input_ids = [3, 4, 5, 6, 7, 8, 9, 10, 11, 3, 4]
+    for non_streaming_mode, text_ids, codec_ids, trailing_ids in (
+        (False, [6], [1], [7, 8, 1]),
+        (True, [6, 7, 8, 1, 2], [0, 0, 0, 0, 1], [2]),
+    ):
+        embeds, _, trailing, _ = frontend.build_custom_voice_inputs(
+            input_id=torch.tensor([input_ids]),
+            voice="VIVIAN",
+            language="english",
+            non_streaming_mode=non_streaming_mode,
+            prompt_constants=prompt_constants,
+        )
+        expected = torch.cat(
+            [
+                embed_text_rows(frontend, input_ids[:3]),
+                embed_text_rows(frontend, [2, 2, 2, 2, 2, 0, *text_ids])
+                + embed_codec_rows(frontend, [3, 4, 6, 5, 9, 0, *codec_ids]),
+            ],
+            dim=1,
+        )
+        torch.testing.assert_close(embeds, expected)
+        torch.testing.assert_close(trailing, embed_text_rows(frontend, trailing_ids))
+    assert torch.equal(
+        prompt_constants.feedback_pad_embed, embed_text_rows(frontend, [2])[0, 0]
     )
-    input_id = torch.arange(12, dtype=torch.long).unsqueeze(0) % 9
-    embeds, attention_mask, trailing, ref_code = frontend.build_custom_voice_inputs(
-        input_id=input_id,
-        voice="vivian",
-        language="en",
-        non_streaming_mode=False,
-        instruct_id=None,
-    )
-    assert ref_code is None
-    assert embeds.shape[0] == 1 and embeds.shape[-1] == talker.hidden_size
-    assert attention_mask.shape == (1, embeds.shape[1])
-    assert trailing.shape[-1] == talker.hidden_size
-    assert torch.isfinite(embeds).all()
+
+
+def test_qwen3_tts_icl_prompts_match_fresh_embeddings() -> None:
+    frontend = make_prompt_frontend()
+    prompt_constants = frontend.build_prompt_constants()
+    code_tables = [
+        frontend.get_input_embeddings(),
+        *frontend.code_predictor.model.codec_embedding,
+    ]
+    input_ids = [3, 4, 5, 6, 7, 8, 9, 10, 11, 3, 4]
+    ref_ids = [3, 4, 5, 10, 11, 9, 10]
+    speaker_embed = torch.randn(8)
+    for non_streaming_mode, frames, text_ids, codec_pads, trailing_ids in (
+        (False, 3, [10, 11, 6, 7], 0, [8, 1]),
+        (False, 7, [10, 11, 6, 7, 8, 1, 2, 2], 0, [2]),
+        (True, 3, [10, 11, 6, 7, 8, 1, 2, 2, 2, 2], 6, [2]),
+    ):
+        ref_code = torch.randint(0, 7, (frames, 3))
+        embeds, _, trailing, _ = frontend.build_voice_clone_inputs(
+            input_id=torch.tensor([input_ids]),
+            ref_id=torch.tensor([ref_ids]),
+            voice_clone_prompt={
+                "ref_spk_embedding": [speaker_embed],
+                "ref_code": [ref_code],
+                "icl_mode": [True],
+            },
+            language="auto",
+            non_streaming_mode=non_streaming_mode,
+            prompt_constants=prompt_constants,
+        )
+        frame_rows = sum(
+            table(ref_code[:, group]) for group, table in enumerate(code_tables)
+        )
+        expected = torch.cat(
+            [
+                embed_text_rows(frontend, input_ids[:3]),
+                embed_text_rows(frontend, [2, 2, 2, 2, 0])
+                + torch.cat(
+                    [
+                        embed_codec_rows(frontend, [2, 4, 5]),
+                        speaker_embed.view(1, 1, -1),
+                        embed_codec_rows(frontend, [0]),
+                    ],
+                    dim=1,
+                ),
+                embed_text_rows(frontend, text_ids)
+                + torch.cat(
+                    [
+                        embed_codec_rows(frontend, [0] * codec_pads + [1]),
+                        frame_rows.unsqueeze(0),
+                    ],
+                    dim=1,
+                ),
+            ],
+            dim=1,
+        )
+        torch.testing.assert_close(embeds, expected)
+        torch.testing.assert_close(trailing, embed_text_rows(frontend, trailing_ids))
 
 
 def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:

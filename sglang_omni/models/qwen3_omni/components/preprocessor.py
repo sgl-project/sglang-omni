@@ -16,8 +16,9 @@ import numpy as np
 import numpy.typing as npt
 import torch
 import xxhash
+from sglang.srt.utils.hf_transformers.common import get_context_length
 from tokenizers.normalizers import NFC
-from transformers import BatchFeature, PreTrainedTokenizerBase
+from transformers import AutoConfig, BatchFeature, PreTrainedTokenizerBase
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
@@ -322,7 +323,6 @@ class Qwen3OmniPreprocessor:
         video_total_pixels: int | None = None,
     ) -> None:
         self.model_path = model_path
-        self.max_seq_len = max_seq_len
         self.default_video_fps = float(video_fps) if video_fps is not None else None
         self.default_video_max_frames = (
             int(video_max_frames) if video_max_frames is not None else None
@@ -337,6 +337,13 @@ class Qwen3OmniPreprocessor:
             int(video_total_pixels) if video_total_pixels is not None else None
         )
         self.model_dir = resolve_local_model_dir(model_path)
+        if max_seq_len is None:
+            thinker_text_config = AutoConfig.from_pretrained(
+                self.model_dir, trust_remote_code=True
+            ).thinker_config.text_config
+            self.max_seq_len = get_context_length(thinker_text_config)
+        else:
+            self.max_seq_len = max_seq_len
         # Only override ``extra_special_tokens`` when the checkpoint omits them
         # (transformers 5.x layout). Passing an empty dict would clobber the
         # tokens a transformers 4.x checkpoint already declares in its config.

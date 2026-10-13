@@ -606,9 +606,15 @@ SESSION_TEARDOWN_HOLD_S = 1.5
 class CappedPeerServer:
     """Fake native peers behind a session cap, counting what is open at once."""
 
-    def __init__(self, capacity: int | None = None, hold_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        capacity: int | None = None,
+        hold_s: float = 0.0,
+        initial_denials: int = 0,
+    ) -> None:
         self.capacity = capacity
         self.hold_s = hold_s
+        self.initial_denials = initial_denials
         self.open_count = 0
         self.peak_open = 0
         self.denials = 0
@@ -616,7 +622,9 @@ class CappedPeerServer:
     def process_request(
         self, connection: ServerConnection, request: Request
     ) -> Response | None:
-        if self.capacity is not None and self.open_count >= self.capacity:
+        if self.denials < self.initial_denials or (
+            self.capacity is not None and self.open_count >= self.capacity
+        ):
             self.denials += 1
             return connection.respond(
                 HTTPStatus.SERVICE_UNAVAILABLE, "connection capacity exhausted\n"
@@ -674,7 +682,7 @@ def test_run_samples_keeps_at_most_concurrency_sessions_open(tmp_path: Path) -> 
     assert load["initial_delay_s"]["p90"] <= load["initial_delay_s"]["max"]
     assert load["input_pacing_violations"] == 0
     assert load["max_input_pacing_deviation_s"] <= PACKET_MS / 1000
-    assert load["admission_denied_variants"] == 0
+    assert load["variants_with_admission_denials"] == 0
     assert load["variants_passed"] == 8
     assert load["recording_wall_s"] == max(
         session["finished_s"] for session in sessions
@@ -715,8 +723,61 @@ def test_run_samples_accounts_sessions_the_server_refuses_past_its_cap(
     assert all(
         variant["status"] == "pass" for variant in variants if variant not in denied
     )
-    assert result["load"]["admission_denied_variants"] == len(denied)
+    assert result["load"]["variants_with_admission_denials"] == len(denied)
     assert result["load"]["variants_passed"] == len(variants) - len(denied)
+    assert result["load"]["input_pacing_violations"] == 0
+
+
+def test_load_counts_a_recovered_variant_once_after_multiple_denials(
+    tmp_path: Path,
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    peer_server = CappedPeerServer(initial_denials=2)
+
+    result = asyncio.run(
+        peer_server.record(dataset, output, sample_ids=["user_interruption/1"])
+    )
+
+    variants = result["samples"][0]["variants"].values()
+    assert [variant["output"]["admission_denials"] for variant in variants] == [2, 0]
+    assert all(variant["status"] == "pass" for variant in variants)
+    assert result["load"]["variants_with_admission_denials"] == 1
+    assert result["load"]["variants_passed"] == 2
+    assert result["load"]["input_pacing_violations"] == 0
+    assert json.loads((output / "run.json").read_text()) == result
+
+
+@pytest.mark.parametrize(
+    "max_deviation_s,within_tolerance,expected_violations",
+    [(None, False, 0), (0.0, True, 0), (0.1, False, 1)],
+)
+def test_load_counts_only_measured_pacing_violations(
+    max_deviation_s: float | None,
+    within_tolerance: bool,
+    expected_violations: int,
+) -> None:
+    samples = [
+        {
+            "variants": {
+                "overlap": {
+                    "input_timing": {
+                        "max_abs_deviation_s": max_deviation_s,
+                        "within_tolerance": within_tolerance,
+                    },
+                    "output": None,
+                    "session": None,
+                    "errors": [],
+                    "status": "fail",
+                }
+            }
+        }
+    ]
+
+    assert (
+        v15_runner.summarize_load(samples, 1)["input_pacing_violations"]
+        == expected_violations
+    )
 
 
 def test_run_samples_rejects_a_concurrency_below_one(tmp_path: Path) -> None:

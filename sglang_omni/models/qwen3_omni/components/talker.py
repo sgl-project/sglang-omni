@@ -935,7 +935,7 @@ class Qwen3OmniTalker(nn.Module):
         self.repetition_penalties = torch.ones(
             max_batch_size,
             1,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.suppress_mask = torch.zeros(
@@ -947,12 +947,12 @@ class Qwen3OmniTalker(nn.Module):
         self.sampling_temperatures = torch.ones(
             max_batch_size,
             1,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_top_ps = torch.ones(
             max_batch_size,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_top_ks = torch.full(
@@ -963,7 +963,7 @@ class Qwen3OmniTalker(nn.Module):
         )
         self.sampling_min_ps = torch.zeros(
             max_batch_size,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_seeds = torch.zeros(
@@ -1367,7 +1367,7 @@ class Qwen3OmniTalker(nn.Module):
         pruned_states = hidden_states[last_index]
         next_token_logits, _ = self.codec_head(pruned_states)
         return LogitsProcessorOutput(
-            next_token_logits=next_token_logits,
+            next_token_logits=next_token_logits.float(),
             hidden_states=pruned_states,
         )
 
@@ -1377,8 +1377,10 @@ class Qwen3OmniTalker(nn.Module):
     ) -> LogitsProcessorOutput:
         """Compute codec logits directly for decode/CUDA-graph capture."""
         next_token_logits, _ = self.codec_head(hidden_states)
+        # note (ratish): sglang's sampler divides and softmaxes in the logits' own dtype.
+        # The reference samples from fp32 logits, as sglang's logits processor returns them.
         return LogitsProcessorOutput(
-            next_token_logits=next_token_logits,
+            next_token_logits=next_token_logits.float(),
             hidden_states=hidden_states,
         )
 
@@ -1388,9 +1390,7 @@ class Qwen3OmniTalker(nn.Module):
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         batch_size = logits.shape[0]
-        logits = logits.clone()
-
-        penalties = self.repetition_penalties[:batch_size].to(dtype=logits.dtype)
+        penalties = self.repetition_penalties[:batch_size]
         penalized_logits = torch.where(
             logits > 0, logits / penalties, logits * penalties
         )
@@ -1930,8 +1930,9 @@ class Qwen3OmniTalker(nn.Module):
 
     @torch.no_grad()
     def precompile_kernels_after_loading(self) -> None:
-        """Compile the repetition penalty a request's first sample would compile: one row
-        and several rows are two graphs, as a dimension of 1 specializes."""
+        """Compile the repetition penalty a request's first sample would compile, on the
+        float32 logits it receives: one row and several rows are two graphs, as a
+        dimension of 1 specializes."""
         activations = self.model.codec_embedding.weight
         for rows in (1, 2):
             apply_scaling_penalties(
@@ -1939,7 +1940,7 @@ class Qwen3OmniTalker(nn.Module):
                     rows,
                     self.config.text_config.vocab_size,
                     device=activations.device,
-                    dtype=activations.dtype,
+                    dtype=torch.float32,
                 ),
                 torch.ones(
                     rows,

@@ -14,7 +14,12 @@ from numpy.typing import NDArray
 from pydantic import JsonValue
 from scipy.signal import resample_poly
 
-from benchmarks.duplex.reference_capture import TraceFormat, parse_pcm16_trace
+from benchmarks.duplex.profiles import PROFILES
+from benchmarks.duplex.reference_capture import (
+    AUDIO_DELTA,
+    TraceFormat,
+    parse_pcm16_trace,
+)
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.duplex.v15_audio import PACING_TOLERANCE_S
 
@@ -133,8 +138,12 @@ def analyze_variant(
     trace_format: TraceFormat,
     expected_input_sha: str | None,
     receipts_required: bool = False,
+    profile_rate: int | None = None,
 ) -> tuple[dict[str, JsonValue], bytes | None, NDArray[np.int16] | None]:
-    """Stream one trace; return (record, input_pcm or None, output int16 at 16 kHz or None)."""
+    """Stream one trace; return (record, input_pcm or None, output int16 at 16 kHz or None).
+
+    profile_rate is the recorded profile's output rate for the legacy format.
+    """
     reasons, post_window_events, anomalies = [], [], []
     pcm_path, trace_path = variant_dir / "input.pcm", variant_dir / "continuous.jsonl"
     if not pcm_path.is_file() or not trace_path.is_file():
@@ -180,6 +189,8 @@ def analyze_variant(
     }
     first_audio_s = last_audio_s = None
     live_after_t = False
+    interrupts_on_speech = None
+    barge_in_cuts = 0
     created_responses, response_terminals = set(), {}
     closed_count, close_times_s = 0, []
     accepted_receipts = {}
@@ -195,7 +206,9 @@ def analyze_variant(
             post_window_events.append({"elapsed_s": at(time_s), "message": message})
 
     with trace_path.open(encoding="utf-8") as handle:
-        for capture in parse_pcm16_trace(handle, samples, packet):
+        for capture in parse_pcm16_trace(
+            handle, samples, packet, trace_format, profile_rate
+        ):
             line_number = capture.line_number
             if capture.row is None:
                 reasons.append(capture.read_error)
@@ -250,6 +263,17 @@ def analyze_variant(
                     accepted_receipts.setdefault(f"sent:{kind}", at(time_s))
                 else:
                     pass
+                if (
+                    trace_format is TraceFormat.LEGACY_PCM16
+                    and kind == "session.update"
+                    and interrupts_on_speech is None
+                ):
+                    turn_detection = event["session"].get("turn_detection") or {}
+                    interrupts_on_speech = (
+                        turn_detection.get("interrupt_response") is not False
+                    )
+                else:
+                    pass
                 continue
             else:
                 pass
@@ -293,7 +317,24 @@ def analyze_variant(
                 "sglang.input_audio.ended",
             ):
                 accepted_receipts.setdefault(kind, at(time_s))
-            elif kind == "response.output_audio.delta":
+            elif trace_format is TraceFormat.LEGACY_PCM16 and (
+                kind == "output_audio_buffer.cleared"
+                or (
+                    kind == "input_audio_buffer.speech_started" and interrupts_on_speech
+                )
+            ):
+                if playout is None:
+                    continue
+                else:
+                    pass
+                cut = round(at(time_s) * out_rate)
+                if cut < cursor:
+                    playout[cut : min(cursor, len(playout))] = 0
+                    cursor = cut
+                    barge_in_cuts += 1
+                else:
+                    pass
+            elif kind == AUDIO_DELTA[trace_format]:
                 try:
                     if first_append_s is None:
                         raise ValueError("audio before first input append")
@@ -516,6 +557,10 @@ def analyze_variant(
             "first_playout_start_s": first_audio_s,
             "last_contributing_receipt_s": last_audio_s,
         }
+        if trace_format is TraceFormat.LEGACY_PCM16:
+            record["output"]["barge_in_cuts"] = barge_in_cuts
+        else:
+            pass
         record["boundary"] = {
             "playout_active_at_T": bool(cursor is not None and cursor > crop_at),
             "queued_audio_cropped_s": (
@@ -548,6 +593,19 @@ def load_runs(runs: list[Path], trace_format: TraceFormat) -> tuple[
             )
         else:
             pass
+        profile = manifest.get("profile")
+        protocol = PROFILES[profile].protocol if profile in PROFILES else None
+        if trace_format is TraceFormat.LEGACY_PCM16 and protocol != "legacy":
+            raise ValueError(
+                f"{run} profile {profile!r} did not record the legacy protocol"
+            )
+        elif trace_format is TraceFormat.PCM16 and protocol == "legacy":
+            raise ValueError(
+                f"{run} profile {profile!r} recorded the legacy protocol; export it "
+                f"with --trace-format {TraceFormat.LEGACY_PCM16.value}"
+            )
+        else:
+            pass
         sources.append(
             {
                 "run": str(run),
@@ -576,7 +634,8 @@ def load_runs(runs: list[Path], trace_format: TraceFormat) -> tuple[
 
 
 def diagnostics(run: Path, state: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    """Preserve recorder verdicts verbatim-by-field; they never decide eligibility."""
+    """Preserve recorder verdicts verbatim-by-field; only the legacy export gates on
+    the protocol verdict, and it reads run.json for that."""
     kept = {k: v for k, v in state.items() if k not in ("files", "input_timing")}
     directory = run / state["directory"]
     if (directory / "report.json").is_file():

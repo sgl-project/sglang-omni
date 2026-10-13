@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Record the native full-duplex session protocol over a real WebSocket."""
+"""Record native full-duplex or legacy turn-based sessions over a real WebSocket."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 import websockets
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, ProfileName
+from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 
 SAMPLE_RATE = 16000
 PACKET_MS = 80
@@ -42,6 +42,33 @@ TRANSPORT: dict[str, JsonValue] = {
     "input_end": "first append send start + unpadded input duration",
     "input_send_receipts": SEND_RECEIPTS_FILE,
 }
+# note (luojiaxuan): The legacy protocol has no end/drain receipts, so the session
+# ends by a liveness probe a fixed tail after the input end instead.
+LEGACY_TAIL_S = 1.0
+LEGACY_TRANSPORT: dict[str, JsonValue] = {
+    "input_receipts": "none: no accepted, ended or drained events",
+    "session_end": "input end + tail, then a no-op session.update liveness probe; "
+    "the socket closes after its session.updated without session.close",
+}
+
+
+class TurnDetection(BaseModel):
+    """session.update turn_detection; the server validates every other field."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    type: Literal["server_vad", "semantic_vad"]
+
+
+def legacy_protocol(profile: ProfileName, turn_detection: TurnDetection | None) -> bool:
+    """Whether profile records the legacy protocol, which alone takes turn_detection."""
+    legacy = PROFILES[profile].protocol == "legacy"
+    if legacy != (turn_detection is not None):
+        raise ValueError(
+            "turn_detection is required by legacy-protocol profiles and rejected by "
+            "native ones"
+        )
+    else:
+        return legacy
 
 
 class InputAudioMetadata(TypedDict):
@@ -63,12 +90,29 @@ async def run_session(
     trace_path: Path,
     timeout_s: float = 90.0,
     profile: ProfileName = DEFAULT_PROFILE,
+    turn_detection: TurnDetection | None = None,
+    tail_s: float = LEGACY_TAIL_S,
 ) -> None:
-    """Save observations and failures; classification belongs to offline replay."""
+    """Save observations and failures; classification belongs to offline replay.
+
+    turn_detection configures a legacy-protocol session; tail_s is the delay after
+    the input end before that session's liveness probe.
+    """
     if not pcm or len(pcm) % 2:
         raise ValueError("Input must be nonempty PCM16")
     else:
         pass
+    legacy = legacy_protocol(profile, turn_detection)
+    requested_type = turn_detection.type if turn_detection is not None else None
+    configure: dict[str, JsonValue] = (
+        {"output_modalities": ["audio"]}
+        if turn_detection is None
+        else {
+            "modalities": ["text", "audio"],
+            "turn_detection": turn_detection.model_dump(mode="json"),
+        }
+    )
+    input_s = len(pcm) / (2 * SAMPLE_RATE)
 
     receipts: list[SendReceipt] = []
     with trace_path.open("x", encoding="utf-8", buffering=1) as trace_file:
@@ -124,6 +168,7 @@ async def run_session(
         async def exchange() -> None:
             async with await admit() as websocket:
                 seen: dict[str, asyncio.Event] = {}
+                latest: dict[str, dict[str, JsonValue]] = {}
                 aborted = asyncio.Event()
                 fatal = False
 
@@ -135,7 +180,7 @@ async def run_session(
                         "session.close",
                     ],
                     *,
-                    session: dict[str, list[str]] | None = None,
+                    session: dict[str, JsonValue] | None = None,
                     audio: str | None = None,
                     sglang: InputAudioMetadata | None = None,
                 ) -> None:
@@ -206,6 +251,7 @@ async def run_session(
                                 f"{frame[:FRAME_EXCERPT_CHARS]!r}: "
                                 f"{type(exc).__name__}: {exc}"
                             ) from exc
+                        latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
                         if event_type == "error":
                             # note (wenyao): Close waits for adapter teardown.
@@ -221,16 +267,33 @@ async def run_session(
                     else:
                         pass
 
+                def echoed_turn_detection_type() -> JsonValue:
+                    session_fields = latest["session.updated"].get("session")
+                    turn = (
+                        session_fields.get("turn_detection")
+                        if isinstance(session_fields, dict)
+                        else None
+                    )
+                    return turn.get("type") if isinstance(turn, dict) else None
+
                 async def drive() -> None:
                     streamed = False
                     if await settle("session.created"):
-                        await send(
-                            "session.update",
-                            session={"output_modalities": ["audio"]},
-                        )
+                        await send("session.update", session=configure)
                     else:
                         pass
                     if await settle("session.updated"):
+                        # note (luojiaxuan): The facade substitutes server_vad when no
+                        # Smart Turn model is loaded, so the echo is the only evidence
+                        # of which detector ran.
+                        echoed = echoed_turn_detection_type() if legacy else None
+                        if echoed != requested_type:
+                            raise RuntimeError(
+                                f"session.updated echoed turn_detection.type {echoed!r}, "
+                                f"requested {requested_type!r}"
+                            )
+                        else:
+                            pass
                         streamed = True
                         start_s = time.perf_counter()
                         for sequence, byte_offset in enumerate(
@@ -266,15 +329,27 @@ async def run_session(
                             max(
                                 0.0,
                                 receipts[0]["start_s"]
-                                + len(pcm) / (2 * SAMPLE_RATE)
+                                + input_s
+                                + (tail_s if legacy else 0.0)
                                 - time.perf_counter(),
                             )
                         )
-                        if not aborted.is_set():
+                        if aborted.is_set():
+                            pass
+                        elif legacy:
+                            # note (luojiaxuan): The facade acknowledges no other
+                            # client event after the input, so a no-op update is the
+                            # liveness proof at the end of the window.
+                            seen["session.updated"].clear()
+                            await send("session.update", session={})
+                            await settle("session.updated")
+                        else:
                             await send("sglang.input_audio.end")
                             await settle("sglang.input_audio.drained")
-                        else:
-                            pass
+                    else:
+                        pass
+                    if legacy:
+                        return
                     else:
                         pass
                     closed = seen.setdefault("session.closed", asyncio.Event())

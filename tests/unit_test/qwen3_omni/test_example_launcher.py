@@ -274,7 +274,7 @@ def make_args(**overrides) -> argparse.Namespace:
         gpu_audio_encoder=None,
         thinker_tp_size=1,
         gpu_thinker_tp=None,
-        thinker_max_seq_len=8192,
+        thinker_max_seq_len=None,
         talker_max_seq_len=None,
         mem_fraction_static=None,
         thinker_mem_fraction_static=None,

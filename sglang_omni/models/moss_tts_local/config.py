@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import os
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -18,9 +18,6 @@ from sglang_omni.config import (
 from sglang_omni.utils.cpu import bounded_intraop_threads
 
 _PKG = "sglang_omni.models.moss_tts_local"
-# Keep reference encoding with AR so process-scoped SGLang accounting includes
-# its codec allocation. The vocoder is isolated: its Python-heavy packed decode
-# otherwise stalls the AR scheduler thread under ordinary serving concurrency.
 _COLOCATED_PREPROCESSING_GPU_MEMORY_FRACTION = 0.15
 _COLOCATED_AR_GPU_MEMORY_FRACTION = 0.67
 _COLOCATED_VOCODER_GPU_MEMORY_FRACTION = 0.18
@@ -65,16 +62,14 @@ def stages(*, codec_gpu: int, colocated: bool) -> list[StageConfig]:
     return [
         StageConfig(
             name="preprocessing",
-            process="pipeline",
+            process="preprocessing",
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             factory=FactoryArgs(
                 compute_dtype="bfloat16",
                 attention_backend="auto",
                 max_concurrency=_PREPROCESSING_MAX_CONCURRENCY,
             ),
-            gpu_memory_fraction=(
-                _COLOCATED_PREPROCESSING_GPU_MEMORY_FRACTION if colocated else None
-            ),
+            gpu_memory_fraction=_COLOCATED_PREPROCESSING_GPU_MEMORY_FRACTION,
             gpu=0,
             next="tts_engine",
         ),
@@ -87,7 +82,9 @@ def stages(*, codec_gpu: int, colocated: bool) -> list[StageConfig]:
                 mem_fraction_static=None if colocated else _AR_MEM_FRACTION_STATIC
             ),
             gpu_memory_fraction=(
-                _COLOCATED_AR_GPU_MEMORY_FRACTION if colocated else None
+                _COLOCATED_AR_GPU_MEMORY_FRACTION
+                if colocated
+                else _AR_MEM_FRACTION_STATIC
             ),
             gpu=0,
             next="vocoder",
@@ -152,15 +149,10 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         "tts_engine": EngineStageConfig,
     }
 
-    @classmethod
-    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (Akazaakane): preprocessing publishes prepared requests into a
-        # module-level PreparedRequestQueue that the AR stage pops in-process.
-        return frozenset({("preprocessing", "tts_engine")})
-
     stages: list[StageConfig] = Field(
         default_factory=lambda: stages(codec_gpu=0, colocated=True)
     )
+    mps: Literal["off", "on", "auto"] = "auto"
 
     # note (Zhang Yiyang): These options only control streaming vocoder graphs;
     # AR engine graph settings are scoped to tts_engine.engine.

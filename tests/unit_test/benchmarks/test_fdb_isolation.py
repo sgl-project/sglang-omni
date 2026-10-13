@@ -12,16 +12,16 @@ from unittest.mock import Mock
 import pytest
 from typer.testing import CliRunner
 
-from benchmarks.duplex.fdb_v15.common import (
+from benchmarks.duplex.fdb.common import (
     DEFAULT_JUDGE_PORT,
     DEFAULT_SERVER_PORT,
     JOB_PORT_STRIDE,
     NCCL_PORT_END,
     load_settings,
 )
-from benchmarks.duplex.fdb_v15.generate import generate
-from benchmarks.duplex.fdb_v15.selection import SampleSelection
-from benchmarks.duplex.fdb_v15.servers import model_server_command
+from benchmarks.duplex.fdb.generate import generate
+from benchmarks.duplex.fdb.selection import SampleSelection
+from benchmarks.duplex.fdb.servers import model_server_command
 from sglang_omni.cli import app
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.native_config import (
@@ -121,7 +121,13 @@ def test_generate_refuses_more_shards_than_the_server_admits(
         match=f"--num-shards {num_shards} exceeds the model server's max_sessions "
         f"{DEFAULT_MAX_SESSIONS}",
     ):
-        generate(settings, 1, SampleSelection(per_subset=1), num_shards=num_shards)
+        generate(
+            settings,
+            1,
+            SampleSelection(per_subset=1),
+            SampleSelection(per_subset=0),
+            num_shards=num_shards,
+        )
     assert not (tmp_path / "fdb").exists()
 
 

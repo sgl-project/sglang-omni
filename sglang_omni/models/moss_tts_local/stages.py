@@ -68,7 +68,7 @@ class ArMemoryBudget:
 
 
 def configure_pipeline_threads(worker_count: int) -> int:
-    """Bound the shared Torch CPU pool used by the colocated pipeline process."""
+    """Bound the Torch CPU pool used by preprocessing workers."""
     override = os.environ.get("OMP_NUM_THREADS", "").strip()
     if override.isdigit() and int(override) >= 1:
         requested = int(override)
