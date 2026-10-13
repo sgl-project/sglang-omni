@@ -57,7 +57,7 @@ def test_skipped_decode_preserves_live_pages(page_size, prompt_lengths):
         )
         req.kv.kv_committed_len = length
         req.kv.kv_allocated_len = length
-        req._omni_data = SimpleNamespace(pending_text_queue=deque())
+        req.omni_data = SimpleNamespace(pending_text_queue=deque())
         reqs.append(req)
     batch = SimpleNamespace(
         reqs=reqs,
@@ -67,7 +67,7 @@ def test_skipped_decode_preserves_live_pages(page_size, prompt_lengths):
     )
     scheduler = object.__new__(NemotronTalkerScheduler)
     scheduler.token_to_kv_pool_allocator = allocator
-    scheduler._model_runner = object.__new__(NemotronVoiceChatTalkerModelRunner)
+    scheduler.model_runner = object.__new__(NemotronVoiceChatTalkerModelRunner)
     initial_free = allocator.available_size()
     committed = pool.clone()
 
@@ -121,7 +121,7 @@ def test_skipped_decode_preserves_live_pages(page_size, prompt_lengths):
             assert_competing_allocation_preserves_live_pages()
 
         for req in reqs:
-            req._omni_data.pending_text_queue.append(12)
+            req.omni_data.pending_text_queue.append(12)
         assert scheduler.get_next_batch_to_run() is batch
         assert_competing_allocation_preserves_live_pages()
         for index, req in enumerate(reqs):

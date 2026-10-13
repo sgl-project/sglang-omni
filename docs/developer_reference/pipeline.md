@@ -53,9 +53,20 @@ Stage responsibilities:
 - drain `scheduler.outbox` and convert scheduler output into control-plane
   messages
 
+A stage whose config lists `http_routes` also serves the ASGI app its
+scheduler returns from `http_app()`, on a Unix socket in the pipeline's IPC
+runtime directory, from a thread with its own event loop. The app's lifespan
+starts before the stage reports ready and ends when the stage stops, and the
+Omni HTTP server relays every request under those path prefixes to the
+socket as ASGI messages, streaming bodies both ways and passing a client
+disconnect on. A runtime that already lives in the stage process, such as a
+native engine with its own HTTP API, therefore serves that API without being
+imported into the HTTP process, and its routes answer 503 with the cause when
+the stage stops serving.
+
 The important invariant is that `Stage` does not branch on scheduler type.
-`SimpleScheduler`, `OmniScheduler`, and streaming schedulers all present the
-same surface.
+`SimpleScheduler`, `OmniScheduler`, `SessionScheduler` (stages that keep state
+per session), and streaming schedulers all present the same surface.
 
 ### Scheduler
 
@@ -108,6 +119,23 @@ inbox.get() -> compute function -> outbox.put(result or error)
 
 It supports a batch compute function for stages where local batching is
 useful.
+
+#### SessionScheduler
+
+`SessionScheduler` serves stages that keep state per session. Each request is
+one session operation: open, append, or close. The stage keeps one cursor per
+session, so a session's operations run in arrival order.
+
+With `SessionHooks`, each call runs one unit and concurrent workers serve
+different sessions. With `BatchedSessionHooks`, `append_batch` runs the
+earliest ready unit of every ready session in one call; that one hook call
+replaces the concurrent workers. When fewer sessions are ready than open, an
+idle stage waits up to `gather_window_ms` for more appends; each stage derives
+that window from its own per-call floor, and 0 runs with what is ready.
+
+A session whose state exceeds `max_state_bytes_per_session` after an append
+is ended alone. An exception raised by `append_batch` ends every session in
+that call. Sessions outside the failed call continue.
 
 #### Code2WavScheduler
 

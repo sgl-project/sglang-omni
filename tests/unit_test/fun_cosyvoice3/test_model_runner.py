@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from array import array
 from types import SimpleNamespace
 
 import pytest
@@ -25,26 +26,50 @@ from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
 
 def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
-    runner._outbox = None
+    runner.outbox = None
     requests = [
         SimpleNamespace(data=CosyVoice3SGLangRequestData()),
         SimpleNamespace(data=CosyVoice3SGLangRequestData()),
     ]
     result = SimpleNamespace(next_token_ids=torch.tensor([[EOS_ID], [13]]))
 
-    runner._collect_tokens(result, None, None, requests)
+    runner.collect_tokens(result, None, None, requests)
 
     assert requests[0].data.output_codes == []
     assert [code.item() for code in requests[1].data.output_codes] == [13]
     assert requests[1].data.output_codes[0].dtype == torch.long
+    assert runner.resolve_host_token_ids(result).tolist() == [EOS_ID, 13]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cosyvoice3_runner_reads_cuda_token_ids_through_pinned_staging() -> None:
+    """A pageable read of the step's ids stalls other threads' kernel launches."""
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.outbox = None
+    runner.token_id_host_bufs = None
+    runner.token_id_host_slot = 0
+    requests = [
+        SimpleNamespace(data=CosyVoice3SGLangRequestData()),
+        SimpleNamespace(data=CosyVoice3SGLangRequestData()),
+    ]
+    result = SimpleNamespace(
+        next_token_ids=torch.tensor([EOS_ID, 13], dtype=torch.int32, device="cuda")
+    )
+
+    runner.collect_tokens(result, None, None, requests)
+
+    host_token_ids = runner.resolve_host_token_ids(result)
+    assert host_token_ids.is_pinned()
+    assert host_token_ids.tolist() == [EOS_ID, 13]
 
 
 def test_cosyvoice3_runner_skips_all_control_tokens() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
-    runner._outbox = None
+    runner.outbox = None
     requests = [SimpleNamespace(data=CosyVoice3SGLangRequestData())]
 
-    runner._collect_tokens(
+    runner.collect_tokens(
         SimpleNamespace(next_token_ids=torch.tensor([VOCAB_SIZE + 3])),
         None,
         None,
@@ -63,7 +88,7 @@ def test_cosyvoice3_runner_samples_before_prefill_and_decode_collection() -> Non
 
 def test_cosyvoice3_mlx_runner_collects_exact_scheduler_rows() -> None:
     runner = object.__new__(FunCosyVoice3MlxSchedulerModelRunner)
-    runner._resolve_skip_rids = set()
+    runner.resolve_skip_rids = set()
     requests = [
         SimpleNamespace(request_id="first", data=SimpleNamespace(output_codes=[])),
         SimpleNamespace(request_id="second", data=SimpleNamespace(output_codes=[])),
@@ -79,7 +104,7 @@ def test_cosyvoice3_mlx_runner_collects_exact_scheduler_rows() -> None:
     assert [code.item() for code in requests[0].data.output_codes] == [13]
     assert requests[1].data.output_codes == []
 
-    runner._resolve_skip_rids = {"first"}
+    runner.resolve_skip_rids = {"first"}
     runner.post_process_outputs(
         SimpleNamespace(next_token_ids=torch.tensor([14, 15])),
         scheduler_output,
@@ -98,7 +123,7 @@ def test_cosyvoice3_mlx_runner_collects_exact_scheduler_rows() -> None:
 
 def test_cosyvoice3_mlx_lookahead_accepts_owned_history_constraints() -> None:
     runner = object.__new__(FunCosyVoice3MlxSchedulerModelRunner)
-    runner._last_mlx_pending = None
+    runner.last_mlx_pending = None
     req = SimpleNamespace(
         rid="req",
         sampling_params=SimpleNamespace(
@@ -114,7 +139,7 @@ def test_cosyvoice3_mlx_lookahead_accepts_owned_history_constraints() -> None:
     assert runner.lookahead_eligible(SimpleNamespace(reqs=[req], has_grammar=False))
     assert not runner.lookahead_eligible(SimpleNamespace(reqs=[req], has_grammar=True))
 
-    runner._last_mlx_pending = SimpleNamespace(
+    runner.last_mlx_pending = SimpleNamespace(
         launch=SimpleNamespace(mode="decode"),
         reqs=[SimpleNamespace(rid="another")],
     )
@@ -129,19 +154,19 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
     sampling_info = SimpleNamespace(sampling_seed=None, is_all_greedy=True)
     sampled_with = []
 
-    class _Runner(FunCosyVoice3ModelRunner):
-        def _apply_repetition_penalty(self, logits_output, requests):
+    class Runner(FunCosyVoice3ModelRunner):
+        def apply_repetition_penalty(self, logits_output, requests):
             del logits_output, requests
 
-        def _apply_codec_suppress_tokens(self, logits_output, requests):
+        def apply_codec_suppress_tokens(self, logits_output, requests):
             del logits_output, requests
 
-        def _install_sampling_seeds(self, forward_batch, requests):
+        def install_sampling_seeds(self, forward_batch, requests):
             del requests
             forward_batch.sampling_info.sampling_seed = torch.tensor([7])
 
-    runner = object.__new__(_Runner)
-    runner._cosyvoice3_recent_tokens = {}
+    runner = object.__new__(Runner)
+    runner.cosyvoice3_recent_tokens = {}
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(
             sample=lambda logits_output, forward_batch: sampled_with.append(
@@ -188,7 +213,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
     )
     forward_batch = SimpleNamespace(sampling_info=sampling_info)
 
-    token_ids = runner._sample_next_token_ids(
+    token_ids = runner.sample_next_token_ids(
         logits_output,
         forward_batch,
         None,
@@ -207,7 +232,7 @@ def test_cosyvoice3_torch_mps_ras_redraws_recent_speech_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
-    runner._cosyvoice3_recent_tokens = {"req": [4, 7, 9]}
+    runner.cosyvoice3_recent_tokens = {"req": [4, 7, 9]}
     sampling_info = SimpleNamespace(is_all_greedy=False)
     logits_output = SimpleNamespace(
         next_token_logits=torch.tensor(
@@ -224,7 +249,7 @@ def test_cosyvoice3_torch_mps_ras_redraws_recent_speech_token(
     monkeypatch.setattr(torch, "multinomial", fake_multinomial)
     request = SimpleNamespace(request_id="req")
 
-    result = runner._apply_ras_fallback(
+    result = runner.apply_ras_fallback(
         logits_output,
         torch.tensor([9], dtype=torch.int32),
         sampling_info,
@@ -235,7 +260,7 @@ def test_cosyvoice3_torch_mps_ras_redraws_recent_speech_token(
     assert len(sampled) == 1
     assert sampled[0][1] == 1
     assert sampled[0][0][0, 9].item() == 0.0
-    assert runner._cosyvoice3_recent_tokens["req"][-1] == 6
+    assert runner.cosyvoice3_recent_tokens["req"][-1] == 6
     assert torch.equal(
         logits_output.next_token_logprobs,
         torch.log(torch.tensor([0.7])),
@@ -244,7 +269,7 @@ def test_cosyvoice3_torch_mps_ras_redraws_recent_speech_token(
 
 def test_cosyvoice3_torch_mps_ras_keeps_non_repeated_token() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
-    runner._cosyvoice3_recent_tokens = {"req": [4, 7, 9]}
+    runner.cosyvoice3_recent_tokens = {"req": [4, 7, 9]}
     sampling_info = SimpleNamespace(is_all_greedy=False)
     logits_output = SimpleNamespace(
         next_token_logits=torch.ones((1, VOCAB_SIZE), dtype=torch.float32),
@@ -252,7 +277,7 @@ def test_cosyvoice3_torch_mps_ras_keeps_non_repeated_token() -> None:
     )
     request = SimpleNamespace(request_id="req")
 
-    result = runner._apply_ras_fallback(
+    result = runner.apply_ras_fallback(
         logits_output,
         torch.tensor([6], dtype=torch.int32),
         sampling_info,
@@ -260,16 +285,114 @@ def test_cosyvoice3_torch_mps_ras_keeps_non_repeated_token() -> None:
     )
 
     assert result.tolist() == [6]
-    assert runner._cosyvoice3_recent_tokens["req"][-1] == 6
+    assert runner.cosyvoice3_recent_tokens["req"][-1] == 6
 
 
 def test_cosyvoice3_torch_mps_clears_ras_history_on_finish() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
-    runner._cosyvoice3_recent_tokens = {"req": [1], "keep": [2]}
+    runner.cosyvoice3_recent_tokens = {"req": [1], "keep": [2]}
 
     runner.on_request_finished("req", None)
 
-    assert runner._cosyvoice3_recent_tokens == {"keep": [2]}
+    assert runner.cosyvoice3_recent_tokens == {"keep": [2]}
+
+
+@pytest.mark.parametrize("use_ascend_backend", [False, True])
+def test_cosyvoice3_ras_masks_and_redraws_repeated_speech_tokens(
+    use_ascend_backend: bool,
+) -> None:
+    """A repeated speech token must not crowd out EOS until the length cap."""
+    probs = torch.zeros((6, EOS_ID + 1))
+    probs[0, 9], probs[0, EOS_ID] = 0.9, 0.1
+    probs[[1, 2, 3, 5], 2] = 0.4
+    probs[1, 5] = probs[2, 9] = probs[3, EOS_ID] = probs[5, 9] = 0.6
+    probs[4, 9] = 1.0
+    histories = [[9] + [4] * 9, [1, 2, 3], [9], [EOS_ID], [9], [9] + [4] * 10]
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.outbox = None
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            sampler=SimpleNamespace(use_ascend_backend=use_ascend_backend)
+        )
+    )
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                output_codes=[],
+                req=SimpleNamespace(
+                    output_ids=array("q", output_ids),
+                    sampling_params=SimpleNamespace(top_k=1 if row == 2 else 20),
+                ),
+            )
+        )
+        for row, output_ids in enumerate(histories)
+    ]
+    result = SimpleNamespace(
+        next_token_ids=torch.tensor([9, 5, 9, EOS_ID, 9, 9], dtype=torch.int32),
+        logits_output=SimpleNamespace(
+            next_token_logits=torch.log(probs) + 1 if use_ascend_backend else probs
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        sampling_info=SimpleNamespace(sampling_seed=None),
+        positions=torch.arange(6),
+    )
+
+    runner.collect_tokens(result, forward_batch, None, requests)
+
+    assert result.next_token_ids.tolist() == [EOS_ID, 5, 9, EOS_ID, 9, 9]
+    assert [
+        [int(code) for code in request.data.output_codes] for request in requests
+    ] == [[], [5], [9], [], [9], [9]]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cosyvoice3_seeded_ras_redraw_of_a_row_subset_matches_the_full_draw() -> None:
+    rows = 256
+    probs = torch.zeros((rows, 8), device="cuda")
+    probs[:, 3], probs[:, 5], probs[:, 6] = 0.9, 0.06, 0.04
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.token_id_host_bufs = None
+    runner.token_id_host_slot = 0
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(sampler=SimpleNamespace(use_ascend_backend=False))
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        sampling_info=SimpleNamespace(
+            sampling_seed=torch.arange(1, rows + 1, device="cuda")
+        ),
+        positions=torch.arange(rows, device="cuda"),
+    )
+    subset = range(1, rows, 3)
+
+    def redraw(repeating_rows: range) -> list[int]:
+        requests = [
+            SimpleNamespace(
+                data=SimpleNamespace(
+                    req=SimpleNamespace(
+                        output_ids=array("q", [3 if row in repeating_rows else 4]),
+                        sampling_params=SimpleNamespace(top_k=20),
+                    )
+                )
+            )
+            for row in range(rows)
+        ]
+        result = SimpleNamespace(
+            next_token_ids=torch.full((rows,), 3, dtype=torch.int32, device="cuda"),
+            logits_output=SimpleNamespace(next_token_logits=probs),
+        )
+        return runner.redraw_repeated_tokens(
+            result, forward_batch, requests, [3] * rows
+        )
+
+    full = redraw(range(rows))
+    partial = redraw(subset)
+
+    assert 3 not in full
+    assert [partial[row] for row in subset] == [full[row] for row in subset]
 
 
 def test_cosyvoice3_load_weights_maps_custom_and_backbone_keys(
@@ -280,7 +403,7 @@ def test_cosyvoice3_load_weights_maps_custom_and_backbone_keys(
     torch.nn.Module.__init__(model)
     speech_embedding = torch.nn.Parameter(torch.zeros(2, 3))
     decoder = torch.nn.Parameter(torch.zeros(2, 3))
-    model._cached_params_dict = {
+    model.cached_params_dict = {
         "speech_embedding.weight": speech_embedding,
         "llm_decoder.weight": decoder,
     }
@@ -308,6 +431,36 @@ def test_cosyvoice3_load_weights_maps_custom_and_backbone_keys(
     assert torch.equal(forwarded[0][1], torch.full((3, 3), 3.0))
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cosyvoice3_speech_head_returns_float32_logits() -> None:
+    """bf16 logits make the sampler's temperature and softmax run in bf16."""
+    device = "cuda"
+    model = object.__new__(FunCosyVoice3SGLangModel)
+    torch.nn.Module.__init__(model)
+    generator = torch.Generator().manual_seed(0)
+    hidden_states = (torch.randn(4, 64, generator=generator) * 4).to(
+        device=device, dtype=torch.bfloat16
+    )
+    model.speech_embedding = torch.nn.Embedding(8, 64).to(device, torch.bfloat16)
+    model.llm_decoder = torch.nn.Linear(64, 8, bias=False).to(device, torch.bfloat16)
+    model.model = (
+        lambda input_ids, positions, forward_batch, input_embeds, pp_proxy_tensors: (
+            hidden_states
+        )
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True, is_extend=lambda: False)
+    )
+    token_ids = torch.zeros(4, dtype=torch.long, device=device)
+
+    output = model(token_ids, token_ids, forward_batch)
+
+    product = hidden_states.double() @ model.llm_decoder.weight.double().T
+    assert output.next_token_logits.dtype == torch.float32
+    assert (output.next_token_logits.double() - product).abs().max() < 1e-3
+
+
 def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
     runner.model = torch.nn.Linear(3, 3, bias=False)
@@ -323,7 +476,7 @@ def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None
     ]
     forward_batch = SimpleNamespace(input_ids=torch.zeros(2, dtype=torch.long))
 
-    result = runner._build_prefill_input_embeds(forward_batch, requests)
+    result = runner.build_prefill_input_embeds(forward_batch, requests)
 
     assert torch.equal(
         result, torch.tensor([[4, 5, 6, 7], [8, 9, 10, 11]], dtype=torch.float32)

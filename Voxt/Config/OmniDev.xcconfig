@@ -1,0 +1,20 @@
+// Development build that runs Voxt's Qwen3-ASR on a local sglang-omni MLX server.
+// Applied on top of the Debug configuration with `xcodebuild -xcconfig`.
+// The .dev suffix keeps Sparkle disabled; the bundle identifier keeps its
+// preferences apart from the release and the regular Dev build.
+//
+// xcodebuild applies this file to every target, Swift packages included, so the
+// target-specific settings are keyed on the app target and fall back to each other
+// target's own value.
+VOXT_OMNI_DEV_BUNDLE_IDENTIFIER_Voxt = com.voxt.Voxt.omni.dev
+VOXT_OMNI_DEV_PRODUCT_NAME_Voxt = Voxt Omni Dev
+PRODUCT_BUNDLE_IDENTIFIER = $(VOXT_OMNI_DEV_BUNDLE_IDENTIFIER_$(TARGET_NAME:c99extidentifier):default=$(inherited))
+PRODUCT_NAME = $(VOXT_OMNI_DEV_PRODUCT_NAME_$(TARGET_NAME:c99extidentifier):default=$(inherited))
+// The app launches the backend's Python supervisor, which a sandbox forbids.
+VOXT_OMNI_DEV_ENABLE_APP_SANDBOX_Voxt = NO
+VOXT_OMNI_DEV_CODE_SIGN_ENTITLEMENTS_Voxt = Voxt/VoxtOmniDev.entitlements
+ENABLE_APP_SANDBOX = $(VOXT_OMNI_DEV_ENABLE_APP_SANDBOX_$(TARGET_NAME:c99extidentifier):default=$(inherited))
+CODE_SIGN_ENTITLEMENTS = $(VOXT_OMNI_DEV_CODE_SIGN_ENTITLEMENTS_$(TARGET_NAME:c99extidentifier):default=$(inherited))
+CODE_SIGN_IDENTITY = -
+CODE_SIGN_STYLE = Manual
+DEVELOPMENT_TEAM =

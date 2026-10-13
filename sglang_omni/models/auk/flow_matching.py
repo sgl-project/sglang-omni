@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -13,6 +14,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner
 
 
 def request_generator(
@@ -20,6 +22,8 @@ def request_generator(
 ) -> torch.Generator | None:
     if seed is None:
         return None
+    else:
+        pass
     return torch.Generator(device=device).manual_seed(int(seed))
 
 
@@ -28,6 +32,16 @@ def fuse_hidden_states(hidden_states, layer_weights, layer_scale):
     stacked = F.layer_norm(hidden_states[:, 1:], [d_llm])
     weights = F.softmax(layer_weights, dim=0)
     return (stacked * weights[None, :, None, None]).sum(dim=1) * layer_scale
+
+
+def pad_rows(tensor: torch.Tensor, rows: int) -> torch.Tensor:
+    """Pad axis 1 up to rows with zeros, i.e. False for a boolean mask."""
+    extra = rows - tensor.shape[1]
+    if extra <= 0:
+        return tensor
+    else:
+        pass
+    return F.pad(tensor, [0, 0] * (tensor.ndim - 2) + [0, extra])
 
 
 def build_time_grid(
@@ -40,12 +54,20 @@ def build_time_grid(
         grid = torch.tensor(list(t_grid), device=device, dtype=torch.float32)
         if grid.ndim != 1 or grid.numel() < 2:
             raise ValueError("t_grid must hold at least two time points")
+        else:
+            pass
         return grid
+    else:
+        pass
     if steps < 1:
         raise ValueError("AuK nfe must be positive")
+    else:
+        pass
     t = torch.linspace(0, 1, steps + 1, device=device, dtype=torch.float32)
     if sway_sampling_coef is not None:
         t = t + sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
+    else:
+        pass
     return t
 
 
@@ -79,6 +101,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        step_graph: AuKStepCudaGraphRunner | None = None,
     ) -> torch.Tensor:
         return self.sample_batch(
             [item],
@@ -86,6 +109,7 @@ class AuKFlowMatching(nn.Module):
             cfg_strength=cfg_strength,
             sway_sampling_coef=sway_sampling_coef,
             t_grid=t_grid,
+            step_graph=step_graph,
         )[0]
 
     @torch.no_grad()
@@ -97,18 +121,25 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        step_graph: AuKStepCudaGraphRunner | None = None,
     ) -> list[torch.Tensor]:
+        """Integrate the velocity field for a batch of requests.
+
+        With a step graph the batch pads to one of that runner's declared
+        shapes, so one captured step can be replayed for every NFE step.
+        """
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
         # Inputs follow the backbone dtype; y stays fp32 through type promotion.
         weight_dtype = self.transformer.dtype
 
-        def pack(tensors):
-            return (
+        def pack(tensors, rows=None):
+            packed = (
                 tensors[0].unsqueeze(0)
                 if len(tensors) == 1
                 else pad_sequence(tensors, batch_first=True)
             )
+            return packed if rows is None else pad_rows(packed, rows)
 
         references = [
             (
@@ -118,13 +149,29 @@ class AuKFlowMatching(nn.Module):
             )
             for item in items
         ]
-        ref = pack(references).to(weight_dtype)
+        # note(Dayuxiaoshui): a runner declines a batch no captured shape
+        # covers, so the padding carries both decisions: no padding, no bind.
+        padding = None
+        if step_graph is not None:
+            padding = step_graph.pad_lengths(
+                frames=max(item.target_frames for item in items),
+                ref=max(reference.shape[0] for reference in references),
+                text=max(item.conditioning.shape[0] for item in items),
+                batch=len(items),
+            )
+        else:
+            pass
+        frame_rows, ref_rows, text_rows = (
+            padding if padding is not None else (None, None, None)
+        )
+
+        ref = pack(references, ref_rows).to(weight_dtype)
         ref_mask = (
             torch.arange(ref.shape[1], device=device)[None, :]
             < torch.tensor([item.ref_length for item in items], device=device)[:, None]
         )
-        text = pack([item.conditioning for item in items]).to(weight_dtype)
-        text_mask = pack([item.text_mask for item in items])
+        text = pack([item.conditioning for item in items], text_rows).to(weight_dtype)
+        text_mask = pack([item.text_mask for item in items], text_rows)
         noise = []
         for item in items:
             generator = request_generator(item.seed, device)
@@ -137,9 +184,11 @@ class AuKFlowMatching(nn.Module):
                     generator=generator,
                 )
             )
-        y0 = pack(noise)
+        y0 = pack(noise, frame_rows)
         mask = audio_positions = joint_positions = None
-        if len(items) > 1:
+        # note(Dayuxiaoshui): positions come from the real lengths, so a padded
+        # batch places each request's frames where the unpadded one would.
+        if len(items) > 1 or padding is not None:
             target_positions = torch.arange(y0.shape[1], device=device)[None, :]
             mask = (
                 target_positions
@@ -171,31 +220,43 @@ class AuKFlowMatching(nn.Module):
                 ],
                 dim=1,
             )
+        else:
+            pass
 
-        def fn(t, x):
-            kwargs = dict(
-                x=x.to(weight_dtype),
-                text=text,
-                time=t,
-                mask=mask,
-                c_mask=text_mask,
-                ref=ref,
-                ref_mask=ref_mask,
-                cache=True,
-                audio_positions=audio_positions,
-                joint_positions=joint_positions,
-            )
+        inputs = dict(
+            text=text,
+            mask=mask,
+            c_mask=text_mask,
+            ref=ref,
+            ref_mask=ref_mask,
+            # note(Dayuxiaoshui): the projected text is constant per trajectory
+            # either way, and a graph holds it in its own buffers, so it must
+            # not also write the python cache.
+            cache=padding is None,
+            audio_positions=audio_positions,
+            joint_positions=joint_positions,
+        )
+
+        def step(inputs, t, x):
+            kwargs = dict(inputs, x=x.to(weight_dtype), time=t)
             if cfg_strength < 1e-5:
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False
                 )
+            else:
+                pass
             pred = self.transformer(**kwargs, cfg_infer=True)
             v_cond, v_uncond = torch.chunk(pred, 2, dim=0)
             return v_cond + (v_cond - v_uncond) * cfg_strength
 
         t = build_time_grid(steps, sway_sampling_coef, t_grid, device=device)
+        fn = None
+        if padding is not None:
+            fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
+        else:
+            pass
         try:
-            result = integrate(fn, y0, t)
+            result = integrate(fn or partial(step, inputs), y0, t)
             return [latent[: item.target_frames] for item, latent in zip(items, result)]
         finally:
             self.transformer.clear_cache()

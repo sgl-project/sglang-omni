@@ -17,7 +17,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 
 
-def _server_args(**overrides: object) -> SimpleNamespace:
+def make_server_args(**overrides: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "max_running_requests": 16,
         "disable_cuda_graph": False,
@@ -102,7 +102,7 @@ def test_build_generation_batch_overrides_reject_non_positive_values() -> None:
 def test_validate_generation_batch_policy_accepts_explicit_full_policy() -> None:
     validate_generation_batch_policy(
         model_name="test-model",
-        server_args=_server_args(),
+        server_args=make_server_args(),
         model_buffer_bs=16,
     )
 
@@ -111,7 +111,7 @@ def test_validate_generation_batch_policy_rejects_implicit_cuda_graph_bs() -> No
     with pytest.raises(ValueError, match="cuda_graph_bs must be explicit"):
         validate_generation_batch_policy(
             model_name="test-model",
-            server_args=_server_args(cuda_graph_bs=None),
+            server_args=make_server_args(cuda_graph_bs=None),
         )
 
 
@@ -119,12 +119,12 @@ def test_validate_generation_batch_policy_rejects_mismatched_cuda_graph_max() ->
     with pytest.raises(ValueError, match=r"max\(cuda_graph_bs\) must match"):
         validate_generation_batch_policy(
             model_name="test-model",
-            server_args=_server_args(cuda_graph_max_bs=32),
+            server_args=make_server_args(cuda_graph_max_bs=32),
         )
 
 
 def test_validate_generation_batch_policy_accepts_partial_compile_coverage() -> None:
-    undercovered_compile = _server_args(
+    undercovered_compile = make_server_args(
         max_running_requests=64,
         cuda_graph_max_bs=64,
         cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
@@ -139,7 +139,7 @@ def test_validate_generation_batch_policy_accepts_partial_compile_coverage() -> 
 def test_validate_generation_batch_policy_accepts_full_64_request_coverage() -> None:
     validate_generation_batch_policy(
         model_name="test-model",
-        server_args=_server_args(
+        server_args=make_server_args(
             max_running_requests=64,
             cuda_graph_max_bs=64,
             cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
@@ -151,7 +151,7 @@ def test_validate_generation_batch_policy_accepts_full_64_request_coverage() -> 
 def test_validate_generation_batch_policy_ignores_disabled_compile_cap() -> None:
     validate_generation_batch_policy(
         model_name="test-model",
-        server_args=_server_args(
+        server_args=make_server_args(
             max_running_requests=64,
             cuda_graph_max_bs=64,
             cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
@@ -165,7 +165,7 @@ def test_validate_generation_batch_policy_rejects_under_sized_model_buffer() -> 
     with pytest.raises(ValueError, match="model_buffer_bs must cover"):
         validate_generation_batch_policy(
             model_name="test-model",
-            server_args=_server_args(max_running_requests=4),
+            server_args=make_server_args(max_running_requests=4),
             model_buffer_bs=2,
         )
 

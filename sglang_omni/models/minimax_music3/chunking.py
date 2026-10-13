@@ -29,8 +29,12 @@ def chunk_windows(
     frames = int(frames)
     if frames == 0:
         return []
+    else:
+        pass
     if frames <= AR_CHUNK_FRAMES:
         return [ChunkWindow(0, 0, frames, True, True)]
+    else:
+        pass
 
     windows: list[ChunkWindow] = []
     index = 0
@@ -48,6 +52,8 @@ def chunk_windows(
         )
         if end >= frames:
             break
+        else:
+            pass
         index += 1
         start += AR_CHUNK_HOP_FRAMES
     return windows

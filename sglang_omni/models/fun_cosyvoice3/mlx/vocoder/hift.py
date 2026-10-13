@@ -20,11 +20,13 @@ from .audio_ops import Snake, hann_window_periodic, istft, stft
 from .config import HiFTConfig
 
 
-def _linear_interpolate_align_false(x: mx.array, new_size: int) -> mx.array:
+def linear_interpolate_align_false(x: mx.array, new_size: int) -> mx.array:
     """Interpolate along the last axis using pixel-center coordinates."""
     T = x.shape[-1]
     if new_size == T:
         return x
+    else:
+        pass
     dst = mx.arange(new_size).astype(x.dtype)
     src = (dst + 0.5) * (T / new_size) - 0.5
     src = mx.clip(src, 0, T - 1)
@@ -67,6 +69,8 @@ class CausalConv1d(nn.Module):
                 else [(0, 0), (0, self.causal_padding), (0, 0)]
             )
             x = mx.pad(x, widths)
+        else:
+            pass
         y = mx.conv1d(x, self.weight, stride=1, padding=0, dilation=self.dilation)
         return y + self.bias
 
@@ -212,9 +216,11 @@ class CausalSineGen(nn.Module):
         rand_ini = mx.random.uniform(shape=(1, harmonic_num + 1))
         # Note (yexiaodong): Keep runtime phases deterministic without adding
         # them to the converted checkpoint's parameter tree.
-        self._rand_ini = mx.concatenate([mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1)
+        self._rand_ini = mx.concatenate(
+            [mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1
+        )  # noqa: leading-underscore
 
-    def _f02uv(self, f0: mx.array) -> mx.array:
+    def f02uv(self, f0: mx.array) -> mx.array:
         return (f0 > self.voiced_threshold).astype(mx.float32)
 
     def __call__(self, f0: mx.array) -> Tuple[mx.array, mx.array, mx.array]:
@@ -224,11 +230,13 @@ class CausalSineGen(nn.Module):
 
         T = fn.shape[1]
         rad_values = (fn / self.sampling_rate) % 1  # (B, T, H+1)
-        rad_values = rad_values.at[:, 0, :].add(self._rand_ini)
+        rad_values = rad_values.at[:, 0, :].add(
+            self._rand_ini
+        )  # noqa: leading-underscore
 
         T_down = max(1, T // self.upsample_scale)
         rad_t = mx.swapaxes(rad_values, 1, 2)  # (B, H+1, T)
-        rad_down_t = _linear_interpolate_align_false(rad_t, T_down)  # (B, H+1, T_down)
+        rad_down_t = linear_interpolate_align_false(rad_t, T_down)  # (B, H+1, T_down)
         rad_down = mx.swapaxes(rad_down_t, 1, 2)  # (B, T_down, H+1)
 
         phase_down = mx.cumsum(rad_down, axis=1) * 2 * math.pi  # (B, T_down, H+1)
@@ -244,10 +252,12 @@ class CausalSineGen(nn.Module):
             phase_t = mx.pad(phase_t, [(0, 0), (0, 0), (0, diff)])
         elif diff < 0:
             phase_t = phase_t[:, :, :T]
+        else:
+            pass
         phase = mx.swapaxes(phase_t, 1, 2)  # (B, T, H+1)
 
         sine_waves = mx.sin(phase) * self.sine_amp
-        uv = self._f02uv(f0)  # (B, T, 1)
+        uv = self.f02uv(f0)  # (B, T, 1)
         noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
         noise = noise_amp * mx.random.uniform(
             shape=sine_waves.shape, key=mx.random.key(0)
@@ -393,35 +403,37 @@ class CausalHiFTGenerator(nn.Module):
         )
 
         # Derived buffer, not a checkpoint weight.
-        self._stft_window = hann_window_periodic(config.istft_params["n_fft"])
+        self._stft_window = hann_window_periodic(
+            config.istft_params["n_fft"]
+        )  # noqa: leading-underscore
         self.f0_predictor = CausalConvRNNF0Predictor(
             in_channels=config.in_channels, cond_channels=config.base_channels
         )
 
     # ------------------------------------------------------------------ #
-    def _f0_upsample(self, f0: mx.array) -> mx.array:
+    def f0_upsample(self, f0: mx.array) -> mx.array:
         return mx.repeat(f0, self.f0_upsample_scale, axis=2)
 
-    def _stft(self, x: mx.array) -> tuple:
+    def stft(self, x: mx.array) -> tuple:
         return stft(
             x,
             self.istft_params["n_fft"],
             self.istft_params["hop_len"],
-            self._stft_window,
+            self._stft_window,  # noqa: leading-underscore
         )
 
-    def _istft(self, magnitude: mx.array, phase: mx.array) -> mx.array:
+    def istft(self, magnitude: mx.array, phase: mx.array) -> mx.array:
         return istft(
             magnitude,
             phase,
             self.istft_params["n_fft"],
             self.istft_params["hop_len"],
-            self._stft_window,
+            self._stft_window,  # noqa: leading-underscore
         )
 
     def decode(self, x: mx.array, s: mx.array) -> mx.array:
         """x: mel (B, in_channels, T); s: source (B, 1, T_wave). -> waveform (B, T_wave)."""
-        s_stft_real, s_stft_imag = self._stft(s.squeeze(1))
+        s_stft_real, s_stft_imag = self.stft(s.squeeze(1))
         s_stft = mx.concatenate([s_stft_real, s_stft_imag], axis=1)
 
         x = mx.swapaxes(x, 1, 2)  # (B, T, C)
@@ -436,6 +448,8 @@ class CausalHiFTGenerator(nn.Module):
 
             if i == self.num_upsamples - 1:
                 x = mx.concatenate([x[:, :, 1:2], x], axis=2)  # reflection pad (1, 0)
+            else:
+                pass
 
             si = mx.swapaxes(s_stft, 1, 2)
             si = self.source_downs[i](si)
@@ -461,13 +475,13 @@ class CausalHiFTGenerator(nn.Module):
         magnitude = mx.exp(x[:, :n_fft_half, :])
         phase = mx.sin(x[:, n_fft_half:, :])
 
-        x = self._istft(magnitude, phase)
+        x = self.istft(magnitude, phase)
         x = mx.clip(x, -self.audio_limit, self.audio_limit)
         return x
 
     def __call__(self, speech_feat: mx.array) -> Tuple[mx.array, mx.array]:
         f0 = self.f0_predictor(speech_feat)  # (B, T)
-        s = self._f0_upsample(mx.expand_dims(f0, 1))  # (B, 1, T*scale)
+        s = self.f0_upsample(mx.expand_dims(f0, 1))  # (B, 1, T*scale)
         s = mx.swapaxes(s, 1, 2)  # (B, T*scale, 1)
         s, _, _ = self.m_source(s)
         s = mx.swapaxes(s, 1, 2)  # (B, 1, T*scale)

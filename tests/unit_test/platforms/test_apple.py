@@ -15,9 +15,9 @@ from sglang_omni.platforms.apple import AppleOmniPlatform
 def test_generic_sglang_platform_resolves_to_apple_when_mps_is_available(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(platforms, "_is_apple_silicon_mps_available", lambda: True)
+    monkeypatch.setattr(platforms, "is_apple_silicon_mps_available", lambda: True)
 
-    resolved = platforms._as_omni_platform(SRTPlatform())
+    resolved = platforms.as_omni_platform(SRTPlatform())
 
     assert isinstance(resolved, AppleOmniPlatform)
     assert resolved.is_mps()

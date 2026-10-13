@@ -31,6 +31,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 
 import numpy as np
 
@@ -85,15 +86,16 @@ def _spawn_client(out, stage_dir, per_client_rate, samples, offset, i):
         cmd.extend(["--ref-format", "references"])
     else:
         cmd.append("--no-ref-audio")
-    logf = open(os.path.join(stage_dir, f"client{i}.log"), "w")
-    preexec = None
-    if os.environ.get("CLIENT_CORES"):
-        client_cores = {int(c) for c in os.environ["CLIENT_CORES"].split(",")}
-        preexec = lambda: os.sched_setaffinity(0, client_cores)  # noqa: E731
-    # Note (Yueying Li): each client gets its own session so teardown can signal
-    # the whole process tree; close the log handle ourselves if Popen never
-    # returns a process to own it.
-    try:
+    # Return the log open; the caller closes it during client cleanup.
+    with ExitStack() as stack:
+        logf = stack.enter_context(open(os.path.join(stage_dir, f"client{i}.log"), "w"))
+        preexec = None
+        if os.environ.get("CLIENT_CORES"):
+            client_cores = {int(c) for c in os.environ["CLIENT_CORES"].split(",")}
+            preexec = lambda: os.sched_setaffinity(0, client_cores)  # noqa: E731
+        # Note (Yueying Li): each client gets its own session so teardown can signal
+        # the whole process tree; close the log handle ourselves if Popen never
+        # returns a process to own it.
         proc = subprocess.Popen(
             cmd,
             stdout=logf,
@@ -101,9 +103,7 @@ def _spawn_client(out, stage_dir, per_client_rate, samples, offset, i):
             preexec_fn=preexec,
             start_new_session=True,
         )
-    except BaseException:
-        logf.close()
-        raise
+        stack.pop_all()
     return proc, logf
 
 

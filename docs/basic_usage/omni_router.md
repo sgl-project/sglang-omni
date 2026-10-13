@@ -161,6 +161,7 @@ limits, and timeouts from the expected workload and worker topology.
 | `GET` | `/ready` | Readiness of every enabled service |
 | `POST` | `/v1/chat/completions` | Chat and multimodal generation |
 | `POST` | `/v1/audio/speech` | Encoded speech or streaming PCM |
+| `GET` | `/v1/audio/speech/{request_id}` | Terminal state of a finished PCM stream, on the worker named by `x-sglang-omni-route-worker` |
 | `POST` | `/v1/audio/speech/batch` | Ordered, unsplit speech batch |
 | `POST` | `/v1/audio/transcriptions` | Multipart transcription |
 | `POST` | `/v1/audio/translations` | Multipart translation |
@@ -181,6 +182,17 @@ encoding, and oversized uploads are rejected before dispatch.
 A canonical `x-request-id` identifies each request. A valid caller value is
 preserved; otherwise the router generates one. The same value is sent to the
 worker and returned to the client.
+
+Media responses carry `x-sglang-omni-worker`, the configured id of the worker
+that answered. A streaming PCM speech response also carries
+`x-sglang-omni-speech-id`, a generated resource ID independent of `x-request-id`.
+After the stream ends, use that speech ID in `GET /v1/audio/speech/{request_id}`
+and echo the worker ID as `x-sglang-omni-route-worker`. The router pins the lookup
+to that worker without keeping per-request state. The hint is not forwarded
+upstream. A missing or duplicate hint answers `400`, a worker id outside the
+media trust domain `404`, and an unhealthy worker `503`. Outcomes are retained
+in a bounded worker-local cache; a missing outcome does not establish how
+generation ended.
 
 ## Routing and Relay
 

@@ -29,7 +29,7 @@ def test_sdk_seed_precedence(prompt, stage_seed, diffusion, stage_params, expect
         extra_params={"diffusion": diffusion},
     )
     native = build_sampling_params(
-        StagePayload("owned", Client._build_omni_request(request), None), "outputs"
+        StagePayload("owned", Client.build_omni_request(request), None), "outputs"
     )
     assert native["seed"] == expected
     assert "temperature" not in native
@@ -38,6 +38,6 @@ def test_sdk_seed_precedence(prompt, stage_seed, diffusion, stage_params, expect
 def test_absent_sdk_seed_keeps_native_default():
     request = GenerateRequest(prompt="a lake", stream=False)
     native = build_sampling_params(
-        StagePayload("owned", Client._build_omni_request(request), None), "outputs"
+        StagePayload("owned", Client.build_omni_request(request), None), "outputs"
     )
     assert "seed" not in native

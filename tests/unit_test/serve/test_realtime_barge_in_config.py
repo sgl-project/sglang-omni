@@ -14,7 +14,7 @@ from sglang_omni.serve.realtime.vad import Emit, VADEvent
 
 
 class FakeVAD:
-    def __init__(self, _config: object | None = None) -> None: ...
+    def __init__(self, config: object | None = None) -> None: ...
 
     def reset(self) -> None: ...
 
@@ -23,7 +23,7 @@ class RecordingWebSocket:
     application_state = WebSocketState.CONNECTED
     client_state = WebSocketState.CONNECTED
 
-    async def send_text(self, _payload: str) -> None: ...
+    async def send_text(self, payload: str) -> None: ...
 
 
 @pytest.mark.asyncio

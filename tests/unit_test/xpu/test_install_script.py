@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path("scripts/xpu/install_xpu.sh")
-_ORIGINAL_MARKER = "# ORIGINAL-CUDA-MANIFEST"
+SCRIPT = Path("scripts/xpu/install_xpu.sh")
+ORIGINAL_MARKER = "# ORIGINAL-CUDA-MANIFEST"
 
 
 @pytest.fixture
@@ -25,13 +25,13 @@ def repo(tmp_path: Path) -> Path:
     """A throwaway repo root holding just what the script touches."""
     root = tmp_path / "repo"
     (root / "scripts" / "xpu").mkdir(parents=True)
-    shutil.copy(_SCRIPT, root / "scripts" / "xpu" / "install_xpu.sh")
-    (root / "pyproject.toml").write_text(f'{_ORIGINAL_MARKER}\n[project]\nname = "x"\n')
+    shutil.copy(SCRIPT, root / "scripts" / "xpu" / "install_xpu.sh")
+    (root / "pyproject.toml").write_text(f'{ORIGINAL_MARKER}\n[project]\nname = "x"\n')
     (root / "pyproject_xpu.toml").write_text('[project]\nname = "x-xpu"\n')
     return root
 
 
-def _run(repo: Path) -> subprocess.CompletedProcess[str]:
+def run(repo: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "scripts/xpu/install_xpu.sh", "--check"],
         cwd=repo,
@@ -49,10 +49,10 @@ def test_rerun_after_an_interrupted_swap_preserves_the_original(repo: Path) -> N
     shutil.copy(repo / "pyproject_xpu.toml", repo / "pyproject.toml")  # then swaps
     # <-- process killed here, before restore()
 
-    result = _run(repo)
+    result = run(repo)
 
     # The only copy of the user's manifest must survive the re-run untouched.
-    assert _ORIGINAL_MARKER in backup.read_text()
+    assert ORIGINAL_MARKER in backup.read_text()
     assert result.returncode != 0
     assert "leftover backup" in result.stderr
     # And the message must say how to get back.
@@ -64,10 +64,10 @@ def test_rerun_after_an_interrupted_swap_preserves_the_original(repo: Path) -> N
 
 def test_a_clean_tree_still_runs(repo: Path) -> None:
     """No backup present: the guard must not block the normal path."""
-    result = _run(repo)
+    result = run(repo)
 
     assert "leftover backup" not in result.stderr
-    assert (repo / "pyproject.toml").read_text().startswith(_ORIGINAL_MARKER)
+    assert (repo / "pyproject.toml").read_text().startswith(ORIGINAL_MARKER)
 
 
 def test_a_second_run_refuses_while_the_lock_is_held(repo: Path) -> None:
@@ -83,7 +83,7 @@ def test_a_second_run_refuses_while_the_lock_is_held(repo: Path) -> None:
         import time
 
         time.sleep(1)
-        result = _run(repo)
+        result = run(repo)
     finally:
         holder.kill()
         holder.wait()
@@ -91,5 +91,5 @@ def test_a_second_run_refuses_while_the_lock_is_held(repo: Path) -> None:
     assert result.returncode != 0
     assert "holds" in result.stderr
     # The original manifest is untouched, and no backup was created.
-    assert _ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
+    assert ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
     assert not (repo / ".pyproject.cuda.bak").exists()

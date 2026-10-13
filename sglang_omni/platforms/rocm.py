@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+else:
+    pass
 
 
 class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
@@ -30,8 +32,26 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         spec: StageLaunchConfig,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        if spec.tp_size <= 1:
+        if spec.allow_child_processes and spec.owned_gpu_ids:
+            # Native children inherit this, and host threads that touch an
+            # unpinned device stay on the stage's own GPUs. As for TP ranks,
+            # HIP_VISIBLE_DEVICES wins when set and both carry the result.
+            from sglang_omni.utils.gpu_memory import narrow_visible_devices
+
+            source_env = env if env is not None else os.environ
+            hip_visible = source_env.get("HIP_VISIBLE_DEVICES")
+            variable = "HIP_VISIBLE_DEVICES" if hip_visible else "CUDA_VISIBLE_DEVICES"
+            owned = narrow_visible_devices(
+                source_env.get(variable), spec.owned_gpu_ids, variable
+            )
+            if hip_visible:
+                return {"CUDA_VISIBLE_DEVICES": owned, "HIP_VISIBLE_DEVICES": owned}
+            else:
+                return {"CUDA_VISIBLE_DEVICES": owned}
+        elif spec.tp_size <= 1:
             return {}
+        else:
+            pass
 
         source_env = env if env is not None else os.environ
         hip_visible = source_env.get("HIP_VISIBLE_DEVICES")
@@ -41,6 +61,8 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         original_visible = source_env.get(visibility_var)
         if spec.gpu_id is None:
             raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
+        else:
+            pass
         if original_visible:
             visible_devices = [item.strip() for item in original_visible.split(",")]
             if spec.gpu_id >= len(visible_devices):
@@ -48,6 +70,8 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
                     f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
                     f"but {visibility_var} only exposes {visible_devices}"
                 )
+            else:
+                pass
             mapped_gpu = visible_devices[spec.gpu_id]
         else:
             mapped_gpu = str(spec.gpu_id)
@@ -62,6 +86,8 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
             # CUDA alias, so the child must be narrowed through it; the alias
             # is kept for the startup lock and SGLang's physical-device helpers.
             env_updates["HIP_VISIBLE_DEVICES"] = mapped_gpu
+        else:
+            pass
         return env_updates
 
     def get_intra_node_transport(self):
@@ -96,6 +122,8 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
                 "CUTLASS MoE runners are NVIDIA CUDA-only. Leave the backend as "
                 "'auto' or pass 'aiter' or 'triton'."
             )
+        else:
+            pass
 
         return effective_quantization
 

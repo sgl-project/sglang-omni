@@ -14,11 +14,11 @@ from sglang_omni.models.ming_tts.config import (
 )
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_example_process_topology_compiles() -> None:
-    config_path = _REPO_ROOT / "examples/configs/ming_omni_tts.yaml"
+    config_path = REPO_ROOT / "examples/configs/ming_omni_tts.yaml"
     config, patches = sources_from_config_file(str(config_path))
     config = ConfigManager(config).merge_config([], extra_patches=patches)
     assert isinstance(config, MingTTSPipelineConfig)

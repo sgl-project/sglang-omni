@@ -105,6 +105,8 @@ class CausalMaskedDiffWithDiT(nn.Module):
     ) -> mx.array:
         if token.shape[0] != 1:
             raise ValueError("CosyVoice3 flow inference supports batch size 1 only")
+        else:
+            pass
 
         embedding = embedding / (
             mx.linalg.norm(embedding, axis=1, keepdims=True) + 1e-8
@@ -147,4 +149,6 @@ class CausalMaskedDiffWithDiT(nn.Module):
         feat = feat[:, :, mel_len1:]  # drop prompt region
         if feat.shape[2] != mel_len2:
             raise RuntimeError(f"mel length mismatch: {feat.shape[2]} != {mel_len2}")
+        else:
+            pass
         return feat

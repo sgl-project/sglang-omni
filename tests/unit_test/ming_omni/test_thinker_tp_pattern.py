@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_THINKER = (
+THINKER = (
     Path(__file__).resolve().parents[3]
     / "sglang_omni"
     / "models"
@@ -13,21 +13,19 @@ _THINKER = (
 )
 
 
-def _source() -> str:
-    return _THINKER.read_text(encoding="utf-8")
+def source() -> str:
+    return THINKER.read_text(encoding="utf-8")
 
 
-def _section(src: str, start: str, end: str) -> str:
+def section(src: str, start: str, end: str) -> str:
     start_idx = src.index(start)
     return src[start_idx : src.index(end, start_idx)]
 
 
 def test_ming_attention_and_layer_boundary_tp_pattern():
-    src = _source()
-    attention_src = _section(
-        src, "class BailingMoeV2Attention", "class BailingMoeV2MLP"
-    )
-    decoder_src = _section(
+    src = source()
+    attention_src = section(src, "class BailingMoeV2Attention", "class BailingMoeV2MLP")
+    decoder_src = section(
         src,
         "class BailingMoeV2DecoderLayer",
         "class BailingMoeV2TextModel",
@@ -41,23 +39,23 @@ def test_ming_attention_and_layer_boundary_tp_pattern():
     assert "tp_size=attn_tp_size" in src
     assert "reduce_results=False" in attention_src
 
-    assert "LayerCommunicator" in src
-    assert "LayerScatterModes" in src
-    assert "prepare_attn_and_capture_last_layer_outputs" in decoder_src
-    assert "prepare_mlp" in decoder_src
-    assert "should_fuse_mlp_allreduce_with_next_layer" in decoder_src
-    assert "should_use_reduce_scatter" in decoder_src
-    assert "postprocess_layer" in decoder_src
-    assert "_sglang_needs_allreduce_fusion" in decoder_src
-    assert "allow_reduce_scatter=True" in decoder_src
+    assert "make_stages(" in decoder_src
+    assert "declare_ffn(sparse=is_layer_sparse" in decoder_src
+    assert "self.attn_boundary.prepare(" in decoder_src
+    assert "self.attn_boundary.finish(" in decoder_src
+    assert "self.ffn_boundary.prepare(" in decoder_src
+    assert "self.ffn_boundary.exit(forward_batch)" in decoder_src
+    assert "should_allreduce_fusion=ffn_exit.fuse_mlp_allreduce" in decoder_src
+    assert "use_reduce_scatter=ffn_exit.mlp_reduce_scatter" in decoder_src
+    assert "ffn_exit.finish(hidden_states)" in decoder_src
     assert "should_allreduce_fusion = False" not in decoder_src
     assert "use_reduce_scatter = False" not in decoder_src
 
 
 def test_ming_mlp_and_weight_loader_tp_pattern():
-    src = _source()
-    mlp_src = _section(src, "class BailingMoeV2MLP", "class BailingMoeV2SparseMoeBlock")
-    load_src = _section(src, "    def load_weights", "# ForCausalLM Wrapper")
+    src = source()
+    mlp_src = section(src, "class BailingMoeV2MLP", "class BailingMoeV2SparseMoeBlock")
+    load_src = section(src, "    def load_weights", "# ForCausalLM Wrapper")
 
     assert "MergedColumnParallelLinear" in mlp_src
     assert "RowParallelLinear" in mlp_src
@@ -82,14 +80,14 @@ def test_ming_mlp_and_weight_loader_tp_pattern():
 
 
 def test_ming_moe_unified_reduction_pattern():
-    src = _source()
-    moe_src = _section(
+    src = source()
+    moe_src = section(
         src,
         "class BailingMoeV2SparseMoeBlock",
         "class BailingMoeV2DecoderLayer",
     )
 
-    assert "self.tp_size = get_tensor_model_parallel_world_size()" in moe_src
+    assert "self.tp_size = get_parallel().tp_size" in moe_src
     assert "reduce_results=False" in moe_src
     assert "final_hidden_states = routed_output + shared_output" in moe_src
     assert "tensor_model_parallel_all_reduce(final_hidden_states)" in moe_src
@@ -103,9 +101,9 @@ def test_ming_moe_unified_reduction_pattern():
 
 
 def test_ming_dense_fully_dp_pattern():
-    src = _source()
-    mlp_src = _section(src, "class BailingMoeV2MLP", "class BailingMoeV2SparseMoeBlock")
-    decoder_src = _section(
+    src = source()
+    mlp_src = section(src, "class BailingMoeV2MLP", "class BailingMoeV2SparseMoeBlock")
+    decoder_src = section(
         src,
         "class BailingMoeV2DecoderLayer",
         "class BailingMoeV2TextModel",

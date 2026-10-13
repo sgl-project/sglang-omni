@@ -20,12 +20,11 @@ pytest.importorskip("sglang")
 from sglang.srt.model_executor.model_runner_components.layer_setup import (  # noqa: E402
     resolve_layer_indices,
 )
-from sglang.srt.speculative.spec_info import SpeculativeAlgorithm  # noqa: E402
 
 from sglang_omni.model_runner.model_worker import ModelWorker  # noqa: E402
 
 
-def _qwen3_omni_engine_config():
+def qwen3_omni_engine_config():
     thinker_text = SimpleNamespace(
         num_hidden_layers=48,
         num_attention_heads=32,
@@ -56,30 +55,30 @@ def _qwen3_omni_engine_config():
         num_hidden_layers=thinker_text.num_hidden_layers,
         num_attention_layers=thinker_text.num_hidden_layers,
         num_nextn_predict_layers=None,
+        swa_attention_layer_ids=None,
         head_dim=thinker_text.head_dim,
         vocab_size=thinker_text.vocab_size,
     )
 
 
-def _pool_layers(config) -> int:
+def pool_layers(config) -> int:
     return resolve_layer_indices(
         model=object(),
         model_config=config,
         is_draft_worker=False,
-        spec_algorithm=SpeculativeAlgorithm.NONE,
     ).num_effective_layers
 
 
 def test_talker_pool_is_sized_from_the_talker_layers() -> None:
-    config = _qwen3_omni_engine_config()
-    assert _pool_layers(config) == 48
-    ModelWorker._apply_arch_override(config, "Qwen3OmniTalker")
-    assert _pool_layers(config) == 20
+    config = qwen3_omni_engine_config()
+    assert pool_layers(config) == 48
+    ModelWorker.apply_arch_override(config, "Qwen3OmniTalker")
+    assert pool_layers(config) == 20
     assert config.num_key_value_heads == 2
 
 
 def test_thinker_pool_keeps_the_thinker_layers() -> None:
-    config = _qwen3_omni_engine_config()
-    ModelWorker._apply_arch_override(config, "Qwen3OmniThinkerForCausalLM")
-    assert _pool_layers(config) == 48
+    config = qwen3_omni_engine_config()
+    ModelWorker.apply_arch_override(config, "Qwen3OmniThinkerForCausalLM")
+    assert pool_layers(config) == 48
     assert config.num_key_value_heads == 4

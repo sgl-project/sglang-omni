@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Control plane for inter-stage communication via ZMQ."""
 
 import asyncio
@@ -27,7 +26,6 @@ from sglang_omni.proto import (
 )
 
 logger = logging.getLogger(__name__)
-
 ControlMessage = (
     AdminMessage
     | AdminResultMessage
@@ -60,21 +58,25 @@ class ControlPlaneContext:
     """Shared ZMQ context for control plane."""
 
     _instance: "ControlPlaneContext | None" = None
-    _context: zmq.asyncio.Context | None = None
+    context: zmq.asyncio.Context | None = None
 
     @classmethod
     def get(cls) -> zmq.asyncio.Context:
         """Get or create the shared ZMQ context."""
-        if cls._context is None:
-            cls._context = zmq.asyncio.Context()
-        return cls._context
+        if cls.context is None:
+            cls.context = zmq.asyncio.Context()
+        else:
+            pass
+        return cls.context
 
     @classmethod
     def close(cls) -> None:
         """Close the shared context."""
-        if cls._context is not None:
-            cls._context.term()
-            cls._context = None
+        if cls.context is not None:
+            cls.context.term()
+            cls.context = None
+        else:
+            pass
 
 
 class PushSocket:
@@ -82,13 +84,13 @@ class PushSocket:
 
     def __init__(self, endpoint: str):
         self.endpoint = endpoint
-        self._socket: zmq.asyncio.Socket | None = None
+        self.socket: zmq.asyncio.Socket | None = None
 
     async def connect(self) -> None:
         """Connect to the endpoint."""
         ctx = ControlPlaneContext.get()
-        self._socket = ctx.socket(zmq.PUSH)
-        self._socket.connect(self.endpoint)
+        self.socket = ctx.socket(zmq.PUSH)
+        self.socket.connect(self.endpoint)
         logger.debug("PUSH socket connected to %s", self.endpoint)
 
     async def send(
@@ -98,10 +100,12 @@ class PushSocket:
         on_submitted: Callable[[], None] | None = None,
     ) -> None:
         """Send a message and optionally report transport acceptance."""
-        if self._socket is None:
+        if self.socket is None:
             raise RuntimeError("Socket not connected")
+        else:
+            pass
         data = serialize_message(msg)
-        pending = self._socket.send(data)
+        pending = self.socket.send(data)
         try:
             await pending
         finally:
@@ -114,25 +118,29 @@ class PushSocket:
                 and pending.exception() is None
             ):
                 on_submitted()
+            else:
+                pass
         logger.debug("PUSH sent %s to %s", type(msg).__name__, self.endpoint)
 
     def close(self) -> None:
         """Close the socket."""
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
+        else:
+            pass
 
 
 async def send_to_endpoint(
-    sockets: dict[str, PushSocket],
-    endpoint: str,
-    msg: ControlMessage,
+    sockets: dict[str, PushSocket], endpoint: str, msg: ControlMessage
 ) -> None:
     socket = sockets.get(endpoint)
     if socket is None:
         socket = PushSocket(endpoint)
         await socket.connect()
         sockets[endpoint] = socket
+    else:
+        pass
     await socket.send(msg)
 
 
@@ -142,43 +150,49 @@ class PullSocket:
     def __init__(self, endpoint: str, bind: bool = True):
         self.endpoint = endpoint
         self.bind = bind
-        self._socket: zmq.asyncio.Socket | None = None
+        self.socket: zmq.asyncio.Socket | None = None
 
     async def start(self) -> None:
         """Bind or connect the socket."""
         ctx = ControlPlaneContext.get()
-        self._socket = ctx.socket(zmq.PULL)
+        self.socket = ctx.socket(zmq.PULL)
         if self.bind:
-            self._socket.bind(self.endpoint)
+            self.socket.bind(self.endpoint)
             logger.debug("PULL socket bound to %s", self.endpoint)
         else:
-            self._socket.connect(self.endpoint)
+            self.socket.connect(self.endpoint)
             logger.debug("PULL socket connected to %s", self.endpoint)
 
     async def recv(self) -> ControlMessage:
         """Receive a message (blocking)."""
-        if self._socket is None:
+        if self.socket is None:
             raise RuntimeError("Socket not started")
-        data = await self._socket.recv()
+        else:
+            pass
+        data = await self.socket.recv()
         msg = deserialize_message(data)
         logger.debug("PULL received %s", type(msg).__name__)
         return msg
 
     async def recv_nowait(self) -> ControlMessage | None:
         """Try to receive a message (non-blocking)."""
-        if self._socket is None:
+        if self.socket is None:
             raise RuntimeError("Socket not started")
+        else:
+            pass
         try:
-            data = await asyncio.wait_for(self._socket.recv(), timeout=0)
+            data = await asyncio.wait_for(self.socket.recv(), timeout=0)
             return deserialize_message(data)
         except asyncio.TimeoutError:
             return None
 
     def close(self) -> None:
         """Close the socket."""
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
+        else:
+            pass
 
 
 class PubSocket:
@@ -186,30 +200,33 @@ class PubSocket:
 
     def __init__(self, endpoint: str):
         self.endpoint = endpoint
-        self._socket: zmq.asyncio.Socket | None = None
+        self.socket: zmq.asyncio.Socket | None = None
 
     async def bind(self) -> None:
         """Bind the socket."""
         ctx = ControlPlaneContext.get()
-        self._socket = ctx.socket(zmq.PUB)
-        self._socket.bind(self.endpoint)
-        # Give subscribers time to connect
+        self.socket = ctx.socket(zmq.PUB)
+        self.socket.bind(self.endpoint)
         await asyncio.sleep(0.1)
         logger.debug("PUB socket bound to %s", self.endpoint)
 
     async def publish(self, msg: AbortMessage) -> None:
         """Publish a message to all subscribers."""
-        if self._socket is None:
+        if self.socket is None:
             raise RuntimeError("Socket not bound")
+        else:
+            pass
         data = serialize_message(msg)
-        await self._socket.send(data)
+        await self.socket.send(data)
         logger.debug("PUB published %s", type(msg).__name__)
 
     def close(self) -> None:
         """Close the socket."""
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
+        else:
+            pass
 
 
 class SubSocket:
@@ -217,38 +234,46 @@ class SubSocket:
 
     def __init__(self, endpoint: str):
         self.endpoint = endpoint
-        self._socket: zmq.asyncio.Socket | None = None
+        self.socket: zmq.asyncio.Socket | None = None
 
     async def connect(self) -> None:
         """Connect to the publisher."""
         ctx = ControlPlaneContext.get()
-        self._socket = ctx.socket(zmq.SUB)
-        self._socket.connect(self.endpoint)
-        self._socket.setsockopt(zmq.SUBSCRIBE, b"")  # Subscribe to all messages
+        self.socket = ctx.socket(zmq.SUB)
+        self.socket.connect(self.endpoint)
+        self.socket.setsockopt(zmq.SUBSCRIBE, b"")
         logger.debug("SUB socket connected to %s", self.endpoint)
 
     async def recv(self) -> AbortMessage:
         """Receive a broadcast message (blocking)."""
-        if self._socket is None:
+        if self.socket is None:
             raise RuntimeError("Socket not connected")
-        data = await self._socket.recv()
+        else:
+            pass
+        data = await self.socket.recv()
         msg = deserialize_message(data)
         if not isinstance(msg, AbortMessage):
             raise ValueError(f"Expected AbortMessage, got {type(msg)}")
+        else:
+            pass
         logger.debug("SUB received %s", type(msg).__name__)
         return msg
 
     def poll(self, timeout_ms: int = 0) -> bool:
         """Check if a message is available."""
-        if self._socket is None:
+        if self.socket is None:
             raise RuntimeError("Socket not connected")
-        return self._socket.poll(timeout_ms, zmq.POLLIN) != 0
+        else:
+            pass
+        return self.socket.poll(timeout_ms, zmq.POLLIN) != 0
 
     def close(self) -> None:
         """Close the socket."""
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
+        else:
+            pass
 
 
 class StageControlPlane:
@@ -272,26 +297,19 @@ class StageControlPlane:
         self.recv_endpoint = recv_endpoint
         self.coordinator_endpoint = coordinator_endpoint
         self.abort_endpoint = abort_endpoint
-
-        self._recv_socket: PullSocket | None = None
-        self._coordinator_socket: PushSocket | None = None
-        self._abort_socket: SubSocket | None = None
-        self._next_stage_sockets: dict[str, PushSocket] = {}
+        self.recv_socket: PullSocket | None = None
+        self.coordinator_socket: PushSocket | None = None
+        self.abort_socket: SubSocket | None = None
+        self.next_stage_sockets: dict[str, PushSocket] = {}
 
     async def start(self) -> None:
         """Initialize all sockets."""
-        # Socket to receive work
-        self._recv_socket = PullSocket(self.recv_endpoint, bind=True)
-        await self._recv_socket.start()
-
-        # Socket to send completions to coordinator
-        self._coordinator_socket = PushSocket(self.coordinator_endpoint)
-        await self._coordinator_socket.connect()
-
-        # Socket to receive abort broadcasts
-        self._abort_socket = SubSocket(self.abort_endpoint)
-        await self._abort_socket.connect()
-
+        self.recv_socket = PullSocket(self.recv_endpoint, bind=True)
+        await self.recv_socket.start()
+        self.coordinator_socket = PushSocket(self.coordinator_endpoint)
+        await self.coordinator_socket.connect()
+        self.abort_socket = SubSocket(self.abort_endpoint)
+        await self.abort_socket.connect()
         logger.info("Stage %s control plane started", self.stage_name)
 
     async def recv(
@@ -306,9 +324,11 @@ class StageControlPlane:
         | ProfilerStopMessage
     ):
         """Receive work from previous stage or coordinator."""
-        if self._recv_socket is None:
+        if self.recv_socket is None:
             raise RuntimeError("Control plane not started")
-        msg = await self._recv_socket.recv()
+        else:
+            pass
+        msg = await self.recv_socket.recv()
         if isinstance(
             msg,
             (
@@ -322,6 +342,8 @@ class StageControlPlane:
             ),
         ):
             return msg
+        else:
+            pass
         raise ValueError(f"Unexpected message type: {type(msg)}")
 
     async def send_to_stage(
@@ -331,7 +353,7 @@ class StageControlPlane:
         msg: DataReadyMessage | DataAckMessage,
     ) -> None:
         """Send a stage-to-stage control message."""
-        await send_to_endpoint(self._next_stage_sockets, next_stage_endpoint, msg)
+        await send_to_endpoint(self.next_stage_sockets, next_stage_endpoint, msg)
 
     async def send_complete(
         self,
@@ -340,42 +362,56 @@ class StageControlPlane:
         on_submitted: Callable[[], None] | None = None,
     ) -> None:
         """Send completion, with an optional nonthrowing acceptance callback."""
-        if self._coordinator_socket is None:
+        if self.coordinator_socket is None:
             raise RuntimeError("Control plane not started")
-        await self._coordinator_socket.send(msg, on_submitted=on_submitted)
+        else:
+            pass
+        await self.coordinator_socket.send(msg, on_submitted=on_submitted)
 
     async def send_stream(self, msg: StreamMessage) -> None:
         """Send a stream chunk to coordinator."""
-        if self._coordinator_socket is None:
+        if self.coordinator_socket is None:
             raise RuntimeError("Control plane not started")
-        await self._coordinator_socket.send(msg)
+        else:
+            pass
+        await self.coordinator_socket.send(msg)
 
     async def send_admin_result(self, msg: AdminResultMessage) -> None:
         """Send an administrative result to coordinator."""
-        if self._coordinator_socket is None:
+        if self.coordinator_socket is None:
             raise RuntimeError("Control plane not started")
-        await self._coordinator_socket.send(msg)
+        else:
+            pass
+        await self.coordinator_socket.send(msg)
 
     async def recv_abort(self) -> AbortMessage:
         """Receive abort broadcast (blocking).
 
         This should be run in a separate task.
         """
-        if self._abort_socket is None:
+        if self.abort_socket is None:
             raise RuntimeError("Control plane not started")
-        return await self._abort_socket.recv()
+        else:
+            pass
+        return await self.abort_socket.recv()
 
     def close(self) -> None:
         """Close all sockets."""
-        if self._recv_socket:
-            self._recv_socket.close()
-        if self._coordinator_socket:
-            self._coordinator_socket.close()
-        if self._abort_socket:
-            self._abort_socket.close()
-        for sock in self._next_stage_sockets.values():
+        if self.recv_socket:
+            self.recv_socket.close()
+        else:
+            pass
+        if self.coordinator_socket:
+            self.coordinator_socket.close()
+        else:
+            pass
+        if self.abort_socket:
+            self.abort_socket.close()
+        else:
+            pass
+        for sock in self.next_stage_sockets.values():
             sock.close()
-        self._next_stage_sockets.clear()
+        self.next_stage_sockets.clear()
 
 
 class CoordinatorControlPlane:
@@ -387,28 +423,19 @@ class CoordinatorControlPlane:
     - Broadcasting abort signals (PUB)
     """
 
-    def __init__(
-        self,
-        completion_endpoint: str,
-        abort_endpoint: str,
-    ):
+    def __init__(self, completion_endpoint: str, abort_endpoint: str):
         self.completion_endpoint = completion_endpoint
         self.abort_endpoint = abort_endpoint
-
-        self._completion_socket: PullSocket | None = None
-        self._abort_socket: PubSocket | None = None
-        self._stage_sockets: dict[str, PushSocket] = {}
+        self.completion_socket: PullSocket | None = None
+        self.abort_socket: PubSocket | None = None
+        self.stage_sockets: dict[str, PushSocket] = {}
 
     async def start(self) -> None:
         """Initialize all sockets."""
-        # Socket to receive completions
-        self._completion_socket = PullSocket(self.completion_endpoint, bind=True)
-        await self._completion_socket.start()
-
-        # Socket to broadcast aborts
-        self._abort_socket = PubSocket(self.abort_endpoint)
-        await self._abort_socket.bind()
-
+        self.completion_socket = PullSocket(self.completion_endpoint, bind=True)
+        await self.completion_socket.start()
+        self.abort_socket = PubSocket(self.abort_endpoint)
+        await self.abort_socket.bind()
         logger.info("Coordinator control plane started")
 
     async def submit_to_stage(
@@ -418,23 +445,27 @@ class CoordinatorControlPlane:
         msg: SubmitMessage | AdminMessage | ShutdownMessage,
     ) -> None:
         """Submit a request to a stage."""
-        if stage_name not in self._stage_sockets:
+        if stage_name not in self.stage_sockets:
             sock = PushSocket(stage_endpoint)
             await sock.connect()
-            self._stage_sockets[stage_name] = sock
-
-        await self._stage_sockets[stage_name].send(msg)
+            self.stage_sockets[stage_name] = sock
+        else:
+            pass
+        await self.stage_sockets[stage_name].send(msg)
 
     async def recv_event(self) -> CompleteMessage | StreamMessage | AdminResultMessage:
         """Receive completion or stream event from a stage."""
-        if self._completion_socket is None:
+        if self.completion_socket is None:
             raise RuntimeError("Control plane not started")
-        msg = await self._completion_socket.recv()
+        else:
+            pass
+        msg = await self.completion_socket.recv()
         if isinstance(msg, (CompleteMessage, StreamMessage, AdminResultMessage)):
             return msg
+        else:
+            pass
         raise ValueError(
-            "Expected CompleteMessage, StreamMessage, or AdminResultMessage, "
-            f"got {type(msg)}"
+            f"Expected CompleteMessage, StreamMessage, or AdminResultMessage, got {type(msg)}"
         )
 
     async def send_admin(
@@ -445,25 +476,32 @@ class CoordinatorControlPlane:
 
     async def broadcast_abort(self, msg: AbortMessage) -> None:
         """Broadcast abort to all stages."""
-        if self._abort_socket is None:
+        if self.abort_socket is None:
             raise RuntimeError("Control plane not started")
-        await self._abort_socket.publish(msg)
+        else:
+            pass
+        await self.abort_socket.publish(msg)
 
     async def send_shutdown(self, stage_name: str, stage_endpoint: str) -> None:
         """Send shutdown message to a stage."""
-        if stage_name not in self._stage_sockets:
+        if stage_name not in self.stage_sockets:
             sock = PushSocket(stage_endpoint)
             await sock.connect()
-            self._stage_sockets[stage_name] = sock
-
-        await self._stage_sockets[stage_name].send(ShutdownMessage())
+            self.stage_sockets[stage_name] = sock
+        else:
+            pass
+        await self.stage_sockets[stage_name].send(ShutdownMessage())
 
     def close(self) -> None:
         """Close all sockets."""
-        if self._completion_socket:
-            self._completion_socket.close()
-        if self._abort_socket:
-            self._abort_socket.close()
-        for sock in self._stage_sockets.values():
+        if self.completion_socket:
+            self.completion_socket.close()
+        else:
+            pass
+        if self.abort_socket:
+            self.abort_socket.close()
+        else:
+            pass
+        for sock in self.stage_sockets.values():
             sock.close()
-        self._stage_sockets.clear()
+        self.stage_sockets.clear()

@@ -488,6 +488,15 @@ Streaming speech is a low-concurrency UX path: it trades some throughput for muc
 
 At c=1 streaming delivers first audio ~2.2× sooner at a ~38% throughput cost. The crossover is around c≈4; past it, single-stream queuing makes streaming's first chunk arrive later than the non-streaming full response. Each streaming request emits ~20 chunks at ~19 ms intervals. The streaming measurements are from PR/local-patch evidence, not a release-wide guarantee; cite streaming as a low-concurrency first-audio win rather than a universal throughput win.
 
+### SeedTTS English Speech Results
+
+Results for the full 1,088-sample English SeedTTS split on 3× H200 (Thinker TP=2 and a dedicated Talker GPU), at concurrency 4 with voice `DB30`, temperature 0.7, seed 42, and `max_new_tokens=256`. AudioVAE uses FlashAttention-2. WER is corpus WER from Qwen3-ASR-1.7B. Each mode was measured once after four warmup requests.
+
+| Mode | Throughput (req/s) | Mean latency (s) | First audio (s) | Audio throughput (audio-s/s) | EN WER |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Non-streaming | 4.606 | 0.867 | — | 29.988 | 1.666% |
+| Streaming | 1.503 | 2.658 | 2.059 | 9.712 | 1.591% |
+
 ### Audio Equivalence
 
 A small c=1 audit (single prompt, single voice, n=4 WAVs per mode) checks that the streaming path preserves audio content versus non-streaming on the same backend.

@@ -32,14 +32,15 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
-from typing import Any, Generic, TypeVar
+from collections.abc import Callable, Coroutine, Mapping, Sequence
+from types import ModuleType
 
 import torch
+from typing_extensions import Generic, TypeVar
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
@@ -55,7 +56,7 @@ StepPlanT = TypeVar("StepPlanT")
 
 
 def resolve_initial_codec_chunk_frames(
-    params: Mapping[str, Any] | None,
+    params: Mapping[str, object] | None,
     *,
     steady_chunk_frames: int,
     default_frames: int = 0,
@@ -65,9 +66,13 @@ def resolve_initial_codec_chunk_frames(
         raise ValueError(
             f"steady_chunk_frames must be positive, got {steady_chunk_frames}"
         )
+    else:
+        pass
     value = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) if params is not None else None
     if value is None:
         value = default_frames
+    else:
+        pass
 
     try:
         frames = int(value)
@@ -77,8 +82,22 @@ def resolve_initial_codec_chunk_frames(
         ) from exc
     if frames < 0:
         raise ValueError(f"{INITIAL_CODEC_CHUNK_FRAMES_PARAM} must be >= 0")
+    else:
+        pass
 
     return min(frames, int(steady_chunk_frames))
+
+
+def vocoder_decode_stream_priority(device_module: ModuleType) -> int:
+    """The second-highest stream priority of the device: ahead of the talker's
+    default-priority stream, with the top level left free. A device with two levels
+    uses the top one."""
+    least_priority, greatest_priority = device_module.Stream.priority_range()
+    if greatest_priority + 1 < least_priority:
+        return greatest_priority + 1
+    else:
+        pass
+    return greatest_priority
 
 
 class StreamingVocoderBase(
@@ -103,24 +122,36 @@ class StreamingVocoderBase(
 
     def __init__(
         self,
-        compute_fn: Callable[[Any], Any] | None,
+        compute_fn: (
+            Callable[
+                [StagePayload],
+                StagePayload | Coroutine[None, None, StagePayload],
+            ]
+            | None
+        ),
         *,
         sample_rate: int,
         stream_source_hint: str | None = None,
         stream_input_modality: str = "audio_codes",
-        batch_compute_fn: Callable[[list[Any]], list[Any]] | None = None,
+        batch_compute_fn: (
+            Callable[
+                [list[StagePayload]],
+                Sequence[StagePayload] | Coroutine[None, None, Sequence[StagePayload]],
+            ]
+            | None
+        ) = None,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         abort_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.stream_states: dict[str, StreamStateT] = {}
-        self._emitted_stream_ids: set[str] = set()
-        self._completed_stream_request_ids: dict[str, None] = {}
+        self.emitted_stream_ids: set[str] = set()
+        self.completed_stream_request_ids: dict[str, None] = {}
         self.sample_rate = int(sample_rate)
-        self._stream_source_hint = stream_source_hint or type(self).__name__
-        self._stream_input_modality = str(stream_input_modality)
+        self.stream_source_hint = stream_source_hint or type(self).__name__
+        self.stream_input_modality = str(stream_input_modality)
         super().__init__(
             compute_fn,
             batch_compute_fn=batch_compute_fn,
@@ -136,15 +167,17 @@ class StreamingVocoderBase(
             self.on_serving_start()
             super().start()
         finally:
-            self._shutdown_stream_states()
+            self.shutdown_stream_states()
 
     def stop(self) -> None:
         was_running = self.running
         super().stop()
         if not was_running:
-            self._shutdown_stream_states()
+            self.shutdown_stream_states()
+        else:
+            pass
 
-    def _shutdown_stream_states(self) -> None:
+    def shutdown_stream_states(self) -> None:
         """Release every live state through ``clear_stream_state`` (the same
         path as completion/abort, so ``release_stream_resources`` runs), then
         let the subclass tear down session-level resources. A failing release
@@ -156,27 +189,31 @@ class StreamingVocoderBase(
                 except Exception:
                     logger.exception(
                         "%s failed to release stream state for %s during shutdown",
-                        self._stream_source_hint,
+                        self.stream_source_hint,
                         request_id,
                     )
-            self._emitted_stream_ids.clear()
-            self._completed_stream_request_ids.clear()
+            self.emitted_stream_ids.clear()
+            self.completed_stream_request_ids.clear()
             self.on_serving_stop()
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         params = payload.request.params
         if not isinstance(params, dict):
             raise TypeError(
-                f"{self._stream_source_hint} request params must be a dict, got "
+                f"{self.stream_source_hint} request params must be a dict, got "
                 f"{type(params).__name__}"
             )
+        else:
+            pass
         return bool(params.get("stream", False))
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        self._completed_stream_request_ids.pop(request_id, None)
+        self.completed_stream_request_ids.pop(request_id, None)
         state = self.get_or_create_stream_state(request_id)
         if state is None:
             return
+        else:
+            pass
         self.latch_stream_contract(request_id, state, payload, origin="payload")
 
     def on_stream_chunk(
@@ -190,10 +227,14 @@ class StreamingVocoderBase(
                 f"{type(self).__name__} coalesces stream chunks; deliver them "
                 "through on_stream_chunk_batch"
             )
-        state = self._ingest_stream_item(request_id, item)
+        else:
+            pass
+        state = self.ingest_stream_item(request_id, item)
         if state is None:
             return []
-        return self._decode_and_emit(request_id, state)
+        else:
+            pass
+        return self.decode_and_emit(request_id, state)
 
     def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
         """Ingest every chunk then run one coalesced pump under ``state_lock``;
@@ -204,24 +245,30 @@ class StreamingVocoderBase(
             for request_id, item in items:
                 if self.is_aborted(request_id):
                     continue
+                else:
+                    pass
                 try:
-                    self._ingest_stream_item(request_id, item)
+                    self.ingest_stream_item(request_id, item)
                 except Exception as exc:
                     self.emit_error(request_id, exc)
                     self.abort_state(request_id)
                     failed.append(request_id)
             if self.pump_on_chunk_batch:
-                failed.extend(self._pump_streams())
+                failed.extend(self.pump_streams())
+            else:
+                pass
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
 
-    def handle_stream_chunk(self, request_id: str, item: Any) -> None:
+    def handle_stream_chunk(self, request_id: str, item: object) -> None:
         """Coalescing schedulers route single-chunk deliveries through the
         batch backbone, so the deferred abort cleanup stays off ``state_lock``
         (the inherited path would run ``on_stream_chunk`` with the lock held)."""
         if not self.can_batch_stream_chunks:
             super().handle_stream_chunk(request_id, item)
             return
+        else:
+            pass
         item = self.validate_stream_chunk_item(request_id, item)
         self.on_stream_chunk_batch([(request_id, item)])
 
@@ -235,13 +282,19 @@ class StreamingVocoderBase(
         state = self.get_or_create_stream_state(request_id)
         if state is None:
             return []
+        else:
+            pass
         waveform = self.decode_delta(request_id, state, is_final=True)
-        if waveform is None and not self._stream_has_emitted(request_id):
+        if waveform is None and not self.stream_has_emitted(request_id):
             waveform = self.fallback_full_decode(request_id, payload, state)
+        else:
+            pass
         messages: list[OutgoingMessage] = []
         if waveform is not None:
-            self._mark_stream_emitted(request_id)
-            messages.append(self._stream_chunk_message(request_id, waveform))
+            self.mark_stream_emitted(request_id)
+            messages.append(self.stream_chunk_message(request_id, waveform))
+        else:
+            pass
         messages.append(
             OutgoingMessage(
                 request_id=request_id,
@@ -253,14 +306,16 @@ class StreamingVocoderBase(
                 ),
             )
         )
-        self._record_completed_stream_request_id(request_id)
+        self.record_completed_stream_request_id(request_id)
         return messages
 
     def clear_stream_state(self, request_id: str) -> None:
-        self._emitted_stream_ids.discard(request_id)
+        self.emitted_stream_ids.discard(request_id)
         state = self.stream_states.pop(request_id, None)
         if state is not None:
             self.release_stream_resources(request_id, state)
+        else:
+            pass
 
     def get_or_create_stream_state(self, request_id: str) -> StreamStateT | None:
         """Registry accessor. Returns None for aborted or completed request ids
@@ -269,90 +324,109 @@ class StreamingVocoderBase(
         state = self.stream_states.get(request_id)
         if state is not None:
             return state
+        else:
+            pass
         if (
             self.is_aborted(request_id)
-            or request_id in self._completed_stream_request_ids
+            or request_id in self.completed_stream_request_ids
         ):
             return None
+        else:
+            pass
         state = self.create_stream_state(request_id)
         if state is None:
             raise RuntimeError(
                 f"{type(self).__name__}.create_stream_state returned None for "
                 f"{request_id!r}"
             )
+        else:
+            pass
         self.stream_states[request_id] = state
         return state
 
     def stream_state_items(self) -> list[tuple[str, StreamStateT]]:
         return list(self.stream_states.items())
 
-    def _stream_has_emitted(self, request_id: str) -> bool:
-        return request_id in self._emitted_stream_ids
+    def stream_has_emitted(self, request_id: str) -> bool:
+        return request_id in self.emitted_stream_ids
 
-    def _mark_stream_emitted(self, request_id: str) -> None:
-        self._emitted_stream_ids.add(request_id)
+    def mark_stream_emitted(self, request_id: str) -> None:
+        self.emitted_stream_ids.add(request_id)
 
-    def _record_completed_stream_request_id(self, request_id: str) -> None:
-        self._completed_stream_request_ids[request_id] = None
-        if (
-            len(self._completed_stream_request_ids)
-            <= _COMPLETED_STREAM_REQUEST_ID_LIMIT
-        ):
+    def record_completed_stream_request_id(self, request_id: str) -> None:
+        self.completed_stream_request_ids[request_id] = None
+        if len(self.completed_stream_request_ids) <= _COMPLETED_STREAM_REQUEST_ID_LIMIT:
             return
+        else:
+            pass
         excess = (
-            len(self._completed_stream_request_ids)
+            len(self.completed_stream_request_ids)
             - _COMPLETED_STREAM_REQUEST_ID_RETAINED
         )
-        for stale_request_id in list(self._completed_stream_request_ids)[:excess]:
-            del self._completed_stream_request_ids[stale_request_id]
+        for stale_request_id in list(self.completed_stream_request_ids)[:excess]:
+            del self.completed_stream_request_ids[stale_request_id]
 
-    def _ingest_stream_item(
+    def ingest_stream_item(
         self, request_id: str, item: StreamItem
     ) -> StreamStateT | None:
         state = self.get_or_create_stream_state(request_id)
         if state is None:
             return None
+        else:
+            pass
         metadata = item.metadata
         if not isinstance(metadata, dict):
             raise RuntimeError(
-                f"{self._stream_source_hint} stream chunk for {request_id!r} is "
+                f"{self.stream_source_hint} stream chunk for {request_id!r} is "
                 "missing metadata"
             )
-        if metadata.get("modality") not in (None, self._stream_input_modality):
+        else:
+            pass
+        if metadata.get("modality") not in (None, self.stream_input_modality):
             raise ValueError(
-                f"{self._stream_source_hint} stream chunk modality must be "
-                f"{self._stream_input_modality}, got {metadata.get('modality')!r}"
+                f"{self.stream_source_hint} stream chunk modality must be "
+                f"{self.stream_input_modality}, got {metadata.get('modality')!r}"
             )
+        else:
+            pass
         if not isinstance(metadata.get("stream"), bool):
             raise RuntimeError(
-                f"{self._stream_source_hint} stream chunk for {request_id!r} must "
+                f"{self.stream_source_hint} stream chunk for {request_id!r} must "
                 "include a bool metadata['stream']"
             )
+        else:
+            pass
         self.latch_stream_contract(
             request_id, state, metadata, origin="stream metadata"
         )
         codes = item.data
         if not isinstance(codes, torch.Tensor):
             raise TypeError(
-                f"{self._stream_source_hint} stream chunk for {request_id!r} must "
+                f"{self.stream_source_hint} stream chunk for {request_id!r} must "
                 f"carry a torch.Tensor, got {type(codes).__name__}"
             )
+        else:
+            pass
         codes = self.validate_chunk(request_id, state, codes)
         self.ingest(request_id, state, codes)
         return state
 
-    def _decode_and_emit(
+    def decode_and_emit(
         self, request_id: str, state: StreamStateT
     ) -> list[OutgoingMessage]:
         if not self.should_decode(state, is_final=False):
             return []
+        else:
+            pass
         waveform = self.decode_delta(request_id, state, is_final=False)
         if waveform is None:
             return []
-        self._mark_stream_emitted(request_id)
-        return [self._stream_chunk_message(request_id, waveform)]
+        else:
+            pass
+        self.mark_stream_emitted(request_id)
+        return [self.stream_chunk_message(request_id, waveform)]
 
-    def _stream_chunk_message(
+    def stream_chunk_message(
         self, request_id: str, waveform: torch.Tensor
     ) -> OutgoingMessage:
         return OutgoingMessage(
@@ -362,12 +436,14 @@ class StreamingVocoderBase(
             metadata={"modality": "audio"},
         )
 
-    def _pump_one_step(self) -> list[str] | None:
+    def pump_one_step(self) -> list[str] | None:
         """Returns None when no stream is ready, otherwise the request ids
         on_step_failure aborted (empty after a successful step)."""
         participants = self.select_step_participants()
         if not participants:
             return None
+        else:
+            pass
         plan = self.build_step_plan(participants)
         try:
             decoded = self.run_step(participants, plan)
@@ -376,24 +452,30 @@ class StreamingVocoderBase(
         for request_id, _ in participants:
             waveform = decoded.get(request_id)
             if waveform is not None and not self.is_aborted(request_id):
-                self._mark_stream_emitted(request_id)
-                self.outbox.put(self._stream_chunk_message(request_id, waveform))
+                self.mark_stream_emitted(request_id)
+                self.outbox.put(self.stream_chunk_message(request_id, waveform))
+            else:
+                pass
         return []
 
-    def _pump_streams(self) -> list[str]:
+    def pump_streams(self) -> list[str]:
         """Coalesced decode loop: steps run until no participants remain, so
         capped-step backlogs drain within one pump; a failed step ends the
         pump and returns the aborted request ids."""
         while True:
-            failed = self._pump_one_step()
+            failed = self.pump_one_step()
             if failed is None:
                 return []
+            else:
+                pass
             if failed:
                 return failed
+            else:
+                pass
 
     def run_ready_step(self) -> None:
         with self.state_lock:
-            failed = self._pump_one_step() or []
+            failed = self.pump_one_step() or []
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
 
@@ -405,7 +487,7 @@ class StreamingVocoderBase(
         self,
         request_id: str,
         state: StreamStateT,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -440,19 +522,21 @@ class StreamingVocoderBase(
         """All cursor/overlap/crossfade/holdback math plus the codec call;
         ``is_final`` flushes the remainder at stream-done. None emits nothing."""
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         del request_id
         return audio_waveform_payload(
             waveform,
             sample_rate=self.sample_rate,
             modality="audio",
-            source_hint=self._stream_source_hint,
+            source_hint=self.stream_source_hint,
         )
 
     @abstractmethod
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: StreamStateT
-    ) -> dict[str, Any]:
+    ) -> Mapping[str, object]:
         """Terminal ``result`` payload data (metadata-only or full audio)."""
 
     def fallback_full_decode(
@@ -516,7 +600,7 @@ class StreamingVocoderBase(
         off the GPU-serializing lock)."""
         logger.exception(
             "%s streaming decode step failed; aborting %d participating request(s)",
-            self._stream_source_hint,
+            self.stream_source_hint,
             len(participants),
         )
         failed: list[str] = []
@@ -531,4 +615,5 @@ __all__ = [
     "INITIAL_CODEC_CHUNK_FRAMES_PARAM",
     "StreamingVocoderBase",
     "resolve_initial_codec_chunk_frames",
+    "vocoder_decode_stream_priority",
 ]

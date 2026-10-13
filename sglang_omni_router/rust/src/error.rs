@@ -151,10 +151,11 @@ pub(crate) enum HttpFault {
     RouterUnavailable,
     UpstreamTimeout,
     HttpVersionNotSupported,
+    NotFound,
 }
 
 impl HttpFault {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::MalformedRequest,
         Self::AmbiguousModel,
         Self::MethodNotAllowed,
@@ -170,6 +171,7 @@ impl HttpFault {
         Self::RouterUnavailable,
         Self::UpstreamTimeout,
         Self::HttpVersionNotSupported,
+        Self::NotFound,
     ];
 
     pub(crate) const fn index(self) -> usize {
@@ -193,6 +195,7 @@ impl HttpFault {
             Self::RouterUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
             Self::HttpVersionNotSupported => StatusCode::HTTP_VERSION_NOT_SUPPORTED,
+            Self::NotFound => StatusCode::NOT_FOUND,
         }
     }
 
@@ -213,6 +216,7 @@ impl HttpFault {
             Self::RouterUnavailable => "router_unavailable",
             Self::UpstreamTimeout => "upstream_timeout",
             Self::HttpVersionNotSupported => "http_version_not_supported",
+            Self::NotFound => "not_found",
         }
     }
 
@@ -233,6 +237,7 @@ impl HttpFault {
             Self::RouterUnavailable => "The router is unavailable.",
             Self::UpstreamTimeout => "The upstream request timed out.",
             Self::HttpVersionNotSupported => "HTTP/1.1 is required.",
+            Self::NotFound => "The requested resource was not found.",
         }
     }
 

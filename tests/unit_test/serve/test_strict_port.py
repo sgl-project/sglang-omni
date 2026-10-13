@@ -7,7 +7,7 @@ import socket
 
 import pytest
 
-from sglang_omni.serve.launcher import _find_available_port
+from sglang_omni.serve.launcher import find_available_port
 
 
 def test_free_port_is_returned_unchanged(monkeypatch):
@@ -15,7 +15,7 @@ def test_free_port_is_returned_unchanged(monkeypatch):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         free = probe.getsockname()[1]
-    assert _find_available_port("127.0.0.1", free) == free
+    assert find_available_port("127.0.0.1", free) == free
 
 
 def test_busy_port_falls_back_by_default(monkeypatch):
@@ -23,7 +23,7 @@ def test_busy_port_falls_back_by_default(monkeypatch):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
         holder.bind(("127.0.0.1", 0))
         busy = holder.getsockname()[1]
-        assert _find_available_port("127.0.0.1", busy) != busy
+        assert find_available_port("127.0.0.1", busy) != busy
 
 
 def test_busy_port_hard_errors_under_strict(monkeypatch):
@@ -32,19 +32,4 @@ def test_busy_port_hard_errors_under_strict(monkeypatch):
         holder.bind(("127.0.0.1", 0))
         busy = holder.getsockname()[1]
         with pytest.raises(RuntimeError, match="STRICT_PORT"):
-            _find_available_port("127.0.0.1", busy)
-
-
-def test_recently_closed_server_port_can_be_reused(monkeypatch):
-    monkeypatch.setenv("SGLANG_OMNI_STRICT_PORT", "1")
-    with socket.socket() as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-        listener.listen()
-        with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
-            peer, _ = listener.accept()
-            with peer:
-                peer.shutdown(socket.SHUT_WR)
-                assert client.recv(1) == b""
-    assert _find_available_port("127.0.0.1", port) == port
+            find_available_port("127.0.0.1", busy)

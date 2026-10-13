@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -42,6 +42,9 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTranscribeDiarizeForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
+    server_warmup_request_factory: ClassVar[str] = (
+        "sglang_omni.serve.server_warmup.build_transcription_warmup_request"
+    )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "asr": MossTDStageConfig,
@@ -75,9 +78,11 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
         )
     ]
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, int]:
         if stage_name == "asr":
             return {"encoder_cache_size_bytes": _ENCODER_CACHE_SIZE_BYTES}
+        else:
+            pass
         return {}
 
     def resolved_env_defaults(self) -> dict[str, str]:
