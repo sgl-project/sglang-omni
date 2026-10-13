@@ -535,7 +535,7 @@ up() {
     setsid numactl --cpunodebind="$node" --membind="$node" -C "${blocks[$i]}" \
       "${serve_cmd[@]}" "${source_args[@]}" "${model_name_args[@]}" \
         "${mem_args[@]}" "${extra_args[@]}" \
-        --host 127.0.0.1 --port "$port" > "$log" 2>&1 < /dev/null &
+        --mps off --host 127.0.0.1 --port "$port" > "$log" 2>&1 < /dev/null &
     pid=$!
     leader_start=$(pid_start_time "$pid") \
       || die "replica $i exited before its process identity could be recorded"
