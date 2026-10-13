@@ -28,6 +28,7 @@ _BAD_REQUEST_MARKERS = (
     "Video input has invalid duration or frame rate",
     "MiniCPM-o video stack_frames currently supports only 1",
     "MiniCPM-o video inputs must be",
+    "MiniCPM-o video inputs must have shape",
     "MiniCPM-o video frames must have",
     "video_url requires a media URL",
     "chat content part",
