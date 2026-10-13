@@ -26,7 +26,6 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
     WindowGraphDecoder,
-    non_streaming_decode_groups,
 )
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -262,7 +261,13 @@ def test_streaming_emits_the_fixed_windows_however_frames_arrive(
 
 
 @pytest.mark.parametrize(
-    ("stride", "ramp", "followup_stride", "overlap", "window_lengths"),
+    (
+        "stream_stride",
+        "stream_followup_stride_ramp",
+        "stream_followup_stride",
+        "stream_overlap_tokens",
+        "window_frame_counts",
+    ),
     [
         pytest.param(10, (10, 12, 32), 64, 32, (10, 20, 32, 64, 96), id="defaults"),
         pytest.param(40, (), 45, 20, (40, 65), id="no-ramp"),
@@ -271,20 +276,20 @@ def test_streaming_emits_the_fixed_windows_however_frames_arrive(
     ],
 )
 def test_the_stream_window_lengths_follow_the_window_config(
-    stride: int,
-    ramp: tuple[int, ...],
-    followup_stride: int,
-    overlap: int,
-    window_lengths: tuple[int, ...],
+    stream_stride: int,
+    stream_followup_stride_ramp: tuple[int, ...],
+    stream_followup_stride: int,
+    stream_overlap_tokens: int,
+    window_frame_counts: tuple[int, ...],
 ) -> None:
     assert (
         stream_window_lengths(
-            stream_stride=stride,
-            stream_followup_stride_ramp=ramp,
-            stream_followup_stride=followup_stride,
-            stream_overlap_tokens=overlap,
+            stream_stride=stream_stride,
+            stream_followup_stride_ramp=stream_followup_stride_ramp,
+            stream_followup_stride=stream_followup_stride,
+            stream_overlap_tokens=stream_overlap_tokens,
         )
-        == window_lengths
+        == window_frame_counts
     )
 
 
@@ -333,9 +338,12 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     )
     codes = torch.randint(0, 100, (2, NUM_CODEBOOKS, 100), device=device)
 
+    replay_results: list[tuple[torch.Tensor, torch.Tensor]] = []
     for frame_count in (96, 7, 10, 11, 64, 95, 97):
         window = codes[:1, :, :frame_count]
-        assert torch.equal(decoder(window), causal_decode(window))
+        replay_results.append((decoder(window), causal_decode(window)))
+    for decoded_audio, expected_audio in replay_results:
+        assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
 
 
@@ -440,61 +448,6 @@ def test_a_non_streaming_batch_decodes_through_the_given_window_decoder() -> Non
     ]
 
 
-@pytest.mark.parametrize(
-    ("frame_counts", "max_padded_frames_per_decode", "groups"),
-    [
-        ([5, 7], None, [[0, 1]]),
-        ([3, 5, 2], 15, [[0, 1, 2]]),
-        ([4, 10, 7, 10, 2], 20, [[1, 3], [2, 0], [4]]),
-        ([30], 20, [[0]]),
-    ],
-)
-def test_non_streaming_rows_split_longest_first_under_the_padded_frame_limit(
-    frame_counts: list[int],
-    max_padded_frames_per_decode: int | None,
-    groups: list[list[int]],
-) -> None:
-    assert (
-        non_streaming_decode_groups(frame_counts, max_padded_frames_per_decode)
-        == groups
-    )
-
-
-@pytest.mark.parametrize(
-    ("max_padded_frames_per_decode", "decoded_shapes"),
-    [
-        (21, [(3, NUM_CODEBOOKS, 7)]),
-        (12, [(1, NUM_CODEBOOKS, 7), (2, NUM_CODEBOOKS, 5)]),
-    ],
-)
-def test_a_non_streaming_batch_over_the_limit_decodes_in_smaller_calls(
-    max_padded_frames_per_decode: int,
-    decoded_shapes: list[tuple[int, ...]],
-) -> None:
-    codec = FrameNumberCodec()
-    vocoder = vocoder_with(
-        codec, max_padded_frames_per_decode=max_padded_frames_per_decode
-    )
-    frame_counts = [5, 7, 3]
-
-    results = vocoder.vocode_payloads(
-        [
-            final_payload(numbered_frames(frame_count), is_streaming=False)
-            for frame_count in frame_counts
-        ]
-    )
-
-    assert [tuple(codes.shape) for codes in codec.decoded_codes] == decoded_shapes
-    for result, frame_count in zip(results, frame_counts, strict=True):
-        assert isinstance(result.data, dict)
-        assert (
-            result.data["audio_data"]
-            == np.repeat(
-                np.arange(frame_count, dtype=np.float32), SAMPLES_PER_FRAME
-            ).tolist()
-        )
-
-
 @pytest.mark.accelerator
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
@@ -566,7 +519,17 @@ def test_the_channels_last_decoder_decodes_like_the_codec(
     )
 
 
-def test_the_ramp_advances_when_a_crossfade_holds_back_a_whole_window() -> None:
+@pytest.mark.parametrize(
+    "chunk_frame_counts",
+    [
+        pytest.param([1] * 128, id="frame-by-frame"),
+        pytest.param([5, 123], id="crosses-multiple-windows"),
+        pytest.param([128], id="all-frames-at-once"),
+    ],
+)
+def test_streaming_crossfade_preserves_audio_across_chunk_sizes(
+    chunk_frame_counts: list[int],
+) -> None:
     codec = FrameNumberCodec()
     vocoder = Drama3VocoderScheduler(
         codec,
@@ -580,15 +543,17 @@ def test_the_ramp_advances_when_a_crossfade_holds_back_a_whole_window() -> None:
         max_batch_wait_ms=2,
     )
     frames = numbered_frames(128)
-    for chunk_id in range(128):
+    first_frame = 0
+    for chunk_id, chunk_frame_count in enumerate(chunk_frame_counts):
         vocoder.handle_stream_chunk(
             "request-a",
             StreamItem(
                 chunk_id=chunk_id,
-                data=frames[chunk_id : chunk_id + 1].T,
+                data=frames[first_frame : first_frame + chunk_frame_count].T,
                 from_stage="tts_engine",
             ),
         )
+        first_frame += chunk_frame_count
     vocoder.handle_streaming_new_request(
         "request-a", final_payload(frames, is_streaming=True)
     )
@@ -603,20 +568,22 @@ def test_the_ramp_advances_when_a_crossfade_holds_back_a_whole_window() -> None:
 
 
 @pytest.mark.parametrize(
-    "ramp",
+    "stream_followup_stride_ramp",
     [
         pytest.param((0,), id="zero"),
         pytest.param((-1,), id="negative"),
         pytest.param((2, 0), id="zero-after-positive"),
     ],
 )
-def test_a_ramp_with_a_non_positive_stride_is_refused(ramp: tuple[int, ...]) -> None:
+def test_a_ramp_with_a_non_positive_stride_is_refused(
+    stream_followup_stride_ramp: tuple[int, ...]
+) -> None:
     with pytest.raises(ValueError, match="stream_followup_stride_ramp"):
         Drama3VocoderScheduler(
             FrameNumberCodec(),
             device="cpu",
             stream_stride=10,
-            stream_followup_stride_ramp=ramp,
+            stream_followup_stride_ramp=stream_followup_stride_ramp,
             stream_followup_stride=64,
             stream_overlap_tokens=32,
             stream_crossfade_samples=0,
@@ -762,3 +729,52 @@ def test_window_batched_frames_vocode_to_the_bytes_of_one_frame_per_message(
     ]
     assert [message.type for message in batched][-1] == "result"
     assert chunk_frame_ranges(batched)[-1][1] == frame_count
+
+
+@pytest.mark.parametrize(
+    ("frame_counts", "max_padded_frames_per_decode"),
+    [
+        pytest.param([5, 7], None, id="unlimited"),
+        pytest.param([3, 5, 2], 15, id="fits-one-batch"),
+        pytest.param([4, 10, 7, 10, 2], 20, id="requires-splitting"),
+        pytest.param([5, 7, 3], 12, id="uneven-batches"),
+        pytest.param([30], 20, id="single-long-request"),
+    ],
+)
+def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
+    frame_counts: list[int], max_padded_frames_per_decode: int | None
+) -> None:
+    codec = FrameNumberCodec()
+    vocoder = vocoder_with(
+        codec, max_padded_frames_per_decode=max_padded_frames_per_decode
+    )
+    payloads: list[StagePayload] = []
+    for request_index, frame_count in enumerate(frame_counts):
+        frames = numbered_frames(frame_count)
+        frames[:, 1] += request_index * 100
+        payload = final_payload(frames, is_streaming=False)
+        payload.request_id = f"request-{request_index}"
+        payloads.append(payload)
+
+    results = vocoder.vocode_payloads(payloads)
+
+    assert [result.request_id for result in results] == [
+        payload.request_id for payload in payloads
+    ]
+    for request_index, (result, frame_count) in enumerate(
+        zip(results, frame_counts, strict=True)
+    ):
+        assert isinstance(result.data, dict)
+        expected_samples = np.repeat(
+            np.arange(frame_count, dtype=np.float32) + request_index * 100,
+            SAMPLES_PER_FRAME,
+        )
+        np.testing.assert_array_equal(result.data["audio_data"], expected_samples)
+    if max_padded_frames_per_decode is not None:
+        assert all(
+            codes.shape[0] == 1
+            or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
+            for codes in codec.decoded_codes
+        )
+    else:
+        assert len(codec.decoded_codes) == 1

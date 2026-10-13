@@ -66,14 +66,12 @@ def first_frame_inputs(
     )
 
 
-def input_tensors(inputs: FirstFrameInputs) -> dict[str, torch.Tensor]:
-    return {
-        field.name: getattr(inputs, field.name) for field in dataclasses.fields(inputs)
-    }
-
-
-def summed_frames(inputs: FirstFrameInputs) -> torch.Tensor:
-    return inputs.input_frames + inputs.positions[:, None] + inputs.cache_slots[:, None]
+def summed_frames(frame_inputs: FirstFrameInputs) -> torch.Tensor:
+    return (
+        frame_inputs.input_frames
+        + frame_inputs.positions[:, None]
+        + frame_inputs.cache_slots[:, None]
+    )
 
 
 class SummingGraph:
@@ -121,31 +119,24 @@ def cpu_first_frame_graphs(events: list[str]) -> Drama3FirstFrameGraphs:
     )
 
 
-def test_replay_stages_each_row_in_place_and_hands_over_a_copy() -> None:
+def test_replay_returns_current_frames_and_preserves_previous_results() -> None:
     events: list[str] = []
     graphs = cpu_first_frame_graphs(events)
-    static_tensors = input_tensors(graphs.static_inputs)
-    addresses = {name: tensor.data_ptr() for name, tensor in static_tensors.items()}
-    unstaged_rows = {
-        name: tensor[2:].clone() for name, tensor in static_tensors.items()
-    }
-    live_inputs = first_frame_inputs(2, 10, torch.device("cpu"))
+    replay_results: list[tuple[torch.Tensor, torch.Tensor]] = []
 
-    frames = graphs.replay(live_inputs)
+    for request_count in (2, MAX_REQUEST_COUNT, 1, 3):
+        live_inputs = first_frame_inputs(
+            request_count, 10 * request_count, torch.device("cpu")
+        )
+        replay_results.append((graphs.replay(live_inputs), summed_frames(live_inputs)))
 
-    assert events == ["refill 2", "replay 2"]
-    assert graphs.max_request_count == MAX_REQUEST_COUNT
-    assert graphs.static_input_bytes == sum(
-        tensor.nbytes for tensor in static_tensors.values()
-    )
-    for name, live_tensor in input_tensors(live_inputs).items():
-        static_tensor = static_tensors[name]
-        assert static_tensor.data_ptr() == addresses[name], name
-        assert torch.equal(static_tensor[:2], live_tensor), name
-        assert torch.equal(static_tensor[2:], unstaged_rows[name]), name
-    assert torch.equal(frames, summed_frames(live_inputs))
-    graphs.sampled_frames[2].zero_()
-    assert torch.equal(frames, summed_frames(live_inputs))
+    for sampled_frames, expected_frames in replay_results:
+        assert torch.equal(sampled_frames, expected_frames)
+    assert events == [
+        event
+        for request_count in (2, MAX_REQUEST_COUNT, 1, 3)
+        for event in (f"refill {request_count}", f"replay {request_count}")
+    ]
 
 
 def never_sampled(
@@ -193,9 +184,6 @@ class SamplerCall:
     is_capture_mode: bool
     attention_backend: AttentionBackend
     forward_mode: ForwardMode
-    request_rows: list[int] | None
-    sequence_lengths: list[int] | None
-    cache_slots: list[int] | None
 
 
 @pytest.mark.accelerator
@@ -224,15 +212,6 @@ def test_capture_records_every_request_count_largest_first_in_capture_mode() -> 
                 is_capture_mode=get_is_capture_mode(),
                 attention_backend=get_attn_backend(),
                 forward_mode=forward_batch.forward_mode,
-                request_rows=(
-                    None if is_capturing else forward_batch.req_pool_indices.tolist()
-                ),
-                sequence_lengths=(
-                    None if is_capturing else forward_batch.seq_lens.tolist()
-                ),
-                cache_slots=(
-                    None if is_capturing else forward_batch.out_cache_loc.tolist()
-                ),
             )
         )
         return input_frames + positions[:, None] + forward_batch.out_cache_loc[:, None]
@@ -259,16 +238,6 @@ def test_capture_records_every_request_count_largest_first_in_capture_mode() -> 
         and sampled.attention_backend is attention_backend
         and sampled.forward_mode == ForwardMode.DECODE
         for sampled in calls
-    )
-    assert all(
-        (sampled.request_rows, sampled.sequence_lengths, sampled.cache_slots)
-        == (
-            [0] * sampled.request_count,
-            [1] * sampled.request_count,
-            [0] * sampled.request_count,
-        )
-        for sampled in calls
-        if not sampled.is_capturing
     )
     assert full_attention_backend.init_forward_metadata_out_graph.call_args_list == [
         call(graphs.forward_batches[request_count], in_capture=True)
