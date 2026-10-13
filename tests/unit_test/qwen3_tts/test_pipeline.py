@@ -6669,6 +6669,58 @@ def test_qwen3_tts_state_round_trips_finish_reason() -> None:
     assert state.to_dict()["finish_reason"] == "length"
 
 
+def test_qwen3_tts_vocoder_result_keeps_the_talker_finish_reason() -> None:
+    """The non-streaming vocoder result is what the client reads the reason from."""
+    payload = make_payload(inputs="target")
+    talker_result = apply_sglang_qwen3_tts_result(
+        payload,
+        Qwen3TTSSGLangRequestData(
+            req=SimpleNamespace(output_ids=[]),
+            output_codes=[torch.tensor([1, 2]), torch.tensor([3, 4])],
+            stage_payload=payload,
+            finish_reason="length",
+        ),
+    )
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(), device="cpu"
+    )
+
+    (vocoder_result,) = asyncio.run(scheduler.vocode_payloads([talker_result]))
+
+    assert vocoder_result.data["finish_reason"] == "length"
+
+
+def test_qwen3_tts_streaming_vocoder_result_keeps_the_talker_finish_reason() -> None:
+    """The streaming terminal result is what the client reads the reason from."""
+    payload = make_payload(inputs="target", params={"stream": True})
+    talker_result = apply_sglang_qwen3_tts_result(
+        payload,
+        Qwen3TTSSGLangRequestData(
+            req=SimpleNamespace(output_ids=[]),
+            output_codes=[torch.tensor([1, 2]), torch.tensor([3, 4])],
+            stage_payload=payload,
+            finish_reason="length",
+        ),
+    )
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(), device="cpu", initial_chunk_frames=8
+    )
+    scheduler.handle_streaming_new_request(talker_result.request_id, talker_result)
+    scheduler.handle_stream_chunk(
+        talker_result.request_id,
+        qwen3_tts_stream_item(
+            torch.ones((2, 2), dtype=torch.long), chunk_id=0, ref_code_len=0
+        ),
+    )
+
+    scheduler.handle_stream_done(talker_result.request_id)
+
+    assert scheduler.outbox.get_nowait().type == "stream"
+    terminal_message = scheduler.outbox.get_nowait()
+    assert terminal_message.type == "result"
+    assert terminal_message.data.data["finish_reason"] == "length"
+
+
 def test_speech_batch_result_exposes_finish_reason() -> None:
     """Batch JSON results carry the reason the single-item header carries."""
     from sglang_omni.serve.protocol import SpeechBatchResult
