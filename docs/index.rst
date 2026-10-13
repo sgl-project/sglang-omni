@@ -105,6 +105,7 @@ Supported Models
    cookbook/higgs_tts.md
    cookbook/voxtral_tts.md
    cookbook/fishaudio_s2_pro.md
+   cookbook/fishaudio_drama3.md
    cookbook/qwen3_tts.md
    cookbook/ming_tts.md
    cookbook/moss_tts.md
@@ -167,4 +168,5 @@ Supported Models
    developer_reference/asr_bench.md
    developer_reference/omni_offline_bench.md
    developer_reference/rl_admin_control.md
+   developer_reference/mlx.md
    developer_reference/bump_version.md

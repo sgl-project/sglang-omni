@@ -9,10 +9,19 @@ from threading import Lock
 
 import torch
 from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.model_executor.model_runner_components.layer_setup import (
+    AttentionAndMoeLayers,
+)
+from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+    PrefillCudaGraphRunner,
+)
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.server_args import ServerArgs
+from torch import nn
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
@@ -113,9 +122,11 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         total GPU memory times that budget minus this stage's measured memory.
         NVML process accounting is preferred. If NVML cannot identify the
         current process, use the stage-local load delta measured inside
-        SGLang's serialized initialization window. Without a stage budget, keep
-        upstream SGLang profiling semantics for ordinary non-colocated AR
-        serving.
+        SGLang's serialized initialization window. A hybrid linear-attention
+        model then sizes its recurrent-state pool out of that headroom, as
+        upstream profiling does, and the KV pool gets the rest. Without a stage
+        budget, keep upstream SGLang profiling semantics for ordinary
+        non-colocated AR serving.
         """
         if self.kv_cache_bytes is not None:
             if self.kv_cache_bytes <= 0:
@@ -175,17 +186,41 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
             pass
 
         if process_memory is None or process_memory <= 0:
-            return self.profile_available_bytes_from_stage_load_delta(
+            available_bytes = self.profile_available_bytes_from_stage_load_delta(
                 pre_model_load_memory,
                 total_memory,
             )
         else:
-            pass
+            available_bytes = self.profile_available_bytes_from_process_memory(
+                total_memory,
+                process_memory,
+            )
 
-        return self.profile_available_bytes_from_process_memory(
-            total_memory,
-            process_memory,
+        if self.mambaish_config is None:
+            return available_bytes
+        else:
+            pass
+        kv_bytes = int(
+            self._handle_max_mamba_cache(  # noqa: leading-underscore  # upstream name
+                available_bytes / (1 << 30)
+            )
+            * (1 << 30)
         )
+        state_bytes = available_bytes - kv_bytes
+        if kv_bytes <= 0:
+            raise RuntimeError(
+                "Colocated GPU memory budget leaves no KV-cache headroom after the "
+                f"hybrid state cache: state={format_bytes_gib(state_bytes)}, "
+                f"budget={format_bytes_gib(available_bytes)}. Raise the stage memory "
+                "fraction or lower max_running_requests."
+            )
+        else:
+            pass
+        logger.info(
+            f"SGLang AR memory profile: hybrid_state={format_bytes_gib(state_bytes)} "
+            f"available_for_kv={format_bytes_gib(kv_bytes)}"
+        )
+        return kv_bytes
 
     def free_gpu_memory_bytes(self) -> int:
         return free_gpu_memory_bytes(self.device, self.gpu_id)
@@ -270,6 +305,8 @@ class SGLModelRunner(ModelRunner):
         self.weight_share_config = None
         self.weight_share_record = None
         self.weight_ipc_leader_monitor = None
+        self.extra_prefill_graph_attention_layers: list[RadixAttention] = []
+        self.prefill_graph_runner_class: type[PrefillCudaGraphRunner] | None = None
         self.register_omni_model()
 
         super().__init__(
@@ -509,15 +546,36 @@ class SGLModelRunner(ModelRunner):
             pass
         return result
 
-    def prefill_cuda_graph_runner_cls(self):
-        from sglang.srt.model_executor.cuda_graph_config import (
-            Backend as CudaGraphBackend,
-        )
-
+    def get_cuda_graph_layers(self, layer_model: nn.Module) -> AttentionAndMoeLayers:
+        layers = super().get_cuda_graph_layers(layer_model)
         if (
-            self.model_arch_override == "WhisperForConditionalGeneration"
-            and get_exec().graph.cuda_graph_config.prefill.backend
+            get_exec().graph.cuda_graph_config.prefill.backend
+            != CudaGraphBackend.BREAKABLE
+        ):
+            return layers
+        else:
+            extra_layers = self.extra_prefill_graph_attention_layers
+            return AttentionAndMoeLayers(
+                attention_layers=[*layers.attention_layers, *extra_layers],
+                moe_layers=layers.moe_layers,
+                moe_fusions=layers.moe_fusions,
+                dsa_indexers=layers.dsa_indexers,
+                mha_companion_layers=[
+                    *layers.mha_companion_layers,
+                    *[None] * len(extra_layers),
+                ],
+            )
+
+    def prefill_cuda_graph_runner_cls(self) -> type[PrefillCudaGraphRunner] | None:
+        is_breakable = (
+            get_exec().graph.cuda_graph_config.prefill.backend
             == CudaGraphBackend.BREAKABLE
+        )
+        if is_breakable and self.prefill_graph_runner_class is not None:
+            return self.prefill_graph_runner_class
+        elif (
+            is_breakable
+            and self.model_arch_override == "WhisperForConditionalGeneration"
         ):
             from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
                 WhisperPrefillCudaGraphRunner,
@@ -525,8 +583,7 @@ class SGLModelRunner(ModelRunner):
 
             return WhisperPrefillCudaGraphRunner
         else:
-            pass
-        return None
+            return None
 
     def weight_update_blocked_reason(self) -> str | None:
         ws = self.weight_share_config

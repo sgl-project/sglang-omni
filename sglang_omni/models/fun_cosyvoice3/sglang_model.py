@@ -16,6 +16,10 @@ from torch import nn
 from transformers import Qwen2Config
 
 from sglang_omni.platforms import current_platform
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 
 VOCAB_SIZE = 6561
 TOTAL_VOCAB_SIZE = VOCAB_SIZE + 200
@@ -104,6 +108,17 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
             logits = self.llm_decoder(hidden_states)
         return LogitsProcessorOutput(
             next_token_logits=logits, hidden_states=hidden_states
+        )
+
+    def precompile_kernels_after_loading(self) -> None:
+        """Compile the repetition penalty every default request applies, on the float32
+        logits forward writes."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.llm_decoder.weight.device,
+                vocab_size=TOTAL_VOCAB_SIZE,
+                penalized_logits_dtype=torch.float32,
+            )
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:

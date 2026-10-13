@@ -170,6 +170,11 @@ def find_available_port(host: str, port: int) -> int:
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # note (Richard Wang): probe the way the server binds. Uvicorn sets
+            # SO_REUSEADDR, so a port whose last connections are still in
+            # TIME_WAIT after a restart is free for it, while a live listener
+            # still fails this bind.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
             return port
     except OSError as exc:
@@ -637,6 +642,7 @@ async def run_server(
             ),
             additional_speech_languages=pipeline_config.additional_speech_languages,
             max_speech_input_chars=pipeline_config.max_speech_input_chars,
+            supported_speech_fields=pipeline_config.supported_speech_fields,
             enable_realtime=enable_realtime,
             realtime_deployment=realtime_deployment,
             supports_realtime_audio_output=(

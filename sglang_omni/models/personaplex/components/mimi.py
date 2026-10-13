@@ -323,7 +323,9 @@ class MimiCodec(nn.Module):
     def init_encode_state(self, batch_size: int) -> MimiEncodeState:
         return MimiEncodeState(
             encoder=self.encoder.init_state(batch_size),
-            transformer=self.encoder_transformer.init_state(batch_size),
+            transformer=self.encoder_transformer.init_state(
+                batch_size, max_chunk_steps=self.spec.frame_ratio
+            ),
             downsample=self.downsample.init_state(batch_size),
         )
 
@@ -342,10 +344,14 @@ class MimiCodec(nn.Module):
             pass
         return self.quantizer.encode(latent)
 
-    def init_decode_state(self, batch_size: int) -> MimiDecodeState:
+    def init_decode_state(
+        self, batch_size: int, *, max_chunk_frames: int
+    ) -> MimiDecodeState:
         return MimiDecodeState(
             upsample=self.upsample.init_state(batch_size),
-            transformer=self.decoder_transformer.init_state(batch_size),
+            transformer=self.decoder_transformer.init_state(
+                batch_size, max_chunk_steps=max_chunk_frames * self.spec.frame_ratio
+            ),
             decoder=self.decoder.init_state(batch_size),
         )
 

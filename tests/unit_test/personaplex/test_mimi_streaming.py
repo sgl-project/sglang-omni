@@ -70,7 +70,7 @@ def test_codec_encode_and_decode_step_match_whole(random_codec):
 
     whole = codec.decode(codes)
     assert whole.shape == (1, 1, codec.samples_per_frame * frames)
-    state = codec.init_decode_state(batch_size=1)
+    state = codec.init_decode_state(batch_size=1, max_chunk_frames=1)
     chunked = torch.cat(
         [codec.decode_step(codes[..., f : f + 1], state) for f in range(frames)], -1
     )
@@ -88,8 +88,8 @@ def test_a_reset_decode_state_decodes_like_a_fresh_one(random_codec):
             -1,
         )
 
-    fresh = stream(codes, codec.init_decode_state(batch_size=1))
-    state = codec.init_decode_state(batch_size=1)
+    fresh = stream(codes, codec.init_decode_state(batch_size=1, max_chunk_frames=1))
+    state = codec.init_decode_state(batch_size=1, max_chunk_frames=1)
     stream(earlier, state)
     state.reset()
     assert torch.equal(stream(codes, state), fresh)
@@ -143,7 +143,7 @@ def influenced_steps(chunk: int) -> list[int]:
     changed[:, 0] += 1.0
 
     def run(inp):
-        state = attention.init_state(batch_size=1)
+        state = attention.init_state(batch_size=1, max_chunk_steps=chunk)
         with torch.no_grad():
             parts = [
                 attention(inp[:, t : t + chunk], offset=t, state=state)
@@ -156,8 +156,7 @@ def influenced_steps(chunk: int) -> list[int]:
 
 
 def test_the_ring_drops_its_oldest_step_as_the_reference_does():
-    """The reference labels the slot it is about to overwrite as a future position,
-    so once the ring is full its oldest entry leaves the window."""
+    """History at or before each frame's end minus the context is excluded."""
     assert influenced_steps(1) == list(range(SMALL.context - 1))
     assert influenced_steps(SMALL.frame_ratio) == list(
         range(SMALL.context - SMALL.frame_ratio)
@@ -170,7 +169,7 @@ def test_the_ring_drops_its_oldest_step_as_the_reference_does():
 def test_whole_sequence_matches_the_streaming_replay(length):
     transformer = small_transformer()
     x = torch.randn(1, SMALL.dim, length)
-    state = transformer.init_state(batch_size=1)
+    state = transformer.init_state(batch_size=1, max_chunk_steps=SMALL.frame_ratio)
     with torch.no_grad():
         whole = transformer(x)
         chunked = torch.cat(
@@ -181,3 +180,21 @@ def test_whole_sequence_matches_the_streaming_replay(length):
             -1,
         )
     torch.testing.assert_close(whole, chunked, atol=1e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize("max_chunk_frames", [1, 3, 8])
+@pytest.mark.parametrize("length_in_steps", [5, 6, 67])
+def test_aggregated_transformer_chunks_match_whole_across_ring_wraps(
+    max_chunk_frames: int, length_in_steps: int
+) -> None:
+    transformer = small_transformer()
+    latent = torch.randn(1, SMALL.dim, length_in_steps)
+    max_chunk_steps = max_chunk_frames * SMALL.frame_ratio
+    state = transformer.init_state(batch_size=1, max_chunk_steps=max_chunk_steps)
+    with torch.inference_mode():
+        whole = transformer(latent)
+        chunks = [
+            transformer.step(latent[..., start : start + max_chunk_steps], state)
+            for start in range(0, length_in_steps, max_chunk_steps)
+        ]
+    torch.testing.assert_close(torch.cat(chunks, -1), whole, atol=1e-6, rtol=1e-5)

@@ -7,6 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
+from sglang.srt.utils import DynamicGradMode
+from torch._dynamo.utils import counters
 
 import sglang_omni.models.fun_cosyvoice3.model_runner as model_runner_module
 from sglang_omni.models.fun_cosyvoice3.model_runner import (
@@ -18,6 +21,7 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
 )
 from sglang_omni.models.fun_cosyvoice3.sglang_model import (
     EOS_ID,
+    TOTAL_VOCAB_SIZE,
     VOCAB_SIZE,
     FunCosyVoice3SGLangModel,
 )
@@ -459,6 +463,50 @@ def test_cosyvoice3_speech_head_returns_float32_logits() -> None:
     product = hidden_states.double() @ model.llm_decoder.weight.double().T
     assert output.next_token_logits.dtype == torch.float32
     assert (output.next_token_logits.double() - product).abs().max() < 1e-3
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cosyvoice3_precompile_leaves_the_first_penalized_samples_nothing_to_compile() -> (
+    None
+):
+    model = object.__new__(FunCosyVoice3SGLangModel)
+    torch.nn.Module.__init__(model)
+    model.speech_embedding = torch.nn.Embedding(TOTAL_VOCAB_SIZE, 64).to(
+        "cuda", torch.bfloat16
+    )
+    model.llm_decoder = torch.nn.Linear(64, TOTAL_VOCAB_SIZE, bias=False).to(
+        "cuda", torch.bfloat16
+    )
+    model.model = (
+        lambda input_ids, positions, forward_batch, input_embeds, pp_proxy_tensors: (
+            input_embeds
+        )
+    )
+    torch.compiler.reset()
+
+    model.precompile_kernels_after_loading()
+    compiled_graphs = counters["stats"]["unique_graphs"]
+
+    with DynamicGradMode():
+        for rows in (1, 3):
+            forward_batch = SimpleNamespace(
+                forward_mode=SimpleNamespace(
+                    is_decode=lambda: False, is_extend=lambda: True
+                ),
+                extend_seq_lens=torch.full((rows,), 2, device="cuda"),
+            )
+            token_ids = torch.zeros(2 * rows, dtype=torch.long, device="cuda")
+            hidden_states = torch.randn(
+                2 * rows, 64, device="cuda", dtype=torch.bfloat16
+            )
+            logits = model(
+                token_ids, token_ids, forward_batch, input_embeds=hidden_states
+            ).next_token_logits
+            apply_scaling_penalties(
+                logits, torch.full(logits.shape, 1.21, device="cuda")
+            )
+    assert counters["stats"]["unique_graphs"] == compiled_graphs
 
 
 def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None:

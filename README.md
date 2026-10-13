@@ -29,6 +29,7 @@
 
 ## News
 
+- [2026/10] 🐟 Day-0 support for [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3): multi-speaker text-to-speech with voice cloning and natural-language control, streamed on `/v1/audio/speech`. \[[Blog](https://www.sglang.io/blog/spg-topology)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)\] \[[Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)\]
 - [2026/10] 🎙️ Introducing [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt), an open-source voice input tool for Mac, now integrating SGLang-Omni for faster local speech recognition on Apple Silicon. Combine ASR with LLM-based text refinement and personal system prompts for accurate technical terminology and personalized voice input, with fully local or remote inference options. [[Download](https://github.com/sgl-project/sglang-omni/releases#release-voxt-v1.16.0)][[Demo]](https://x.com/GenAI_is_real/status/2109419016205017181)
 - [2026/10] 🚀 SGLang-Omni **v0.1.8** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.8"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
 - [2026/09] 🐧 Day-0 support for [AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash): text + voice instructions → 24 kHz speech on `/v1/audio/speech`, audio + editing instructions → edited speech on `/generate`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/auk.html)\]
@@ -50,7 +51,7 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 
 - **Omni chat and speech**: [Qwen3-Omni](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_omni.html), [Ming-Omni](https://sgl-project.github.io/sglang-omni/cookbook/ming_omni.html) — multimodal in, text/audio out.
 - **Music generation**: [MiniMax Music 3](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html) — lyrics + caption → 32 kHz stereo song.
-- **Speech generation**: [Higgs Audio v3](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html), [MOSS-TTS](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts.html), [MOSS-TTS Local](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html), [Fish Speech S2-Pro](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_s2_pro.html), [Qwen3-TTS](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_tts.html), [Voxtral TTS](https://sgl-project.github.io/sglang-omni/cookbook/voxtral_tts.html), [Ming-Omni-TTS](https://sgl-project.github.io/sglang-omni/cookbook/ming_tts.html), [dots.tts](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html), [ZONOS2](https://sgl-project.github.io/sglang-omni/cookbook/zonos2.html) — `/v1/audio/speech`, batch, streaming, uploaded voices.
+- **Speech generation**: [Higgs Audio v3](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html), [MOSS-TTS](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts.html), [MOSS-TTS Local](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html), [Fish Audio Drama 3](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html), [Fish Speech S2-Pro](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_s2_pro.html), [Qwen3-TTS](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_tts.html), [Voxtral TTS](https://sgl-project.github.io/sglang-omni/cookbook/voxtral_tts.html), [Ming-Omni-TTS](https://sgl-project.github.io/sglang-omni/cookbook/ming_tts.html), [dots.tts](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html), [ZONOS2](https://sgl-project.github.io/sglang-omni/cookbook/zonos2.html) — `/v1/audio/speech`, batch, streaming, uploaded voices.
 - **Audio transcription and diarization**: [Qwen3-ASR](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html), [Fun-ASR](https://sgl-project.github.io/sglang-omni/cookbook/fun_asr.html), [ARK-ASR](https://sgl-project.github.io/sglang-omni/cookbook/arkasr.html), [Nemotron 3.5 ASR](https://sgl-project.github.io/sglang-omni/cookbook/nemotron3_5_asr.html), [MOSS-Transcribe-Diarize](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html) via `/v1/audio/transcriptions`. MOSS-TD supports speaker labels and timestamps (`response_format=verbose_json`).
 - **SGLang-Omni Router**: Multi-worker OpenAI-compatible front door — health, readiness, lifecycle, capability discovery. [Router guide](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html).
 
@@ -81,6 +82,20 @@ Additional model guides, including experimental and research-oriented paths, are
 SGLang-Omni welcomes contributors working on inference systems, kernels, scheduling, inter-stage communication, model runners and cache efficiency, model integration, benchmarking, production deployment. Join the [SGLang Slack](https://slack.sglang.io) or read the [developer reference](https://sgl-project.github.io/sglang-omni/developer_reference/main.html).
 
 Organizations interested in supporting SGLang-Omni, TTS, or omni model serving can contact Chenyang Zhao at [zhaochenyang@lmsys.org](mailto:zhaochenyang@lmsys.org).
+
+## Citation
+
+If you use SGLang-Omni for your research, please cite our [technical blog](https://www.sglang.io/blog/spg-topology):
+
+```bibtex
+@misc{sglangomni2026,
+  title={Fish Audio Drama 3 Meets {SGLang-Omni}: Day-0 Support and the Stage--Process--GPU Topology},
+  author={{SGLang-Omni Team}},
+  howpublished={\url{https://www.sglang.io/blog/spg-topology}},
+  year={2026},
+  month={oct}
+}
+```
 
 ## Acknowledgments
 

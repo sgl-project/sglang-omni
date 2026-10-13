@@ -217,6 +217,7 @@ def create_code2wav_executor(
     *,
     num_decode_slots: int,
     max_graph_frames: int,
+    chunk_ramp_frames: list[int],
     device: str | None = None,
     gpu_id: int | None = None,
     **_,
@@ -245,9 +246,14 @@ def create_code2wav_executor(
         return payload
 
     decode_slots = MimiDecodeSlots(
-        codec, num_slots=num_decode_slots, max_graph_frames=max_graph_frames
+        codec,
+        num_slots=num_decode_slots,
+        max_graph_frames=max_graph_frames,
+        max_chunk_frames=max(chunk_ramp_frames),
     )
-    return PersonaPlexCode2WavScheduler(decode_slots, compute_fn=decode)
+    return PersonaPlexCode2WavScheduler(
+        decode_slots, compute_fn=decode, chunk_ramp_frames=chunk_ramp_frames
+    )
 
 
 __all__ = [

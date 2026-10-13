@@ -53,6 +53,8 @@ dependencies = [
     # a port.
     "sox>=1.4.1",
     "av>=16.1.0",
+    "decord==0.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "audioread>=3.0.0",
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",  # Match the pinned sglang stack
     "librosa>=0.11.0",
@@ -122,6 +124,15 @@ fun-cosyvoice3 = [
 minicpm-o = [
     "einops>=0.8.1",
     "onnx>=1.18.0",
+]
+
+# Drama 3 vocoder imports dac and audiotools. These stay out of the base
+# dependencies, so `uv pip install -e .` for other models is unchanged.
+# descript-audiotools pins protobuf<3.20; tool.uv.override-dependencies keeps
+# the project protobuf pin when uv installs this extra.
+fishaudio = [
+    "descript-audiotools==0.7.2",
+    "descript-audio-codec==1.0.0",
 ]
 
 [project.scripts]

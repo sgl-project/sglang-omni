@@ -53,6 +53,10 @@ from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -2205,6 +2209,18 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             batch_size * num_tokens, attn.num_heads * attn.head_dim
         )
         return attn_output
+
+    def precompile_kernels_after_loading(self) -> None:
+        """Compile the seeded draw and the repetition penalty that every request's
+        default sampling reaches, on the codec head's logits."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.codec_head.weight.device,
+                vocab_size=self.config.vocab_size,
+                seeded_log_probability_dtype=torch.float64,
+                penalized_logits_dtype=self.codec_head.weight.dtype,
+            )
+        )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         params_dict = self.cached_params_dict

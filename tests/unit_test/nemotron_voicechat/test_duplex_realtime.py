@@ -44,7 +44,12 @@ class RecordingSessionClient:
         return self.identity
 
     async def append_session(
-        self, identity: SessionIdentity, chunk: TimedChunk
+        self,
+        identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
     ) -> None:
         assert identity == self.identity
         self.chunks.append(chunk)

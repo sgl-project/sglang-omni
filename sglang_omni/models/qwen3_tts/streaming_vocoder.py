@@ -3346,6 +3346,10 @@ class Qwen3TTSStreamingVocoderScheduler(
             data["usage"] = usage
         else:
             pass
+        if final_state.finish_reason is not None:
+            data["finish_reason"] = final_state.finish_reason
+        else:
+            pass
         return data
 
     async def vocode_payload(self, payload: StagePayload) -> StagePayload:
@@ -3412,6 +3416,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         usage = build_usage(state)
         if usage is not None:
             data["usage"] = usage
+        else:
+            pass
+        if state.finish_reason is not None:
+            data["finish_reason"] = state.finish_reason
         else:
             pass
         payload.data = data

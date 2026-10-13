@@ -47,9 +47,15 @@ class MimiDecodeSlots:
     """Streaming decode states at fixed addresses, with graphs for short chunks."""
 
     def __init__(
-        self, codec: MimiCodec, *, num_slots: int, max_graph_frames: int
+        self,
+        codec: MimiCodec,
+        *,
+        num_slots: int,
+        max_graph_frames: int,
+        max_chunk_frames: int,
     ) -> None:
         self.codec = codec
+        self.max_chunk_frames = max(max_chunk_frames, max_graph_frames)
         self.decode_states: list[MimiDecodeState] = []
         self.free_slots: list[int] = []
         self.graphs: dict[tuple[int, int], CapturedDecode] = {}
@@ -67,7 +73,10 @@ class MimiDecodeSlots:
             pass
 
         self.decode_states = [
-            codec.init_decode_state(batch_size=1) for _ in range(num_slots)
+            codec.init_decode_state(
+                batch_size=1, max_chunk_frames=self.max_chunk_frames
+            )
+            for _ in range(num_slots)
         ]
         self.free_slots = list(reversed(range(num_slots)))
         device_module = torch.get_device_module(device)
@@ -131,7 +140,10 @@ class MimiDecodeSlots:
         else:
             pass
         return DecodeSlot(
-            index=None, decode_state=self.codec.init_decode_state(batch_size=1)
+            index=None,
+            decode_state=self.codec.init_decode_state(
+                batch_size=1, max_chunk_frames=self.max_chunk_frames
+            ),
         )
 
     def release(self, slot: DecodeSlot) -> None:

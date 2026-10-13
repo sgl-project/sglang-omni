@@ -73,9 +73,11 @@ class MimiAttention(nn.Module):
         self.in_proj_weight = nn.Parameter(torch.empty(3 * dim, dim))
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
-    def init_state(self, batch_size: int) -> AttentionState:
+    def init_state(self, batch_size: int, *, max_chunk_steps: int) -> AttentionState:
         dim = self.in_proj_weight.shape[1]
-        ring_shape = (batch_size, self.num_heads, self.context, dim // self.num_heads)
+        # note (nightdecode): A chunk is written before it attends, so leave room for it.
+        capacity = self.context + max_chunk_steps
+        ring_shape = (batch_size, self.num_heads, capacity, dim // self.num_heads)
         return AttentionState(
             keys=self.in_proj_weight.new_zeros(ring_shape),
             values=self.in_proj_weight.new_zeros(ring_shape),
@@ -98,26 +100,17 @@ class MimiAttention(nn.Module):
         q, k = apply_interleaved_rope(q, k, pos_q, self.max_period)
         if state is None:
             pos_k = pos_q
-            delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
-            # Note (wilsonzheng0327): The reference writes a whole chunk into its ring
-            # before attending, and once the ring is full it labels the slot at the
-            # write cursor as a future position. So a query sees only the keys
-            # newer than cursor - context, the cursor taken after its own chunk:
-            # the plain window until the ring fills, one to two keys fewer after.
-            # A partial last chunk only advances the cursor by what it holds.
-            # As a rule over positions this is one batched attention that matches
-            # the frame-by-frame ring bit for bit.
-            cursor = ((pos_q // self.write_chunk + 1) * self.write_chunk).clamp(
-                max=offset + length
-            )
-            mask = (delta >= 0) & (
-                pos_k.view(1, -1) > (cursor - self.context).view(-1, 1)
-            )
         else:
             pos_k = self.write_ring(k, v, offset, state)
             k, v = state.keys, state.values
-            delta = pos_q.view(-1, 1) - pos_k.view(1, -1)
-            mask = (pos_k.view(1, -1) >= 0) & (delta >= 0) & (delta < self.context)
+        cursor = ((pos_q // self.write_chunk + 1) * self.write_chunk).clamp(
+            max=offset + length
+        )
+        mask = (
+            (pos_k.view(1, -1) >= 0)
+            & (pos_q.view(-1, 1) >= pos_k.view(1, -1))
+            & (pos_k.view(1, -1) > (cursor - self.context).view(-1, 1))
+        )
         out = functional.scaled_dot_product_attention(q, k, v, attn_mask=mask)
         return self.out_proj(rearrange(out, "b h t d -> b t (h d)"))
 
@@ -128,13 +121,8 @@ class MimiAttention(nn.Module):
         offset: int | torch.Tensor,
         state: AttentionState,
     ) -> torch.Tensor:
-        """Store this step in the ring and label every slot as the reference does.
-
-        The slot about to be overwritten is labelled as a future position, so
-        once the ring is full its oldest entry falls outside the window; the
-        non-streaming mask in forward applies the same rule without the ring.
-        """
-        capacity = self.context
+        """Write a chunk and return each slot's absolute position (-1 if unwritten)."""
+        capacity = state.keys.shape[2]
         slots = torch.arange(k.shape[2], device=k.device) + offset
         state.keys.index_copy_(2, slots % capacity, k)
         state.values.index_copy_(2, slots % capacity, v)
@@ -143,7 +131,7 @@ class MimiAttention(nn.Module):
         indexes = torch.arange(capacity, device=k.device)
         delta = indexes - end_offset % capacity
         positions = torch.where(
-            delta <= 0,
+            delta < 0,
             end_offset + delta,
             end_offset + delta - capacity,
         )
@@ -222,11 +210,14 @@ class MimiTransformer(StreamingModule):
             x = layer(x)
         return x.transpose(1, 2)
 
-    def init_state(self, batch_size: int) -> TransformerState:
+    def init_state(self, batch_size: int, *, max_chunk_steps: int) -> TransformerState:
         device = self.layers[0].self_attn.in_proj_weight.device
         return TransformerState(
             offset=torch.zeros((), dtype=torch.long, device=device),
-            layers=[layer.self_attn.init_state(batch_size) for layer in self.layers],
+            layers=[
+                layer.self_attn.init_state(batch_size, max_chunk_steps=max_chunk_steps)
+                for layer in self.layers
+            ],
         )
 
     def step(self, x: torch.Tensor, state: TransformerState) -> torch.Tensor:

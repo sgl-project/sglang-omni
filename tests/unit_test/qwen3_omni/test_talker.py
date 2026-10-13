@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import inspect
 import threading
 import time
 from collections import deque
@@ -14,7 +13,10 @@ from typing import Any
 import pytest
 import torch
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
+from sglang.srt.utils import DynamicGradMode
 from torch import nn
+from torch._dynamo.utils import counters
 
 import sglang_omni.models.qwen3_omni.components.talker as talker_module
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -2833,44 +2835,34 @@ def test_talker_sampling_buffers_hold_values_bf16_rounds(monkeypatch) -> None:
     assert torch.equal(held, exact)
 
 
-@torch.no_grad()
-def test_talker_penalty_precompile_leaves_the_first_prefill_samples_nothing_to_compile(
-    monkeypatch,
-) -> None:
-    """A request's first one-row and multi-row prefill samples reuse the penalty graphs
-    the talker compiled after loading, instead of compiling on the request path."""
-    from torch._dynamo.utils import counters
-
-    monkeypatch.setattr(
-        talker_module,
-        "apply_scaling_penalties",
-        torch.compile(
-            inspect.unwrap(talker_module.apply_scaling_penalties),
-            dynamic=True,
-            backend="eager",
-        ),
-    )
-    head = nn.Linear(4, 6, bias=False).to(torch.bfloat16)
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_talker_precompile_leaves_the_first_prefill_samples_nothing_to_compile() -> (
+    None
+):
+    head = nn.Linear(4, 6, bias=False).to("cuda", torch.bfloat16)
     fake = SimpleNamespace(
-        model=SimpleNamespace(codec_embedding=nn.Embedding(6, 4, dtype=torch.bfloat16)),
+        model=SimpleNamespace(
+            codec_embedding=nn.Embedding(6, 4).to("cuda", torch.bfloat16)
+        ),
         config=SimpleNamespace(text_config=SimpleNamespace(vocab_size=6)),
         codec_head=lambda states: (head(states), None),
         extend_last_index=lambda forward_batch, device: (
             torch.cumsum(forward_batch.extend_seq_lens, 0) - 1
         ),
     )
-    torch._dynamo.reset()  # noqa: leading-underscore  # production name
+    torch.compiler.reset()
     Qwen3OmniTalker.precompile_kernels_after_loading(fake)
     compiled = counters["stats"]["unique_graphs"]
 
-    for rows in (1, 3):
-        logits = Qwen3OmniTalker.manual_extend_logits(
-            fake,
-            torch.randn(2 * rows, 4, dtype=torch.bfloat16),
-            SimpleNamespace(extend_seq_lens=torch.full((rows,), 2)),
-        ).next_token_logits
-        talker_module.apply_scaling_penalties(logits, torch.full_like(logits, 1.05))
-
+    with DynamicGradMode():
+        for rows in (1, 3):
+            logits = Qwen3OmniTalker.manual_extend_logits(
+                fake,
+                torch.randn(2 * rows, 4, device="cuda", dtype=torch.bfloat16),
+                SimpleNamespace(extend_seq_lens=torch.full((rows,), 2, device="cuda")),
+            ).next_token_logits
+            apply_scaling_penalties(logits, torch.full_like(logits, 1.05))
     assert counters["stats"]["unique_graphs"] == compiled
 
 
