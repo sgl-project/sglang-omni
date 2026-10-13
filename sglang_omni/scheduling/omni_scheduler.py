@@ -768,6 +768,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def init_upstream_scheduler_components(self) -> None:
         """Install the scheduler components required by upstream hot paths."""
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
         from sglang.srt.managers.scheduler_components.batch_result_processor import (
             SchedulerBatchResultProcessor,
         )
@@ -810,8 +811,14 @@ class OmniScheduler(Generic[RequestDataT]):
             max_total_num_tokens=(
                 self.max_total_num_tokens * get_parallel().attn_dcp_size
             ),
-            get_last_batch=lambda: self.last_batch,
-            get_running_batch=lambda: self.running_batch,
+            **(
+                {}
+                if use_mlx()
+                else {
+                    "get_last_batch": lambda: self.last_batch,
+                    "get_running_batch": lambda: self.running_batch,
+                }
+            ),
         )
         empty_queue = types.SimpleNamespace(queue=[], retracted_queue=[])
         self.total_prefill_uncached_tokens = 0
@@ -932,21 +939,32 @@ class OmniScheduler(Generic[RequestDataT]):
         return attr
 
     def init_parallel_state(self, tp_worker: ModelWorker | MlxTpModelWorker) -> None:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
         from sglang.srt.runtime_context import get_parallel
 
         enable_dp_attention = get_parallel().enable_dp_attention
+        if use_mlx():
+            parallel = get_parallel()
+            attention_world = compute_dp_attention_world_info(
+                parallel.tp_rank,
+                parallel.tp_size,
+                parallel.attn_dp_size,
+                parallel.attn_cp_size,
+            )
+        else:
+            attention_world = compute_dp_attention_world_info(
+                enable_dp_attention,
+                self.tp_rank,
+                self.tp_size,
+                self.dp_size,
+                self.attn_cp_size,
+            )
         (
             self.attn_tp_rank,
             self.attn_tp_size,
             self.attn_dp_rank,
             self.attn_dp_size,
-        ) = compute_dp_attention_world_info(
-            enable_dp_attention,
-            self.tp_rank,
-            self.tp_size,
-            self.dp_size,
-            self.attn_cp_size,
-        )
+        ) = attention_world
 
         self.tp_group = tp_worker.get_tp_group()
         self.tp_cpu_group = self.tp_group.cpu_group
@@ -1733,6 +1751,7 @@ class OmniScheduler(Generic[RequestDataT]):
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             req.omni_data = req_data  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            req.arrival_processed_tokens = self.processed_tokens_counter
             self.waiting_queue.append(req)
             enqueued_unit = self.active_session_unit(req_id)
             if enqueued_unit is not None:
@@ -3303,7 +3322,10 @@ class OmniScheduler(Generic[RequestDataT]):
             return
         else:
             pass
-        release_kv_cache(req, self.tree_cache)
+        if use_mlx():
+            release_kv_cache(req, self.tree_cache, checkpoint=False)
+        else:
+            release_kv_cache(req, self.tree_cache)
 
     # note (0xtoward): with autograd on, writes to reused buffers leak every step.
     @DynamicGradMode()

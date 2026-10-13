@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
@@ -1037,15 +1038,26 @@ def create_image_encoder_executor(
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
-    device = str(resolve_concrete_device(device, gpu_id))
-    model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.encoders import MlxImageEncoder
+
+        model = MlxImageEncoder(model_path)
+        logger.info("Qwen3-Omni image encoder backend=mlx_vlm")
+    else:
+        device = str(resolve_concrete_device(device, gpu_id))
+        model = Qwen3OmniImageEncoder(
+            model_path=model_path,
+            device=device,
+            dtype=dtype,
+        )
+        logger.info("Qwen3-Omni image encoder backend=torch")
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
     )
 
-    def _encode(payload: StagePayload) -> StagePayload:
+    def encode(payload: StagePayload) -> StagePayload:
         _emit_event(
             request_id=payload.request_id,
             stage=None,
@@ -1093,9 +1105,9 @@ def create_image_encoder_executor(
     # Preserve the calibrated image-encoder batching shape while allowing
     # deployments to opt into a batch wait through the shared encoder knob.
     return SimpleScheduler(
-        _encode,
+        encode,
         batch_compute_fn=_encode_batch,
-        max_batch_size=32,
+        max_batch_size=1 if use_mlx() else 32,
         max_batch_wait_ms=encoder_batch_wait_ms(),
         request_cost_fn=create_image_encoder_request_cost_fn(model),
         max_batch_cost=QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
@@ -1113,20 +1125,27 @@ def create_audio_encoder_executor(
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
-    device = str(resolve_concrete_device(device, gpu_id))
-    model = Qwen3OmniAudioEncoder(
-        model_path=model_path,
-        device=device,
-        dtype=dtype,
-        enable_layer_cuda_graph=enable_layer_cuda_graph,
-    )
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.encoders import MlxAudioEncoder
+
+        model = MlxAudioEncoder(model_path)
+        logger.info("Qwen3-Omni audio encoder backend=mlx_vlm")
+    else:
+        device = str(resolve_concrete_device(device, gpu_id))
+        model = Qwen3OmniAudioEncoder(
+            model_path=model_path,
+            device=device,
+            dtype=dtype,
+            enable_layer_cuda_graph=enable_layer_cuda_graph,
+        )
+        logger.info("Qwen3-Omni audio encoder backend=torch")
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
     )
 
-    def _encode(payload: StagePayload) -> StagePayload:
+    def encode(payload: StagePayload) -> StagePayload:
         _emit_event(
             request_id=payload.request_id,
             stage=None,
@@ -1172,9 +1191,9 @@ def create_audio_encoder_executor(
                 )
 
     return SimpleScheduler(
-        _encode,
+        encode,
         batch_compute_fn=_encode_batch,
-        max_batch_size=32,
+        max_batch_size=1 if use_mlx() else 32,
         max_batch_wait_ms=encoder_batch_wait_ms(),
         batch_wait_when_idle=False,
     )
@@ -1244,7 +1263,14 @@ def create_sglang_thinker_executor_from_config(
         cuda_graph_backend_prefill=prefill_graph_backend,
     )
     overrides["tp_size"] = tp_size
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.policy import apply_mlx_policy
 
+        apply_mlx_policy(overrides, server_args_overrides)
+        enable_async_decode = False
+        prefill_coalesce_requests = 0
+    else:
+        pass
     if not current_platform.enable_thinker_decode_graph():
         overrides.setdefault("disable_decode_cuda_graph", True)
     else:
@@ -1422,6 +1448,12 @@ def create_talker_ar_executor_from_config(
     else:
         pass
     overrides["tp_size"] = tp_size
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.policy import apply_mlx_policy
+
+        apply_mlx_policy(overrides, server_args_overrides)
+    else:
+        pass
     apply_colocated_ar_memory_contract(
         overrides,
         stage_name="talker_ar",

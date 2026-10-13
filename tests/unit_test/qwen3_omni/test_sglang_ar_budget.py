@@ -20,6 +20,7 @@ from sglang_omni.platforms import current_platform
 
 @pytest.fixture(autouse=True)
 def schedule_bag(monkeypatch):
+    monkeypatch.setattr(qwen_stages, "use_mlx", lambda: False)
     monkeypatch.setattr(
         runner_mod, "get_schedule", lambda: SimpleNamespace(mem_fraction_static=0.9)
     )

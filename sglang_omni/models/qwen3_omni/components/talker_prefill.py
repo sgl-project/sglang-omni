@@ -138,6 +138,7 @@ class TalkerPrefillBuilder:
         codec_think_eos_id: int,
         codec_pad_id: int,
         speaker_map: dict[str, int] | None = None,
+        device: torch.device | None = None,
     ) -> None:
         self.model = model
         model_dir = Path(model_path)
@@ -169,7 +170,9 @@ class TalkerPrefillBuilder:
             for name, speaker_id in (speaker_map or {}).items()
         }
 
-        self.device = model.model.codec_embedding.weight.device
+        self.device = (
+            device if device is not None else model.model.codec_embedding.weight.device
+        )
         self.dtype = model.activation_dtype
         self.thinker_embed_cache: dict[int, torch.Tensor] = {}
         self.tts_special_cache: (
@@ -198,10 +201,9 @@ class TalkerPrefillBuilder:
 
         thinker_input_ids = torch.cat([prompt_ids, assistant_token_ids], dim=0)
         thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
-        # note (ratish): the talker projects zeros in place of the thinker's hidden at
-        # multimodal prompt rows, the only prompt rows the hidden is read at.
         thinker_hidden = torch.cat(
-            [torch.zeros_like(prompt_embed), assistant_embed], dim=0
+            [self.prompt_hidden_states(prompt_embed, thinker_chunks), assistant_embed],
+            dim=0,
         )
         multimodal_mask = self.build_multimodal_mask(thinker_input_ids)
 
@@ -244,6 +246,11 @@ class TalkerPrefillBuilder:
             "tts_eos_embed": tts_eos_embed[0].detach(),
             "prompt_model_inputs": prompt_model_inputs,
         }
+
+    def prompt_hidden_states(
+        self, prompt_embed: torch.Tensor, thinker_chunks: list[StreamItem]
+    ) -> torch.Tensor:
+        return torch.zeros_like(prompt_embed)
 
     def append_text_chunk(
         self, req_data: "SGLangARRequestData", chunk: StreamItem
@@ -323,14 +330,16 @@ class TalkerPrefillBuilder:
 
     def get_tts_special_embeds(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.tts_special_cache is None:
-            special_rows = load_thinker_embedding_rows(
-                self.model_path,
-                [
-                    self.tts_bos_token_id,
-                    self.tts_eos_token_id,
-                    self.tts_pad_token_id,
-                ],
-            ).to(device=self.device, dtype=self.dtype)
+            special_rows = self.load_prompt_token_embeddings(
+                torch.tensor(
+                    [
+                        self.tts_bos_token_id,
+                        self.tts_eos_token_id,
+                        self.tts_pad_token_id,
+                    ],
+                    dtype=torch.long,
+                )
+            )
             projected = self.model.text_projection(special_rows)
             self.tts_special_cache = projected.chunk(3, dim=0)
         else:

@@ -214,6 +214,8 @@ def talker_stage(
     process: str,
     enable_partial_start: bool,
 ) -> StageConfig:
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
     return EngineStageConfig(
         name="talker_ar",
         process=process,
@@ -227,8 +229,8 @@ def talker_stage(
             partial_start_min_chunks=5,
             # Note (wenyao): Match the default serial Code2Wav window so later
             # 10-row messages keep the captured 10/20/30/35-frame graph shapes.
-            codec_coalesce_frames=10,
-            codec_coalesce_early_frames=10,
+            codec_coalesce_frames=0 if use_mlx() else 10,
+            codec_coalesce_early_frames=0 if use_mlx() else 10,
             codec_coalesce_first_frames=0,
         ),
         gpu=gpu,
@@ -421,6 +423,22 @@ class Qwen3OmniPipelineConfig(Qwen3OmniBasePipelineConfig):
     stages: list[StageConfig] = Field(default_factory=text_stages)
 
 
+def default_speech_stages() -> list[StageConfig]:
+    # Apple exposes exactly one Metal device: thinker and talker must land on
+    # the same logical GPU 0 so the unchanged 7-stage speech graph is
+    # constructible on real Apple hardware. Every other platform keeps its
+    # original two-GPU placement.
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+    talker_gpu = 0 if current_platform.is_mps() else 1
+    return speech_stages(
+        thinker_gpu=0,
+        talker_gpu=talker_gpu,
+        process_by_stage=SPEECH_DEFAULT_PROCESSES,
+        enable_partial_start=not use_mlx(),
+    )
+
+
 class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
     """7-stage speech pipeline (text + audio output)."""
 
@@ -441,14 +459,7 @@ class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
             require_memory_fraction_for_colocation=False
         )
     )
-    stages: list[StageConfig] = Field(
-        default_factory=lambda: speech_stages(
-            thinker_gpu=0,
-            talker_gpu=1,
-            process_by_stage=SPEECH_DEFAULT_PROCESSES,
-            enable_partial_start=True,
-        )
-    )
+    stages: list[StageConfig] = Field(default_factory=default_speech_stages)
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
         process_by_stage = {stage.name: stage.process for stage in self.stages}
@@ -464,10 +475,16 @@ class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
         else:
             pass
         if stage_name == "code2wav":
-            return {
+            kwargs = {
                 "enable_cuda_graph": current_platform.enable_code2wav_graph(),
                 "talker_in_process": code2wav_shares_talker_process,
             }
+            if current_platform.is_mps():
+                # note (Copilot): Output overlap requires CUDA events and pinned buffers.
+                kwargs["enable_output_overlap"] = False
+            else:
+                pass
+            return kwargs
         else:
             pass
         return super().stage_factory_kwargs(stage_name)

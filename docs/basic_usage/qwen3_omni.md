@@ -730,6 +730,30 @@ with open("output.wav", "wb") as f:
     f.write(audio_data)
 ```
 
+## Apple Silicon (MLX)
+
+Install the `qwen3-omni-mlx` extra in your Apple Silicon environment.
+Qwen3-Omni uses MLX-VLM with the existing Omni server and supports text,
+image, audio and video inputs with text or speech output.
+
+```bash
+pip install -e ".[qwen3-omni-mlx]"
+mkdir -p .local-artifacts
+SGLANG_USE_MLX=1 python -m sglang_omni.cli serve \
+  --config examples/configs/qwen3_omni_mlx.yaml \
+  --model-path mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit \
+  --host 127.0.0.1 --port 8008
+```
+
+Run from the repository root and use model alias `qwen3-omni-mlx`.
+Local model paths must contain a full Omni checkpoint, not component exports.
+For a text-only pipeline, omit `--config` and add `--text-only`.
+
+Currently limited to TP=1 and one active request per AR stage, without prefix
+caching, chunked prefill or async decode. Thinker decoding is greedy
+(`temperature=0`, `repetition_penalty=1`); log probabilities are unsupported.
+Talker sampling remains configurable.
+
 ## Request Parameters
 
 The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for Qwen3-Omni.

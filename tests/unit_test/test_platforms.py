@@ -41,6 +41,23 @@ class VendorSRTPlatform(SRTPlatform, VendorDeviceMixin):
     pass
 
 
+class RegisteredMpsPlatform(SRTPlatform):
+    _enum = PlatformEnum.MPS
+    device_type = "mps"
+
+    def set_device(self, device: torch.device | int) -> None:
+        raise ValueError(f"MPS platform cannot select device {device}")
+
+
+def test_registered_mps_platform_uses_single_device_omni_policy() -> None:
+    platform = platforms.as_omni_platform(RegisteredMpsPlatform())
+    platform.set_device(0)
+    platform.set_device(torch.device("mps"))
+    assert platform.enable_code2wav_graph() is False
+    with pytest.raises(ValueError, match="one Metal device"):
+        platform.set_device(1)
+
+
 @pytest.mark.parametrize(
     "platform_type",
     [

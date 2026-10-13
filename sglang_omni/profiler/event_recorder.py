@@ -287,6 +287,10 @@ class RequestEventRecorder:
                 return
             else:
                 pass
+            if expected_run_id is not None and self.run_id != expected_run_id:
+                return
+            else:
+                pass
             if stage is None:
                 # Prefer thread/task binding over the process-global
                 # ``_stage``, which is wrong in shared-process topologies.

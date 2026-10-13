@@ -107,10 +107,21 @@ class SGLangOutputProcessor:
 
         return {
             request_index: {
-                "hidden_states": self.slice_per_request_tensor(
-                    raw_hidden,
-                    request_index=request_index,
-                    scheduler_output=scheduler_output,
+                "hidden_states": (
+                    {
+                        name: self.slice_per_request_tensor(
+                            tensor,
+                            request_index=request_index,
+                            scheduler_output=scheduler_output,
+                        )
+                        for name, tensor in raw_hidden.items()
+                    }
+                    if isinstance(raw_hidden, dict)
+                    else self.slice_per_request_tensor(
+                        raw_hidden,
+                        request_index=request_index,
+                        scheduler_output=scheduler_output,
+                    )
                 )
             }
             for request_index in request_indexes

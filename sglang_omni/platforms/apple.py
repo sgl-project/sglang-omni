@@ -20,10 +20,8 @@ else:
 class AppleOmniPlatform(OmniPlatform):
     """Single-device Apple Metal platform.
 
-    SGLang enables its MLX runner through SGLANG_USE_MLX=1 but does not
-    register an MPS SRTPlatform. Omni still needs concrete device operations
-    because every accelerator-backed stage binds its scheduler thread through
-    current_platform.get_device and set_device.
+    Adapts SGLang's MPS platform to Omni's integer stage device IDs and
+    single-device MLX runtime.
     """
 
     _enum: PlatformEnum = PlatformEnum.MPS

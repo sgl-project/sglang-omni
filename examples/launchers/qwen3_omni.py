@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import argparse
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
 from ._common import (
     LauncherPreset,
@@ -18,6 +19,11 @@ from ._common import (
     set_stage_tp_size,
     validate_fraction,
 )
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
 
 _TEXT_SERVER_DESCRIPTION = """Launch Qwen3-Omni with text-only OpenAI responses.
 

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, TypedDict, overload
 
 import torch
 import xxhash
+from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 from transformers import PreTrainedTokenizerBase
 
@@ -81,6 +82,44 @@ def resolve_seed(params: Mapping[str, object]) -> int | None:
         else:
             pass
     return None
+
+
+def validate_modality_placeholder_counts(
+    input_ids: torch.Tensor,
+    *,
+    thinker_config: Qwen3OmniMoeThinkerConfig,
+    model_inputs: dict[str, object],
+    request_id: str,
+) -> None:
+    """Validate encoder row counts before cache-key substitution rewrites placeholders."""
+
+    if not use_mlx():
+        return
+    else:
+        pass
+    flattened = input_ids.reshape(-1)
+    for modality, token_id in (
+        ("image", thinker_config.image_token_id),
+        ("video", thinker_config.video_token_id),
+        ("audio", thinker_config.audio_token_id),
+    ):
+        placeholders = int((flattened == token_id).sum())
+        embeddings = model_inputs.get(f"{modality}_embeds")
+        if embeddings is None:
+            rows = 0
+        elif isinstance(embeddings, (list, tuple)):
+            rows = sum(part.shape[0] for part in embeddings)
+        else:
+            rows = embeddings.shape[0]
+        if rows == placeholders:
+            continue
+        else:
+            pass
+        raise ValueError(
+            f"Apple Qwen3-Omni {modality} rows for request {request_id!r} do not "
+            f"cover its placeholders: placeholders={placeholders} "
+            f"encoder rows={rows}"
+        )
 
 
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
@@ -712,6 +751,15 @@ def build_sglang_thinker_request(
     thinker_inputs = state.thinker_inputs or {}
 
     model_inputs = extract_thinker_model_inputs(thinker_inputs)
+    if thinker_config is not None:
+        validate_modality_placeholder_counts(
+            original_input_ids,
+            thinker_config=thinker_config,
+            model_inputs=model_inputs,
+            request_id=request_id or "req-0",
+        )
+    else:
+        pass
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     media_cache_keys = thinker_inputs.get("media_cache_keys", {})
     pad_values: dict[str, int] = {}
@@ -760,6 +808,16 @@ def build_sglang_thinker_request(
     seed = resolve_seed(params)
 
     # Build SGLang SamplingParams and normalize
+    if use_mlx() and (temperature != 0 or repetition_penalty != 1):
+        raise ValueError(
+            "Qwen3-Omni MLX thinker requires temperature=0 and repetition_penalty=1"
+        )
+    else:
+        pass
+    if use_mlx() and params.get("return_logprob"):
+        raise ValueError("Qwen3-Omni MLX thinker does not support return_logprob")
+    else:
+        pass
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
@@ -1082,13 +1140,26 @@ def make_thinker_stream_output_builder(
         # note (ratish): a cross-process stream chunk must be a tensor, and one
         # this small is pickled inline with the control message
         token_tensor = torch.tensor([token_id], dtype=torch.long)
+        prompt_hidden = getattr(req_data.req, "omni_mlx_prompt_hidden", None)
+        req_data.req.omni_mlx_prompt_hidden = None
         return [
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
-                data=token_tensor,
+                data=(
+                    prompt_hidden
+                    if target == "talker_ar" and prompt_hidden is not None
+                    else token_tensor
+                ),
                 target=target,
-                metadata={"token_id": token_id},
+                metadata={
+                    "token_id": token_id,
+                    **(
+                        {"prompt_hidden_layer": req_data.req.omni_mlx_capture_layer}
+                        if target == "talker_ar" and prompt_hidden is not None
+                        else {}
+                    ),
+                },
             )
             for target in stream_targets
         ]
@@ -1167,7 +1238,15 @@ def make_talker_scheduler_adapters(
     Callable[[SGLangARRequestData], None],
 ]:
     """Build model-specific StagePayload <-> scheduler adapters for talker."""
-    prefill_builder = TalkerPrefillBuilder(
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.talker_prefill import (
+            MlxTalkerPrefillBuilder,
+        )
+
+        builder_class = MlxTalkerPrefillBuilder
+    else:
+        builder_class = TalkerPrefillBuilder
+    prefill_builder = builder_class(
         model=model,
         model_path=model_path,
         audio_token_id=audio_token_id,
@@ -1187,6 +1266,7 @@ def make_talker_scheduler_adapters(
         codec_think_eos_id=codec_think_eos_id,
         codec_pad_id=codec_pad_id,
         speaker_map=speaker_map,
+        device=torch.device("cpu") if use_mlx() else None,
     )
 
     def _resolve_talker_sampling_config(

@@ -23,6 +23,11 @@ from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
+@pytest.fixture(autouse=True)
+def non_apple_topology(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
+
+
 def make_stage(config, name: str):
     return next(stage for stage in config.stages if stage.name == name)
 
@@ -64,7 +69,9 @@ def test_qwen_worker_cpu_policy_and_fallback(
     parent_threads: str | None,
 ) -> None:
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda process_id: set(range(32)))
+    monkeypatch.setattr(
+        cpu.os, "sched_getaffinity", lambda process_id: set(range(32)), raising=False
+    )
     monkeypatch.setattr(cpu, "cgroup_cpu_quota_count", lambda: cpu_quota)
     monkeypatch.setattr(
         "sglang_omni.pipeline.runtime_config.visible_device_count", lambda: 2
@@ -81,7 +88,9 @@ def test_qwen_worker_cpu_policy_and_fallback(
     if colocated:
         set_colocated_runtime(config)
     config.processes["preprocessing"] = ProcessConfig(num_replicas=replicas)
-    config.endpoints = EndpointsConfig(base_path=str(tmp_path))
+    # Keep IPC addresses short even when the checkout has a long absolute path.
+    monkeypatch.chdir(tmp_path)
+    config.endpoints = EndpointsConfig(base_path=".")
     prep = prepare_pipeline_runtime(config)
     try:
         groups = build_stage_groups(

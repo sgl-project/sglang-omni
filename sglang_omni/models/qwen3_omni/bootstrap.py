@@ -81,7 +81,14 @@ def create_thinker_scheduler(
 
     output_proc = SGLangOutputProcessor()
 
-    if speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.runner import OmniMlxSchedulerModelRunner
+
+        model_runner = OmniMlxSchedulerModelRunner(model_worker, output_proc)
+        enable_async_decode = False
+    elif speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
         model_runner = ThinkerModelRunner(model_worker, output_proc)
     else:
         model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
@@ -116,6 +123,7 @@ def create_thinker_scheduler(
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        abort_callback=model_runner.abort_request if use_mlx() else None,
     )
 
 
@@ -140,6 +148,7 @@ def create_talker_scheduler(
 ) -> "QwenTalkerScheduler":
     """Create the Qwen talker scheduler."""
     del speech_enabled
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.models.qwen3_omni.request_builders import (
@@ -161,6 +170,27 @@ def create_talker_scheduler(
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
     from sglang_omni.utils import cuda_graph_batch_validator
 
+    if use_mlx():
+        if enable_partial_start:
+            raise ValueError("MLX talker does not support partial start")
+        else:
+            pass
+        if not feedback_enabled:
+            raise ValueError("MLX talker requires feedback_enabled=True")
+        else:
+            pass
+        if any(
+            (
+                codec_coalesce_frames,
+                codec_coalesce_first_frames,
+                codec_coalesce_early_frames,
+            )
+        ):
+            raise ValueError("MLX talker requires single-frame codec emission")
+        else:
+            pass
+    else:
+        pass
     want_cuda_graph = configure_talker_server_args(
         server_args,
         feedback_enabled=feedback_enabled,
@@ -194,7 +224,17 @@ def create_talker_scheduler(
         _runner_cfg.vocab_size = _codec_vocab_size
     else:
         pass
-    model_worker.model_runner.model.sampler = model_worker.model_runner.sampler
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.talker_prefill import (
+            MlxTalkerProjectionAdapter,
+        )
+
+        talker_model = MlxTalkerProjectionAdapter(
+            model_worker._mlx_runner.model
+        )  # noqa: leading-underscore - native worker contract
+    else:
+        model_worker.model_runner.model.sampler = model_worker.model_runner.sampler
+        talker_model = model_worker.model_runner.model
     if want_cuda_graph:
         # note (ratish): capture after binding the sampler so decode graphs record it.
         init_sglang_cuda_graphs(model_worker)
@@ -226,7 +266,7 @@ def create_talker_scheduler(
     ) = make_talker_scheduler_adapters(
         tokenizer=tokenizer,
         codec_vocab_size=codec_vocab_size,
-        model=model_worker.model_runner.model,
+        model=talker_model,
         model_path=model_config.model_path,
         thinker_config=thinker_config,
         codec_bos_id=talker_config.codec_bos_id,
@@ -266,15 +306,23 @@ def create_talker_scheduler(
         im_end_token_id=root_config.im_end_token_id,
     )
 
-    model_runner = QwenTalkerModelRunner(
-        model_worker,
-        output_proc,
-        scheduler.outbox,
-        code2wav_in_process=code2wav_in_process,
-        feedback_enabled=feedback_enabled,
-        codec_coalesce_frames=codec_coalesce_frames,
-        codec_coalesce_first_frames=codec_coalesce_first_frames,
-        codec_coalesce_early_frames=codec_coalesce_early_frames,
-    )
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.talker_runner import MlxTalkerModelRunner
+
+        model_runner = MlxTalkerModelRunner(model_worker, output_proc)
+        model_runner.outbox = scheduler.outbox
+        scheduler.abort_callback = model_runner.abort_request
+        scheduler.enable_async_decode = False
+    else:
+        model_runner = QwenTalkerModelRunner(
+            model_worker,
+            output_proc,
+            scheduler.outbox,
+            code2wav_in_process=code2wav_in_process,
+            feedback_enabled=feedback_enabled,
+            codec_coalesce_frames=codec_coalesce_frames,
+            codec_coalesce_first_frames=codec_coalesce_first_frames,
+            codec_coalesce_early_frames=codec_coalesce_early_frames,
+        )
     scheduler.bind_model_runner(model_runner)
     return scheduler

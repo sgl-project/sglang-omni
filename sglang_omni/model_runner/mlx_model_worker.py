@@ -269,6 +269,18 @@ def create_mlx_model_worker(
         )
 
         make_runner_class = make_qwen3_asr_mlx_runner_class
+    elif model_arch == "Qwen3OmniThinkerForCausalLM":
+        from sglang_omni.models.qwen3_omni.mlx.runner import (
+            make_qwen3_omni_thinker_mlx_runner_class,
+        )
+
+        make_runner_class = make_qwen3_omni_thinker_mlx_runner_class
+    elif model_arch == "Qwen3OmniTalker":
+        from sglang_omni.models.qwen3_omni.mlx.runner import (
+            make_qwen3_omni_talker_mlx_runner_class,
+        )
+
+        make_runner_class = make_qwen3_omni_talker_mlx_runner_class
     elif model_arch == "ArkasrForConditionalGeneration":
         from sglang_omni.models.arkasr.mlx.runner import make_arkasr_mlx_runner_class
 
@@ -312,6 +324,10 @@ def create_mlx_model_worker(
                 # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
                 # 6,761-codec-token vocabulary rather than Qwen2 text tokens.
                 self.model_config.vocab_size = 6561 + 200
+            elif model_arch == "Qwen3OmniTalker":
+                self.model_config.vocab_size = (
+                    self.model_config.hf_config.talker_config.text_config.vocab_size
+                )
             else:
                 pass
             runner_class = make_runner_class()
@@ -364,13 +380,13 @@ def create_mlx_model_worker(
             self._mlx_pool_initialized = False  # noqa: leading-underscore
 
         def get_tp_group(self):
-            return self.model_runner.tp_group
+            return get_parallel().tp_group
 
         def get_attention_tp_group(self):
-            return self.model_runner.attention_tp_group
+            return get_parallel().attn_tp_group
 
         def get_attention_tp_cpu_group(self):
-            return self.model_runner.attention_tp_group.cpu_group
+            return get_parallel().attn_tp_group.cpu_group
 
     publish(
         server_args,
