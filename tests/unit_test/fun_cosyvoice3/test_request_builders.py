@@ -26,6 +26,7 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
     clear_cosyvoice3_preprocessing_context,
     pop_prepared_cosyvoice3_request,
+    prepare_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
     set_cosyvoice3_preprocessing_context,
 )
@@ -851,6 +852,56 @@ def test_preprocess_excludes_reference_speech_from_instruct_llm_prompt(
     assert prepared.flow_prompt_speech_token.tolist() == [[40]]
 
 
+HOLD_CYCLES = 1_000_000_000
+
+
+class EmbeddingModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.text_embed_tokens = torch.nn.Embedding(8, 4)
+        self.speech_embedding = torch.nn.Embedding(TOTAL_VOCAB_SIZE, 4)
+
+
+def prepare_hello_on_stream(
+    model: EmbeddingModel, stream: torch.cuda.Stream
+) -> CosyVoice3PreparedRequest:
+    return prepare_cosyvoice3_request(
+        model=model,
+        tokenizer=FakeTokenizer(),
+        state=FunCosyVoice3State(text="hello"),
+        reference_artifact=None,
+        stream=stream,
+    )
+
+
+def build_request_on_stream(
+    prepared: CosyVoice3PreparedRequest,
+    model: EmbeddingModel,
+    stream: torch.cuda.Stream,
+    request_id: str,
+) -> CosyVoice3SGLangRequestData:
+    request_builders._PREPARED_REQUESTS[request_id] = (
+        prepared  # noqa: leading-underscore  # production name
+    )
+    payload = StagePayload(
+        request_id,
+        OmniRequest(inputs="hello"),
+        {"_cosyvoice3_prepared_request": request_id},
+    )
+    with torch.cuda.stream(stream):
+        return build_sglang_cosyvoice3_request(payload, model=model)
+
+
+def hello_prompt_rows(model: EmbeddingModel) -> torch.Tensor:
+    return torch.cat(
+        [
+            model.speech_embedding.weight[[SOS_ID]],
+            model.text_embed_tokens.weight[[3, 1, 2]],
+            model.speech_embedding.weight[[TASK_ID]],
+        ]
+    )
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_preprocessing_builds_prompt_rows_without_a_host_wait(
@@ -871,12 +922,6 @@ def test_cuda_preprocessing_builds_prompt_rows_without_a_host_wait(
         "extract_prompt_speech_feat",
         lambda audio, sample_rate: torch.ones(1, 2, 80),
     )
-
-    class EmbeddingModel(torch.nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.text_embed_tokens = torch.nn.Embedding(8, 4)
-            self.speech_embedding = torch.nn.Embedding(TOTAL_VOCAB_SIZE, 4)
 
     model = EmbeddingModel().cuda()
     set_cosyvoice3_preprocessing_context(
@@ -923,6 +968,74 @@ def test_cuda_preprocessing_builds_prompt_rows_without_a_host_wait(
         ]
     )
     assert torch.equal(request_data.prompt_input_embeds, expected_rows)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_prompt_rows_are_read_only_after_preprocessing_writes_them() -> None:
+    torch.manual_seed(0)
+    warmup_model = EmbeddingModel().cuda()
+    model = EmbeddingModel().cuda()
+    producer = torch.cuda.Stream()
+    consumer = torch.cuda.Stream()
+    warmup_request = build_request_on_stream(
+        prepare_hello_on_stream(warmup_model, producer),
+        warmup_model,
+        consumer,
+        "req-warmup",
+    )
+    with torch.cuda.stream(consumer):
+        warmup_request.prompt_input_embeds.clone()
+    del warmup_request
+    expected_rows = hello_prompt_rows(model)
+    torch.cuda.synchronize()
+
+    with torch.cuda.stream(producer):
+        torch.cuda._sleep(HOLD_CYCLES)  # noqa: leading-underscore  # upstream name
+    prepared = prepare_hello_on_stream(model, producer)
+    request_data = build_request_on_stream(prepared, model, consumer, "req-ordered")
+    with torch.cuda.stream(consumer):
+        read_rows = request_data.prompt_input_embeds.clone()
+    producer_was_held = not prepared.ready_event.query()
+    torch.cuda.synchronize()
+
+    assert producer_was_held
+    assert torch.equal(read_rows, expected_rows)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_prompt_rows_stay_allocated_until_the_ar_stream_reads_them() -> None:
+    torch.manual_seed(0)
+    model = EmbeddingModel().cuda()
+    producer = torch.cuda.Stream()
+    consumer = torch.cuda.Stream()
+    warmup_request = build_request_on_stream(
+        prepare_hello_on_stream(model, producer), model, consumer, "req-warmup"
+    )
+    with torch.cuda.stream(consumer):
+        warmup_request.prompt_input_embeds.clone()
+    with torch.cuda.stream(producer):
+        torch.full((5, 4), -1.0, device="cuda")
+    del warmup_request
+    torch.cuda.synchronize()
+    prepared = prepare_hello_on_stream(model, producer)
+    expected_rows = hello_prompt_rows(model)
+    torch.cuda.synchronize()
+
+    with torch.cuda.stream(consumer):
+        torch.cuda._sleep(HOLD_CYCLES)  # noqa: leading-underscore  # upstream name
+    request_data = build_request_on_stream(prepared, model, consumer, "req-retained")
+    with torch.cuda.stream(consumer):
+        read_rows = request_data.prompt_input_embeds.clone()
+    del prepared, request_data
+    with torch.cuda.stream(producer):
+        overwrites = [torch.full((5, 4), -1.0, device="cuda") for _ in range(64)]
+    consumer_was_held = not consumer.query()
+    torch.cuda.synchronize()
+
+    assert consumer_was_held
+    assert torch.equal(read_rows, expected_rows)
 
 
 def test_result_adapter_preserves_reference_conditioning_for_vocoder(
