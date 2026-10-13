@@ -199,6 +199,7 @@ class ShmRelay(Relay):
 
         try:
             shm = shm_create_from_tensor(tensor)
+            # macOS rounds SHM allocations to pages; padding is not tensor data.
             size_bytes = tensor.numel() * tensor.element_size()
             metadata: ShmPutMetadata = {
                 "engine_id": self.engine_id,

@@ -6,10 +6,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import tempfile
 from collections.abc import Mapping
 from itertools import islice
 from pathlib import Path
+from typing import Any
 
 import av
 import librosa
@@ -462,6 +464,23 @@ def load_video_path(
         ele["total_pixels"] = int(total_pixels)
     else:
         pass
+    reader = os.environ.get("SGLANG_OMNI_VIDEO_READER", "qwen")
+    if reader == "pyav":
+        try:
+            frames, sample_fps = read_video_frames_pyav(path, ele)
+            ele.update(video=frames, sample_fps=sample_fps)
+            video, sample_fps = qwen_vision.fetch_video(
+                ele, return_video_sample_fps=True
+            )
+        except Exception as exc:
+            raise VideoDecodeError(
+                f"Failed to decode video path={path}; {type(exc).__name__}: {exc}"
+            ) from exc
+        return video, float(sample_fps)
+    elif reader != "qwen":
+        raise VideoDecodeError(f"Unsupported video reader: {reader!r}")
+    else:
+        pass
     backend = qwen_vision.get_video_reader_backend()
     try:
         video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
@@ -534,6 +553,51 @@ def load_video_path(
         antialias=True,
     ).float()
     return video, sample_fps
+
+
+def read_video_frames_pyav(
+    path: Path, options: dict[str, Any]
+) -> tuple[list[Any], float]:
+    with av.open(str(path)) as container:
+        if not container.streams.video:
+            raise ValueError("Input has no video stream")
+        else:
+            pass
+        stream = container.streams.video[0]
+        video_fps = float(stream.average_rate or 0)
+        if video_fps <= 0:
+            raise ValueError("Video stream has no positive frame rate")
+        else:
+            pass
+        total_frames = stream.frames
+        if total_frames <= 0:
+            total_frames = sum(1 for _ in container.decode(stream))
+        else:
+            pass
+
+    nframes = qwen_vision.smart_nframes(
+        options, total_frames=total_frames, video_fps=video_fps
+    )
+    indices = torch.linspace(0, total_frames - 1, nframes).round().long().tolist()
+    selected = set(indices)
+    frames = {}
+    with av.open(str(path)) as container:
+        for index, frame in enumerate(container.decode(video=0)):
+            if index in selected:
+                frames[index] = frame.to_image()
+            else:
+                pass
+            if index >= indices[-1]:
+                break
+            else:
+                pass
+    if len(frames) != len(selected):
+        raise ValueError(
+            f"Decoded {len(frames)} of {len(selected)} requested video frames"
+        )
+    else:
+        pass
+    return [frames[index] for index in indices], nframes / total_frames * video_fps
 
 
 def build_video_mm_inputs(

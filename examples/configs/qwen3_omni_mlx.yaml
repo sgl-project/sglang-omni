@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# Select with SGLANG_USE_MLX=1 and --model-path pointing to the MLX checkpoint.
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-mlx
+model_path: mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit
+endpoints:
+  base_path: .local-artifacts/ipc
+
+stages:
+  image_encoder:
+    gpu_memory_fraction: 0.04
+  audio_encoder:
+    gpu_memory_fraction: 0.04
+  thinker:
+    gpu_memory_fraction: 0.65
+    engine:
+      max_running_requests: 1
+      max_total_tokens: 8192
+      disable_radix_cache: true
+      chunked_prefill_size: -1
+      enable_mixed_chunk: false
+  talker_ar:
+    gpu_memory_fraction: 0.20
+    engine:
+      max_running_requests: 1
+      max_total_tokens: 8192
+      disable_radix_cache: true
+      chunked_prefill_size: -1
+  code2wav:
+    gpu_memory_fraction: 0.02

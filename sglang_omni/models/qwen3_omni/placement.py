@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from sglang_omni.config import PipelineConfig, StagePlacementPlan
+from sglang_omni.platforms import current_platform
 
 _SPEECH_STAGE_ORDER = (
     "preprocessing",
@@ -71,6 +72,17 @@ class Qwen3OmniPlacementPolicy:
                 else:
                     pass
                 if not set(thinker.gpu_ids).intersection(talker.gpu_ids):
+                    continue
+                else:
+                    pass
+                if not has_replicated_ar_stage and current_platform.is_mps():
+                    # Apple exposes exactly one Metal device (GPU 0), so the
+                    # ordinary (non-colocated), non-replicated speech config
+                    # has no second GPU to disaggregate onto there. Replica
+                    # overlap and tensor-parallel-rank overlap policy checks
+                    # remain fully enforced regardless of platform; only the
+                    # simple single-instance same-GPU case is exempted, and
+                    # only on MPS.
                     continue
                 else:
                     pass

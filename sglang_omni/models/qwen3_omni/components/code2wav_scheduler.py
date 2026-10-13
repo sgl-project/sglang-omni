@@ -1127,7 +1127,28 @@ def create_code2wav_scheduler(
     talker_in_process: bool = False,
 ) -> Code2WavScheduler:
     """Factory: returns Code2WavScheduler."""
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
     from sglang_omni.utils.device import resolve_concrete_device
+
+    if use_mlx():
+        from sglang_omni.models.qwen3_omni.mlx.encoders import MlxCode2Wav
+
+        if enable_cuda_graph:
+            raise ValueError("MLX code2wav does not support CUDA graphs")
+        else:
+            pass
+        return Code2WavScheduler(
+            MlxCode2Wav(model_path),
+            device="cpu",
+            stream_chunk_size=stream_chunk_size,
+            left_context_size=left_context_size,
+            initial_codec_chunk_frames=initial_codec_chunk_frames,
+            max_replay_rows=1,
+            enable_output_overlap=False,
+        )
+    else:
+        pass
 
     if enable_cuda_graph and total_gpu_memory_fraction is None:
         raise ValueError(

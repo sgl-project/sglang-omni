@@ -1503,6 +1503,7 @@ def build_state_machine_scheduler(
     scheduler.aborted_request_id_order = deque()
     scheduler.waiting_queue = []
     scheduler.request_builder = request_builder_stub
+    scheduler.processed_tokens_counter = 0
     scheduler.request_admission_lock = threading.RLock()
     scheduler.request_build_executor = None
     scheduler.request_build_max_pending = 0

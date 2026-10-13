@@ -20,6 +20,13 @@ from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.fixture(autouse=True)
+def non_apple_config_platform(monkeypatch):
+    # CUDA/XPU example plans should not depend on the test host. Apple-specific
+    # tests explicitly override this platform selection.
+    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_mps", lambda: False)
+
+
 def make_stage(config, name: str):
     return next(stage for stage in config.stages if stage.name == name)
 
@@ -412,6 +419,41 @@ def test_qwen3_omni_xpu_b60_example_config_loads_and_plans() -> None:
     assert plan.stages["thinker"].gpu_ids == tuple(range(8))
     assert plan.stages["talker_ar"].gpu_ids == (6,)
     assert plan.stages["code2wav"].gpu_ids == (7,)
+
+
+@pytest.mark.parametrize("use_mlx", [False, True])
+def test_qwen3_omni_apple_default_config_needs_no_backend_yaml(
+    monkeypatch: pytest.MonkeyPatch, use_mlx: bool
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime
+
+    from sglang_omni.models.qwen3_omni import config as qwen_config
+
+    monkeypatch.setattr(qwen_config.current_platform, "is_mps", lambda: True)
+    monkeypatch.setattr(qwen_config.current_platform, "device_type", "mps")
+    monkeypatch.setattr(
+        qwen_config.current_platform, "enable_code2wav_graph", lambda: False
+    )
+    monkeypatch.setattr(runtime, "use_mlx", lambda: use_mlx)
+    config = ConfigManager(
+        Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    ).merge_config([])
+
+    assert isinstance(config, Qwen3OmniSpeechPipelineConfig)
+    assert config.model_path == "dummy"
+    assert [stage.name for stage in config.stages] == [
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+        "thinker",
+        "decode",
+        "talker_ar",
+        "code2wav",
+    ]
+    assert all(stage.gpu in (None, 0) for stage in config.stages)
+    code2wav_args = resolve_stage_factory_args(make_stage(config, "code2wav"), config)
+    assert code2wav_args["enable_cuda_graph"] is False
+    assert code2wav_args["enable_output_overlap"] is False
 
 
 @pytest.mark.parametrize("enabled", [False, True])

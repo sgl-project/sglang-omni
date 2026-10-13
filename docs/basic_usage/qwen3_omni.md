@@ -730,6 +730,50 @@ with open("output.wav", "wb") as f:
     f.write(audio_data)
 ```
 
+<a id="apple-silicon-mlx"></a>
+## Integrated MLX on Apple Silicon
+
+This branch supports Qwen3-Omni through the existing Omni Python server,
+pipeline, preprocessing, scheduler, and JSON/SSE response formats. Model
+execution uses native MLX components and compatible MLX-LM decoder primitives;
+neither MLX-VLM nor MLX-Audio is required or imported. No standalone server is
+introduced. This is an explicitly approved branch exception
+to the [standalone MLX contribution policy](../developer_reference/mlx.md).
+
+Use a separate environment with the root `qwen3-omni-mlx` extra. It pins
+MLX 0.32.3, MLX-LM 0.31.2, Transformers 5.19.0, and Starlette 1.8.0.
+Keep the compatible source SGLang installation described in the
+[Apple installation guide](../get_started/installation.md#macos-apple-silicon);
+do not replace it with CUDA wheels or upgrade an existing tested environment
+in place. Non-Apple dependency pins are unchanged.
+
+The supported input is a **full Omni checkpoint**, such as
+`mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit`, with its root configuration
+and weight shards. Local directories and Hub IDs use the shared checkpoint
+resolver. No checkpoint conversion is needed. Legacy component-directory
+exports are not supported; missing or incompatible owned weights fail in the
+component loader rather than producing placeholder tensors.
+Affine per-module quantization, including quantized embeddings, is preserved;
+there is no dense dequantization fallback. Individual expert tensors are stacked
+only when every expert is present and their shapes, dtypes, and affine settings
+agree; mixed dense/sparse decoder layers are supported. Conflicting stacked and
+individual tensors or quantization metadata are rejected rather than overwritten.
+For tied thinker embeddings, an identical redundant `lm_head.weight` is accepted;
+conflicting aliases remain errors.
+Vision respects the checkpoint's configured activation, and audio keeps float32
+input features and sinusoidal positions rather than downcasting them to the
+convolution weights' dtype. Different activation or fused rotary arithmetic in
+another backend can change greedy continuations; matching weights alone does not
+establish numerical or generated-output parity.
+
+```bash
+mkdir -p .local-artifacts
+SGLANG_USE_MLX=1 python -m sglang_omni.cli serve \
+  --config examples/configs/qwen3_omni_mlx.yaml \
+  --model-path /path/to/Qwen3-Omni-30B-A3B-Instruct-4bit \
+  --host 127.0.0.1 --port 8008
+```
+
 ## Request Parameters
 
 The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for Qwen3-Omni.

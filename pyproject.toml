@@ -23,7 +23,8 @@ dependencies = [
     "torch==2.13.0",
     "torchvision==0.28.0",
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
-    "transformers==5.12.1",  # Match the pinned sglang stack
+    "transformers==5.12.1; sys_platform != 'darwin' or platform_machine != 'arm64'",  # Match the pinned CUDA stack
+    "transformers>=5.12.1,<6; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub[hf_xet]>=0.36.0",# HF model downloads with Xet transport
@@ -103,6 +104,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+qwen3-omni-mlx = [
+    "mlx==0.32.3",
+    "mlx-lm==0.31.2",
+    "transformers==5.19.0",
+    "starlette==1.8.0",
+]
+mlx = [
+    "mlx>=0.32.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.31.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+dev = [
+    "psutil>=5.9.0",          # Test/qualification-only process and host memory telemetry
+]
 audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",

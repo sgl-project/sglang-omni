@@ -156,6 +156,8 @@ def create_sglang_infrastructure(
     )
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
+    from sglang_omni.platforms import current_platform
+
     if use_mlx():
         # Note (Jiaxin Deng): the MLX worker sizes no SGLang KV pool, so a
         # declared byte budget could only be ignored; refuse instead.
@@ -168,12 +170,18 @@ def create_sglang_infrastructure(
             pass
         from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
 
+        # A native MLX load or architecture failure must propagate.
         model_worker = create_mlx_model_worker(
             config=worker_config,
             server_args=server_args,
             gpu_id=gpu_id,
             tp_rank=tp_rank,
         )
+    elif (
+        model_arch_override in ("Qwen3OmniThinkerForCausalLM", "Qwen3OmniTalker")
+        and current_platform.is_mps()
+    ):
+        raise ValueError("Qwen3-Omni on Apple Silicon requires SGLANG_USE_MLX=1")
     else:
         model_worker = ModelWorker(
             config=worker_config,
