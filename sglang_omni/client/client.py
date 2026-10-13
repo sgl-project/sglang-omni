@@ -802,6 +802,7 @@ class Client:
                 pass
             Client.set_audio_data(chunk, result)
             chunk.usage = Client.build_usage_info(result)
+            chunk.image_usage = result.get("image_usage")
             return chunk
         else:
             pass
