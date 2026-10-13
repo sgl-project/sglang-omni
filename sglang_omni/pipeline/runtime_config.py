@@ -13,7 +13,13 @@ from pathlib import Path
 import zmq
 
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    LEVEL_ZERO_IPC_MIN_TRANSFER_KB,
+    LEVEL_ZERO_IPC_POOL_SIZE_MB,
+    LEVEL_ZERO_IPC_SLOT_SIZE_KB,
+    PipelineConfig,
+    StageConfig,
+)
 from sglang_omni.config.topology import (
     LogicalProcessPlan,
     ProcessTopologyPlan,
@@ -182,6 +188,9 @@ def build_comm_config(
             "credits": comm_cfg.credits,
             "cuda_ipc_slot_size_kb": comm_cfg.cuda_ipc_slot_size_kb,
             "cuda_ipc_pool_size_mb": comm_cfg.cuda_ipc_pool_size_mb,
+            "level_zero_ipc_slot_size_kb": comm_cfg.level_zero_ipc_slot_size_kb,
+            "level_zero_ipc_pool_size_mb": comm_cfg.level_zero_ipc_pool_size_mb,
+            "level_zero_ipc_min_transfer_kb": comm_cfg.level_zero_ipc_min_transfer_kb,
             "mooncake_protocol": comm_cfg.mooncake_protocol,
             "mooncake_hostname": comm_cfg.mooncake_hostname,
             "mooncake_device_name": comm_cfg.mooncake_device_name,
@@ -194,6 +203,9 @@ def build_comm_config(
         "credits": 2,
         "cuda_ipc_slot_size_kb": 64,
         "cuda_ipc_pool_size_mb": None,
+        "level_zero_ipc_slot_size_kb": LEVEL_ZERO_IPC_SLOT_SIZE_KB,
+        "level_zero_ipc_pool_size_mb": LEVEL_ZERO_IPC_POOL_SIZE_MB,
+        "level_zero_ipc_min_transfer_kb": LEVEL_ZERO_IPC_MIN_TRANSFER_KB,
         "mooncake_protocol": "rdma",
         "mooncake_hostname": None,
         "mooncake_device_name": "",
