@@ -706,6 +706,7 @@ class TestReceiveSideLogicalNames:
     def test_stream_chunks_reach_the_scheduler_with_logical_source(self):
         import asyncio
 
+        from sglang_omni.pipeline.local_dispatch import LocalStreamChunk
         from sglang_omni.pipeline.stage.stream_queue import StreamQueue
         from tests.unit_test.pipeline.helpers import make_stage
 
@@ -717,8 +718,17 @@ class TestReceiveSideLogicalNames:
         stage.stream_queue = StreamQueue()
 
         async def run() -> None:
-            await stage.receive_local_stream_chunk(
-                "req", "engine@r1", chunk_id=0, data={"pcm": 1}
+            await stage.receive_local_stream_chunks(
+                "engine@r1",
+                [
+                    LocalStreamChunk(
+                        request_id="req",
+                        chunk_id=0,
+                        data={"pcm": 1},
+                        metadata=None,
+                        replica_bindings=None,
+                    )
+                ],
             )
 
         asyncio.run(run())

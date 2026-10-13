@@ -14,8 +14,11 @@ from pathlib import Path
 from openai import OpenAI
 
 from benchmarks.duplex import v10_dataset
-from benchmarks.duplex.artifacts import add_server_identity_args, server_identity
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
+from benchmarks.duplex.artifacts import (
+    add_protocol_args,
+    add_server_identity_args,
+    server_identity,
+)
 from benchmarks.duplex.reference_core import V10_REFERENCE_FILES
 from benchmarks.duplex.reference_source import verify_reference
 from benchmarks.duplex.reference_v10 import (
@@ -54,6 +57,8 @@ def record(args: argparse.Namespace) -> int:
             variants=VARIANTS,
             kind=RUN_KIND,
             profile=args.profile,
+            turn_detection=args.turn_detection,
+            legacy_tail_s=args.legacy_tail,
         )
     )
     manifest, _, _ = load_run(args.output)
@@ -121,10 +126,11 @@ def reference_evaluate(args: argparse.Namespace) -> int:
         else:
             pass
         timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        client = OpenAI(api_key=api_key, base_url=args.base_url)
         judge = JudgeLedger(
-            OpenAI(api_key=api_key, base_url=args.base_url),
+            client,
             args.tree / "judge" / f"user-interruption-{timestamp}.jsonl",
-            args.base_url,
+            str(client.base_url),
             args.served_model,
         )
     else:
@@ -150,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         "--output", type=Path, required=True, help="New immutable run directory"
     )
     add_server_identity_args(record_parser)
-    record_parser.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE)
+    add_protocol_args(record_parser)
     record_parser.add_argument(
         "--dataset-revision", required=True, help="Dataset release or archive digest"
     )

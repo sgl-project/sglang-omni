@@ -7,18 +7,21 @@ import hashlib
 import json
 import os
 import socket
+import subprocess
 import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
 from benchmarks.benchmarker.utils import start_server_from_cmd, stop_server
-from benchmarks.duplex.fdb_v15.common import (
+from benchmarks.duplex.fdb.common import (
     JUDGE_MODEL_ID,
     JUDGE_SERVED_MODEL,
     Settings,
+    follow_log,
     log,
     log_tail,
 )
@@ -117,6 +120,27 @@ def ensure_port_free(port: int) -> None:
             pass
 
 
+@dataclass(frozen=True)
+class RunningServer:
+    """A server that running_server started, and the log its output goes to."""
+
+    name: str
+    process: subprocess.Popen
+    log_file: Path
+
+    def ensure_alive(self, when: str) -> None:
+        """Stop the step with the end of the server log if the server exited;
+        when places the exit, as in "during the recordings"."""
+        returncode = self.process.poll()
+        if returncode is not None:
+            raise SystemExit(
+                f"ERROR: the {self.name} exited with code {returncode} {when}; "
+                f"last lines of {self.log_file}:\n{log_tail(self.log_file)}"
+            )
+        else:
+            pass
+
+
 @contextmanager
 def running_server(
     name: str,
@@ -126,42 +150,46 @@ def running_server(
     log_file: Path,
     health_path: str,
     ready_text: str,
-) -> Iterator[None]:
+) -> Iterator[RunningServer]:
     """Serve on one GPU until the block exits, then stop the server's process group."""
     ensure_port_free(port)
     log(f"== Starting the {name} on GPU {gpu} (log: {log_file})")
+    # note (luojiaxuan): the follower reads from the first byte, so a log left
+    # by an earlier attempt is emptied before the follower opens it.
+    log_file.write_text("")
     started = time.monotonic()
-    try:
-        process = start_server_from_cmd(
-            command,
-            log_file,
-            port,
-            timeout=SERVER_READY_TIMEOUT_S,
-            env={
-                "CUDA_VISIBLE_DEVICES": gpu,
-                # A taken port must fail here. Falling over to a random port
-                # would leave the client talking to the port in the command.
-                "SGLANG_OMNI_STRICT_PORT": "1",
-            },
-            strip_proxy=True,
-            health_path=health_path,
-            health_body_contains=ready_text,
-        )
-    except (RuntimeError, TimeoutError):
-        raise SystemExit(
-            f"ERROR: the {name} did not become ready; "
-            f"last lines of {log_file}:\n{log_tail(log_file)}"
-        ) from None
-    log(f"   ready after {time.monotonic() - started:.0f}s")
-    try:
-        yield
-    finally:
-        log(f"== Stopping the {name}")
-        stop_server(process)
+    with follow_log(log_file):
+        try:
+            process = start_server_from_cmd(
+                command,
+                log_file,
+                port,
+                timeout=SERVER_READY_TIMEOUT_S,
+                env={
+                    "CUDA_VISIBLE_DEVICES": gpu,
+                    # A taken port must fail here. Falling over to a random port
+                    # would leave the client talking to the port in the command.
+                    "SGLANG_OMNI_STRICT_PORT": "1",
+                },
+                strip_proxy=True,
+                health_path=health_path,
+                health_body_contains=ready_text,
+            )
+        except (RuntimeError, TimeoutError):
+            raise SystemExit(
+                f"ERROR: the {name} did not become ready; "
+                f"last lines of {log_file}:\n{log_tail(log_file)}"
+            ) from None
+        log(f"   ready after {time.monotonic() - started:.0f}s")
+        try:
+            yield RunningServer(name, process, log_file)
+        finally:
+            log(f"== Stopping the {name}")
+            stop_server(process)
 
 
 @contextmanager
-def model_server(settings: Settings, log_file: Path) -> Iterator[None]:
+def model_server(settings: Settings, log_file: Path) -> Iterator[RunningServer]:
     with running_server(
         "model server",
         model_server_command(settings),
@@ -170,12 +198,12 @@ def model_server(settings: Settings, log_file: Path) -> Iterator[None]:
         log_file,
         health_path="/v1/realtime/capabilities",
         ready_text='"native_full_duplex":true',
-    ):
-        yield
+    ) as server:
+        yield server
 
 
 @contextmanager
-def judge_server(settings: Settings, log_file: Path) -> Iterator[None]:
+def judge_server(settings: Settings, log_file: Path) -> Iterator[RunningServer]:
     command = judge_server_command(settings)
     write_judge_config(settings, command)
     with running_server(
@@ -186,8 +214,8 @@ def judge_server(settings: Settings, log_file: Path) -> Iterator[None]:
         log_file,
         health_path="/v1/models",
         ready_text=JUDGE_SERVED_MODEL,
-    ):
-        yield
+    ) as server:
+        yield server
 
 
 def serve_in_foreground(command: list[str], gpu: str) -> None:

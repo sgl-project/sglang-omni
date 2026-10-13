@@ -11,6 +11,7 @@ import torch
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.types import ModelRunnerOutput
+from tests.unit_test.fixtures.qwen_fakes import RecordingOutbox
 
 
 def fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
@@ -33,8 +34,7 @@ def make_runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner.code2wav_target = "code2wav"
     runner.code2wav_in_process = False
     runner.codec_coalesce_frames = 0
-    runner.outbox = SimpleNamespace(sent=[])
-    runner.outbox.put = runner.outbox.sent.append
+    runner.outbox = RecordingOutbox()
     return runner
 
 

@@ -12,14 +12,14 @@ from unittest.mock import Mock
 import pytest
 from typer.testing import CliRunner
 
-from benchmarks.duplex.fdb_v15.common import (
+from benchmarks.duplex.fdb.common import (
     DEFAULT_JUDGE_PORT,
     DEFAULT_SERVER_PORT,
     JOB_PORT_STRIDE,
     NCCL_PORT_END,
     load_settings,
 )
-from benchmarks.duplex.fdb_v15.servers import model_server_command
+from benchmarks.duplex.fdb.servers import model_server_command
 from sglang_omni.cli import app
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
