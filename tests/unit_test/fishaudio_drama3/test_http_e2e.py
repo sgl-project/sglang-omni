@@ -19,6 +19,8 @@ import numpy as np
 import pytest
 
 from sglang_omni.client.audio import encode_wav
+from sglang_omni.models.fishaudio_drama3.config import DEFAULT_CODEC_PATH
+from sglang_omni.models.fishaudio_drama3.stages import resolve_codec_directory
 from sglang_omni.utils.connection import find_available_port
 from tests.unit_test.fishaudio_drama3.http_server import MODEL_NAME
 from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
@@ -81,6 +83,8 @@ def write_checkpoint(checkpoint_dir: Path) -> None:
 def base_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     checkpoint_dir = tmp_path_factory.mktemp("drama3-checkpoint")
     write_checkpoint(checkpoint_dir)
+    # The server runs offline, so fetch the pinned codec into the Hub cache first.
+    resolve_codec_directory(DEFAULT_CODEC_PATH)
     port = find_available_port()
     server = start_server_from_cmd(
         [
