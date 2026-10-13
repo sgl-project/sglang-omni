@@ -45,7 +45,7 @@ from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceEncodeHook,
     load_codec,
 )
-from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
+from sglang_omni.scheduling.audio_stream import WindowDecoder
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler

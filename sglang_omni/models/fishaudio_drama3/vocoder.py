@@ -9,17 +9,17 @@ import torch
 
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3GenerationResult
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import DAC
-from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
-    S2ProFinalAudioData,
-    S2ProVocoderScheduler,
-    StreamVocoderState,
-    WindowDecoder,
-    build_stream_vocoder_chunk,
-)
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.audio_stream import (
+    FinalAudioData,
+    StreamVocoderState,
+    WindowDecoder,
+    build_stream_vocoder_chunk,
+)
+from sglang_omni.scheduling.audio_vocoder import StreamingVocoderScheduler
 from sglang_omni.scheduling.message import OutgoingMessage
 
 
@@ -133,9 +133,8 @@ class WindowGraphDecoder:
         ].clone()
 
 
-class Drama3VocoderScheduler(S2ProVocoderScheduler):
-    """Feeds S2-Pro's windows one frame at a time, so chunk boundaries do not
-    depend on how many frames a stream chunk or the final payload carries."""
+class Drama3VocoderScheduler(StreamingVocoderScheduler):
+    """Decode complete windows regardless of incoming frame chunk sizes."""
 
     def __init__(
         self,
@@ -187,13 +186,20 @@ class Drama3VocoderScheduler(S2ProVocoderScheduler):
         """Audio chunks for frames [1 + num_codebooks, frames] given in order."""
         state = self.stream_states.setdefault(request_id, StreamVocoderState())
         messages: list[OutgoingMessage] = []
-        for frame_index in range(frame_codes.shape[1]):
-            is_window_end = state.total_tokens + 1 >= (
-                state.next_vocode_tokens or self.stream_stride
-            )
+        incoming_frame_count = frame_codes.shape[1]
+        first_frame_index = 0
+        while first_frame_index < incoming_frame_count:
+            window_end_frame = state.next_vocode_tokens or self.stream_stride
+            remaining_window_frame_count = window_end_frame - state.total_tokens
+            if incoming_frame_count - first_frame_index < remaining_window_frame_count:
+                end_frame_index = incoming_frame_count
+                is_window_end = False
+            else:
+                end_frame_index = first_frame_index + remaining_window_frame_count
+                is_window_end = True
             audio_chunk = build_stream_vocoder_chunk(
                 state,
-                frame_codes[:, frame_index : frame_index + 1],
+                frame_codes[:, first_frame_index:end_frame_index],
                 codec=self.codec,
                 device=self.device,
                 stream_stride=self.stream_stride,
@@ -219,6 +225,7 @@ class Drama3VocoderScheduler(S2ProVocoderScheduler):
                 )
             else:
                 pass
+            first_frame_index = end_frame_index
         return messages
 
     def on_stream_chunk(
@@ -258,10 +265,10 @@ class Drama3VocoderScheduler(S2ProVocoderScheduler):
         super().clear_stream_state(request_id)
         self.stream_window_counts.pop(request_id, None)
 
-    def final_result_data(self, payload: StagePayload) -> S2ProFinalAudioData:
+    def final_result_data(self, payload: StagePayload) -> FinalAudioData:
         result = generation_result_of(payload)
         completion_tokens = int(result.frames.shape[0])
-        final_data: S2ProFinalAudioData = {
+        final_data: FinalAudioData = {
             "modality": "audio",
             "sample_rate": int(self.codec.sample_rate),
             "usage": {

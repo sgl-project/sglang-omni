@@ -9,7 +9,7 @@ import torch
 from tokenizers import Tokenizer
 
 from sglang_omni.client.types import SamplingParams
-from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig, checked_int
+from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.prompt import (
     SEMANTIC_BEGIN_TOKEN,
     SPEAKER_IDS,
@@ -23,6 +23,7 @@ from sglang_omni.models.fishaudio_drama3.request_builders import (
     REQUEST_ERROR_PREFIX,
     Drama3GenerationInput,
 )
+from sglang_omni.models.fishaudio_drama3.text_config import checked_int
 from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceInput,
     fish_reference_payload_is_supported,

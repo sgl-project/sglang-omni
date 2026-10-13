@@ -40,6 +40,7 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
 from sglang_omni.models.fishaudio_drama3.quantization import (
     QUANTIZATION_METHOD,
@@ -56,15 +57,12 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     CodebookSampler,
     triton_sampling_unsupported_reason,
 )
-from sglang_omni.models.fishaudio_drama3.sglang_model import (
-    Drama3DecodeBuffers,
-    Drama3ForCausalLM,
-    Drama3TowerPrefill,
-)
+from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FUSED_KERNELS,
     MAX_FUSED_ROWS,
 )
+from sglang_omni.models.fishaudio_drama3.tower_prefill import Drama3TowerPrefill
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,

@@ -8,8 +8,6 @@ Decode steps go through the model's fixed buffers, which a decode CUDA graph rea
 
 from __future__ import annotations
 
-import dataclasses
-
 import torch
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
@@ -26,19 +24,19 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.request_id_prefill_cuda_graph_runner import (
     RequestIdPrefillCudaGraphRunner,
 )
-from sglang_omni.models.fishaudio_drama3.request_builders import (
-    MINIMUM_PROMPT_ROWS,
-    Drama3RequestData,
+from sglang_omni.models.fishaudio_drama3.decode_state import (
+    Drama3DecodeStatePool,
+    extend_frame_rows,
+    ras_window,
+    request_data_of,
+    request_ids_of,
 )
-from sglang_omni.models.fishaudio_drama3.sampling import (
-    EMPTY_RAS_SLOT,
-    RAS_WINDOW_FRAMES,
-)
-from sglang_omni.models.fishaudio_drama3.sglang_model import (
+from sglang_omni.models.fishaudio_drama3.model_inputs import (
     Drama3DecodeBuffers,
-    Drama3ForCausalLM,
     Drama3StepInputs,
 )
+from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
+from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.vendor.sglang.core import (
@@ -47,85 +45,14 @@ from sglang_omni.vendor.sglang.core import (
     ScheduleBatch,
 )
 
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Drama3DecodeStatePool:
-    frames: torch.Tensor
-    ras_windows: torch.Tensor
-    temperature: torch.Tensor
-    top_k: torch.Tensor
-    top_p: torch.Tensor
-    row_indices: torch.Tensor
-
-    @classmethod
-    def allocate(
-        cls, *, request_slot_count: int, frame_width: int, device: torch.device
-    ) -> Drama3DecodeStatePool:
-        row_count = request_slot_count + 1
-        return cls(
-            frames=torch.zeros(
-                (row_count, frame_width), dtype=torch.int64, device=device
-            ),
-            ras_windows=torch.full(
-                (row_count, RAS_WINDOW_FRAMES),
-                EMPTY_RAS_SLOT,
-                dtype=torch.int64,
-                device=device,
-            ),
-            temperature=torch.ones(row_count, dtype=torch.float32, device=device),
-            top_k=torch.ones(row_count, dtype=torch.int64, device=device),
-            top_p=torch.ones(row_count, dtype=torch.float32, device=device),
-            row_indices=torch.zeros(
-                request_slot_count, dtype=torch.int64, device=device
-            ),
-        )
-
-
-def ras_window(frame_rows: list[list[int]]) -> list[int]:
-    """Main tokens of the last RAS_WINDOW_FRAMES frames, oldest first, left-padded with
-    EMPTY_RAS_SLOT."""
-    main_tokens = [frame_row[0] for frame_row in frame_rows[-RAS_WINDOW_FRAMES:]]
-    return [EMPTY_RAS_SLOT] * (RAS_WINDOW_FRAMES - len(main_tokens)) + main_tokens
-
-
-def extend_frame_rows(data: Drama3RequestData) -> list[list[int]]:
-    """The rows of a prefill, which must cover the request's whole frame history."""
-    req = data.req
-    assert req is not None
-    sequence_ids = list(req.full_untruncated_fill_ids)
-    extend_range = req.extend_range
-    if (
-        extend_range is None
-        or extend_range.start != 0
-        or extend_range.end != len(sequence_ids)
-    ):
-        raise RuntimeError(
-            f"{req.rid}: a Drama 3 prefill must cover the whole sequence of "
-            f"{len(sequence_ids)} rows in one extend; got {extend_range}"
-        )
-    elif len(sequence_ids) < MINIMUM_PROMPT_ROWS:
-        raise RuntimeError(
-            f"{req.rid}: an extend needs at least {MINIMUM_PROMPT_ROWS} rows"
-        )
-    elif [frame_row[0] for frame_row in data.frame_rows] != sequence_ids:
-        raise RuntimeError(f"{req.rid}: the frame history is not the sequence")
-    else:
-        return data.frame_rows
-
-
-def request_data_of(request: SchedulerRequest) -> Drama3RequestData:
-    data = request.data
-    assert isinstance(data, Drama3RequestData)
-    return data
-
-
-def request_ids_of(batch_request_data: list[Drama3RequestData]) -> list[str]:
-    request_ids = []
-    for request_data in batch_request_data:
-        request = request_data.req
-        assert request is not None
-        request_ids.append(request.rid)
-    return request_ids
+__all__ = [
+    "Drama3ModelRunner",
+    "Drama3DecodeStatePool",
+    "extend_frame_rows",
+    "ras_window",
+    "request_data_of",
+    "request_ids_of",
+]
 
 
 class Drama3ModelRunner(ModelRunner[Drama3RequestData]):

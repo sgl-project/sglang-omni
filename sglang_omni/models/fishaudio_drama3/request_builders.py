@@ -11,10 +11,11 @@ import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig, checked_int
+from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
     frames_in_complete_windows,
 )
+from sglang_omni.models.fishaudio_drama3.text_config import checked_int
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
