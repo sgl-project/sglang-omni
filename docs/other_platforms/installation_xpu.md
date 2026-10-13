@@ -121,6 +121,37 @@ build reports `fatal error: sycl/sycl.hpp: No such file or directory`, point the
 export CPATH="$(python -c 'import sys; print(sys.prefix)')/include"
 ```
 
+Stage-to-stage transfers between XPU cards go through shared memory by default. Setting
+`SGLANG_OMNI_XPU_LEVEL_ZERO_IPC=1` moves GPU payloads of 1 MiB or more over Level-Zero IPC
+instead, card to card without the host copy. These still stay on shared memory:
+
+- transfers below `comm.level_zero_ipc_min_transfer_kb` (1 MiB by default);
+- payloads larger than the sender's staging pool, `comm.level_zero_ipc_pool_size_mb`
+  (64 MB by default);
+- stream chunks whose metadata carries tensors;
+- paged KV transfers, which require CUDA IPC and are not supported on XPU.
+
+Each stage process that sends over Level Zero takes its pool as one allocation outside
+torch's allocator, on its first Level-Zero send. The KV sizing that runs at startup does
+not count it, so leave `comm.level_zero_ipc_pool_size_mb` (64 MB) plus 64 MB spare free on
+that card, by lowering the stage's memory fraction if it is tight. The pool does not show in
+`torch.xpu.memory_allocated()`, `memory_reserved()` or `memory_snapshot()`, so when you
+debug an OOM on a sending card, add it to what they report. `torch.xpu.mem_get_info()`
+reads the whole card and counts the pool once sends have written to it. A receiver keeps a
+sender's pool mapped while it reads from it, and unmaps pools whose sender has stopped,
+keeping at most eight that no read holds. A pool being read is never unmapped, so a
+receiver reading from more than eight senders at once holds more until those reads finish;
+the log says so when it happens, and closing the stage releases them.
+
+If Level Zero fails on a stage (a pool that does not fit, a staging copy that does not
+finish, or a receiver that fails a read or does not acknowledge in time), the stage logs one
+warning and sends over shared memory for the rest of the run. A payload that failed before
+it was sent goes over shared memory instead; one already sent when its read failed or timed
+out fails, as it would on shared memory. The warning for a pool that does not fit names the
+setting to lower.
+
+It is off by default because no shipped XPU pipeline sends payloads that large yet.
+
 ### Qwen3-ASR (speech-to-text, single XPU)
 
 **Launch**

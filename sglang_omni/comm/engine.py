@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from itertools import count
-from typing import Callable
+from typing import Callable, Protocol
 from uuid import uuid4
 
 import msgspec
@@ -46,6 +46,12 @@ from sglang_omni.proto import (
 from sglang_omni.relay.base import Relay, RelayOperation
 
 logger = logging.getLogger(__name__)
+
+
+class RelayWrite(Protocol):
+    async def __call__(
+        self, relay: Relay, transport: TransportKind
+    ) -> tuple[DataRef, list[RelayOperation]]: ...
 
 
 class KVTransferCancelled(RuntimeError):
@@ -1008,20 +1014,47 @@ class CommEngine:
                 queue.task_done()
                 del job
 
+    async def write_or_fall_back_to_shm(
+        self,
+        relay: Relay,
+        transport: TransportKind,
+        write: RelayWrite,
+    ) -> tuple[DataRef, list[RelayOperation]]:
+        try:
+            return await write(relay, transport)
+        except Exception:
+            if (
+                transport is not TransportKind.LEVEL_ZERO_IPC
+                or self.router.level_zero_ipc_failure is None
+            ):
+                raise
+            else:
+                pass
+            return await write(self.router.relay(TransportKind.SHM), TransportKind.SHM)
+
     async def run_payload_send(self, job: PayloadSendJob, queue_key: str) -> None:
         object_id: str | None = None
         send_start = _comm_now_ns()
         write_ms = -1.0
         control_ms = -1.0
-        try:
-            write_start = _comm_now_ns()
+
+        async def write_payload(
+            relay: Relay, transport: TransportKind
+        ) -> tuple[DataRef, list[RelayOperation]]:
             data_ref, op = await stage_io.write_payload(
-                job.relay,
+                relay,
                 job.request_id,
                 job.payload,
-                transport=job.transport,
+                transport=transport,
                 from_stage=job.from_stage,
                 to_stage=job.to_stage,
+            )
+            return data_ref, [op]
+
+        try:
+            write_start = _comm_now_ns()
+            data_ref, ops = await self.write_or_fall_back_to_shm(
+                job.relay, job.transport, write_payload
             )
             write_ms = _comm_elapsed_ms(write_start)
             object_id = data_ref.object_id
@@ -1033,7 +1066,7 @@ class CommEngine:
                 to_stage=job.to_stage,
                 target_endpoint=job.target_endpoint,
                 data_ref=data_ref,
-                ops=[op],
+                ops=ops,
                 replica_bindings=job.replica_bindings,
             )
             control_ms = _comm_elapsed_ms(control_start)
@@ -1042,7 +1075,7 @@ class CommEngine:
                 request_id=job.request_id,
                 from_stage=job.from_stage,
                 to_stage=job.to_stage,
-                transport=job.transport.value,
+                transport=data_ref.transport.value,
                 queue_key=queue_key,
                 queue_wait_ms=round((send_start - job.enqueued_ns) / 1_000_000.0, 6),
                 write_ms=round(write_ms, 6),
@@ -1069,10 +1102,12 @@ class CommEngine:
         send_start = _comm_now_ns()
         write_ms = -1.0
         control_ms = -1.0
-        try:
-            write_start = _comm_now_ns()
-            data_ref, ops = await stage_io.write_stream_chunk(
-                job.relay,
+
+        async def write_stream_chunk(
+            relay: Relay, transport: TransportKind
+        ) -> tuple[DataRef, list[RelayOperation]]:
+            return await stage_io.write_stream_chunk(
+                relay,
                 request_id=job.request_id,
                 data=job.data,
                 target_stage=job.target_stage,
@@ -1080,7 +1115,13 @@ class CommEngine:
                 chunk_id=job.chunk_id,
                 object_id=stream_object_id,
                 metadata=job.metadata,
-                transport=job.transport,
+                transport=transport,
+            )
+
+        try:
+            write_start = _comm_now_ns()
+            data_ref, ops = await self.write_or_fall_back_to_shm(
+                job.relay, job.transport, write_stream_chunk
             )
             write_ms = _comm_elapsed_ms(write_start)
             object_id = data_ref.object_id
@@ -1103,7 +1144,7 @@ class CommEngine:
                 from_stage=job.from_stage,
                 to_stage=job.target_stage,
                 chunk_id=job.chunk_id,
-                transport=job.transport.value,
+                transport=data_ref.transport.value,
                 bytes=job.data.nbytes,
                 queue_key=queue_key,
                 queue_wait_ms=round((send_start - job.enqueued_ns) / 1_000_000.0, 6),

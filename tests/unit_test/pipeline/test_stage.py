@@ -24,6 +24,7 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
 from sglang_omni.proto import (
+    DataAckMessage,
     DataReadyMessage,
     ShutdownMessage,
     StagePayload,
@@ -780,6 +781,40 @@ def test_stage_relay_read_failure_completes_with_error() -> None:
         assert control_plane.completions[0].success is False
         assert "relay read failed" in control_plane.completions[0].error
         assert relay.cleaned[-1] == "req-1"
+
+    asyncio.run(run())
+
+
+def test_a_relay_the_stage_cannot_build_fails_the_read_and_acks_it() -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        stage_obj = make_stage(
+            relay=relay,
+            control_plane=control_plane,
+            endpoints={"upstream": "inproc://upstream"},
+        )
+        payload = make_stage_payload(request_id="req-1")
+        data_ref, _ = await stage_io.write_payload(
+            relay,
+            "req-1",
+            payload,
+            transport=TransportKind.SHM,
+        )
+        stage_obj.comm.relay = Mock(side_effect=RuntimeError("relay setup failed"))
+
+        await stage_obj.on_data_ready(
+            DataReadyMessage("req-1", "upstream", "stage", data_ref.to_dict())
+        )
+
+        assert control_plane.completions[0].success is False
+        assert "relay setup failed" in control_plane.completions[0].error
+        acks = [
+            msg
+            for _, _, msg in control_plane.sent_to_stage
+            if isinstance(msg, DataAckMessage)
+        ]
+        assert [ack.success for ack in acks] == [False]
 
     asyncio.run(run())
 

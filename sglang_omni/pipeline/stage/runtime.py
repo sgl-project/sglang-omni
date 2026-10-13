@@ -792,8 +792,8 @@ class Stage:
             pass
 
         data_ref = self.data_ref_from_message(msg)
-        relay = self.comm.relay(data_ref.transport)
         try:
+            relay = self.comm.relay(data_ref.transport)
             payload = await self.comm.read_data(
                 relay=relay,
                 request_id=request_id,
@@ -967,8 +967,8 @@ class Stage:
             pass
 
         data_ref = self.data_ref_from_message(msg)
-        relay = self.comm.relay(data_ref.transport)
         try:
+            relay = self.comm.relay(data_ref.transport)
             data, metadata = await self.comm.read_stream_chunk(
                 relay=relay,
                 data_ref=data_ref,
@@ -1123,8 +1123,8 @@ class Stage:
             return
         else:
             pass
-        relay = self.comm.relay(data_ref.transport)
         try:
+            relay = self.comm.relay(data_ref.transport)
             await self.comm.read_data(
                 relay=relay,
                 request_id=request_id,
@@ -1156,8 +1156,8 @@ class Stage:
         else:
             pass
         data_ref = self.data_ref_from_message(msg)
-        relay = self.comm.relay(data_ref.transport)
         try:
+            relay = self.comm.relay(data_ref.transport)
             await self.comm.read_stream_chunk(relay=relay, data_ref=data_ref)
         except Exception as exc:
             logger.debug(
@@ -2075,7 +2075,7 @@ class Stage:
         transport_kind, relay = self.comm.router.relay_for_payload(
             target, projected_payload
         )
-        await self.comm.send_payload(
+        data_ref = await self.comm.send_payload(
             relay=relay,
             control_plane=self.control_plane,
             request_id=request_id,
@@ -2090,7 +2090,7 @@ class Stage:
             request_id=request_id,
             stage=self.name,
             event_name="stage_hop_sent",
-            metadata={"to_stage": target, "transport": transport_kind.value},
+            metadata={"to_stage": target, "transport": data_ref.transport.value},
         )
 
     @staticmethod
@@ -2437,7 +2437,9 @@ class Stage:
             return
         else:
             pass
-        transport_kind, relay = self.comm.router.relay_for_stream(target, data)
+        transport_kind, relay = self.comm.router.relay_for_stream(
+            target, data, metadata
+        )
         _emit_event(
             request_id=request_id,
             stage=self.name,

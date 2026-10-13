@@ -22,11 +22,11 @@ import torch
 
 from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPool
 from sglang_omni.relay.cuda_ipc import (
-    ContiguousSlotAllocator,
     CudaIpcGetOperation,
     CudaIpcPutOperation,
     CudaIpcRelay,
 )
+from sglang_omni.relay.slot_pool import ContiguousSlotAllocator
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace
 
 N = 1024 * 1024  # 1 MiB payload
