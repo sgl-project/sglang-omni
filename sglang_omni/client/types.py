@@ -164,6 +164,7 @@ class GenerateChunk:
     modality: str = "text"
     language: str | None = None
     audio_data: object = None
+    media: list[dict[str, object]] | None = None
     sample_rate: int | None = None
 
     @property
@@ -191,6 +192,7 @@ class GenerateChunk:
             "modality": self.modality,
             "language": self.language,
             "audio_data": self.audio_data,
+            "media": self.media,
             "sample_rate": self.sample_rate,
         }
 
@@ -232,6 +234,10 @@ class CompletionResult:
     request_id: str
     text: str
     audio: CompletionAudio | None = None
+    # Saved media of a generation stage. Delivered files belong to the
+    # caller. The server removes them only when it drops the completion
+    # before any caller receives it.
+    media: list[dict[str, object]] | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
     output_token_logprobs: list[list[float | int]] | None = None

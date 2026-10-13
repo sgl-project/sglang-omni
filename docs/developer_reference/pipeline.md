@@ -53,6 +53,17 @@ Stage responsibilities:
 - drain `scheduler.outbox` and convert scheduler output into control-plane
   messages
 
+A stage whose config lists `http_routes` also serves the ASGI app its
+scheduler returns from `http_app()`, on a Unix socket in the pipeline's IPC
+runtime directory, from a thread with its own event loop. The app's lifespan
+starts before the stage reports ready and ends when the stage stops, and the
+Omni HTTP server relays every request under those path prefixes to the
+socket as ASGI messages, streaming bodies both ways and passing a client
+disconnect on. A runtime that already lives in the stage process, such as a
+native engine with its own HTTP API, therefore serves that API without being
+imported into the HTTP process, and its routes answer 503 with the cause when
+the stage stops serving.
+
 The important invariant is that `Stage` does not branch on scheduler type.
 `SimpleScheduler`, `OmniScheduler`, `SessionScheduler` (stages that keep state
 per session), and streaming schedulers all present the same surface.

@@ -126,12 +126,14 @@ Supported Models
    cookbook/llada2_uni.md
    cookbook/fun_cosyvoice3.md
    cookbook/auk.md
+   cookbook/cosmos3_super.md
 
 .. toctree::
    :maxdepth: 1
    :caption: General Usage
 
    basic_usage/qwen3_omni.md
+   basic_usage/native_chat_stage.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
    basic_usage/process_topology.md
@@ -139,6 +141,7 @@ Supported Models
    basic_usage/process_topology_migration.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
+   basic_usage/native_media_routes.md
 
 
 .. toctree::

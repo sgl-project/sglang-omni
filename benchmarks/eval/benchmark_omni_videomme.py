@@ -139,6 +139,7 @@ def _build_base_url(config: VideoEvalConfig) -> str:
 async def run_video_eval(
     config: VideoEvalConfig,
     *,
+    completion=None,
     samples: list[VideoMMESample] | None = None,
     load_samples=load_videomme_samples,
     task_label: str,
@@ -166,6 +167,7 @@ async def run_video_eval(
     send_fn = make_video_send_fn(
         config.model,
         api_url,
+        completion=completion,
         max_tokens=config.max_tokens,
         temperature=config.temperature,
         video_fps=config.video_fps,

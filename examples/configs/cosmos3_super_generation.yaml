@@ -1,0 +1,26 @@
+# Two-H100 80GB SDK generation recipe; see docs/cookbook/cosmos3_super.md.
+config_cls: Cosmos3PipelineConfig
+name: cosmos3-super-generation
+model_path: nvidia/Cosmos3-Super@fe77b66696d645f663b8f27e942b3b43e4629e23
+
+stages:
+  generation:
+    gpu: 0
+    runtime_gpu_ids: [0, 1]
+    # One Omni owner; native SGLang creates its own workers.
+    tp_size: 1
+    factory:
+      output_dir: outputs/cosmos3-super
+      server_args_overrides:
+        tp_size: 1
+        # FSDP applies to resident components; the offloaded transformer bypasses it.
+        # Leave Ulysses/CFG placement at native defaults.
+        use_fsdp_inference: true
+        # 2-GPU node default; widen with runtime_gpu_ids for larger allocations.
+        hsdp_shard_dim: 2
+        hsdp_replicate_dim: 1
+        # Native offload keeps 24 layers in EACH 64-layer stack (48 total).
+        # This worked on 2x H100 80GB; explicit resident FSDP is not yet qualified.
+        component_residency: {transformer: layerwise-offload}
+        layerwise_resident_layers: {transformer: 24}
+        warmup_mode: "off"

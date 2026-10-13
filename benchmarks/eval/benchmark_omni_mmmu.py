@@ -133,6 +133,7 @@ def _build_base_url(config: MMMUEvalConfig) -> str:
 async def run_mmmu_eval(
     config: MMMUEvalConfig,
     *,
+    completion=None,
     compute_wer: bool = True,
 ) -> dict:
     """Run full MMMU evaluation and return results dict.
@@ -158,6 +159,7 @@ async def run_mmmu_eval(
     send_fn = make_mmmu_send_fn(
         config.model,
         api_url,
+        completion=completion,
         max_tokens=config.max_tokens,
         temperature=config.temperature,
         seed=config.seed,
