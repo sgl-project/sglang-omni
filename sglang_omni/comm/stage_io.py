@@ -848,6 +848,15 @@ async def read_transfer_buffer(
     return buf
 
 
+def packed_size_bytes(tensors: dict[str, torch.Tensor]) -> int:
+    """Byte length of the buffer pack_tensors builds for these tensors."""
+    offset = 0
+    for tensor in tensors.values():
+        offset += pad_offset(offset, dtype_alignment(tensor.dtype))
+        offset += tensor.numel() * tensor.element_size()
+    return offset
+
+
 def dtype_alignment(dtype: torch.dtype) -> int:
     return max(torch.empty((), dtype=dtype).element_size(), 1)
 
